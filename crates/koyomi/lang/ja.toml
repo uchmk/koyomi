@@ -213,6 +213,9 @@ next_none = "時刻の予定はありません（手で流します）"
 next_unconfirmed = "未確認のため、時刻が来ても流しません"
 next_over = "この先の予定はありません"
 when_row = "{0}（{1}）{2}"
+event_file = "ファイルが来たとき: {0}"
+event_file_settle = "ファイルが来たとき: {0}（{1} 変わらなくなってから）"
+event_start = "PC の起動・サインインのとき（エンジンの起動）"
 
 [calendar]
 heading = "カレンダー"

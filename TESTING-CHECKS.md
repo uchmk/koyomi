@@ -1,6 +1,6 @@
 # Checklist
 
-205 checks in TESTING.md, 204 left for a person.
+219 checks in TESTING.md, 218 left for a person.
 
 ## 1. Start
 
@@ -282,3 +282,20 @@
 - [ ] **25.16** A part with no `after` (`kind = "join"`) and a job nothing follows that has `kind = "time"` → `孤立した部品: j（after が無い）` and `孤立した部品: t（後に続くものが無い）`; `after = ["a", "b"]` with `b` after `a` after `b`: `after が輪になっている: a → b → a` 〔未訳〕
 - [ ] **25.17** `koyomi review` / the approval box of a net with every kind of part → Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` 〔未訳〕
 - [ ] **25.18** `koyomi run` a net with 3 running jobs and `concurrency = 2`, one of them a `kind = "time"` part → The part waits without taking a slot: the two jobs run and the part is 実行中 at the same time 〔未訳〕
+
+## 26. Starts by events (`[[when]] file = …` + `settle`, `on_start = true`)
+
+- [ ] **26.1** A net with `[[when]] file = 'D:\受信\*.csv'` and a job echoing `%KOYOMI_FILE%`; `koyomi approve` it; copy `sales.csv` into `D:\受信` → A run starts within a few seconds; `koyomi show` says `ファイル`（`D:\受信\sales.csv が来た`）; the job's log is the path 〔未訳〕
+- [ ] **26.2** The same with `settle = "10s"`; write the file slowly (append every 3 s for 20 s, then stop) → No run while it is being written; a run starts about 10 s after the last write 〔未訳〕
+- [ ] **26.3** Copy `note.txt` into `D:\受信` → Nothing starts: only `*.csv` counts 〔未訳〕
+- [ ] **26.4** Two files are already in `D:\受信` when the net is approved (or the engine starts) → No run; the history has a ⊘ スキップ row `見張り始めたときに既に 2 個あった（D:\受信\*.csv）: 流さない`; a file copied in afterwards starts a run 〔未訳〕
+- [ ] **26.5** Copy `b.csv` in while the run for `a.csv` is still going → `b.csv` waits; its run starts right after the first run ends (one run per file, in name order) 〔未訳〕
+- [ ] **26.6** Overwrite `a.csv` (new size or time) after its run ended → A run starts again; a file left as it is does not start another, and the engine's restart does not run it again 〔未訳〕
+- [ ] **26.7** Delete `D:\受信` before the engine starts, then make it and copy a file in → `koyomi check` (or the window) says `待つファイルのフォルダーを見張れない（5 秒ごとに見る）`; the file still starts a run within about 5 s 〔未訳〕
+- [ ] **26.8** The net has `calendar = "会社"` and the file comes on a Sunday → No run; a ⊘ スキップ row `… が来たが、休業日なので流さない（on_closed = "run" で流せる）`; with `on_closed = "run"` in the `[[when]]` the run starts 〔未訳〕
+- [ ] **26.9** The `[[when]]` has `except = [<today>]` or `start = <tomorrow>` → No run; a ⊘ スキップ row `… が来たが、except か start / end の外なので流さない` 〔未訳〕
+- [ ] **26.10** `koyomi hold` the net (or `koyomi pause`), then copy a file in → No run; a ⏸ 保留 row with the reason, as for a time; `koyomi release` / `resume` does not run it afterwards (the file counts as recorded) 〔未訳〕
+- [ ] **26.11** A net with `[[when]] on_start = true`; `koyomi approve`; `koyomi engine stop` and start the engine again (or sign in again) → A run starts once; `koyomi show` says `起動`（`起動したとき`）; the engine's running on does not start it again 〔未訳〕
+- [ ] **26.12** The same net, unapproved, when the engine starts; and with a calendar on a closed day → 🔒 `未確認のため流さなかった（koyomi approve …）`; ⊘ スキップ `起動したが、休業日なので流さない（on_closed = "run" で流せる）` 〔未訳〕
+- [ ] **26.13** `koyomi next` and the net's 予定 in the window for a net with both events and `every = "day"` → The rows `ファイルが来たとき: D:\受信\*.csv（10 秒 変わらなくなってから）` and `PC の起動・サインインのとき（エンジンの起動）` come first, then the times; `koyomi review` of it shows the same two rows under 今週 〔未訳〕
+- [ ] **26.14** `koyomi check` a `[[when]]` with `file = 'in\*.csv'`, with `file = 'D:\*\a.csv'`, with `file = …` and `on_closed = "prev"`, and with `on_start = false` → `file は絶対パスで書く（例: …）`; `file の * / ? はファイル名の部分だけ（フォルダーには使えない）`; `file / on_start では on_closed は "skip" か "run"`; `on_start は true だけ（使わないなら [[when]] ごと消す）` 〔未訳〕

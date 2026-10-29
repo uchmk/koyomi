@@ -23,11 +23,13 @@ use koyomi_core::held::Held;
 use koyomi_core::jobnet::Jobnet;
 use koyomi_core::run::{How, State as RunState};
 use koyomi_core::scan::{scan_in, Def, Standing};
-use koyomi_core::when;
+use koyomi_core::when::{self, Kind, OnClosed};
 
 use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot};
 
+mod events;
+mod files;
 mod retain;
 mod runner;
 mod schedule;
@@ -132,6 +134,8 @@ struct State {
     runner: Runner,
     /// The clock: when `[[when]]` was last looked at.
     schedule: Schedule,
+    /// The rest of `[[when]]`: files arriving and the engine's start.
+    events: events::Events,
     /// The sweep of logs and history older than `keep_days`.
     retain: Retain,
     keep_days: u32,
@@ -174,6 +178,7 @@ impl State {
             bad_config,
             runner,
             schedule,
+            events: events::Events::new(),
             retain,
             keep_days,
             notify: NotifyCfg::default(),
@@ -257,20 +262,8 @@ impl State {
         }
         for (k, (i, instant, planned)) in due.iter().enumerate() {
             let def = self.defs[*i].clone();
-            // Past what the holiday table knows: the day may be a holiday, so
-            // it is not run as if it were not, and the record says why.
-            let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
-            if let Some(until) = cal.filter(|c| c.stale(planned.date())).and_then(|c| c.until()) {
-                self.runner.not_run(&def, *planned, RunState::Locked, &format!("祝日の表が古い（{until} まで）"));
-                continue;
-            }
-            // Stopped by hand: written down as ⏸, so the time is not lost in silence.
-            if self.held.paused {
-                self.runner.not_run(&def, *planned, RunState::Held, "スケジュールを止めている（koyomi resume）");
-                continue;
-            }
-            if self.held.is_held(&def.id) {
-                self.runner.not_run(&def, *planned, RunState::Held, &format!("保留中（koyomi release {}）", def.id));
+            if let Some((state, why)) = self.stopped(&def, planned.date()) {
+                self.runner.not_run(&def, *planned, state, &why);
                 continue;
             }
             let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
@@ -294,6 +287,108 @@ impl State {
             }
         }
         self.schedule.looked(now, !due.is_empty());
+    }
+
+    /// Why `def` is not to start on `day` whatever its `[[when]]` says: the
+    /// holiday table does not reach the day (it may be a holiday, so it is not
+    /// run as if it were not), the schedule is paused, or the net is held.
+    /// Each is written down (⏸ for the two by hand), so nothing is lost in silence.
+    fn stopped(&self, def: &Def, day: NaiveDate) -> Option<(RunState, String)> {
+        let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
+        if let Some(until) = cal.filter(|c| c.stale(day)).and_then(|c| c.until()) {
+            return Some((RunState::Locked, format!("祝日の表が古い（{until} まで）")));
+        }
+        if self.held.paused {
+            return Some((RunState::Held, "スケジュールを止めている（koyomi resume）".to_owned()));
+        }
+        if self.held.is_held(&def.id) {
+            return Some((RunState::Held, format!("保留中（koyomi release {}）", def.id)));
+        }
+        None
+    }
+
+    /// Why an event on `day` does not start `def` by its `when`: the day is
+    /// outside `start` / `end` or in `except`, or it is a closed day and
+    /// `on_closed` is not `"run"`. `what` is the event, for the record.
+    fn off_day(&self, def: &Def, w: &when::When, day: NaiveDate, what: &str) -> Option<String> {
+        if !w.runs_on(day) {
+            return Some(format!("{what}が、except か start / end の外なので流さない"));
+        }
+        let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
+        if cal.is_some_and(|c| !c.is_business(day)) && w.on_closed_in(cal) != OnClosed::Run {
+            return Some(format!("{what}が、休業日なので流さない（on_closed = \"run\" で流せる）"));
+        }
+        None
+    }
+
+    /// Starts what an event says: the nets with `on_start = true` once, when
+    /// the engine starts; a net with `file = …` for each file that has come
+    /// (`events::Events`). What does not start is recorded with why, as a time
+    /// is. A file that comes while its net runs waits for the run to end.
+    fn tick_events(&mut self) {
+        let now = Local::now().naive_local();
+        let today = now.date();
+        if self.events.take_start() {
+            for def in self.defs.clone() {
+                let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| matches!(w.kind, Kind::OnStart))) else { continue };
+                if let Some(why) = self.off_day(&def, w, today, "起動した") {
+                    self.runner.not_run(&def, now, RunState::Skipped, &why);
+                    continue;
+                }
+                if let Some((state, why)) = self.stopped(&def, today) {
+                    self.runner.not_run(&def, now, state, &why);
+                    continue;
+                }
+                match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
+                    schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
+                        if let Err(e) = self.runner.start_event(&def, How::Start, "起動したとき", None) {
+                            self.runner.not_run(&def, now, RunState::Locked, &e);
+                        }
+                    }
+                    schedule::Verdict::NotRun(state, reason) => {
+                        self.runner.not_run(&def, now, state, &reason);
+                    }
+                }
+            }
+        }
+        for a in self.events.due() {
+            let path = a.path.display().to_string();
+            let Some(def) = self.defs.iter().find(|d| d.id == a.def_id).cloned() else {
+                self.events.fired(&a.def_id, &a.pattern, &a.path);
+                continue;
+            };
+            let Some(w) =
+                def.net.as_ref().and_then(|n| n.when.iter().find(|w| matches!(&w.kind, Kind::File { file, .. } if *file == a.pattern)))
+            else {
+                self.events.fired(&a.def_id, &a.pattern, &a.path);
+                continue;
+            };
+            if let Some(why) = self.off_day(&def, w, today, &format!("{path} が来た")) {
+                self.runner.not_run(&def, now, RunState::Skipped, &why);
+                self.events.fired(&a.def_id, &a.pattern, &a.path);
+                continue;
+            }
+            if let Some((state, why)) = self.stopped(&def, today) {
+                self.runner.not_run(&def, now, state, &why);
+                self.events.fired(&a.def_id, &a.pattern, &a.path);
+                continue;
+            }
+            // Still running: the file keeps; it starts the net when the run ends.
+            if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
+                continue;
+            }
+            match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
+                schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
+                    if let Err(e) = self.runner.start_event(&def, How::File, &format!("{path} が来た"), Some(path)) {
+                        self.runner.not_run(&def, now, RunState::Locked, &e);
+                    }
+                }
+                schedule::Verdict::NotRun(state, reason) => {
+                    self.runner.not_run(&def, now, state, &reason);
+                }
+            }
+            self.events.fired(&a.def_id, &a.pattern, &a.path);
+        }
     }
 
     /// Reads `approved.toml` again; only while it does not read (the engine is its one writer).
@@ -328,6 +423,17 @@ impl State {
         self.calendars = Calendars::load(&self.paths.calendars);
         self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
         self.runner.set_children(Self::children_of(&self.defs));
+        // Files there before the watch began are not run: they may be old, and
+        // a restart must not run them again. The record says they were there.
+        let now = Local::now().naive_local();
+        for (id, pattern, n) in self.events.set_rules(&self.defs) {
+            if let Some(def) = self.defs.iter().find(|d| d.id == id).cloned() {
+                self.runner.not_run(&def, now, RunState::Skipped, &format!("見張り始めたときに既に {n} 個あった（{pattern}）: 流さない"));
+            }
+        }
+        if !self.events.watching() {
+            self.warnings.push("待つファイルのフォルダーを見張れない（5 秒ごとに見る）".to_owned());
+        }
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
@@ -615,6 +721,7 @@ pub fn run() -> i32 {
         }
         state.runner.tick();
         state.tick_schedule();
+        state.tick_events();
         state.tick_retain();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {

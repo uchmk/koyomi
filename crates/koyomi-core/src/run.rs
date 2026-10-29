@@ -151,6 +151,10 @@ pub enum How {
     Schedule,
     /// `koyomi rerun` or 再実行: the jobs that passed before are carried over.
     Rerun,
+    /// A file the net waits for came (`[[when]] file = …`).
+    File,
+    /// The engine started (`[[when]] on_start = true`).
+    Start,
 }
 
 /// How a job ended, as the engine saw it.
@@ -321,6 +325,10 @@ pub struct Run {
     /// or that it started after its time (遅れて実行).
     #[serde(default)]
     pub reason: String,
+    /// The file that started the run (`[[when]] file = …`): `KOYOMI_FILE` for
+    /// a job no `kind = "file"` part comes before.
+    #[serde(default)]
+    pub file: Option<String>,
 }
 
 /// How a run that started after its time (`missed = "once"`) begins its reason.
@@ -367,6 +375,7 @@ impl Run {
             state: State::Running,
             jobs,
             reason: String::new(),
+            file: None,
         };
         run.settle(now);
         run
@@ -399,6 +408,7 @@ impl Run {
             state,
             jobs,
             reason: reason.to_owned(),
+            file: None,
         }
     }
 
@@ -571,7 +581,8 @@ impl Run {
         self.settle(now);
     }
 
-    /// The last file a `kind = "file"` part found before `id` (by its lines, back to the start).
+    /// The last file a `kind = "file"` part found before `id` (by its lines,
+    /// back to the start), else the file that started the run.
     pub fn file_for(&self, id: &str) -> Option<String> {
         let mut seen = BTreeSet::new();
         let mut stack = vec![id.to_owned()];
@@ -588,7 +599,7 @@ impl Run {
                 }
             }
         }
-        None
+        self.file.clone()
     }
 
     /// Marks `id` started.

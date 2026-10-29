@@ -64,21 +64,31 @@ pub fn when_row(t: &Table, at: NaiveDateTime) -> String {
     t.trf("run.when_row", &[&day, &wd, &at.format("%H:%M").to_string()])
 }
 
-/// The next `n` times `whens` come after `now`, one row each: what the window
-/// and `koyomi next` both show, from the same calculation the engine starts by.
-/// With a calendar, a day past its holiday table is marked: the engine will not run it.
+/// An event `when` as a row (`ファイルが来たとき: D:\受信\*.csv`); `None` for a time.
+pub fn event_row(t: &Table, w: &When) -> Option<String> {
+    match &w.kind {
+        when::Kind::File { file, settle: None } => Some(t.trf("run.event_file", &[file])),
+        when::Kind::File { file, settle: Some(s) } => Some(t.trf("run.event_file_settle", &[file, &koyomi_core::duration::text(*s)])),
+        when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
+        _ => None,
+    }
+}
+
+/// The events `whens` start by, then the next `n` times they come after `now`,
+/// one row each: what the window and `koyomi next` both show, from the same
+/// calculation the engine starts by. With a calendar, a day past its holiday
+/// table is marked: the engine will not run it.
 pub fn next_rows(t: &Table, whens: &[When], cal: Option<&Calendar>, now: NaiveDateTime, n: usize) -> Vec<String> {
-    when::next_times_in(whens, now, n, cal)
-        .into_iter()
-        .map(|at| {
-            let row = when_row(t, at);
-            if cal.is_some_and(|c| c.stale(at.date())) {
-                format!("{row}  {}", t.tr("calendar.stale"))
-            } else {
-                row
-            }
-        })
-        .collect()
+    let mut rows: Vec<String> = whens.iter().filter_map(|w| event_row(t, w)).collect();
+    rows.extend(when::next_times_in(whens, now, n, cal).into_iter().map(|at| {
+        let row = when_row(t, at);
+        if cal.is_some_and(|c| c.stale(at.date())) {
+            format!("{row}  {}", t.tr("calendar.stale"))
+        } else {
+            row
+        }
+    }));
+    rows
 }
 
 /// The days of a month, in order, with what each is under `cal`.

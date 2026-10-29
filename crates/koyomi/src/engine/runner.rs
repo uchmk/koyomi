@@ -108,7 +108,7 @@ impl Due {
         match self {
             Due::Time { at, text } => (now >= *at).then(|| (State::Ok, format!("{text} になった"), None)),
             Due::File { pattern, settle, timeout, since, seen } => {
-                let found = find_file(pattern);
+                let found = super::files::find_file(pattern);
                 let arrived = match (found, *settle) {
                     (None, _) => {
                         *seen = None;
@@ -148,57 +148,6 @@ fn time_text(at: NaiveDateTime, days: u32) -> String {
     } else {
         at.format("%Y-%m-%d %H:%M").to_string()
     }
-}
-
-/// The file `pattern` names: a path, or a folder and a name with `*` / `?`
-/// (the first by name when several match). Its size and change time with it.
-fn find_file(pattern: &str) -> Option<(PathBuf, u64, Option<SystemTime>)> {
-    let pat = Path::new(pattern);
-    let name = pat.file_name()?.to_string_lossy().into_owned();
-    if !name.contains(['*', '?']) {
-        let meta = std::fs::metadata(pat).ok().filter(|m| m.is_file())?;
-        return Some((pat.to_path_buf(), meta.len(), meta.modified().ok()));
-    }
-    let dir = pat.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
-    let mut hits: Vec<(PathBuf, u64, Option<SystemTime>)> = std::fs::read_dir(dir)
-        .ok()?
-        .flatten()
-        .filter_map(|e| {
-            let n = e.file_name().to_string_lossy().into_owned();
-            let m = e.metadata().ok()?;
-            (m.is_file() && glob_match(&name, &n)).then(|| (e.path(), m.len(), m.modified().ok()))
-        })
-        .collect();
-    hits.sort_by(|a, b| a.0.cmp(&b.0));
-    hits.into_iter().next()
-}
-
-/// `*` (any run of characters) and `?` (any one character) in `pattern`,
-/// against the whole of `name`; letters' case does not count on Windows.
-fn glob_match(pattern: &str, name: &str) -> bool {
-    let fold = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_owned() };
-    let (p, n): (Vec<char>, Vec<char>) = (fold(pattern).chars().collect(), fold(name).chars().collect());
-    let (mut pi, mut ni) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some((pi, ni));
-            pi += 1;
-        } else if let Some((sp, sn)) = star {
-            pi = sp + 1;
-            ni = sn + 1;
-            star = Some((sp, sn + 1));
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
 }
 
 pub struct Runner {
@@ -313,22 +262,28 @@ impl Runner {
     /// Starts `def` for the business day `date`; `planned` is the time a schedule
     /// meant it for. Refused while the same net runs.
     pub fn start(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>) -> Result<String, String> {
-        self.begin(def, date, how, planned, None)
+        let run = self.prepare(def, date, how, planned, None)?;
+        self.launch(run, &def.text)
     }
 
     /// Starts `def` at the job `from`: the jobs before it are ⊘ スキップ ([`Run::starting_at`]).
     pub fn start_at(&mut self, def: &Def, date: NaiveDate, from: &str) -> Result<String, String> {
-        self.begin(def, date, How::Manual, None, Some(from))
+        let run = self.prepare(def, date, How::Manual, None, Some(from))?;
+        self.launch(run, &def.text)
     }
 
-    fn begin(
-        &mut self,
-        def: &Def,
-        date: NaiveDate,
-        how: How,
-        planned: Option<NaiveDateTime>,
-        from: Option<&str>,
-    ) -> Result<String, String> {
+    /// Starts `def` for today because something happened: `how` says what
+    /// (a file came, the engine started), `reason` goes on the run, and `file`
+    /// is the file that came, `KOYOMI_FILE` for its jobs.
+    pub fn start_event(&mut self, def: &Def, how: How, reason: &str, file: Option<String>) -> Result<String, String> {
+        let mut run = self.prepare(def, Local::now().date_naive(), how, None, None)?;
+        run.reason = reason.to_owned();
+        run.file = file;
+        self.launch(run, &def.text)
+    }
+
+    /// A new run of `def`, not launched yet: the net expanded, no other run of it going.
+    fn prepare(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>, from: Option<&str>) -> Result<Run, String> {
         let net = self.expand(def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?)?;
         self.not_running(&def.id, def.label())?;
         let now = Local::now().naive_local();
@@ -339,7 +294,7 @@ impl Runner {
             None => Run::new(&id, &def.id, def.label(), &date, how, &net, now),
         };
         run.planned = planned;
-        self.launch(run, &def.text)
+        Ok(run)
     }
 
     /// Starts run `previous` again with the definition it ran, the copy beside
@@ -1523,6 +1478,23 @@ id = \"a\"
     }
 
     #[test]
+    fn a_run_started_by_a_file_hands_it_to_its_jobs_as_koyomi_file() {
+        let dir = scratch("event");
+        let show = if cfg!(windows) { echo("%KOYOMI_FILE%") } else { "run = [\"sh\", \"-c\", \"echo $KOYOMI_FILE\"]".to_owned() };
+        let d = def("net", &format!("format = 1\n[[when]]\nfile = 'D:\\\\in\\\\*.csv'\n[[job]]\nid = \"b\"\n{show}\n"));
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start_event(&d, How::File, "D:\\in\\Sales.csv が来た", Some("D:\\in\\Sales.csv".to_owned())).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!((run.how, run.state, run.reason.as_str()), (How::File, State::Ok, "D:\\in\\Sales.csv が来た"));
+        assert_eq!(run.planned, None);
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "D:\\in\\Sales.csv");
+        // While it runs, the same net is refused, as by hand.
+        let id2 = r.start_event(&d, How::Start, "起動したとき", None).unwrap();
+        assert_eq!(wait_over(&mut r, &id2).how, How::Start);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_waiting_part_is_killed_by_hand_and_the_run_ends_abnormally() {
         let dir = scratch("killwait");
         let text = format!(
@@ -1568,17 +1540,5 @@ id = \"a\"
         let (a, x, b) = (run.job("a").unwrap(), run.job("c/x").unwrap(), run.job("b").unwrap());
         assert!(a.ended.unwrap() <= x.started.unwrap() && x.ended.unwrap() <= b.started.unwrap());
         let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn glob_match_takes_star_and_question_mark() {
-        assert!(glob_match("*.csv", "sales.csv"));
-        assert!(glob_match("sales-??.csv", "sales-01.csv"));
-        assert!(!glob_match("sales-??.csv", "sales-001.csv"));
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("a*b*c", "aXXbYYc"));
-        assert!(!glob_match("a*b*c", "aXXbYY"));
-        assert!(!glob_match("*.csv", "sales.txt"));
-        assert_eq!(glob_match("*.CSV", "sales.csv"), cfg!(windows));
     }
 }

@@ -6,6 +6,10 @@
 
 ### 追加
 
+- 出来事での起動: `[[when]] file = 'D:\受信\*.csv'`（来たファイルごとに 1 回流し、ジョブに `KOYOMI_FILE` で渡す。`settle = "10s"` で大きさと更新時刻がその間変わらなくなってから。
+  見張り始めに既にあるファイルは ⊘ スキップで記録して流さない。流れている間に来たファイルは終わってから。`ito-watch` に加えて 5 秒ごとにも見る）、
+  `[[when]] on_start = true`（エンジンの起動 = PC の起動・サインインのとき）。どちらも `except` / `start` / `end` と `on_closed = "skip" | "run"`（既定 skip）が効き、
+  流さないときは理由つきで記録する。`koyomi next`・窓の予定・`koyomi review` に時刻なしの行で出る。`koyomi show` の 起動 は `ファイル`・`起動`。
 - 流れの部品: 線の 3 種類 `after = [{ job = "a", on = "ok" | "error" | "any" }]`（打ち切り・強制終了も異常。異常の線で続いても、異常終了したジョブがあれば回は ✕ 異常）、
   `kind = "branch"`（`code = "1..3"` / `"else"` の線で分ける）、`kind = "join"`（`wait = "all" | "any"`。線が 2 本以上のジョブは全部を待つ）、
   `kind = "time"`（`at`、`days`）、`kind = "file"`（`file`、`settle`、`timeout`。来たファイルは次のジョブに `KOYOMI_FILE` で渡す）、

@@ -152,10 +152,13 @@ pub fn week(t: &Table, d: &Def, cal: Option<&Calendar>, now: NaiveDateTime) -> V
         Ok(net) => when::between_in(&net.when, now, until, cal),
         Err(_) => Vec::new(),
     });
+    let mut out: Vec<String> = net.when.iter().filter_map(|w| crate::show::event_row(t, w)).collect();
     if new.is_empty() && old.as_ref().is_none_or(|o| o.is_empty()) {
-        return if net.when.is_empty() && d.previous.is_none() { Vec::new() } else { vec![t.tr("review.week_none").to_owned()] };
+        if !out.is_empty() || (net.when.is_empty() && d.previous.is_none()) {
+            return out;
+        }
+        return vec![t.tr("review.week_none").to_owned()];
     }
-    let mut out = Vec::new();
     // (time, mark): what is listed. Without a previous version, every time, unmarked.
     let rows: Vec<(NaiveDateTime, &str)> = match &old {
         None => {

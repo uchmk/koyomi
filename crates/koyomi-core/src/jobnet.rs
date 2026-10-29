@@ -397,10 +397,10 @@ struct RawWhen {
     on_closed: Field,
     business_day: Field,
     shift: Field,
-    // Of the design, not run by this version.
     file: Field,
     settle: Field,
     on_start: Field,
+    // Of the design, not run by this version.
     after_jobnet: Field,
     on: Field,
 }
@@ -717,9 +717,7 @@ impl Checker<'_> {
         for entry in raw {
             let head = entry.span().start;
             let w = entry.get_ref();
-            for (field, name) in
-                [(&w.file, "file"), (&w.settle, "settle"), (&w.on_start, "on_start"), (&w.after_jobnet, "after_jobnet"), (&w.on, "on")]
-            {
+            for (field, name) in [(&w.after_jobnet, "after_jobnet"), (&w.on, "on")] {
                 self.not_yet(field, name);
             }
             let kind = if w.once.is_some() {
@@ -734,12 +732,18 @@ impl Checker<'_> {
                 }
             } else if w.dates.is_some() {
                 "dates"
+            } else if w.file.is_some() {
+                "file"
+            } else if w.on_start.is_some() {
+                "on_start"
             } else {
-                self.add(head, "[[when]] には once か every か dates が要る");
+                self.add(head, "[[when]] には once か every か dates か file か on_start が要る");
                 continue;
             };
             let allowed: &[&str] = match kind {
                 "once" => &["once"],
+                "file" => &["file", "settle"],
+                "on_start" => &["on_start"],
                 "day" => &["every", "at"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days"],
                 "week" => &["every", "days", "at"],
@@ -762,6 +766,9 @@ impl Checker<'_> {
                 (&w.dates, "dates"),
                 (&w.business_day, "business_day"),
                 (&w.shift, "shift"),
+                (&w.file, "file"),
+                (&w.settle, "settle"),
+                (&w.on_start, "on_start"),
             ] {
                 if let Some(f) = field {
                     if !allowed.contains(&name) {
@@ -776,9 +783,27 @@ impl Checker<'_> {
                 Some("run") => Some(OnClosed::Run),
                 _ => None,
             };
+            // An event has no day to move to: it runs on its day or not at all.
+            if matches!(kind, "file" | "on_start") && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
+                let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
+                self.add(pos, "file / on_start では on_closed は \"skip\" か \"run\"");
+            }
             let before = self.problems.len();
             let kind = match kind {
                 "once" => self.datetime(&w.once).map(|at| Kind::Once { at }),
+                "file" => {
+                    let file = self.event_file(&w.file);
+                    let settle = self.duration_of(&w.settle, "settle");
+                    file.map(|file| Kind::File { file, settle })
+                }
+                "on_start" => match w.on_start.as_ref().and_then(|f| f.get_ref().as_bool()) {
+                    Some(true) => Some(Kind::OnStart),
+                    _ => {
+                        let pos = w.on_start.as_ref().map_or(head, |f| f.span().start);
+                        self.add(pos, "on_start は true だけ（使わないなら [[when]] ごと消す）");
+                        None
+                    }
+                },
                 "day" => self.at(&w.at, head).map(|at| Kind::Day { at }),
                 "minutes" | "hours" => {
                     let n = self.n(&w.n, head);
@@ -851,6 +876,33 @@ impl Checker<'_> {
             }
         }
         out
+    }
+
+    /// `[[when]] file`: an absolute path, `*` / `?` only in the name part.
+    fn event_file(&mut self, field: &Field) -> Option<String> {
+        let f = field.as_ref()?;
+        let pos = f.span().start;
+        let text = self.string(field, "file")?;
+        if text.trim().is_empty() {
+            self.add(pos, "file が空");
+            return None;
+        }
+        // Split by either separator: the check reads the same on every OS.
+        let (dir, name) = text.rsplit_once(['/', '\\']).unwrap_or(("", text.as_str()));
+        let drive = text.as_bytes().get(1) == Some(&b':') && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+        if !(drive || text.starts_with("\\\\") || text.starts_with('/')) {
+            self.add(pos, "file は絶対パスで書く（例: file = 'D:\\受信\\*.csv'）");
+            return None;
+        }
+        if name.is_empty() {
+            self.add(pos, "file はファイル名まで書く（例: file = 'D:\\受信\\*.csv'）");
+            return None;
+        }
+        if dir.contains(['*', '?']) {
+            self.add(pos, "file の * / ? はファイル名の部分だけ（フォルダーには使えない）");
+            return None;
+        }
+        Some(text)
     }
 
     fn at(&mut self, field: &Field, head: usize) -> Option<Vec<NaiveTime>> {
@@ -1866,7 +1918,7 @@ after = [{ job = \"way\", code = \"else\" }]
     fn a_when_names_its_mistake_with_its_line() {
         let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
-        assert_eq!(p("at = [\"02:00\"]"), ["a.toml の 2 行目: [[when]] には once か every か dates が要る"]);
+        assert_eq!(p("at = [\"02:00\"]"), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start が要る"]);
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
             ["a.toml の 3 行目: every は \"day\"・\"minutes\"・\"hours\"・\"week\"・\"month\"・\"year\" のどれか"]
@@ -1924,11 +1976,51 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("once = \"今夜\""), ["a.toml の 3 行目: 日時は 2026-11-30T21:00:00 のように書く（時差はつけない）: 今夜"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nstart = 2027-01-01\nend = 2026-12-01"), ["a.toml の 5 行目: start は end より前"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nfoo = 1"), ["a.toml の 5 行目: 知らない欄 foo"]);
-        for f in ["file = \"x\"", "settle = \"10s\"", "on_start = true", "after_jobnet = \"a/b\"", "on = \"ok\""] {
+        for f in ["after_jobnet = \"a/b\"", "on = \"ok\""] {
             let name = f.split(' ').next().unwrap();
             assert_eq!(
                 p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),
                 [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")],
+                "{f}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_event_when_is_a_file_or_the_start() {
+        let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
+        let net =
+            parse("format = 1\n[[when]]\nfile = 'D:\\受信\\*.csv'\nsettle = \"10s\"\n[[when]]\non_start = true\nexcept = [2026-12-31]\n")
+                .unwrap();
+        assert_eq!(net.when.len(), 2);
+        assert_eq!(net.when[0].kind, Kind::File { file: "D:\\受信\\*.csv".to_owned(), settle: Some(10) });
+        assert!(net.when[0].is_event());
+        assert_eq!(net.when[1].kind, Kind::OnStart);
+        assert_eq!(net.when[1].except, [NaiveDate::from_ymd_opt(2026, 12, 31).unwrap()]);
+        // A UNC path and a plain file (no wildcard) are fine; the settle may be left out.
+        let net = parse("format = 1\n[[when]]\nfile = '\\\\nas\\in\\done.flag'\n").unwrap();
+        assert_eq!(net.when[0].kind, Kind::File { file: "\\\\nas\\in\\done.flag".to_owned(), settle: None });
+        assert_eq!(p("file = 'in\\*.csv'"), ["a.toml の 3 行目: file は絶対パスで書く（例: file = 'D:\\受信\\*.csv'）"]);
+        assert_eq!(p("file = 'D:\\受信\\'"), ["a.toml の 3 行目: file はファイル名まで書く（例: file = 'D:\\受信\\*.csv'）"]);
+        assert_eq!(p("file = 'D:\\*\\a.csv'"), ["a.toml の 3 行目: file の * / ? はファイル名の部分だけ（フォルダーには使えない）"]);
+        assert_eq!(p("file = ''"), ["a.toml の 3 行目: file が空"]);
+        assert_eq!(
+            p("file = 'D:\\in\\a.csv'\nsettle = 10"),
+            ["a.toml の 4 行目: settle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]
+        );
+        assert_eq!(p("file = 'D:\\in\\a.csv'\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は file では使わない"]);
+        assert_eq!(
+            p("file = 'D:\\in\\a.csv'\non_closed = \"prev\""),
+            ["a.toml の 4 行目: file / on_start では on_closed は \"skip\" か \"run\""]
+        );
+        assert_eq!(p("on_start = false"), ["a.toml の 3 行目: on_start は true だけ（使わないなら [[when]] ごと消す）"]);
+        assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
+        assert_eq!(p("settle = \"10s\""), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start が要る"]);
+        for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
+            let name = f.split(' ').next().unwrap();
+            assert_eq!(
+                p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),
+                [format!("a.toml の 5 行目: {name} は day では使わない")],
                 "{f}"
             );
         }

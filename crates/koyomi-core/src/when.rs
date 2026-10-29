@@ -69,6 +69,24 @@ pub enum Kind {
     Year { month: u32, day: u32, at: Vec<NaiveTime> },
     /// `dates = [2026-12-30, 2027-01-04]`, `at`.
     Dates { dates: Vec<NaiveDate>, at: Vec<NaiveTime> },
+    /// `file = 'D:\受信\*.csv'`, `settle = "10s"`: a file arriving (an event, not a time).
+    /// `file` is an absolute path; `*` / `?` only in its name. `settle`: the seconds
+    /// the file must stay the same size before it counts as written.
+    File {
+        file: String,
+        #[serde(default)]
+        settle: Option<u64>,
+    },
+    /// `on_start = true`: when the engine starts (the PC's start or sign-in).
+    OnStart,
+}
+
+impl Kind {
+    /// An event (a file arriving, the engine's start), not a time: it has no
+    /// next time, and runs when it happens on a day `start` / `end` / `except` allow.
+    pub fn is_event(&self) -> bool {
+        matches!(self, Kind::File { .. } | Kind::OnStart)
+    }
 }
 
 /// Which day of the month. `day = 31` in a shorter month is no day: nothing runs that month.
@@ -132,6 +150,11 @@ fn months_around(date: NaiveDate) -> impl Iterator<Item = (i32, u32)> {
 const HORIZON: u64 = 366 * 8 + 7;
 
 impl When {
+    /// An event (`file`, `on_start`), not a time.
+    pub fn is_event(&self) -> bool {
+        self.kind.is_event()
+    }
+
     /// Whether `date` is within `start`..=`end` and not in `except`.
     pub fn runs_on(&self, date: NaiveDate) -> bool {
         self.start.is_none_or(|s| date >= s) && self.end.is_none_or(|e| date <= e) && !self.except.contains(&date)
@@ -157,6 +180,7 @@ impl When {
             Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
+            Kind::File { .. } | Kind::OnStart => Vec::new(),
         }
     }
 
@@ -188,6 +212,9 @@ impl When {
 
     /// The first time after `after` (not at it), if any within the horizon.
     pub fn next_after_in(&self, after: NaiveDateTime, cal: Option<&Calendar>) -> Option<NaiveDateTime> {
+        if self.is_event() {
+            return None;
+        }
         if let Kind::Once { at } = &self.kind {
             let day = match cal {
                 Some(c) => c.adjust(at.date(), self.on_closed_in(cal))?,
@@ -579,6 +606,28 @@ mod tests {
         let text = toml::to_string(&vec![w.clone()].into_iter().map(|w| ("w", w)).collect::<BTreeMap<_, _>>()).unwrap();
         let back: BTreeMap<String, When> = toml::from_str(&text).unwrap();
         assert_eq!(back["w"], w);
+    }
+
+    #[test]
+    fn an_event_has_no_next_time_and_survives_toml() {
+        let file = When {
+            kind: Kind::File { file: "D:\\in\\*.csv".to_owned(), settle: None },
+            except: Vec::new(),
+            start: None,
+            end: None,
+            on_closed: Some(OnClosed::Run),
+        };
+        let start = When { kind: Kind::OnStart, ..file.clone() };
+        for w in [&file, &start] {
+            assert!(w.is_event());
+            assert_eq!(w.next_after(dt("2026-11-30 00:00")), None);
+            assert!(w.times_on(d("2026-11-30")).is_empty());
+            let text = toml::to_string(&BTreeMap::from([("w", w.clone())])).unwrap();
+            let back: BTreeMap<String, When> = toml::from_str(&text).unwrap();
+            assert_eq!(&back["w"], w);
+        }
+        assert!(toml::to_string(&BTreeMap::from([("w", file)])).unwrap().contains("every = \"file\""));
+        assert!(next_times(&[start], dt("2026-11-30 00:00"), 3).is_empty());
     }
 
     /// UTC−5, an hour ahead between 2026-03-08 02:00 and 2026-11-01 02:00 on

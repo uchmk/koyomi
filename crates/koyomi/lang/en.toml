@@ -214,6 +214,9 @@ next_none = "No scheduled time (started by hand)"
 next_unconfirmed = "Not approved: it will not start when its time comes"
 next_over = "No time to come"
 when_row = "{0} ({1}) {2}"
+event_file = "When a file arrives: {0}"
+event_file_settle = "When a file arrives: {0} (after {1} unchanged)"
+event_start = "At start-up (when the engine starts)"
 
 [calendar]
 heading = "Calendars"
