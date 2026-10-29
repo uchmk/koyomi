@@ -1,0 +1,31 @@
+# The app's words by key (English first; ja.toml lays over it).
+[app]
+title = "koyomi"
+hello = "Hello from koyomi."
+bug = "Report a problem (F12)"
+
+[title]
+search = "Command palette"
+bell = "Notices ({0} unread)"
+minimize = "Minimize"
+maximize = "Maximize"
+restore = "Restore"
+close = "Close"
+
+[notices]
+title = "Notices ({0} unread)"
+mark_read = "Mark all read"
+empty = "No notices"
+ago = "{} ago"
+ok = "done"
+info = "info"
+warn = "check"
+err = "failed"
+wait = "waiting"
+
+[palette]
+hint = "Type a command"
+none = "No command matches"
+report_bug = "Report a problem"
+reset_scale = "Reset the scale"
+quit = "Quit"
