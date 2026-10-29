@@ -25,6 +25,8 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 |---|---|---|
 | 3.1 | Open the window with no engine running, then close the window | The engine starts by itself and is still running after the window is closed (`koyomi engine status` answers) |
 | 3.2 | Run `koyomi engine` while one is up, then `koyomi engine stop` | The first prints "もう動いている" and exits 1; stop stops the running one |
+| 3.3 | Run `koyomi startup on`, then `koyomi startup` and `koyomi engine status` | Both say サインイン時の起動: あり (the status on its last line); the Run key `uchmk.koyomi` under HKCU holds `koyomi.exe engine`; the settings' General page shows the switch on; after signing in again the engine is up with no window |
+| 3.4 | Run `koyomi startup off`, then `koyomi startup oops` | The first says サインイン時には起動しない and the key is gone; the second prints the usage and exits 2 |
 
 ## 4. Approval
 

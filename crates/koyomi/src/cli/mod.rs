@@ -1,4 +1,4 @@
-//! The commands that print and exit: `check`, `list`, `approve`, `run`, `status`, `log`, `kill`, `engine`.
+//! The commands that print and exit: `check`, `list`, `approve`, `run`, `status`, `log`, `kill`, `engine`, `startup`.
 //!
 //! Exit codes: 0 done, 1 refused or not so (a problem in a file, not approved, an engine already up),
 //! 2 used wrongly.
@@ -27,7 +27,11 @@ usage: koyomi [--version | --help | env]
        koyomi log <run> <job>        the tail of one job's log
        koyomi kill <run> [<job>]     stop one job, or the whole run
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
+       koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
+
+/// What the sign-in entry runs: the engine, not the window.
+pub const STARTUP_ARGS: [&str; 1] = ["engine"];
 
 /// Words for the person at the console: common.toml's language.
 pub fn table() -> ito_i18n::Table {
@@ -48,6 +52,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "log" => log(rest),
         "kill" => kill(rest),
         "engine" => engine_cmd(rest),
+        "startup" => startup_cmd(rest),
         _ => return None,
     })
 }
@@ -367,7 +372,7 @@ fn engine_cmd(args: &[String]) -> i32 {
         [] => engine::run(),
         [a] if a == "status" => match ask(&proto::door(), &Request::Status) {
             Ok(text) => {
-                say(&text, false);
+                say(&format!("{text}\n{}", startup_line()), false);
                 0
             }
             Err(_) => {
@@ -386,5 +391,49 @@ fn engine_cmd(args: &[String]) -> i32 {
             }
         },
         _ => usage("engine takes status or stop"),
+    }
+}
+
+/// Whether the engine starts at sign-in, in a line.
+fn startup_line() -> String {
+    match ito_common::startup::enabled("koyomi") {
+        true => "サインイン時の起動: あり".to_owned(),
+        false => "サインイン時の起動: なし".to_owned(),
+    }
+}
+
+fn startup_cmd(args: &[String]) -> i32 {
+    let on = match args {
+        [] => {
+            say(&startup_line(), false);
+            return 0;
+        }
+        [a] if a == "on" => true,
+        [a] if a == "off" => false,
+        _ => return usage("startup takes on or off"),
+    };
+    let exe = match std::env::current_exe() {
+        Ok(p) => p,
+        Err(e) => {
+            say(&format!("koyomi: {e}"), true);
+            return 1;
+        }
+    };
+    match ito_common::startup::set("koyomi", &exe, &STARTUP_ARGS, on) {
+        Ok(()) => {
+            say(
+                if on {
+                    "koyomi: サインイン時にエンジンを起動する"
+                } else {
+                    "koyomi: サインイン時には起動しない"
+                },
+                false,
+            );
+            0
+        }
+        Err(e) => {
+            say(&format!("koyomi: {e}"), true);
+            1
+        }
     }
 }
