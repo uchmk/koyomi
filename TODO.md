@@ -67,13 +67,14 @@
   `settings.rs`（一般・テーマ・通知・キー・詳細・情報）と `prefs.rs`（common.toml・テーマ・keymap.toml・koyomi.toml の `[notify]` の読み書きと 2 秒の見張り）。
 - [x] 窓の場所を戻す: 雛形は `window::Saved` で戻し `Tracker::follow` で書く。終わるときの `Tracker::close` は `on_exit` で。
 - [x] 通知を入れる: ベルに `ito_notices::Notice<String>`（`go` は回の id。押すとその回を開く）。システムの通知はエンジンが出すので、押しても窓は開かない（4 の「持ち主に聞くこと」）。
-- [ ] コマンドパレットの中身: 箱と `<C-S-p>` は繋いである。`Command` と `commands` に、アプリのコマンドを足す（キーは `ito-keymap` から引く）。手本は minato の `main.rs`。
+- [x] コマンドパレットの中身: 箱と `<C-S-p>` は繋いである。`Command` と `commands` に、アプリのコマンドを足す（キーは `ito-keymap` から引く）。手本は minato の `main.rs`。
+  不具合の報告・倍率を戻す・設定・キー・終了。回ごとの操作（今すぐ動かす・止める）は木の中の箱にあり、パレットには足していない。
   - [x] 「設定」（キーは `keymap` の `settings`）。
   - [x] 「キー」（ヘルプ。キーは `keymap` の `help`）。
 - [x] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
-- [ ] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。
-- [ ] `icon.rs` に本当のアイコンを描く。
-- [ ] リリースの workflow は kura か yagura のものを写す。
+- [x] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。項目ごとに節を足した（1〜17）。
+- [x] `icon.rs` に本当のアイコンを描く。暗いタイルの上の暦のページ（cyan の帯・6 つの日・金色の今日）。`build.rs` が同じファイルで `koyomi.exe` の絵も作る。
+- [x] リリースの workflow は kura か yagura のものを写す。`scripts/lanes.sh sync` が ito の雛形の `release.yml` を書いていた（`lanes.conf` の `workflows=`）。写す必要はない。
 
 ## 持ち主に聞くこと
 

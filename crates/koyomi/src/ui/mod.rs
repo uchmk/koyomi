@@ -691,7 +691,11 @@ mod tests {
     const NET: &str = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
 
     fn defs() -> Vec<Def> {
-        let dir = std::env::temp_dir().join(format!("koyomi-view-{}", std::process::id()));
+        // A folder per call: the tests run side by side, and one that reads a
+        // file another is still writing would get a def that is not Unconfirmed.
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("koyomi-view-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         ["bom", "バックアップ", "月次締め"]
             .iter()
@@ -811,6 +815,7 @@ mod tests {
         let mut b = asking();
         let size = egui::vec2(1280.0, 800.0);
         frame(&ctx, size, Vec::new(), &mut b);
+        assert!(b.asking.is_some(), "the box is up");
         frame(&ctx, size, key(egui::Key::Tab), &mut b);
         assert_eq!(b.focus, 1);
         assert!(ctx.memory(|m| m.focused()).is_none(), "nothing behind the box takes the focus");
