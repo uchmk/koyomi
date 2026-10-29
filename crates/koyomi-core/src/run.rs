@@ -320,6 +320,8 @@ pub const LATE: &str = "遅れて実行";
 
 /// How a job carried over from the previous run begins its reason (a rerun).
 pub const CARRIED: &str = "前の回の結果";
+/// The reason of a job a person skipped (`koyomi skip`): the ones after it go on as if it passed.
+pub const SKIPPED: &str = "人がスキップした";
 
 /// `from` and every job after it (by `after`, and on). `from` must be a job of `jobs`.
 fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
@@ -490,7 +492,24 @@ impl Run {
 
     /// A run of the schedule that never started (time passed, skipped, locked).
     pub fn not_started(&self) -> bool {
-        matches!(self.state, State::Missed | State::Skipped | State::Locked)
+        matches!(self.state, State::Missed | State::Skipped | State::Locked | State::Held)
+    }
+
+    /// A person skips the job `id` before it starts: it ends ⊘ now with [`SKIPPED`], and the
+    /// jobs after it go on as if it passed. A job that runs or has ended is refused.
+    pub fn skip(&mut self, id: &str, now: NaiveDateTime) -> Result<(), String> {
+        let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| format!("ジョブがない: {id}"))?;
+        if j.state == State::Running {
+            return Err(format!("{}: もう動いている", j.label()));
+        }
+        if !j.pending() {
+            return Err(format!("{}: もう終わっている", j.label()));
+        }
+        j.state = State::Skipped;
+        j.ended = Some(now);
+        j.reason = SKIPPED.to_owned();
+        self.settle(now);
+        Ok(())
     }
 
     pub fn duration(&self) -> Option<chrono::Duration> {
@@ -832,6 +851,29 @@ mod tests {
         let r = Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap();
         assert_eq!(r.job("a").unwrap().reason, "前の回の結果: 終了コード 1（警告）");
         assert_eq!(r.job("a").unwrap().state, State::Warn);
+    }
+
+    #[test]
+    fn a_skipped_job_passes_and_a_running_or_ended_one_is_not_skipped() {
+        let mut r = diamond();
+        r.start("a", at("2026-10-30 09:00:00"));
+        assert_eq!(r.skip("a", at("2026-10-30 09:00:01")).unwrap_err(), "a: もう動いている");
+        assert_eq!(r.skip("x", at("2026-10-30 09:00:01")).unwrap_err(), "ジョブがない: x");
+        // Waiting on a: skipped now, and d still waits for c.
+        r.skip("b", at("2026-10-30 09:00:01")).unwrap();
+        let b = r.job("b").unwrap();
+        assert_eq!((b.state, b.ended, b.reason.as_str()), (State::Skipped, Some(at("2026-10-30 09:00:01")), SKIPPED));
+        assert_eq!(r.job("d").unwrap().state, State::Waiting);
+        assert_eq!(r.skip("b", at("2026-10-30 09:00:02")).unwrap_err(), "b: もう終わっている");
+        r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
+        assert_eq!(r.ready(), vec!["c"]);
+        r.skip("c", at("2026-10-30 09:00:03")).unwrap();
+        assert_eq!(r.ready(), vec!["d"]);
+        r.start("d", at("2026-10-30 09:00:04"));
+        r.finish("d", Outcome::Exited(0), at("2026-10-30 09:00:05"));
+        assert!(r.is_over());
+        assert_eq!(r.state, State::Ok);
+        assert!(r.skip("d", at("2026-10-30 09:00:06")).is_err());
     }
 
     #[test]

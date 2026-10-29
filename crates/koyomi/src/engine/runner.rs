@@ -282,9 +282,37 @@ impl Runner {
     /// Records each waiting time as スキップ: the engine stops, and nothing
     /// would start them.
     pub fn drop_queue(&mut self) {
-        for q in std::mem::take(&mut self.queue) {
+        for q in self.unqueue(None) {
             self.not_run(&q.def, q.planned, State::Skipped, "待っている間にエンジンが止まった");
         }
+    }
+    /// Takes the times waiting for the net `net` (every net when `None`) out of the queue:
+    /// the caller writes down why they will not run.
+    pub fn unqueue(&mut self, net: Option<&str>) -> Vec<Queued> {
+        let (gone, kept) = std::mem::take(&mut self.queue).into_iter().partition(|q| match net {
+            None => true,
+            Some(n) => q.def.id == n,
+        });
+        self.queue = kept;
+        gone
+    }
+    /// A person skips `job` of `run` before it starts: it ends ⊘, and the jobs after it go on.
+    pub fn skip(&mut self, run: &str, job: &str) -> Result<String, String> {
+        let now = Local::now().naive_local();
+        let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| format!("実行がない: {run}"))?;
+        if r.is_over() {
+            return Err(format!("{run}: もう終わっている"));
+        }
+        r.skip(job, now)?;
+        let r = r.clone();
+        if let Some(j) = r.job(job) {
+            self.record(&r, history::job_end(&r, j));
+        }
+        if r.is_over() {
+            self.ended(r);
+        }
+        self.start_ready();
+        Ok(format!("{run} の {job} を飛ばした"))
     }
 
     /// Starts the schedule's time `planned` of `def`, late or not; what
@@ -370,8 +398,7 @@ impl Runner {
                 }
                 if r.is_over() {
                     // Nothing was running: the run ends here.
-                    self.record(&r, history::run_end(&r));
-                    self.over.push(r);
+                    self.ended(r);
                 }
                 Ok(format!("{run} を止める"))
             }
@@ -380,7 +407,7 @@ impl Runner {
 
     /// Takes in what ended and starts what is ready. Called often by the engine's loop.
     pub fn tick(&mut self) {
-        let mut ended: Vec<Run> = Vec::new();
+        let mut over: Vec<Run> = Vec::new();
         while let Ok(done) = self.rx.try_recv() {
             self.active.retain(|a| !(a.run == done.run && a.job == done.job));
             let now = Local::now().naive_local();
@@ -396,21 +423,22 @@ impl Runner {
                 self.record(&r, history::job_end(&r, j));
             }
             if r.is_over() {
-                ended.push(r);
+                over.push(r);
             }
         }
-        let freed: Vec<String> = ended.iter().map(|r| r.jobnet.clone()).collect();
-        for r in ended {
-            self.record(&r, history::run_end(&r));
-            self.over.push(r);
+        for r in over {
+            self.ended(r);
         }
         self.start_ready();
-        // The time that waited for one of these runs starts now.
-        for net in freed {
-            if let Some(i) = self.queue.iter().position(|q| q.def.id == net) {
-                let q = self.queue.remove(i);
-                self.go(&q.def, q.planned, q.late);
-            }
+    }
+    /// The run is over: it is written down, told of, and the time that waited for its net starts.
+    fn ended(&mut self, r: Run) {
+        let net = r.jobnet.clone();
+        self.record(&r, history::run_end(&r));
+        self.over.push(r);
+        if let Some(i) = self.queue.iter().position(|q| q.def.id == net) {
+            let q = self.queue.remove(i);
+            self.go(&q.def, q.planned, q.late);
         }
     }
 
@@ -753,6 +781,44 @@ mod tests {
         assert!(r.log_path(&third, "a").exists());
         assert!(r.rerun(&first, Some("x")).unwrap_err().contains("ジョブがない: x"));
         assert!(r.rerun("20200101-000000-00", None).unwrap_err().contains("実行がない"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_skipped_job_does_not_run_and_the_ones_after_it_go_on() {
+        let dir = scratch("skip");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n[[job]]\nid = \"c\"\nafter = [\"b\"]\n{}\n",
+            sleep(2),
+            echo("two"),
+            echo("three")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        assert!(r.skip(&id, "a").unwrap_err().contains("もう動いている"));
+        assert!(r.skip(&id, "x").unwrap_err().contains("ジョブがない: x"));
+        assert!(r.skip("20200101-000000-00", "a").unwrap_err().contains("実行がない"));
+        assert_eq!(r.skip(&id, "b").unwrap(), format!("{id} の b を飛ばした"));
+        let b = r.run(&id).unwrap().job("b").unwrap().clone();
+        assert_eq!((b.state, b.reason.as_str()), (State::Skipped, koyomi_core::run::SKIPPED));
+        // A time that waits for this net is taken out of the queue when asked.
+        let planned = Local::now().naive_local();
+        r.queue(&d, planned, false);
+        assert_eq!(r.queued().len(), 1);
+        assert_eq!(r.unqueue(Some("other")).len(), 0);
+        assert_eq!(r.unqueue(Some("net")).len(), 1);
+        assert!(r.queued().is_empty());
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        assert_eq!(run.job("c").unwrap().state, State::Ok);
+        assert!(!r.log_path(&id, "b").exists(), "b must not run");
+        assert_eq!(r.log_tail(&id, "c").unwrap().trim(), "three");
+        assert!(r.skip(&id, "c").unwrap_err().contains("もう終わっている"));
+        // The history has b's skip: a new runner reads the run as it was.
+        r.flush();
+        let back = Runner::new(&dir, Config::default());
+        assert_eq!(back.run(&id).unwrap().job("b").unwrap().reason, koyomi_core::run::SKIPPED);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

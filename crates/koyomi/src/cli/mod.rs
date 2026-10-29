@@ -1,4 +1,5 @@
-//! The commands that print and exit: `check`, `list`, `approve`, `run`, `status`, `log`, `kill`, `engine`, `startup`.
+//! The commands that print and exit: `check`, `list`, `approve`, `run`, `rerun`, `status`, `log`, `kill`,
+//! `hold`, `release`, `skip`, `pause`, `resume`, `engine`, `startup`.
 //!
 //! Exit codes: 0 done, 1 refused or not so (a problem in a file, not approved, an engine already up),
 //! 2 used wrongly.
@@ -29,6 +30,10 @@ usage: koyomi [--version | --help | env]
                                      the runs still going (--today: every run of today)
        koyomi log <run> <job>        the tail of one job's log
        koyomi kill <run> [<job>]     stop one job, or the whole run
+       koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
+       koyomi release <group/name>   take the net off hold
+       koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
+       koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
@@ -55,6 +60,11 @@ pub fn run(args: &[String]) -> Option<i32> {
         "status" => status(rest),
         "log" => log(rest),
         "kill" => kill(rest),
+        "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
+        "release" => one_id(rest, "release", |id| Request::Release { id }),
+        "skip" => skip(rest),
+        "pause" => plain(rest, "pause", Request::Pause),
+        "resume" => plain(rest, "resume", Request::Resume),
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         _ => return None,
@@ -147,7 +157,10 @@ fn list(args: &[String]) -> i32 {
         for n in &snap.notes {
             say(&format!("注意: {n}"), false);
         }
-        for line in review::tree(&table(), &snap.defs) {
+        if snap.paused {
+            say(&format!("{} スケジュールを止めている（koyomi resume で戻す）", koyomi_core::run::State::Held.mark()), false);
+        }
+        for line in review::tree(&table(), &snap.defs, &snap.held) {
             say(&line, false);
         }
     }
@@ -379,6 +392,39 @@ fn log(args: &[String]) -> i32 {
             0
         }
         Err(e) => fail(&e),
+    }
+}
+
+/// Sends `request` and prints the answer: the commands with nothing to read back.
+fn ask_and_say(request: &Request) -> i32 {
+    match client::call(request) {
+        Ok(text) => {
+            say(&text, false);
+            0
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn one_id(args: &[String], name: &str, make: fn(String) -> Request) -> i32 {
+    match args {
+        [id] => ask_and_say(&make(id.clone())),
+        _ => usage(&format!("{name} takes a group/name")),
+    }
+}
+
+fn plain(args: &[String], name: &str, request: Request) -> i32 {
+    if args.is_empty() {
+        ask_and_say(&request)
+    } else {
+        usage(&format!("{name} takes nothing"))
+    }
+}
+
+fn skip(args: &[String]) -> i32 {
+    match args {
+        [run, job] => ask_and_say(&Request::Skip { run: run.clone(), job: job.clone() }),
+        _ => usage("skip takes a run and a job"),
     }
 }
 

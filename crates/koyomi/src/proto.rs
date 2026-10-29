@@ -9,7 +9,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 4;
+pub const PROTO: u32 = 5;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -22,9 +22,14 @@ pub enum Request {
     /// Every definition and the warnings, as a [`Snapshot`].
     List,
     /// One definition, as a [`Def`] (what an approval shows).
-    Show { id: String },
+    Show {
+        id: String,
+    },
     /// Approve `id` as it reads now, if it still hashes to `sha256`.
-    Approve { id: String, sha256: String },
+    Approve {
+        id: String,
+        sha256: String,
+    },
     /// Start the net `id` now for the business day `date` (`YYYY-MM-DD`; today when none),
     /// at the job `from` when there is one (the jobs before it are skipped).
     /// The reply is the run's id.
@@ -36,13 +41,38 @@ pub enum Request {
     },
     /// Start `run` again with the definition it had: what passed is carried
     /// over, the rest runs (from the job `from`, when there is one). The reply is the new run's id.
-    Rerun { run: String, from: Option<String> },
+    Rerun {
+        run: String,
+        from: Option<String>,
+    },
     /// Stop one job of a run, or the whole run.
-    Kill { run: String, job: Option<String> },
+    Kill {
+        run: String,
+        job: Option<String>,
+    },
     /// Today's runs and the ones still going, as [`Runs`].
     Runs,
     /// The tail of one job's log.
-    Log { run: String, job: String },
+    Log {
+        run: String,
+        job: String,
+    },
+    /// Put the net `id` on hold: its times are written down as ⏸ 保留 and do not run, nor does `Run`.
+    Hold {
+        id: String,
+    },
+    /// Take the net `id` off hold.
+    Release {
+        id: String,
+    },
+    /// Skip the job `job` of `run` before it starts: ⊘, and the jobs after it go on.
+    Skip {
+        run: String,
+        job: String,
+    },
+    /// Stop the whole schedule: every time is written down as ⏸ 保留 until `Resume`. Runs by hand still go.
+    Pause,
+    Resume,
 }
 
 pub fn door() -> Door<Request> {
@@ -59,6 +89,12 @@ pub struct Snapshot {
     /// One line each about `[notify]` (a plain-text address, an unknown event). Runs still start.
     #[serde(default)]
     pub notes: Vec<String>,
+    /// The ids on hold (`koyomi hold`).
+    #[serde(default)]
+    pub held: Vec<String>,
+    /// `koyomi pause`: no time starts anything.
+    #[serde(default)]
+    pub paused: bool,
 }
 
 impl Snapshot {

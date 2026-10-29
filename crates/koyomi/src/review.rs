@@ -6,6 +6,7 @@ use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
 use koyomi_core::jobnet;
+use koyomi_core::run::State as RunState;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
 
@@ -31,12 +32,19 @@ pub fn word(t: &Table, s: Standing) -> String {
 }
 
 /// `▲ 月次締め  未確認`: one row of the tree.
-pub fn row(t: &Table, d: &Def) -> String {
-    format!("{} {}  {}", state(d.standing).mark(), d.label(), word(t, d.standing))
+/// `⏸ 月次締め  確認済み・保留` when `held`: a confirmed net on hold shows the hold's mark; the
+/// standing's mark stays when it says more (未確認, 誤り), and the word gains 保留 either way.
+pub fn row(t: &Table, d: &Def, held: bool) -> String {
+    let mark = if held && d.standing == Standing::Confirmed { RunState::Held.mark() } else { state(d.standing).mark() };
+    let mut word = word(t, d.standing);
+    if held {
+        word = format!("{word}・{}", t.tr("state.held"));
+    }
+    format!("{mark} {}  {word}", d.label())
 }
 
 /// The tree as text: a line per group, then its definitions indented. `koyomi list` prints this.
-pub fn tree(t: &Table, defs: &[Def]) -> Vec<String> {
+pub fn tree(t: &Table, defs: &[Def], held: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut group: Option<&str> = None;
     for d in defs {
@@ -44,7 +52,7 @@ pub fn tree(t: &Table, defs: &[Def]) -> Vec<String> {
             group = Some(&d.group);
             out.push(d.group.clone());
         }
-        out.push(format!("  {}", row(t, d)));
+        out.push(format!("  {}", row(t, d, held.contains(&d.id))));
     }
     out
 }
@@ -193,8 +201,15 @@ mod tests {
     #[test]
     fn a_row_has_a_mark_and_a_word() {
         let d = def(NET, &Store::default());
-        assert_eq!(row(&table(), &d), "▲ 月次締め  未確認");
-        assert_eq!(tree(&table(), &[d]), ["経理", "  ▲ 月次締め  未確認"]);
+        assert_eq!(row(&table(), &d, false), "▲ 月次締め  未確認");
+        assert_eq!(row(&table(), &d, true), "▲ 月次締め  未確認・保留");
+        assert_eq!(tree(&table(), std::slice::from_ref(&d), &[]), ["経理", "  ▲ 月次締め  未確認"]);
+        let mut store = Store::default();
+        store.approve("経理/月次締め", &koyomi_core::approved::hash(NET.as_bytes()), NET);
+        let d = def(NET, &store);
+        assert_eq!(row(&table(), &d, false), "✔ 月次締め  確認済み");
+        assert_eq!(row(&table(), &d, true), "⏸ 月次締め  確認済み・保留");
+        assert_eq!(tree(&table(), &[d], &["経理/月次締め".to_owned()]), ["経理", "  ⏸ 月次締め  確認済み・保留"]);
     }
 
     /// the exe, each argument on its own line, the directory and the timeout.

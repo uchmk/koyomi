@@ -17,6 +17,7 @@ use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::Store;
 use koyomi_core::config::Config;
+use koyomi_core::held::Held;
 use koyomi_core::run::{How, State as RunState};
 use koyomi_core::scan::{scan, Def, Standing};
 use koyomi_core::when;
@@ -43,13 +44,22 @@ pub struct Paths {
     pub state: PathBuf,
     /// `state_dir("koyomi")/approved.toml`.
     pub approved: PathBuf,
+    /// `state_dir("koyomi")/held.toml`: what a person stopped by hand.
+    pub held: PathBuf,
 }
 
 impl Paths {
     pub fn find() -> Result<Paths, String> {
         let app = ito_common::app_dir("koyomi").ok_or("設定のフォルダーが分からない")?;
         let state = ito_common::state_dir("koyomi").ok_or("状態のフォルダーが分からない")?;
-        Ok(Paths { jobnets: app.join("jobnets"), config: app.join("koyomi.toml"), approved: state.join("approved.toml"), app, state })
+        Ok(Paths {
+            jobnets: app.join("jobnets"),
+            config: app.join("koyomi.toml"),
+            approved: state.join("approved.toml"),
+            held: state.join("held.toml"),
+            app,
+            state,
+        })
     }
 
     /// `koyomi.toml`, or why it does not read.
@@ -60,6 +70,11 @@ impl Paths {
     /// The approvals, or the line that says `approved.toml` does not read.
     pub fn store(&self) -> Result<Store, String> {
         Store::load(&self.approved).map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで承認しない", shown(&self.approved)))
+    }
+
+    /// What is on hold, or the line that says `held.toml` does not read.
+    pub fn held(&self) -> Result<Held, String> {
+        Held::load(&self.held).map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで流さない", shown(&self.held)))
     }
 }
 
@@ -98,6 +113,10 @@ struct State {
     store: Store,
     /// Why `approved.toml` did not read: until it does, nothing is approved and nothing written over it.
     unreadable: Option<String>,
+    /// The nets on hold and whether the schedule is paused (`held.toml`).
+    held: Held,
+    /// Why `held.toml` did not read: until it does, nothing starts and nothing is written over it.
+    held_bad: Option<String>,
     defs: Vec<Def>,
     warnings: Vec<String>,
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
@@ -139,6 +158,8 @@ impl State {
             paths,
             store: Store::default(),
             unreadable: None,
+            held: Held::default(),
+            held_bad: None,
             defs: Vec::new(),
             warnings: Vec::new(),
             bad_config,
@@ -196,7 +217,8 @@ impl State {
             }
         }
         let (runs, missed) = notify::group_missed(self.runner.take_over());
-        for r in runs {
+        // A time stopped by hand (⏸) is not told of: the person did it.
+        for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
             let (event, title, body) = notify::words(&self.words, &r);
             notify::tell(&self.notify, event, &title, &body);
         }
@@ -219,6 +241,15 @@ impl State {
         }
         for (k, (i, instant, planned)) in due.iter().enumerate() {
             let def = self.defs[*i].clone();
+            // Stopped by hand: written down as ⏸, so the time is not lost in silence.
+            if self.held.paused {
+                self.runner.not_run(&def, *planned, RunState::Held, "スケジュールを止めている（koyomi resume）");
+                continue;
+            }
+            if self.held.is_held(&def.id) {
+                self.runner.not_run(&def, *planned, RunState::Held, &format!("保留中（koyomi release {}）", def.id));
+                continue;
+            }
             let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
             let last = !due[k + 1..].iter().any(|(j, _, _)| j == i);
             let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last);
@@ -254,10 +285,20 @@ impl State {
                 self.unreadable = Some(e);
             }
         }
+        match self.paths.held() {
+            Ok(held) => {
+                self.held = held;
+                self.held_bad = None;
+            }
+            Err(e) => {
+                self.held = Held::default();
+                self.held_bad = Some(e);
+            }
+        }
     }
 
     fn rescan(&mut self) {
-        if self.unreadable.is_some() {
+        if self.unreadable.is_some() || self.held_bad.is_some() {
             self.reload();
         }
         self.reload_config();
@@ -265,13 +306,14 @@ impl State {
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
+        self.warnings.extend(self.held_bad.clone());
     }
 
     fn snapshot(&self) -> Snapshot {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
         let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().collect();
-        Snapshot { defs: self.defs.clone(), warnings, notes }
+        Snapshot { defs: self.defs.clone(), warnings, notes, held: self.held.held.clone(), paused: self.held.paused }
     }
 
     fn status(&self) -> String {
@@ -285,6 +327,12 @@ impl State {
             running,
             self.retain.line()
         );
+        if self.held.paused {
+            out.push_str("\nスケジュールを止めている（koyomi resume で戻す）");
+        }
+        for id in &self.held.held {
+            out.push_str(&format!("\n保留中: {id}（koyomi release {id} で戻す）"));
+        }
         for q in self.runner.queued() {
             out.push_str(&format!(
                 "\n待ち: {}  {} の回は前の回が終わってから流す（{} から待っている）",
@@ -342,8 +390,57 @@ impl State {
         match def.standing {
             Standing::Invalid => Err(format!("定義の誤りがあり、流せない: {}", def.file)),
             Standing::Unconfirmed => Err(format!("未確認のため流さない: {}（koyomi approve {id}）", def.file)),
+            Standing::Confirmed if self.held.is_held(id) => Err(format!("保留中のため流さない: {id}（koyomi release {id}）")),
             Standing::Confirmed => Ok(def),
         }
+    }
+
+    /// `held.toml` can be written: it read, and nothing else is in the way.
+    fn held_writable(&self) -> Result<(), String> {
+        match &self.held_bad {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
+    fn save_held(&self) -> Result<(), String> {
+        if let Some(dir) = self.paths.held.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        ito_common::write_atomic(&self.paths.held, self.held.to_toml())
+    }
+    fn hold(&mut self, id: &str) -> Result<String, String> {
+        self.held_writable()?;
+        let label = self.defs.iter().find(|d| d.id == id).map(Def::label).ok_or_else(|| format!("定義がない: {id}"))?.to_owned();
+        if !self.held.hold(id) {
+            return Err(format!("もう保留している: {id}"));
+        }
+        self.save_held()?;
+        for q in self.runner.unqueue(Some(id)) {
+            self.runner.not_run(&q.def, q.planned, RunState::Held, &format!("待っている間に保留した（koyomi release {id}）"));
+        }
+        Ok(format!("保留した: {label}（koyomi release {id} で戻す）"))
+    }
+    fn release(&mut self, id: &str) -> Result<String, String> {
+        self.held_writable()?;
+        if !self.held.release(id) {
+            return Err(format!("保留していない: {id}"));
+        }
+        self.save_held()?;
+        Ok(format!("保留を解いた: {id}"))
+    }
+    fn pause(&mut self, on: bool) -> Result<String, String> {
+        self.held_writable()?;
+        if self.held.paused == on {
+            return Err(if on { "もう止めている（koyomi resume で戻す）" } else { "止めていない" }.to_owned());
+        }
+        self.held.paused = on;
+        self.save_held()?;
+        if on {
+            for q in self.runner.unqueue(None) {
+                self.runner.not_run(&q.def, q.planned, RunState::Held, "待っている間にスケジュールを止めた（koyomi resume）");
+            }
+        }
+        Ok(if on { "スケジュールを止めた（koyomi resume で戻す）" } else { "スケジュールを戻した" }.to_owned())
     }
 
     fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
@@ -384,6 +481,11 @@ impl State {
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::Log { run, job } => self.runner.log_tail(run, job),
+            Request::Hold { id } => self.hold(id),
+            Request::Release { id } => self.release(id),
+            Request::Skip { run, job } => self.runner.skip(run, job),
+            Request::Pause => self.pause(true),
+            Request::Resume => self.pause(false),
         }
     }
 }
@@ -493,7 +595,13 @@ mod tests {
         std::fs::write(dir.join("経理/月次締め.toml"), net).unwrap();
         std::fs::create_dir_all(dir.join("共通")).unwrap();
         std::fs::write(dir.join("共通/壊れ.toml"), "format = 1\nrnu = 1\n").unwrap();
-        let snap = Snapshot { defs: scan(&dir, &Store::default()), warnings: vec!["w".into()], notes: vec!["n".into()] };
+        let snap = Snapshot {
+            defs: scan(&dir, &Store::default()),
+            warnings: vec!["w".into()],
+            notes: vec!["n".into()],
+            held: vec!["共通/x".into()],
+            paused: true,
+        };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
         assert_eq!(back.defs.len(), 2);

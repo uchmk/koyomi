@@ -316,6 +316,20 @@ impl Browser {
                 }
             });
         }
+        if self.snap.as_ref().is_some_and(|s| s.paused) {
+            egui::Panel::top("paused").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let head = format!("{} {}", State::Held.mark(), t.tr("band.paused"));
+                    let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
+                    ito_a11y::say(&r, Role::Label, &head);
+                    let r = ui.add_enabled(!modal, egui::Button::new(t.tr("run.resume")));
+                    ito_a11y::say(&r, Role::Button, t.tr("run.resume"));
+                    if r.clicked() {
+                        let _ = self.tx.send(Request::Resume);
+                    }
+                });
+            });
+        }
         if self.autostart_off {
             egui::Panel::top("autostart").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
                 let head = format!("{} {}", ito_a11y::State::Warning.mark(), t.tr("band.autostart"));
@@ -331,6 +345,16 @@ impl Browser {
                 self.tree(ui, t);
                 ui.add_space(10.0);
                 self.today(ui, t);
+                // The one switch over the whole schedule, below what it stops.
+                let paused = self.snap.as_ref().is_some_and(|s| s.paused);
+                if !paused && self.snap.is_some() {
+                    ui.add_space(10.0);
+                    let r = ui.button(t.tr("run.pause"));
+                    ito_a11y::say(&r, Role::Button, t.tr("run.pause"));
+                    if r.clicked() {
+                        let _ = self.tx.send(Request::Pause);
+                    }
+                }
             });
         });
         egui::CentralPanel::default().show(ui, |ui| {
@@ -397,7 +421,7 @@ impl Browser {
                 let r = ui.label(egui::RichText::new(&d.group).strong().color(c.dim));
                 ito_a11y::say(&r, Role::Heading, &d.group);
             }
-            let text = review::row(t, d);
+            let text = review::row(t, d, snap.held.contains(&d.id));
             let on = self.run_sel.is_none() && self.selected.as_deref() == Some(d.id.as_str());
             let r = ui.selectable_label(on, format!("  {text}"));
             ito_a11y::say(&r, Role::Row, &text);
@@ -498,7 +522,20 @@ impl Browser {
             let r = ui.add_enabled(can && picked.is_some(), egui::Button::new(&label));
             ito_a11y::say(&r, Role::Button, &label);
             if r.clicked() {
-                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked });
+                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
+            }
+            // Skip the picked job before it starts: the jobs after it go on.
+            let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
+            let label = match &picked {
+                Some(j) => t.trf("run.skip_from", &[j]),
+                None => t.tr("run.skip_pick").to_owned(),
+            };
+            let r = ui.add_enabled(!run.is_over() && pending, egui::Button::new(&label));
+            ito_a11y::say(&r, Role::Button, &label);
+            if r.clicked() {
+                if let Some(job) = picked.clone() {
+                    let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
+                }
             }
             ui.separator();
             for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
@@ -553,7 +590,8 @@ impl Browser {
     fn detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(def) = self.selected_def().cloned() else { return };
-        let head = review::row(t, &def);
+        let held = self.snap.as_ref().is_some_and(|s| s.held.contains(&def.id));
+        let head = review::row(t, &def, held);
         ui.heading(&head);
         ui.label(egui::RichText::new(&def.file).color(c.dim));
         ui.add_space(6.0);
@@ -594,12 +632,25 @@ impl Browser {
                 self.focus = 0;
             }
             let can = def.standing == Standing::Confirmed && !self.blocked();
-            let r = ui.add_enabled(can, egui::Button::new(t.tr("run.now")));
+            let r = ui.add_enabled(can && !held, egui::Button::new(t.tr("run.now")));
             ito_a11y::say(&r, Role::Button, t.tr("run.now"));
             if r.clicked() {
                 let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None, from: None });
             }
+            // On hold: its times are written down as ⏸ and nothing runs until it is released.
+            let key = if held { "run.release" } else { "run.hold" };
+            let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
+            ito_a11y::say(&r, Role::Button, t.tr(key));
+            if r.clicked() {
+                let id = def.id.clone();
+                let _ = self.tx.send(if held { Request::Release { id } } else { Request::Hold { id } });
+            }
         });
+        if held {
+            let text = format!("{} {}", State::Held.mark(), t.tr("run.held_note"));
+            let r = ui.label(egui::RichText::new(&text).color(graph::colour(&c, State::Held)));
+            ito_a11y::say(&r, Role::Label, &text);
+        }
         self.show_result(ui);
     }
 
@@ -736,7 +787,7 @@ mod tests {
     fn quiet(defs: Vec<Def>) -> Browser {
         let (_, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
-        let snap = Some(Snapshot { defs, warnings: Vec::new(), notes: Vec::new() });
+        let snap = Some(Snapshot { defs, warnings: Vec::new(), notes: Vec::new(), held: Vec::new(), paused: false });
         Browser {
             rx,
             tx,
