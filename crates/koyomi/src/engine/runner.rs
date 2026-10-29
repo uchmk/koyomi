@@ -253,6 +253,31 @@ impl Runner {
         self.runs.iter().find(|r| r.id == id)
     }
 
+    /// The runs that started on the days `from` to `to` (both included), oldest
+    /// first: the ones kept here for the days this engine writes, the others read
+    /// back from their day's file. At most a year, so a reply stays a reply.
+    pub fn history(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<Run>, String> {
+        if to < from {
+            return Err(format!("範囲が逆: {from} → {to}"));
+        }
+        if (to - from).num_days() > 366 {
+            return Err("範囲は 1 年まで".to_owned());
+        }
+        let mut out = Vec::new();
+        let mut day = from;
+        while day <= to {
+            if self.days.contains_key(&day) {
+                out.extend(self.runs.iter().filter(|r| r.started.date() == day).cloned());
+            } else {
+                let loaded = Day::load(&history::path(&self.history, day)).unwrap_or_default();
+                out.extend(loaded.runs());
+            }
+            let Some(next) = day.succ_opt() else { break };
+            day = next;
+        }
+        Ok(out)
+    }
+
     /// The runs the day's list shows: started today, or not over yet.
     pub fn today(&self) -> Vec<Run> {
         let today = Local::now().date_naive();

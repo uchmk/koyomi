@@ -1,6 +1,6 @@
-//! The window's left side (the tree, then today's runs, then the calendars), the
-//! detail beside it (a definition, a run as a picture with its log under it, or
-//! a calendar's month) and the boxes that ask before approving or killing.
+//! The window's left side (the tree, then today's runs and 履歴, then the calendars),
+//! the detail beside it (a definition, a run as a picture with its log under it, the
+//! runs of past days, or a calendar's month) and the boxes that ask before approving or killing.
 //!
 //! Nothing here touches a process: a thread keeps the engine up and asks it for the
 //! list, the runs of today and the log being watched, and the window reads what that
@@ -55,6 +55,38 @@ struct Kept {
 /// The job whose log the thread fetches: `(run, job)`.
 type Watch = Arc<Mutex<Option<(String, String)>>>;
 
+/// 履歴: the days asked for, what narrows the rows, and the rows the engine sent for those days.
+struct History {
+    from: String,
+    to: String,
+    /// The net the rows are narrowed to; empty for all of them.
+    net: String,
+    state: Option<State>,
+    rows: Vec<Run>,
+    /// Why there are no rows: a date that does not read, or the engine's word.
+    error: Option<String>,
+}
+
+impl History {
+    /// The last 7 days up to `today`, nothing narrowed.
+    fn week(today: chrono::NaiveDate) -> History {
+        let from = today - chrono::Duration::days(7);
+        History { from: from.to_string(), to: today.to_string(), net: String::new(), state: None, rows: Vec::new(), error: None }
+    }
+
+    fn request(&self) -> Request {
+        Request::History { from: self.from.clone(), to: self.to.clone() }
+    }
+
+    /// The rows that match the net and the state, newest first.
+    fn filtered(&self) -> Vec<&Run> {
+        let mut rows: Vec<&Run> =
+            self.rows.iter().filter(|r| (self.net.is_empty() || r.jobnet == self.net) && self.state.is_none_or(|s| r.state == s)).collect();
+        rows.sort_by_key(|r| std::cmp::Reverse(r.started));
+        rows
+    }
+}
+
 pub struct Browser {
     rx: Receiver<Msg>,
     tx: Sender<Request>,
@@ -95,6 +127,8 @@ pub struct Browser {
     cal_month: Option<(i32, u32)>,
     /// What the last click on a day did to the file, shown under the month.
     cal_result: Option<Result<String, String>>,
+    /// 履歴, when it is open: the detail is its rows.
+    hist: Option<History>,
 }
 
 impl Browser {
@@ -184,6 +218,7 @@ impl Browser {
             cal_sel: None,
             cal_month: None,
             cal_result: None,
+            hist: None,
         }
     }
 
@@ -217,6 +252,21 @@ impl Browser {
                     self.starting = false;
                     self.down = Some(e);
                 }
+                Msg::Answer(Request::History { .. }, r) => {
+                    // The days asked for: the rows of 履歴, or why there are none.
+                    if let Some(h) = &mut self.hist {
+                        match r.and_then(|text| Runs::parse(&text)) {
+                            Ok(rs) => {
+                                h.rows = rs.runs;
+                                h.error = None;
+                            }
+                            Err(e) => {
+                                h.rows.clear();
+                                h.error = Some(e);
+                            }
+                        }
+                    }
+                }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -245,6 +295,7 @@ impl Browser {
     pub fn open_run(&mut self, id: &str) {
         self.run_sel = Some(id.to_owned());
         self.job_sel = None;
+        self.hist = None;
     }
 
     fn blocked(&self) -> bool {
@@ -258,7 +309,7 @@ impl Browser {
 
     fn selected_run(&self) -> Option<&Run> {
         let id = self.run_sel.as_deref()?;
-        self.runs.iter().find(|r| r.id == id)
+        self.runs.iter().find(|r| r.id == id).or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
     }
 
     /// The job whose log is shown: the one picked, else the one running, else the last that started.
@@ -299,6 +350,14 @@ impl Browser {
         out.push_str(&format!("selected: {}\n", self.selected.as_deref().unwrap_or("-")));
         out.push_str(&format!("run: {}\n", self.run_sel.as_deref().unwrap_or("-")));
         out.push_str(&format!("job: {}\n", self.job_sel.as_deref().unwrap_or("-")));
+        let history = match &self.hist {
+            Some(h) => {
+                let net = if h.net.is_empty() { "*" } else { h.net.as_str() };
+                format!("{}..{} {net} {} {}", h.from, h.to, h.state.map_or("*", |s| s.key()), h.filtered().len())
+            }
+            None => "-".to_owned(),
+        };
+        out.push_str(&format!("history: {history}\n"));
         let asking = match (&self.asking, &self.killing) {
             (Some(a), _) => format!("approve {}", a.id),
             (None, Some(r)) => format!("kill {r}"),
@@ -367,6 +426,7 @@ impl Browser {
                 self.tree(ui, t);
                 ui.add_space(10.0);
                 self.today(ui, t);
+                self.history_link(ui, t);
                 self.calendar_list(ui, t);
                 // The one switch over the whole schedule, below what it stops.
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
@@ -384,7 +444,9 @@ impl Browser {
             if modal {
                 ui.disable();
             }
-            if self.run_sel.is_some() {
+            if self.hist.is_some() {
+                self.history_view(ui, t);
+            } else if self.run_sel.is_some() {
                 self.run_view(ui, t);
             } else if self.cal_sel.is_some() {
                 self.calendar_view(ui, t);
@@ -447,7 +509,7 @@ impl Browser {
                 ito_a11y::say(&r, Role::Heading, &d.group);
             }
             let text = review::row(t, d, snap.held.contains(&d.id));
-            let on = self.run_sel.is_none() && self.selected.as_deref() == Some(d.id.as_str());
+            let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
             let r = ui.selectable_label(on, format!("  {text}"));
             ito_a11y::say(&r, Role::Row, &text);
             if r.clicked() {
@@ -460,6 +522,7 @@ impl Browser {
             self.cal_sel = None;
             self.job_sel = None;
             self.result = None;
+            self.hist = None;
         }
     }
 
@@ -514,6 +577,116 @@ impl Browser {
             self.cal_sel = None;
             self.job_sel = None;
             self.result = None;
+            self.hist = None;
+        }
+    }
+
+    /// The 履歴 row under today's runs: a click opens the last 7 days.
+    fn history_link(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        if self.snap.is_none() {
+            return;
+        }
+        let r = ui.selectable_label(self.hist.is_some(), format!("  {}", t.tr("run.history")));
+        ito_a11y::say(&r, Role::Row, t.tr("run.history"));
+        if r.clicked() {
+            self.open_history();
+        }
+    }
+
+    /// Opens 履歴 on the last 7 days and asks the engine for them.
+    pub fn open_history(&mut self) {
+        let h = History::week(chrono::Local::now().date_naive());
+        let _ = self.tx.send(h.request());
+        self.hist = Some(h);
+        self.run_sel = None;
+        self.cal_sel = None;
+        self.job_sel = None;
+        self.result = None;
+    }
+
+    /// 履歴: the days and what narrows the rows, the rows that match (newest
+    /// first, each the day it started, the state, the net, the times), and under
+    /// them the run picked, as under 今日 (its picture, its log, 再実行).
+    fn history_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let nets: Vec<String> = self.snap.as_ref().map(|s| s.defs.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
+        let Some(h) = self.hist.as_mut() else { return };
+        ui.heading(t.tr("run.history"));
+        ui.add_space(6.0);
+        let mut search = false;
+        ui.horizontal(|ui| {
+            ui.label(t.tr("run.history_from"));
+            ui.add(egui::TextEdit::singleline(&mut h.from).desired_width(90.0));
+            ui.label(t.tr("run.history_to"));
+            ui.add(egui::TextEdit::singleline(&mut h.to).desired_width(90.0));
+            let all = t.tr("run.history_all");
+            let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
+            egui::ComboBox::from_id_salt("history_net").selected_text(net_text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut h.net, String::new(), all);
+                for id in &nets {
+                    ui.selectable_value(&mut h.net, id.clone(), id);
+                }
+            });
+            let state_text = match h.state {
+                Some(s) => show::tag(t, s),
+                None => all.to_owned(),
+            };
+            egui::ComboBox::from_id_salt("history_state").selected_text(state_text).show_ui(ui, |ui| {
+                ui.selectable_value(&mut h.state, None, all);
+                for s in State::ALL {
+                    ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
+                }
+            });
+            let r = ui.button(t.tr("run.history_search"));
+            ito_a11y::say(&r, Role::Button, t.tr("run.history_search"));
+            search = r.clicked();
+        });
+        if search {
+            let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
+            match (day(&h.from), day(&h.to)) {
+                (Some(from), Some(to)) => {
+                    h.from = from.to_string();
+                    h.to = to.to_string();
+                    h.error = None;
+                    let _ = self.tx.send(h.request());
+                }
+                _ => h.error = Some(t.tr("run.history_bad_date").to_owned()),
+            }
+        }
+        if let Some(e) = &h.error {
+            ui.label(egui::RichText::new(e).color(c.err));
+        }
+        ui.add_space(6.0);
+        let rows = h.filtered();
+        ui.label(egui::RichText::new(t.trf("run.history_count", &[&rows.len().to_string()])).color(c.dim));
+        if rows.is_empty() && h.error.is_none() {
+            ui.label(t.tr("run.history_none"));
+        }
+        let mut pick = None;
+        for run in rows {
+            let mut text = format!("{}  {}  {}  {}", run.started.date(), show::tag(t, run.state), run.title, show::hms(run.started));
+            if let Some(e) = run.ended {
+                text.push_str(&format!("  {}", show::hms(e)));
+            }
+            if let Some(d) = run.duration() {
+                text.push_str(&format!("  {}", show::duration(d)));
+            }
+            let on = self.run_sel.as_deref() == Some(run.id.as_str());
+            let r = ui.selectable_label(on, egui::RichText::new(format!("  {text}")).color(graph::colour(&c, run.state)));
+            ito_a11y::say(&r, Role::Row, &text);
+            if r.clicked() {
+                pick = Some(run.id.clone());
+            }
+        }
+        if pick.is_some() {
+            self.run_sel = pick;
+            self.job_sel = None;
+            self.result = None;
+        }
+        if self.run_sel.is_some() {
+            ui.add_space(10.0);
+            ui.separator();
+            self.run_view(ui, t);
         }
     }
 
@@ -814,6 +987,35 @@ mod tests {
     }
 
     /// A browser on a fixed list with no engine behind it.
+    #[test]
+    fn the_history_narrows_by_net_and_state_newest_first() {
+        use koyomi_core::run::How;
+        let net = koyomi_core::jobnet::Jobnet::default();
+        let at = |d: u32, h: u32| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap().and_hms_opt(h, 0, 0).unwrap();
+        let run = |id: &str, jobnet: &str, at, state| {
+            let mut r = Run::new(id, jobnet, "t", "2026-10-28", How::Manual, &net, at);
+            r.state = state;
+            r
+        };
+        let mut h = History::week(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap());
+        assert_eq!((h.from.as_str(), h.to.as_str()), ("2026-10-23", "2026-10-30"));
+        assert!(matches!(h.request(), Request::History { from, to } if from == "2026-10-23" && to == "2026-10-30"));
+        h.rows = vec![
+            run("r1", "g/a", at(28, 9), State::Ok),
+            run("r2", "g/b", at(29, 9), State::Error),
+            run("r3", "g/a", at(29, 10), State::Ok),
+        ];
+        let ids = |h: &History| h.filtered().iter().map(|r| r.id.clone()).collect::<Vec<_>>();
+        assert_eq!(ids(&h), ["r3", "r2", "r1"]);
+        h.net = "g/a".into();
+        assert_eq!(ids(&h), ["r3", "r1"]);
+        h.net.clear();
+        h.state = Some(State::Error);
+        assert_eq!(ids(&h), ["r2"]);
+        h.state = Some(State::Held);
+        assert!(ids(&h).is_empty());
+    }
+
     fn quiet(defs: Vec<Def>) -> Browser {
         let (_, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
@@ -844,6 +1046,7 @@ mod tests {
             cal_sel: None,
             cal_month: None,
             cal_result: None,
+            hist: None,
         }
     }
 

@@ -380,3 +380,29 @@ A `[[when]]` with `after_jobnet = "経理/売上取込"` starts the net when a r
 | 27.11 | `koyomi check` a `[[when]]` with `after_jobnet = "売上取込"`; with `on = "sometimes"`; with `every = "day"` and `on = "ok"`; with `after_jobnet = …` and `on_closed = "prev"` | `after_jobnet は "グループ/名前" で書く（例: …）`; `on は "ok"・"error"・"any" のどれか`; `on は day では使わない`; `after_jobnet では on_closed は "skip" か "run"` |
 | 27.12 | `koyomi next`, the net's 予定 in the window, and `koyomi review` for `g/b` | A row with no time: `g/a が終わったとき（正常終了・警告終了のとき）` (`異常終了のとき` / `どう終わっても` for the other `on`s) |
 | 27.13 | Three nets `g/a` → `g/b` → `g/c` (each after the one before); `koyomi rerun` a run of `g/a` from 3 days ago | `g/b` and then `g/c` run, each with `g/a`'s business day; the history has the three rows with that date |
+
+## 28. History search and the rest of the CLI (`history`, `show`, `list --group`, `--help`, `--toml`)
+
+The window's 履歴 (a row under 今日) and `koyomi history` show the runs that started on a range of days (the last 7 when none is given, at most a year), narrowed by jobnet and state on the asking side. Every command takes `--help` (its own lines of the usage, exit 0) and `--toml` (the answer as TOML for another program: the commands that answer with data print it as such, the rest print `ok = true|false` and the `lines` they would have said).
+
+| # | Do | Expect |
+|---|---|---|
+| 28.1 | Some runs over the last days (ok, error, skipped); `koyomi history` | The runs of the last 7 days up to today, oldest first, each as `status --today` prints it (the mark, the id, the title, the date, the times, the jobs under it) |
+| 28.2 | `koyomi history --from 2026-10-01 --to 2026-10-15`; `--from` alone; `--to` alone | Those days only; `--from` alone goes up to today; `--to` alone covers the 7 days up to it |
+| 28.3 | `koyomi history --status error`; `--status ok g/a`; `koyomi history g\a` | Only the runs of that state; only that net's; `\` reads as `/` |
+| 28.4 | `koyomi history --status nope`; `--from 2026/10/01`; `--from 2026-10-20 --to 2026-10-01`; `--from 2024-01-01` | `--status takes one of ok, warn, …` and the usage (exit 2); `--from takes YYYY-MM-DD` (exit 2); `koyomi: 範囲が逆: …` (exit 1); `koyomi: 範囲は 1 年まで` (exit 1) |
+| 28.5 | `koyomi history --status held` with no held run in the days | `該当する実行はありません` (exit 0) |
+| 28.6 | `koyomi history --toml`, `koyomi status --toml`, `koyomi list --toml`, `koyomi show g/a --toml` | The runs as `[[runs]]` tables (the same shape as the history files); the snapshot (`[[defs]]`, `warnings`, `held`, `paused`, …); the definition as the engine read it (`id`, `file`, `standing`, `[net]`, `[[problems]]`) |
+| 28.7 | `koyomi next g/a --toml`; `koyomi calendar 会社 --toml`; `koyomi log <run> <job> --toml` | `unconfirmed = …` and `[[next]]` with `at = "2026-11-02 09:00:00"` or `event = "…"`; `calendar`, `month`, `business_days` and a `[[day]]` per date with `kind = "business" / "open" / "closed" / "holiday" / "weekly_off"` and `name` when it has one; `run`, `job`, `text` |
+| 28.8 | `koyomi hold g/a --toml`; `koyomi engine status --toml` with the engine down; `koyomi check bad.toml --toml` | `ok = true` + `lines = ["…"]`; `ok = false` + `lines = ["koyomi: エンジンは動いていない"]` (exit 1); `ok = false` and the problems as `lines` (exit 1) |
+| 28.9 | `koyomi approve g/a --toml` on an unconfirmed net | The preview and `確かめたなら y を入力` are still said as text (a person answers); after `y`, `ok = true` + `lines` |
+| 28.10 | `koyomi list --help`, `koyomi history -h`, `koyomi --toml list --help`, `koyomi pause --help` | Only that command's lines of the usage under `usage:`, then `every command takes --help …` (exit 0); `pause --help` prints the `pause \| resume` line |
+| 28.11 | `koyomi list --group 経理`; `koyomi list --group nothing`; `koyomi list --toml --group 経理` | Only that group's nets in the tree (the warnings and notes still above); `koyomi: グループがない: nothing` (exit 1); the snapshot with only those defs |
+| 28.12 | `koyomi show g/a` (confirmed, unconfirmed, held, and ✗ 誤り) | The file and its standing (`⏸ 保留` added when held), then what `approve` shows (the jobs, the times, the next week) without the question or the diff; a ✗ net prints its problems and nothing under them; exit 0 |
+| 28.13 | The window: click 履歴 under 今日 | The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (`2026-10-29  ✓ 正常終了  売上取込  09:00:00  09:00:12  12 s`, coloured by state); the count above; the tree's and 今日's picks are off |
+| 28.14 | Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 | The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay |
+| 28.15 | Pick a net in ジョブネット, then a state in 状態 | The rows narrow at once (no 検索 needed); the count follows; `該当する実行はありません` when nothing matches |
+| 28.16 | Click a row in 履歴 | Under the rows: the run's picture, its jobs' logs on click, 再実行 and the rest as under 今日; the row stays marked |
+| 28.17 | While 履歴 is open: click a net in the tree, a run under 今日, or a calendar; then 履歴 again | Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed |
+| 28.18 | Narrator / NVDA over 履歴 | The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) |
+| 28.19 | `koyomi --keys` report with 履歴 open | A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) |

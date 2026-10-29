@@ -1,7 +1,7 @@
 //! What the window and the CLI say to the engine through its door, and what the engine says back.
 //!
 //! One request and one reply per connection (`ito_ipc::door`). The reply is
-//! text: TOML for `List`, `Show` and `Runs`, the log's tail for `Log`, a line for the rest.
+//! text: TOML for `List`, `Show`, `Runs` and `History`, the log's tail for `Log`, a line for the rest.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 7;
+pub const PROTO: u32 = 8;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -55,6 +55,13 @@ pub enum Request {
     },
     /// Today's runs and the ones still going, as [`Runs`].
     Runs,
+    /// The runs that started on the days `from` to `to` (`YYYY-MM-DD`, both
+    /// included, at most a year), oldest first, as [`Runs`]: what `koyomi history`
+    /// and the window's 履歴 show. The narrowing by net and state is theirs.
+    History {
+        from: String,
+        to: String,
+    },
     /// The tail of one job's log.
     Log {
         run: String,

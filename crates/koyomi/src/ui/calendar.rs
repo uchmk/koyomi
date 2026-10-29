@@ -41,6 +41,7 @@ impl Browser {
             self.run_sel = None;
             self.job_sel = None;
             self.result = None;
+            self.hist = None;
         }
     }
 

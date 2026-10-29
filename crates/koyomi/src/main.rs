@@ -42,8 +42,9 @@ const ABOUT: &str = "koyomi — Small job scheduler and monitor (a light JP1)";
 
 fn usage_text() -> String {
     format!(
-        "{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n\n  --keys SCRIPT  press these keys once the window is up, as kura's --keys;\n                 KOYOMI_KEYS_DONE names the file that says how it ended\n",
-        cli::USAGE.trim_end()
+        "{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n\n  --keys SCRIPT  press these keys once the window is up, as kura's --keys;\n                 KOYOMI_KEYS_DONE names the file that says how it ended\n\n  {}\n",
+        cli::USAGE.trim_end(),
+        cli::NOTE.trim_end()
     )
 }
 

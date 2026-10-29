@@ -1,17 +1,23 @@
-//! The commands that print and exit: `check`, `list`, `approve`, `run`, `rerun`, `status`, `log`, `kill`,
-//! `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`.
+//! The commands that print and exit: `check`, `list`, `show`, `approve`, `run`, `rerun`, `next`, `status`,
+//! `history`, `log`, `kill`, `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`.
+//!
+//! Every command takes `--help` (its lines of the usage) and `--toml` (the answer as TOML, for
+//! another program: the commands that answer with data print it as such, the rest print `ok`
+//! and the `lines` they would have said).
 //!
 //! Exit codes: 0 done, 1 refused or not so (a problem in a file, not approved, an engine already up),
 //! 2 used wrongly.
 
-use chrono::{Datelike, NaiveDate};
-use ito_ipc::door::ask;
-use koyomi_core::calendar::{Calendar, Calendars};
-use koyomi_core::scan::{Def, Standing};
-
+use std::cell::RefCell;
 use std::time::Duration;
 
-use koyomi_core::run::Run;
+use chrono::{Datelike, NaiveDate};
+use ito_ipc::door::ask;
+use koyomi_core::calendar::{Calendar, Calendars, Day};
+use koyomi_core::run::{Run, State};
+use koyomi_core::scan::{Def, Standing};
+use koyomi_core::when;
+use serde::Serialize;
 
 use crate::proto::{self, Request, Runs, Snapshot};
 use crate::{client, engine, review, say, show};
@@ -20,7 +26,8 @@ pub const USAGE: &str = "\
 usage: koyomi [--version | --help | env]
        koyomi check <file>           read a definition (or koyomi.toml, _group.toml, calendars/<name>.toml)
                                      and say what is wrong with it (exit 1 if anything)
-       koyomi list [--toml]          the definitions and where each stands
+       koyomi list [--group <group>] the definitions and where each stands (--group: that group's only)
+       koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
        koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
@@ -29,8 +36,11 @@ usage: koyomi [--version | --help | env]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too)
        koyomi next <group/name> [--count N]
                                      the next 10 times its [[when]] comes (N: that many)
-       koyomi status [--today] [--toml]
-                                     the runs still going (--today: every run of today)
+       koyomi status [--today]       the runs still going (--today: every run of today)
+       koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [<group/name>]
+                                     the runs of those days, oldest first (the last 7 days when none;
+                                     --status: ok, warn, error, timeout, killed, running, running_error,
+                                     waiting, held, skipped, missed, locked or not_run)
        koyomi log <run> <job>        the tail of one job's log
        koyomi kill <run> [<job>]     stop one job, or the whole run
        koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
@@ -43,6 +53,9 @@ usage: koyomi [--version | --help | env]
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
 
+/// What every command takes, under the usage.
+pub const NOTE: &str = "every command takes --help (its lines) and --toml (the answer as TOML, for other programs)\n";
+
 /// What the sign-in entry runs: the engine, not the window.
 pub const STARTUP_ARGS: [&str; 1] = ["engine"];
 
@@ -52,17 +65,39 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
+const COMMANDS: [&str; 19] = [
+    "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "pause",
+    "resume", "calendar", "engine", "startup",
+];
+
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
+///
+/// `--help` anywhere after the command prints its lines of the usage. `--toml` anywhere
+/// makes the answer TOML (see [`finish`]).
 pub fn run(args: &[String]) -> Option<i32> {
     let (first, rest) = args.split_first()?;
-    Some(match first.as_str() {
+    if !COMMANDS.contains(&first.as_str()) {
+        return None;
+    }
+    if rest.iter().any(|a| a == "--help" || a == "-h") {
+        say(&help_for(first), false);
+        return Some(0);
+    }
+    let rest: Vec<String> = rest.iter().filter(|a| *a != "--toml").cloned().collect();
+    if rest.len() + 1 != args.len() {
+        CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
+    }
+    let rest = rest.as_slice();
+    let code = match first.as_str() {
         "check" => check(rest),
         "list" => list(rest),
+        "show" => show_cmd(rest),
         "approve" => approve(rest),
         "run" => run_cmd(rest),
         "rerun" => rerun_cmd(rest),
         "next" => next(rest),
         "status" => status(rest),
+        "history" => history(rest),
         "log" => log(rest),
         "kill" => kill(rest),
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
@@ -74,7 +109,74 @@ pub fn run(args: &[String]) -> Option<i32> {
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         _ => return None,
-    })
+    };
+    Some(finish(code))
+}
+
+/// The usage's lines for `cmd`: the line naming it, the ones that go on under it, and the note.
+fn help_for(cmd: &str) -> String {
+    let mut lines = Vec::new();
+    let mut inside = false;
+    for l in USAGE.lines() {
+        if let Some(h) = l.trim_start().strip_prefix("koyomi ") {
+            let words = h.split("  ").next().unwrap_or(h);
+            inside = words.split([' ', '|']).any(|w| w == cmd);
+        }
+        if inside {
+            lines.push(l);
+        }
+    }
+    if lines.is_empty() {
+        return format!("{USAGE}\n{NOTE}");
+    }
+    format!("usage:\n{}\n\n{NOTE}", lines.join("\n"))
+}
+
+thread_local! {
+    /// Under `--toml`: the lines the command said, printed at the end as `lines`.
+    /// `None` prints them as they come.
+    static CAPTURE: RefCell<Option<Vec<String>>> = const { RefCell::new(None) };
+}
+
+/// Whether `--toml` was given.
+fn toml() -> bool {
+    CAPTURE.with(|c| c.borrow().is_some())
+}
+
+/// Says a line, or keeps it for the end under `--toml`.
+fn out(text: &str, err: bool) {
+    let kept = CAPTURE.with(|c| match c.borrow_mut().as_mut() {
+        Some(lines) => {
+            lines.extend(text.lines().map(str::to_owned));
+            true
+        }
+        None => false,
+    });
+    if !kept {
+        say(text, err);
+    }
+}
+
+/// Prints `text`, the command's answer as TOML. The lines kept so far were for a person: dropped.
+fn emit(text: &str) {
+    CAPTURE.with(|c| *c.borrow_mut() = None);
+    say(text.trim_end_matches('\n'), false);
+}
+
+/// What `--toml` prints for a command that answers in words: whether it went through, and the words.
+#[derive(Serialize)]
+struct Said {
+    ok: bool,
+    lines: Vec<String>,
+}
+
+/// Under `--toml`, prints what was kept as [`Said`] unless the command printed its own TOML.
+fn finish(code: i32) -> i32 {
+    if let Some(lines) = CAPTURE.with(|c| c.borrow_mut().take()) {
+        let text = toml::to_string(&Said { ok: code == 0, lines }).unwrap_or_default();
+        say(text.trim_end_matches('\n'), false);
+    }
+    code
 }
 
 fn usage(why: &str) -> i32 {
@@ -89,7 +191,7 @@ fn check(args: &[String]) -> i32 {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
-            say(&format!("{name}: 読めない: {e}"), true);
+            out(&format!("{name}: 読めない: {e}"), true);
             return 1;
         }
     };
@@ -104,11 +206,11 @@ fn check(args: &[String]) -> i32 {
     if name == "_group.toml" {
         return match koyomi_core::group::parse(&text) {
             Ok(_) => {
-                say(&format!("{name}: 問題なし"), false);
+                out(&format!("{name}: 問題なし"), false);
                 0
             }
             Err(e) => {
-                say(&format!("{name}: {e}"), true);
+                out(&format!("{name}: {e}"), true);
                 1
             }
         };
@@ -119,7 +221,7 @@ fn check(args: &[String]) -> i32 {
         let inside = path.canonicalize().ok().filter(|p| paths.app.canonicalize().is_ok_and(|a| p.starts_with(a)));
         let files: Vec<_> = inside.into_iter().collect();
         for w in engine::access_warnings(paths, &files) {
-            say(&w, true);
+            out(&w, true);
             bad = true;
         }
     }
@@ -135,11 +237,11 @@ fn check(args: &[String]) -> i32 {
         problems.extend(koyomi_core::scan::child_problem(net, &defs).map(|message| koyomi_core::jobnet::Problem { line: 0, message }));
     }
     for p in &problems {
-        say(&p.in_file(&name), true);
+        out(&p.in_file(&name), true);
         bad = true;
     }
     if !bad {
-        say(&format!("{name}: 問題なし"), false);
+        out(&format!("{name}: 問題なし"), false);
     }
     i32::from(bad)
 }
@@ -150,7 +252,7 @@ fn check_calendar(name: &str, text: &str) -> i32 {
     let cal = match Calendar::parse(stem, text) {
         Ok(c) => c,
         Err(e) => {
-            say(&format!("{name}: {e}"), true);
+            out(&format!("{name}: {e}"), true);
             return 1;
         }
     };
@@ -158,7 +260,7 @@ fn check_calendar(name: &str, text: &str) -> i32 {
     let mut bad = false;
     if cal.holidays {
         if let Some(line) = koyomi_core::calendar::japan::caution(today, engine::CAUTION_DAYS) {
-            say(&format!("{name}: {line}"), true);
+            out(&format!("{name}: {line}"), true);
             // Past the table: the days after it will not run. Before: a word in time, not a fault.
             bad = cal.stale(today);
             if bad {
@@ -167,7 +269,7 @@ fn check_calendar(name: &str, text: &str) -> i32 {
             return 0;
         }
     }
-    say(&format!("{name}: 問題なし"), false);
+    out(&format!("{name}: 問題なし"), false);
     i32::from(bad)
 }
 
@@ -176,16 +278,16 @@ fn check_config(name: &str, text: &str) -> i32 {
     let config = match koyomi_core::config::Config::parse(text) {
         Ok(c) => c,
         Err(e) => {
-            say(&format!("{name}: {e}"), true);
+            out(&format!("{name}: {e}"), true);
             return 1;
         }
     };
     let (_, notes) = crate::notify::read(&config);
     for n in &notes {
-        say(n, true);
+        out(n, true);
     }
     if notes.is_empty() {
-        say(&format!("{name}: 問題なし"), false);
+        out(&format!("{name}: 問題なし"), false);
     }
     i32::from(!notes.is_empty())
 }
@@ -195,32 +297,77 @@ fn snapshot() -> Result<Snapshot, String> {
 }
 
 fn list(args: &[String]) -> i32 {
-    let toml = match args {
-        [] => false,
-        [a] if a == "--toml" => true,
-        _ => return usage("list takes only --toml"),
+    let group = match args {
+        [] => None,
+        [a, g] if a == "--group" => Some(g.clone()),
+        _ => return usage("list takes --group <group>"),
     };
+    let mut snap = match snapshot() {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    if let Some(g) = &group {
+        if !snap.defs.iter().any(|d| &d.group == g) {
+            return fail(&format!("グループがない: {g}"));
+        }
+        snap.defs.retain(|d| &d.group == g);
+    }
+    if toml() {
+        emit(&snap.to_toml());
+        return 0;
+    }
+    for w in &snap.warnings {
+        out(&format!("! {w}"), false);
+    }
+    for n in snap.notes.iter().chain(&snap.cautions) {
+        out(&format!("注意: {n}"), false);
+    }
+    if snap.paused {
+        out(&format!("{} スケジュールを止めている（koyomi resume で戻す）", State::Held.mark()), false);
+    }
+    for line in review::tree(&table(), &snap.defs, &snap.held) {
+        out(&line, false);
+    }
+    0
+}
+
+/// `koyomi show <group/name>`: the definition as the engine reads it, the way
+/// `approve` shows it before asking (held is said too). `--toml`: the definition.
+fn show_cmd(args: &[String]) -> i32 {
+    let [id] = args else { return usage("show takes one group/name") };
+    let id = id.replace('\\', "/");
     let snap = match snapshot() {
         Ok(s) => s,
-        Err(e) => {
-            say(&format!("koyomi: {e}"), true);
-            return 1;
-        }
+        Err(e) => return fail(&e),
     };
-    if toml {
-        say(snap.to_toml().trim_end_matches('\n'), false);
-    } else {
-        for w in &snap.warnings {
-            say(&format!("! {w}"), false);
+    let text = match client::call(&Request::Show { id: id.clone() }) {
+        Ok(s) => s,
+        Err(e) => return fail(&e),
+    };
+    if toml() {
+        emit(&text);
+        return 0;
+    }
+    let def: Def = match toml::from_str(&text) {
+        Ok(d) => d,
+        Err(e) => return fail(&e.to_string()),
+    };
+    let t = table();
+    let mut head = format!("{} {}", def.file, review::word(&t, def.standing));
+    if snap.held.contains(&def.id) {
+        head.push_str(&format!("  {} {}", State::Held.mark(), t.tr("run.hold")));
+    }
+    out(&head, false);
+    for p in &def.problems {
+        out(&p.in_file(&def.file), true);
+    }
+    if def.net.is_some() {
+        for l in review::body(&t, &def) {
+            out(&l, false);
         }
-        for n in snap.notes.iter().chain(&snap.cautions) {
-            say(&format!("注意: {n}"), false);
-        }
-        if snap.paused {
-            say(&format!("{} スケジュールを止めている（koyomi resume で戻す）", koyomi_core::run::State::Held.mark()), false);
-        }
-        for line in review::tree(&table(), &snap.defs, &snap.held) {
-            say(&line, false);
+        let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+        for l in review::week(&t, &def, cal, chrono::Local::now().naive_local()) {
+            out(&l, false);
         }
     }
     0
@@ -231,7 +378,7 @@ fn approve(args: &[String]) -> i32 {
     let id = id.replace('\\', "/");
     let t = table();
     let fail = |text: &str| {
-        say(text, true);
+        out(text, true);
         1
     };
     let snap = match snapshot() {
@@ -240,7 +387,7 @@ fn approve(args: &[String]) -> i32 {
     };
     if !snap.warnings.is_empty() {
         for w in &snap.warnings {
-            say(&format!("! {w}"), true);
+            out(&format!("! {w}"), true);
         }
         return fail("承認できない: 他のユーザーが書き換えられる場所がある");
     }
@@ -251,12 +398,12 @@ fn approve(args: &[String]) -> i32 {
     match def.standing {
         Standing::Invalid => {
             for p in &def.problems {
-                say(&p.in_file(&def.file), true);
+                out(&p.in_file(&def.file), true);
             }
             return fail(&format!("{}: 定義の誤りがあり、承認できない", def.file));
         }
         Standing::Confirmed => {
-            say(&format!("{}: すでに確認済み", def.file), false);
+            out(&format!("{}: すでに確認済み", def.file), false);
             return 0;
         }
         Standing::Unconfirmed => {}
@@ -284,7 +431,7 @@ fn approve(args: &[String]) -> i32 {
     }
     match client::call(&Request::Approve { id, sha256: def.sha256 }) {
         Ok(text) => {
-            say(&text, false);
+            out(&text, false);
             0
         }
         Err(e) => fail(&format!("koyomi: {e}")),
@@ -318,26 +465,88 @@ fn next(args: &[String]) -> i32 {
     let Some(def) = snap.defs.iter().find(|d| d.id == id) else { return fail(&format!("定義がない: {id}")) };
     let Some(net) = &def.net else {
         for p in &def.problems {
-            say(&p.in_file(&def.file), true);
+            out(&p.in_file(&def.file), true);
         }
         return fail(&format!("{}: 定義の誤り", def.file));
     };
-    if net.when.is_empty() {
-        say(t.tr("run.next_none"), false);
+    let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+    let now = chrono::Local::now().naive_local();
+    let unconfirmed = def.standing != Standing::Confirmed;
+    if toml() {
+        let mut next: Vec<NextRow> =
+            net.when.iter().filter_map(|w| show::event_row(&t, w)).map(|e| NextRow { at: None, event: Some(e) }).collect();
+        next.extend(
+            when::next_times_in(&net.when, now, count, cal)
+                .into_iter()
+                .map(|at| NextRow { at: Some(at.format("%Y-%m-%d %H:%M:%S").to_string()), event: None }),
+        );
+        emit(&toml::to_string(&Next { unconfirmed, next }).unwrap_or_default());
         return 0;
     }
-    if def.standing != Standing::Confirmed {
-        say(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
+    if net.when.is_empty() {
+        out(t.tr("run.next_none"), false);
+        return 0;
     }
-    let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-    let rows = show::next_rows(&t, &net.when, cal, chrono::Local::now().naive_local(), count);
+    if unconfirmed {
+        out(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
+    }
+    let rows = show::next_rows(&t, &net.when, cal, now, count);
     if rows.is_empty() {
-        say(t.tr("run.next_over"), false);
+        out(t.tr("run.next_over"), false);
     }
     for r in rows {
-        say(&r, false);
+        out(&r, false);
     }
     0
+}
+
+/// `koyomi next --toml`: `unconfirmed`, then a `[[next]]` with `at` (a time) or `event` (what starts it) each.
+#[derive(Serialize)]
+struct Next {
+    unconfirmed: bool,
+    next: Vec<NextRow>,
+}
+
+#[derive(Serialize)]
+struct NextRow {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    event: Option<String>,
+}
+
+/// `koyomi calendar --toml`: the month, its business days, and a `[[day]]` each with
+/// `kind` (`business`, `open`, `closed`, `holiday`, `weekly_off`) and the name written for it.
+#[derive(Serialize)]
+struct Month {
+    calendar: String,
+    month: String,
+    business_days: usize,
+    day: Vec<DayRow>,
+}
+
+#[derive(Serialize)]
+struct DayRow {
+    date: String,
+    kind: &'static str,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    name: Option<String>,
+}
+
+fn day_row(date: NaiveDate, day: Day) -> DayRow {
+    let kind = match &day {
+        Day::Business => "business",
+        Day::Open(_) => "open",
+        Day::Closed(_) => "closed",
+        Day::Holiday(_) => "holiday",
+        Day::WeeklyOff => "weekly_off",
+    };
+    let name = match day {
+        Day::Open(n) | Day::Closed(n) if !n.is_empty() => Some(n),
+        Day::Holiday(n) => Some(n.to_owned()),
+        _ => None,
+    };
+    DayRow { date: date.to_string(), kind, name }
 }
 
 /// `koyomi calendar <name> [--month YYYY-MM]`: the month's days as the engine counts them.
@@ -365,14 +574,25 @@ fn calendar(args: &[String]) -> i32 {
     };
     let Some(cal) = snap.calendars.get(&name) else {
         for c in snap.cautions.iter().filter(|c| c.starts_with(&format!("calendars/{name}.toml"))) {
-            say(c, true);
+            out(c, true);
         }
         return fail(&t.trf("calendar.missing", &[&name]));
     };
     let today = chrono::Local::now().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
+    if toml() {
+        let days = show::month_days(cal, y, m);
+        let month = Month {
+            calendar: name.clone(),
+            month: format!("{y}-{m:02}"),
+            business_days: days.iter().filter(|(_, d)| d.is_business()).count(),
+            day: days.into_iter().map(|(date, d)| day_row(date, d)).collect(),
+        };
+        emit(&toml::to_string(&month).unwrap_or_default());
+        return 0;
+    }
     for l in show::month_lines(&t, cal, y, m, today) {
-        say(&l, false);
+        out(&l, false);
     }
     0
 }
@@ -382,7 +602,7 @@ fn runs() -> Result<Vec<Run>, String> {
 }
 
 fn fail(text: &str) -> i32 {
-    say(&format!("koyomi: {text}"), true);
+    out(&format!("koyomi: {text}"), true);
     1
 }
 
@@ -432,7 +652,7 @@ fn started(reply: Result<String, String>, wait: bool) -> i32 {
         Err(e) => return fail(&e),
     };
     let t = table();
-    say(&t.trf("run.started", &[&run]), false);
+    out(&t.trf("run.started", &[&run]), false);
     if !wait {
         return 0;
     }
@@ -444,43 +664,90 @@ fn started(reply: Result<String, String>, wait: bool) -> i32 {
         };
         let Some(r) = found else { return fail(&format!("実行が見当たらない: {run}")) };
         if r.is_over() {
-            say(&show::run_line(&t, &r), false);
-            for j in &r.jobs {
-                say(&format!("  {}", show::job_line(&t, j)), false);
-            }
+            say_runs(&t, std::slice::from_ref(&r));
             return i32::from(!r.state.passed());
         }
     }
 }
 
 fn status(args: &[String]) -> i32 {
-    let (mut today, mut toml) = (false, false);
-    for a in args {
-        match a.as_str() {
-            "--today" => today = true,
-            "--toml" => toml = true,
-            _ => return usage("status takes --today and --toml"),
-        }
-    }
+    let today = match args {
+        [] => false,
+        [a] if a == "--today" => true,
+        _ => return usage("status takes --today"),
+    };
     let rs = match runs() {
         Ok(rs) => rs,
         Err(e) => return fail(&e),
     };
     let rs: Vec<Run> = rs.into_iter().filter(|r| today || !r.is_over()).collect();
-    if toml {
-        say(Runs { runs: rs }.to_toml().trim_end_matches('\n'), false);
+    if toml() {
+        emit(&Runs { runs: rs }.to_toml());
         return 0;
     }
     let t = table();
     if rs.is_empty() {
-        say(if today { t.tr("run.none") } else { "動いている実行はありません" }, false);
+        out(if today { t.tr("run.none") } else { "動いている実行はありません" }, false);
     }
-    for r in &rs {
-        say(&show::run_line(&t, r), false);
+    say_runs(&t, &rs);
+    0
+}
+
+/// The runs as `status` prints them: a line each, its jobs under it.
+fn say_runs(t: &ito_i18n::Table, rs: &[Run]) {
+    for r in rs {
+        out(&show::run_line(t, r), false);
         for j in &r.jobs {
-            say(&format!("  {}", show::job_line(&t, j)), false);
+            out(&format!("  {}", show::job_line(t, j)), false);
         }
     }
+}
+
+/// `koyomi history [--from D] [--to D] [--status <state>] [<group/name>]`: the runs that
+/// started on those days (the last 7 when none), oldest first, narrowed by state and net here.
+fn history(args: &[String]) -> i32 {
+    let (mut from, mut to, mut state, mut net) = (None, None, None, None);
+    let day = |d: Option<&String>| d.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--from" => match day(it.next()) {
+                Some(d) => from = Some(d),
+                None => return usage("--from takes YYYY-MM-DD"),
+            },
+            "--to" => match day(it.next()) {
+                Some(d) => to = Some(d),
+                None => return usage("--to takes YYYY-MM-DD"),
+            },
+            "--status" => match it.next().and_then(|k| State::ALL.iter().find(|s| s.key() == k)) {
+                Some(s) => state = Some(*s),
+                None => {
+                    let keys: Vec<&str> = State::ALL.iter().map(|s| s.key()).collect();
+                    return usage(&format!("--status takes one of {}", keys.join(", ")));
+                }
+            },
+            _ if net.is_none() && !a.starts_with("--") => net = Some(a.replace('\\', "/")),
+            _ => return usage("history takes --from, --to, --status and one group/name"),
+        }
+    }
+    let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let from = from.unwrap_or(to - chrono::Duration::days(7));
+    let reply = client::call(&Request::History { from: from.to_string(), to: to.to_string() });
+    let rs = match reply.and_then(|s| Runs::parse(&s)) {
+        Ok(r) => r.runs,
+        Err(e) => return fail(&e),
+    };
+    let rs: Vec<Run> =
+        rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
+    if toml() {
+        emit(&Runs { runs: rs }.to_toml());
+        return 0;
+    }
+    let t = table();
+    if rs.is_empty() {
+        out(t.tr("run.history_none"), false);
+    }
+    say_runs(&t, &rs);
     0
 }
 
@@ -488,18 +755,31 @@ fn log(args: &[String]) -> i32 {
     let [run, job] = args else { return usage("log takes a run and a job") };
     match client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
         Ok(text) => {
-            say(text.trim_end_matches('\n'), false);
+            if toml() {
+                let log = Log { run: run.clone(), job: job.clone(), text };
+                emit(&toml::to_string(&log).unwrap_or_default());
+            } else {
+                out(text.trim_end_matches('\n'), false);
+            }
             0
         }
         Err(e) => fail(&e),
     }
 }
 
+/// `koyomi log --toml`: the run, the job and the tail.
+#[derive(Serialize)]
+struct Log {
+    run: String,
+    job: String,
+    text: String,
+}
+
 /// Sends `request` and prints the answer: the commands with nothing to read back.
 fn ask_and_say(request: &Request) -> i32 {
     match client::call(request) {
         Ok(text) => {
-            say(&text, false);
+            out(&text, false);
             0
         }
         Err(e) => fail(&e),
@@ -536,7 +816,7 @@ fn kill(args: &[String]) -> i32 {
     };
     match client::call(&Request::Kill { run, job }) {
         Ok(text) => {
-            say(&text, false);
+            out(&text, false);
             0
         }
         Err(e) => fail(&e),
@@ -548,21 +828,21 @@ fn engine_cmd(args: &[String]) -> i32 {
         [] => engine::run(),
         [a] if a == "status" => match ask(&proto::door(), &Request::Status) {
             Ok(text) => {
-                say(&format!("{text}\n{}", startup_line()), false);
+                out(&format!("{text}\n{}", startup_line()), false);
                 0
             }
             Err(_) => {
-                say("koyomi: エンジンは動いていない", true);
+                out("koyomi: エンジンは動いていない", true);
                 1
             }
         },
         [a] if a == "stop" => match ask(&proto::door(), &Request::Stop) {
             Ok(_) => {
-                say("koyomi: エンジンを止めた", false);
+                out("koyomi: エンジンを止めた", false);
                 0
             }
             Err(_) => {
-                say("koyomi: エンジンは動いていない", true);
+                out("koyomi: エンジンは動いていない", true);
                 1
             }
         },
@@ -581,7 +861,7 @@ fn startup_line() -> String {
 fn startup_cmd(args: &[String]) -> i32 {
     let on = match args {
         [] => {
-            say(&startup_line(), false);
+            out(&startup_line(), false);
             return 0;
         }
         [a] if a == "on" => true,
@@ -591,13 +871,13 @@ fn startup_cmd(args: &[String]) -> i32 {
     let exe = match std::env::current_exe() {
         Ok(p) => p,
         Err(e) => {
-            say(&format!("koyomi: {e}"), true);
+            out(&format!("koyomi: {e}"), true);
             return 1;
         }
     };
     match ito_common::startup::set("koyomi", &exe, &STARTUP_ARGS, on) {
         Ok(()) => {
-            say(
+            out(
                 if on {
                     "koyomi: サインイン時にエンジンを起動する"
                 } else {
@@ -608,7 +888,7 @@ fn startup_cmd(args: &[String]) -> i32 {
             0
         }
         Err(e) => {
-            say(&format!("koyomi: {e}"), true);
+            out(&format!("koyomi: {e}"), true);
             1
         }
     }

@@ -681,6 +681,10 @@ impl State {
             Request::Rerun { run, from } => self.rerun(run, from.as_deref()),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
+            Request::History { from, to } => {
+                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {s}"));
+                Ok(Runs { runs: self.runner.history(day(from)?, day(to)?)? }.to_toml())
+            }
             Request::Log { run, job } => self.runner.log_tail(run, job),
             Request::Hold { id } => self.hold(id),
             Request::Release { id } => self.release(id),
