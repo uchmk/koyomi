@@ -177,7 +177,7 @@ impl Browser {
         }
     }
 
-    fn drain(&mut self) {
+    pub fn drain(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,

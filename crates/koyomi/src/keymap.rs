@@ -49,9 +49,9 @@ fn command(text: &str, warnings: &mut Vec<String>) -> Option<Cmd> {
     }
 }
 
-/// The bindings in force.
+/// The bindings in force, by layer (koyomi has the one, `app`).
 pub struct Keys {
-    app: Vec<Binding<Cmd>>,
+    layers: Vec<(String, Vec<Binding<Cmd>>)>,
 }
 
 impl Keys {
@@ -70,7 +70,23 @@ impl Keys {
             }
             None => true,
         });
-        (Self { app }, warnings)
+        (Self { layers: vec![("app".to_owned(), app)] }, warnings)
+    }
+
+    fn app(&self) -> &[Binding<Cmd>] {
+        &self.layers[0].1
+    }
+
+    /// The layers as the settings' Keys page lists them.
+    pub fn layers(&self) -> &[(String, Vec<Binding<Cmd>>)] {
+        &self.layers
+    }
+
+    /// The built-in keys alone, for the Keys page to show what a change
+    /// departs from.
+    pub fn built_in_layers() -> &'static [(String, Vec<Binding<Cmd>>)] {
+        static BUILT_IN: std::sync::OnceLock<Vec<(String, Vec<Binding<Cmd>>)>> = std::sync::OnceLock::new();
+        BUILT_IN.get_or_init(|| Self::load(None).0.layers)
     }
 
     /// The key in `keys` that koyomi takes before the keymap, if any.
@@ -80,13 +96,13 @@ impl Keys {
 
     /// What `pressed` (the chord so far) runs.
     pub fn resolve(&self, pressed: &[Key]) -> Match<'_, Cmd> {
-        ito_keymap::resolve(&self.app, pressed)
+        ito_keymap::resolve(self.app(), pressed)
     }
 
     /// The keys that run `name`, as the palette shows them; empty when it
     /// is unbound.
     pub fn label(&self, name: &str) -> String {
-        self.app
+        self.app()
             .iter()
             .find(|b| matches!(b.run.as_slice(), [Cmd::Run(n)] if *n == name))
             .filter(|b| matches!(self.resolve(&b.on), Match::Exact(e) if std::ptr::eq(e, *b)))
@@ -116,10 +132,19 @@ mod tests {
         assert_eq!(run(&k, "<C-,>"), Some(vec![Cmd::Run("settings")]));
         assert_eq!(run(&k, "q"), None);
         for a in ACTIONS {
-            assert!(k.app.iter().any(|b| b.run == [Cmd::Run(a)]), "{a}");
+            assert!(k.app().iter().any(|b| b.run == [Cmd::Run(a)]), "{a}");
             assert!(!k.label(a).is_empty(), "{a}");
         }
         assert_eq!(k.label("quit"), "Ctrl+Q");
+    }
+
+    #[test]
+    fn the_built_in_layers_are_the_defaults_once() {
+        let b = Keys::built_in_layers();
+        assert_eq!(b.len(), 1);
+        assert_eq!(b[0].0, "app");
+        assert_eq!(b[0].1.len(), Keys::load(None).0.layers()[0].1.len());
+        assert!(std::ptr::eq(b, Keys::built_in_layers()));
     }
 
     #[test]

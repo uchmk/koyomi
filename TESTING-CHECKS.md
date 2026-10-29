@@ -1,6 +1,6 @@
 # Checklist
 
-85 checks in TESTING.md, 84 left for a person.
+104 checks in TESTING.md, 103 left for a person.
 
 ## 1. Start
 
@@ -124,8 +124,30 @@
 ## 14. Keys (`keymap.toml`)
 
 - [ ] **14.1** Press Ctrl+Q with the tree focused → The window closes (the engine keeps running) 〔未訳〕
-- [ ] **14.2** Press Ctrl+, and then F1 → The status bar says the settings, then the help, are not wired yet; nothing else changes 〔未訳〕
+- [ ] **14.2** Press Ctrl+, and then F1 → Ctrl+, opens the settings; Esc closes them; F1 says in the status bar that the help is not wired yet 〔未訳〕
 - [ ] **14.3** Open the palette (Ctrl+Shift+P) → "Quit" shows `Ctrl+Q` as its key 〔未訳〕
 - [ ] **14.4** Write `<uchmk>\koyomi\keymap.toml` with `[[app.keymap]]` `on = "<C-q>"` `run = "none"` and another binding `on = "<C-w>"` `run = "quit"`, restart → Ctrl+Q does nothing; Ctrl+W quits; the palette shows `Ctrl+W` 〔未訳〕
 - [ ] **14.5** Add a line with `run = "explode"` and one with `on = "<F12>"`, restart → The bell lists two warnings naming the file: `explode` is no action, F12 is fixed; the other keys still work 〔未訳〕
 - [ ] **14.6** Type Ctrl+Q while the search box of the palette has the focus → The palette takes the key (nothing quits); Esc, then Ctrl+Q quits 〔未訳〕
+
+## 15. Settings (Ctrl+,)
+
+- [ ] **15.1** Press Ctrl+, → The settings cover the tree: General, Theme, Keys, Advanced, About down the left; the foot of the nav opens `common.toml` 〔未訳〕
+- [ ] **15.2** Press Esc, or ← at the top → The tree is back as it was (the selected net still selected) 〔未訳〕
+- [ ] **15.3** General: pick 日本語 → The window turns Japanese at once; `common.toml` has `language = "ja"` within 2 seconds; minato or kura at the same desk follow 〔未訳〕
+- [ ] **15.4** General: pick 125 % → The window scales; `scale = 1.25` is in `common.toml`; Ctrl+0 puts it back and the file follows 〔未訳〕
+- [ ] **15.5** General: switch the clock's date on and change its format → The status bar's clock shows the date in that format at once 〔未訳〕
+- [ ] **15.6** General: "Start at sign-in" → The switch shows what the OS has; toggled, the registry (Windows) or the autostart folder gets koyomi, and the band about starting at sign-in (TESTING 11) goes away at the next start 〔未訳〕
+- [ ] **15.7** General: "Forget the window's place" → `state_dir("koyomi")\window.toml` is gone; the next start opens at the default size in the middle 〔未訳〕
+- [ ] **15.8** Theme: pick Dark, then Light, then System → The colours change at once, the sample card with it; `theme = "…"` is in `common.toml`; System follows the OS's light/dark 〔未訳〕
+- [ ] **15.9** Theme: edit `common.toml` by hand to `theme = "koyomi Light"` while the window is open → The window turns light within 2 seconds without a restart 〔未訳〕
+- [ ] **15.10** Keys: click Ctrl+Q's key, press Ctrl+W → The row shows Ctrl+W; `<uchmk>\koyomi\keymap.toml` holds only that change; Ctrl+W quits from then on and the palette shows it 〔未訳〕
+- [ ] **15.11** Keys: while the page waits for a key, press F12 and Ctrl+Shift+P → They are taken as the key (no bug form, no palette); Esc gives the page up 〔未訳〕
+- [ ] **15.12** Keys: bind F12 to an action → The row says koyomi reads F12 itself and the binding never runs 〔未訳〕
+- [ ] **15.13** Keys: ↺ on a changed row → The built-in key is back and the line is gone from `keymap.toml` (the file is removed when nothing is left in it) 〔未訳〕
+- [ ] **15.14** Keys: write `run = "explode"` into `keymap.toml` by hand while the window is open → The bell lists the warning within 2 seconds; the other keys still work 〔未訳〕
+- [ ] **15.15** Advanced: "Open the config folder" and "Open the state folder" → The file manager opens `<uchmk>` and `state_dir("koyomi")` 〔未訳〕
+- [ ] **15.16** Advanced: "Put the settings back" → `common.toml` and `keymap.toml` are moved aside as `*.bak-<stamp>`; the definitions, `koyomi.toml`, `approved.toml` and the runs are untouched; the window goes back to the defaults at once 〔未訳〕
+- [ ] **15.17** About → The version, the commit, the OS line and the licence; "Report a bug" opens the issue form as F12 does 〔未訳〕
+- [ ] **15.18** Type `keymap` in the search box → The Keys page is offered; Enter opens it with its rows highlighted 〔未訳〕
+- [ ] **15.19** Open the settings while the engine runs a job → The run still ends (the bell still rings for a failed one) and the tree shows it once the settings close 〔未訳〕

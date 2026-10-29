@@ -1,11 +1,11 @@
 //! koyomi: Small job scheduler and monitor (a light JP1)
 //!
 //! What is wired here: the window (its place kept, its own title bar with the
-//! bell and the notice list), common.toml's theme, language and scale,
-//! `--version` / `--help`, F12 (the bug report), `--keys` (a script that
-//! drives the window for a test lane), and keymap.toml (Ctrl+Q quits; the
-//! keys of the settings and the help are bound, and say so until those are
-//! wired).
+//! bell and the notice list), common.toml's theme, language and scale (and
+//! the settings screen that writes them, Ctrl+,), `--version` / `--help`,
+//! F12 (the bug report), `--keys` (a script that drives the window for a
+//! test lane), and keymap.toml (Ctrl+Q quits; the help's key is bound, and
+//! says so until the help is wired).
 //! What the uchmk apps also have and is still to wire is in TODO.md, each
 //! item with the ito crate and an app that already does it.
 
@@ -19,8 +19,10 @@ mod i18n;
 mod icon;
 mod keymap;
 mod notify;
+mod prefs;
 mod proto;
 mod review;
+mod settings;
 mod show;
 mod ui;
 
@@ -47,7 +49,13 @@ fn usage_text() -> String {
 
 struct App {
     table: ito_i18n::Table,
-    common: ito_common::Common,
+    /// common.toml, the themes and keymap.toml, kept current by a watcher;
+    /// the settings screen's state.
+    prefs: prefs::Prefs,
+    settings_open: bool,
+    /// Starts at sign-in: what the OS says, and the thread asking it.
+    startup: Option<bool>,
+    startup_rx: Option<std::sync::mpsc::Receiver<bool>>,
     tracker: Option<Tracker>,
     lang: String,
     /// The last scale change, as the line the status bar shows.
@@ -81,6 +89,7 @@ struct App {
 enum Command {
     ReportBug,
     ResetScale,
+    Settings,
     Quit,
 }
 
@@ -98,33 +107,30 @@ impl App {
         used.ppp = cc.egui_ctx.pixels_per_point();
         ito_common::runinfo::save("koyomi", &used);
         let base = ito_common::base_dir();
-        let (common, mut warnings) = match base.as_deref().map(ito_common::Common::read) {
-            Some(Ok(read)) => read,
-            Some(Err(e)) => (Default::default(), vec![e]),
-            None => Default::default(),
-        };
-        let lang = i18n::resolve(common.language.as_deref());
+        let mut prefs = prefs::Prefs::load(base.clone());
+        let mut warnings: Vec<String> = prefs.common_warn.iter().chain(&prefs.theme_warn).cloned().collect();
+        let lang = i18n::resolve(prefs.common.language.as_deref());
         let (table, errors) = i18n::table(&lang);
         warnings.extend(errors);
-        let own = base.as_deref().map(|b| ito_common::app_dir_in(b, "koyomi").join(keymap::FILE));
-        let (keys, key_notes) = load_keys(own.as_deref());
+        let own = base.as_deref().map(prefs::keymap_path);
+        let (keys, mut key_notes) = load_keys(own.as_deref());
         for w in warnings.iter().chain(&key_notes) {
             eprintln!("koyomi: {w}");
         }
-        let themes = ito_theme::builtin();
-        let choice = common.theme.as_deref().unwrap_or("system");
-        let dark = common.dark_theme.as_deref().unwrap_or("koyomi Dark");
-        let light = common.light_theme.as_deref().unwrap_or("koyomi Light");
-        if let Ok(theme) = ito_theme::pick(&themes, choice, dark, light, false) {
-            ito_theme::set(theme.colors);
-        }
+        // What common.toml got wrong goes under the bell too, once.
+        key_notes.extend(warnings);
+        prefs.watch(&cc.egui_ctx);
+        prefs.apply_theme(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(ito_theme::colors().visuals());
         // The scale is common.toml's, so egui's own Ctrl+= / Ctrl+- stay out of it.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
-        cc.egui_ctx.set_zoom_factor(common.scale_or_one());
+        cc.egui_ctx.set_zoom_factor(prefs.common.scale_or_one());
         Self {
             table,
-            common,
+            prefs,
+            settings_open: false,
+            startup: None,
+            startup_rx: None,
             tracker: saved.tracker(),
             lang,
             scale_note: None,
@@ -187,12 +193,12 @@ impl App {
         }
     }
 
-    /// What a bound key does. The settings and the help are not wired yet:
-    /// the status bar says so, rather than nothing happening.
+    /// What a bound key does. The help is not wired yet: the status bar
+    /// says so, rather than nothing happening.
     fn run_key(&mut self, ctx: &egui::Context, c: keymap::Cmd) {
         match c {
             keymap::Cmd::Run("quit") => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            keymap::Cmd::Run("settings") => self.scale_note = Some(self.table.trf("notices.not_yet", &[self.table.tr("keys.settings")])),
+            keymap::Cmd::Run("settings") => self.settings_open = true,
             keymap::Cmd::Run("help") => self.scale_note = Some(self.table.trf("notices.not_yet", &[self.table.tr("keys.help")])),
             keymap::Cmd::Run(_) | keymap::Cmd::None => {}
         }
@@ -207,8 +213,9 @@ impl App {
     }
 
     /// The steps of the `--keys` script that are not keys: pictures, state
-    /// files, the theme and the language (applied to this window only; the
-    /// owner's common.toml is not written), quit, and the done file.
+    /// files, the theme and the language (set on this window's copy of
+    /// common.toml, which `sync_common` applies; the owner's file is not
+    /// written), quit, and the done file.
     fn script(&mut self, ctx: &egui::Context) {
         let Some(script) = &mut self.script else { return };
         if let Some(err) = script.shot(ctx) {
@@ -226,22 +233,15 @@ impl App {
                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                 }
                 Do::Theme(name) => {
-                    let themes = ito_theme::builtin();
-                    let dark = self.common.dark_theme.as_deref().unwrap_or("koyomi Dark");
-                    let light = self.common.light_theme.as_deref().unwrap_or("koyomi Light");
-                    match ito_theme::pick(&themes, &name, dark, light, false) {
-                        Ok(theme) => {
-                            ito_theme::set(theme.colors);
-                            ctx.set_visuals(ito_theme::colors().visuals());
-                        }
-                        Err(e) => say(&format!("koyomi --keys: <Theme:{name}>: {e}"), true),
+                    self.prefs.common.theme = Some(name.clone());
+                    self.prefs.apply_theme(ctx);
+                    if let Some(e) = self.prefs.theme_err.take() {
+                        say(&format!("koyomi --keys: <Theme:{name}>: {e}"), true);
                     }
                 }
                 Do::Lang(code) => {
-                    self.lang = i18n::resolve(Some(&code));
-                    let (table, errors) = i18n::table(&self.lang);
-                    self.table = table;
-                    for e in errors {
+                    self.prefs.common.language = Some(code.clone());
+                    for e in self.sync_lang() {
                         say(&format!("koyomi --keys: <Lang:{code}>: {e}"), true);
                     }
                 }
@@ -269,7 +269,7 @@ impl App {
         };
         self.font = None;
         let mut fonts = egui::FontDefinitions::default();
-        ito_fonts::register(&mut fonts, self.common.mono_font.unwrap_or_default());
+        ito_fonts::register(&mut fonts, self.prefs.common.mono_font_or_default());
         if let Some(bytes) = bytes {
             fonts.font_data.insert("japanese".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
             for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -307,28 +307,65 @@ impl App {
     }
 
     fn scale_to(&mut self, ctx: &egui::Context, to: ito_common::ScaleTo) {
-        let next = ito_common::scale_step(self.common.scale_or_one(), to);
-        if next == self.common.scale_or_one() {
+        let now = self.prefs.common.scale_or_one();
+        let next = ito_common::scale_step(now, to);
+        if next == now {
             return;
         }
-        self.common.scale = Some(next);
+        self.prefs.set_scale(next, self.table.tr("settings.no_folder"));
         ctx.set_zoom_factor(next);
         ito_statusbar::scale_changed(ctx, next);
         self.scale_note = Some(ito_common::scale_text(next, &self.lang));
-        if let Some(base) = ito_common::base_dir() {
-            std::thread::spawn(move || {
-                let change = ito_common::scale_change(next);
-                if let Err(e) = ito_common::edit_common(&base, |text| change.apply(text)) {
-                    eprintln!("koyomi: {e}");
-                }
-            });
+    }
+
+    /// common.toml changed (the settings, another app at the same desk, an
+    /// editor): the language, the theme and the scale follow; keymap.toml's
+    /// change reloads the keys. What a writer could not do goes under the bell.
+    fn sync_common(&mut self, ctx: &egui::Context) {
+        self.prefs.pump();
+        if let Some(e) = self.prefs.failed.take() {
+            self.key_notes.push(e);
         }
+        match self.prefs.keymap_new.take() {
+            Some(None) => {
+                let own = self.prefs.base.as_deref().map(prefs::keymap_path);
+                let (keys, notes) = load_keys(own.as_deref());
+                self.keys = keys;
+                self.key_pending.clear();
+                self.key_notes.extend(notes);
+            }
+            Some(Some(e)) => self.key_notes.push(e),
+            None => {}
+        }
+        for e in self.sync_lang() {
+            self.key_notes.push(e);
+        }
+        self.prefs.apply_theme(ctx);
+        if let Some(e) = self.prefs.theme_err.take() {
+            self.key_notes.push(e);
+        }
+        let scale = self.prefs.common.scale_or_one();
+        if ctx.zoom_factor() != scale {
+            ctx.set_zoom_factor(scale);
+        }
+    }
+
+    /// The table follows common.toml's language; the lang files' errors come back.
+    fn sync_lang(&mut self) -> Vec<String> {
+        let lang = i18n::resolve(self.prefs.common.language.as_deref());
+        if lang == self.lang {
+            return Vec::new();
+        }
+        let (table, errors) = i18n::table(&lang);
+        self.lang = lang;
+        self.table = table;
+        errors
     }
 
     /// The bottom bar: the app's items on the left (add yours here), the clock
     /// from common.toml at the right end, the scale's words after a change.
     fn status_bar(&mut self, ui: &mut egui::Ui) {
-        let clock = self.common.clock_or(None);
+        let clock = self.prefs.common.clock_or(None);
         let spec = ito_statusbar::Spec { clock: &clock, lang: &self.lang, opacity: 1.0 };
         let version = env!("CARGO_PKG_VERSION");
         ito_statusbar::show(ui, &spec, |ui| ito_statusbar::item(ui, version, ito_theme::colors().dim), |_| {});
@@ -391,6 +428,7 @@ impl App {
         vec![
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
             ito_palette::Entry::new(t.tr("palette.reset_scale"), "Ctrl+0", Command::ResetScale),
+            ito_palette::Entry::new(t.tr("palette.settings"), self.keys.label("settings"), Command::Settings),
             ito_palette::Entry::new(t.tr("palette.quit"), self.keys.label("quit"), Command::Quit),
         ]
     }
@@ -418,6 +456,7 @@ impl App {
             None => self.palette = Some(view),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),
             Some(ito_palette::Answer::Pick(Command::ResetScale)) => self.scale_to(ctx, ito_common::ScaleTo::Reset),
+            Some(ito_palette::Answer::Pick(Command::Settings)) => self.settings_open = true,
             Some(ito_palette::Answer::Pick(Command::Quit)) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Some(_) => {}
         }
@@ -498,10 +537,15 @@ impl App {
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
-        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F12)) {
+        self.sync_common(&ctx);
+        // The Keys page is taking a key: every key is that key, F12 too.
+        let taking = self.settings_open && self.prefs.keys_edit.busy();
+        if !taking && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F12)) {
             self.report_bug(&ctx);
         }
-        self.rescale(&ctx);
+        if !taking {
+            self.rescale(&ctx);
+        }
         if let Some(t) = &mut self.tracker {
             t.follow(&ctx);
         }
@@ -512,10 +556,18 @@ impl eframe::App for App {
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
         self.take_notices();
         self.notice_list(&ctx);
-        self.command_palette(&ctx);
-        self.read_keys(&ctx);
+        if !taking {
+            self.command_palette(&ctx);
+        }
         self.take_font(&ctx);
-        self.browser.show(ui, &self.table);
+        if self.settings_open {
+            // The engine's news still comes in while the settings cover the tree.
+            self.browser.drain();
+            settings::show(ui, self);
+        } else {
+            self.read_keys(&ctx);
+            self.browser.show(ui, &self.table);
+        }
         self.script(&ctx);
         // Last, so the edges of the frameless window win over what is under them.
         if !cfg!(target_os = "macos") {
@@ -538,6 +590,10 @@ impl eframe::App for App {
     /// The window closed from outside while a script ran: the done file says
     /// so, else the lane waits out its timeout.
     fn on_exit(&mut self) {
+        // The window's last place, written now rather than on the tracker's clock.
+        if let Some(t) = &mut self.tracker {
+            t.close(None);
+        }
         let Some(script) = &mut self.script else { return };
         if !script.running() {
             return;

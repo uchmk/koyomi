@@ -12,6 +12,8 @@ close = "閉じる"
 [keys]
 settings = "設定"
 help = "ヘルプ"
+main = "どこでも"
+fixed = "{} は koyomi が先に読むので、ここに割り当てても動きません。"
 
 [keydesc]
 "Open the settings" = "設定を開く"
@@ -36,6 +38,19 @@ none = "一致するコマンドはありません"
 report_bug = "不具合を報告"
 reset_scale = "拡大率を戻す"
 quit = "終了"
+settings = "設定"
+
+[settings]
+general = "一般"
+general_lead = "言語・大きさ・時計。uchmk のどのアプリでも共通です。"
+theme = "テーマ"
+theme_lead = "色。uchmk のどのアプリでも共通です。"
+display = "表示"
+theme_note = "自分のテーマの置き場所:"
+no_folder = "このマシンには設定のフォルダがありません。"
+sample = "このテーマでの見本"
+keys = "キー"
+keys_lead = "操作ごとのキー。キーを押して変え、↺ で既定に戻します。keymap.toml には変えた分だけを書きます。"
 
 [standing]
 confirmed = "確認済み"

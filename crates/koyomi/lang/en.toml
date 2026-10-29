@@ -13,6 +13,8 @@ close = "Close"
 [keys]
 settings = "The settings"
 help = "The help"
+main = "Everywhere"
+fixed = "koyomi reads {} itself: bound here, it never runs."
 
 [keydesc]
 "Open the settings" = "Open the settings"
@@ -37,6 +39,19 @@ none = "No command matches"
 report_bug = "Report a bug"
 reset_scale = "Reset the scale"
 quit = "Quit"
+settings = "Settings"
+
+[settings]
+general = "General"
+general_lead = "The language, the size and the clock, shared by every uchmk app."
+theme = "Theme"
+theme_lead = "The colours, shared by every uchmk app."
+display = "Display"
+theme_note = "Your own themes go in"
+no_folder = "This machine has no config folder."
+sample = "A sample in this theme"
+keys = "Keys"
+keys_lead = "Each operation's keys. Press a key to change one, ↺ to put the built-in ones back. Only what you change is written to keymap.toml."
 
 [standing]
 confirmed = "approved"

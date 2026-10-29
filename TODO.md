@@ -56,16 +56,19 @@
 （足りない所は ito に頼む。`scripts/ito-first.py` が見ている）。
 
 - [x] `--keys` の台本: `ito-keyscript`（`Runner`、`KOYOMI_KEYS_DONE`）。`<State:名前>` は `ui::Browser::report`（エンジン・件数・選んだもの）。
-- [ ] `keymap.toml` と設定の「キー」ページ: `ito-keys`・`ito-keymap`・`ito-prefs` の `keys_page`。既定のキーは `defaults/keymap.toml`
+- [x] `keymap.toml` と設定の「キー」ページ: `ito-keys`・`ito-keymap`・`ito-prefs` の `keys_page`。既定のキーは `defaults/keymap.toml`
   （`<C-,>` 設定・`<F1>` ヘルプ・`<C-q>` 終了）。手本は minato の `keymap.rs`・`prefs.rs`。
   - [x] `keymap.rs`（`Keys::load`・`resolve`・`label`）と `main.rs` の読み（`read_keys`・`press`・`run_key`）。利用者の `keymap.toml` は起動時に読み、間違いはベルに。
-  - [ ] 「キー」ページ（`keys_page`、`ito_keymap::edit` で書く、2 秒の見張り）は設定の画面と一緒に。
+  - [x] 「キー」ページ（`keys_page`、`ito_keymap::edit` で書く、2 秒の見張り）は設定の画面と一緒に（`settings.rs`・`prefs.rs`）。
 - [ ] `?` と F1 のヘルプ: `ito-help`（`ito-keymap` の一覧を描く）。手本は michi の `app.rs`・`ui.rs`。
 - [ ] 通知と設定の「通知」ページ: `ito-notify`（システムの通知・音・webhook）と `ito-prefs` の `notify_page`。手本は minato の `app.rs`・`settings.rs`。
-- [ ] 設定の画面: `ito_prefs::show`（Language・CLOCK・Theme の共通のページ + キー）。手本は minato の `settings.rs`。
-- [ ] 窓の場所を戻す: 雛形は `window::Saved` で戻し `Tracker::follow` で書く。終わるときの `Tracker::close` は未配線。
+- [x] 設定の画面: `ito_prefs::show`（Language・CLOCK・Theme の共通のページ + キー）。手本は minato の `settings.rs`。
+  `settings.rs`（一般・テーマ・キー・詳細・情報）と `prefs.rs`（common.toml・テーマ・keymap.toml の読み書きと 2 秒の見張り）。「通知」ページは通知の項目で。
+- [x] 窓の場所を戻す: 雛形は `window::Saved` で戻し `Tracker::follow` で書く。終わるときの `Tracker::close` は `on_exit` で。
 - [x] 通知を入れる: ベルに `ito_notices::Notice<String>`（`go` は回の id。押すとその回を開く）。システムの通知はエンジンが出すので、押しても窓は開かない（4 の「持ち主に聞くこと」）。
 - [ ] コマンドパレットの中身: 箱と `<C-S-p>` は繋いである。`Command` と `commands` に、アプリのコマンドを足す（キーは `ito-keymap` から引く）。手本は minato の `main.rs`。
+  - [x] 「設定」（キーは `keymap` の `settings`）。
+  - [ ] 「ヘルプ」はヘルプの項目で。
 - [x] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
 - [ ] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。
 - [ ] `icon.rs` に本当のアイコンを描く。
@@ -98,6 +101,10 @@
 - 今日の一覧のこれから（5）: 確認済みの定義の今日これから来る回を `○ 待ち` の薄い行で、流した回の上に出す。押しても開かない（回ではないので）。
 - 自動起動の帯（5）: 確認済みで `[[when]]` のある定義があり、`ito_common::startup::enabled("koyomi")` が偽のときに出す。帯に設定を入れるボタンは付けていない（設定の画面で入れる。「勝手に入れない」）。
 - 時刻の回の通知（5）: 時刻を過ぎた回の通知は `failed` の出来事として出す（`[notify]` を書かなくても出る）。別の出来事に分けたければ直す。
+
+- 設定の「既定に戻す」（配線）: `common.toml` と `keymap.toml` だけを `*.bak-<時刻>` に退ける。`koyomi.toml`・定義・`approved.toml`・記録は設定ではなく仕事なので触らない。minato にある「設定の持ち出し（bundle）」の札は付けていない（持ち出すものが common.toml と keymap.toml だけで、コピーで足りる）。
+- `--keys` の `<Theme:>`・`<Lang:>`（配線）: 窓が持つ common.toml の写しだけを変え、ファイルは書かない（前と同じ）。設定の画面で変えたときはファイルに書き、窓は見張りで追う（同じ机の他のアプリと同じ道）。
+- 設定の画面の間のキー（配線）: 設定が出ている間は `keymap.toml` のキーを読まない（Esc で閉じる・「キー」ページが押されたキーを取る）。F12・倍率・パレットは「キー」ページがキーを待っている間だけ止める。
 
 - 7 日の予定の並べ方（6）: 増える回と消える回を日時の順に混ぜて 20 件（`+`・`-` の印で分ける）、残りは `… 他 N 件`。変わらない回は出さない。初めての確かめは全部の回を印なしで出す。
 - 前の版が今の読み方で読めないとき（6）: 前に確かめた版の `[[when]]` を今の読み方で読めなければ、前は 0 回として数える（今の回が全部 `+` で出る）。koyomi の版を上げて `[[when]]` の読み方が変わったときにだけ起きる。
