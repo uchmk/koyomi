@@ -6,6 +6,10 @@
 
 ### 追加
 
+- カレンダー: `calendars/<名前>.toml`（`holidays = "japan"`、`weekly_off`、`closed` / `open` は名前つきも）と、ジョブネット・`jobnets/<グループ>/_group.toml` の `calendar`。
+  `[[when]] every = "month"` に `business_day = 5` / `-1`、`day = 20, shift = -3`、休みの日の扱い `on_closed = "prev" | "next" | "skip" | "run"`（既定は `skip`）。
+  日本の祝日の表は 2027-12-31 まで。90 日前から窓の帯と `koyomi check calendars/<名前>.toml` が知らせ、過ぎた日は流さず 🔒（理由 `祝日の表が古い（… まで）`）で通知する。
+  窓の「カレンダー」（月の表。日を押すと休みの日は `open`、平日は `closed` になり、ファイルに書く）と `koyomi calendar <名前> [--month YYYY-MM]`。
 - 保留と一時停止: `koyomi hold <ジョブネット>` / `release`、`koyomi pause` / `resume` と、窓の「保留」「保留を解く」「スケジュールを止める」のボタン・止めている間の帯。
   保留中のジョブネットは時刻が来ても流さず、履歴に ⏸ 保留（理由 `保留中（koyomi release …）`）の回を残す（通知はしない）。`koyomi run` も断る。
   止めている間は全部の時刻が ⏸ 保留 になる（手で流すことはできる）。待っていた回も ⏸ 保留 の記録にする。

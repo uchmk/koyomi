@@ -5,6 +5,8 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 use crate::approved::{self, Store};
+use crate::calendar::Calendars;
+use crate::group::{self, Group};
 use crate::jobnet::{self, Jobnet, Problem};
 
 /// Where a definition stands. Only [`Confirmed`](Standing::Confirmed) may ever run.
@@ -38,6 +40,9 @@ pub struct Def {
     pub text: String,
     /// The text last approved, when this has changed since: what the next approval compares with.
     pub previous: Option<String>,
+    /// The calendar this net counts by: its own `calendar`, else the group's `_group.toml`'s.
+    #[serde(default)]
+    pub calendar: Option<String>,
 }
 
 impl Def {
@@ -47,8 +52,14 @@ impl Def {
     }
 }
 
-/// Reads the file at `path` as the definition `id` in `group` (`file` is how it is shown).
+/// [`read_def_in`] with no group file and no calendars.
 pub fn read_def(path: &Path, group: &str, name: &str, store: &Store) -> Def {
+    read_def_in(path, group, name, store, Ok(&Group::default()), &Calendars::default())
+}
+
+/// Reads the file at `path` as the definition `id` in `group` (`file` is how it is shown).
+/// `shared` is the group's `_group.toml` (or why it does not read); `cals` what `calendar` may name.
+pub fn read_def_in(path: &Path, group: &str, name: &str, store: &Store, shared: Result<&Group, &String>, cals: &Calendars) -> Def {
     let id = format!("{group}/{name}");
     let file = format!("{group}/{name}.toml");
     let bytes = std::fs::read(path);
@@ -59,13 +70,35 @@ pub fn read_def(path: &Path, group: &str, name: &str, store: &Store) -> Def {
         },
         Err(e) => (String::new(), String::new(), Some(format!("読めない: {e}"))),
     };
-    let (net, problems) = match read_problem {
+    let (mut net, mut problems) = match read_problem {
         Some(message) => (None, vec![Problem { line: 0, message }]),
         None => match jobnet::parse(&text) {
             Ok(n) => (Some(n), Vec::new()),
             Err(p) => (None, p),
         },
     };
+    let mut calendar = None;
+    if let Some(n) = &net {
+        let mut bad = |message: String| problems.push(Problem { line: 0, message });
+        match shared {
+            Ok(g) => {
+                calendar = n.calendar.clone().or_else(|| g.calendar.clone());
+                match &calendar {
+                    Some(c) => {
+                        if let Some(why) = cals.problem(c) {
+                            bad(why);
+                        }
+                    }
+                    None if n.needs_calendar() => bad("calendar が要る（business_day・shift・on_closed を使うとき）".to_owned()),
+                    None => {}
+                }
+            }
+            Err(e) => bad(format!("_group.toml: {e}")),
+        }
+    }
+    if !problems.is_empty() {
+        net = None;
+    }
     let standing = if net.is_none() {
         Standing::Invalid
     } else if store.is_approved(&id, &sha256) {
@@ -75,14 +108,20 @@ pub fn read_def(path: &Path, group: &str, name: &str, store: &Store) -> Def {
     };
     let previous = (standing == Standing::Unconfirmed).then(|| store.get(&id).map(|e| e.text.clone())).flatten();
     let title = net.as_ref().and_then(|n| n.name.clone());
-    Def { id, group: group.to_owned(), name: name.to_owned(), title, file, standing, problems, net, sha256, text, previous }
+    Def { id, group: group.to_owned(), name: name.to_owned(), title, file, standing, problems, net, sha256, text, previous, calendar }
+}
+
+/// [`scan_in`] with no calendars: a net that names one is invalid.
+pub fn scan(dir: &Path, store: &Store) -> Vec<Def> {
+    scan_in(dir, store, &Calendars::default())
 }
 
 /// Every `<dir>/<group>/<name>.toml` (not `_group.toml`), sorted by group then name.
-pub fn scan(dir: &Path, store: &Store) -> Vec<Def> {
-    let mut found: Vec<(String, String, PathBuf)> = Vec::new();
+pub fn scan_in(dir: &Path, store: &Store, cals: &Calendars) -> Vec<Def> {
+    let mut found: Vec<(String, String, PathBuf, Result<Group, String>)> = Vec::new();
     for group in subdirs(dir) {
         let group_name = file_name(&group);
+        let shared = group::load(&group.join("_group.toml"));
         let Ok(files) = std::fs::read_dir(&group) else { continue };
         for f in files.flatten() {
             let p = f.path();
@@ -91,11 +130,11 @@ pub fn scan(dir: &Path, store: &Store) -> Vec<Def> {
             if stem.is_empty() || stem == "_group" || !p.is_file() {
                 continue;
             }
-            found.push((group_name.clone(), stem.to_owned(), p));
+            found.push((group_name.clone(), stem.to_owned(), p, shared.clone()));
         }
     }
-    found.sort();
-    found.into_iter().map(|(g, n, p)| read_def(&p, &g, &n, store)).collect()
+    found.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+    found.into_iter().map(|(g, n, p, shared)| read_def_in(&p, &g, &n, store, shared.as_ref(), cals)).collect()
 }
 
 fn subdirs(dir: &Path) -> Vec<PathBuf> {
@@ -130,7 +169,7 @@ mod tests {
         let d = tmp("tree");
         put(&d, "経理", "月次締め.toml", NET);
         put(&d, "共通", "バックアップ.toml", NET);
-        put(&d, "共通", "_group.toml", "x = 1");
+        put(&d, "共通", "_group.toml", "format = 1\n");
         put(&d, "共通", "notes.txt", "x");
         let defs = scan(&d, &Store::default());
         let ids: Vec<_> = defs.iter().map(|d| d.id.as_str()).collect();
@@ -177,6 +216,40 @@ mod tests {
         put(&d, "g", "n.toml", "format = 1\n[[job]]\nid = \"a\"\nrun = []\n");
         assert_eq!(scan(&d, &store)[0].standing, Standing::Invalid);
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_calendar_comes_from_the_net_or_the_group_and_must_exist() {
+        let d = tmp("calendar");
+        let cal_dir = tmp("calendar-cals");
+        std::fs::write(cal_dir.join("会社.toml"), "format = 1\nholidays = \"japan\"\n").unwrap();
+        let cals = Calendars::load(&cal_dir);
+        put(&d, "経理", "_group.toml", "format = 1\ncalendar = \"会社\"\n");
+        put(&d, "経理", "a.toml", NET);
+        let with = |c: &str| NET.replace("format = 1\n", &format!("format = 1\ncalendar = \"{c}\"\n"));
+        const FIFTH: &str = "[[when]]\nevery = \"month\"\nbusiness_day = 5\nat = [\"09:00\"]\n";
+        put(&d, "経理", "b.toml", &with("工場"));
+        put(&d, "営業", "c.toml", &format!("{NET}{FIFTH}"));
+        put(&d, "営業", "d.toml", &format!("{}{FIFTH}", with("会社")));
+        put(&d, "壊れ", "_group.toml", "x = 1\n");
+        put(&d, "壊れ", "e.toml", NET);
+        let defs = scan_in(&d, &Store::default(), &cals);
+        let by = |id: &str| defs.iter().find(|d| d.id == id).unwrap();
+        assert_eq!(by("経理/a").calendar.as_deref(), Some("会社"), "the group's calendar");
+        assert_eq!(by("経理/a").standing, Standing::Unconfirmed);
+        assert_eq!(by("経理/b").standing, Standing::Invalid);
+        assert_eq!(by("経理/b").problems[0].in_file("経理/b.toml"), "経理/b.toml: カレンダーがない: calendars/工場.toml");
+        assert_eq!(by("営業/c").problems[0].message, "calendar が要る（business_day・shift・on_closed を使うとき）");
+        assert_eq!(by("営業/d").standing, Standing::Unconfirmed);
+        assert_eq!(by("壊れ/e").standing, Standing::Invalid);
+        assert_eq!(by("壊れ/e").problems[0].message, "_group.toml: 知らない欄 x");
+        assert_eq!(
+            scan(&d, &Store::default()).iter().find(|d| d.id == "経理/a").unwrap().standing,
+            Standing::Invalid,
+            "without calendars a named one is missing"
+        );
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(&cal_dir);
     }
 
     #[test]

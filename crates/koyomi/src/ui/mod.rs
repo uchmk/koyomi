@@ -1,6 +1,6 @@
-//! The window's left side (the tree, then today's runs), the detail beside it
-//! (a definition, or a run as a picture with its log under it) and the boxes
-//! that ask before approving or killing.
+//! The window's left side (the tree, then today's runs, then the calendars), the
+//! detail beside it (a definition, a run as a picture with its log under it, or
+//! a calendar's month) and the boxes that ask before approving or killing.
 //!
 //! Nothing here touches a process: a thread keeps the engine up and asks it for the
 //! list, the runs of today and the log being watched, and the window reads what that
@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::proto::{Request, Runs, Snapshot};
 use crate::{client, review, show};
 
+pub mod calendar;
 pub mod graph;
 
 /// How often the engine is asked for the list and the runs.
@@ -88,6 +89,12 @@ pub struct Browser {
     notes: Vec<String>,
     /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
     autostart_off: bool,
+    /// The calendar picked on the left; when it is set, the detail is its month.
+    cal_sel: Option<String>,
+    /// The month shown, when it is not this one.
+    cal_month: Option<(i32, u32)>,
+    /// What the last click on a day did to the file, shown under the month.
+    cal_result: Option<Result<String, String>>,
 }
 
 impl Browser {
@@ -174,6 +181,9 @@ impl Browser {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
+            cal_sel: None,
+            cal_month: None,
+            cal_result: None,
         }
     }
 
@@ -337,6 +347,18 @@ impl Browser {
                 ito_a11y::say(&r, Role::Label, &head);
             });
         }
+        // The calendars: a file that does not read, a holiday table near its end. Nothing stops for these.
+        if let Some(snap) = self.snap.as_ref().filter(|s| !s.cautions.is_empty()) {
+            let lines: Vec<String> = snap.cautions.clone();
+            egui::Panel::top("cautions").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
+                let head = format!("{} {}", ito_a11y::State::Warning.mark(), t.tr("band.caution"));
+                let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
+                ito_a11y::say(&r, Role::Label, &head);
+                for l in &lines {
+                    ui.add(egui::Label::new(egui::RichText::new(l).color(c.wait_text())).wrap());
+                }
+            });
+        }
         egui::Panel::left("tree").default_size(320.0).show(ui, |ui| {
             if modal {
                 ui.disable();
@@ -345,6 +367,7 @@ impl Browser {
                 self.tree(ui, t);
                 ui.add_space(10.0);
                 self.today(ui, t);
+                self.calendar_list(ui, t);
                 // The one switch over the whole schedule, below what it stops.
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
                 if !paused && self.snap.is_some() {
@@ -363,6 +386,8 @@ impl Browser {
             }
             if self.run_sel.is_some() {
                 self.run_view(ui, t);
+            } else if self.cal_sel.is_some() {
+                self.calendar_view(ui, t);
             } else {
                 self.detail(ui, t);
             }
@@ -432,6 +457,7 @@ impl Browser {
         if pick.is_some() {
             self.selected = pick;
             self.run_sel = None;
+            self.cal_sel = None;
             self.job_sel = None;
             self.result = None;
         }
@@ -449,7 +475,8 @@ impl Browser {
         let mut coming: Vec<(chrono::NaiveDateTime, String)> = Vec::new();
         for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed) {
             if let Some(net) = &d.net {
-                coming.extend(when::between(&net.when, now, end).into_iter().map(|at| (at, d.label().to_owned())));
+                let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                coming.extend(when::between_in(&net.when, now, end, cal).into_iter().map(|at| (at, d.label().to_owned())));
             }
         }
         coming.sort();
@@ -484,6 +511,7 @@ impl Browser {
         }
         if pick.is_some() {
             self.run_sel = pick;
+            self.cal_sel = None;
             self.job_sel = None;
             self.result = None;
         }
@@ -613,7 +641,8 @@ impl Browser {
                 if def.standing != Standing::Confirmed {
                     ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
                 }
-                let rows = show::next_rows(t, &net.when, chrono::Local::now().naive_local(), 10);
+                let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
+                let rows = show::next_rows(t, &net.when, cal, chrono::Local::now().naive_local(), 10);
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
                 }
@@ -697,7 +726,8 @@ impl Browser {
             return;
         }
         let mut body = review::body(t, &def);
-        let week = review::week(t, &def, chrono::Local::now().naive_local());
+        let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
+        let week = review::week(t, &def, cal, chrono::Local::now().naive_local());
         if !week.is_empty() {
             body.push(String::new());
             body.extend(week);
@@ -787,7 +817,7 @@ mod tests {
     fn quiet(defs: Vec<Def>) -> Browser {
         let (_, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
-        let snap = Some(Snapshot { defs, warnings: Vec::new(), notes: Vec::new(), held: Vec::new(), paused: false });
+        let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
             rx,
             tx,
@@ -811,6 +841,9 @@ mod tests {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
+            cal_sel: None,
+            cal_month: None,
+            cal_result: None,
         }
     }
 

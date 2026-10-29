@@ -1,10 +1,12 @@
 //! The commands that print and exit: `check`, `list`, `approve`, `run`, `rerun`, `status`, `log`, `kill`,
-//! `hold`, `release`, `skip`, `pause`, `resume`, `engine`, `startup`.
+//! `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`.
 //!
 //! Exit codes: 0 done, 1 refused or not so (a problem in a file, not approved, an engine already up),
 //! 2 used wrongly.
 
+use chrono::{Datelike, NaiveDate};
 use ito_ipc::door::ask;
+use koyomi_core::calendar::{Calendar, Calendars};
 use koyomi_core::scan::{Def, Standing};
 
 use std::time::Duration;
@@ -16,7 +18,8 @@ use crate::{client, engine, review, say, show};
 
 pub const USAGE: &str = "\
 usage: koyomi [--version | --help | env]
-       koyomi check <file>           read a definition and say what is wrong with it (exit 1 if anything)
+       koyomi check <file>           read a definition (or koyomi.toml, _group.toml, calendars/<name>.toml)
+                                     and say what is wrong with it (exit 1 if anything)
        koyomi list [--toml]          the definitions and where each stands
        koyomi approve <group/name>   show what it would run, and approve it on `y`
        koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--wait]
@@ -34,6 +37,8 @@ usage: koyomi [--version | --help | env]
        koyomi release <group/name>   take the net off hold
        koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
+       koyomi calendar <name> [--month YYYY-MM]
+                                     the month as calendars/<name>.toml counts it (this month when none)
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
@@ -65,6 +70,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "skip" => skip(rest),
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
+        "calendar" => calendar(rest),
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         _ => return None,
@@ -90,25 +96,72 @@ fn check(args: &[String]) -> i32 {
     if name == "koyomi.toml" {
         return check_config(&name, &text);
     }
+    let paths = engine::Paths::find().ok();
+    let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+    if parent == "calendars" {
+        return check_calendar(&name, &text);
+    }
+    if name == "_group.toml" {
+        return match koyomi_core::group::parse(&text) {
+            Ok(_) => {
+                say(&format!("{name}: 問題なし"), false);
+                0
+            }
+            Err(e) => {
+                say(&format!("{name}: {e}"), true);
+                1
+            }
+        };
+    }
     let mut bad = false;
     // A file under the settings folder runs only if nobody else can change it.
-    if let Ok(paths) = engine::Paths::find() {
+    if let Some(paths) = &paths {
         let inside = path.canonicalize().ok().filter(|p| paths.app.canonicalize().is_ok_and(|a| p.starts_with(a)));
         let files: Vec<_> = inside.into_iter().collect();
-        for w in engine::access_warnings(&paths, &files) {
+        for w in engine::access_warnings(paths, &files) {
             say(&w, true);
             bad = true;
         }
     }
-    if let Err(problems) = koyomi_core::jobnet::parse(&text) {
-        for p in problems {
-            say(&p.in_file(&name), true);
-        }
+    // Read as the engine would: with the group's `_group.toml` beside it and the calendars of the settings folder.
+    let shared = path.parent().map(|p| koyomi_core::group::load(&p.join("_group.toml"))).unwrap_or(Ok(Default::default()));
+    let cals = paths.as_ref().map(|p| Calendars::load(&p.calendars)).unwrap_or_default();
+    let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
+    let def = koyomi_core::scan::read_def_in(path, &parent, &stem, &Default::default(), shared.as_ref(), &cals);
+    for p in &def.problems {
+        say(&p.in_file(&name), true);
         bad = true;
     }
     if !bad {
         say(&format!("{name}: 問題なし"), false);
     }
+    i32::from(bad)
+}
+
+/// `koyomi check calendars/<name>.toml`: the file reads, and how long its holiday table lasts.
+fn check_calendar(name: &str, text: &str) -> i32 {
+    let stem = name.strip_suffix(".toml").unwrap_or(name);
+    let cal = match Calendar::parse(stem, text) {
+        Ok(c) => c,
+        Err(e) => {
+            say(&format!("{name}: {e}"), true);
+            return 1;
+        }
+    };
+    let today = chrono::Local::now().date_naive();
+    let mut bad = false;
+    if cal.holidays {
+        if let Some(line) = koyomi_core::calendar::japan::caution(today, engine::CAUTION_DAYS) {
+            say(&format!("{name}: {line}"), true);
+            // Past the table: the days after it will not run. Before: a word in time, not a fault.
+            bad = cal.stale(today);
+            if bad {
+                return 1;
+            }
+            return 0;
+        }
+    }
+    say(&format!("{name}: 問題なし"), false);
     i32::from(bad)
 }
 
@@ -154,7 +207,7 @@ fn list(args: &[String]) -> i32 {
         for w in &snap.warnings {
             say(&format!("! {w}"), false);
         }
-        for n in &snap.notes {
+        for n in snap.notes.iter().chain(&snap.cautions) {
             say(&format!("注意: {n}"), false);
         }
         if snap.paused {
@@ -206,7 +259,8 @@ fn approve(args: &[String]) -> i32 {
     for l in review::body(&t, &def) {
         say(&l, false);
     }
-    for l in review::week(&t, &def, chrono::Local::now().naive_local()) {
+    let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+    for l in review::week(&t, &def, cal, chrono::Local::now().naive_local()) {
         say(&l, false);
     }
     let diff = review::diff(&def);
@@ -249,11 +303,13 @@ fn next(args: &[String]) -> i32 {
         }
     }
     let Some(id) = id else { return usage("next takes one group/name") };
+    let id = id.replace('\\', "/");
     let t = table();
-    let def: Def = match client::call(&Request::Show { id: id.clone() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
-        Ok(d) => d,
+    let snap = match snapshot() {
+        Ok(s) => s,
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
+    let Some(def) = snap.defs.iter().find(|d| d.id == id) else { return fail(&format!("定義がない: {id}")) };
     let Some(net) = &def.net else {
         for p in &def.problems {
             say(&p.in_file(&def.file), true);
@@ -267,12 +323,50 @@ fn next(args: &[String]) -> i32 {
     if def.standing != Standing::Confirmed {
         say(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
     }
-    let rows = show::next_rows(&t, &net.when, chrono::Local::now().naive_local(), count);
+    let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+    let rows = show::next_rows(&t, &net.when, cal, chrono::Local::now().naive_local(), count);
     if rows.is_empty() {
         say(t.tr("run.next_over"), false);
     }
     for r in rows {
         say(&r, false);
+    }
+    0
+}
+
+/// `koyomi calendar <name> [--month YYYY-MM]`: the month's days as the engine counts them.
+fn calendar(args: &[String]) -> i32 {
+    let mut name = None;
+    let mut month = None;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--month" {
+            match it.next().and_then(|m| NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d").ok()) {
+                Some(d) => month = Some((d.year(), d.month())),
+                None => return usage("--month takes YYYY-MM"),
+            }
+        } else if name.is_none() {
+            name = Some(a.clone());
+        } else {
+            return usage("calendar takes one name");
+        }
+    }
+    let Some(name) = name else { return usage("calendar takes one name") };
+    let t = table();
+    let snap = match snapshot() {
+        Ok(s) => s,
+        Err(e) => return fail(&format!("koyomi: {e}")),
+    };
+    let Some(cal) = snap.calendars.get(&name) else {
+        for c in snap.cautions.iter().filter(|c| c.starts_with(&format!("calendars/{name}.toml"))) {
+            say(c, true);
+        }
+        return fail(&t.trf("calendar.missing", &[&name]));
+    };
+    let today = chrono::Local::now().date_naive();
+    let (y, m) = month.unwrap_or((today.year(), today.month()));
+    for l in show::month_lines(&t, cal, y, m, today) {
+        say(&l, false);
     }
     0
 }

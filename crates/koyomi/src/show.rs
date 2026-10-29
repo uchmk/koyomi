@@ -4,6 +4,7 @@
 
 use chrono::{Datelike, NaiveDateTime};
 use ito_i18n::Table;
+use koyomi_core::calendar::{Calendar, Day};
 use koyomi_core::run::{JobRun, Run, State};
 use koyomi_core::when::{self, When};
 
@@ -64,8 +65,99 @@ pub fn when_row(t: &Table, at: NaiveDateTime) -> String {
 
 /// The next `n` times `whens` come after `now`, one row each: what the window
 /// and `koyomi next` both show, from the same calculation the engine starts by.
-pub fn next_rows(t: &Table, whens: &[When], now: NaiveDateTime, n: usize) -> Vec<String> {
-    when::next_times(whens, now, n).into_iter().map(|at| when_row(t, at)).collect()
+/// With a calendar, a day past its holiday table is marked: the engine will not run it.
+pub fn next_rows(t: &Table, whens: &[When], cal: Option<&Calendar>, now: NaiveDateTime, n: usize) -> Vec<String> {
+    when::next_times_in(whens, now, n, cal)
+        .into_iter()
+        .map(|at| {
+            let row = when_row(t, at);
+            if cal.is_some_and(|c| c.stale(at.date())) {
+                format!("{row}  {}", t.tr("calendar.stale"))
+            } else {
+                row
+            }
+        })
+        .collect()
+}
+
+/// The days of a month, in order, with what each is under `cal`.
+pub fn month_days(cal: &Calendar, year: i32, month: u32) -> Vec<(chrono::NaiveDate, Day)> {
+    let mut out = Vec::new();
+    let Some(mut d) = chrono::NaiveDate::from_ymd_opt(year, month, 1) else { return out };
+    while d.month() == month {
+        out.push((d, cal.day(d)));
+        let Some(n) = d.succ_opt() else { break };
+        d = n;
+    }
+    out
+}
+
+/// `会社 2026-11（営業日 19 日）`: the month's heading.
+pub fn month_head(t: &Table, cal: &Calendar, year: i32, month: u32) -> String {
+    let business = month_days(cal, year, month).iter().filter(|(_, d)| d.is_business()).count();
+    t.trf("calendar.month", &[&cal.name, &format!("{year}-{month:02}"), &business.to_string()])
+}
+
+/// The day's name for the list under the month: what was written, the holiday's, or the kind.
+pub fn day_name(t: &Table, day: &Day) -> Option<String> {
+    match day {
+        Day::Business | Day::WeeklyOff => None,
+        Day::Holiday(n) => Some((*n).to_owned()),
+        Day::Open(n) => Some(if n.is_empty() { t.tr("calendar.open").to_owned() } else { n.clone() }),
+        Day::Closed(n) => Some(if n.is_empty() { t.tr("calendar.closed").to_owned() } else { n.clone() }),
+    }
+}
+
+/// `祝日の表: 2027-12-31 まで` when the calendar uses it; marked when `today` is past it.
+pub fn until_line(t: &Table, cal: &Calendar, today: chrono::NaiveDate) -> Option<String> {
+    let until = cal.until()?;
+    let line = t.trf("calendar.until", &[&until.to_string()]);
+    Some(if cal.stale(today) { format!("{line}  {}", t.tr("calendar.stale")) } else { line })
+}
+
+/// What `koyomi calendar` prints: the heading, a week per row (a closed day
+/// in `( )`, an `open` day in `[ ]`), the named days, the holiday table's end.
+pub fn month_lines(t: &Table, cal: &Calendar, year: i32, month: u32, today: chrono::NaiveDate) -> Vec<String> {
+    let mut out = vec![month_head(t, cal, year, month)];
+    let days = month_days(cal, year, month);
+    let wd = |w: chrono::Weekday| t.tr(&format!("weekday.{}", w.to_string().to_lowercase())).to_owned();
+    let week = [
+        chrono::Weekday::Mon,
+        chrono::Weekday::Tue,
+        chrono::Weekday::Wed,
+        chrono::Weekday::Thu,
+        chrono::Weekday::Fri,
+        chrono::Weekday::Sat,
+        chrono::Weekday::Sun,
+    ];
+    out.push(week.iter().map(|w| format!("{:>4}", wd(*w))).collect::<Vec<_>>().join(""));
+    let mut row = String::new();
+    let Some((first, _)) = days.first() else { return out };
+    for _ in 0..first.weekday().num_days_from_monday() {
+        row.push_str("    ");
+    }
+    for (d, day) in &days {
+        let cell = match day {
+            Day::Business => format!(" {:>2} ", d.day()),
+            Day::Open(_) => format!("[{:>2}]", d.day()),
+            Day::Closed(_) | Day::Holiday(_) | Day::WeeklyOff => format!("({:>2})", d.day()),
+        };
+        row.push_str(&cell);
+        if d.weekday() == chrono::Weekday::Sun {
+            out.push(row.trim_end().to_owned());
+            row.clear();
+        }
+    }
+    if !row.is_empty() {
+        out.push(row.trim_end().to_owned());
+    }
+    for (d, day) in &days {
+        if let Some(n) = day_name(t, day) {
+            out.push(format!("{} {n}", d.day()));
+        }
+    }
+    out.extend(until_line(t, cal, today));
+    out
 }
 
 /// One line for a job: tag, name, times, duration, the reason when there is one.
@@ -116,11 +208,63 @@ run = [\"x\"]
         .when;
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let (ja, _) = crate::i18n::table("ja");
-        let rows = next_rows(&ja, &whens, now, 3);
+        let rows = next_rows(&ja, &whens, None, now, 3);
         assert_eq!(rows, vec!["2026-10-31（土）02:00", "2026-11-01（日）02:00", "2026-11-02（月）02:00"]);
         let (en, _) = crate::i18n::table("en");
-        assert_eq!(next_rows(&en, &whens, now, 1), vec!["2026-10-31 (Sat) 02:00"]);
-        assert!(next_rows(&en, &[], now, 10).is_empty());
+        assert_eq!(next_rows(&en, &whens, None, now, 1), vec!["2026-10-31 (Sat) 02:00"]);
+        assert!(next_rows(&en, &[], None, now, 10).is_empty());
+    }
+
+    /// with a calendar the closed days are skipped (`on_closed = "skip"`), and a day past the holiday table is marked.
+    #[test]
+    fn a_calendar_skips_closed_days_and_marks_days_past_its_table() {
+        let whens = koyomi_core::jobnet::parse(
+            "format = 1
+calendar = \"会社\"
+[[when]]
+every = \"day\"
+at = [\"02:00\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap()
+        .when;
+        let cal = Calendar::parse("会社", "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\n").unwrap();
+        let (ja, _) = crate::i18n::table("ja");
+        let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let rows = next_rows(&ja, &whens, Some(&cal), now, 2);
+        assert_eq!(rows, vec!["2026-11-02（月）02:00", "2026-11-04（水）02:00"], "the weekend and 文化の日 are skipped");
+        let late = NaiveDateTime::parse_from_str("2027-12-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let rows = next_rows(&ja, &whens, Some(&cal), late, 2);
+        assert_eq!(rows, vec!["2027-12-31（金）02:00", "2028-01-03（月）02:00  祝日の表が古い"]);
+    }
+
+    #[test]
+    fn a_month_reads_as_weeks_with_closed_days_in_brackets() {
+        let cal = Calendar::parse(
+            "会社",
+            "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\nclosed = [{ date = 2026-11-20, name = \"創立記念日\" }]\nopen = [2026-11-28]\n",
+        )
+        .unwrap();
+        let (ja, _) = crate::i18n::table("ja");
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let lines = month_lines(&ja, &cal, 2026, 11, today);
+        assert_eq!(lines[0], "会社 2026-11（営業日 19 日）");
+        assert_eq!(lines[1], "   月   火   水   木   金   土   日");
+        assert_eq!(lines[2], "                        ( 1)");
+        assert_eq!(lines[3], "  2 ( 3)  4   5   6 ( 7)( 8)");
+        assert_eq!(lines[5], " 16  17  18  19 (20)(21)(22)");
+        assert_eq!(lines[6], "(23) 24  25  26  27 [28](29)");
+        assert_eq!(lines[7], " 30");
+        assert_eq!(&lines[8..], ["3 文化の日", "20 創立記念日", "23 勤労感謝の日", "28 休日出勤", "祝日の表: 2027-12-31 まで"]);
+        let (en, _) = crate::i18n::table("en");
+        let late = chrono::NaiveDate::from_ymd_opt(2028, 1, 5).unwrap();
+        assert_eq!(
+            month_lines(&en, &cal, 2026, 11, late).last().map(String::as_str),
+            Some("Holiday table: until 2027-12-31  holiday table out of date")
+        );
     }
 
     #[test]

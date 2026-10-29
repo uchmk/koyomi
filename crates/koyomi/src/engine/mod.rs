@@ -16,10 +16,11 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::Store;
+use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::run::{How, State as RunState};
-use koyomi_core::scan::{scan, Def, Standing};
+use koyomi_core::scan::{scan_in, Def, Standing};
 use koyomi_core::when;
 
 use crate::notify;
@@ -35,9 +36,11 @@ use schedule::Schedule;
 /// Where everything of the engine's lives.
 #[derive(Clone, Debug)]
 pub struct Paths {
-    /// `app_dir("koyomi")`: the settings folder. Holds `jobnets/` and `koyomi.toml`.
+    /// `app_dir("koyomi")`: the settings folder. Holds `jobnets/`, `calendars/` and `koyomi.toml`.
     pub app: PathBuf,
     pub jobnets: PathBuf,
+    /// `app_dir("koyomi")/calendars`: `<name>.toml`, what `calendar = "<name>"` names.
+    pub calendars: PathBuf,
     /// `app_dir("koyomi")/koyomi.toml`.
     pub config: PathBuf,
     /// `state_dir("koyomi")`: `approved.toml`, `history/`, `logs/`.
@@ -54,6 +57,7 @@ impl Paths {
         let state = ito_common::state_dir("koyomi").ok_or("状態のフォルダーが分からない")?;
         Ok(Paths {
             jobnets: app.join("jobnets"),
+            calendars: app.join("calendars"),
             config: app.join("koyomi.toml"),
             approved: state.join("approved.toml"),
             held: state.join("held.toml"),
@@ -118,6 +122,8 @@ struct State {
     /// Why `held.toml` did not read: until it does, nothing starts and nothing is written over it.
     held_bad: Option<String>,
     defs: Vec<Def>,
+    /// `calendars/*.toml` as last read; the nets count their days by these.
+    calendars: Calendars,
     warnings: Vec<String>,
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
     bad_config: Option<String>,
@@ -161,6 +167,7 @@ impl State {
             held: Held::default(),
             held_bad: None,
             defs: Vec::new(),
+            calendars: Calendars::default(),
             warnings: Vec::new(),
             bad_config,
             runner,
@@ -236,11 +243,19 @@ impl State {
         let mut due: Vec<(usize, DateTime<Utc>, NaiveDateTime)> = Vec::new();
         for (i, d) in self.defs.iter().enumerate() {
             if let Some(net) = &d.net {
-                due.extend(when::due(&Local, &net.when, checked, now).into_iter().map(|(instant, planned)| (i, instant, planned)));
+                let cal = d.calendar.as_deref().and_then(|c| self.calendars.get(c));
+                due.extend(when::due_in(&Local, &net.when, cal, checked, now).into_iter().map(|(instant, planned)| (i, instant, planned)));
             }
         }
         for (k, (i, instant, planned)) in due.iter().enumerate() {
             let def = self.defs[*i].clone();
+            // Past what the holiday table knows: the day may be a holiday, so
+            // it is not run as if it were not, and the record says why.
+            let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
+            if let Some(until) = cal.filter(|c| c.stale(planned.date())).and_then(|c| c.until()) {
+                self.runner.not_run(&def, *planned, RunState::Locked, &format!("祝日の表が古い（{until} まで）"));
+                continue;
+            }
             // Stopped by hand: written down as ⏸, so the time is not lost in silence.
             if self.held.paused {
                 self.runner.not_run(&def, *planned, RunState::Held, "スケジュールを止めている（koyomi resume）");
@@ -302,7 +317,8 @@ impl State {
             self.reload();
         }
         self.reload_config();
-        self.defs = scan(&self.paths.jobnets, &self.store);
+        self.calendars = Calendars::load(&self.paths.calendars);
+        self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
@@ -313,7 +329,15 @@ impl State {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
         let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().collect();
-        Snapshot { defs: self.defs.clone(), warnings, notes, held: self.held.held.clone(), paused: self.held.paused }
+        Snapshot {
+            defs: self.defs.clone(),
+            warnings,
+            notes,
+            held: self.held.held.clone(),
+            paused: self.held.paused,
+            cautions: self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS),
+            calendars: self.calendars.map.clone(),
+        }
     }
 
     fn status(&self) -> String {
@@ -490,6 +514,9 @@ impl State {
     }
 }
 
+/// How many days before the holiday table ends the window's band and `koyomi check` start to say so.
+pub const CAUTION_DAYS: i64 = 90;
+
 /// How often everything is looked at again even when the watcher is silent
 /// (an access list changes without a file event).
 const SWEEP: Duration = Duration::from_secs(5);
@@ -511,6 +538,7 @@ pub fn run() -> i32 {
         return 1;
     }
     let _ = std::fs::create_dir_all(&paths.jobnets);
+    let _ = std::fs::create_dir_all(&paths.calendars);
     let rx = proto::door().listen(|| {});
 
     // `listen` quietly waits when another engine holds the door; ask until an engine answers, and
@@ -536,7 +564,7 @@ pub fn run() -> i32 {
             _ => dirty.store(true, Ordering::Relaxed),
         })
     };
-    watcher.watch(vec![paths.jobnets.clone()]);
+    watcher.watch(vec![paths.jobnets.clone(), paths.calendars.clone()]);
 
     let mut state = State::new(paths);
     let mut last_scan = Instant::now();
@@ -588,23 +616,40 @@ mod tests {
 
     #[test]
     fn a_snapshot_survives_the_door() {
-        let net = "format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\", \"-v\"]\npos = [1.0, 2.0]\n";
+        let net =
+            "format = 1\nname = \"月次締め\"\ncalendar = \"会社\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\", \"-v\"]\npos = [1.0, 2.0]\n";
         let dir = std::env::temp_dir().join(format!("koyomi-snap-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("経理")).unwrap();
         std::fs::write(dir.join("経理/月次締め.toml"), net).unwrap();
         std::fs::create_dir_all(dir.join("共通")).unwrap();
         std::fs::write(dir.join("共通/壊れ.toml"), "format = 1\nrnu = 1\n").unwrap();
+        let cal_dir = std::env::temp_dir().join(format!("koyomi-snap-cals-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&cal_dir);
+        std::fs::create_dir_all(&cal_dir).unwrap();
+        std::fs::write(
+            cal_dir.join("会社.toml"),
+            "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\nclosed = [2026-11-20, { date = 2026-12-29, name = \"年末\" }]\nopen = [{ date = 2026-11-21, name = \"棚卸\" }]\n",
+        )
+        .unwrap();
+        let cals = Calendars::load(&cal_dir);
         let snap = Snapshot {
-            defs: scan(&dir, &Store::default()),
+            defs: scan_in(&dir, &Store::default(), &cals),
             warnings: vec!["w".into()],
             notes: vec!["n".into()],
             held: vec!["共通/x".into()],
             paused: true,
+            cautions: vec!["c".into()],
+            calendars: cals.map.clone(),
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
         assert_eq!(back.defs.len(), 2);
+        assert_eq!(back.defs[1].calendar.as_deref(), Some("会社"));
+        let cal = &back.calendars["会社"];
+        assert_eq!(cal.closed.len(), 2);
+        assert_eq!(cal.open.values().next().map(String::as_str), Some("棚卸"));
         let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&cal_dir);
     }
 }

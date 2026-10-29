@@ -5,6 +5,7 @@ use chrono::{Days, NaiveDateTime};
 use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
+use koyomi_core::calendar::Calendar;
 use koyomi_core::jobnet;
 use koyomi_core::run::State as RunState;
 use koyomi_core::scan::{Def, Standing};
@@ -110,13 +111,14 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
 /// (`-`), in order, `WEEK_ROWS` at most and the rest as a count. A first
 /// approval lists the times as they will be. A writing mistake in `[[when]]`
 /// (every minute, the month's end, a holiday) shows here as a number before
-/// anything runs. Empty when neither version has a `[[when]]`.
-pub fn week(t: &Table, d: &Def, now: NaiveDateTime) -> Vec<String> {
+/// anything runs. Empty when neither version has a `[[when]]`. `cal` is the
+/// calendar the net counts by (both versions are counted by it).
+pub fn week(t: &Table, d: &Def, cal: Option<&Calendar>, now: NaiveDateTime) -> Vec<String> {
     let Some(net) = &d.net else { return Vec::new() };
     let until = now.checked_add_days(Days::new(7)).unwrap_or(now);
-    let new = when::between(&net.when, now, until);
+    let new = when::between_in(&net.when, now, until, cal);
     let old: Option<Vec<NaiveDateTime>> = d.previous.as_deref().map(|text| match jobnet::parse(text) {
-        Ok(net) => when::between(&net.when, now, until),
+        Ok(net) => when::between_in(&net.when, now, until, cal),
         Err(_) => Vec::new(),
     });
     if new.is_empty() && old.as_ref().is_none_or(|o| o.is_empty()) {
@@ -273,13 +275,13 @@ run = [\"x\"]
         let now = at("2026-10-30 09:00:00");
         let mut store = Store::default();
         let first = def(DAILY, &store);
-        let w = week(&table(), &first, now);
+        let w = week(&table(), &first, None, now);
         assert_eq!(w[0], "この先 7 日の予定: 7 回");
         assert_eq!(w[1], "  2026-10-31（土）02:00");
         assert_eq!(w.len(), 8, "{w:?}");
         store.approve(&first.id, &first.sha256, &first.text);
         let d = def(QUARTER, &store);
-        let w = week(&table(), &d, now);
+        let w = week(&table(), &d, None, now);
         assert_eq!(w[0], "7 日で 7 回 → 672 回（+665）");
         assert!(w[1].starts_with("+ 2026-10-30（金）09:15"), "{w:?}");
         assert!(!w.iter().any(|l| l.contains("02:00")), "2:00 stays, so it is not listed: {w:?}");
@@ -289,7 +291,7 @@ run = [\"x\"]
         let second = def(QUARTER, &store);
         store.approve(&second.id, &second.sha256, &second.text);
         let d = def(DAILY, &store);
-        let w = week(&table(), &d, now);
+        let w = week(&table(), &d, None, now);
         assert_eq!(w[0], "7 日で 672 回 → 7 回（-665）");
         assert!(w[1].starts_with("- 2026-10-30（金）09:15"), "{w:?}");
         store.approve(&first.id, &first.sha256, &first.text);
@@ -301,11 +303,17 @@ except = [\"2026-11-01\"]",
             ),
             &store,
         );
-        assert_eq!(week(&table(), &d, now), vec!["7 日で 7 回 → 6 回（-1）", "- 2026-11-01（日）02:00"]);
+        assert_eq!(week(&table(), &d, None, now), vec!["7 日で 7 回 → 6 回（-1）", "- 2026-11-01（日）02:00"]);
         let d = def(NET, &Store::default());
-        assert!(week(&table(), &d, now).is_empty(), "no [[when]] and nothing before: nothing to say");
+        assert!(week(&table(), &d, None, now).is_empty(), "no [[when]] and nothing before: nothing to say");
         store.approve(&d.id, &d.sha256, &d.text);
         let d = def(&NET.replace("2026-10", "2026-11"), &store);
-        assert_eq!(week(&table(), &d, now), vec!["7 日の予定はありません"], "a change that leaves no time says so");
+        assert_eq!(week(&table(), &d, None, now), vec!["7 日の予定はありません"], "a change that leaves no time says so");
+        // With a calendar the weekend is not counted: the week has 5 times, not 7.
+        let cal = Calendar::parse("会社", "format = 1\nweekly_off = [\"sat\", \"sun\"]\n").unwrap();
+        let d = def(DAILY, &Store::default());
+        let w = week(&table(), &d, Some(&cal), now);
+        assert_eq!(w[0], "この先 7 日の予定: 5 回");
+        assert_eq!(w[1], "  2026-11-02（月）02:00");
     }
 }

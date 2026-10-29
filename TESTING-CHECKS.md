@@ -1,6 +1,6 @@
 # Checklist
 
-173 checks in TESTING.md, 172 left for a person.
+187 checks in TESTING.md, 186 left for a person.
 
 ## 1. Start
 
@@ -244,3 +244,20 @@
 - [ ] **23.8** Hold a net and pause, then `koyomi engine stop` and `koyomi engine start`; look at `state_dir("koyomi")/held.toml` → The file has `paused = true` and `held = ["<group/name>"]`; after the restart the hold and the pause are still on (list shows both) 〔未訳〕
 - [ ] **23.9** Write `held = 1` into `held.toml` while the engine runs (or before `engine start`), then wait for a time → The warning band and `koyomi list` say `held.toml が読めない（…）。直すか退けるまで流さない`, nothing runs, `koyomi hold`/`pause` are refused with the same line; fixing the file clears it at the next scan 〔未訳〕
 - [ ] **23.10** Queue a time behind a running run (`overlap = "queue"`), then `koyomi hold <group/name>` (or `koyomi pause`) before the run ends → The waiting time turns into a ⏸ 保留 run with the reason `待っている間に保留した（koyomi release …）` (`待っている間にスケジュールを止めた（koyomi resume）`), and `engine status` no longer lists it under 待ち 〔未訳〕
+
+## 24. Calendar (`calendars/<name>.toml`, `calendar`, `business_day`, `on_closed`, `koyomi calendar`)
+
+- [ ] **24.1** Write `calendars/会社.toml` with `format = 1`, `holidays = "japan"`, `weekly_off = ["sat", "sun"]`, `closed = [{ date = 2026-11-20, name = "創立記念日" }]`, `open = [2026-11-28]`; then `koyomi calendar 会社 --month 2026-11` → The heading `会社 2026-11（営業日 19 日）`, a weekday header 月〜日, the weeks with `( 3)`, `( 7)( 8)`, `(20)`, `(23)` and `[28]`, then the lines `3 文化の日`, `20 創立記念日`, `23 勤労感謝の日`, `28 休日出勤`, `祝日の表: 2027-12-31 まで` 〔未訳〕
+- [ ] **24.2** `koyomi calendar 工場` (no such file), `koyomi calendar 会社 --month 2026-13` → `カレンダーがない: 工場` (exit 1); `--month takes YYYY-MM` 〔未訳〕
+- [ ] **24.3** A net with `calendar = "会社"` and `[[when]] every = "month", business_day = 5, at = ["09:00"]`; `koyomi next 経理/<name>`, the window's detail → The next times are the 5th business day of each month (2026-11: 11-09, since 11-03 is 文化の日 and the weekend is off); the window shows the same rows under 次の 10 回 〔未訳〕
+- [ ] **24.4** `business_day = -1`, then `day = 20, shift = -3` (same net), `koyomi next` → The last business day of each month (2026-11-30, 2026-12-30 if 12-31 is not in `closed`); 3 business days before the 20th (2026-11-17 since 11-20 is closed: 19→18→17) 〔未訳〕
+- [ ] **24.5** `[[when]] every = "day", at = ["02:00"]` with `calendar = "会社"` and no `on_closed`; then `on_closed = "prev"`, `"next"`, `"run"` → `skip` is the default: Saturday, Sunday and 文化の日 have no time; `prev` runs the weekend's and holiday's times on the Friday before (one each, in order), `next` on the Monday after, `run` on the day itself 〔未訳〕
+- [ ] **24.6** `business_day = 5` in a net without `calendar` and no `_group.toml` naming one; `koyomi check <file>` and `koyomi list` → `calendar が要る（business_day・shift・on_closed を使うとき）`; the net is ✕ 無効 and does not run 〔未訳〕
+- [ ] **24.7** Write `jobnets/経理/_group.toml` with `format = 1` and `calendar = "会社"`; a net of 経理 without `calendar`; `koyomi check` the net and the window's detail → The net counts by 会社 (its 次の 10 回 skip the weekend); `koyomi check jobnets/経理/_group.toml` says `_group.toml: 問題なし`; write `x = 1` into `_group.toml`: every net of 経理 is ✕ 無効 with `_group.toml: 知らない欄 x` 〔未訳〕
+- [ ] **24.8** `calendar = "工場"` (no file), then write `calendars/工場.toml` with `holidays = 1` → `カレンダーがない: calendars/工場.toml`, then `calendars/工場.toml が読めない（…）`; the window's band 「カレンダーの注意」 and `koyomi list`'s `注意:` line show `calendars/工場.toml: …`; nothing else stops 〔未訳〕
+- [ ] **24.9** `KOYOMI_DATE=2027-10-15` (fewer than 90 days left), `koyomi list`, the window, `koyomi check calendars/会社.toml` → The band and the `注意:` line read `祝日の表は 2027-12-31 までの分です（あと 77 日）`; `koyomi check` prints the same line and exits 0 〔未訳〕
+- [ ] **24.10** `KOYOMI_DATE=2028-01-05`, a net on 会社 with `every = "day"`, `at` a minute away; `koyomi check calendars/会社.toml`, `koyomi next`, wait for the time → The band reads `祝日の表が古い（2027-12-31 まで）。それより後の日は流さない`; `koyomi check` prints it and exits 1; `koyomi next` marks each row `祝日の表が古い`; when the time comes, 今日 has a 🔒 run with the reason `祝日の表が古い（2027-12-31 まで）`, no job ran, and a notification was sent 〔未訳〕
+- [ ] **24.11** In the window, pick 会社 under カレンダー; use ◀ ▶; click a Saturday, a holiday, a weekday, and each again → The month table shows the holidays and closed days in the warning colour with `( )`, weekends dim, `open` days in the done colour with `[ ]`, today selected; the names list under it; the clicks write `calendars/会社.toml` (`open = [...]` / `closed = [...]` appear and go), the engine reads it again and the table follows within a few seconds; `<file> に書きました` under the month 〔未訳〕
+- [ ] **24.12** Make `calendars/会社.toml` read-only, click a day → `calendars/会社.toml に書けない: …` in the error colour; the table does not change 〔未訳〕
+- [ ] **24.13** Pick a net that uses 会社 in the tree, then pick 会社 under カレンダー → The calendar view lists the net under 「このカレンダーで流す定義」 and its next 10 times under it, counted by 会社 〔未訳〕
+- [ ] **24.14** `koyomi approve` a net on 会社 with `every = "day"` → The week's count in the approval box and in the CLI skips the weekend (5 times, not 7) 〔未訳〕

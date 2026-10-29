@@ -173,6 +173,7 @@ mod tests {
             sha256: hash(text.as_bytes()),
             text: text.into(),
             previous: None,
+            calendar: None,
         }
     }
 

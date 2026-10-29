@@ -4,8 +4,10 @@
 //! a net (its order and states), the day's history and `koyomi.toml`.
 
 pub mod approved;
+pub mod calendar;
 pub mod config;
 pub mod duration;
+pub mod group;
 pub mod held;
 pub mod history;
 pub mod jobnet;

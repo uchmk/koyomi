@@ -63,7 +63,7 @@
 - [x] 11. 判定とシェルのジョブ（S）: `judge = { warn, error }`（終了コードの範囲で正常・警告・異常。既定は 0 だけ正常）、`shell = "powershell"` + `script`（明示したときだけ）。`DECISIONS.md` の「実行するコマンドの安全」「ジョブ」。
 - [x] 12. 再実行（M）: `rerun <実行> [--from <ジョブ>]`・`run --from <ジョブ>`・窓の「再実行」。済んだジョブは流さず前の結果を引き継ぐ。`DECISIONS.md` の「CLI」、2 周目の候補。
 - [x] 13. 保留・スキップ・一時停止（S）: `hold`/`release <ジョブネット>`（⏸ 保留）、`skip <実行> <ジョブ>`（次の 1 回だけ ⊘）、`pause`/`resume`（スケジュール全体）。窓のボタンと `state_dir` の TOML。`DECISIONS.md` の「CLI」「画面」、D の状態の一覧。
-- [ ] 14. カレンダー（L）: `calendars/<名前>.toml`（`holidays = "japan"`・`weekly_off`・`closed`/`open` は名前つきも）、ジョブネットと `_group.toml` の `calendar`、`on_closed`、`business_day`、`day` + `shift`、祝日の表の期限（90 日前の帯・`check` の警告・「祝日の表が古い」）、窓の月の表（押して切り替え）、`koyomi calendar`。日本の祝日の表を ito に頼むかを先に決める。`DECISIONS.md` の「実行のタイミング」「ファイル」「画面」、D。
+- [x] 14. カレンダー（L）: `calendars/<名前>.toml`（`holidays = "japan"`・`weekly_off`・`closed`/`open` は名前つきも）、ジョブネットと `_group.toml` の `calendar`、`on_closed`、`business_day`、`day` + `shift`、祝日の表の期限（90 日前の帯・`check` の警告・「祝日の表が古い」）、窓の月の表（押して切り替え）、`koyomi calendar`。日本の祝日の表を ito に頼むかを先に決める。`DECISIONS.md` の「実行のタイミング」「ファイル」「画面」、D。
 - [ ] 15. 流れの部品（L）: 線の 3 種類（`after = [{ job, on }]`）、分岐、待ち合わせ（全部・どれか）、時刻待ち、ファイル待ち、通知の部品（`kind = "notify"`、`to` は無し）、子ジョブネット（`kind = "jobnet"`・`use`、呼び合いの輪は検査ではじく）。`DECISIONS.md` の「ジョブとジョブネットの関係」。
 - [ ] 16. 出来事での起動（M）: `file = '…\*.csv'` + `settle`（`ito-watch`、大きさが決めた秒数だけ変わらないこと、`KOYOMI_FILE`）、`on_start = true`。`DECISIONS.md` の「実行のタイミング」の出来事。
 - [ ] 17. ジョブネットの間のつながり（M）: `after_jobnet` + `on`。業務日の引き継ぎ・同じ業務日に 1 回まで・輪の検査は D のとおり。
@@ -134,6 +134,12 @@
 - 平文のアドレスと「通知」ページ（配線）: `hide_webhooks` が既定のまま平文の `https://…` が書いてあると、ページはそのアドレスを見せたうえで注意を出し、ページで何かを変えた最初の書き込みで資格情報ストアに移す（エンジンは移るまで送らない。前と同じ）。送る側の読み（`notify::read`）と見せる側の読み（`notify::parse`）を分けた。
 - 「通知」ページの読み直し（配線）: `koyomi.toml` を 2 秒ごとに見張り、`secret:` の読み戻しはスレッドで（起動の直後はページに既定が出て、読めしだい差し替わる）。エンジンへの合図はなく、エンジンが 5 秒ごとに読み直すのを待つ。
 
+- 日本の祝日の表（14）: ito に無いので koyomi-core の `calendar.rs` に規則で持つ（2027-12-31 まで）。2 つ目のアプリが要るときに ito に頼む（Issue は立てていない）。
+- `on_closed` の既定（14）: カレンダーがあるときは `skip`（黙って別の日に動かさない）。カレンダーが無いのに `business_day`・`shift`・`on_closed` を書くと「calendar が要る」の無効。
+- 祝日の表を過ぎた日（14）: 予定には出すが「祝日の表が古い」と添え、時刻が来たら流さず 🔒 の回（理由 `祝日の表が古い（… まで）`）として記録して通知する。
+  カレンダーの読めないファイルと 90 日前の知らせは、止めない帯（`Snapshot.cautions`、`koyomi list` の `注意:`）に出す。
+- 窓の月の表の書き込み（14）: 窓が `calendars/<名前>.toml` を ito-common の `set_key` / `write_atomic` で書き、エンジンの見張り（`calendars/` も見る）が読み直す。エンジンを通さないのは、カレンダーの編集はエンジンの状態でなく設定だから。
+- `_group.toml` が読めないとき（14）: そのグループのジョブネットは全部 無効（安全を先に）。`except`・`start`・`end` は `on_closed` で動かしたあとの日で見る。
 - 保留中の手動実行（13）: `koyomi run` と窓の「今すぐ流す」も断る（保留は「人が止めた。解除するまで動かない」なので、手でも動かさない方を選んだ）。
 - 保留・停止中に来た時刻（13）: 黙って捨てず、⏸ 保留 の回として履歴に残す（理由 `保留中（koyomi release …）` / `スケジュールを止めている（koyomi resume）`）。
   通知は送らない（人がしたことなので、知らせることがない）。`missed` のまとめにも入れない。

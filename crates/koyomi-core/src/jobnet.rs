@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::when::{self, Kind, MonthRule, When};
+use crate::when::{self, Kind, MonthRule, OnClosed, When};
 
 /// The `format` this version reads.
 pub const FORMAT: i64 = 1;
@@ -48,6 +48,16 @@ pub struct Jobnet {
     /// What to do with a time that comes while the net's last run is not over.
     #[serde(default)]
     pub overlap: Overlap,
+    /// `calendar = "会社"`: `calendars/会社.toml`. None: the group's, or no calendar.
+    #[serde(default)]
+    pub calendar: Option<String>,
+}
+
+impl Jobnet {
+    /// Whether a `[[when]]` counts business days or says `on_closed`, so the net must have a calendar.
+    pub fn needs_calendar(&self) -> bool {
+        self.when.iter().any(|w| w.on_closed.is_some() || matches!(&w.kind, Kind::Month { rule, .. } if rule.needs_calendar()))
+    }
 }
 
 /// `missed`: a time of the schedule that passed while nothing could start.
@@ -193,7 +203,6 @@ struct RawNet {
     /// Only `"skip"` (the default) in this version.
     missed: Field,
     overlap: Field,
-    // Of the design, not run by this version.
     calendar: Field,
 }
 
@@ -215,10 +224,10 @@ struct RawWhen {
     except: Field,
     start: Field,
     end: Field,
-    // Of the design, not run by this version.
     on_closed: Field,
     business_day: Field,
     shift: Field,
+    // Of the design, not run by this version.
     file: Field,
     settle: Field,
     on_start: Field,
@@ -266,10 +275,11 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     };
     let mut c = Checker { text, problems: Vec::new() };
     let (missed, overlap) = c.top(&raw);
+    let calendar = c.calendar(&raw.calendar);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap })
+        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -407,7 +417,6 @@ impl Checker<'_> {
             Some(_) => {}
         }
         self.string(&raw.name, "name");
-        self.not_yet(&raw.calendar, "calendar");
         let missed = match self.choice(&raw.missed, "missed", &["skip", "once"]) {
             Some("once") => Missed::Once,
             _ => Missed::Skip,
@@ -419,22 +428,27 @@ impl Checker<'_> {
         (missed, overlap)
     }
 
+    /// `calendar = "会社"`: a name a `calendars/<name>.toml` can have.
+    fn calendar(&mut self, field: &Field) -> Option<String> {
+        let f = field.as_ref()?;
+        match f.get_ref().as_str() {
+            Some(s) if crate::calendar::valid_name(s) => Some(s.to_owned()),
+            _ => {
+                self.add(f.span().start, "calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）");
+                None
+            }
+        }
+    }
+
     /// The `[[when]]` entries that read; a mistake in one drops that entry.
     fn whens(&mut self, raw: &[Spanned<RawWhen>]) -> Vec<When> {
         let mut out = Vec::new();
         for entry in raw {
             let head = entry.span().start;
             let w = entry.get_ref();
-            for (field, name) in [
-                (&w.on_closed, "on_closed"),
-                (&w.business_day, "business_day"),
-                (&w.shift, "shift"),
-                (&w.file, "file"),
-                (&w.settle, "settle"),
-                (&w.on_start, "on_start"),
-                (&w.after_jobnet, "after_jobnet"),
-                (&w.on, "on"),
-            ] {
+            for (field, name) in
+                [(&w.file, "file"), (&w.settle, "settle"), (&w.on_start, "on_start"), (&w.after_jobnet, "after_jobnet"), (&w.on, "on")]
+            {
                 self.not_yet(field, name);
             }
             let kind = if w.once.is_some() {
@@ -458,7 +472,7 @@ impl Checker<'_> {
                 "day" => &["every", "at"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days"],
                 "week" => &["every", "days", "at"],
-                "month" => &["every", "day", "nth", "weekday", "at"],
+                "month" => &["every", "day", "nth", "weekday", "business_day", "shift", "at"],
                 "year" => &["every", "date", "at"],
                 _ => &["dates", "at"],
             };
@@ -475,6 +489,8 @@ impl Checker<'_> {
                 (&w.weekday, "weekday"),
                 (&w.date, "date"),
                 (&w.dates, "dates"),
+                (&w.business_day, "business_day"),
+                (&w.shift, "shift"),
             ] {
                 if let Some(f) = field {
                     if !allowed.contains(&name) {
@@ -482,6 +498,13 @@ impl Checker<'_> {
                     }
                 }
             }
+            let on_closed = match self.choice(&w.on_closed, "on_closed", &["prev", "next", "skip", "run"]) {
+                Some("prev") => Some(OnClosed::Prev),
+                Some("next") => Some(OnClosed::Next),
+                Some("skip") => Some(OnClosed::Skip),
+                Some("run") => Some(OnClosed::Run),
+                _ => None,
+            };
             let before = self.problems.len();
             let kind = match kind {
                 "once" => self.datetime(&w.once).map(|at| Kind::Once { at }),
@@ -552,7 +575,7 @@ impl Checker<'_> {
             }
             if let Some(kind) = kind {
                 if self.problems.len() == before {
-                    out.push(When { kind, except, start, end });
+                    out.push(When { kind, except, start, end, on_closed });
                 }
             }
         }
@@ -643,9 +666,37 @@ impl Checker<'_> {
     }
 
     fn month_rule(&mut self, w: &RawWhen, head: usize) -> Option<MonthRule> {
+        if let Some(b) = &w.business_day {
+            for (field, name) in [(&w.day, "day"), (&w.nth, "nth"), (&w.weekday, "weekday"), (&w.shift, "shift")] {
+                if let Some(f) = field {
+                    self.add(f.span().start, format!("{name} は business_day と一緒に使わない"));
+                }
+            }
+            return match b.get_ref().as_integer() {
+                Some(n) if (1..=31).contains(&n) || (-31..=-1).contains(&n) => Some(MonthRule::BusinessDay { n: n as i32 }),
+                _ => {
+                    self.add(b.span().start, "business_day は 1 から 31 か -1 から -31 の数");
+                    None
+                }
+            };
+        }
+        let shift = match &w.shift {
+            None => Some(0),
+            Some(f) if !matches!(w.day.as_ref().map(|d| d.get_ref()), Some(toml::Value::Integer(_))) => {
+                self.add(f.span().start, "shift は day の数と使う（例: day = 20, shift = -3）");
+                None
+            }
+            Some(f) => match f.get_ref().as_integer() {
+                Some(n) if (-31..=31).contains(&n) => Some(n as i32),
+                _ => {
+                    self.add(f.span().start, "shift は -31 から 31 の数");
+                    None
+                }
+            },
+        };
         match (&w.day, &w.nth, &w.weekday) {
             (Some(d), None, None) => match d.get_ref() {
-                toml::Value::Integer(n) if (1..=31).contains(n) => Some(MonthRule::Day { day: *n as u32 }),
+                toml::Value::Integer(n) if (1..=31).contains(n) => shift.map(|shift| MonthRule::Day { day: *n as u32, shift }),
                 toml::Value::String(s) if s == "last" => Some(MonthRule::Last),
                 _ => {
                     self.add(d.span().start, "day は 1 から 31 の数か \"last\"");
@@ -672,7 +723,10 @@ impl Checker<'_> {
                 nth.zip(weekday).map(|(nth, weekday)| MonthRule::Nth { nth, weekday })
             }
             _ => {
-                self.add(head, "month には day か、nth と weekday が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"）");
+                self.add(
+                    head,
+                    "month には day か、nth と weekday か、business_day が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"、business_day = 5）",
+                );
                 None
             }
         }
@@ -1134,7 +1188,11 @@ exit 1'''
             let name = f.split(' ').next().unwrap();
             assert_eq!(problems(&text), [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")], "{f}");
         }
-        assert_eq!(problems("format = 1\ncalendar = \"会社\"\n"), ["a.toml の 2 行目: この版ではまだ使えない: calendar"]);
+        assert_eq!(parse("format = 1\ncalendar = \"会社\"\n").unwrap().calendar.as_deref(), Some("会社"));
+        assert_eq!(parse("format = 1\n").unwrap().calendar, None);
+        let bad = "a.toml の 2 行目: calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）";
+        assert_eq!(problems("format = 1\ncalendar = \"a/b\"\n"), [bad]);
+        assert_eq!(problems("format = 1\ncalendar = 1\n"), [bad]);
         assert!(problems("format = 1\nmissed = \"skip\"\noverlap = \"skip\"\n").is_empty());
         assert_eq!(problems("format = 1\nmissed = \"later\"\n"), ["a.toml の 2 行目: missed は \"skip\"・\"once\" のどれか"]);
         assert_eq!(problems("format = 1\noverlap = 1\n"), ["a.toml の 2 行目: overlap は \"skip\"・\"queue\" のどれか"]);
@@ -1167,8 +1225,24 @@ exit 1'''
         );
         assert_eq!(
             net("every = \"month\"\nday = 25\nat = [\"09:00\"]").unwrap()[0].kind,
-            Kind::Month { rule: MonthRule::Day { day: 25 }, at: vec![t("09:00")] }
+            Kind::Month { rule: MonthRule::Day { day: 25, shift: 0 }, at: vec![t("09:00")] }
         );
+        assert_eq!(
+            net("every = \"month\"\nday = 20\nshift = -3\nat = [\"09:00\"]").unwrap()[0].kind,
+            Kind::Month { rule: MonthRule::Day { day: 20, shift: -3 }, at: vec![t("09:00")] }
+        );
+        assert_eq!(
+            net("every = \"month\"\nbusiness_day = -1\nat = [\"21:00\"]").unwrap()[0].kind,
+            Kind::Month { rule: MonthRule::BusinessDay { n: -1 }, at: vec![t("21:00")] }
+        );
+        let w = net("every = \"day\"\nat = [\"02:00\"]\non_closed = \"prev\"").unwrap();
+        assert_eq!(w[0].on_closed, Some(OnClosed::Prev));
+        assert_eq!(net("every = \"day\"\nat = [\"02:00\"]").unwrap()[0].on_closed, None);
+        let needs = |body: &str| parse(&format!("format = 1\n[[when]]\n{body}\n")).unwrap().needs_calendar();
+        assert!(needs("every = \"month\"\nbusiness_day = 1\nat = [\"09:00\"]"));
+        assert!(needs("every = \"month\"\nday = 1\nshift = 1\nat = [\"09:00\"]"));
+        assert!(needs("every = \"day\"\nat = [\"09:00\"]\non_closed = \"skip\""));
+        assert!(!needs("every = \"month\"\nday = 1\nat = [\"09:00\"]"));
         assert_eq!(
             net("every = \"month\"\nday = \"last\"\nat = [\"21:00\"]").unwrap()[0].kind,
             Kind::Month { rule: MonthRule::Last, at: vec![t("21:00")] }
@@ -1216,7 +1290,33 @@ exit 1'''
         assert_eq!(p("every = \"hours\"\nn = 1\nfrom = \"18:00\"\nto = \"09:00\""), ["a.toml の 5 行目: from は to より前"]);
         assert_eq!(
             p("every = \"month\"\nat = [\"09:00\"]"),
-            ["a.toml の 2 行目: month には day か、nth と weekday が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"）"]
+            ["a.toml の 2 行目: month には day か、nth と weekday か、business_day が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"、business_day = 5）"]
+        );
+        assert_eq!(
+            p("every = \"month\"\nbusiness_day = 0\nat = [\"09:00\"]"),
+            ["a.toml の 4 行目: business_day は 1 から 31 か -1 から -31 の数"]
+        );
+        assert_eq!(
+            p("every = \"month\"\nbusiness_day = 32\nat = [\"09:00\"]"),
+            ["a.toml の 4 行目: business_day は 1 から 31 か -1 から -31 の数"]
+        );
+        assert_eq!(
+            p("every = \"month\"\nbusiness_day = 1\nday = 2\nat = [\"09:00\"]"),
+            ["a.toml の 5 行目: day は business_day と一緒に使わない"]
+        );
+        assert_eq!(p("every = \"month\"\nday = 20\nshift = 40\nat = [\"09:00\"]"), ["a.toml の 5 行目: shift は -31 から 31 の数"]);
+        assert_eq!(
+            p("every = \"month\"\nnth = 2\nweekday = \"tue\"\nshift = 1\nat = [\"09:00\"]"),
+            ["a.toml の 6 行目: shift は day の数と使う（例: day = 20, shift = -3）"]
+        );
+        assert_eq!(
+            p("every = \"month\"\nday = \"last\"\nshift = -1\nat = [\"09:00\"]"),
+            ["a.toml の 5 行目: shift は day の数と使う（例: day = 20, shift = -3）"]
+        );
+        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nbusiness_day = 1"), ["a.toml の 5 行目: business_day は day では使わない"]);
+        assert_eq!(
+            p("every = \"day\"\nat = [\"02:00\"]\non_closed = \"before\""),
+            ["a.toml の 5 行目: on_closed は \"prev\"・\"next\"・\"skip\"・\"run\" のどれか"]
         );
         assert_eq!(p("every = \"month\"\nday = 32\nat = [\"09:00\"]"), ["a.toml の 4 行目: day は 1 から 31 の数か \"last\""]);
         assert_eq!(p("every = \"month\"\nnth = 6\nweekday = \"tue\"\nat = [\"09:00\"]"), ["a.toml の 4 行目: nth は 1 から 5 の数"]);
@@ -1229,16 +1329,7 @@ exit 1'''
         assert_eq!(p("once = \"今夜\""), ["a.toml の 3 行目: 日時は 2026-11-30T21:00:00 のように書く（時差はつけない）: 今夜"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nstart = 2027-01-01\nend = 2026-12-01"), ["a.toml の 5 行目: start は end より前"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nfoo = 1"), ["a.toml の 5 行目: 知らない欄 foo"]);
-        for f in [
-            "on_closed = \"before\"",
-            "business_day = -1",
-            "shift = \"before\"",
-            "file = \"x\"",
-            "settle = \"10s\"",
-            "on_start = true",
-            "after_jobnet = \"a/b\"",
-            "on = \"ok\"",
-        ] {
+        for f in ["file = \"x\"", "settle = \"10s\"", "on_start = true", "after_jobnet = \"a/b\"", "on = \"ok\""] {
             let name = f.split(' ').next().unwrap();
             assert_eq!(
                 p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),

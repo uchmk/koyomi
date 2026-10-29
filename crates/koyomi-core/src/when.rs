@@ -16,7 +16,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::{DateTime, Datelike, Days, Duration, MappedLocalTime, NaiveDate, NaiveDateTime, NaiveTime, TimeZone, Utc, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::calendar::Calendar;
+
 /// One `[[when]]`: a kind of time, within `start`..=`end`, minus `except`.
+/// With a calendar, `on_closed` says what a time on a closed day does;
+/// `start`, `end` and `except` are on the day the time runs.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct When {
     pub kind: Kind,
@@ -26,6 +30,23 @@ pub struct When {
     pub start: Option<NaiveDate>,
     #[serde(default)]
     pub end: Option<NaiveDate>,
+    /// `on_closed`; none written: `skip` when the net has a calendar.
+    #[serde(default)]
+    pub on_closed: Option<OnClosed>,
+}
+
+/// `on_closed`: what a time written on a closed day of the net's calendar does.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum OnClosed {
+    /// Runs on the business day before.
+    Prev,
+    /// Runs on the business day after.
+    Next,
+    /// Does not run.
+    Skip,
+    /// Runs on the day as written.
+    Run,
 }
 
 /// The kinds of time, named as `every` names them (`once` and `dates` have no `every`).
@@ -54,8 +75,11 @@ pub enum Kind {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "on", rename_all = "snake_case")]
 pub enum MonthRule {
+    /// `day = 20`, moved `shift` business days (`shift = -3`: three before; needs a calendar when not 0).
     Day {
         day: u32,
+        #[serde(default)]
+        shift: i32,
     },
     Last,
     /// The `nth` (1..=5) `weekday` of the month.
@@ -63,16 +87,45 @@ pub enum MonthRule {
         nth: u32,
         weekday: Weekday,
     },
+    /// `business_day = 5`: the 5th business day; `-1`: the last. Needs a calendar.
+    BusinessDay {
+        n: i32,
+    },
 }
 
 impl MonthRule {
     pub fn matches(&self, date: NaiveDate) -> bool {
+        self.matches_in(date, None)
+    }
+
+    /// Whether `date` is the rule's day, counting business days by `cal`
+    /// (without one, a rule that counts them matches no day).
+    pub fn matches_in(&self, date: NaiveDate, cal: Option<&Calendar>) -> bool {
         match self {
-            MonthRule::Day { day } => date.day() == *day,
+            MonthRule::Day { day, shift: 0 } => date.day() == *day,
+            MonthRule::Day { day, shift } => cal.is_some_and(|c| {
+                months_around(date).any(|(y, m)| NaiveDate::from_ymd_opt(y, m, *day).and_then(|base| c.shift(base, *shift)) == Some(date))
+            }),
             MonthRule::Last => date.succ_opt().is_none_or(|n| n.month() != date.month()),
             MonthRule::Nth { nth, weekday } => date.weekday() == *weekday && (date.day() - 1) / 7 + 1 == *nth,
+            MonthRule::BusinessDay { n } => cal.is_some_and(|c| c.nth_business_day(date.year(), date.month(), *n) == Some(date)),
         }
     }
+
+    /// Whether the rule counts business days, and so needs a calendar.
+    pub fn needs_calendar(&self) -> bool {
+        match self {
+            MonthRule::Day { shift, .. } => *shift != 0,
+            MonthRule::BusinessDay { .. } => true,
+            MonthRule::Last | MonthRule::Nth { .. } => false,
+        }
+    }
+}
+
+/// The months a `shift` of up to 31 business days can land in `date`'s from: three either side.
+fn months_around(date: NaiveDate) -> impl Iterator<Item = (i32, u32)> {
+    let n = date.year() * 12 + date.month() as i32 - 1;
+    (n - 3..=n + 3).map(|k| (k.div_euclid(12), (k.rem_euclid(12) + 1) as u32))
 }
 
 /// How far [`When::next_after`] looks: past the longest gap a yearly `02-29` can have.
@@ -84,38 +137,71 @@ impl When {
         self.start.is_none_or(|s| date >= s) && self.end.is_none_or(|e| date <= e) && !self.except.contains(&date)
     }
 
-    /// The times on `date`, in order, each once.
-    pub fn times_on(&self, date: NaiveDate) -> Vec<NaiveTime> {
-        if !self.runs_on(date) {
-            return Vec::new();
+    /// `on_closed` as it applies with `cal`: `skip` unless written; `run` without a calendar.
+    pub fn on_closed_in(&self, cal: Option<&Calendar>) -> OnClosed {
+        match cal {
+            Some(_) => self.on_closed.unwrap_or(OnClosed::Skip),
+            None => OnClosed::Run,
         }
+    }
+
+    /// The times the kind writes on `date`: no calendar's move, no `start`/`end`/`except`.
+    fn written_on(&self, date: NaiveDate, cal: Option<&Calendar>) -> Vec<NaiveTime> {
         let on = |yes: bool, at: &Vec<NaiveTime>| if yes { at.clone() } else { Vec::new() };
-        let mut times = match &self.kind {
+        match &self.kind {
             Kind::Once { at } => on(at.date() == date, &vec![at.time()]),
             Kind::Day { at } => at.clone(),
             Kind::Minutes { n, from, to, days } => steps(date, i64::from(*n), *from, *to, days),
             Kind::Hours { n, from, to, days } => steps(date, i64::from(*n) * 60, *from, *to, days),
             Kind::Week { days, at } => on(days.contains(&date.weekday()), at),
-            Kind::Month { rule, at } => on(rule.matches(date), at),
+            Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
+        }
+    }
+
+    /// The times on `date` with no calendar, in order, each once.
+    pub fn times_on(&self, date: NaiveDate) -> Vec<NaiveTime> {
+        self.times_on_in(date, None)
+    }
+
+    /// The times that run on `date`, in order, each once: the ones written
+    /// on it and, with a calendar, the ones `on_closed` moves onto it from
+    /// the closed days beside it.
+    pub fn times_on_in(&self, date: NaiveDate, cal: Option<&Calendar>) -> Vec<NaiveTime> {
+        if !self.runs_on(date) {
+            return Vec::new();
+        }
+        let mut times = match cal {
+            None => self.written_on(date, None),
+            Some(c) => c.sources(date, self.on_closed_in(cal)).into_iter().flat_map(|s| self.written_on(s, cal)).collect(),
         };
         times.sort();
         times.dedup();
         times
     }
 
-    /// The first time after `after` (not at it), if any within the horizon.
+    /// The first time after `after` (not at it) with no calendar, if any within the horizon.
     pub fn next_after(&self, after: NaiveDateTime) -> Option<NaiveDateTime> {
+        self.next_after_in(after, None)
+    }
+
+    /// The first time after `after` (not at it), if any within the horizon.
+    pub fn next_after_in(&self, after: NaiveDateTime, cal: Option<&Calendar>) -> Option<NaiveDateTime> {
         if let Kind::Once { at } = &self.kind {
-            return (*at > after && self.runs_on(at.date())).then_some(*at);
+            let day = match cal {
+                Some(c) => c.adjust(at.date(), self.on_closed_in(cal))?,
+                None => at.date(),
+            };
+            let t = day.and_time(at.time());
+            return (t > after && self.runs_on(day)).then_some(t);
         }
         let first = self.start.map_or(after.date(), |s| s.max(after.date()));
         let far = first + Days::new(HORIZON);
         let last = self.end.map_or(far, |e| e.min(far));
         let mut d = first;
         while d <= last {
-            if let Some(t) = self.times_on(d).into_iter().find(|t| d.and_time(*t) > after) {
+            if let Some(t) = self.times_on_in(d, cal).into_iter().find(|t| d.and_time(*t) > after) {
                 return Some(d.and_time(t));
             }
             d = d.succ_opt()?;
@@ -143,14 +229,19 @@ fn steps(date: NaiveDate, step: i64, from: NaiveTime, to: NaiveTime, days: &[Wee
     out
 }
 
-/// Every time of `whens` after `after` and up to `until`, in order, each once.
+/// Every time of `whens` after `after` and up to `until`, in order, each once (no calendar).
 pub fn between(whens: &[When], after: NaiveDateTime, until: NaiveDateTime) -> Vec<NaiveDateTime> {
+    between_in(whens, after, until, None)
+}
+
+/// Every time of `whens` after `after` and up to `until`, in order, each once.
+pub fn between_in(whens: &[When], after: NaiveDateTime, until: NaiveDateTime, cal: Option<&Calendar>) -> Vec<NaiveDateTime> {
     let mut out = BTreeSet::new();
     let mut d = after.date();
     let last = until.date().min(after.date() + Days::new(400));
     while d <= last {
         for w in whens {
-            for t in w.times_on(d) {
+            for t in w.times_on_in(d, cal) {
                 let dt = d.and_time(t);
                 if dt > after && dt <= until {
                     out.insert(dt);
@@ -163,14 +254,19 @@ pub fn between(whens: &[When], after: NaiveDateTime, until: NaiveDateTime) -> Ve
     out.into_iter().collect()
 }
 
+/// The next `n` times of `whens` after `after` with no calendar.
+pub fn next_times(whens: &[When], after: NaiveDateTime, n: usize) -> Vec<NaiveDateTime> {
+    next_times_in(whens, after, n, None)
+}
+
 /// The next `n` times of `whens` after `after`, in order, each once (two
 /// `[[when]]` that name the same time are one time).
-pub fn next_times(whens: &[When], after: NaiveDateTime, n: usize) -> Vec<NaiveDateTime> {
+pub fn next_times_in(whens: &[When], after: NaiveDateTime, n: usize, cal: Option<&Calendar>) -> Vec<NaiveDateTime> {
     let mut out = BTreeSet::new();
     for w in whens {
         let mut cursor = after;
         for _ in 0..n {
-            match w.next_after(cursor) {
+            match w.next_after_in(cursor, cal) {
                 Some(t) => {
                     out.insert(t);
                     cursor = t;
@@ -191,13 +287,24 @@ const SLACK: Duration = Duration::hours(2);
 /// written as, in order. Each instant once: a wall-clock time the zone shows
 /// twice is its first showing; one the zone skips is the first time after it.
 pub fn due<Tz: TimeZone>(tz: &Tz, whens: &[When], checked: DateTime<Utc>, now: DateTime<Utc>) -> Vec<(DateTime<Utc>, NaiveDateTime)> {
+    due_in(tz, whens, None, checked, now)
+}
+
+/// [`due`] with the net's calendar.
+pub fn due_in<Tz: TimeZone>(
+    tz: &Tz,
+    whens: &[When],
+    cal: Option<&Calendar>,
+    checked: DateTime<Utc>,
+    now: DateTime<Utc>,
+) -> Vec<(DateTime<Utc>, NaiveDateTime)> {
     if now <= checked || whens.is_empty() {
         return Vec::new();
     }
     let lo = checked.with_timezone(tz).naive_local() - SLACK;
     let hi = now.with_timezone(tz).naive_local() + SLACK;
     let mut out: BTreeMap<DateTime<Utc>, NaiveDateTime> = BTreeMap::new();
-    for naive in between(whens, lo, hi) {
+    for naive in between_in(whens, lo, hi, cal) {
         let Some(instant) = resolve(tz, naive) else { continue };
         if checked < instant && instant <= now {
             out.entry(instant).or_insert(naive);
@@ -292,7 +399,10 @@ mod tests {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
     }
     fn when(kind: Kind) -> When {
-        When { kind, except: Vec::new(), start: None, end: None }
+        When { kind, except: Vec::new(), start: None, end: None, on_closed: None }
+    }
+    fn company() -> Calendar {
+        Calendar::parse("会社", "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\nclosed = [2026-11-20]\n").unwrap()
     }
     fn at(times: &[&str]) -> Vec<NaiveTime> {
         times.iter().map(|s| t(s)).collect()
@@ -315,11 +425,63 @@ mod tests {
         assert_eq!(last.next_after(dt("2026-02-01 00:00")), Some(dt("2026-02-28 21:00")));
         assert_eq!(last.next_after(dt("2028-02-01 00:00")), Some(dt("2028-02-29 21:00")));
         assert_eq!(last.next_after(dt("2026-04-01 00:00")), Some(dt("2026-04-30 21:00")));
-        let d31 = when(Kind::Month { rule: MonthRule::Day { day: 31 }, at: at(&["21:00"]) });
+        let d31 = when(Kind::Month { rule: MonthRule::Day { day: 31, shift: 0 }, at: at(&["21:00"]) });
         assert!(d31.times_on(d("2026-04-30")).is_empty());
         assert_eq!(d31.next_after(dt("2026-04-01 00:00")), Some(dt("2026-05-31 21:00")));
-        let d25 = when(Kind::Month { rule: MonthRule::Day { day: 25 }, at: at(&["09:00"]) });
+        let d25 = when(Kind::Month { rule: MonthRule::Day { day: 25, shift: 0 }, at: at(&["09:00"]) });
         assert_eq!(d25.next_after(dt("2026-10-25 09:00")), Some(dt("2026-11-25 09:00")));
+    }
+
+    #[test]
+    fn a_calendar_counts_business_days() {
+        let c = company();
+        // November 2026: the 1st is a Sunday, the 3rd and 23rd holidays, the 20th closed.
+        let fifth = when(Kind::Month { rule: MonthRule::BusinessDay { n: 5 }, at: at(&["09:00"]) });
+        assert_eq!(fifth.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-09 09:00")));
+        assert_eq!(fifth.next_after(dt("2026-11-01 00:00")), None, "no calendar: no business days");
+        let last = when(Kind::Month { rule: MonthRule::BusinessDay { n: -1 }, at: at(&["21:00"]) });
+        assert_eq!(last.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-30 21:00")));
+        assert_eq!(last.next_after_in(dt("2026-12-01 00:00"), Some(&c)), Some(dt("2026-12-31 21:00")));
+        let shifted = when(Kind::Month { rule: MonthRule::Day { day: 20, shift: -3 }, at: at(&["09:00"]) });
+        assert_eq!(shifted.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-17 09:00")));
+        assert!(shifted.times_on_in(d("2026-11-20"), Some(&c)).is_empty());
+        assert!(shifted.times_on(d("2026-11-20")).is_empty() && shifted.times_on(d("2026-11-17")).is_empty());
+        // A shift past the month's start lands in the month before.
+        let early = when(Kind::Month { rule: MonthRule::Day { day: 1, shift: -1 }, at: at(&["09:00"]) });
+        assert_eq!(early.times_on_in(d("2026-11-30"), Some(&c)), at(&["09:00"]));
+        assert!(MonthRule::BusinessDay { n: 1 }.needs_calendar() && MonthRule::Day { day: 1, shift: 1 }.needs_calendar());
+        assert!(!MonthRule::Day { day: 1, shift: 0 }.needs_calendar() && !MonthRule::Last.needs_calendar());
+    }
+
+    #[test]
+    fn on_closed_moves_or_skips_times() {
+        let c = company();
+        let mut daily = when(Kind::Day { at: at(&["02:00"]) });
+        // With a calendar, a closed day's time skips unless told otherwise.
+        assert!(daily.times_on_in(d("2026-11-21"), Some(&c)).is_empty());
+        assert_eq!(daily.times_on_in(d("2026-11-21"), None), at(&["02:00"]));
+        assert_eq!(daily.next_after_in(dt("2026-11-20 00:00"), Some(&c)), Some(dt("2026-11-24 02:00")));
+        daily.on_closed = Some(OnClosed::Run);
+        assert_eq!(daily.next_after_in(dt("2026-11-20 00:00"), Some(&c)), Some(dt("2026-11-20 02:00")));
+        let mut m = when(Kind::Month { rule: MonthRule::Day { day: 21, shift: 0 }, at: at(&["09:00"]) });
+        m.on_closed = Some(OnClosed::Prev);
+        // The 21st is a Saturday, the 20th closed: the time runs on the 19th.
+        assert_eq!(m.times_on_in(d("2026-11-19"), Some(&c)), at(&["09:00"]));
+        assert!(m.times_on_in(d("2026-11-21"), Some(&c)).is_empty());
+        assert_eq!(m.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-19 09:00")));
+        m.on_closed = Some(OnClosed::Next);
+        assert_eq!(m.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-24 09:00")));
+        // `except` is on the day the time runs.
+        m.except = vec![d("2026-11-24")];
+        assert_eq!(m.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-12-21 09:00")));
+        let once = when(Kind::Once { at: dt("2026-11-22 10:00") });
+        assert_eq!(once.next_after_in(dt("2026-11-01 00:00"), Some(&c)), None);
+        assert_eq!(once.next_after(dt("2026-11-01 00:00")), Some(dt("2026-11-22 10:00")));
+        let mut once_prev = once.clone();
+        once_prev.on_closed = Some(OnClosed::Prev);
+        assert_eq!(once_prev.next_after_in(dt("2026-11-01 00:00"), Some(&c)), Some(dt("2026-11-19 10:00")));
+        assert_eq!(between_in(&[once_prev], dt("2026-11-01 00:00"), dt("2026-12-01 00:00"), Some(&c)), [dt("2026-11-19 10:00")]);
+        assert_eq!(next_times_in(&[daily.clone()], dt("2026-11-20 00:00"), 2, Some(&c)), [dt("2026-11-20 02:00"), dt("2026-11-21 02:00")]);
     }
 
     #[test]
@@ -412,6 +574,7 @@ mod tests {
             except: vec![d("2026-12-08")],
             start: Some(d("2026-11-01")),
             end: None,
+            on_closed: Some(OnClosed::Prev),
         };
         let text = toml::to_string(&vec![w.clone()].into_iter().map(|w| ("w", w)).collect::<BTreeMap<_, _>>()).unwrap();
         let back: BTreeMap<String, When> = toml::from_str(&text).unwrap();

@@ -3,13 +3,16 @@
 //! One request and one reply per connection (`ito_ipc::door`). The reply is
 //! text: TOML for `List`, `Show` and `Runs`, the log's tail for `Log`, a line for the rest.
 
+use std::collections::BTreeMap;
+
 use ito_ipc::door::Door;
+use koyomi_core::calendar::Calendar;
 use koyomi_core::run::Run;
 use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 5;
+pub const PROTO: u32 = 6;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -95,6 +98,14 @@ pub struct Snapshot {
     /// `koyomi pause`: no time starts anything.
     #[serde(default)]
     pub paused: bool,
+    /// One line each about the calendars: a file that does not read, the
+    /// holiday table's age. Nothing is stopped by these.
+    #[serde(default)]
+    pub cautions: Vec<String>,
+    /// `calendars/<name>.toml` as the engine read them, by name: what the
+    /// window's month table and the next times count by.
+    #[serde(default)]
+    pub calendars: BTreeMap<String, Calendar>,
 }
 
 impl Snapshot {
