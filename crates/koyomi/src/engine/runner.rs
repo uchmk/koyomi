@@ -275,8 +275,8 @@ impl Runner {
     /// Starts `def` for today because something happened: `how` says what
     /// (a file came, the engine started), `reason` goes on the run, and `file`
     /// is the file that came, `KOYOMI_FILE` for its jobs.
-    pub fn start_event(&mut self, def: &Def, how: How, reason: &str, file: Option<String>) -> Result<String, String> {
-        let mut run = self.prepare(def, Local::now().date_naive(), how, None, None)?;
+    pub fn start_event(&mut self, def: &Def, date: NaiveDate, how: How, reason: &str, file: Option<String>) -> Result<String, String> {
+        let mut run = self.prepare(def, date, how, None, None)?;
         run.reason = reason.to_owned();
         run.file = file;
         self.launch(run, &def.text)
@@ -1483,14 +1483,23 @@ id = \"a\"
         let show = if cfg!(windows) { echo("%KOYOMI_FILE%") } else { "run = [\"sh\", \"-c\", \"echo $KOYOMI_FILE\"]".to_owned() };
         let d = def("net", &format!("format = 1\n[[when]]\nfile = 'D:\\\\in\\\\*.csv'\n[[job]]\nid = \"b\"\n{show}\n"));
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start_event(&d, How::File, "D:\\in\\Sales.csv が来た", Some("D:\\in\\Sales.csv".to_owned())).unwrap();
+        let today = Local::now().date_naive();
+        let id = r.start_event(&d, today, How::File, "D:\\in\\Sales.csv が来た", Some("D:\\in\\Sales.csv".to_owned())).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!((run.how, run.state, run.reason.as_str()), (How::File, State::Ok, "D:\\in\\Sales.csv が来た"));
         assert_eq!(run.planned, None);
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "D:\\in\\Sales.csv");
         // While it runs, the same net is refused, as by hand.
-        let id2 = r.start_event(&d, How::Start, "起動したとき", None).unwrap();
+        let id2 = r.start_event(&d, today, How::Start, "起動したとき", None).unwrap();
         assert_eq!(wait_over(&mut r, &id2).how, How::Start);
+        // After another net: the run takes that run's business day, and the jobs see it.
+        let show = if cfg!(windows) { echo("%KOYOMI_DATE%") } else { "run = [\"sh\", \"-c\", \"echo $KOYOMI_DATE\"]".to_owned() };
+        let d2 = def("after", &format!("format = 1\n[[when]]\nafter_jobnet = \"g/net\"\n[[job]]\nid = \"b\"\n{show}\n"));
+        let date = NaiveDate::from_ymd_opt(2026, 10, 28).unwrap();
+        let id3 = r.start_event(&d2, date, How::After, "g/net が終わった（正常終了）", None).unwrap();
+        let run = wait_over(&mut r, &id3);
+        assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
+        assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

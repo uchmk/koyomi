@@ -17,6 +17,7 @@ use chrono::{DateTime, Datelike, Days, Duration, MappedLocalTime, NaiveDate, Nai
 use serde::{Deserialize, Serialize};
 
 use crate::calendar::Calendar;
+use crate::run::State;
 
 /// One `[[when]]`: a kind of time, within `start`..=`end`, minus `except`.
 /// With a calendar, `on_closed` says what a time on a closed day does;
@@ -79,13 +80,54 @@ pub enum Kind {
     },
     /// `on_start = true`: when the engine starts (the PC's start or sign-in).
     OnStart,
+    /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
+    /// so (an event). The run takes the business day of the run it follows.
+    AfterJobnet {
+        jobnet: String,
+        #[serde(default)]
+        on: AfterOn,
+    },
 }
 
 impl Kind {
-    /// An event (a file arriving, the engine's start), not a time: it has no
-    /// next time, and runs when it happens on a day `start` / `end` / `except` allow.
+    /// An event (a file arriving, the engine's start, another net's end), not a
+    /// time: it has no next time, and runs when it happens on a day
+    /// `start` / `end` / `except` allow.
     pub fn is_event(&self) -> bool {
-        matches!(self, Kind::File { .. } | Kind::OnStart)
+        matches!(self, Kind::File { .. } | Kind::OnStart | Kind::AfterJobnet { .. })
+    }
+}
+
+/// Which end of the run before lets an `after_jobnet` net start: `on = "ok"`
+/// (正常終了 or 警告終了), `"error"` (異常終了, 打ち切り, 強制終了) or `"any"`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AfterOn {
+    #[default]
+    Ok,
+    Error,
+    Any,
+}
+
+impl AfterOn {
+    /// Whether a run that ended as `state` lets the net after it start. The
+    /// record of a time that did not run (スキップ, 時刻を過ぎた, 止めた, 保留)
+    /// is no end of a run: nothing follows it.
+    pub fn lets(self, state: State) -> bool {
+        match self {
+            AfterOn::Ok => matches!(state, State::Ok | State::Warn),
+            AfterOn::Error => matches!(state, State::Error | State::Timeout | State::Killed),
+            AfterOn::Any => matches!(state, State::Ok | State::Warn | State::Error | State::Timeout | State::Killed),
+        }
+    }
+
+    /// `on` as it is written.
+    pub fn name(self) -> &'static str {
+        match self {
+            AfterOn::Ok => "ok",
+            AfterOn::Error => "error",
+            AfterOn::Any => "any",
+        }
     }
 }
 
@@ -180,7 +222,7 @@ impl When {
             Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
-            Kind::File { .. } | Kind::OnStart => Vec::new(),
+            Kind::File { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => Vec::new(),
         }
     }
 
@@ -436,6 +478,21 @@ mod tests {
     }
     fn texts(v: &[NaiveDateTime]) -> Vec<String> {
         v.iter().map(|x| x.format("%Y-%m-%d %H:%M").to_string()).collect()
+    }
+
+    #[test]
+    fn after_jobnet_takes_the_ends_its_on_names_and_no_record_of_a_time_not_run() {
+        assert!(AfterOn::Ok.lets(State::Ok) && AfterOn::Ok.lets(State::Warn) && !AfterOn::Ok.lets(State::Error));
+        assert!(AfterOn::Error.lets(State::Error) && AfterOn::Error.lets(State::Timeout) && AfterOn::Error.lets(State::Killed));
+        assert!(!AfterOn::Error.lets(State::Warn));
+        assert!(AfterOn::Any.lets(State::Ok) && AfterOn::Any.lets(State::Killed));
+        for s in [State::Skipped, State::Missed, State::Locked, State::Held, State::NotRun, State::Running, State::Waiting] {
+            assert!(!AfterOn::Any.lets(s), "{s:?}");
+        }
+        let w = when(Kind::AfterJobnet { jobnet: "経理/売上取込".to_owned(), on: AfterOn::Any });
+        assert!(w.is_event());
+        assert_eq!(w.next_after(dt("2026-10-30 23:00")), None);
+        assert_eq!(AfterOn::default().name(), "ok");
     }
 
     #[test]

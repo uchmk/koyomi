@@ -155,6 +155,8 @@ pub enum How {
     File,
     /// The engine started (`[[when]] on_start = true`).
     Start,
+    /// A run of the net before it ended (`[[when]] after_jobnet = …`).
+    After,
 }
 
 /// How a job ended, as the engine saw it.

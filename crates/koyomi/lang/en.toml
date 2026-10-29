@@ -217,6 +217,10 @@ when_row = "{0} ({1}) {2}"
 event_file = "When a file arrives: {0}"
 event_file_settle = "When a file arrives: {0} (after {1} unchanged)"
 event_start = "At start-up (when the engine starts)"
+event_after = "When {0} ends ({1})"
+after_ok = "ended well, or with a warning"
+after_error = "ended with an error"
+after_any = "ended either way"
 
 [calendar]
 heading = "Calendars"

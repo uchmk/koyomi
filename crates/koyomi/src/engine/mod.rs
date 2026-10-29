@@ -21,7 +21,7 @@ use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::jobnet::Jobnet;
-use koyomi_core::run::{How, State as RunState};
+use koyomi_core::run::{How, Run, State as RunState};
 use koyomi_core::scan::{scan_in, Def, Standing};
 use koyomi_core::when::{self, Kind, OnClosed};
 
@@ -236,7 +236,9 @@ impl State {
             let (event, title, body) = notify::part_words(&self.words, r, &job);
             notify::tell(&self.notify, event, &title, &body);
         }
-        let (runs, missed) = notify::group_missed(self.runner.take_over());
+        let over = self.runner.take_over();
+        self.tick_after(&over);
+        let (runs, missed) = notify::group_missed(over);
         // A time stopped by hand (⏸) is not told of: the person did it.
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
             let (event, title, body) = notify::words(&self.words, &r);
@@ -341,7 +343,7 @@ impl State {
                 }
                 match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
                     schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
-                        if let Err(e) = self.runner.start_event(&def, How::Start, "起動したとき", None) {
+                        if let Err(e) = self.runner.start_event(&def, today, How::Start, "起動したとき", None) {
                             self.runner.not_run(&def, now, RunState::Locked, &e);
                         }
                     }
@@ -379,7 +381,7 @@ impl State {
             }
             match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
                 schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
-                    if let Err(e) = self.runner.start_event(&def, How::File, &format!("{path} が来た"), Some(path)) {
+                    if let Err(e) = self.runner.start_event(&def, today, How::File, &format!("{path} が来た"), Some(path)) {
                         self.runner.not_run(&def, now, RunState::Locked, &e);
                     }
                 }
@@ -388,6 +390,52 @@ impl State {
                 }
             }
             self.events.fired(&a.def_id, &a.pattern, &a.path);
+        }
+    }
+
+    /// Starts the nets with `[[when]] after_jobnet = …` on each run of `over`
+    /// that ended as their `on` says, however that run was started. The run
+    /// takes the business day of the run it follows (`KOYOMI_DATE`). A net
+    /// starts this way once a business day: a second end on the same day is
+    /// recorded as ⊘ スキップ and told of, so a person runs it by hand if it
+    /// is wanted. A net still running from before does not start again.
+    fn tick_after(&mut self, over: &[Run]) {
+        let now = Local::now().naive_local();
+        for prev in over {
+            for (def, w) in followers(&self.defs, prev) {
+                let date = NaiveDate::parse_from_str(&prev.date, "%Y-%m-%d").unwrap_or(now.date());
+                let what = format!("{} が終わった（{}）", prev.jobnet, crate::show::word(&self.words, prev.state));
+                if let Some(why) = self.off_day(&def, &w, date, &what) {
+                    self.runner.not_run(&def, now, RunState::Skipped, &why);
+                    continue;
+                }
+                if let Some((state, why)) = self.stopped(&def, date) {
+                    self.runner.not_run(&def, now, state, &why);
+                    continue;
+                }
+                if let Some(done) = followed(self.runner.runs(), &def.id, &prev.date) {
+                    let why = format!(
+                        "{what}が、同じ業務日（{}）に既に流した（{}）: 後続は流していない。要るなら手で流す（koyomi run {}）",
+                        prev.date, done.id, def.id
+                    );
+                    self.runner.not_run(&def, now, RunState::Skipped, &why);
+                    continue;
+                }
+                if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
+                    self.runner.not_run(&def, now, RunState::Skipped, &format!("{what}が、前の回がまだ動いているので流さない"));
+                    continue;
+                }
+                match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
+                    schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
+                        if let Err(e) = self.runner.start_event(&def, date, How::After, &what, None) {
+                            self.runner.not_run(&def, now, RunState::Locked, &e);
+                        }
+                    }
+                    schedule::Verdict::NotRun(state, reason) => {
+                        self.runner.not_run(&def, now, state, &reason);
+                    }
+                }
+            }
         }
     }
 
@@ -431,11 +479,11 @@ impl State {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("見張り始めたときに既に {n} 個あった（{pattern}）: 流さない"));
             }
         }
+        let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
+        self.warnings = access_warnings(&self.paths, &files);
         if !self.events.watching() {
             self.warnings.push("待つファイルのフォルダーを見張れない（5 秒ごとに見る）".to_owned());
         }
-        let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
-        self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
         self.warnings.extend(self.held_bad.clone());
     }
@@ -740,9 +788,67 @@ pub fn run() -> i32 {
     }
 }
 
+/// The nets with a `[[when]] after_jobnet` naming `prev`'s net whose `on`
+/// takes the way `prev` ended, each with that `[[when]]`.
+fn followers(defs: &[Def], prev: &Run) -> Vec<(Def, when::When)> {
+    let mut out = Vec::new();
+    for d in defs {
+        let Some(net) = &d.net else { continue };
+        for w in &net.when {
+            if let Kind::AfterJobnet { jobnet, on } = &w.kind {
+                if *jobnet == prev.jobnet && on.lets(prev.state) {
+                    out.push((d.clone(), w.clone()));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// The run of `id` that already started after another net on the business day `date`, if any.
+fn followed<'a>(runs: &'a [Run], id: &str, date: &str) -> Option<&'a Run> {
+    runs.iter().find(|r| r.jobnet == id && r.how == How::After && r.date == date)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_net_after_another_follows_the_ends_its_on_names_once_a_business_day() {
+        let text = "format = 1\n[[when]]\nafter_jobnet = \"経理/売上取込\"\non = \"error\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n";
+        let net = koyomi_core::jobnet::parse(text).unwrap();
+        let def = Def {
+            id: "経理/集計".to_owned(),
+            group: "経理".to_owned(),
+            name: "集計".to_owned(),
+            title: None,
+            file: "経理/集計.toml".to_owned(),
+            standing: Standing::Confirmed,
+            problems: Vec::new(),
+            net: Some(net.clone()),
+            sha256: String::new(),
+            text: text.to_owned(),
+            previous: None,
+            calendar: None,
+        };
+        let now = Local::now().naive_local();
+        let mut prev = Run::new("p1", "経理/売上取込", "売上取込", "2026-10-29", How::Rerun, &net, now);
+        prev.state = RunState::Error;
+        let f = followers(std::slice::from_ref(&def), &prev);
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].0.id, "経理/集計");
+        prev.state = RunState::Ok;
+        assert!(followers(std::slice::from_ref(&def), &prev).is_empty());
+        let mut other = Run::new("p2", "経理/他", "他", "2026-10-29", How::Manual, &net, now);
+        other.state = RunState::Error;
+        assert!(followers(std::slice::from_ref(&def), &other).is_empty());
+        let mut done = Run::new("f1", "経理/集計", "集計", "2026-10-29", How::After, &net, now);
+        assert_eq!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-29").map(|r| r.id.as_str()), Some("f1"));
+        assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-30").is_none());
+        done.how = How::Manual;
+        assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-29").is_none());
+    }
 
     #[test]
     fn a_snapshot_survives_the_door() {

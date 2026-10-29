@@ -70,6 +70,9 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
         when::Kind::File { file, settle: None } => Some(t.trf("run.event_file", &[file])),
         when::Kind::File { file, settle: Some(s) } => Some(t.trf("run.event_file_settle", &[file, &koyomi_core::duration::text(*s)])),
         when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
+        when::Kind::AfterJobnet { jobnet, on } => {
+            Some(t.trf("run.event_after", &[jobnet.as_str(), t.tr(&format!("run.after_{}", on.name()))]))
+        }
         _ => None,
     }
 }

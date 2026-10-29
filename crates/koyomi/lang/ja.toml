@@ -216,6 +216,10 @@ when_row = "{0}（{1}）{2}"
 event_file = "ファイルが来たとき: {0}"
 event_file_settle = "ファイルが来たとき: {0}（{1} 変わらなくなってから）"
 event_start = "PC の起動・サインインのとき（エンジンの起動）"
+event_after = "{0} が終わったとき（{1}）"
+after_ok = "正常終了・警告終了のとき"
+after_error = "異常終了のとき"
+after_any = "どう終わっても"
 
 [calendar]
 heading = "カレンダー"

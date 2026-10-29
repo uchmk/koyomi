@@ -1,6 +1,6 @@
 # Checklist
 
-219 checks in TESTING.md, 218 left for a person.
+232 checks in TESTING.md, 231 left for a person.
 
 ## 1. Start
 
@@ -299,3 +299,19 @@
 - [ ] **26.12** The same net, unapproved, when the engine starts; and with a calendar on a closed day → 🔒 `未確認のため流さなかった（koyomi approve …）`; ⊘ スキップ `起動したが、休業日なので流さない（on_closed = "run" で流せる）` 〔未訳〕
 - [ ] **26.13** `koyomi next` and the net's 予定 in the window for a net with both events and `every = "day"` → The rows `ファイルが来たとき: D:\受信\*.csv（10 秒 変わらなくなってから）` and `PC の起動・サインインのとき（エンジンの起動）` come first, then the times; `koyomi review` of it shows the same two rows under 今週 〔未訳〕
 - [ ] **26.14** `koyomi check` a `[[when]]` with `file = 'in\*.csv'`, with `file = 'D:\*\a.csv'`, with `file = …` and `on_closed = "prev"`, and with `on_start = false` → `file は絶対パスで書く（例: …）`; `file の * / ? はファイル名の部分だけ（フォルダーには使えない）`; `file / on_start では on_closed は "skip" か "run"`; `on_start は true だけ（使わないなら [[when]] ごと消す）` 〔未訳〕
+
+## 27. Links between jobnets (`[[when]] after_jobnet = …` + `on`)
+
+- [ ] **27.1** Net `g/a` (one job echoing hi) and net `g/b` with `[[when]] after_jobnet = "g/a"` and a job echoing `%KOYOMI_DATE%`; `koyomi approve` both; `koyomi run g/a` → When `g/a` ends 正常終了, a run of `g/b` starts within a few seconds; its history row's reason is `g/a が終わった（正常終了）` (and `how = "after"` in the history file); its job's log is today's date 〔未訳〕
+- [ ] **27.2** `koyomi rerun` a run of `g/a` whose business day was 2 days ago → `g/b` starts again, with that run's business day (`KOYOMI_DATE` is 2 days ago, and the history row shows that date) 〔未訳〕
+- [ ] **27.3** `g/a`'s job made to fail (`exit 1`); `koyomi run g/a` with `g/b` on `on = "ok"` (default), then with `on = "error"`, then `on = "any"` → With the default, nothing starts (no row at all for `g/b`); with `"error"` and `"any"`, `g/b` starts with `g/a が終わった（異常終了）` 〔未訳〕
+- [ ] **27.4** `g/a`'s job ends 警告終了 (`warn_codes`), `g/b` on `on = "error"` and then on `on = "ok"` → `"error"`: nothing; `"ok"`: `g/b` starts (`g/a が終わった（警告終了）`) 〔未訳〕
+- [ ] **27.5** `koyomi run g/a` twice on the same business day (after 27.1) → The second time `g/b` does not start: a ⊘ スキップ row `g/a が終わった（正常終了）が、同じ業務日（<date>）に既に流した（<run id>）: 後続は流していない。要るなら手で流す（koyomi run g/b）`, and a notification says so 〔未訳〕
+- [ ] **27.6** After 27.5, `koyomi run g/b` by hand (and from the window) → It runs: only the automatic start is once a day 〔未訳〕
+- [ ] **27.7** `g/b` given a job that sleeps 60 s; `koyomi run g/a` twice quickly (two different runs of `g/a` ending while `g/b` is still running, with the second `g/a` run `rerun` from another day) → The second end: ⊘ スキップ `… が、前の回がまだ動いているので流さない`; nothing queues 〔未訳〕
+- [ ] **27.8** `g/b` unapproved; `koyomi hold g/b`; `koyomi pause`; each time `koyomi run g/a` → 🔒 `未確認のため流さなかった（koyomi approve …）`; ⏸ 保留 with the reason; ⏸ with the pause's reason — as for a time 〔未訳〕
+- [ ] **27.9** `g/b` with `calendar = "会社"`, and `koyomi rerun` a run of `g/a` whose business day is a Sunday → ⊘ スキップ `g/a が終わった（正常終了）が、休業日なので流さない（on_closed = "run" で流せる）`; with `on_closed = "run"` in the `[[when]]`, `g/b` runs with that Sunday as `KOYOMI_DATE` 〔未訳〕
+- [ ] **27.10** `koyomi check` with `after_jobnet = "g/none"`; and with `g/a` after `g/b` and `g/b` after `g/a` → `先行のジョブネットがない: g/none`; `after_jobnet が輪になっている: g/a → g/b → g/a` on both (the window shows them as ✗ 誤り and does not run them); a net after `g/a` that is not itself in the loop is fine 〔未訳〕
+- [ ] **27.11** `koyomi check` a `[[when]]` with `after_jobnet = "売上取込"`; with `on = "sometimes"`; with `every = "day"` and `on = "ok"`; with `after_jobnet = …` and `on_closed = "prev"` → `after_jobnet は "グループ/名前" で書く（例: …）`; `on は "ok"・"error"・"any" のどれか`; `on は day では使わない`; `after_jobnet では on_closed は "skip" か "run"` 〔未訳〕
+- [ ] **27.12** `koyomi next`, the net's 予定 in the window, and `koyomi review` for `g/b` → A row with no time: `g/a が終わったとき（正常終了・警告終了のとき）` (`異常終了のとき` / `どう終わっても` for the other `on`s) 〔未訳〕
+- [ ] **27.13** Three nets `g/a` → `g/b` → `g/c` (each after the one before); `koyomi rerun` a run of `g/a` from 3 days ago → `g/b` and then `g/c` run, each with `g/a`'s business day; the history has the three rows with that date 〔未訳〕

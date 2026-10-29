@@ -8,6 +8,7 @@ use crate::approved::{self, Store};
 use crate::calendar::Calendars;
 use crate::group::{self, Group};
 use crate::jobnet::{self, Jobnet, Problem};
+use crate::when::Kind;
 
 /// Where a definition stands. Only [`Confirmed`](Standing::Confirmed) may ever run.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -141,10 +142,58 @@ pub fn child_problem(net: &Jobnet, defs: &[Def]) -> Option<String> {
     jobnet::expand(net, &lookup).err()
 }
 
-/// Marks each net whose child jobnets cannot be used as invalid, with why (a line-0 problem).
+/// What the `[[when]] after_jobnet` lines of `net` (the net `id`) cannot
+/// follow among `defs`: a net that is not there, or a chain that comes round
+/// to `id` (A after B, B after A). `None` when each can be followed. A net
+/// before with a definition error is no problem here: it just never runs.
+pub fn after_problem(id: &str, net: &Jobnet, defs: &[Def]) -> Option<String> {
+    let befores = |net: &Jobnet| -> Vec<String> {
+        net.when
+            .iter()
+            .filter_map(|w| match &w.kind {
+                Kind::AfterJobnet { jobnet, .. } => Some(jobnet.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    for before in befores(net) {
+        if !defs.iter().any(|d| d.id == before) {
+            return Some(format!("先行のジョブネットがない: {before}"));
+        }
+    }
+    // Walks the nets before, before those, …; a way back to `id` is a loop.
+    fn walk(at: &str, target: &str, path: &mut Vec<String>, befores: &dyn Fn(&str) -> Vec<String>) -> Option<Vec<String>> {
+        for b in befores(at) {
+            if b == target {
+                let mut p = path.clone();
+                p.push(b);
+                return Some(p);
+            }
+            // A loop that does not pass `target` is that net's own problem.
+            if path.contains(&b) {
+                continue;
+            }
+            path.push(b.clone());
+            if let Some(p) = walk(&b, target, path, befores) {
+                return Some(p);
+            }
+            path.pop();
+        }
+        None
+    }
+    let of = |i: &str| defs.iter().find(|d| d.id == i).and_then(|d| d.net.as_ref()).map(befores).unwrap_or_default();
+    let mut path = vec![id.to_owned()];
+    walk(id, id, &mut path, &of).map(|p| format!("after_jobnet が輪になっている: {}", p.join(" → ")))
+}
+
+/// Marks each net whose child jobnets cannot be used, or whose `after_jobnet`
+/// cannot be followed, as invalid, with why (a line-0 problem).
 pub fn link(defs: &mut [Def]) {
-    let bad: Vec<(usize, String)> =
-        defs.iter().enumerate().filter_map(|(i, d)| d.net.as_ref().and_then(|n| child_problem(n, defs)).map(|m| (i, m))).collect();
+    let bad: Vec<(usize, String)> = defs
+        .iter()
+        .enumerate()
+        .filter_map(|(i, d)| d.net.as_ref().and_then(|n| child_problem(n, defs).or_else(|| after_problem(&d.id, n, defs))).map(|m| (i, m)))
+        .collect();
     for (i, message) in bad {
         let d = &mut defs[i];
         d.problems.push(Problem { line: 0, message });
@@ -287,6 +336,30 @@ mod tests {
         );
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(&cal_dir);
+    }
+
+    #[test]
+    fn an_after_jobnet_must_be_there_and_must_not_come_round() {
+        let d = tmp("after");
+        let after = |u: &str| format!("format = 1\n[[when]]\nafter_jobnet = \"{u}\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n");
+        put(&d, "g", "a.toml", &after("g/b"));
+        put(&d, "g", "b.toml", &after("g/c"));
+        put(&d, "g", "c.toml", &after("g/a"));
+        put(&d, "g", "d.toml", &after("g/none"));
+        put(&d, "g", "e.toml", &after("g/a"));
+        put(&d, "g", "f.toml", &after("g/f"));
+        let defs = scan(&d, &Store::default());
+        let of = |id: &str| {
+            let x = defs.iter().find(|x| x.id == id).unwrap();
+            (x.standing, x.problems.iter().map(|p| p.message.clone()).collect::<Vec<_>>())
+        };
+        assert_eq!(of("g/a"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/a → g/b → g/c → g/a".to_owned()]));
+        assert_eq!(of("g/b"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/b → g/c → g/a → g/b".to_owned()]));
+        assert_eq!(of("g/d"), (Standing::Invalid, vec!["先行のジョブネットがない: g/none".to_owned()]));
+        assert_eq!(of("g/f"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/f → g/f".to_owned()]));
+        // e follows a, which is in a loop; e itself is not: a fine net (a will never run).
+        assert_eq!(of("g/e"), (Standing::Unconfirmed, vec![]));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::when::{self, Kind, MonthRule, OnClosed, When};
+use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The `format` this version reads.
 pub const FORMAT: i64 = 1;
@@ -400,7 +400,6 @@ struct RawWhen {
     file: Field,
     settle: Field,
     on_start: Field,
-    // Of the design, not run by this version.
     after_jobnet: Field,
     on: Field,
 }
@@ -717,9 +716,6 @@ impl Checker<'_> {
         for entry in raw {
             let head = entry.span().start;
             let w = entry.get_ref();
-            for (field, name) in [(&w.after_jobnet, "after_jobnet"), (&w.on, "on")] {
-                self.not_yet(field, name);
-            }
             let kind = if w.once.is_some() {
                 "once"
             } else if let Some(f) = &w.every {
@@ -736,14 +732,17 @@ impl Checker<'_> {
                 "file"
             } else if w.on_start.is_some() {
                 "on_start"
+            } else if w.after_jobnet.is_some() {
+                "after_jobnet"
             } else {
-                self.add(head, "[[when]] には once か every か dates か file か on_start が要る");
+                self.add(head, "[[when]] には once か every か dates か file か on_start か after_jobnet が要る");
                 continue;
             };
             let allowed: &[&str] = match kind {
                 "once" => &["once"],
                 "file" => &["file", "settle"],
                 "on_start" => &["on_start"],
+                "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days"],
                 "week" => &["every", "days", "at"],
@@ -769,6 +768,8 @@ impl Checker<'_> {
                 (&w.file, "file"),
                 (&w.settle, "settle"),
                 (&w.on_start, "on_start"),
+                (&w.after_jobnet, "after_jobnet"),
+                (&w.on, "on"),
             ] {
                 if let Some(f) = field {
                     if !allowed.contains(&name) {
@@ -788,6 +789,10 @@ impl Checker<'_> {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
                 self.add(pos, "file / on_start では on_closed は \"skip\" か \"run\"");
             }
+            if kind == "after_jobnet" && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
+                let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
+                self.add(pos, "after_jobnet では on_closed は \"skip\" か \"run\"");
+            }
             let before = self.problems.len();
             let kind = match kind {
                 "once" => self.datetime(&w.once).map(|at| Kind::Once { at }),
@@ -795,6 +800,22 @@ impl Checker<'_> {
                     let file = self.event_file(&w.file);
                     let settle = self.duration_of(&w.settle, "settle");
                     file.map(|file| Kind::File { file, settle })
+                }
+                "after_jobnet" => {
+                    let on = match self.choice(&w.on, "on", &["ok", "error", "any"]) {
+                        Some("error") => AfterOn::Error,
+                        Some("any") => AfterOn::Any,
+                        _ => AfterOn::Ok,
+                    };
+                    match self.string(&w.after_jobnet, "after_jobnet") {
+                        Some(u) if use_is_well_formed(&u) => Some(Kind::AfterJobnet { jobnet: u, on }),
+                        Some(_) => {
+                            let pos = w.after_jobnet.as_ref().map_or(head, |f| f.span().start);
+                            self.add(pos, "after_jobnet は \"グループ/名前\" で書く（例: after_jobnet = \"経理/売上取込\"）");
+                            None
+                        }
+                        None => None,
+                    }
                 }
                 "on_start" => match w.on_start.as_ref().and_then(|f| f.get_ref().as_bool()) {
                     Some(true) => Some(Kind::OnStart),
@@ -1918,7 +1939,10 @@ after = [{ job = \"way\", code = \"else\" }]
     fn a_when_names_its_mistake_with_its_line() {
         let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
-        assert_eq!(p("at = [\"02:00\"]"), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start が要る"]);
+        assert_eq!(
+            p("at = [\"02:00\"]"),
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]
+        );
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
             ["a.toml の 3 行目: every は \"day\"・\"minutes\"・\"hours\"・\"week\"・\"month\"・\"year\" のどれか"]
@@ -1980,10 +2004,35 @@ after = [{ job = \"way\", code = \"else\" }]
             let name = f.split(' ').next().unwrap();
             assert_eq!(
                 p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),
-                [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")],
+                [format!("a.toml の 5 行目: {name} は day では使わない")],
                 "{f}"
             );
         }
+    }
+
+    #[test]
+    fn an_after_jobnet_when_names_the_net_before_and_which_end_of_it() {
+        let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
+        let net = parse(
+            "format = 1\n[[when]]\nafter_jobnet = \"経理/売上取込\"\n[[when]]\nafter_jobnet = \"経理/売上取込\"\non = \"error\"\non_closed = \"run\"\n",
+        )
+        .unwrap();
+        assert_eq!(net.when[0].kind, Kind::AfterJobnet { jobnet: "経理/売上取込".to_owned(), on: AfterOn::Ok });
+        assert!(net.when[0].is_event());
+        assert_eq!(net.when[1].kind, Kind::AfterJobnet { jobnet: "経理/売上取込".to_owned(), on: AfterOn::Error });
+        assert_eq!(net.when[1].on_closed, Some(OnClosed::Run));
+        assert_eq!(
+            p("after_jobnet = \"売上取込\""),
+            ["a.toml の 3 行目: after_jobnet は \"グループ/名前\" で書く（例: after_jobnet = \"経理/売上取込\"）"]
+        );
+        assert_eq!(p("after_jobnet = 1"), ["a.toml の 3 行目: after_jobnet は文字列で書く"]);
+        assert_eq!(p("after_jobnet = \"a/b\"\non = \"sometimes\""), ["a.toml の 4 行目: on は \"ok\"・\"error\"・\"any\" のどれか"]);
+        assert_eq!(p("after_jobnet = \"a/b\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は after_jobnet では使わない"]);
+        assert_eq!(
+            p("after_jobnet = \"a/b\"\non_closed = \"next\""),
+            ["a.toml の 4 行目: after_jobnet では on_closed は \"skip\" か \"run\""]
+        );
+        assert_eq!(p("on = \"ok\""), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]);
     }
 
     #[test]
@@ -2015,7 +2064,10 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(p("on_start = false"), ["a.toml の 3 行目: on_start は true だけ（使わないなら [[when]] ごと消す）"]);
         assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
-        assert_eq!(p("settle = \"10s\""), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start が要る"]);
+        assert_eq!(
+            p("settle = \"10s\""),
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]
+        );
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
             assert_eq!(
