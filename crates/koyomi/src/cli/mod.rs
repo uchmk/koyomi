@@ -49,6 +49,10 @@ usage: koyomi [--version | --help | env]
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
+       koyomi new <group/name>       write a new definition from the template (one job, no time yet; unconfirmed)
+       koyomi versions <group/name>  the versions kept before each save and restore, newest first
+       koyomi restore <group/name> <version>
+                                     put that version back as the file (unconfirmed until approved)
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
@@ -65,9 +69,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 19] = [
+const COMMANDS: [&str; 22] = [
     "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "pause",
-    "resume", "calendar", "engine", "startup",
+    "resume", "calendar", "new", "versions", "restore", "engine", "startup",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -106,6 +110,9 @@ pub fn run(args: &[String]) -> Option<i32> {
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
         "calendar" => calendar(rest),
+        "new" => new_cmd(rest),
+        "versions" => versions(rest),
+        "restore" => restore(rest),
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         _ => return None,
@@ -773,6 +780,66 @@ struct Log {
     run: String,
     job: String,
     text: String,
+}
+
+/// `koyomi new <group/name>`: the template as `jobnets/<group>/<name>.toml`. Nothing is asked of
+/// the engine: the file is like one written by hand, and stays unconfirmed until approved.
+fn new_cmd(args: &[String]) -> i32 {
+    let [id] = args else { return usage("new takes one group/name") };
+    let id = id.replace('\\', "/");
+    let Some((group, name)) = id.split_once('/').filter(|_| koyomi_core::jobnet::is_id(&id)) else {
+        return fail(&format!("グループ/名前 の形で書く: {id}"));
+    };
+    let paths = match engine::Paths::find() {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    let path = paths.jobnets.join(group).join(format!("{name}.toml"));
+    if path.exists() {
+        return fail(&format!("もうある: {}", path.display()));
+    }
+    if let Some(dir) = path.parent() {
+        if let Err(e) = std::fs::create_dir_all(dir) {
+            return fail(&format!("{} を作れない: {e}", dir.display()));
+        }
+    }
+    if let Err(e) = ito_common::write_atomic(&path, koyomi_core::write::template(name)) {
+        return fail(&e);
+    }
+    out(&format!("書いた: {}（未確認。窓か koyomi approve で確かめてから流す）", path.display()), false);
+    0
+}
+
+/// `koyomi versions <group/name>`: the versions the engine kept, newest first.
+fn versions(args: &[String]) -> i32 {
+    let [id] = args else { return usage("versions takes one group/name") };
+    let id = id.replace('\\', "/");
+    let text = match client::call(&Request::Versions { id: id.clone() }) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
+    };
+    if toml() {
+        emit(&text);
+        return 0;
+    }
+    let v = match proto::Versions::parse(&text) {
+        Ok(v) => v,
+        Err(e) => return fail(&e),
+    };
+    if v.versions.is_empty() {
+        out(&format!("版はまだ無い: {id}"), false);
+    } else {
+        out(&v.versions.join("\n"), false);
+    }
+    0
+}
+
+/// `koyomi restore <group/name> <version>`.
+fn restore(args: &[String]) -> i32 {
+    match args {
+        [id, version] => ask_and_say(&Request::Restore { id: id.replace('\\', "/"), version: version.clone() }),
+        _ => usage("restore takes a group/name and a version"),
+    }
 }
 
 /// Sends `request` and prints the answer: the commands with nothing to read back.

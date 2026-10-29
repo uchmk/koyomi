@@ -609,7 +609,7 @@ impl Checker<'_> {
             "jobnet" => {
                 let use_ = match &j.use_ {
                     Some(f) => self.string(&j.use_, "use").filter(|u| {
-                        let ok = use_is_well_formed(u);
+                        let ok = is_id(u);
                         if !ok {
                             self.add(f.span().start, "use は \"グループ/名前\" で書く（例: use = \"共通/バックアップ\"）");
                         }
@@ -808,7 +808,7 @@ impl Checker<'_> {
                         _ => AfterOn::Ok,
                     };
                     match self.string(&w.after_jobnet, "after_jobnet") {
-                        Some(u) if use_is_well_formed(&u) => Some(Kind::AfterJobnet { jobnet: u, on }),
+                        Some(u) if is_id(&u) => Some(Kind::AfterJobnet { jobnet: u, on }),
                         Some(_) => {
                             let pos = w.after_jobnet.as_ref().map_or(head, |f| f.span().start);
                             self.add(pos, "after_jobnet は \"グループ/名前\" で書く（例: after_jobnet = \"経理/売上取込\"）");
@@ -1342,7 +1342,8 @@ impl Checker<'_> {
 }
 
 /// `グループ/名前`: one `/`, both sides there, nothing that leaves the folder.
-fn use_is_well_formed(u: &str) -> bool {
+/// What `use`, `after_jobnet` and the editor's new net are checked with.
+pub fn is_id(u: &str) -> bool {
     let mut parts = u.split('/');
     let (Some(g), Some(n), None) = (parts.next(), parts.next(), parts.next()) else { return false };
     let plain = |s: &str| !s.trim().is_empty() && s != "." && s != ".." && !s.contains('\\');

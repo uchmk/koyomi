@@ -61,22 +61,42 @@ pub fn read_def(path: &Path, group: &str, name: &str, store: &Store) -> Def {
 /// Reads the file at `path` as the definition `id` in `group` (`file` is how it is shown).
 /// `shared` is the group's `_group.toml` (or why it does not read); `cals` what `calendar` may name.
 pub fn read_def_in(path: &Path, group: &str, name: &str, store: &Store, shared: Result<&Group, &String>, cals: &Calendars) -> Def {
+    match std::fs::read(path) {
+        Ok(b) => match std::str::from_utf8(&b) {
+            Ok(t) => def_of_text(t, group, name, store, shared, cals),
+            Err(_) => unreadable(&approved::hash(&b), group, name, "UTF-8 の文字として読めない".to_owned()),
+        },
+        Err(e) => unreadable("", group, name, format!("読めない: {e}")),
+    }
+}
+
+/// A file that could not be read as text: invalid, with the one problem.
+fn unreadable(sha256: &str, group: &str, name: &str, message: String) -> Def {
+    Def {
+        id: format!("{group}/{name}"),
+        group: group.to_owned(),
+        name: name.to_owned(),
+        title: None,
+        file: format!("{group}/{name}.toml"),
+        standing: Standing::Invalid,
+        problems: vec![Problem { line: 0, message }],
+        net: None,
+        sha256: sha256.to_owned(),
+        text: String::new(),
+        previous: None,
+        calendar: None,
+    }
+}
+
+/// [`read_def_in`] for text already in hand: what the engine checks before it
+/// saves what the editor sends.
+pub fn def_of_text(text: &str, group: &str, name: &str, store: &Store, shared: Result<&Group, &String>, cals: &Calendars) -> Def {
     let id = format!("{group}/{name}");
     let file = format!("{group}/{name}.toml");
-    let bytes = std::fs::read(path);
-    let (sha256, text, read_problem) = match &bytes {
-        Ok(b) => match std::str::from_utf8(b) {
-            Ok(t) => (approved::hash(b), t.to_owned(), None),
-            Err(_) => (approved::hash(b), String::new(), Some("UTF-8 の文字として読めない".to_owned())),
-        },
-        Err(e) => (String::new(), String::new(), Some(format!("読めない: {e}"))),
-    };
-    let (mut net, mut problems) = match read_problem {
-        Some(message) => (None, vec![Problem { line: 0, message }]),
-        None => match jobnet::parse(&text) {
-            Ok(n) => (Some(n), Vec::new()),
-            Err(p) => (None, p),
-        },
+    let sha256 = approved::hash(text.as_bytes());
+    let (mut net, mut problems) = match jobnet::parse(text) {
+        Ok(n) => (Some(n), Vec::new()),
+        Err(p) => (None, p),
     };
     let mut calendar = None;
     if let Some(n) = &net {
@@ -109,7 +129,20 @@ pub fn read_def_in(path: &Path, group: &str, name: &str, store: &Store, shared: 
     };
     let previous = (standing == Standing::Unconfirmed).then(|| store.get(&id).map(|e| e.text.clone())).flatten();
     let title = net.as_ref().and_then(|n| n.name.clone());
-    Def { id, group: group.to_owned(), name: name.to_owned(), title, file, standing, problems, net, sha256, text, previous, calendar }
+    Def {
+        id,
+        group: group.to_owned(),
+        name: name.to_owned(),
+        title,
+        file,
+        standing,
+        problems,
+        net,
+        sha256,
+        text: text.to_owned(),
+        previous,
+        calendar,
+    }
 }
 
 /// [`scan_in`] with no calendars: a net that names one is invalid.

@@ -1,7 +1,7 @@
 //! What the window and the CLI say to the engine through its door, and what the engine says back.
 //!
 //! One request and one reply per connection (`ito_ipc::door`). The reply is
-//! text: TOML for `List`, `Show`, `Runs` and `History`, the log's tail for `Log`, a line for the rest.
+//! text: TOML for `List`, `Show`, `Runs`, `History` and `Versions`, the log's tail for `Log`, a line for the rest.
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 8;
+pub const PROTO: u32 = 9;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -83,6 +83,27 @@ pub enum Request {
     /// Stop the whole schedule: every time is written down as ⏸ 保留 until `Resume`. Runs by hand still go.
     Pause,
     Resume,
+    /// The editor's save: `text` becomes `jobnets/<id>.toml` and counts as confirmed
+    /// (the editor shows what it saves). `base_sha256` is what the file hashed to when
+    /// the editor read it (`None`: a new net); when the file is not that now, the save
+    /// is refused with `ほかで変わっています` unless `force`. The file as it was goes
+    /// under `versions/` first.
+    Save {
+        id: String,
+        text: String,
+        base_sha256: Option<String>,
+        force: bool,
+    },
+    /// The versions kept of the net `id`, newest first, as [`Versions`].
+    Versions {
+        id: String,
+    },
+    /// Put the version `version` of the net `id` back as its file (the file as it is
+    /// goes under `versions/` first). The net is unconfirmed until approved.
+    Restore {
+        id: String,
+        version: String,
+    },
 }
 
 pub fn door() -> Door<Request> {
@@ -121,6 +142,23 @@ impl Snapshot {
     }
 
     pub fn parse(text: &str) -> Result<Snapshot, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// What `Versions` answers: `versions/<group>/<name>/<version>.toml`'s stems, newest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Versions {
+    #[serde(default)]
+    pub versions: Vec<String>,
+}
+
+impl Versions {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<Versions, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 }

@@ -16,17 +16,18 @@ use std::time::{Duration, Instant};
 use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
-use koyomi_core::approved::Store;
+use koyomi_core::approved::{self, Store};
 use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
+use koyomi_core::group;
 use koyomi_core::held::Held;
 use koyomi_core::jobnet::Jobnet;
 use koyomi_core::run::{How, Run, State as RunState};
-use koyomi_core::scan::{scan_in, Def, Standing};
+use koyomi_core::scan::{def_of_text, link, scan_in, Def, Standing};
 use koyomi_core::when::{self, Kind, OnClosed};
 
 use crate::notify;
-use crate::proto::{self, Request, Runs, Snapshot};
+use crate::proto::{self, Request, Runs, Snapshot, Versions};
 
 mod events;
 mod files;
@@ -667,6 +668,99 @@ impl State {
         Ok(format!("確認した: {id}"))
     }
 
+    /// The editor's save (see [`Request::Save`]): checked as a file would be, the old
+    /// file kept under `versions/`, written whole, and approved at once.
+    fn save(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("保存できない: {}", self.warnings.join(" / ")));
+        }
+        let (group, name) = split_id(id)?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        // The file as it is now, not as the last scan saw it: an edit by hand a moment ago counts.
+        let now = std::fs::read(&path).ok().map(|b| approved::hash(&b));
+        if !force && now.as_deref() != base_sha256 {
+            return Err(format!("ほかで変わっています: {id}"));
+        }
+        let shared = group::load(&self.paths.jobnets.join(group).join("_group.toml"));
+        let def = def_of_text(text, group, name, &self.store, shared.as_ref(), &self.calendars);
+        let mut all: Vec<Def> = self.defs.iter().filter(|d| d.id != id).cloned().collect();
+        all.push(def);
+        link(&mut all);
+        let def = all.pop().expect("pushed");
+        if def.standing == Standing::Invalid {
+            let why: Vec<String> = def.problems.iter().map(|p| p.in_file(&def.file)).collect();
+            return Err(format!("保存できない:\n{}", why.join("\n")));
+        }
+        self.keep_version(&path, group, name)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+        }
+        ito_common::write_atomic(&path, text)?;
+        let mut next = self.store.clone();
+        next.approve(id, &def.sha256, text);
+        if let Some(dir) = self.paths.approved.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
+        self.store = next;
+        self.rescan();
+        Ok(format!("保存した: {id}"))
+    }
+
+    /// Copies the file at `path`, when there is one, to
+    /// `versions/<group>/<name>/<YYYYMMDD-HHMMSS>.toml` before it is written over.
+    fn keep_version(&self, path: &Path, group: &str, name: &str) -> Result<(), String> {
+        let Ok(old) = std::fs::read(path) else { return Ok(()) };
+        let dir = self.versions_dir(group, name);
+        std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", shown(&dir)))?;
+        let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let mut version = stamp.clone();
+        let mut n = 1;
+        while dir.join(format!("{version}.toml")).exists() {
+            n += 1;
+            version = format!("{stamp}-{n}");
+        }
+        ito_common::write_atomic(&dir.join(format!("{version}.toml")), old)
+    }
+
+    fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
+        self.paths.state.join("versions").join(group).join(name)
+    }
+
+    /// The versions kept of `id`, newest first.
+    fn versions(&self, id: &str) -> Result<String, String> {
+        let (group, name) = split_id(id)?;
+        let mut versions: Vec<String> = match std::fs::read_dir(self.versions_dir(group, name)) {
+            Ok(entries) => entries.flatten().filter_map(|e| e.file_name().to_str()?.strip_suffix(".toml").map(str::to_owned)).collect(),
+            Err(_) => Vec::new(),
+        };
+        versions.sort();
+        versions.reverse();
+        Ok(Versions { versions }.to_toml())
+    }
+
+    /// Puts a kept version back as the file (the file as it is is kept first). Not approved:
+    /// what comes back is looked at like a file written by hand.
+    fn restore(&mut self, id: &str, version: &str) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("戻せない: {}", self.warnings.join(" / ")));
+        }
+        let (group, name) = split_id(id)?;
+        if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-') {
+            return Err(format!("版の名前は 20261030-101500 のような形: {version}"));
+        }
+        let from = self.versions_dir(group, name).join(format!("{version}.toml"));
+        let text = std::fs::read(&from).map_err(|_| format!("版がない: {id} の {version}"))?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        self.keep_version(&path, group, name)?;
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+        }
+        ito_common::write_atomic(&path, text)?;
+        self.rescan();
+        Ok(format!("{version} に戻した: {id}（未確認。確かめてから流す）"))
+    }
+
     fn answer(&mut self, request: &Request) -> Result<String, String> {
         match request {
             Request::Status => Ok(self.status()),
@@ -691,8 +785,19 @@ impl State {
             Request::Skip { run, job } => self.runner.skip(run, job),
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
+            Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
+            Request::Versions { id } => self.versions(id),
+            Request::Restore { id, version } => self.restore(id, version),
         }
     }
+}
+
+/// `グループ/名前` as its two parts, or why it is not one.
+fn split_id(id: &str) -> Result<(&str, &str), String> {
+    if !koyomi_core::jobnet::is_id(id) {
+        return Err(format!("グループ/名前 の形で書く: {id}"));
+    }
+    id.split_once('/').ok_or_else(|| format!("グループ/名前 の形で書く: {id}"))
 }
 
 /// How many days before the holiday table ends the window's band and `koyomi check` start to say so.
@@ -852,6 +957,83 @@ mod tests {
         assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-30").is_none());
         done.how = How::Manual;
         assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-29").is_none());
+    }
+
+    fn temp_paths(tag: &str) -> Paths {
+        let root = std::env::temp_dir().join(format!("koyomi-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let app = root.join("app");
+        let state = root.join("state");
+        std::fs::create_dir_all(app.join("jobnets")).unwrap();
+        std::fs::create_dir_all(app.join("calendars")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        Paths {
+            jobnets: app.join("jobnets"),
+            calendars: app.join("calendars"),
+            config: app.join("koyomi.toml"),
+            approved: state.join("approved.toml"),
+            held: state.join("held.toml"),
+            app,
+            state,
+        }
+    }
+
+    fn standing_of(s: &State, id: &str) -> Option<Standing> {
+        s.defs.iter().find(|d| d.id == id).map(|d| d.standing)
+    }
+
+    #[test]
+    fn a_save_is_checked_kept_and_confirmed_and_a_restore_is_not() {
+        let paths = temp_paths("save");
+        let mut s = State::new(paths.clone());
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let one = "format = 1\nname = \"一\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let two = "format = 1\nname = \"二\"\n\n[[job]]\nid = \"a\"\nrun = [\"y.exe\"]\n";
+        // A new net: nothing to be based on.
+        assert_eq!(s.save("経理/集計", one, None, false), Ok("保存した: 経理/集計".to_owned()));
+        let file = paths.jobnets.join("経理").join("集計.toml");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 0);
+        // Saved again on a stale base: refused; on the right base: the old file is kept.
+        let hash = approved::hash(one.as_bytes());
+        assert_eq!(s.save("経理/集計", two, Some("stale"), false), Err("ほかで変わっています: 経理/集計".to_owned()));
+        assert_eq!(s.save("経理/集計", two, None, false), Err("ほかで変わっています: 経理/集計".to_owned()));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
+        assert!(s.save("経理/集計", two, Some(&hash), false).is_ok());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
+        let versions = Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions;
+        assert_eq!(versions.len(), 1);
+        assert_eq!(std::fs::read_to_string(paths.state.join("versions/経理/集計").join(format!("{}.toml", versions[0]))).unwrap(), one);
+        // What does not read is not saved, whatever the base.
+        let err = s.save("経理/集計", "format = 1\n[[job]]\nid = \"a\"\n", Some("x"), true).unwrap_err();
+        assert!(err.starts_with("保存できない:"), "{err}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
+        // A loop through a child net is caught against the other nets too.
+        let child = "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/集計\"\n";
+        assert!(s.save("経理/子", child, None, false).is_ok());
+        let looped = "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/子\"\n";
+        let err = s.save("経理/集計", looped, None, true).unwrap_err();
+        assert!(err.contains("輪") || err.contains("子ジョブネット"), "{err}");
+        // Not a group/name: refused before anything is touched.
+        assert!(s.save("集計", two, None, true).is_err());
+        assert!(s.save("../x/y", two, None, true).is_err());
+        // A restore puts the version back, keeps today's, and leaves the net unconfirmed.
+        assert_eq!(s.restore("経理/集計", "20000101-000000"), Err("版がない: 経理/集計 の 20000101-000000".to_owned()));
+        assert!(s.restore("経理/集計", "../../approved").is_err());
+        assert!(s.restore("経理/集計", "nope").is_err());
+        let said = s.restore("経理/集計", &versions[0]).unwrap();
+        assert!(said.contains("未確認"), "{said}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Unconfirmed));
+        assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 2);
+        // Forced over a hand edit: saved, and the hand edit kept as a version.
+        std::fs::write(&file, "format = 1\n").unwrap();
+        assert!(s.save("経理/集計", two, Some(&hash), false).is_err());
+        assert!(s.save("経理/集計", two, Some(&hash), true).is_ok());
+        assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 3);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
     #[test]
