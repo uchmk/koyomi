@@ -196,3 +196,19 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 16.7 | Select a net, press Approve… so its box shows, then press F1 and Enter | The help closes nothing behind it: Enter does not press the box's button; Esc closes the help first, then the box |
 | 16.8 | Open the palette and look at the Keys entry | It shows F1 (the first key bound to `help`); picking it opens the help |
 | 16.9 | Press Ctrl+, while the help is open | The settings cover the tree and the help is closed; Esc brings back the tree without the help |
+
+## 17. Settings: Notifications
+
+| # | Do | Expect |
+|---|---|---|
+| 17.1 | With no `koyomi.toml`, open the settings and the Notifications page | A table with the columns Ended ok / Ended abnormally: the system notification is on for Ended abnormally only, no sound, no webhook; "Keep the addresses out of the file" is on; nothing is written yet |
+| 17.2 | Switch the system notification on for Ended ok | `koyomi.toml` gets `[notify]` with `system = ["done", "failed"]` and nothing else; within 5 s `koyomi list` shows no note, and a net that ends well is told of (10.4) |
+| 17.3 | Switch the sound on for Ended abnormally and pick another sound | `sound = ["failed"]` and `sound_failed = "<name>"` are written; a failing net plays it (10.5) |
+| 17.4 | Press ↺ at the top | The switches go back to 17.1; `[notify]` keeps only what still differs from the defaults (the webhooks and the switch stay) |
+| 17.5 | Add a webhook with an `https://ntfy.sh/<topic>` address, ntfy, for Ended abnormally | `koyomi.toml` gets `[[notify.webhooks]]` with `url = "secret:webhook-1"`; the address is in Credential Manager under `uchmk/koyomi/webhook-1`; the page shows the address; a failing net posts to the topic |
+| 17.6 | Press "Send a test" at the top, then the test button on the webhook's row | A system notification `koyomi: 試しの通知` (the first with the sound when one is on); the topic gets the same text; the second sends to that topic only |
+| 17.7 | Switch "Keep the addresses out of the file" off | `hide_webhooks = false` and the address itself are written; the credential is deleted; `koyomi check koyomi.toml` says nothing about it |
+| 17.8 | Write `webhook = "https://ntfy.sh/<topic>"` by hand with `hide_webhooks` unset, then open the page | The page shows the red note about the plain-text address (10.8) with the address in the webhook's row; changing anything on the page moves the address to the credential store and `secret:webhook-1` into the file; the note goes |
+| 17.9 | Edit `[notify]` with a text editor while the page is open | Within 2 s the page shows it; a line it cannot read is shown in red on the page and the switches stay |
+| 17.10 | Open the page with `concurrency = 2` and a comment in `koyomi.toml`, change a switch | Only `[notify]` changed; `concurrency`, the comment and the line order stay |
+| 17.11 | Search the settings for `webhook` or `[notify]` | The results show the Notifications page |

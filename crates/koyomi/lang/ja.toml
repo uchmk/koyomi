@@ -63,6 +63,8 @@ no_folder = "このマシンには設定のフォルダがありません。"
 sample = "このテーマでの見本"
 keys = "キー"
 keys_lead = "操作ごとのキー。キーを押して変え、↺ で既定に戻します。keymap.toml には変えた分だけを書きます。"
+notify = "通知"
+notify_lead = "回が終わったときの知らせ方。窓が開いていなくても出ます。koyomi.toml の [notify] に書き、エンジンは 5 秒以内に読み直します。"
 
 [standing]
 confirmed = "確認済み"
@@ -95,6 +97,12 @@ autostart = "時刻で流す定義がありますが、サインイン時に koy
 
 [notify]
 missed = "{0}: {1} の回は時刻を過ぎました（PC が止まっていました）"
+done = "正常終了"
+failed = "異常終了"
+done_sound = "正常終了の音"
+failed_sound = "異常終了の音"
+test_title = "koyomi: 試しの通知"
+test_body = "回が終わったときはこのように知らせます。"
 
 [weekday]
 mon = "月"

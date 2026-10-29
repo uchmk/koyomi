@@ -33,7 +33,26 @@ fn icon(side: u32) -> Vec<u8> {
 /// `[notify]` of `config` with koyomi's defaults where nothing is written, and
 /// the lines a person should see (an unknown event, a plain-text address).
 /// The `secret:` addresses are not read back here: see [`NotifyCfg::reveal`].
+/// This is what sends: a plain-text address under `hide_webhooks` is taken
+/// out, so nothing goes there. The settings page reads with [`parse`].
 pub fn read(config: &Config) -> (NotifyCfg, Vec<String>) {
+    let (mut n, notes) = parse(config);
+    if n.hide_webhooks() {
+        // The note is already there, from `parse`.
+        for p in &mut n.places {
+            if ito_notify::is_http(&p.url) {
+                p.url.clear();
+            }
+        }
+    }
+    (n, notes)
+}
+
+/// Like [`read`], but a plain-text address under `hide_webhooks` stays (the
+/// settings' Notifications page shows it, and its first write moves it to
+/// the credential store, as `hide_webhooks` means). The note is given all
+/// the same.
+pub fn parse(config: &Config) -> (NotifyCfg, Vec<String>) {
     let mut notes = Vec::new();
     let mut n: NotifyCfg = match toml::Value::Table(config.notify.clone()).try_into() {
         Ok(n) => n,
@@ -50,15 +69,16 @@ pub fn read(config: &Config) -> (NotifyCfg, Vec<String>) {
     }
     n.hide_webhooks.get_or_insert(true);
     n.check(&EVENTS, PATH, &mut notes);
-    if n.hide_webhooks() {
-        for p in &mut n.places {
-            if ito_notify::is_http(&p.url) {
-                notes.push(PLAIN.to_owned());
-                p.url.clear();
-            }
-        }
+    if n.hide_webhooks() && n.places.iter().any(|p| ito_notify::is_http(&p.url)) {
+        notes.push(PLAIN.to_owned());
     }
     (n, notes)
+}
+
+/// "Send a test" on the settings' Notifications page, as the page sets
+/// things now (`p`): every way, or only the webhook `what` names.
+pub fn test(p: &ito_prefs::Notify, what: ito_prefs::Test, title: &str, body: &str) {
+    ito_prefs::test_notify(&EVENTS, p, what, APP, icon, title, body);
 }
 
 /// The event a run that ended is, and the title and body told of it: the
@@ -149,6 +169,11 @@ mod tests {
         assert!(notes.is_empty(), "{notes:?}");
         assert_eq!(n.places[0].url, "https://ntfy.sh/koyomi");
         assert_eq!(n.places[0].states, vec!["failed".to_owned()]);
+        // The settings page keeps the address, so it can show it and
+        // move it to the store; it is noted all the same.
+        let (n, notes) = parse(&cfg("webhook = \"https://ntfy.sh/koyomi\"\n"));
+        assert_eq!(notes, vec![PLAIN.to_owned()]);
+        assert_eq!(n.places[0].url, "https://ntfy.sh/koyomi");
     }
 
     #[test]

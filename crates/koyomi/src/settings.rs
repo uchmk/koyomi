@@ -1,8 +1,10 @@
 //! The settings screen (Ctrl+,): `ito-prefs` draws the nav and the cards, and
 //! the rows common to every uchmk app (the language, the size, the clock,
-//! the window, the theme) write common.toml. koyomi's own page is the Keys
-//! page (each operation's keys, written to keymap.toml). The definitions
-//! and koyomi.toml are not settings: they stay files, as DECISIONS.md has it.
+//! the window, the theme) write common.toml. koyomi's own pages are the
+//! Notifications page (`[notify]` of koyomi.toml, the one table of it the
+//! screen writes) and the Keys page (each operation's keys, written to
+//! keymap.toml). The definitions and the rest of koyomi.toml are not
+//! settings: they stay files, as DECISIONS.md has it.
 
 use egui::{vec2, Align2, FontId, Sense, Stroke, StrokeKind, Ui};
 use ito_common::{themes_dir, CommonChange};
@@ -12,9 +14,10 @@ use crate::App;
 
 pub const GENERAL: usize = 0;
 pub const THEME: usize = 1;
-pub const KEYS: usize = 2;
-pub const ADVANCED: usize = 3;
-pub const ABOUT: usize = 4;
+pub const NOTIFY: usize = 2;
+pub const KEYS: usize = 3;
+pub const ADVANCED: usize = 4;
+pub const ABOUT: usize = 5;
 
 /// The keymap's layers and the words that name them on the Keys page.
 const LAYERS: [(&str, &str); 1] = [("app", "keys.main")];
@@ -46,10 +49,13 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (THEME, "theme"),
         (THEME, "dark_theme"),
         (THEME, "light_theme"),
+        (NOTIFY, "[notify]"),
+        (NOTIFY, "koyomi.toml"),
         (KEYS, "keymap.toml"),
         (KEYS, "prepend_keymap"),
     ]
     .into_iter()
+    .chain(ito_prefs::notify_index(w).into_iter().map(|t| (NOTIFY, t)))
     .chain(keys)
     .chain(layers)
     .chain(ito_prefs::window_index(more).into_iter().chain(ito_prefs::startup_index(more)).map(|t| (GENERAL, t)))
@@ -72,6 +78,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let page_words = [
         (tr("settings.general"), tr("settings.general_lead")),
         (tr("settings.theme"), tr("settings.theme_lead")),
+        (tr("settings.notify"), tr("settings.notify_lead")),
         (tr("settings.keys"), tr("settings.keys_lead")),
         (adv.0.to_owned(), adv.1.to_owned()),
         (about.0.to_owned(), about.1.to_owned()),
@@ -86,8 +93,13 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let own =
         app.prefs.base.as_deref().map_or_else(|| crate::keymap::FILE.to_owned(), |b| crate::prefs::keymap_path(b).display().to_string());
     let mut key_edits = Vec::new();
+    // The Notifications page as it is set now, when it was changed; and
+    // what "Send a test" asked for.
+    let mut notify_new: Option<ito_prefs::Notify> = None;
+    let mut test = None;
     let prefs = &mut app.prefs;
     let keys_edit = &mut prefs.keys_edit;
+    let (notify, notify_warn, drafts) = (&prefs.notify, &prefs.notify_warn, &mut prefs.notify_drafts);
     let mut bug = false;
     let mut forget = false;
     let mut startup_toggled = None;
@@ -119,6 +131,28 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             asked.extend(ito_prefs::theme_page(ui, l, w, themes, (&t, &d, &li), &note, |ui| preview(ui, &tr("settings.sample"), &runs)));
             // Read at the next start: the fonts are loaded once, in the background.
             asked.extend(ito_prefs::mono_font_card(ui, l, more, common.mono_font_or_default()));
+        }
+        NOTIFY => {
+            for n in notify_warn {
+                ito_prefs::status(ui, n, l.c.err);
+            }
+            let mut n = notify.page(&crate::notify::EVENTS);
+            let was = n.clone();
+            let (done, done_sound, failed, failed_sound) =
+                (tr("notify.done"), tr("notify.done_sound"), tr("notify.failed"), tr("notify.failed_sound"));
+            let ends = [
+                ito_prefs::End { name: &done, color: l.c.done, sound: &done_sound },
+                ito_prefs::End { name: &failed, color: l.c.err, sound: &failed_sound },
+            ];
+            // koyomi's own defaults: only 異常 is told, without a sound, and
+            // the addresses are kept in the credential store.
+            let defaults = crate::notify::parse(&koyomi_core::config::Config::default()).0.page(&crate::notify::EVENTS);
+            if let Some(what) = ito_prefs::notify_page(ui, l, w, &ends, &mut n, &defaults, drafts) {
+                test = Some((what, n.clone()));
+            }
+            if n != was {
+                notify_new = Some(n);
+            }
         }
         KEYS => {
             let layer_name = |n: &str| LAYERS.iter().find(|(id, _)| *id == n).map_or_else(|| n.to_owned(), |(_, k)| tr(k));
@@ -154,6 +188,12 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     if bug {
         app.report_bug(ui.ctx());
     }
+    if let Some((what, n)) = test {
+        crate::notify::test(&n, what, &tr("notify.test_title"), &tr("notify.test_body"));
+    }
+    if let Some(n) = notify_new {
+        app.prefs.notify_edit(n, &no_folder);
+    }
     if forget {
         if let Some(dir) = &state_dir {
             let dir = dir.clone();
@@ -177,7 +217,8 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 }
             }
             // common.toml and keymap.toml are moved aside on a thread; the
-            // definitions and koyomi.toml are the work, and stay.
+            // definitions and koyomi.toml are the work, and stay (the
+            // Notifications page has its own ↺, which writes `[notify]`).
             ito_prefs::Advanced::Reset => app.prefs.reset(&no_folder),
         }
     }

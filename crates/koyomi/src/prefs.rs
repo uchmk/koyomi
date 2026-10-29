@@ -1,17 +1,23 @@
 //! What the settings screen reads and writes (ito's `docs/common-spec.md`):
 //! common.toml (the language, the scale, the theme and the clock, shared by
-//! every uchmk app), the person's themes and koyomi's keymap.toml. The files
-//! are watched every 2 s and written on threads of their own; what was read
-//! comes back as a [`Reload`], which [`Prefs::pump`] folds in. The UI thread
-//! never touches the disk. (minato's prefs.rs, without the backup.)
+//! every uchmk app), the person's themes, koyomi's keymap.toml and the
+//! `[notify]` table of koyomi.toml (the Notifications page; the rest of
+//! koyomi.toml stays a file). The files are watched every 2 s and written on
+//! threads of their own; what was read comes back as a [`Reload`], which
+//! [`Prefs::pump`] folds in. The UI thread never touches the disk.
+//! (minato's prefs.rs, without the backup.)
 
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use ito_common::{common_path, edit_common, themes_dir, write_atomic, Common, CommonChange};
-use ito_prefs::State;
+use ito_notify::webhook::Place;
+use ito_prefs::{Notify, NotifyCfg, State};
 use ito_theme::Theme;
+use koyomi_core::config::Config;
+
+use crate::notify::EVENTS;
 
 /// How often the files are looked at.
 const WATCH: Duration = Duration::from_secs(2);
@@ -23,7 +29,55 @@ pub enum Reload {
     /// keymap.toml's text (`None` when there is none), or why it could not
     /// be read.
     Keymap(Result<Option<String>, String>),
+    /// `[notify]` of koyomi.toml, with its `secret:` addresses read back,
+    /// and what to warn of; or why the file could not be read.
+    Config(Result<(NotifyCfg, Vec<String>), String>),
     Failed(String),
+}
+
+/// koyomi.toml in `base`'s `koyomi` folder.
+pub fn config_path(base: &Path) -> PathBuf {
+    ito_common::app_dir_in(base, "koyomi").join("koyomi.toml")
+}
+
+/// `[notify]` of the koyomi.toml at `path` (none: the defaults) as the page
+/// shows it, the `secret:` addresses read back from the credential store.
+/// Blocks on the store: call it off the UI thread.
+fn read_config(path: &Path) -> Result<(NotifyCfg, Vec<String>), String> {
+    let config = Config::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let (mut n, mut notes) = crate::notify::parse(&config);
+    notes.extend(n.reveal("koyomi"));
+    Ok((n, notes))
+}
+
+/// One lock for every writer of koyomi.toml from the window.
+static CONFIG_ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set `edits` (`[notify]` keys, already TOML) and `webhooks` in the
+/// koyomi.toml at `path` (none yet is an empty one), written only when that
+/// changes it; the rest of the file keeps its lines and comments. Call it
+/// off the UI thread.
+pub fn write_config(path: &Path, edits: &[(&str, String)], webhooks: Option<&[Place]>) -> Result<(), String> {
+    let at = |e: String| format!("{}: {e}", path.display());
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(at(e.to_string())),
+    };
+    let mut new = text.clone();
+    for (key, value) in edits {
+        new = ito_common::set_key(&new, Some("notify"), key, value).map_err(at)?;
+    }
+    if let Some(places) = webhooks {
+        new = ito_prefs::write_webhooks(&new, places, true).map_err(at)?;
+    }
+    if new != text {
+        if let Some(dir) = path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
+        }
+        write_atomic(path, &new).map_err(at)?;
+    }
+    Ok(())
 }
 
 /// keymap.toml in `base`'s `koyomi` folder.
@@ -92,6 +146,12 @@ pub struct Prefs {
     pub keymap_new: Option<Option<String>>,
     /// The Keys page's search and the keys it is taking.
     pub keys_edit: ito_prefs::KeysEdit,
+    /// `[notify]` of koyomi.toml as the Notifications page shows it (the
+    /// `secret:` addresses read back), and what it warns of.
+    pub notify: NotifyCfg,
+    pub notify_warn: Vec<String>,
+    /// The Notifications page's fields while they are typed in.
+    pub notify_drafts: ito_prefs::Drafts,
     tx: Sender<Reload>,
     rx: Receiver<Reload>,
     wake: Option<egui::Context>,
@@ -120,6 +180,9 @@ impl Prefs {
             keymap: None,
             keymap_new: None,
             keys_edit: ito_prefs::KeysEdit::default(),
+            notify: crate::notify::parse(&Config::default()).0,
+            notify_warn: Vec::new(),
+            notify_drafts: ito_prefs::Drafts::new(),
             tx,
             rx,
             wake: None,
@@ -129,10 +192,16 @@ impl Prefs {
         }
     }
 
-    /// common.toml, the themes and keymap.toml in `base`.
+    /// common.toml, the themes and keymap.toml in `base`. koyomi.toml's
+    /// `[notify]` comes a moment later (the credential store is slow): a
+    /// thread reads it and [`Prefs::pump`] takes it in.
     pub fn load(base: Option<PathBuf>) -> Self {
         let mut p = Self::empty();
         if let Some(b) = &base {
+            let (tx, path) = (p.tx.clone(), config_path(b));
+            std::thread::spawn(move || {
+                let _ = tx.send(Reload::Config(read_config(&path)));
+            });
             match Common::read(b) {
                 Ok((c, w)) => (p.common, p.common_warn) = (c, w),
                 Err(e) => p.common_warn = vec![e],
@@ -156,8 +225,8 @@ impl Prefs {
         let os_ctx = ctx.clone();
         self.os_light = ito_common::OsLight::watch(WATCH, move || os_ctx.request_repaint());
         let Some(base) = self.base.clone() else { return };
-        let (common, themes, keymap) = (common_path(&base), themes_dir(&base), keymap_path(&base));
-        let mut paths = vec![common.clone(), themes.clone(), keymap.clone()];
+        let (common, themes, keymap, config) = (common_path(&base), themes_dir(&base), keymap_path(&base), config_path(&base));
+        let mut paths = vec![common.clone(), themes.clone(), keymap.clone(), config.clone()];
         // A theme file edited in place; one added or taken away changes the
         // folder's time.
         if let Ok(entries) = std::fs::read_dir(&themes) {
@@ -176,6 +245,9 @@ impl Prefs {
             }
             if changed.contains(&keymap) {
                 sent &= tx.send(Reload::Keymap(read_keymap(&keymap))).is_ok();
+            }
+            if changed.contains(&config) {
+                sent &= tx.send(Reload::Config(read_config(&config))).is_ok();
             }
             ctx.request_repaint();
             sent
@@ -204,6 +276,10 @@ impl Prefs {
                     self.keymap = t;
                     self.keymap_new = Some(None);
                 }
+                Reload::Config(Ok((n, w))) => (self.notify, self.notify_warn) = (n, w),
+                // Unreadable (being written, or a line the engine refuses
+                // too): the page keeps what it had, and says so.
+                Reload::Config(Err(e)) => self.notify_warn = vec![e],
                 Reload::Failed(e) => {
                     self.scale_wanted = None;
                     self.failed = Some(e);
@@ -285,6 +361,35 @@ impl Prefs {
             let r = match write_keymap(&path, &edits) {
                 Ok(()) => Reload::Keymap(read_keymap(&path)),
                 Err(e) => Reload::Failed(e),
+            };
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// Write the Notifications page's `page` into koyomi.toml's `[notify]` on
+    /// a thread (only the keys that differ from the file; the webhook
+    /// addresses go to the credential store while `hide_webhooks` is on),
+    /// then read it again. The engine reads koyomi.toml again within 5 s.
+    pub fn notify_edit(&self, page: Notify, no_folder: &str) {
+        if page == self.notify.page(&EVENTS) {
+            return;
+        }
+        let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let Some(base) = self.base.clone() else {
+            Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
+            return;
+        };
+        let now = self.notify.clone();
+        std::thread::spawn(move || {
+            let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let path = config_path(&base);
+            let edits = now.edits(&EVENTS, &page);
+            let r = match now.webhooks_to_write("koyomi", &EVENTS, &page) {
+                Ok(webhooks) => match write_config(&path, &edits, webhooks.as_deref()) {
+                    Ok(()) => Reload::Config(read_config(&path)),
+                    Err(e) => Reload::Failed(e),
+                },
+                Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
             };
             Self::send_back(&tx, &wake, r);
         });

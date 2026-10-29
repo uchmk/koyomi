@@ -64,6 +64,8 @@ no_folder = "This machine has no config folder."
 sample = "A sample in this theme"
 keys = "Keys"
 keys_lead = "Each operation's keys. Press a key to change one, ↺ to put the built-in ones back. Only what you change is written to keymap.toml."
+notify = "Notifications"
+notify_lead = "How koyomi tells you that a run ended, whether or not its window is open. Written to [notify] in koyomi.toml; the engine reads it again within 5 s."
 
 [standing]
 confirmed = "approved"
@@ -96,6 +98,12 @@ autostart = "A definition runs on a schedule, but koyomi does not start at sign-
 
 [notify]
 missed = "{0}: the run at {1} was passed over (the PC was off)"
+done = "Ended ok"
+failed = "Ended abnormally"
+done_sound = "Sound when a run ended ok"
+failed_sound = "Sound when a run ended abnormally"
+test_title = "koyomi: test notification"
+test_body = "A run that ended is told like this."
 
 [weekday]
 mon = "Mon"
