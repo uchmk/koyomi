@@ -12,19 +12,22 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use chrono::{Local, NaiveDate};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::Store;
 use koyomi_core::config::Config;
-use koyomi_core::run::How;
+use koyomi_core::run::{How, State as RunState};
 use koyomi_core::scan::{scan, Def, Standing};
+use koyomi_core::when;
 
 use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot};
 
 mod runner;
+mod schedule;
 use runner::Runner;
+use schedule::Schedule;
 
 /// Where everything of the engine's lives.
 #[derive(Clone, Debug)]
@@ -98,6 +101,8 @@ struct State {
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
     bad_config: Option<String>,
     runner: Runner,
+    /// The clock: when `[[when]]` was last looked at.
+    schedule: Schedule,
     /// `[notify]` as runs are told with: the `secret:` addresses read back
     /// (on a thread; until it answers they are not sent to).
     notify: NotifyCfg,
@@ -121,6 +126,7 @@ impl State {
             Err(e) => (Config::default(), Some(e)),
         };
         let runner = Runner::new(&paths.state, config);
+        let schedule = Schedule::new(&paths.state);
         let (reveal_tx, reveal_rx) = mpsc::channel();
         let mut s = State {
             paths,
@@ -130,6 +136,7 @@ impl State {
             warnings: Vec::new(),
             bad_config,
             runner,
+            schedule,
             notify: NotifyCfg::default(),
             notify_raw: None,
             notify_notes: Vec::new(),
@@ -178,10 +185,44 @@ impl State {
                 self.reveal_notes = notes;
             }
         }
-        for r in self.runner.take_over() {
+        let (runs, missed) = notify::group_missed(self.runner.take_over());
+        for r in runs {
             let (event, title, body) = notify::words(&self.words, &r);
             notify::tell(&self.notify, event, &title, &body);
         }
+        for runs in missed {
+            let (event, title, body) = notify::missed_words(&self.words, &runs);
+            notify::tell(&self.notify, event, &title, &body);
+        }
+    }
+
+    /// Starts what `[[when]]` says is due since the last look, and records
+    /// each time that did not start with why (`schedule::judge`).
+    fn tick_schedule(&mut self) {
+        let now = Utc::now();
+        let Some(checked) = self.schedule.look(now) else { return };
+        let mut due: Vec<(usize, DateTime<Utc>, NaiveDateTime)> = Vec::new();
+        for (i, d) in self.defs.iter().enumerate() {
+            if let Some(net) = &d.net {
+                due.extend(when::due(&Local, &net.when, checked, now).into_iter().map(|(instant, planned)| (i, instant, planned)));
+            }
+        }
+        for (i, instant, planned) in &due {
+            let def = self.defs[*i].clone();
+            let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
+            let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running);
+            match verdict {
+                schedule::Verdict::Start => {
+                    if let Err(e) = self.runner.start(&def, planned.date(), How::Schedule, Some(*planned)) {
+                        self.runner.not_run(&def, *planned, RunState::Locked, &e);
+                    }
+                }
+                schedule::Verdict::NotRun(state, reason) => {
+                    self.runner.not_run(&def, *planned, state, &reason);
+                }
+            }
+        }
+        self.schedule.looked(now, !due.is_empty());
     }
 
     /// Reads `approved.toml` again; only while it does not read (the engine is its one writer).
@@ -247,7 +288,7 @@ impl State {
             None => Local::now().date_naive(),
         };
         let def = def.clone();
-        self.runner.start(&def, date, How::Manual)
+        self.runner.start(&def, date, How::Manual, None)
     }
 
     fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
@@ -352,6 +393,7 @@ pub fn run() -> i32 {
                 }
                 if stop {
                     state.runner.flush();
+                    state.schedule.flush();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -361,6 +403,7 @@ pub fn run() -> i32 {
             Err(mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
         state.runner.tick();
+        state.tick_schedule();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);

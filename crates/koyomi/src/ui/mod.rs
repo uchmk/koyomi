@@ -14,8 +14,9 @@ use std::time::Duration;
 
 use ito_a11y::Role;
 use ito_common::kept;
-use koyomi_core::run::Run;
+use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
+use koyomi_core::when;
 use serde::{Deserialize, Serialize};
 
 use crate::proto::{Request, Runs, Snapshot};
@@ -85,6 +86,8 @@ pub struct Browser {
     /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
     seen_notes: BTreeSet<String>,
     notes: Vec<String>,
+    /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
+    autostart_off: bool,
 }
 
 impl Browser {
@@ -170,6 +173,7 @@ impl Browser {
             ended: Vec::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
+            autostart_off: false,
         }
     }
 
@@ -185,6 +189,9 @@ impl Browser {
                             self.notes.push(n.clone());
                         }
                     }
+                    let timed =
+                        s.defs.iter().any(|d| d.standing == Standing::Confirmed && d.net.as_ref().is_some_and(|n| !n.when.is_empty()));
+                    self.autostart_off = timed && !ito_common::startup::enabled("koyomi");
                     self.snap = Some(s);
                 }
                 Msg::Runs(r) => {
@@ -283,6 +290,13 @@ impl Browser {
                 }
             });
         }
+        if self.autostart_off {
+            egui::Panel::top("autostart").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
+                let head = format!("{} {}", ito_a11y::State::Warning.mark(), t.tr("band.autostart"));
+                let r = ui.add(egui::Label::new(egui::RichText::new(head.clone()).color(c.wait_text())).wrap());
+                ito_a11y::say(&r, Role::Label, &head);
+            });
+        }
         egui::Panel::left("tree").default_size(320.0).show(ui, |ui| {
             if modal {
                 ui.disable();
@@ -378,12 +392,25 @@ impl Browser {
         let c = ito_theme::colors();
         let r = ui.label(egui::RichText::new(t.tr("run.today")).strong().color(c.dim));
         ito_a11y::say(&r, Role::Heading, t.tr("run.today"));
-        if self.snap.is_none() {
-            return;
+        let Some(snap) = &self.snap else { return };
+        // What is still to come today, soonest first: a time, not a run, so not a row to open.
+        let now = chrono::Local::now().naive_local();
+        let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
+        let mut coming: Vec<(chrono::NaiveDateTime, String)> = Vec::new();
+        for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed) {
+            if let Some(net) = &d.net {
+                coming.extend(when::between(&net.when, now, end).into_iter().map(|at| (at, d.label().to_owned())));
+            }
         }
-        if self.runs.is_empty() {
+        coming.sort();
+        if self.runs.is_empty() && coming.is_empty() {
             ui.add(egui::Label::new(t.tr("run.none")).wrap());
             return;
+        }
+        for (at, title) in &coming {
+            let text = format!("{}  {title}  {}", show::tag(t, State::Waiting), show::hms(*at));
+            let r = ui.label(egui::RichText::new(format!("  {text}")).color(graph::colour(&c, State::Waiting)));
+            ito_a11y::say(&r, Role::Row, &text);
         }
         let mut pick = None;
         let mut runs: Vec<&Run> = self.runs.iter().collect();
@@ -492,6 +519,26 @@ impl Browser {
         }
         for l in review::body(t, &def) {
             ui.label(l);
+        }
+        if let Some(net) = &def.net {
+            ui.add_space(6.0);
+            if net.when.is_empty() {
+                ui.label(egui::RichText::new(t.tr("run.next_none")).color(c.dim));
+            } else {
+                let head = t.trf("run.next", &["10"]);
+                let r = ui.label(egui::RichText::new(&head).strong().color(c.dim));
+                ito_a11y::say(&r, Role::Heading, &head);
+                if def.standing != Standing::Confirmed {
+                    ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
+                }
+                let rows = show::next_rows(t, &net.when, chrono::Local::now().naive_local(), 10);
+                if rows.is_empty() {
+                    ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
+                }
+                for row in rows {
+                    ui.label(format!("  {row}"));
+                }
+            }
         }
         ui.add_space(8.0);
         ui.horizontal(|ui| {
@@ -652,6 +699,7 @@ mod tests {
             ended: Vec::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
+            autostart_off: false,
         }
     }
 
@@ -754,7 +802,7 @@ mod tests {
             pos: None,
             timeout: None,
         };
-        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])] };
+        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new() };
         let now = chrono::Local::now().naive_local();
         let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
@@ -781,6 +829,7 @@ mod tests {
         let net = Jobnet {
             name: None,
             jobs: vec![Job { id: "a".into(), name: None, run: vec!["x".into()], dir: None, after: Vec::new(), pos: None, timeout: None }],
+            when: Vec::new(),
         };
         let now = chrono::Local::now().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);

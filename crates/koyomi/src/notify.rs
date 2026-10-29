@@ -12,7 +12,7 @@ use ito_i18n::Table;
 use ito_notify::toast::App;
 use ito_prefs::{Event, NotifyCfg, DONE_FAILED};
 use koyomi_core::config::Config;
-use koyomi_core::run::Run;
+use koyomi_core::run::{Run, State};
 
 use crate::show;
 
@@ -73,6 +73,42 @@ pub fn words(t: &Table, r: &Run) -> (&'static str, String, String) {
     }
     lines.push(format!("{}  {}", r.id, r.date));
     (event, title, lines.join("\n"))
+}
+
+/// Splits off the runs that are 時刻を過ぎた, in groups of one net each (in
+/// the order the nets first come), so a net whose times the PC slept through
+/// is told of once. The rest keep their order.
+pub fn group_missed(runs: Vec<Run>) -> (Vec<Run>, Vec<Vec<Run>>) {
+    let mut rest = Vec::new();
+    let mut missed: Vec<Vec<Run>> = Vec::new();
+    for r in runs {
+        if r.state != State::Missed {
+            rest.push(r);
+        } else if let Some(g) = missed.iter_mut().find(|g| g[0].jobnet == r.jobnet) {
+            g.push(r);
+        } else {
+            missed.push(vec![r]);
+        }
+    }
+    (rest, missed)
+}
+
+/// The words for the times of one net the PC slept through (`runs`, one net,
+/// at least one): `経理/月次締め: 2:00 の回は時刻を過ぎました（PC が止まっていました）`,
+/// then each run's id and day. The event is `failed`: a time that passed is
+/// something to look at.
+pub fn missed_words(t: &Table, runs: &[Run]) -> (&'static str, String, String) {
+    let first = &runs[0];
+    let title = format!("{}  {}", show::tag(t, State::Missed), first.title);
+    let same_day = runs.iter().all(|r| r.date == first.date);
+    let times: Vec<String> = runs
+        .iter()
+        .filter_map(|r| r.planned)
+        .map(|p| if same_day { p.format("%-H:%M").to_string() } else { p.format("%-m/%-d %-H:%M").to_string() })
+        .collect();
+    let mut lines = vec![t.trf("notify.missed", &[&first.jobnet, &times.join("、")])];
+    lines.extend(runs.iter().map(|r| format!("{}  {}", r.id, r.date)));
+    ("failed", title, lines.join("\n"))
 }
 
 /// Tells of `event` in every way `n` turns on for it.
@@ -163,5 +199,30 @@ mod tests {
         assert_eq!(event, "done");
         assert_eq!(title, "✓ 正常終了  月次締め");
         assert!(body.starts_with("✓ 正常終了  r  月次締め  2026-10-30"), "{body}");
+    }
+
+    #[test]
+    fn the_times_a_net_slept_through_are_told_once_per_net() {
+        let (t, _) = crate::i18n::table("ja");
+        let net = koyomi_core::jobnet::parse("format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let now = at("2026-10-30 09:00:00");
+        let miss = |id: &str, jobnet: &str, p: &str| Run::not_run(id, jobnet, "月次締め", &p[..10], at(p), State::Missed, "x", &net, now);
+        let a = miss("20261030-090000-00", "経理/月次締め", "2026-10-30 02:00:00");
+        let b = miss("20261030-090000-01", "経理/月次締め", "2026-10-30 06:30:00");
+        let c = miss("20261030-090000-02", "経理/日次", "2026-10-30 07:00:00");
+        let mut done = Run::new("r", "経理/日次", "日次", "2026-10-30", How::Manual, &net, now);
+        done.start("a", now);
+        done.finish("a", Outcome::Exited(0), now);
+        let (rest, missed) = group_missed(vec![a, done, b, c]);
+        assert_eq!(rest.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), vec!["r"]);
+        assert_eq!(missed.len(), 2);
+        let (event, title, body) = missed_words(&t, &missed[0]);
+        assert_eq!(event, "failed");
+        assert_eq!(title, "↷ 時刻を過ぎた  月次締め");
+        assert_eq!(body, "経理/月次締め: 2:00、6:30 の回は時刻を過ぎました（PC が止まっていました）\n20261030-090000-00  2026-10-30\n20261030-090000-01  2026-10-30");
+        let two = vec![miss("x", "g/n", "2026-10-29 02:00:00"), miss("y", "g/n", "2026-10-30 02:00:00")];
+        let (_, _, body) = missed_words(&t, &two);
+        assert!(body.starts_with("g/n: 10/29 2:00、10/30 2:00 の回は"), "{body}");
     }
 }

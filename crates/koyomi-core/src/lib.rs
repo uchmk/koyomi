@@ -10,3 +10,4 @@ pub mod history;
 pub mod jobnet;
 pub mod run;
 pub mod scan;
+pub mod when;

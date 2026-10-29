@@ -238,6 +238,9 @@ pub struct Run {
     pub ended: Option<NaiveDateTime>,
     pub state: State,
     pub jobs: Vec<JobRun>,
+    /// Why a run that never started was not run (時刻を過ぎた, スキップ, ロック).
+    #[serde(default)]
+    pub reason: String,
 }
 
 impl Run {
@@ -259,9 +262,40 @@ impl Run {
             ended: None,
             state: State::Running,
             jobs,
+            reason: String::new(),
         };
         run.settle(now);
         run
+    }
+
+    /// A run of the schedule that was not started: over at once, every job
+    /// `NotRun`, with `state` (Missed, Skipped or Locked) and `reason` saying why.
+    #[allow(clippy::too_many_arguments)]
+    pub fn not_run(
+        id: &str,
+        jobnet: &str,
+        title: &str,
+        date: &str,
+        planned: NaiveDateTime,
+        state: State,
+        reason: &str,
+        net: &Jobnet,
+        now: NaiveDateTime,
+    ) -> Run {
+        let jobs = net.jobs.iter().map(|j| JobRun { ended: Some(now), ..JobRun::from_job(j) }).collect();
+        Run {
+            id: id.to_owned(),
+            jobnet: jobnet.to_owned(),
+            title: title.to_owned(),
+            date: date.to_owned(),
+            how: How::Schedule,
+            planned: Some(planned),
+            started: now,
+            ended: Some(now),
+            state,
+            jobs,
+            reason: reason.to_owned(),
+        }
     }
 
     pub fn job(&self, id: &str) -> Option<&JobRun> {
@@ -274,6 +308,11 @@ impl Run {
 
     pub fn is_over(&self) -> bool {
         self.ended.is_some()
+    }
+
+    /// A run of the schedule that never started (time passed, skipped, locked).
+    pub fn not_started(&self) -> bool {
+        matches!(self.state, State::Missed | State::Skipped | State::Locked)
     }
 
     pub fn duration(&self) -> Option<chrono::Duration> {
@@ -523,7 +562,8 @@ mod tests {
 
     /// a → b, a → c, (b, c) → d.
     fn diamond() -> Run {
-        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])] };
+        let net =
+            Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])], when: Vec::new() };
         Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
     }
 
@@ -633,7 +673,7 @@ mod tests {
     fn layers_follow_the_longest_path() {
         let r = diamond();
         assert_eq!(r.layers(), vec![vec![0], vec![1, 2], vec![3]]);
-        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a", "b"])] };
+        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a", "b"])], when: Vec::new() };
         let r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
         assert_eq!(r.layers(), vec![vec![0], vec![1], vec![2]]);
     }

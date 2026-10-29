@@ -312,11 +312,16 @@ impl App {
     /// started the run, and shows with no window open.)
     fn take_notices(&mut self) {
         let mut add: Vec<(ito_notices::Kind, String, Option<String>, Option<String>)> = Vec::new();
-        for r in self.browser.take_ended() {
+        let (ended, missed) = notify::group_missed(self.browser.take_ended());
+        for r in ended {
             if r.state.is_error() {
                 let (_, title, body) = notify::words(&self.table, &r);
                 add.push((ito_notices::Kind::Err, title, Some(body), Some(r.id.clone())));
             }
+        }
+        for runs in missed {
+            let (_, title, body) = notify::missed_words(&self.table, &runs);
+            add.push((ito_notices::Kind::Warn, title, Some(body), Some(runs[0].id.clone())));
         }
         for n in self.browser.take_notes() {
             add.push((ito_notices::Kind::Warn, n, None, None));

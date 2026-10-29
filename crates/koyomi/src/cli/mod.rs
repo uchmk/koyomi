@@ -20,6 +20,8 @@ usage: koyomi [--version | --help | env]
        koyomi approve <group/name>   show what it would run, and approve it on `y`
        koyomi run <group/name> [--date YYYY-MM-DD] [--wait]
                                      start the net now (for that business day; --wait: stay until it ends)
+       koyomi next <group/name> [--count N]
+                                     the next 10 times its [[when]] comes (N: that many)
        koyomi status [--today] [--toml]
                                      the runs still going (--today: every run of today)
        koyomi log <run> <job>        the tail of one job's log
@@ -41,6 +43,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "list" => list(rest),
         "approve" => approve(rest),
         "run" => run_cmd(rest),
+        "next" => next(rest),
         "status" => status(rest),
         "log" => log(rest),
         "kill" => kill(rest),
@@ -201,6 +204,52 @@ fn approve(args: &[String]) -> i32 {
         }
         Err(e) => fail(&format!("koyomi: {e}")),
     }
+}
+
+/// The next times one net's `[[when]]` comes, as the window lists them.
+fn next(args: &[String]) -> i32 {
+    let mut id = None;
+    let mut count = 10usize;
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        if a == "--count" {
+            match it.next().and_then(|n| n.parse::<usize>().ok()).filter(|n| (1..=1000).contains(n)) {
+                Some(n) => count = n,
+                None => return usage("--count takes a number from 1 to 1000"),
+            }
+        } else if id.is_none() {
+            id = Some(a.clone());
+        } else {
+            return usage("next takes one group/name");
+        }
+    }
+    let Some(id) = id else { return usage("next takes one group/name") };
+    let t = table();
+    let def: Def = match client::call(&Request::Show { id: id.clone() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
+        Ok(d) => d,
+        Err(e) => return fail(&format!("koyomi: {e}")),
+    };
+    let Some(net) = &def.net else {
+        for p in &def.problems {
+            say(&p.in_file(&def.file), true);
+        }
+        return fail(&format!("{}: 定義の誤り", def.file));
+    };
+    if net.when.is_empty() {
+        say(t.tr("run.next_none"), false);
+        return 0;
+    }
+    if def.standing != Standing::Confirmed {
+        say(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
+    }
+    let rows = show::next_rows(&t, &net.when, chrono::Local::now().naive_local(), count);
+    if rows.is_empty() {
+        say(t.tr("run.next_over"), false);
+    }
+    for r in rows {
+        say(&r, false);
+    }
+    0
 }
 
 fn runs() -> Result<Vec<Run>, String> {

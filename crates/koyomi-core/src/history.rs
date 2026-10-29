@@ -46,6 +46,9 @@ pub enum Event {
         run: String,
         state: State,
         jobs: Vec<JobLast>,
+        /// Why a run of the schedule was not started.
+        #[serde(default)]
+        reason: String,
     },
 }
 
@@ -144,6 +147,7 @@ pub fn run_end(run: &Run) -> Event {
         run: run.id.clone(),
         state: run.state,
         jobs: run.jobs.iter().map(|j| JobLast { id: j.id.clone(), state: j.state, reason: j.reason.clone() }).collect(),
+        reason: run.reason.clone(),
     }
 }
 
@@ -194,7 +198,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     r.resettle(*at);
                 }
             }
-            Event::RunEnd { at, run, state, jobs } => {
+            Event::RunEnd { at, run, state, jobs, reason } => {
                 if let Some(r) = runs.iter_mut().find(|r| &r.id == run) {
                     for last in jobs {
                         if let Some(j) = r.jobs.iter_mut().find(|j| j.id == last.id) {
@@ -207,6 +211,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     }
                     r.state = *state;
                     r.ended = Some(*at);
+                    r.reason = reason.clone();
                 }
             }
         }
@@ -237,7 +242,7 @@ mod tests {
     }
 
     fn net() -> Jobnet {
-        Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["b"])] }
+        Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["b"])], when: Vec::new() }
     }
 
     #[test]

@@ -49,6 +49,19 @@ problems = "誤り"
 
 [band]
 warning = "他のユーザーが書き換えられる場所があります。直すまで何も確認できません"
+autostart = "時刻で流す定義がありますが、サインイン時に koyomi は起動しません。PC を入れ直したあとは、koyomi を開くまで時刻が来ても流れません"
+
+[notify]
+missed = "{0}: {1} の回は時刻を過ぎました（PC が止まっていました）"
+
+[weekday]
+mon = "月"
+tue = "火"
+wed = "水"
+thu = "木"
+fri = "金"
+sat = "土"
+sun = "日"
 
 [confirm]
 title = "この内容を実行してよいか確かめます"
@@ -69,7 +82,7 @@ waiting = "待ち"
 held = "保留"
 skipped = "スキップ"
 missed = "時刻を過ぎた"
-locked = "ロック"
+locked = "止めた"
 not_run = "未実行"
 
 [run]
@@ -90,3 +103,8 @@ log_none = "ログはまだありません"
 horizontal = "横に流す"
 vertical = "縦に流す"
 started = "流した: {0}"
+next = "次の {0} 回"
+next_none = "時刻の予定はありません（手で流します）"
+next_unconfirmed = "未確認のため、時刻が来ても流しません"
+next_over = "この先の予定はありません"
+when_row = "{0}（{1}）{2}"

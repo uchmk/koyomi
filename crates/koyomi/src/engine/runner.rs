@@ -137,15 +137,17 @@ impl Runner {
         self.runs.iter().filter(|r| r.started.date() == today || !r.is_over()).cloned().collect()
     }
 
-    /// Starts `def` for the business day `date`. Refused while the same net runs.
-    pub fn start(&mut self, def: &Def, date: NaiveDate, how: How) -> Result<String, String> {
+    /// Starts `def` for the business day `date`; `planned` is the time a schedule
+    /// meant it for. Refused while the same net runs.
+    pub fn start(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>) -> Result<String, String> {
         let net = def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?;
         if self.runs.iter().any(|r| r.jobnet == def.id && !r.is_over()) {
             return Err(format!("{}: 動いている間はもう一度は流せない", def.label()));
         }
         let now = Local::now().naive_local();
         let id = self.new_id(now);
-        let run = Run::new(&id, &def.id, def.label(), &date.format("%Y-%m-%d").to_string(), how, net, now);
+        let mut run = Run::new(&id, &def.id, def.label(), &date.format("%Y-%m-%d").to_string(), how, net, now);
+        run.planned = planned;
         // The run keeps the definition it started with, beside its logs.
         let dir = self.run_dir(&run.id);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
@@ -154,6 +156,21 @@ impl Runner {
         self.runs.push(run);
         self.tick();
         Ok(id)
+    }
+
+    /// Records a scheduled time of `def` that did not start (時刻を過ぎた, スキップ,
+    /// 未確認で止めた) as a run that is over at once, so the day shows it and
+    /// nobody has to ask why nothing happened. `reason` is shown with it.
+    pub fn not_run(&mut self, def: &Def, planned: NaiveDateTime, state: State, reason: &str) -> Option<String> {
+        let net = def.net.as_ref()?;
+        let now = Local::now().naive_local();
+        let id = self.new_id(now);
+        let run = Run::not_run(&id, &def.id, def.label(), &planned.format("%Y-%m-%d").to_string(), planned, state, reason, net, now);
+        self.record(&run, history::run_start(&run));
+        self.record(&run, history::run_end(&run));
+        self.runs.push(run.clone());
+        self.over.push(run);
+        Some(id)
     }
 
     fn new_id(&mut self, now: NaiveDateTime) -> String {
@@ -474,8 +491,8 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
-        assert!(r.start(&d, Local::now().date_naive(), How::Manual).unwrap_err().contains("動いている間は"));
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("動いている間は"));
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let (a, b) = (run.job("a").unwrap(), run.job("b").unwrap());
@@ -493,7 +510,7 @@ mod tests {
         // A second runner finds the finished run, and starts the net again.
         let mut r2 = Runner::new(&dir, Config::default());
         assert_eq!(r2.today().len(), 1);
-        assert!(r2.start(&d, Local::now().date_naive(), How::Manual).is_ok());
+        assert!(r2.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -503,7 +520,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", fail_cmd(), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
         assert_eq!(run.job("a").unwrap().state, State::Error);
@@ -518,7 +535,7 @@ mod tests {
         let dir = scratch("missing");
         let d = def("net", "format = 1\n[[job]]\nid = \"a\"\nrun = [\"koyomi-no-such-program-xyz\"]\n");
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
         assert!(run.job("a").unwrap().reason.contains("起動できない"), "{}", run.job("a").unwrap().reason);
@@ -532,7 +549,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{sleep}\n[[job]]\nid = \"b\"\n{sleep}\n[[job]]\nid = \"c\"\n{sleep}\n");
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         let run = r.run(&id).unwrap();
         assert_eq!(run.running(), 2);
         assert_eq!(run.job("c").unwrap().state, State::Waiting);
@@ -549,7 +566,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{long}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{long}\n");
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
         let asked = Instant::now();
         r.kill(&id, None).unwrap();
@@ -577,7 +594,7 @@ mod tests {
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let started = Instant::now();
-        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert!(started.elapsed() < Duration::from_secs(10), "the timeout did not stop the job");
         assert_eq!(run.state, State::Error);
@@ -588,7 +605,7 @@ mod tests {
         assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えた）\n"));
         // A job that ends in time is not touched by its timer.
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\ntimeout = \"1h\"\n", echo("quick"));
-        let id = r.start(&def("quick", &text), Local::now().date_naive(), How::Manual).unwrap();
+        let id = r.start(&def("quick", &text), Local::now().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let _ = std::fs::remove_dir_all(&dir);
@@ -615,6 +632,47 @@ mod tests {
         r.flush();
         let day = Day::load(&history::path(&hist, today)).unwrap();
         assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_time_that_did_not_start_is_a_run_over_at_once_with_its_reason() {
+        let dir = scratch("notrun");
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+[[job]]
+id = \"a\"
+{}
+",
+                echo("one")
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let planned = NaiveDateTime::parse_from_str("2026-10-30 02:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let id = r.not_run(&d, planned, State::Missed, "2:00 に PC が止まっていました").unwrap();
+        let run = r.run(&id).unwrap().clone();
+        assert!(run.is_over());
+        assert_eq!(run.state, State::Missed);
+        assert_eq!(run.how, How::Schedule);
+        assert_eq!(run.planned, Some(planned));
+        assert_eq!(run.date, "2026-10-30");
+        assert_eq!(run.reason, "2:00 に PC が止まっていました");
+        assert!(run.jobs.iter().all(|j| j.state == State::NotRun));
+        assert!(!r.log_path(&id, "a").exists(), "nothing ran, nothing logged");
+        let over = r.take_over();
+        assert_eq!(over.len(), 1, "told of once");
+        assert_eq!(over[0].id, id);
+        assert!(r.take_over().is_empty());
+        // The net is free to start: a time that passed holds nothing.
+        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
+        r.flush();
+        let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
+        let back = day.runs();
+        let kept = back.iter().find(|x| x.id == id).expect("in the day's history");
+        assert_eq!(kept.state, State::Missed);
+        assert_eq!(kept.reason, "2:00 に PC が止まっていました");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
