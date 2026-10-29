@@ -25,10 +25,11 @@ mod tests {
     fn the_tables_read() {
         let (en, errs) = table("en");
         assert!(errs.is_empty(), "{errs:?}");
-        assert_eq!(en.tr("app.hello"), "Hello from koyomi.");
+        assert_eq!(en.tr("app.title"), "koyomi");
+        assert_eq!(en.tr("standing.unconfirmed"), "not approved");
         let (ja, errs) = table("ja");
         assert!(errs.is_empty(), "{errs:?}");
-        assert_eq!(ja.tr("app.hello"), "koyomi です。");
         assert_eq!(ja.tr("app.title"), "koyomi");
+        assert_eq!(ja.tr("standing.unconfirmed"), "未確認");
     }
 }

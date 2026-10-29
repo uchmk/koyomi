@@ -1,8 +1,6 @@
 # The app's words by key (English first; ja.toml lays over it).
 [app]
 title = "koyomi"
-hello = "Hello from koyomi."
-bug = "Report a problem (F12)"
 
 [title]
 search = "Command palette"
@@ -26,6 +24,35 @@ wait = "waiting"
 [palette]
 hint = "Type a command"
 none = "No command matches"
-report_bug = "Report a problem"
-reset_scale = "Reset the scale"
+report_reset_scale = "Reset the scale"
 quit = "Quit"
+
+[standing]
+confirmed = "approved"
+unconfirmed = "not approved"
+invalid = "definition error"
+
+[review]
+file = "File"
+job = "Job"
+exe = "Run"
+arg = "Argument"
+dir = "Directory"
+nodir = "(none)"
+diff = "Changes since the version last approved:"
+
+[tree]
+empty = "No definitions. Put <group>/<name>.toml in the jobnets folder"
+starting = "Starting the engine…"
+failed = "Cannot reach the engine: {0}"
+problems = "Errors"
+
+[band]
+warning = "Someone else can write to a place koyomi reads from. Nothing can be approved until that is fixed"
+
+[confirm]
+title = "Check what this will run"
+yes = "Approve"
+no = "Cancel"
+approve = "Approve…"
+hint = "Enter: approve  Esc: cancel"

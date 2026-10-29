@@ -1,0 +1,50 @@
+//! What the window and the CLI say to the engine through its door, and what the engine says back.
+//!
+//! One request and one reply per connection (`ito_ipc::door`). The reply is
+//! text: TOML for `List` and `Show`, a line for the rest.
+
+use ito_ipc::door::Door;
+use koyomi_core::scan::Def;
+use serde::{Deserialize, Serialize};
+
+/// Bumped when `Request` or what a reply holds changes shape.
+pub const PROTO: u32 = 1;
+
+pub const ENV: &str = "KOYOMI_ADDRESS";
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum Request {
+    /// One line on the running engine.
+    Status,
+    /// The engine ends after it answers.
+    Stop,
+    /// Every definition and the warnings, as a [`Snapshot`].
+    List,
+    /// One definition, as a [`Def`] (what an approval shows).
+    Show { id: String },
+    /// Approve `id` as it reads now, if it still hashes to `sha256`.
+    Approve { id: String, sha256: String },
+}
+
+pub fn door() -> Door<Request> {
+    Door::new("koyomi", ENV, PROTO)
+}
+
+/// What `List` answers: the tree, and why nothing can be approved (when it cannot).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Snapshot {
+    pub defs: Vec<Def>,
+    /// One line each: `<path> は <who> が書き換えられる`, or that `approved.toml` does not read.
+    /// Not empty: nothing can be approved.
+    pub warnings: Vec<String>,
+}
+
+impl Snapshot {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<Snapshot, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}

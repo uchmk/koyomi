@@ -8,9 +8,15 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod cli;
+mod client;
+mod engine;
 mod envreport;
 mod i18n;
 mod icon;
+mod proto;
+mod review;
+mod ui;
 
 use ito_common::window::{Saved, Tracker};
 
@@ -19,13 +25,11 @@ const ICON_PX: u32 = 128;
 
 const REPO: &str = "https://github.com/uchmk/koyomi";
 
-const USAGE: &str = "\
-koyomi — Small job scheduler and monitor (a light JP1)
+const ABOUT: &str = "koyomi — Small job scheduler and monitor (a light JP1)";
 
-usage: koyomi [--version | --help | env]
-
-  env   print what a bug report needs (version, files, last run); no window
-";
+fn usage_text() -> String {
+    format!("{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n", cli::USAGE.trim_end())
+}
 
 struct App {
     table: ito_i18n::Table,
@@ -42,6 +46,9 @@ struct App {
     bell_at: egui::Rect,
     /// The command palette while it is open (Ctrl+Shift+P, or the bar's box).
     palette: Option<ito_palette::View>,
+    browser: ui::Browser,
+    /// The Japanese face, read off the UI thread; `None` once it is registered.
+    font: Option<std::sync::mpsc::Receiver<Option<Vec<u8>>>>,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -99,7 +106,29 @@ impl App {
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
+            browser: ui::Browser::start(&cc.egui_ctx),
+            font: Some(font_reader(&cc.egui_ctx)),
         }
+    }
+
+    /// Registers the Japanese face once the reader thread has it, so names do not draw as boxes.
+    fn take_font(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.font else { return };
+        let bytes = match rx.try_recv() {
+            Ok(b) => b,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(_) => None,
+        };
+        self.font = None;
+        let mut fonts = egui::FontDefinitions::default();
+        ito_fonts::register(&mut fonts, self.common.mono_font.unwrap_or_default());
+        if let Some(bytes) = bytes {
+            fonts.font_data.insert("japanese".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
+            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
+                fonts.families.entry(family).or_default().push("japanese".to_owned());
+            }
+        }
+        ctx.set_fonts(fonts);
     }
 
     /// Ctrl+wheel and Ctrl+= / Ctrl+- / Ctrl+0: the whole window's scale, one
@@ -299,10 +328,8 @@ impl eframe::App for App {
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
         self.notice_list(&ctx);
         self.command_palette(&ctx);
-        ui.heading(self.table.tr("app.hello"));
-        ui.label(self.table.tr("app.bug"));
-        let note = self.scale_note.clone();
-        ui.label(note.unwrap_or_else(|| ito_common::scale_text(self.common.scale_or_one(), &self.lang)));
+        self.take_font(&ctx);
+        self.browser.show(ui, &self.table);
         // Last, so the edges of the frameless window win over what is under them.
         if !cfg!(target_os = "macos") {
             ito_titlebar::resize_edges(&ctx);
@@ -312,6 +339,17 @@ impl eframe::App for App {
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         ito_theme::colors().bg.to_normalized_gamma_f32()
     }
+}
+
+/// Reads the Japanese face on a thread of its own (it is tens of megabytes) and repaints when it is in.
+fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<Option<Vec<u8>>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    let ctx = ctx.clone();
+    std::thread::spawn(move || {
+        let _ = tx.send(ito_common::fonts::read_first(ito_common::fonts::JAPANESE).map(|(_, b)| b));
+        ctx.request_repaint();
+    });
+    rx
 }
 
 /// Puts a line where whoever typed the command is looking, on standard error
@@ -327,14 +365,17 @@ fn say(text: &str, err: bool) {
 }
 
 fn main() -> eframe::Result {
-    let mut args = std::env::args().skip(1);
-    if let Some(a) = args.next() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Some(code) = cli::run(&args) {
+        std::process::exit(code);
+    }
+    if let Some(a) = args.first() {
         match a.as_str() {
             "--version" | "-V" => say(&ito_bugreport::version_line("koyomi", env!("CARGO_PKG_VERSION")), false),
-            "--help" | "-h" => say(USAGE, false),
+            "--help" | "-h" => say(&usage_text(), false),
             "env" | "--env" => say(envreport::text().trim_end_matches('\n'), false),
             other => {
-                say(&format!("koyomi: unknown argument `{other}`\n\n{USAGE}"), true);
+                say(&format!("koyomi: unknown argument `{other}`\n\n{}", usage_text()), true);
                 std::process::exit(2);
             }
         }

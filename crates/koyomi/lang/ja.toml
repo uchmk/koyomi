@@ -1,6 +1,5 @@
 [app]
-hello = "koyomi です。"
-bug = "不具合を報告 (F12)"
+title = "koyomi"
 
 [title]
 search = "コマンド パレット"
@@ -24,6 +23,35 @@ wait = "待機中"
 [palette]
 hint = "コマンドを入力"
 none = "一致するコマンドはありません"
-report_bug = "不具合を報告"
-reset_scale = "拡大率を戻す"
+report_reset_scale = "拡大率を戻す"
 quit = "終了"
+
+[standing]
+confirmed = "確認済み"
+unconfirmed = "未確認"
+invalid = "定義の誤り"
+
+[review]
+file = "ファイル"
+job = "ジョブ"
+exe = "実行"
+arg = "引数"
+dir = "作業フォルダー"
+nodir = "（指定なし）"
+diff = "前に確かめた版との違い:"
+
+[tree]
+empty = "定義がありません。jobnets フォルダーに <グループ>/<名前>.toml を置いてください"
+starting = "エンジンを起動しています…"
+failed = "エンジンに繋がりません: {0}"
+problems = "誤り"
+
+[band]
+warning = "他のユーザーが書き換えられる場所があります。直すまで何も確認できません"
+
+[confirm]
+title = "この内容を実行してよいか確かめます"
+yes = "確かめた"
+no = "やめる"
+approve = "確かめる…"
+hint = "Enter: 確かめた　Esc: やめる"

@@ -50,6 +50,18 @@ ito-notices = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8d
 ito-palette = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
 # `koyomi.com` and the answers `out` and `err` write.
 ito-console = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+# The engine's door (`koyomi engine` answers the window and the CLI), the folder watcher, the confirm box,
+# the state marks (symbol + word, not colour alone), child processes, and the bundled mono font.
+ito-ipc = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+ito-watch = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+ito-confirm = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+ito-diff = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+ito-a11y = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde", features = ["egui"] }
+ito-fonts = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde", features = ["egui"] }
+ito-proc = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
+koyomi-core = { path = "../koyomi-core" }
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
 # eframe's own defaults, but for `winit/default`: that draws the title on
 # Wayland's window frame with ab_glyph, which brings the unmaintained ttf-parser.
 eframe = { version = "0.36", default-features = false, features = ["accesskit", "default_fonts", "links", "wayland", "web_screen_reader", "wgpu", "x11"] }

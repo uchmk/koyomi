@@ -1,0 +1,13 @@
+[package]
+name = "koyomi-core"
+description = "koyomi's job-net definitions: the TOML model, its checks and the approved-definition store (no GUI)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+toml = "1.1"
+sha2 = "0.10"

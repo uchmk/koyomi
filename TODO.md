@@ -4,9 +4,15 @@
 
 仕様と受け入れ条件は `DECISIONS.md`。番号は `DECISIONS.md` の「`TODO.md` の 1〜6」と同じ。上から順に作る。
 
-- [ ] 1. 定義を読んで確かめる（L）: `crates/koyomi-core` の TOML のモデルと検査、中身の hash で見る確認済み、
+- [x] 1. 定義を読んで確かめる（L）: `crates/koyomi-core` の TOML のモデルと検査、中身の hash で見る確認済み、
   他のユーザーが書ける定義の止め、`ito-confirm` での確かめ、`koyomi check`・`koyomi approve`。
   `DECISIONS.md` の「1 周目」、「実行するコマンドの安全」、「ファイル」。
+  - [x] `koyomi-core`: `jobnet`（TOML のモデルと検査、行番号つきの誤り、まだ使えない欄は「この版ではまだ使えない」）、
+    `approved`（中身全体の sha256 で見る確認済み、`approved.toml`）、`scan`（`jobnets/<group>/<name>.toml` の読み）。
+  - [x] `koyomi engine`（`ito_ipc::door`、`ito-watch` で定義の変化を追う）、`koyomi check`・`list`・`approve`・`engine status|stop`。
+  - [x] 窓: 左の木（確認済み ✔・未確認 ▲・定義の誤り ✖）、右の内容、`ito-confirm` の確かめの箱（前に確かめた版との差分は `ito-diff`）。
+  - [x] 他のユーザーが書ける場所（`ito_common::access`）は帯で知らせ、直るまで確かめない。
+  - [x] 日本語の字体（`ito_fonts::register` + `ito_common::fonts::JAPANESE`）。
 - [ ] 2. 手で流すことと、結果とログ（L）: `koyomi engine`（`ito_ipc::door`）、`run`・`status`・`log`・`kill`、状態の一覧の文言と記号。
   `DECISIONS.md` の「1 周目」、「構成」、「CLI」、「3 周目の候補」の「D. 決めた細部」。
 - [ ] 3. 打ち切り時間と強制終了（S）: `ito-proc` でプロセスの木ごと止める。`DECISIONS.md` の「1 周目」。
@@ -32,7 +38,7 @@
 - [ ] 窓の場所を戻す: 雛形は `window::Saved` で戻し `Tracker::follow` で書く。終わるときの `Tracker::close` は未配線。
 - [ ] 通知を入れる: 雛形のベルは `notices` が空のまま。`ito_notices::Notice` を push し（`go` に飛び先の型）、`ito-notify` の `Toast::open` で押すと開くトーストにする。
 - [ ] コマンドパレットの中身: 箱と `<C-S-p>` は繋いである。`Command` と `commands` に、アプリのコマンドを足す（キーは `ito-keymap` から引く）。手本は minato の `main.rs`。
-- [ ] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
+- [x] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
 - [ ] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。
 - [ ] `icon.rs` に本当のアイコンを描く。
 - [ ] リリースの workflow は kura か yagura のものを写す。
