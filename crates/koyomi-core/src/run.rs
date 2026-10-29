@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::jobnet::{Job, Jobnet, Judge, Retry};
+use crate::jobnet::{Job, Jobnet, Judge, Line, On, Part, Range, Retry, Wait};
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -176,7 +176,13 @@ pub struct JobRun {
     #[serde(default)]
     pub dir: Option<String>,
     #[serde(default)]
-    pub after: Vec<String>,
+    pub after: Vec<Line>,
+    /// A job that runs, or a part of the flow (a branch, a join, a wait …).
+    #[serde(default, skip_serializing_if = "Part::is_job")]
+    pub part: Part,
+    /// The file a `kind = "file"` part found: `KOYOMI_FILE` for the jobs after it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<String>,
     /// Seconds it may run before the engine stops it.
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -212,6 +218,8 @@ impl JobRun {
             run: job.run.clone(),
             dir: job.dir.clone(),
             after: job.after.clone(),
+            part: job.part.clone(),
+            file: None,
             timeout: job.timeout,
             retry: job.retry,
             shell: job.shell.clone(),
@@ -331,7 +339,7 @@ fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
     let mut out: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
     loop {
         let more: Vec<String> =
-            jobs.iter().filter(|j| !out.contains(&j.id) && j.after.iter().any(|a| out.contains(a))).map(|j| j.id.clone()).collect();
+            jobs.iter().filter(|j| !out.contains(&j.id) && j.after.iter().any(|l| out.contains(&l.job))).map(|j| j.id.clone()).collect();
         if more.is_empty() {
             return Ok(out);
         }
@@ -516,22 +524,71 @@ impl Run {
         Some(self.ended? - self.started)
     }
 
-    /// How many jobs run right now.
+    /// How many jobs run a process right now (a part that waits is not counted).
     pub fn running(&self) -> usize {
-        self.jobs.iter().filter(|j| j.state == State::Running).count()
+        self.jobs.iter().filter(|j| j.state == State::Running && j.part.is_job()).count()
     }
 
-    /// The jobs the engine may start now: pending, and every `after` has passed.
+    /// The jobs the engine may start now: pending, and their lines are met.
     pub fn ready(&self) -> Vec<String> {
         if self.is_over() {
             return Vec::new();
         }
-        self.jobs
-            .iter()
-            .filter(|j| j.pending())
-            .filter(|j| j.after.iter().all(|a| self.job(a).is_some_and(|p| p.state.passed())))
-            .map(|j| j.id.clone())
-            .collect()
+        let codes = codes_of(&self.jobs);
+        self.jobs.iter().filter(|j| j.pending() && fate_of(j, &self.jobs, &codes).0 == Fate::Met).map(|j| j.id.clone()).collect()
+    }
+
+    /// The line `l` let its job's result through: it ended as the line says.
+    pub fn line_met(&self, l: &Line) -> bool {
+        line_fate(l, &self.jobs, &codes_of(&self.jobs)) == Fate::Met
+    }
+
+    /// A part that waits (`kind = "time"` / `"file"`) starts to: it reads as 実行中 with this reason.
+    pub fn wait_on(&mut self, id: &str, reason: &str, now: NaiveDateTime) {
+        if let Some(i) = self.index(id) {
+            let j = &mut self.jobs[i];
+            j.state = State::Running;
+            j.started = Some(now);
+            j.reason = reason.to_owned();
+        }
+        self.settle(now);
+    }
+
+    /// A part that runs no process ends: `state` with this reason, and the file it found when it is one.
+    pub fn end_part(&mut self, id: &str, state: State, reason: &str, file: Option<String>, now: NaiveDateTime) {
+        if let Some(i) = self.index(id) {
+            let j = &mut self.jobs[i];
+            if j.started.is_none() {
+                j.started = Some(now);
+            }
+            j.state = state;
+            j.ended = Some(now);
+            j.reason = reason.to_owned();
+            if file.is_some() {
+                j.file = file;
+            }
+        }
+        self.settle(now);
+    }
+
+    /// The last file a `kind = "file"` part found before `id` (by its lines, back to the start).
+    pub fn file_for(&self, id: &str) -> Option<String> {
+        let mut seen = BTreeSet::new();
+        let mut stack = vec![id.to_owned()];
+        while let Some(x) = stack.pop() {
+            let Some(j) = self.job(&x) else { continue };
+            if x != id {
+                if let Some(f) = &j.file {
+                    return Some(f.clone());
+                }
+            }
+            for l in &j.after {
+                if seen.insert(l.job.clone()) {
+                    stack.push(l.job.clone());
+                }
+            }
+        }
+        None
     }
 
     /// Marks `id` started.
@@ -631,6 +688,11 @@ impl Run {
                 j.state = State::NotRun;
                 j.reason = "強制終了".to_owned();
                 j.ended = Some(now);
+            } else if j.state == State::Running && j.part.waits() {
+                // A wait is no process: it ends here, as 強制終了.
+                j.state = State::Killed;
+                j.reason = "強制終了".to_owned();
+                j.ended = Some(now);
             }
         }
         self.settle(now);
@@ -662,35 +724,77 @@ impl Run {
         if self.is_over() {
             return;
         }
-        let labels: BTreeMap<String, String> = self.jobs.iter().map(|j| (j.id.clone(), j.label().to_owned())).collect();
+        let codes = codes_of(&self.jobs);
         loop {
-            let states: BTreeMap<String, (State, bool)> = self.jobs.iter().map(|j| (j.id.clone(), (j.state, j.pending()))).collect();
             let mut changed = false;
-            for j in &mut self.jobs {
+            for i in 0..self.jobs.len() {
+                let j = &self.jobs[i];
                 if !j.pending() {
                     continue;
                 }
-                // A predecessor that ended without passing, or that will never run.
-                let blocked = j.after.iter().find(|a| match states.get(*a) {
-                    Some((s, pending)) => !pending && !s.passed() && !matches!(s, State::Running | State::Held),
-                    None => true,
-                });
-                if let Some(a) = blocked {
-                    j.state = State::NotRun;
-                    j.ended = Some(now);
-                    j.reason = format!("先行の {} が異常終了", labels.get(a).unwrap_or(a));
-                    changed = true;
-                    continue;
+                // A station of a child jobnet ends when the child's jobs have.
+                if let Part::Jobnet { .. } = j.part {
+                    let prefix = format!("{}/", j.id);
+                    let children: Vec<&JobRun> = self.jobs.iter().filter(|c| c.id.starts_with(&prefix)).collect();
+                    if !children.is_empty() {
+                        if children.iter().any(|c| c.pending() || matches!(c.state, State::Running | State::Held)) {
+                            let j = &mut self.jobs[i];
+                            if j.state != State::Waiting {
+                                j.state = State::Waiting;
+                                j.reason = "子ジョブネットの終わりを待っています".to_owned();
+                            }
+                            continue;
+                        }
+                        let (state, reason) = if let Some(e) = children.iter().find(|c| c.state.is_error()) {
+                            (State::Error, format!("子ジョブネットの {} が異常終了", e.label()))
+                        } else if children.iter().all(|c| c.state == State::NotRun) {
+                            (State::NotRun, children[0].reason.clone())
+                        } else if children.iter().any(|c| c.state == State::Warn) {
+                            (State::Warn, "子ジョブネットに警告".to_owned())
+                        } else {
+                            (State::Ok, String::new())
+                        };
+                        let j = &mut self.jobs[i];
+                        j.state = state;
+                        j.started = j.started.or(Some(now));
+                        j.ended = Some(now);
+                        j.reason = reason;
+                        changed = true;
+                        continue;
+                    }
                 }
-                let waiting_for: Vec<&str> = j
-                    .after
-                    .iter()
-                    .filter(|a| !states.get(*a).is_some_and(|(s, _)| s.passed()))
-                    .map(|a| labels.get(a).map_or(a.as_str(), String::as_str))
-                    .collect();
-                if !waiting_for.is_empty() {
-                    j.state = State::Waiting;
-                    j.reason = format!("{} の終わりを待っています", waiting_for.join("・"));
+                let (fate, why) = fate_of(j, &self.jobs, &codes);
+                match fate {
+                    Fate::Dead => {
+                        let j = &mut self.jobs[i];
+                        j.state = State::NotRun;
+                        j.ended = Some(now);
+                        j.reason = why;
+                        changed = true;
+                    }
+                    Fate::Open => {
+                        let j = &mut self.jobs[i];
+                        j.state = State::Waiting;
+                        j.reason = why;
+                    }
+                    Fate::Met => {
+                        // A part with no process and no clock ends here and now.
+                        let (state, exit, reason) = match &j.part {
+                            Part::Branch => match j.after.first().and_then(|l| self.job(&l.job)).and_then(|p| p.exit) {
+                                Some(code) => (State::Ok, Some(code), format!("終了コード {code}")),
+                                None => (State::Error, None, "終了コードが無い".to_owned()),
+                            },
+                            Part::Join { .. } | Part::Jobnet { .. } => (State::Ok, None, String::new()),
+                            _ => continue,
+                        };
+                        let j = &mut self.jobs[i];
+                        j.state = state;
+                        j.started = Some(now);
+                        j.ended = Some(now);
+                        j.exit = exit;
+                        j.reason = reason;
+                        changed = true;
+                    }
                 }
             }
             if !changed {
@@ -723,11 +827,80 @@ impl Run {
     }
 }
 
+/// Whether a job's lines let it go on: yes, not yet, or never.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Fate {
+    Met,
+    Open,
+    Dead,
+}
+
+/// The ranges of every `code` line from each branch, over the run: an `else` line is met when none of them is.
+fn codes_of(jobs: &[JobRun]) -> BTreeMap<String, Vec<Range>> {
+    let mut out: BTreeMap<String, Vec<Range>> = BTreeMap::new();
+    for j in jobs {
+        for l in &j.after {
+            if let On::Code(r) = &l.on {
+                out.entry(l.job.clone()).or_default().extend(r.iter().copied());
+            }
+        }
+    }
+    out
+}
+
+/// What the state of the job a line comes from means for the line.
+fn line_fate(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) -> Fate {
+    let Some(p) = jobs.iter().find(|j| j.id == l.job) else { return Fate::Dead };
+    if p.pending() || matches!(p.state, State::Running | State::Held) {
+        return Fate::Open;
+    }
+    let met = match &l.on {
+        On::Ok => p.state.passed(),
+        On::Error => p.state.is_error(),
+        On::Any => p.state.passed() || p.state.is_error(),
+        On::Code(r) => p.exit.is_some_and(|c| r.iter().any(|r| r.has(c))),
+        On::Else => p.exit.is_some_and(|c| !codes.get(&l.job).is_some_and(|rs| rs.iter().any(|r| r.has(c)))),
+    };
+    if met {
+        Fate::Met
+    } else {
+        Fate::Dead
+    }
+}
+
+/// The fate of a job from all its lines (a `kind = "join"` with `wait = "any"`
+/// goes on the first met line), with the reason for 実行待ち or 未実行.
+fn fate_of(j: &JobRun, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) -> (Fate, String) {
+    let label = |id: &str| jobs.iter().find(|x| x.id == id).map_or(id.to_owned(), |x| x.label().to_owned());
+    let fates: Vec<(&Line, Fate)> = j.after.iter().map(|l| (l, line_fate(l, jobs, codes))).collect();
+    let any = matches!(j.part, Part::Join { wait: Wait::Any });
+    let dead = |l: &Line| match l.on {
+        On::Ok => format!("先行の {} が異常終了", label(&l.job)),
+        _ => format!("{} の線の条件に合わなかった", label(&l.job)),
+    };
+    if any {
+        if fates.iter().any(|(_, f)| *f == Fate::Met) {
+            return (Fate::Met, String::new());
+        }
+        if !fates.is_empty() && fates.iter().all(|(_, f)| *f == Fate::Dead) {
+            return (Fate::Dead, dead(fates[0].0));
+        }
+    } else if let Some((l, _)) = fates.iter().find(|(_, f)| *f == Fate::Dead) {
+        return (Fate::Dead, dead(l));
+    }
+    let open: Vec<String> = fates.iter().filter(|(_, f)| *f != Fate::Met).map(|(l, _)| label(&l.job)).collect();
+    if open.is_empty() {
+        (Fate::Met, String::new())
+    } else {
+        (Fate::Open, format!("{} の終わりを待っています", open.join("・")))
+    }
+}
+
 /// See [`Run::layers`]. A job whose `after` cannot be placed (a cycle) goes in the first layer.
-pub fn layers(jobs: &[(&str, &[String])]) -> Vec<Vec<usize>> {
+pub fn layers(jobs: &[(&str, &[Line])]) -> Vec<Vec<usize>> {
     let index: BTreeMap<&str, usize> = jobs.iter().enumerate().map(|(i, (id, _))| (*id, i)).collect();
     let mut depth = vec![usize::MAX; jobs.len()];
-    fn depth_of(i: usize, jobs: &[(&str, &[String])], index: &BTreeMap<&str, usize>, depth: &mut [usize], stack: &mut Vec<usize>) -> usize {
+    fn depth_of(i: usize, jobs: &[(&str, &[Line])], index: &BTreeMap<&str, usize>, depth: &mut [usize], stack: &mut Vec<usize>) -> usize {
         if depth[i] != usize::MAX {
             return depth[i];
         }
@@ -735,8 +908,13 @@ pub fn layers(jobs: &[(&str, &[String])]) -> Vec<Vec<usize>> {
             return 0;
         }
         stack.push(i);
-        let d =
-            jobs[i].1.iter().filter_map(|a| index.get(a.as_str())).map(|&p| depth_of(p, jobs, index, depth, stack) + 1).max().unwrap_or(0);
+        let d = jobs[i]
+            .1
+            .iter()
+            .filter_map(|l| index.get(l.job.as_str()))
+            .map(|&p| depth_of(p, jobs, index, depth, stack) + 1)
+            .max()
+            .unwrap_or(0);
         stack.pop();
         depth[i] = d;
         d
@@ -765,18 +943,191 @@ mod tests {
     }
 
     fn job(id: &str, after: &[&str]) -> Job {
-        Job {
-            id: id.into(),
-            name: None,
-            run: vec!["x".into()],
-            dir: None,
-            after: after.iter().map(|s| s.to_string()).collect(),
-            pos: None,
-            timeout: None,
-            retry: None,
-            shell: None,
-            script: None,
-            judge: None,
+        Job { id: id.into(), run: vec!["x".into()], after: after.iter().map(|s| Line::ok(s)).collect(), ..Default::default() }
+    }
+
+    fn part(id: &str, part: Part, after: &[Line]) -> Job {
+        Job { id: id.into(), part, after: after.to_vec(), ..Default::default() }
+    }
+
+    fn line(job: &str, on: On) -> Line {
+        Line { job: job.into(), on }
+    }
+
+    fn net_of(jobs: Vec<Job>) -> Run {
+        let net = Jobnet { jobs, ..Default::default() };
+        Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
+    }
+
+    /// an error line goes on when its job failed and dies when it passed; a plain line the other way round.
+    #[test]
+    fn an_error_line_fires_on_an_error_and_the_net_is_still_abnormal() {
+        let jobs = || {
+            vec![
+                job("a", &[]),
+                job("b", &["a"]),
+                part("oops", Part::Notify, &[line("a", On::Error)]),
+                part("oops2", Part::Notify, &[line("b", On::Error)]),
+                job("end", &[]).after_any("b"),
+            ]
+        };
+        let mut r = net_of(jobs());
+        ended(&mut r, "a", 1, "2026-10-30 09:01:00");
+        assert_eq!(r.job("b").unwrap().state, State::NotRun);
+        assert_eq!(r.job("b").unwrap().reason, "先行の a が異常終了");
+        assert_eq!(r.ready(), vec!["oops"], "the notify part may go, on a's error line");
+        assert_eq!(r.job("oops2").unwrap().state, State::NotRun, "b never ran: its error line is dead");
+        assert_eq!(r.job("oops2").unwrap().reason, "b の線の条件に合わなかった");
+        assert_eq!(r.job("end").unwrap().state, State::NotRun, "b never ran: its any line is dead");
+        assert_eq!(r.state, State::RunningError);
+        r.end_part("oops", State::Ok, "通知した", None, at("2026-10-30 09:01:01"));
+        assert_eq!(r.state, State::Error, "a notify on an error line does not make the run pass");
+        assert!(r.is_over());
+        let mut r = net_of(jobs());
+        ended(&mut r, "a", 0, "2026-10-30 09:01:00");
+        assert_eq!(r.ready(), vec!["b"]);
+        assert_eq!(r.job("oops").unwrap().state, State::NotRun);
+        assert_eq!(r.job("oops").unwrap().reason, "a の線の条件に合わなかった");
+        assert_eq!(r.job("oops2").unwrap().state, State::Waiting, "b may still fail");
+        ended(&mut r, "b", 0, "2026-10-30 09:02:00");
+        assert_eq!(r.job("oops2").unwrap().state, State::NotRun);
+        assert_eq!(r.ready(), vec!["end"], "the any line fires on a pass too");
+        ended(&mut r, "end", 0, "2026-10-30 09:03:00");
+        assert_eq!(r.state, State::Ok);
+    }
+
+    /// a branch ends at once with its job's exit code, and the `code` / `else` lines choose the way.
+    #[test]
+    fn a_branch_routes_by_the_exit_code() {
+        let jobs = || {
+            vec![
+                job("chk", &[]),
+                part("way", Part::Branch, &[line("chk", On::Any)]),
+                job("one", &[]).after(line("way", On::Code(ranges("1..3").unwrap()))),
+                job("rest", &[]).after(line("way", On::Else)),
+            ]
+        };
+        let mut r = net_of(jobs());
+        assert_eq!(r.job("way").unwrap().state, State::Waiting);
+        ended(&mut r, "chk", 2, "2026-10-30 09:01:00");
+        let way = r.job("way").unwrap();
+        assert_eq!((way.state, way.exit, way.reason.as_str()), (State::Ok, Some(2), "終了コード 2"));
+        assert_eq!(way.started, Some(at("2026-10-30 09:01:00")));
+        assert_eq!(r.ready(), vec!["one"]);
+        assert_eq!(r.job("rest").unwrap().state, State::NotRun);
+        assert_eq!(r.job("rest").unwrap().reason, "way の線の条件に合わなかった");
+        assert_eq!(r.state, State::RunningError, "chk's code 2 is still an error of the run");
+        let mut r = net_of(jobs());
+        ended(&mut r, "chk", 0, "2026-10-30 09:01:00");
+        assert_eq!(r.ready(), vec!["rest"]);
+        assert_eq!(r.job("one").unwrap().state, State::NotRun);
+        ended(&mut r, "rest", 0, "2026-10-30 09:02:00");
+        assert_eq!(r.state, State::Ok);
+    }
+
+    /// a join with `wait = "any"` goes on the first line met; `wait = "all"` on the last, and dies on the first dead line.
+    #[test]
+    fn a_join_waits_for_all_or_any() {
+        let jobs =
+            |wait| vec![job("a", &[]), job("b", &[]), part("j", Part::Join { wait }, &[Line::ok("a"), Line::ok("b")]), job("z", &["j"])];
+        let mut r = net_of(jobs(Wait::Any));
+        ended(&mut r, "a", 0, "2026-10-30 09:01:00");
+        assert_eq!(r.job("j").unwrap().state, State::Ok);
+        assert_eq!(r.ready(), vec!["b", "z"]);
+        let mut r = net_of(jobs(Wait::Any));
+        ended(&mut r, "a", 1, "2026-10-30 09:01:00");
+        assert_eq!(r.job("j").unwrap().state, State::Waiting, "b may still pass");
+        assert_eq!(r.job("j").unwrap().reason, "a・b の終わりを待っています");
+        ended(&mut r, "b", 1, "2026-10-30 09:02:00");
+        assert_eq!(r.job("j").unwrap().state, State::NotRun);
+        assert_eq!(r.job("z").unwrap().state, State::NotRun);
+        assert_eq!(r.state, State::Error);
+        let mut r = net_of(jobs(Wait::All));
+        ended(&mut r, "a", 0, "2026-10-30 09:01:00");
+        assert_eq!(r.job("j").unwrap().state, State::Waiting);
+        assert_eq!(r.job("j").unwrap().reason, "b の終わりを待っています");
+        ended(&mut r, "b", 0, "2026-10-30 09:02:00");
+        assert_eq!(r.job("j").unwrap().state, State::Ok);
+        assert_eq!(r.ready(), vec!["z"]);
+        let mut r = net_of(jobs(Wait::All));
+        ended(&mut r, "a", 1, "2026-10-30 09:01:00");
+        assert_eq!(r.job("j").unwrap().state, State::NotRun);
+        assert_eq!(r.job("j").unwrap().reason, "先行の a が異常終了");
+    }
+
+    /// a wait (time, file) reads as 実行中 with its reason, ends by the engine, and is killed with the run.
+    #[test]
+    fn a_wait_runs_until_the_engine_ends_it() {
+        let t = Part::Time { at: crate::when::time("06:00").unwrap(), days: 0 };
+        let f = Part::File { file: "C:\\in\\*.csv".into(), settle: None };
+        let mut r = net_of(vec![part("t", t.clone(), &[]), part("f", f.clone(), &[Line::ok("t")]), job("z", &["f"])]);
+        assert_eq!(r.ready(), vec!["t"]);
+        r.wait_on("t", "06:00 を待っています", at("2026-10-30 09:00:00"));
+        assert_eq!(r.job("t").unwrap().state, State::Running);
+        assert_eq!(r.running(), 0, "a wait holds no slot");
+        assert_eq!(r.state, State::Running);
+        r.end_part("t", State::Ok, "06:00 になった", None, at("2026-10-30 09:00:01"));
+        assert_eq!(r.ready(), vec!["f"]);
+        r.wait_on("f", "C:\\in\\*.csv を待っています", at("2026-10-30 09:00:01"));
+        r.end_part("f", State::Ok, "C:\\in\\a.csv が来た", Some("C:\\in\\a.csv".into()), at("2026-10-30 09:00:02"));
+        assert_eq!(r.file_for("z").as_deref(), Some("C:\\in\\a.csv"));
+        assert_eq!(r.file_for("f"), None);
+        assert_eq!(r.ready(), vec!["z"]);
+        let mut r = net_of(vec![part("t", t, &[]), part("f", f, &[Line::ok("t")]), job("z", &["f"])]);
+        r.wait_on("t", "06:00 を待っています", at("2026-10-30 09:00:00"));
+        r.kill_pending(at("2026-10-30 09:00:03"));
+        assert_eq!(r.job("t").unwrap().state, State::Killed);
+        assert_eq!(r.job("t").unwrap().reason, "強制終了");
+        assert!(r.is_over());
+        assert_eq!(r.state, State::Error);
+        let mut r = net_of(vec![part("f", Part::File { file: "x".into(), settle: None }, &[]), job("z", &["f"])]);
+        r.wait_on("f", "x を待っています", at("2026-10-30 09:00:00"));
+        r.end_part("f", State::Timeout, "打ち切り（1h を超えた）", None, at("2026-10-30 10:00:00"));
+        assert_eq!(r.job("z").unwrap().state, State::NotRun);
+        assert_eq!(r.state, State::Error);
+    }
+
+    /// the station of a child jobnet ends when the child's jobs have: an error of any of them is its error.
+    #[test]
+    fn a_child_jobnets_station_follows_its_jobs() {
+        let jobs = || {
+            vec![
+                job("a", &[]),
+                job("bk/c1", &["a"]),
+                job("bk/c2", &["bk/c1"]),
+                part("bk", Part::Jobnet { use_: "g/c".into() }, &[line("bk/c2", On::Any)]),
+                job("z", &["bk"]),
+            ]
+        };
+        let mut r = net_of(jobs());
+        assert_eq!(r.job("bk").unwrap().reason, "子ジョブネットの終わりを待っています");
+        ended(&mut r, "a", 0, "2026-10-30 09:01:00");
+        ended(&mut r, "bk/c1", 0, "2026-10-30 09:02:00");
+        assert_eq!(r.job("bk").unwrap().state, State::Waiting);
+        ended(&mut r, "bk/c2", 0, "2026-10-30 09:03:00");
+        assert_eq!(r.job("bk").unwrap().state, State::Ok);
+        assert_eq!(r.ready(), vec!["z"]);
+        let mut r = net_of(jobs());
+        ended(&mut r, "a", 0, "2026-10-30 09:01:00");
+        ended(&mut r, "bk/c1", 1, "2026-10-30 09:02:00");
+        let bk = r.job("bk").unwrap();
+        assert_eq!((bk.state, bk.reason.as_str()), (State::Error, "子ジョブネットの bk/c1 が異常終了"));
+        assert_eq!(r.job("z").unwrap().state, State::NotRun);
+        assert_eq!(r.state, State::Error);
+        let mut r = net_of(jobs());
+        ended(&mut r, "a", 1, "2026-10-30 09:01:00");
+        let bk = r.job("bk").unwrap();
+        assert_eq!((bk.state, bk.reason.as_str()), (State::NotRun, "先行の a が異常終了"));
+        assert!(r.is_over());
+    }
+
+    impl Job {
+        fn after(mut self, l: Line) -> Job {
+            self.after.push(l);
+            self
+        }
+        fn after_any(self, id: &str) -> Job {
+            self.after(line(id, On::Any))
         }
     }
 

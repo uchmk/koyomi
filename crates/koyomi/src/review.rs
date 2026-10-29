@@ -6,7 +6,7 @@ use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::jobnet;
+use koyomi_core::jobnet::{self, Part, Wait};
 use koyomi_core::run::State as RunState;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
@@ -70,7 +70,38 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     }
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
-        out.push(format!("{} {}{name}", t.tr("review.job"), j.id));
+        out.push(format!("{} {}{name}", t.tr(&format!("part.{}", j.part.key())), j.id));
+        for l in &j.after {
+            out.push(format!("  {}: {}", t.tr("review.after"), l.text()));
+        }
+        match &j.part {
+            Part::Job => {}
+            Part::Branch | Part::Notify => continue,
+            Part::Join { wait } => {
+                let how = t.tr(if *wait == Wait::All { "review.wait_all" } else { "review.wait_any" });
+                out.push(format!("  {}: {how}", t.tr("review.wait")));
+                continue;
+            }
+            Part::Time { at, days } => {
+                let later = if *days > 0 { t.trf("review.days", &[&days.to_string()]) } else { String::new() };
+                out.push(format!("  {}: {}{later}", t.tr("review.at"), at.format("%H:%M")));
+                continue;
+            }
+            Part::File { file, settle } => {
+                out.push(format!("  {}: {file}", t.tr("review.file_wait")));
+                if let Some(s) = settle {
+                    out.push(format!("  {}: {}", t.tr("review.settle"), koyomi_core::duration::text(*s)));
+                }
+                if let Some(secs) = j.timeout {
+                    out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
+                }
+                continue;
+            }
+            Part::Jobnet { use_ } => {
+                out.push(format!("  {}: {use_}", t.tr("review.use")));
+                continue;
+            }
+        }
         if let (Some(shell), Some(script)) = (&j.shell, &j.script) {
             out.push(format!("  {}: {shell}", t.tr("review.shell")));
             for (i, line) in script.lines().enumerate() {

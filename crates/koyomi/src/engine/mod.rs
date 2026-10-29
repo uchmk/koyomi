@@ -7,6 +7,7 @@
 //! It is also the one place a run is told of (`notify`): the window and the
 //! console only start runs, so a run is told of the same way however it started.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -19,6 +20,7 @@ use koyomi_core::approved::Store;
 use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
+use koyomi_core::jobnet::Jobnet;
 use koyomi_core::run::{How, State as RunState};
 use koyomi_core::scan::{scan_in, Def, Standing};
 use koyomi_core::when;
@@ -223,6 +225,12 @@ impl State {
                 self.reveal_notes = notes;
             }
         }
+        // A 通知 part tells of the run as it stands.
+        for (run, job) in self.runner.take_notices() {
+            let Some(r) = self.runner.runs().iter().find(|r| r.id == run) else { continue };
+            let (event, title, body) = notify::part_words(&self.words, r, &job);
+            notify::tell(&self.notify, event, &title, &body);
+        }
         let (runs, missed) = notify::group_missed(self.runner.take_over());
         // A time stopped by hand (⏸) is not told of: the person did it.
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
@@ -319,10 +327,25 @@ impl State {
         self.reload_config();
         self.calendars = Calendars::load(&self.paths.calendars);
         self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
+        self.runner.set_children(Self::children_of(&self.defs));
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
         self.warnings.extend(self.held_bad.clone());
+    }
+
+    /// What a `kind = "jobnet"` part may use: each confirmed net, or why the others cannot be.
+    fn children_of(defs: &[Def]) -> BTreeMap<String, Result<Jobnet, String>> {
+        defs.iter()
+            .map(|d| {
+                let net = match (d.standing, &d.net) {
+                    (Standing::Confirmed, Some(n)) => Ok(n.clone()),
+                    (Standing::Unconfirmed, _) => Err(format!("子ジョブネット {} が未確認", d.id)),
+                    _ => Err(format!("子ジョブネット {} に定義の誤りがある", d.id)),
+                };
+                (d.id.clone(), net)
+            })
+            .collect()
     }
 
     fn snapshot(&self) -> Snapshot {

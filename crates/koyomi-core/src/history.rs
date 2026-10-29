@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
+use crate::jobnet::{Line, Part};
 use crate::run::{How, JobRun, Run, State};
 
 /// One line of history.
@@ -69,7 +70,9 @@ pub struct JobBrief {
     pub id: String,
     pub name: Option<String>,
     #[serde(default)]
-    pub after: Vec<String>,
+    pub after: Vec<Line>,
+    #[serde(default, skip_serializing_if = "Part::is_job")]
+    pub part: Part,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -125,7 +128,11 @@ pub fn run_start(run: &Run) -> Event {
         date: run.date.clone(),
         how: run.how,
         planned: run.planned,
-        jobs: run.jobs.iter().map(|j| JobBrief { id: j.id.clone(), name: j.name.clone(), after: j.after.clone() }).collect(),
+        jobs: run
+            .jobs
+            .iter()
+            .map(|j| JobBrief { id: j.id.clone(), name: j.name.clone(), after: j.after.clone(), part: j.part.clone() })
+            .collect(),
     }
 }
 
@@ -169,6 +176,8 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         run: Vec::new(),
                         dir: None,
                         after: b.after.clone(),
+                        part: b.part.clone(),
+                        file: None,
                         timeout: None,
                         retry: None,
                         shell: None,
@@ -232,7 +241,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobnet::{Job, Jobnet};
+    use crate::jobnet::{Job, Jobnet, Line};
     use crate::run::Outcome;
 
     fn at(s: &str) -> NaiveDateTime {
@@ -244,14 +253,8 @@ mod tests {
             id: id.into(),
             name: Some(format!("{id}の名")),
             run: vec!["x".into()],
-            dir: None,
-            after: after.iter().map(|s| s.to_string()).collect(),
-            pos: None,
-            timeout: None,
-            retry: None,
-            shell: None,
-            script: None,
-            judge: None,
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
         }
     }
 

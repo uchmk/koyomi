@@ -5,7 +5,8 @@
 //! in words (symbol + state + name), and that row is what the keyboard and
 //! the screen reader get.
 
-use egui::{Color32, Pos2, Rect, Sense, Stroke, Vec2};
+use egui::{Color32, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use koyomi_core::jobnet::On;
 use koyomi_core::run::{JobRun, Run, State, Tone};
 
 const STEP_ALONG: f32 = 150.0;
@@ -58,17 +59,20 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
     if moving {
         ui.ctx().request_repaint_after(std::time::Duration::from_millis(80));
     }
-    // The lines first, painted with the predecessor's result (what came through it).
+    // The lines first, painted with the predecessor's result when it came
+    // through them; an error / any / code line is the thinner one.
     for (i, j) in run.jobs.iter().enumerate() {
-        for a in &j.after {
-            let Some(p) = run.jobs.iter().position(|x| &x.id == a) else { continue };
+        for l in &j.after {
+            let Some(p) = run.jobs.iter().position(|x| x.id == l.job) else { continue };
             let (from, to) = (at[p], at[i]);
             let pred = &run.jobs[p];
-            let col = if pred.state.is_final() || pred.state == State::Running { colour(&c, pred.state) } else { c.border };
+            let through = pred.state.is_final() && run.line_met(l);
+            let col = if through || pred.state == State::Running { colour(&c, pred.state) } else { c.border };
+            let width = if l.on == On::Ok { 3.0 } else { 1.5 };
             if pred.state == State::Running {
                 dashed(&painter, from, to, col, phase);
             } else {
-                painter.line_segment([from, to], Stroke::new(3.0, col));
+                painter.line_segment([from, to], Stroke::new(width, col));
             }
         }
     }
@@ -76,7 +80,15 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
         let p = at[i];
         let on = selected == Some(j.id.as_str());
         let fill = if j.state == State::NotRun || j.state == State::Waiting { c.panel } else { colour(&c, j.state) };
-        painter.circle(p, RADIUS, fill, Stroke::new(if on { 3.0 } else { 2.0 }, if on { c.fg } else { colour(&c, j.state) }));
+        let stroke = Stroke::new(if on { 3.0 } else { 2.0 }, if on { c.fg } else { colour(&c, j.state) });
+        if j.part.is_job() {
+            painter.circle(p, RADIUS, fill, stroke);
+        } else {
+            // A part is a square: it runs no process.
+            let r = Rect::from_center_size(p, Vec2::splat(RADIUS * 2.0));
+            painter.rect_filled(r, 2.0, fill);
+            painter.rect_stroke(r, 2.0, stroke, StrokeKind::Inside);
+        }
         let text = format!("{} {}", j.state.mark(), j.label());
         let (anchor, align) = if vertical {
             (p + Vec2::new(RADIUS + 8.0, 0.0), egui::Align2::LEFT_CENTER)
@@ -118,22 +130,15 @@ pub fn words(t: &ito_i18n::Table, job: &JobRun) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use koyomi_core::jobnet::{Job, Jobnet};
+    use koyomi_core::jobnet::{Job, Jobnet, Line};
     use koyomi_core::run::How;
 
     fn run() -> Run {
         let job = |id: &str, after: &[&str]| Job {
             id: id.into(),
-            name: None,
             run: vec!["x".into()],
-            dir: None,
-            after: after.iter().map(|s| s.to_string()).collect(),
-            pos: None,
-            timeout: None,
-            retry: None,
-            shell: None,
-            script: None,
-            judge: None,
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
         };
         let net = Jobnet {
             name: None,

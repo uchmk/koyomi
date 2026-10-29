@@ -6,6 +6,11 @@
 
 ### 追加
 
+- 流れの部品: 線の 3 種類 `after = [{ job = "a", on = "ok" | "error" | "any" }]`（打ち切り・強制終了も異常。異常の線で続いても、異常終了したジョブがあれば回は ✕ 異常）、
+  `kind = "branch"`（`code = "1..3"` / `"else"` の線で分ける）、`kind = "join"`（`wait = "all" | "any"`。線が 2 本以上のジョブは全部を待つ）、
+  `kind = "time"`（`at`、`days`）、`kind = "file"`（`file`、`settle`、`timeout`。来たファイルは次のジョブに `KOYOMI_FILE` で渡す）、
+  `kind = "notify"`（`to` は無し。その時点の回の様子を通知する）、`kind = "jobnet"`（`use = "グループ/名前"`。子の `[[when]]` は使わない。未確認・定義の誤り・呼び合いの輪ははじく）。
+  `koyomi check` が 線の輪・孤立した部品・子ジョブネットの呼び合いの輪・無い子ジョブネットを指す。窓の流れでは部品は四角、線は ok が太く error / any / code が細い。
 - カレンダー: `calendars/<名前>.toml`（`holidays = "japan"`、`weekly_off`、`closed` / `open` は名前つきも）と、ジョブネット・`jobnets/<グループ>/_group.toml` の `calendar`。
   `[[when]] every = "month"` に `business_day = 5` / `-1`、`day = 20, shift = -3`、休みの日の扱い `on_closed = "prev" | "next" | "skip" | "run"`（既定は `skip`）。
   日本の祝日の表は 2027-12-31 まで。90 日前から窓の帯と `koyomi check calendars/<名前>.toml` が知らせ、過ぎた日は流さず 🔒（理由 `祝日の表が古い（… まで）`）で通知する。

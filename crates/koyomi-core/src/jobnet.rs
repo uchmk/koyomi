@@ -82,16 +82,21 @@ pub enum Overlap {
     Queue,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Job {
     pub id: String,
     pub name: Option<String>,
     /// The executable first, then one argument per element. Never a shell
-    /// line. Empty when the job has `shell` and `script` instead.
+    /// line. Empty when the job has `shell` and `script` instead (or the
+    /// job is a part that runs nothing).
     pub run: Vec<String>,
     pub dir: Option<String>,
-    pub after: Vec<String>,
+    /// The lines that lead here: `after = ["a"]`, or `{ job = "a", on = "error" }`.
+    pub after: Vec<Line>,
     pub pos: Option<(f64, f64)>,
+    /// What the job is: a job that runs, or one of the parts (`kind = "branch"` …).
+    #[serde(default, skip_serializing_if = "Part::is_job")]
+    pub part: Part,
     /// Seconds the job may run before it is stopped, from `timeout = "30m"`.
     #[serde(default)]
     pub timeout: Option<u64>,
@@ -108,6 +113,171 @@ pub struct Job {
     /// Without it, 0 is 正常 and every other code 異常.
     #[serde(default)]
     pub judge: Option<Judge>,
+}
+
+/// A line from the job `job` to the one that has it in `after`: which
+/// result of `job` lets this one go on. Written as the id alone (`on = "ok"`),
+/// or as a table: `{ job = "a", on = "error" }`, `{ job = "a", code = "1..3" }`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Line {
+    pub job: String,
+    pub on: On,
+}
+
+impl Line {
+    /// The plain line: goes on when `job` passed.
+    pub fn ok(job: &str) -> Line {
+        Line { job: job.to_owned(), on: On::Ok }
+    }
+
+    /// As it is written: `a`, `a (error)`, `a (any)`, `a (code 1..3)`, `a (else)`.
+    pub fn text(&self) -> String {
+        match &self.on {
+            On::Ok => self.job.clone(),
+            On::Error => format!("{} (error)", self.job),
+            On::Any => format!("{} (any)", self.job),
+            On::Code(r) => format!("{} (code {})", self.job, Judge::list(r)),
+            On::Else => format!("{} (else)", self.job),
+        }
+    }
+}
+
+/// What result of the line's job lets it through.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub enum On {
+    /// 正常 or 警告 (or skipped): the plain line.
+    #[default]
+    Ok,
+    /// 異常 (an error, a timeout, a kill).
+    Error,
+    /// Ended, whichever way.
+    Any,
+    /// From a `kind = "branch"` part: its exit code is in these ranges.
+    Code(Vec<Range>),
+    /// From a `kind = "branch"` part: no `code` line from it matched.
+    Else,
+}
+
+/// The TOML shape of a [`Line`]: the id alone, or `{ job, on }` / `{ job, code }`.
+#[derive(Serialize, Deserialize)]
+#[serde(untagged)]
+enum LineRepr {
+    Id(String),
+    Full {
+        job: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        on: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        code: Option<String>,
+    },
+}
+
+impl Serialize for Line {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        let repr = match &self.on {
+            On::Ok => LineRepr::Id(self.job.clone()),
+            On::Error => LineRepr::Full { job: self.job.clone(), on: Some("error".to_owned()), code: None },
+            On::Any => LineRepr::Full { job: self.job.clone(), on: Some("any".to_owned()), code: None },
+            On::Code(r) => LineRepr::Full { job: self.job.clone(), on: None, code: Some(Judge::list(r)) },
+            On::Else => LineRepr::Full { job: self.job.clone(), on: None, code: Some("else".to_owned()) },
+        };
+        repr.serialize(s)
+    }
+}
+
+impl<'de> Deserialize<'de> for Line {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Line, D::Error> {
+        match LineRepr::deserialize(d)? {
+            LineRepr::Id(job) => Ok(Line::ok(&job)),
+            LineRepr::Full { job, on, code } => line_of_parts(job, on.as_deref(), code.as_deref()).map_err(serde::de::Error::custom),
+        }
+    }
+}
+
+/// `{ job, on }` or `{ job, code }` as a line; the message says what is wrong.
+fn line_of_parts(job: String, on: Option<&str>, code: Option<&str>) -> Result<Line, String> {
+    let on = match (on, code) {
+        (Some(_), Some(_)) => return Err("after の線には on と code のどちらか 1 つを書く".to_owned()),
+        (None, None) | (Some("ok"), None) => On::Ok,
+        (Some("error"), None) => On::Error,
+        (Some("any"), None) => On::Any,
+        (Some(_), None) => return Err("after の線の on は \"ok\"・\"error\"・\"any\" のどれか".to_owned()),
+        (None, Some("else")) => On::Else,
+        (None, Some(c)) => On::Code(ranges(c).map_err(|e| format!("after の線の code {e}"))?),
+    };
+    Ok(Line { job, on })
+}
+
+/// How a `kind = "join"` part waits for its lines.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Wait {
+    /// Every line (the plain rule).
+    #[default]
+    All,
+    /// The first line that is met.
+    Any,
+}
+
+/// What a `[[job]]` is: a job that runs a command, or a part of the flow that runs nothing.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "lowercase")]
+pub enum Part {
+    /// Runs `run` (or `shell` + `script`).
+    #[default]
+    Job,
+    /// 分岐: ends at once with its one predecessor's exit code; `code` lines choose the way.
+    Branch,
+    /// 待ち合わせ: ends when its lines are met, all of them or any one.
+    Join { wait: Wait },
+    /// 時刻待ち: ends at `at` on the run's day plus `days` (at once when that passed).
+    Time {
+        at: NaiveTime,
+        #[serde(default)]
+        days: u32,
+    },
+    /// ファイル待ち: ends when a file matching `file` is there and unchanged for `settle` seconds.
+    File {
+        file: String,
+        #[serde(default)]
+        settle: Option<u64>,
+    },
+    /// 通知: sends the run's notification as it stands, then ends.
+    Notify,
+    /// 子ジョブネット: `use = "グループ/名前"`'s jobs run here, in its place.
+    Jobnet {
+        #[serde(rename = "use")]
+        use_: String,
+    },
+}
+
+impl Part {
+    pub fn is_job(&self) -> bool {
+        matches!(self, Part::Job)
+    }
+
+    /// `job`, `branch` …: the `kind` as written, and the key of its word.
+    pub fn key(&self) -> &'static str {
+        match self {
+            Part::Job => "job",
+            Part::Branch => "branch",
+            Part::Join { .. } => "join",
+            Part::Time { .. } => "time",
+            Part::File { .. } => "file",
+            Part::Notify => "notify",
+            Part::Jobnet { .. } => "jobnet",
+        }
+    }
+
+    /// Ends in the run itself as soon as its lines are met: no process, no clock.
+    pub fn is_instant(&self) -> bool {
+        matches!(self, Part::Branch | Part::Join { .. } | Part::Jobnet { .. })
+    }
+
+    /// Waits for the clock or a file: the engine polls it.
+    pub fn waits(&self) -> bool {
+        matches!(self, Part::Time { .. } | Part::File { .. })
+    }
 }
 
 /// Which exit codes end a job as 警告 and which as 異常. A code in neither
@@ -244,10 +414,15 @@ struct RawJob {
     dir: Field,
     after: Field,
     pos: Field,
-    // Of the design, not run by this version.
     kind: Field,
     #[serde(rename = "use")]
     use_: Field,
+    wait: Field,
+    at: Field,
+    days: Field,
+    file: Field,
+    settle: Field,
+    // Of the design, not run by this version.
     to: Field,
     shell: Field,
     script: Field,
@@ -339,20 +514,116 @@ impl Checker<'_> {
     }
 
     fn timeout(&mut self, field: &Field) -> Option<u64> {
+        self.duration_of(field, "timeout")
+    }
+
+    /// A duration written as `"30m"`.
+    fn duration_of(&mut self, field: &Field, name: &str) -> Option<u64> {
         let f = field.as_ref()?;
         let text = match f.get_ref() {
             toml::Value::String(s) => s.clone(),
             _ => {
-                self.add(f.span().start, "timeout は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）");
+                self.add(f.span().start, format!("{name} は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"));
                 return None;
             }
         };
         match crate::duration::parse(&text) {
             Ok(secs) => Some(secs),
             Err(e) => {
-                self.add(f.span().start, format!("timeout {e}"));
+                self.add(f.span().start, format!("{name} {e}"));
                 None
             }
+        }
+    }
+
+    /// A field that only some kinds of `[[job]]` may have: `wait は kind = "join" にだけ書く`.
+    fn only(&mut self, field: &Field, name: &str, kinds: &str) {
+        if let Some(f) = field {
+            self.add(f.span().start, format!("{name} は kind = {kinds} にだけ書く"));
+        }
+    }
+
+    /// `kind` and the fields that go with it, as a [`Part`].
+    fn part(&mut self, j: &RawJob, start: usize) -> Part {
+        let kind = self.choice(&j.kind, "kind", &["job", "branch", "join", "time", "file", "notify", "jobnet"]).unwrap_or("job");
+        if kind != "join" {
+            self.only(&j.wait, "wait", "\"join\"");
+        }
+        if kind != "time" {
+            self.only(&j.at, "at", "\"time\"");
+            self.only(&j.days, "days", "\"time\"");
+        }
+        if kind != "file" {
+            self.only(&j.file, "file", "\"file\"");
+            self.only(&j.settle, "settle", "\"file\"");
+        }
+        if kind != "jobnet" {
+            self.only(&j.use_, "use", "\"jobnet\"");
+        }
+        match kind {
+            "branch" => Part::Branch,
+            "join" => {
+                let wait = match self.choice(&j.wait, "wait", &["all", "any"]) {
+                    Some("any") => Wait::Any,
+                    _ => Wait::All,
+                };
+                Part::Join { wait }
+            }
+            "time" => {
+                let at = match &j.at {
+                    Some(f) => self.time_of(f, "at"),
+                    None => {
+                        self.add(start, "kind = \"time\" には at が要る（例: at = \"06:00\"）");
+                        None
+                    }
+                };
+                let days = match &j.days {
+                    None => 0,
+                    Some(f) => match f.get_ref().as_integer() {
+                        Some(n) if (0..=366).contains(&n) => n as u32,
+                        _ => {
+                            self.add(f.span().start, "days は 0 以上の整数で書く（何日後の at か）");
+                            0
+                        }
+                    },
+                };
+                Part::Time { at: at.unwrap_or(NaiveTime::MIN), days }
+            }
+            "file" => {
+                let file = match &j.file {
+                    Some(_) => self.string(&j.file, "file").filter(|f| {
+                        let ok = !f.trim().is_empty();
+                        if !ok {
+                            self.add(j.file.as_ref().map_or(start, |f| f.span().start), "file が空");
+                        }
+                        ok
+                    }),
+                    None => {
+                        self.add(start, "kind = \"file\" には file が要る（例: file = 'C:\\in\\*.csv'）");
+                        None
+                    }
+                };
+                let settle = self.duration_of(&j.settle, "settle");
+                Part::File { file: file.unwrap_or_default(), settle }
+            }
+            "notify" => Part::Notify,
+            "jobnet" => {
+                let use_ = match &j.use_ {
+                    Some(f) => self.string(&j.use_, "use").filter(|u| {
+                        let ok = use_is_well_formed(u);
+                        if !ok {
+                            self.add(f.span().start, "use は \"グループ/名前\" で書く（例: use = \"共通/バックアップ\"）");
+                        }
+                        ok
+                    }),
+                    None => {
+                        self.add(start, "kind = \"jobnet\" には use が要る（例: use = \"共通/バックアップ\"）");
+                        None
+                    }
+                };
+                Part::Jobnet { use_: use_.unwrap_or_default() }
+            }
+            _ => Part::Job,
         }
     }
 
@@ -821,9 +1092,8 @@ impl Checker<'_> {
         for entry in raw {
             let start = entry.span().start;
             let j = entry.get_ref();
-            for (field, name) in [(&j.kind, "kind"), (&j.use_, "use"), (&j.to, "to")] {
-                self.not_yet(field, name);
-            }
+            self.not_yet(&j.to, "to");
+            let part = self.part(j, start);
             let id = match &j.id {
                 None => {
                     self.add(start, "id が無い");
@@ -842,40 +1112,78 @@ impl Checker<'_> {
                     }
                 },
             };
-            let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
-            let script = self.string(&j.script, "script");
-            // Either `run`, or a shell with its script: never both, never a shell line in `run`.
-            let run = match (&j.shell, &j.script) {
-                (Some(s), _) => {
-                    if let Some(f) = &j.run {
-                        self.add(f.span().start, "run と shell は両方書けない（run か、shell と script か）");
+            let (run, shell, script, dir, retry, judge) = if part.is_job() {
+                let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
+                let script = self.string(&j.script, "script");
+                // Either `run`, or a shell with its script: never both, never a shell line in `run`.
+                let run = match (&j.shell, &j.script) {
+                    (Some(s), _) => {
+                        if let Some(f) = &j.run {
+                            self.add(f.span().start, "run と shell は両方書けない（run か、shell と script か）");
+                        }
+                        if j.script.is_none() {
+                            self.add(s.span().start, "shell には script が要る");
+                        } else if script.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                            self.add(s.span().start, "script が空");
+                        }
+                        Vec::new()
                     }
-                    if j.script.is_none() {
-                        self.add(s.span().start, "shell には script が要る");
-                    } else if script.as_deref().is_some_and(|t| t.trim().is_empty()) {
-                        self.add(s.span().start, "script が空");
+                    (None, Some(f)) => {
+                        self.add(f.span().start, "script には shell = \"powershell\" が要る");
+                        self.run(&j.run, start)
                     }
-                    Vec::new()
+                    // A refused `kind` is one problem, not two.
+                    (None, None) if j.run.is_none() && j.kind.as_ref().is_some_and(|f| f.get_ref().as_str() != Some("job")) => Vec::new(),
+                    (None, None) => self.run(&j.run, start),
+                };
+                let dir = self.string(&j.dir, "dir");
+                let retry = self.retry(&j.retry);
+                let judge = self.judge(&j.judge);
+                (run, shell, script, dir, retry, judge)
+            } else {
+                for (field, name) in
+                    [(&j.run, "run"), (&j.shell, "shell"), (&j.script, "script"), (&j.dir, "dir"), (&j.retry, "retry"), (&j.judge, "judge")]
+                {
+                    self.only(field, name, "\"job\"");
                 }
-                (None, Some(f)) => {
-                    self.add(f.span().start, "script には shell = \"powershell\" が要る");
-                    self.run(&j.run, start)
-                }
-                (None, None) => self.run(&j.run, start),
+                (Vec::new(), None, None, None, None, None)
+            };
+            let timeout = if part.is_job() || matches!(part, Part::File { .. }) {
+                self.timeout(&j.timeout)
+            } else {
+                self.only(&j.timeout, "timeout", "\"job\" か \"file\"");
+                None
             };
             let after = self.after(&j.after);
-            let dir = self.string(&j.dir, "dir");
+            if part == Part::Branch && after.len() != 1 {
+                self.add(start, "kind = \"branch\" には after を 1 つ書く（その終了コードで分ける）");
+            }
             let name = self.string(&j.name, "name");
             let pos = self.pos(&j.pos);
-            let timeout = self.timeout(&j.timeout);
-            let retry = self.retry(&j.retry);
-            let judge = self.judge(&j.judge);
-            jobs.push(Job { id, name, run, dir, after, pos, timeout, retry, shell, script, judge });
+            jobs.push(Job { id, name, run, dir, after, pos, part, timeout, retry, shell, script, judge });
         }
+        let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
             let at = entry.get_ref().after.as_ref().map_or(entry.span().start, |f| f.span().start);
-            for a in job.after.iter().filter(|a| !seen.contains(a.as_str())) {
-                self.add(at, format!("after が無い id を指している: {a}"));
+            for l in &job.after {
+                if !seen.contains(l.job.as_str()) {
+                    self.add(at, format!("after が無い id を指している: {}", l.job));
+                } else if matches!(l.on, On::Code(_) | On::Else) && !jobs.iter().any(|p| p.id == l.job && p.part == Part::Branch) {
+                    self.add(at, format!("code の線は kind = \"branch\" の部品からだけ引ける: {}", l.job));
+                }
+            }
+            // A part that nothing leads to, or that leads nowhere, does nothing: a mistake, not a quiet no-op.
+            let (needs_after, needs_next) = match job.part {
+                Part::Branch | Part::Join { .. } => (true, true),
+                Part::Time { .. } | Part::File { .. } => (false, true),
+                Part::Notify => (true, false),
+                Part::Job | Part::Jobnet { .. } => (false, false),
+            };
+            if needs_after && job.after.is_empty() {
+                self.add(entry.span().start, format!("孤立した部品: {}（after が無い）", job.id));
+            }
+            if needs_next && !followed.contains(job.id.as_str()) {
+                self.add(entry.span().start, format!("孤立した部品: {}（後に続くものが無い）", job.id));
             }
         }
         if let Some(cycle) = find_cycle(&jobs) {
@@ -906,7 +1214,7 @@ impl Checker<'_> {
         strings
     }
 
-    fn after(&mut self, field: &Field) -> Vec<String> {
+    fn after(&mut self, field: &Field) -> Vec<Line> {
         let Some(f) = field else { return Vec::new() };
         let at = f.span().start;
         let toml::Value::Array(items) = f.get_ref() else {
@@ -916,12 +1224,33 @@ impl Checker<'_> {
         let mut out = Vec::new();
         for v in items {
             match v {
-                toml::Value::String(s) => out.push(s.clone()),
-                toml::Value::Table(_) => self.add(at, "この版ではまだ使えない: after の線の種類（{ job, on }）"),
-                _ => self.add(at, "after の要素は id の文字列で書く"),
+                toml::Value::String(s) => out.push(Line::ok(s)),
+                toml::Value::Table(t) => match self.line(t) {
+                    Ok(l) => out.push(l),
+                    Err(e) => self.add(at, e),
+                },
+                _ => self.add(at, "after の要素は id の文字列か { job, on } の表で書く"),
             }
         }
         out
+    }
+
+    /// One `{ job = "a", on = "error" }` / `{ job = "a", code = "1..3" }` of `after`.
+    fn line(&mut self, t: &toml::Table) -> Result<Line, String> {
+        for k in t.keys() {
+            if !matches!(k.as_str(), "job" | "on" | "code") {
+                return Err(format!("after の線に知らない欄 {k}（job・on・code）"));
+            }
+        }
+        let job = t.get("job").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).ok_or("after の線には job（id）が要る")?.to_owned();
+        let text = |k: &str| match t.get(k) {
+            None => Ok(None),
+            Some(toml::Value::String(s)) => Ok(Some(s.clone())),
+            Some(_) => Err(format!("after の線の {k} は文字列で書く")),
+        };
+        let on = text("on")?;
+        let code = text("code")?;
+        line_of_parts(job, on.as_deref(), code.as_deref())
     }
 
     fn pos(&mut self, field: &Field) -> Option<(f64, f64)> {
@@ -939,9 +1268,17 @@ impl Checker<'_> {
     }
 }
 
+/// `グループ/名前`: one `/`, both sides there, nothing that leaves the folder.
+fn use_is_well_formed(u: &str) -> bool {
+    let mut parts = u.split('/');
+    let (Some(g), Some(n), None) = (parts.next(), parts.next(), parts.next()) else { return false };
+    let plain = |s: &str| !s.trim().is_empty() && s != "." && s != ".." && !s.contains('\\');
+    plain(g) && plain(n)
+}
+
 /// The ids of a loop in `after` (`a → b → a`), if any.
 fn find_cycle(jobs: &[Job]) -> Option<Vec<String>> {
-    type After<'a> = BTreeMap<&'a str, &'a [String]>;
+    type After<'a> = BTreeMap<&'a str, &'a [Line]>;
     #[derive(Clone, Copy, PartialEq)]
     enum Mark {
         Open,
@@ -960,8 +1297,8 @@ fn find_cycle(jobs: &[Job]) -> Option<Vec<String>> {
         }
         marks.insert(id, Mark::Open);
         path.push(id);
-        for next in after.get(id).copied().unwrap_or(&[]) {
-            if after.contains_key(next.as_str()) {
+        for next in after.get(id).copied().unwrap_or(&[]).iter().map(|l| l.job.as_str()) {
+            if after.contains_key(next) {
                 if let Some(c) = visit(next, after, marks, path) {
                     return Some(c);
                 }
@@ -974,6 +1311,64 @@ fn find_cycle(jobs: &[Job]) -> Option<Vec<String>> {
     let after: After = jobs.iter().map(|j| (j.id.as_str(), j.after.as_slice())).collect();
     let mut marks = BTreeMap::new();
     jobs.iter().find_map(|j| visit(&j.id, &after, &mut marks, &mut Vec::new()))
+}
+
+/// The net with each `kind = "jobnet"` part replaced by the jobs of the net
+/// it uses (`lookup` reads `use` as `グループ/名前`): a child's job `x` under the
+/// part `p` is `p/x`, named `p's label/x's label`; the child's first jobs get
+/// the part's own lines, and the part stays as the station that ends when the
+/// child's last jobs have ended. The child's `[[when]]` is not used. A child
+/// that uses a child is expanded the same way; a net that uses itself, by any
+/// way round, is refused (`scan` says so before anything runs).
+pub fn expand(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>) -> Result<Jobnet, String> {
+    expand_in(net, lookup, &mut Vec::new())
+}
+
+fn expand_in(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>, stack: &mut Vec<String>) -> Result<Jobnet, String> {
+    let mut out = net.clone();
+    out.jobs.clear();
+    for j in &net.jobs {
+        let Part::Jobnet { use_ } = &j.part else {
+            out.jobs.push(j.clone());
+            continue;
+        };
+        if stack.contains(use_) {
+            return Err(format!("子ジョブネットの呼び合いが輪になっている: {} → {use_}", stack.join(" → ")));
+        }
+        let child = lookup(use_)?;
+        stack.push(use_.clone());
+        let child = expand_in(&child, lookup, stack)?;
+        stack.pop();
+        let prefix = format!("{}/", j.id);
+        let label = j.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| j.id.clone());
+        let followed: BTreeSet<&str> = child.jobs.iter().flat_map(|c| c.after.iter().map(|l| l.job.as_str())).collect();
+        let mut station = j.clone();
+        if !child.jobs.is_empty() {
+            station.after = child
+                .jobs
+                .iter()
+                .filter(|c| !followed.contains(c.id.as_str()))
+                .map(|c| Line { job: format!("{prefix}{}", c.id), on: On::Any })
+                .collect();
+        }
+        for c in &child.jobs {
+            let mut c = c.clone();
+            let own = c.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| c.id.clone());
+            c.id = format!("{prefix}{}", c.id);
+            c.name = Some(format!("{label}/{own}"));
+            c.pos = None;
+            if c.after.is_empty() {
+                c.after = j.after.clone();
+            } else {
+                for l in &mut c.after {
+                    l.job = format!("{prefix}{}", l.job);
+                }
+            }
+            out.jobs.push(c);
+        }
+        out.jobs.push(station);
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -1010,7 +1405,7 @@ after = ["extract"]
         assert_eq!(net.jobs.len(), 2);
         assert_eq!(net.jobs[0].run, [r"C:\batch\extract.bat", "--month"]);
         assert_eq!(net.jobs[0].pos, Some((40.0, 80.0)));
-        assert_eq!(net.jobs[1].after, ["extract"]);
+        assert_eq!(net.jobs[1].after, [Line::ok("extract")]);
     }
 
     #[test]
@@ -1183,11 +1578,8 @@ exit 1'''
 
     #[test]
     fn fields_that_do_not_run_yet_are_refused_not_ignored() {
-        for f in ["kind = \"notify\"", "use = \"a/b\"", "to = \"c\""] {
-            let text = format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{f}\n");
-            let name = f.split(' ').next().unwrap();
-            assert_eq!(problems(&text), [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")], "{f}");
-        }
+        let text = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = \"c\"\n";
+        assert_eq!(problems(text), ["a.toml の 5 行目: この版ではまだ使えない: to"]);
         assert_eq!(parse("format = 1\ncalendar = \"会社\"\n").unwrap().calendar.as_deref(), Some("会社"));
         assert_eq!(parse("format = 1\n").unwrap().calendar, None);
         let bad = "a.toml の 2 行目: calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）";
@@ -1196,8 +1588,211 @@ exit 1'''
         assert!(problems("format = 1\nmissed = \"skip\"\noverlap = \"skip\"\n").is_empty());
         assert_eq!(problems("format = 1\nmissed = \"later\"\n"), ["a.toml の 2 行目: missed は \"skip\"・\"once\" のどれか"]);
         assert_eq!(problems("format = 1\noverlap = 1\n"), ["a.toml の 2 行目: overlap は \"skip\"・\"queue\" のどれか"]);
-        let line = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nafter = [{ job = \"b\", on = \"error\" }]\n";
-        assert_eq!(problems(line), ["a.toml の 5 行目: この版ではまだ使えない: after の線の種類（{ job, on }）"]);
+    }
+
+    const FLOW: &str = r#"format = 1
+[[job]]
+id = "a"
+run = ["x"]
+[[job]]
+id = "b"
+run = ["y"]
+after = ["a"]
+[[job]]
+id = "oops"
+kind = "notify"
+after = [{ job = "a", on = "error" }, { job = "b", on = "error" }]
+[[job]]
+id = "end"
+run = ["z"]
+after = [{ job = "b", on = "any" }]
+"#;
+
+    /// `after` takes the id alone (ok), `{ job, on = "ok" | "error" | "any" }`, and `{ job, code }` from a branch.
+    #[test]
+    fn each_kind_of_line_reads() {
+        let net = parse(FLOW).unwrap();
+        assert_eq!(net.jobs[1].after, [Line::ok("a")]);
+        assert_eq!(net.jobs[2].part, Part::Notify);
+        assert_eq!(net.jobs[2].after, [Line { job: "a".into(), on: On::Error }, Line { job: "b".into(), on: On::Error }]);
+        assert_eq!(net.jobs[3].after, [Line { job: "b".into(), on: On::Any }]);
+        assert_eq!(net.jobs[2].after[0].text(), "a (error)");
+        let branch = "format = 1
+[[job]]
+id = \"chk\"
+run = [\"x\"]
+[[job]]
+id = \"way\"
+kind = \"branch\"
+after = [\"chk\"]
+[[job]]
+id = \"one\"
+run = [\"y\"]
+after = [{ job = \"way\", code = \"1..3\" }]
+[[job]]
+id = \"rest\"
+run = [\"z\"]
+after = [{ job = \"way\", code = \"else\" }]
+";
+        let net = parse(branch).unwrap();
+        assert_eq!(net.jobs[1].part, Part::Branch);
+        assert_eq!(net.jobs[2].after, [Line { job: "way".into(), on: On::Code(ranges("1..3").unwrap()) }]);
+        assert_eq!(net.jobs[3].after, [Line { job: "way".into(), on: On::Else }]);
+        assert_eq!(net.jobs[2].after[0].text(), "way (code 1..3)");
+        // The lines keep their shape through TOML (the history writes them back).
+        let text = toml::to_string(&net).unwrap();
+        assert!(text.contains("after = [\"chk\"]"), "{text}");
+        assert!(text.contains("code = \"1..3\""), "{text}");
+        assert_eq!(toml::from_str::<Jobnet>(&text).unwrap(), net);
+        let p = |l: &str| {
+            problems(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nrun = [\"y\"]\nafter = [{l}]\n"))
+        };
+        assert_eq!(p("{ job = \"a\", on = \"bad\" }"), ["a.toml の 8 行目: after の線の on は \"ok\"・\"error\"・\"any\" のどれか"]);
+        assert_eq!(p("{ job = \"a\", on = \"ok\", code = \"1\" }"), ["a.toml の 8 行目: after の線には on と code のどちらか 1 つを書く"]);
+        assert_eq!(p("{ on = \"ok\" }"), ["a.toml の 8 行目: after の線には job（id）が要る"]);
+        assert_eq!(p("{ job = \"a\", when = 1 }"), ["a.toml の 8 行目: after の線に知らない欄 when（job・on・code）"]);
+        assert_eq!(
+            p("{ job = \"a\", code = \"x\" }"),
+            ["a.toml の 8 行目: after の線の code \"x\" は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）"]
+        );
+        assert_eq!(p("{ job = \"a\", code = \"1\" }"), ["a.toml の 8 行目: code の線は kind = \"branch\" の部品からだけ引ける: a"]);
+        assert_eq!(p("1"), ["a.toml の 8 行目: after の要素は id の文字列か { job, on } の表で書く"]);
+    }
+
+    /// each kind of part reads with its own fields, and refuses a job's fields.
+    #[test]
+    fn each_kind_of_part_reads() {
+        let net = |kind: &str, extra: &str| {
+            parse(&format!(
+                "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"p\"\nkind = \"{kind}\"\n{extra}after = [\"a\"]\n[[job]]\nid = \"z\"\nrun = [\"y\"]\nafter = [\"p\"]\n"
+            ))
+            .map(|n| n.jobs[1].part.clone())
+            .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>())
+        };
+        assert_eq!(net("branch", ""), Ok(Part::Branch));
+        assert_eq!(net("join", ""), Ok(Part::Join { wait: Wait::All }));
+        assert_eq!(net("join", "wait = \"any\"\n"), Ok(Part::Join { wait: Wait::Any }));
+        assert_eq!(net("join", "wait = \"one\"\n"), Err(vec!["a.toml の 8 行目: wait は \"all\"・\"any\" のどれか".to_owned()]));
+        assert_eq!(net("time", "at = \"06:00\"\n"), Ok(Part::Time { at: when::time("06:00").unwrap(), days: 0 }));
+        assert_eq!(net("time", "at = \"06:00\"\ndays = 1\n"), Ok(Part::Time { at: when::time("06:00").unwrap(), days: 1 }));
+        assert_eq!(net("time", ""), Err(vec!["a.toml の 5 行目: kind = \"time\" には at が要る（例: at = \"06:00\"）".to_owned()]));
+        assert_eq!(
+            net("time", "at = \"06:00\"\ndays = -1\n"),
+            Err(vec!["a.toml の 9 行目: days は 0 以上の整数で書く（何日後の at か）".to_owned()])
+        );
+        assert_eq!(net("file", "file = 'C:\\in\\*.csv'\n"), Ok(Part::File { file: "C:\\in\\*.csv".into(), settle: None }));
+        assert_eq!(
+            net("file", "file = 'C:\\in\\a.csv'\nsettle = \"10s\"\ntimeout = \"1h\"\n"),
+            Ok(Part::File { file: "C:\\in\\a.csv".into(), settle: Some(10) })
+        );
+        assert_eq!(
+            net("file", ""),
+            Err(vec!["a.toml の 5 行目: kind = \"file\" には file が要る（例: file = 'C:\\in\\*.csv'）".to_owned()])
+        );
+        assert_eq!(net("file", "file = \" \"\n"), Err(vec!["a.toml の 8 行目: file が空".to_owned()]));
+        assert_eq!(
+            net("file", "file = \"a\"\nsettle = 10\n"),
+            Err(vec!["a.toml の 9 行目: settle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）".to_owned()])
+        );
+        assert_eq!(net("notify", ""), Ok(Part::Notify));
+        assert_eq!(net("jobnet", "use = \"共通/バックアップ\"\n"), Ok(Part::Jobnet { use_: "共通/バックアップ".into() }));
+        assert_eq!(
+            net("jobnet", ""),
+            Err(vec!["a.toml の 5 行目: kind = \"jobnet\" には use が要る（例: use = \"共通/バックアップ\"）".to_owned()])
+        );
+        for u in ["a", "a/b/c", "/b", "a/", "../b", "a/..", "a\\b/c"] {
+            assert_eq!(
+                net("jobnet", &format!("use = \"{}\"\n", u.replace('\\', "\\\\"))),
+                Err(vec!["a.toml の 8 行目: use は \"グループ/名前\" で書く（例: use = \"共通/バックアップ\"）".to_owned()]),
+                "{u}"
+            );
+        }
+        assert_eq!(net("branch", "run = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: run は kind = \"job\" にだけ書く".to_owned()]));
+        assert_eq!(
+            net("branch", "timeout = \"1m\"\n"),
+            Err(vec!["a.toml の 8 行目: timeout は kind = \"job\" か \"file\" にだけ書く".to_owned()])
+        );
+        assert_eq!(net("branch", "wait = \"any\"\n"), Err(vec!["a.toml の 8 行目: wait は kind = \"join\" にだけ書く".to_owned()]));
+        assert_eq!(
+            net("job", "use = \"a/b\"\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 8 行目: use は kind = \"jobnet\" にだけ書く".to_owned()])
+        );
+        assert_eq!(
+            net("job", "at = \"06:00\"\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 8 行目: at は kind = \"time\" にだけ書く".to_owned()])
+        );
+        assert_eq!(
+            net("step", ""),
+            Err(vec![
+                "a.toml の 7 行目: kind は \"job\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"jobnet\" のどれか".to_owned()
+            ])
+        );
+        // A part of the flow ends at once (no process): the TOML of a run keeps its kind.
+        let net = parse(&format!(
+            "{FLOW}[[job]]\nid = \"w\"\nkind = \"time\"\nat = \"06:00\"\n[[job]]\nid = \"after_w\"\nrun = [\"x\"]\nafter = [\"w\"]\n"
+        ))
+        .unwrap();
+        let text = toml::to_string(&net).unwrap();
+        assert!(text.contains("kind = \"time\""), "{text}");
+        assert!(!text.contains("kind = \"job\""), "{text}");
+        assert_eq!(toml::from_str::<Jobnet>(&text).unwrap(), net);
+    }
+
+    /// a part nothing leads to or that leads nowhere is a mistake, and a branch takes one line in.
+    #[test]
+    fn an_orphan_part_is_refused() {
+        let p = |body: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{body}"));
+        assert_eq!(
+            p("[[job]]\nid = \"j\"\nkind = \"join\"\n"),
+            ["a.toml の 5 行目: 孤立した部品: j（after が無い）", "a.toml の 5 行目: 孤立した部品: j（後に続くものが無い）"]
+        );
+        assert_eq!(
+            p("[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"06:00\"\n"),
+            ["a.toml の 5 行目: 孤立した部品: t（後に続くものが無い）"]
+        );
+        assert_eq!(p("[[job]]\nid = \"n\"\nkind = \"notify\"\n"), ["a.toml の 5 行目: 孤立した部品: n（after が無い）"]);
+        assert_eq!(
+            p("[[job]]\nid = \"b\"\nkind = \"branch\"\nafter = [\"a\", \"a\"]\n[[job]]\nid = \"z\"\nrun = [\"y\"]\nafter = [\"b\"]\n"),
+            ["a.toml の 5 行目: kind = \"branch\" には after を 1 つ書く（その終了コードで分ける）"]
+        );
+        assert!(p("[[job]]\nid = \"n\"\nkind = \"jobnet\"\nuse = \"x/y\"\n").is_empty());
+        assert_eq!(
+            p("[[job]]\nid = \"b\"\nrun = [\"y\"]\nafter = [{ job = \"c\", on = \"any\" }]\n[[job]]\nid = \"c\"\nrun = [\"y\"]\nafter = [{ job = \"b\", on = \"error\" }]\n"),
+            ["a.toml の 5 行目: after が輪になっている: b → c → b"]
+        );
+    }
+
+    /// a child jobnet's jobs take the part's place, under its id and name, and a loop of uses is refused.
+    #[test]
+    fn a_child_jobnet_expands_in_place() {
+        let parent = parse(
+            "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"bk\"\nname = \"控え\"\nkind = \"jobnet\"\nuse = \"共通/バックアップ\"\nafter = [\"a\"]\n[[job]]\nid = \"z\"\nrun = [\"y\"]\nafter = [\"bk\"]\n",
+        )
+        .unwrap();
+        let child = parse("format = 1\n[[when]]\nevery = \"day\"\nat = [\"01:00\"]\n[[job]]\nid = \"c1\"\nrun = [\"c\"]\n[[job]]\nid = \"c2\"\nname = \"二\"\nrun = [\"c\"]\nafter = [\"c1\"]\n[[job]]\nid = \"c3\"\nrun = [\"c\"]\nafter = [\"c1\"]\n").unwrap();
+        let lookup = |u: &str| {
+            if u == "共通/バックアップ" {
+                Ok(child.clone())
+            } else {
+                Err(format!("子ジョブネットがない: {u}"))
+            }
+        };
+        let net = expand(&parent, &lookup).unwrap();
+        let ids: Vec<&str> = net.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["a", "bk/c1", "bk/c2", "bk/c3", "bk", "z"]);
+        assert_eq!(net.jobs[1].after, [Line::ok("a")], "the child's first job takes the part's lines");
+        assert_eq!(net.jobs[2].after, [Line::ok("bk/c1")]);
+        assert_eq!(net.jobs[2].name.as_deref(), Some("控え/二"));
+        assert_eq!(net.jobs[1].name.as_deref(), Some("控え/c1"));
+        assert_eq!(net.jobs[4].part, Part::Jobnet { use_: "共通/バックアップ".into() });
+        assert_eq!(net.jobs[4].after, [Line { job: "bk/c2".into(), on: On::Any }, Line { job: "bk/c3".into(), on: On::Any }]);
+        assert_eq!(net.jobs[5].after, [Line::ok("bk")]);
+        assert!(net.when.is_empty() && net.jobs.iter().all(|j| j.pos.is_none()));
+        let missing = parse("format = 1\n[[job]]\nid = \"bk\"\nkind = \"jobnet\"\nuse = \"x/y\"\n").unwrap();
+        assert_eq!(expand(&missing, &lookup).unwrap_err(), "子ジョブネットがない: x/y");
+        let myself = parse("format = 1\n[[job]]\nid = \"me\"\nkind = \"jobnet\"\nuse = \"a/b\"\n").unwrap();
+        let loop_ = |u: &str| if u == "a/b" { Ok(myself.clone()) } else { Err(String::new()) };
+        assert_eq!(expand(&myself, &loop_).unwrap_err(), "子ジョブネットの呼び合いが輪になっている: a/b → a/b");
     }
 
     #[test]

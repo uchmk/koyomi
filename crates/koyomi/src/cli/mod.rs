@@ -128,7 +128,13 @@ fn check(args: &[String]) -> i32 {
     let cals = paths.as_ref().map(|p| Calendars::load(&p.calendars)).unwrap_or_default();
     let stem = path.file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| name.clone());
     let def = koyomi_core::scan::read_def_in(path, &parent, &stem, &Default::default(), shared.as_ref(), &cals);
-    for p in &def.problems {
+    let mut problems = def.problems.clone();
+    if let (Some(net), Some(paths)) = (&def.net, &paths) {
+        // The child jobnets it uses, as the engine would find them.
+        let defs = koyomi_core::scan::scan_plain(&paths.jobnets, &Default::default(), &cals);
+        problems.extend(koyomi_core::scan::child_problem(net, &defs).map(|message| koyomi_core::jobnet::Problem { line: 0, message }));
+    }
+    for p in &problems {
         say(&p.in_file(&name), true);
         bad = true;
     }

@@ -116,8 +116,45 @@ pub fn scan(dir: &Path, store: &Store) -> Vec<Def> {
     scan_in(dir, store, &Calendars::default())
 }
 
-/// Every `<dir>/<group>/<name>.toml` (not `_group.toml`), sorted by group then name.
+/// Every `<dir>/<group>/<name>.toml` (not `_group.toml`), sorted by group then
+/// name; a net whose child jobnets (`kind = "jobnet"`) are missing, invalid
+/// or call each other round is invalid too ([`link`]).
 pub fn scan_in(dir: &Path, store: &Store, cals: &Calendars) -> Vec<Def> {
+    let mut defs = scan_plain(dir, store, cals);
+    link(&mut defs);
+    defs
+}
+
+/// What a `kind = "jobnet"` part of `net` cannot use among `defs`: a `use`
+/// that is not there, one with a definition error, or a call that comes
+/// round to itself. `None` when every child can be used.
+pub fn child_problem(net: &Jobnet, defs: &[Def]) -> Option<String> {
+    let lookup = |u: &str| -> Result<Jobnet, String> {
+        match defs.iter().find(|d| d.id == u) {
+            None => Err(format!("子ジョブネットがない: {u}")),
+            Some(d) => match &d.net {
+                Some(n) => Ok(n.clone()),
+                None => Err(format!("子ジョブネット {u} に定義の誤りがある")),
+            },
+        }
+    };
+    jobnet::expand(net, &lookup).err()
+}
+
+/// Marks each net whose child jobnets cannot be used as invalid, with why (a line-0 problem).
+pub fn link(defs: &mut [Def]) {
+    let bad: Vec<(usize, String)> =
+        defs.iter().enumerate().filter_map(|(i, d)| d.net.as_ref().and_then(|n| child_problem(n, defs)).map(|m| (i, m))).collect();
+    for (i, message) in bad {
+        let d = &mut defs[i];
+        d.problems.push(Problem { line: 0, message });
+        d.net = None;
+        d.standing = Standing::Invalid;
+    }
+}
+
+/// [`scan_in`] without the look at the child jobnets.
+pub fn scan_plain(dir: &Path, store: &Store, cals: &Calendars) -> Vec<Def> {
     let mut found: Vec<(String, String, PathBuf, Result<Group, String>)> = Vec::new();
     for group in subdirs(dir) {
         let group_name = file_name(&group);

@@ -25,13 +25,13 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
-use koyomi_core::jobnet::{Judge, Retry};
+use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry};
 use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
 
@@ -80,6 +80,127 @@ pub struct Queued {
     pub since: NaiveDateTime,
 }
 
+/// A part that waits: `kind = "time"` for a time, `kind = "file"` for a file.
+struct Waiting {
+    run: String,
+    job: String,
+    due: Due,
+}
+
+enum Due {
+    /// The time, and how it reads (`06:00`, or with the day when it is another).
+    Time { at: NaiveDateTime, text: String },
+    File {
+        pattern: String,
+        /// Seconds the file must stay the same before it counts as arrived.
+        settle: Option<u64>,
+        /// Seconds the part may wait from `since` (its `timeout`).
+        timeout: Option<u64>,
+        since: Instant,
+        /// The file last seen: its path, size and change time, and when it was first seen so.
+        seen: Option<(PathBuf, u64, Option<SystemTime>, Instant)>,
+    },
+}
+
+impl Due {
+    /// What ends the wait now, when something does: the state, the reason, and the file found.
+    fn check(&mut self, now: NaiveDateTime) -> Option<(State, String, Option<String>)> {
+        match self {
+            Due::Time { at, text } => (now >= *at).then(|| (State::Ok, format!("{text} になった"), None)),
+            Due::File { pattern, settle, timeout, since, seen } => {
+                let found = find_file(pattern);
+                let arrived = match (found, *settle) {
+                    (None, _) => {
+                        *seen = None;
+                        false
+                    }
+                    (Some((p, len, mtime)), None) => {
+                        *seen = Some((p, len, mtime, Instant::now()));
+                        true
+                    }
+                    (Some((p, len, mtime)), Some(s)) => match seen {
+                        Some((sp, sl, sm, first)) if *sp == p && *sl == len && *sm == mtime => first.elapsed() >= Duration::from_secs(s),
+                        _ => {
+                            *seen = Some((p, len, mtime, Instant::now()));
+                            false
+                        }
+                    },
+                };
+                if arrived {
+                    let path = seen.as_ref().map(|s| s.0.display().to_string())?;
+                    return Some((State::Ok, format!("{path} が来た"), Some(path)));
+                }
+                match *timeout {
+                    Some(t) if since.elapsed() >= Duration::from_secs(t) => {
+                        Some((State::Timeout, format!("打ち切り（{} を超えた）", koyomi_core::duration::text(t)), None))
+                    }
+                    _ => None,
+                }
+            }
+        }
+    }
+}
+
+/// `06:00` on the run's day, or `2026-11-02 06:00` when `days` moved it.
+fn time_text(at: NaiveDateTime, days: u32) -> String {
+    if days == 0 {
+        at.format("%H:%M").to_string()
+    } else {
+        at.format("%Y-%m-%d %H:%M").to_string()
+    }
+}
+
+/// The file `pattern` names: a path, or a folder and a name with `*` / `?`
+/// (the first by name when several match). Its size and change time with it.
+fn find_file(pattern: &str) -> Option<(PathBuf, u64, Option<SystemTime>)> {
+    let pat = Path::new(pattern);
+    let name = pat.file_name()?.to_string_lossy().into_owned();
+    if !name.contains(['*', '?']) {
+        let meta = std::fs::metadata(pat).ok().filter(|m| m.is_file())?;
+        return Some((pat.to_path_buf(), meta.len(), meta.modified().ok()));
+    }
+    let dir = pat.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
+    let mut hits: Vec<(PathBuf, u64, Option<SystemTime>)> = std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            let m = e.metadata().ok()?;
+            (m.is_file() && glob_match(&name, &n)).then(|| (e.path(), m.len(), m.modified().ok()))
+        })
+        .collect();
+    hits.sort_by(|a, b| a.0.cmp(&b.0));
+    hits.into_iter().next()
+}
+
+/// `*` (any run of characters) and `?` (any one character) in `pattern`,
+/// against the whole of `name`; letters' case does not count on Windows.
+fn glob_match(pattern: &str, name: &str) -> bool {
+    let fold = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_owned() };
+    let (p, n): (Vec<char>, Vec<char>) = (fold(pattern).chars().collect(), fold(name).chars().collect());
+    let (mut pi, mut ni) = (0, 0);
+    let mut star: Option<(usize, usize)> = None;
+    while ni < n.len() {
+        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
+            pi += 1;
+            ni += 1;
+        } else if pi < p.len() && p[pi] == '*' {
+            star = Some((pi, ni));
+            pi += 1;
+        } else if let Some((sp, sn)) = star {
+            pi = sp + 1;
+            ni = sn + 1;
+            star = Some((sp, sn + 1));
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
 pub struct Runner {
     /// `state_dir/logs`.
     logs: PathBuf,
@@ -98,6 +219,12 @@ pub struct Runner {
     over: Vec<Run>,
     /// The times that wait for a run of their net to end, oldest first.
     queue: Vec<Queued>,
+    /// What a `kind = "jobnet"` part may use, by id: the net, or why it cannot be used.
+    children: BTreeMap<String, Result<Jobnet, String>>,
+    /// The parts that wait for a time or a file.
+    waits: Vec<Waiting>,
+    /// The `kind = "notify"` parts that ended since [`Runner::take_notices`]: (run, job).
+    notices: Vec<(String, String)>,
 }
 
 impl Runner {
@@ -116,6 +243,9 @@ impl Runner {
             last_id: (String::new(), 0),
             over: Vec::new(),
             queue: Vec::new(),
+            children: BTreeMap::new(),
+            waits: Vec::new(),
+            notices: Vec::new(),
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -143,6 +273,22 @@ impl Runner {
     /// The runs that ended since the last call, oldest first: each once.
     pub fn take_over(&mut self) -> Vec<Run> {
         std::mem::take(&mut self.over)
+    }
+
+    /// The nets a `kind = "jobnet"` part may use (`use = "グループ/名前"`): each
+    /// confirmed net, or why the others cannot be used.
+    pub fn set_children(&mut self, children: BTreeMap<String, Result<Jobnet, String>>) {
+        self.children = children;
+    }
+
+    /// The `kind = "notify"` parts that ended since the last call, oldest first: (run id, job id).
+    pub fn take_notices(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.notices)
+    }
+
+    /// `net` with its child jobnets' jobs in place of their parts ([`jobnet::expand`]).
+    fn expand(&self, net: &Jobnet) -> Result<Jobnet, String> {
+        jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))
     }
 
     pub fn set_config(&mut self, config: Config) {
@@ -183,14 +329,14 @@ impl Runner {
         planned: Option<NaiveDateTime>,
         from: Option<&str>,
     ) -> Result<String, String> {
-        let net = def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?;
+        let net = self.expand(def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?)?;
         self.not_running(&def.id, def.label())?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let date = date.format("%Y-%m-%d").to_string();
         let mut run = match from {
-            Some(from) => Run::starting_at(&id, &def.id, def.label(), &date, how, net, from, now)?,
-            None => Run::new(&id, &def.id, def.label(), &date, how, net, now),
+            Some(from) => Run::starting_at(&id, &def.id, def.label(), &date, how, &net, from, now)?,
+            None => Run::new(&id, &def.id, def.label(), &date, how, &net, now),
         };
         run.planned = planned;
         self.launch(run, &def.text)
@@ -206,8 +352,9 @@ impl Runner {
         self.not_running(&prev.jobnet, &prev.title)?;
         let path = self.run_dir(previous).join("definition.toml");
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let net = koyomi_core::jobnet::parse(&text)
-            .map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
+        let net =
+            jobnet::parse(&text).map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
+        let net = self.expand(&net)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let run = Run::rerun(&id, &prev, &net, from, now)?;
@@ -386,12 +533,21 @@ impl Runner {
                 if j.state != State::Running {
                     return Err(format!("{}: 動いていない", j.label()));
                 }
+                if j.part.waits() {
+                    // A wait has no process: it ends here.
+                    self.waits.retain(|w| !(w.run == run && w.job == job));
+                    if let Some(r) = self.end_part(run, job, State::Killed, "強制終了", None, now) {
+                        self.ended(r);
+                    }
+                    return Ok(format!("{run} の {job} を止めた"));
+                }
                 let a = self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| format!("{job}: 動いていない"))?;
                 ask_stop(&a.why, &a.stop, WHY_KILLED);
                 Ok(format!("{run} の {job} を止める"))
             }
             None => {
                 r.kill_pending(now);
+                self.waits.retain(|w| w.run != run);
                 let r = r.clone();
                 for a in self.active.iter().filter(|a| a.run == run) {
                     ask_stop(&a.why, &a.stop, WHY_KILLED);
@@ -426,6 +582,24 @@ impl Runner {
                 over.push(r);
             }
         }
+        // The parts that wait: a time that came, a file that is there, or a wait that ran out.
+        let mut i = 0;
+        while i < self.waits.len() {
+            let now = Local::now().naive_local();
+            let w = &mut self.waits[i];
+            let still = self.runs.iter().find(|r| r.id == w.run).and_then(|r| r.job(&w.job)).is_some_and(|j| j.state == State::Running);
+            if !still {
+                // Stopped by a kill, or gone with its run.
+                self.waits.remove(i);
+                continue;
+            }
+            let Some((state, reason, file)) = w.due.check(now) else {
+                i += 1;
+                continue;
+            };
+            let w = self.waits.remove(i);
+            over.extend(self.end_part(&w.run, &w.job, state, &reason, file, now));
+        }
         for r in over {
             self.ended(r);
         }
@@ -442,13 +616,18 @@ impl Runner {
         }
     }
 
+    /// Starts what is ready: a job's process, or a part's wait, notice, or end.
     fn start_ready(&mut self) {
         let limit = self.config.concurrency.max(1);
         let mut running = self.active.len();
         let mut starts: Vec<(String, String)> = Vec::new();
         for r in &mut self.runs {
             for job in r.ready() {
-                if running < limit {
+                // A part runs no process: it takes no slot.
+                let is_job = r.job(&job).is_none_or(|j| j.part.is_job());
+                if !is_job {
+                    starts.push((r.id.clone(), job));
+                } else if running < limit {
                     running += 1;
                     starts.push((r.id.clone(), job));
                 } else {
@@ -456,36 +635,106 @@ impl Runner {
                 }
             }
         }
+        let mut over = Vec::new();
         for (run_id, job_id) in starts {
             let now = Local::now().naive_local();
-            let Some(r) = self.runs.iter_mut().find(|r| r.id == run_id) else { continue };
-            r.start(&job_id, now);
-            let r = r.clone();
-            let Some(j) = r.job(&job_id) else { continue };
-            self.record(&r, history::job_start(&r, j));
-            let stop = Arc::new(AtomicBool::new(false));
-            let why = Arc::new(AtomicU8::new(WHY_NONE));
-            self.active.push(Active { run: run_id.clone(), job: job_id.clone(), stop: stop.clone(), why: why.clone() });
-            let log = self.log_path(&run_id, &job_id);
-            let job = JobSpec {
-                run: run_id,
-                jobnet: r.jobnet.clone(),
-                date: r.date.clone(),
-                id: job_id,
-                command: j.command(),
-                dir: j.dir.clone(),
-                timeout: j.timeout,
-                retry: j.retry,
-                judge: j.judge.clone(),
-                log,
-                cap: self.config.log_max_bytes(),
-            };
-            let tx = self.tx.clone();
-            let _ = std::thread::Builder::new().name("koyomi-job".into()).spawn(move || {
-                let done = run_job(&job, &stop, &why);
-                let _ = tx.send(done);
-            });
+            let Some(j) = self.runs.iter().find(|r| r.id == run_id).and_then(|r| r.job(&job_id)) else { continue };
+            let (part, timeout) = (j.part.clone(), j.timeout);
+            match part {
+                Part::Job => self.start_job(&run_id, &job_id, now),
+                Part::Notify => {
+                    self.notices.push((run_id.clone(), job_id.clone()));
+                    over.extend(self.end_part(&run_id, &job_id, State::Ok, "通知した", None, now));
+                }
+                Part::Time { at, days } => {
+                    let date = self.runs.iter().find(|r| r.id == run_id).and_then(|r| NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").ok());
+                    let due = date.and_then(|d| d.checked_add_days(chrono::Days::new(u64::from(days)))).map(|d| d.and_time(at));
+                    match due {
+                        Some(due) if due > now => {
+                            let text = time_text(due, days);
+                            let reason = format!("{text} を待っています");
+                            self.wait_on(&run_id, &job_id, &reason, Due::Time { at: due, text }, now);
+                        }
+                        Some(due) => {
+                            let reason = format!("{} を過ぎていた", time_text(due, days));
+                            over.extend(self.end_part(&run_id, &job_id, State::Ok, &reason, None, now));
+                        }
+                        None => over.extend(self.end_part(&run_id, &job_id, State::Error, "日付が読めない", None, now)),
+                    }
+                }
+                Part::File { file, settle } => {
+                    let due = Due::File { pattern: file.clone(), settle, timeout, since: Instant::now(), seen: None };
+                    self.wait_on(&run_id, &job_id, &format!("{file} を待っています"), due, now);
+                }
+                // 分岐・待ち合わせ・子ジョブネット end in `Run::settle`, never here.
+                Part::Branch | Part::Join { .. } | Part::Jobnet { .. } => {}
+            }
         }
+        for r in over {
+            self.ended(r);
+        }
+    }
+
+    /// Starts the job's process on a thread of its own.
+    fn start_job(&mut self, run_id: &str, job_id: &str, now: NaiveDateTime) {
+        let Some(r) = self.runs.iter_mut().find(|r| r.id == run_id) else { return };
+        r.start(job_id, now);
+        let r = r.clone();
+        let Some(j) = r.job(job_id) else { return };
+        self.record(&r, history::job_start(&r, j));
+        let stop = Arc::new(AtomicBool::new(false));
+        let why = Arc::new(AtomicU8::new(WHY_NONE));
+        self.active.push(Active { run: run_id.to_owned(), job: job_id.to_owned(), stop: stop.clone(), why: why.clone() });
+        let log = self.log_path(run_id, job_id);
+        let job = JobSpec {
+            run: run_id.to_owned(),
+            jobnet: r.jobnet.clone(),
+            date: r.date.clone(),
+            id: job_id.to_owned(),
+            command: j.command(),
+            dir: j.dir.clone(),
+            timeout: j.timeout,
+            retry: j.retry,
+            judge: j.judge.clone(),
+            file: r.file_for(job_id),
+            log,
+            cap: self.config.log_max_bytes(),
+        };
+        let tx = self.tx.clone();
+        let _ = std::thread::Builder::new().name("koyomi-job".into()).spawn(move || {
+            let done = run_job(&job, &stop, &why);
+            let _ = tx.send(done);
+        });
+    }
+
+    /// A part starts to wait: 実行中 with `reason`, until `due` ends it.
+    fn wait_on(&mut self, run_id: &str, job_id: &str, reason: &str, due: Due, now: NaiveDateTime) {
+        let Some(r) = self.runs.iter_mut().find(|r| r.id == run_id) else { return };
+        r.wait_on(job_id, reason, now);
+        let r = r.clone();
+        if let Some(j) = r.job(job_id) {
+            self.record(&r, history::job_start(&r, j));
+        }
+        self.waits.push(Waiting { run: run_id.to_owned(), job: job_id.to_owned(), due });
+    }
+
+    /// A part that runs no process ends; the run comes back when that ended it.
+    fn end_part(
+        &mut self,
+        run_id: &str,
+        job_id: &str,
+        state: State,
+        reason: &str,
+        file: Option<String>,
+        now: NaiveDateTime,
+    ) -> Option<Run> {
+        let r = self.runs.iter_mut().find(|r| r.id == run_id)?;
+        r.end_part(job_id, state, reason, file, now);
+        let r = r.clone();
+        if let Some(j) = r.job(job_id) {
+            self.record(&r, history::job_end(&r, j));
+        }
+        r.is_over().then_some(r)
     }
 
     /// Appends `event` to the file of the day `run` started, and writes the file.
@@ -519,6 +768,8 @@ struct JobSpec {
     retry: Option<Retry>,
     /// What the exit codes mean: a 警告 end is not run again.
     judge: Option<Judge>,
+    /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
+    file: Option<String>,
     log: PathBuf,
     cap: u64,
 }
@@ -606,6 +857,9 @@ fn attempt(
         cmd.current_dir(dir);
     }
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
+    if let Some(f) = &job.file {
+        cmd.env("KOYOMI_FILE", f);
+    }
     let mut on_line = |stream: ito_proc::Stream, line: &str| {
         if size.capped {
             return false;
@@ -1196,5 +1450,135 @@ id = \"a\"
         assert!(tail.ends_with("line 04999 ............................\n"));
         assert!(tail.len() as u64 <= TAIL);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Ticks until `job` of `id` is 実行中, or gives up.
+    fn wait_running(r: &mut Runner, id: &str, job: &str) {
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until {
+            r.tick();
+            if r.run(id).and_then(|r| r.job(job)).is_some_and(|j| j.state == State::Running) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        panic!("{id}/{job} did not start");
+    }
+
+    #[test]
+    fn a_notify_part_and_a_passed_time_end_at_once_and_the_notice_comes_out() {
+        let dir = scratch("parts");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"00:00\"\nafter = [\"a\"]\n[[job]]\nid = \"n\"\nkind = \"notify\"\nafter = [\"t\"]\n[[job]]\nid = \"b\"\n{}\nafter = [\"n\"]\n",
+            echo("one"),
+            echo("two")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        let t = run.job("t").unwrap();
+        assert_eq!(t.state, State::Ok);
+        assert!(t.reason.ends_with("00:00 を過ぎていた"), "{:?}", t.reason);
+        assert_eq!(run.job("n").unwrap().reason, "通知した");
+        assert_eq!(r.take_notices(), vec![(id.clone(), "n".to_owned())]);
+        assert!(r.take_notices().is_empty());
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "two");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_part_waits_for_the_file_and_hands_it_on_as_koyomi_file() {
+        let dir = scratch("file");
+        let inbox = dir.join("in");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let pattern = inbox.join("*.csv").display().to_string().replace('\\', "/");
+        let show = if cfg!(windows) { echo("%KOYOMI_FILE%") } else { "run = [\"sh\", \"-c\", \"echo $KOYOMI_FILE\"]".to_owned() };
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"f\"\nkind = \"file\"\nfile = \"{pattern}\"\n[[job]]\nid = \"b\"\n{show}\nafter = [\"f\"]\n"
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "f");
+        let f = r.run(&id).unwrap().job("f").unwrap().clone();
+        assert!(f.reason.ends_with("を待っています"), "{:?}", f.reason);
+        // Another name does not count; the right one does.
+        std::fs::write(inbox.join("note.txt"), "x").unwrap();
+        for _ in 0..5 {
+            r.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert_eq!(r.run(&id).unwrap().job("f").unwrap().state, State::Running);
+        std::fs::write(inbox.join("Sales.csv"), "1,2").unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        let f = run.job("f").unwrap();
+        assert!(f.reason.ends_with("が来た"), "{:?}", f.reason);
+        let got = f.file.clone().unwrap();
+        assert!(got.ends_with("Sales.csv"), "{got}");
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), got);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_waiting_part_is_killed_by_hand_and_the_run_ends_abnormally() {
+        let dir = scratch("killwait");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"00:00\"\ndays = 1\n[[job]]\nid = \"b\"\n{}\nafter = [\"t\"]\n",
+            echo("two")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "t");
+        assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
+        assert!(r.kill(&id, Some("t")).unwrap().contains("止めた"));
+        let run = r.run(&id).unwrap().clone();
+        assert!(run.is_over());
+        assert_eq!(run.job("t").unwrap().state, State::Killed);
+        assert!(run.state.is_error());
+        assert!(r.take_over().iter().any(|o| o.id == id));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_child_jobnet_runs_its_jobs_in_place_and_an_unconfirmed_one_is_refused() {
+        let dir = scratch("child");
+        let child = koyomi_core::jobnet::parse(&format!("format = 1\nname = \"子\"\n[[job]]\nid = \"x\"\n{}\n", echo("in-child"))).unwrap();
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"c\"\nkind = \"jobnet\"\nuse = \"g/child\"\nafter = [\"a\"]\n[[job]]\nid = \"b\"\n{}\nafter = [\"c\"]\n",
+            echo("one"),
+            echo("two")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        // Not known yet: the start is refused, not run half.
+        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("子ジョブネットがない"));
+        r.set_children(BTreeMap::from([("g/child".to_owned(), Err("子ジョブネット g/child が未確認".to_owned()))]));
+        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("未確認"));
+        r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        let ids: Vec<&str> = run.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c/x", "c", "b"]);
+        assert_eq!(r.log_tail(&id, "c/x").unwrap().trim(), "in-child");
+        let (a, x, b) = (run.job("a").unwrap(), run.job("c/x").unwrap(), run.job("b").unwrap());
+        assert!(a.ended.unwrap() <= x.started.unwrap() && x.ended.unwrap() <= b.started.unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn glob_match_takes_star_and_question_mark() {
+        assert!(glob_match("*.csv", "sales.csv"));
+        assert!(glob_match("sales-??.csv", "sales-01.csv"));
+        assert!(!glob_match("sales-??.csv", "sales-001.csv"));
+        assert!(glob_match("*", "anything"));
+        assert!(glob_match("a*b*c", "aXXbYYc"));
+        assert!(!glob_match("a*b*c", "aXXbYY"));
+        assert!(!glob_match("*.csv", "sales.txt"));
+        assert_eq!(glob_match("*.CSV", "sales.csv"), cfg!(windows));
     }
 }

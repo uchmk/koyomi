@@ -96,6 +96,23 @@ pub fn words(t: &Table, r: &Run) -> (&'static str, String, String) {
     (event, title, lines.join("\n"))
 }
 
+/// The words a `kind = "notify"` part sends: the run as it stands, headed
+/// `{state}  {title}: {part}`, the jobs that ended abnormally so far (or the
+/// run's line), then the id and the day. The event is `failed` once a job
+/// ended abnormally, else `done`.
+pub fn part_words(t: &Table, r: &Run, job: &str) -> (&'static str, String, String) {
+    let bad = r.jobs.iter().any(|j| j.state.is_error());
+    let event = if bad { "failed" } else { "done" };
+    let label = r.job(job).map_or(job, |j| j.label());
+    let title = format!("{}  {}: {label}", show::tag(t, r.state), r.title);
+    let mut lines: Vec<String> = r.jobs.iter().filter(|j| j.state.is_error()).map(|j| show::job_line(t, j)).collect();
+    if lines.is_empty() {
+        lines.push(show::run_line(t, r));
+    }
+    lines.push(format!("{}  {}", r.id, r.date));
+    (event, title, lines.join("\n"))
+}
+
 /// Splits off the runs that are 時刻を過ぎた, in groups of one net each (in
 /// the order the nets first come), so a net whose times the PC slept through
 /// is told of once. The rest keep their order.

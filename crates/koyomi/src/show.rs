@@ -5,6 +5,7 @@
 use chrono::{Datelike, NaiveDateTime};
 use ito_i18n::Table;
 use koyomi_core::calendar::{Calendar, Day};
+use koyomi_core::jobnet::Part;
 use koyomi_core::run::{JobRun, Run, State};
 use koyomi_core::when::{self, When};
 
@@ -162,7 +163,7 @@ pub fn month_lines(t: &Table, cal: &Calendar, year: i32, month: u32, today: chro
 
 /// One line for a job: tag, name, times, duration, the reason when there is one.
 pub fn job_line(t: &Table, j: &JobRun) -> String {
-    let mut line = format!("{}  {}", tag(t, j.state), j.label());
+    let mut line = format!("{}  {}{}", tag(t, j.state), kind(t, &j.part), j.label());
     let times = span(j.started, j.ended);
     if !times.is_empty() {
         line.push_str(&format!("  {times}"));
@@ -174,6 +175,15 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
         line.push_str(&format!("  {}", j.reason));
     }
     line
+}
+
+/// `【分岐】` and the like before a part's name; nothing before a job's.
+pub fn kind(t: &Table, p: &Part) -> String {
+    if p.is_job() {
+        String::new()
+    } else {
+        format!("【{}】", t.tr(&format!("part.{}", p.key())))
+    }
 }
 
 #[cfg(test)]

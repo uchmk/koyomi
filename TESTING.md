@@ -314,3 +314,28 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 | 24.12 | Make `calendars/会社.toml` read-only, click a day | `calendars/会社.toml に書けない: …` in the error colour; the table does not change |
 | 24.13 | Pick a net that uses 会社 in the tree, then pick 会社 under カレンダー | The calendar view lists the net under 「このカレンダーで流す定義」 and its next 10 times under it, counted by 会社 |
 | 24.14 | `koyomi approve` a net on 会社 with `every = "day"` | The week's count in the approval box and in the CLI skips the weekend (5 times, not 7) |
+
+## 25. Parts of the flow (lines `on` / `code`, branch, join, time, file, notify, child jobnet)
+
+`koyomi check <file>` reads the lines and parts; the window's 流れ draws a job as a circle and a part as a square (`【分岐】` and the like before its name in `koyomi show` and the notifications).
+
+| # | Do | Expect |
+|---|---|---|
+| 25.1 | A net: `a` (fails, exit 3), `b` with `after = [{ job = "a", on = "error" }]`, `c` with `after = ["a"]`; run it | `b` runs, `c` ends `－ 実行なし`（理由 `a が異常終了`）; the run is ✕ 異常（`a` failed）even though the error line led on; the thick line a→c stays in the border colour, the thin line a→b takes `a`'s colour |
+| 25.2 | `d` with `after = [{ job = "a", on = "any" }]` after a failing and after a passing `a` | `d` runs both times; `koyomi review` of the net lists `線: a (any)` under `d` |
+| 25.3 | `a` ends by `timeout = "1s"`, then by `koyomi kill`; `b` has `on = "error"`, `c` has `on = "ok"` | Both times `b` runs and `c` is 実行なし: 打ち切り and 強制終了 count as abnormal on a line |
+| 25.4 | `p` with `kind = "branch"`, `after = ["a"]`; `x` with `after = [{ job = "p", code = "0" }]`, `y` with `code = "1..3"`, `z` with `code = "else"`; `a` exits 0, 2, 9 in turn | Exactly one of x / y / z runs each time (0 → x, 2 → y, 9 → z); the others are 実行なし; `p` reads `【分岐】p` and ends ○ with `a` 's code as its reason |
+| 25.5 | `j` with `kind = "join"`, `wait = "all"`, `after = ["a", "b"]` (a 1 s, b 5 s), `c` after `j`; then `wait = "any"` | `all`: `c` starts after `b` ends; `any`: `c` starts right after `a`, `b` keeps running and the run ends when `b` does |
+| 25.6 | `k` (a plain job) with `after = ["a", "b"]` | `k` waits for both, like `wait = "all"`: a job with 2 or more lines waits for all of them |
+| 25.7 | `t` with `kind = "time"`, `at` 2 minutes ahead, `after = ["a"]`, `c` after `t`; then `at = "00:00"` | `t` reads 実行中 `【時刻待ち】t` with the reason `HH:MM を待っています` and a dashed line; at the time it ends ○ `HH:MM になった` and `c` runs; `00:00`: it ends at once with `00:00 を過ぎていた` |
+| 25.8 | `t` with `days = 1`, `at = "00:00"`; `koyomi kill <run> t` | The reason reads `YYYY-MM-DD 00:00 を待っています` (tomorrow); kill ends it ✕ 強制終了, the run ends ✕ 異常, `c` is 実行なし |
+| 25.9 | `f` with `kind = "file"`, `file = 'C:\in\*.csv'`, `settle = "3s"`, `timeout = "10m"`, `c` after `f` running `cmd /c echo %KOYOMI_FILE%`; drop `note.txt`, then `Sales.csv` and keep writing it for 5 s | `f` waits (`C:\in\*.csv を待っています`), `note.txt` changes nothing; `Sales.csv` ends `f` 3 s after it stops changing: ○ `C:\in\Sales.csv が来た`; `c`'s log shows `C:\in\Sales.csv`; without `settle` it ends as soon as the file is there |
+| 25.10 | `f` with `timeout = "5s"` and no file | `f` ends ✕ 打ち切り（`打ち切り（5 秒 を超えた）`）after 5 s, the run ends ✕ 異常 |
+| 25.11 | `n` with `kind = "notify"`, `after = [{ job = "a", on = "error" }]`, and `to = "x"` on it; then without `to`; `a` fails | `koyomi check`: `to は kind = … にだけ書く` (the part has no `to`); without it the notification arrives as `✕ 異常  <title>: n` with the line of `a` and the run's id and day; `n` ends ○ `通知した` at once; the run is ✕ 異常 (`a` failed) |
+| 25.12 | `n` after a passing `a` | The notification is a `done` one (`○ 正常  <title>: n`) with the run's line |
+| 25.13 | `jobnets/共通/バックアップ.toml` (confirmed, jobs `x`, `y`); a net with `c` `kind = "jobnet"`, `use = "共通/バックアップ"`, `after = ["a"]`, `b` after `c`; run it | The run lists `a`, `c/x`, `c/y`, `【子ジョブネット】c`, `b` in that order; `c/x` and `c/y` run after `a`, `b` after them; `c` ends with the child's result; the child's own `[[when]]` is not used |
+| 25.14 | `use = "共通/無い"`; then make `バックアップ.toml` invalid (`x = 1`); then leave it unconfirmed (edit it) | `koyomi check` and `koyomi list`: `子ジョブネットがない: 共通/無い`, `子ジョブネット 共通/バックアップ に定義の誤りがある`; the parent is ✕ 無効 and does not run; unconfirmed: `koyomi run` says `子ジョブネット 共通/バックアップ が未確認` and nothing starts |
+| 25.15 | `バックアップ.toml` gets a `kind = "jobnet"` part with `use` = the parent | Both are ✕ 無効 with `子ジョブネットの呼び合いが輪になっている: 共通/バックアップ → <parent> → 共通/バックアップ` (the ids in the order they call) |
+| 25.16 | A part with no `after` (`kind = "join"`) and a job nothing follows that has `kind = "time"` | `孤立した部品: j（after が無い）` and `孤立した部品: t（後に続くものが無い）`; `after = ["a", "b"]` with `b` after `a` after `b`: `after が輪になっている: a → b → a` |
+| 25.17 | `koyomi review` / the approval box of a net with every kind of part | Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` |
+| 25.18 | `koyomi run` a net with 3 running jobs and `concurrency = 2`, one of them a `kind = "time"` part | The part waits without taking a slot: the two jobs run and the part is 実行中 at the same time |

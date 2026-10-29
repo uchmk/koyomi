@@ -936,20 +936,13 @@ mod tests {
     /// A run of today that is still going draws, with its picture and its jobs, and a frame later too.
     #[test]
     fn a_running_run_draws_its_picture_and_watches_the_running_job() {
-        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::jobnet::{Job, Jobnet, Line};
         use koyomi_core::run::{How, Outcome};
         let job = |id: &str, after: &[&str]| Job {
             id: id.into(),
-            name: None,
             run: vec!["x".into()],
-            dir: None,
-            after: after.iter().map(|s| s.to_string()).collect(),
-            pos: None,
-            timeout: None,
-            retry: None,
-            shell: None,
-            script: None,
-            judge: None,
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
         };
         let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
         let now = chrono::Local::now().naive_local();
@@ -977,19 +970,7 @@ mod tests {
         use koyomi_core::run::How;
         let net = Jobnet {
             name: None,
-            jobs: vec![Job {
-                id: "a".into(),
-                name: None,
-                run: vec!["x".into()],
-                dir: None,
-                after: Vec::new(),
-                pos: None,
-                timeout: None,
-                retry: None,
-                shell: None,
-                script: None,
-                judge: None,
-            }],
+            jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }],
             when: Vec::new(),
             ..Default::default()
         };
