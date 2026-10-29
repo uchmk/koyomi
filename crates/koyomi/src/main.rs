@@ -16,6 +16,7 @@ mod i18n;
 mod icon;
 mod proto;
 mod review;
+mod show;
 mod ui;
 
 use ito_common::window::{Saved, Tracker};
@@ -106,7 +107,7 @@ impl App {
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
-            browser: ui::Browser::start(&cc.egui_ctx),
+            browser: ui::Browser::start(&cc.egui_ctx, ito_common::state_dir("koyomi")),
             font: Some(font_reader(&cc.egui_ctx)),
         }
     }

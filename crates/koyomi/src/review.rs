@@ -88,8 +88,11 @@ mod tests {
         crate::i18n::table("ja").0
     }
 
+    /// Each call writes its own file: the tests run side by side.
     fn def(text: &str, store: &Store) -> Def {
-        let dir = std::env::temp_dir().join(format!("koyomi-review-{}", std::process::id()));
+        static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = N.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let dir = std::env::temp_dir().join(format!("koyomi-review-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("月次締め.toml");
         std::fs::write(&p, text).unwrap();

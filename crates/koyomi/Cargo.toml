@@ -60,6 +60,7 @@ ito-a11y = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98
 ito-fonts = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde", features = ["egui"] }
 ito-proc = { git = "https://github.com/uchmk/ito", rev = "a7111c1094223bb1f8de98fb29435baca9f7fcde" }
 koyomi-core = { path = "../koyomi-core" }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 # eframe's own defaults, but for `winit/default`: that draws the title on

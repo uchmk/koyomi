@@ -13,8 +13,17 @@
   - [x] 窓: 左の木（確認済み ✔・未確認 ▲・定義の誤り ✖）、右の内容、`ito-confirm` の確かめの箱（前に確かめた版との差分は `ito-diff`）。
   - [x] 他のユーザーが書ける場所（`ito_common::access`）は帯で知らせ、直るまで確かめない。
   - [x] 日本語の字体（`ito_fonts::register` + `ito_common::fonts::JAPANESE`）。
-- [ ] 2. 手で流すことと、結果とログ（L）: `koyomi engine`（`ito_ipc::door`）、`run`・`status`・`log`・`kill`、状態の一覧の文言と記号。
+- [x] 2. 手で流すことと、結果とログ（L）: `koyomi engine`（`ito_ipc::door`）、`run`・`status`・`log`・`kill`、状態の一覧の文言と記号。
   `DECISIONS.md` の「1 周目」、「構成」、「CLI」、「3 周目の候補」の「D. 決めた細部」。
+  - [x] `koyomi-core`: `run`（1 回の実行のモデル: `after` の順、全部の先行がそろって動く、異常の先の「未実行」、
+    ジョブネットは異常が 1 つでも異常、状態の記号と文言の表）、`layout`（層に分けて並べる）、`history`（`[[event]]` の読み書きと戻し）、`config`（`koyomi.toml`）。
+  - [x] エンジン: `ito_proc::run_lines` をワーカースレッドで回し、`logs/<日>/<実行>/<ジョブ>.log`（既定 10 MB まで）と
+    `history/<年>/<月>/<日>.toml` を `kept::Writer` で書く。起動したときの定義の写しで最後まで流す。同じジョブネットが動いている間は断る。
+    未確認・誤り・他のユーザーが書ける場所があるときは流さない。`KOYOMI_JOBNET`・`JOB`・`RUN`・`DATE`。
+  - [x] CLI: `run <ジョブネット> [--date <業務日>] [--wait]`、`status [--today] [--toml]`、`log <実行> <ジョブ>`、`kill <実行> [<ジョブ>]`。
+  - [x] 窓: 「今日」の一覧（予定・状態の記号と色・開始・終了・所要）、選んだ回の図（駅のような丸と名前、通った結果で塗る線、横・縦は `state.toml`）、
+    図の下にログ（動いている間は流れる）、今すぐ流す・強制終了（`ito-confirm`）。
+  - [x] 単体テスト（順・遷移・履歴の戻し）、`TESTING.md` の行、`CHANGELOG.md`。
 - [ ] 3. 打ち切り時間と強制終了（S）: `ito-proc` でプロセスの木ごと止める。`DECISIONS.md` の「1 周目」。
 - [ ] 4. 失敗の通知（S）: システムの通知・ベル・webhook（アドレスは既定で `ito-secret`）。`DECISIONS.md` の「2 周目」。
 - [ ] 5. 時刻のスケジュールと次の 10 回（M）: `[[when]]` を読んで起動する。時刻を過ぎた回と前の回が動いているときは既定だけ。
@@ -42,3 +51,12 @@
 - [ ] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。
 - [ ] `icon.rs` に本当のアイコンを描く。
 - [ ] リリースの workflow は kura か yagura のものを写す。
+
+## 持ち主に聞くこと
+
+実行役が迷って、いちばん小さく戻しやすい形に決めたもの。違えば直す。
+
+- 秘密の値の `***` への置き換え（2）: v0.1 では `ito-secret` に登録する画面も欄もないので、置き換える対象がなく、ログはそのまま書く。登録の口を作るとき（4 の webhook）に一緒に入れる。
+- ジョブの作業フォルダー（2）: `dir` がないジョブはエンジンの作業フォルダーで動く（エンジンを起こした所。窓から起きたときはその exe の場所）。定義のフォルダーにする方がよければ直す。
+- `state.toml` の `flow`（2）: `--keys` がまだ配線されていないので、窓は今は必ず書く。`--keys` を配線するときに `Browser::start` の `state` を `None` にする。
+

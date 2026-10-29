@@ -11,3 +11,4 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 sha2 = "0.10"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }

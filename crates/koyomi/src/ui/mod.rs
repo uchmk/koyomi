@@ -1,25 +1,39 @@
-//! The window's left tree, the detail beside it and the approval box.
+//! The window's left side (the tree, then today's runs), the detail beside it
+//! (a definition, or a run as a picture with its log under it) and the boxes
+//! that ask before approving or killing.
 //!
-//! Nothing here touches the disk or a process: a thread keeps the engine up and asks it for the
-//! list, and the window reads what that thread sent. An approval is sent the same way.
+//! Nothing here touches a process: a thread keeps the engine up and asks it for the
+//! list, the runs of today and the log being watched, and the window reads what that
+//! thread sent. An approval, a start and a kill are sent the same way.
 
+use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ito_a11y::Role;
+use ito_common::kept;
+use koyomi_core::run::Run;
 use koyomi_core::scan::{Def, Standing};
+use serde::{Deserialize, Serialize};
 
-use crate::proto::{Request, Snapshot};
-use crate::{client, review};
+use crate::proto::{Request, Runs, Snapshot};
+use crate::{client, review, show};
 
-/// How often the engine is asked for the list.
+pub mod graph;
+
+/// How often the engine is asked for the list and the runs.
 const POLL: Duration = Duration::from_secs(1);
 
 enum Msg {
     Starting,
     Snapshot(Snapshot),
+    Runs(Runs),
+    /// The tail of one job's log: run, job, text.
+    Log(String, String, String),
     Down(String),
-    Approved(Result<String, String>),
+    /// The engine's answer to a request the window sent.
+    Answer(Request, Result<String, String>),
 }
 
 pub struct Approval {
@@ -27,23 +41,50 @@ pub struct Approval {
     sha256: String,
 }
 
+/// What `state.toml` keeps for the window.
+#[derive(Default, Serialize, Deserialize)]
+struct Kept {
+    /// `horizontal` (the default) or `vertical`: which way a run's picture flows.
+    #[serde(default)]
+    flow: Option<String>,
+}
+
+/// The job whose log the thread fetches: `(run, job)`.
+type Watch = Arc<Mutex<Option<(String, String)>>>;
+
 pub struct Browser {
     rx: Receiver<Msg>,
     tx: Sender<Request>,
+    watch: Watch,
     snap: Option<Snapshot>,
+    runs: Vec<Run>,
     down: Option<String>,
     starting: bool,
+    /// The definition picked in the tree.
     selected: Option<String>,
+    /// The run picked under 今日; when it is set, the detail is the run.
+    run_sel: Option<String>,
+    /// The job whose log is shown, when one was picked by hand.
+    job_sel: Option<String>,
+    /// The last log tail fetched: run, job, text.
+    log: Option<(String, String, String)>,
+    vertical: bool,
+    flow: Option<kept::Writer>,
     asking: Option<Approval>,
+    /// The run a kill is being asked about.
+    killing: Option<String>,
     focus: usize,
-    /// The last answer to an approval, shown under the detail.
+    /// The last answer to an approval or a start, shown under the detail.
     result: Option<Result<String, String>>,
 }
 
 impl Browser {
-    pub fn start(ctx: &egui::Context) -> Browser {
+    /// Starts the thread. `state` is the state folder for `state.toml`; `None` keeps nothing.
+    pub fn start(ctx: &egui::Context, state: Option<PathBuf>) -> Browser {
         let (tx_msg, rx) = mpsc::channel::<Msg>();
         let (tx, rx_req) = mpsc::channel::<Request>();
+        let watch: Watch = Arc::default();
+        let seen = watch.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || loop {
             let send = |m: Msg| {
@@ -65,7 +106,8 @@ impl Browser {
             }
             match rx_req.recv_timeout(POLL) {
                 Ok(request) => {
-                    if !send(Msg::Approved(client::call(&request))) {
+                    let answer = client::call(&request);
+                    if !send(Msg::Answer(request, answer)) {
                         return;
                     }
                 }
@@ -79,8 +121,43 @@ impl Browser {
             if !send(m) {
                 return;
             }
+            if let Ok(r) = client::call(&Request::Runs).and_then(|t| Runs::parse(&t)) {
+                if !send(Msg::Runs(r)) {
+                    return;
+                }
+            }
+            let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some((run, job)) = target {
+                if let Ok(text) = client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
+                    if !send(Msg::Log(run, job, text)) {
+                        return;
+                    }
+                }
+            }
         });
-        Browser { rx, tx, snap: None, down: None, starting: true, selected: None, asking: None, focus: 0, result: None }
+        let path = state.map(|d| d.join("state.toml"));
+        let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
+        let vertical = kept.flow.as_deref() == Some("vertical");
+        let flow = path.map(|p| kept::Writer::new(p, true));
+        Browser {
+            rx,
+            tx,
+            watch,
+            snap: None,
+            runs: Vec::new(),
+            down: None,
+            starting: true,
+            selected: None,
+            run_sel: None,
+            job_sel: None,
+            log: None,
+            vertical,
+            flow,
+            asking: None,
+            killing: None,
+            focus: 0,
+            result: None,
+        }
     }
 
     fn drain(&mut self) {
@@ -92,11 +169,20 @@ impl Browser {
                     self.down = None;
                     self.snap = Some(s);
                 }
+                Msg::Runs(r) => self.runs = r.runs,
+                Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Down(e) => {
                     self.starting = false;
                     self.down = Some(e);
                 }
-                Msg::Approved(r) => self.result = Some(r),
+                Msg::Answer(req, r) => {
+                    // A start that went through opens the run.
+                    if let (Request::Run { .. }, Ok(id)) = (&req, &r) {
+                        self.run_sel = Some(id.clone());
+                        self.job_sel = None;
+                    }
+                    self.result = Some(r);
+                }
             }
         }
     }
@@ -110,14 +196,36 @@ impl Browser {
         self.snap.as_ref()?.defs.iter().find(|d| d.id == id)
     }
 
-    /// Draws the warning band, the tree, the detail and, when asked for, the approval box.
+    fn selected_run(&self) -> Option<&Run> {
+        let id = self.run_sel.as_deref()?;
+        self.runs.iter().find(|r| r.id == id)
+    }
+
+    /// The job whose log is shown: the one picked, else the one running, else the last that started.
+    fn watched_job(run: &Run, picked: Option<&str>) -> Option<String> {
+        if let Some(j) = picked.and_then(|p| run.jobs.iter().find(|j| j.id == p)) {
+            return Some(j.id.clone());
+        }
+        let running = run.jobs.iter().find(|j| j.state == koyomi_core::run::State::Running);
+        let last = run.jobs.iter().filter(|j| j.started.is_some()).max_by_key(|j| j.started);
+        running.or(last).map(|j| j.id.clone())
+    }
+
+    fn set_flow(&mut self, vertical: bool) {
+        self.vertical = vertical;
+        if let Some(w) = &self.flow {
+            w.save_toml(&Kept { flow: Some(if vertical { "vertical" } else { "horizontal" }.to_owned()) });
+        }
+    }
+
+    /// Draws the warning band, the tree and the runs, the detail and, when asked for, a box.
     ///
-    /// While the box is up it is the only thing that answers: its keys are taken before anything
+    /// While a box is up it is the only thing that answers: its keys are taken before anything
     /// behind it is drawn, what is behind is disabled, and no widget keeps the keyboard focus.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
         let ctx = ui.ctx().clone();
-        let modal = self.asking.is_some();
+        let modal = self.asking.is_some() || self.killing.is_some();
         let key = if modal { self.box_keys(&ctx) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
@@ -132,19 +240,28 @@ impl Browser {
                 }
             });
         }
-        egui::Panel::left("tree").default_size(300.0).show(ui, |ui| {
+        egui::Panel::left("tree").default_size(320.0).show(ui, |ui| {
             if modal {
                 ui.disable();
             }
-            self.tree(ui, t);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                self.tree(ui, t);
+                ui.add_space(10.0);
+                self.today(ui, t);
+            });
         });
         egui::CentralPanel::default().show(ui, |ui| {
             if modal {
                 ui.disable();
             }
-            self.detail(ui, t);
+            if self.run_sel.is_some() {
+                self.run_view(ui, t);
+            } else {
+                self.detail(ui, t);
+            }
         });
         self.confirm(&ctx, t, key);
+        self.confirm_kill(&ctx, t, key);
         if modal {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -190,26 +307,132 @@ impl Browser {
             ui.label(egui::RichText::new(t.trf("tree.failed", &[e])).color(c.err));
         }
         let mut pick = None;
-        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
-            let mut group: Option<&str> = None;
-            for d in &snap.defs {
-                if group != Some(d.group.as_str()) {
-                    group = Some(&d.group);
-                    let r = ui.label(egui::RichText::new(&d.group).strong().color(c.dim));
-                    ito_a11y::say(&r, Role::Heading, &d.group);
-                }
-                let text = review::row(t, d);
-                let on = self.selected.as_deref() == Some(d.id.as_str());
-                let r = ui.selectable_label(on, format!("  {text}"));
-                ito_a11y::say(&r, Role::Row, &text);
-                if r.clicked() {
-                    pick = Some(d.id.clone());
+        let mut group: Option<&str> = None;
+        for d in &snap.defs {
+            if group != Some(d.group.as_str()) {
+                group = Some(&d.group);
+                let r = ui.label(egui::RichText::new(&d.group).strong().color(c.dim));
+                ito_a11y::say(&r, Role::Heading, &d.group);
+            }
+            let text = review::row(t, d);
+            let on = self.run_sel.is_none() && self.selected.as_deref() == Some(d.id.as_str());
+            let r = ui.selectable_label(on, format!("  {text}"));
+            ito_a11y::say(&r, Role::Row, &text);
+            if r.clicked() {
+                pick = Some(d.id.clone());
+            }
+        }
+        if pick.is_some() {
+            self.selected = pick;
+            self.run_sel = None;
+            self.job_sel = None;
+            self.result = None;
+        }
+    }
+
+    /// Today's runs, newest first: symbol and state, net, planned or started, ended, duration.
+    fn today(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let r = ui.label(egui::RichText::new(t.tr("run.today")).strong().color(c.dim));
+        ito_a11y::say(&r, Role::Heading, t.tr("run.today"));
+        if self.snap.is_none() {
+            return;
+        }
+        if self.runs.is_empty() {
+            ui.add(egui::Label::new(t.tr("run.none")).wrap());
+            return;
+        }
+        let mut pick = None;
+        let mut runs: Vec<&Run> = self.runs.iter().collect();
+        runs.sort_by_key(|r| std::cmp::Reverse(r.started));
+        for run in runs {
+            let planned = run.planned.map(show::hms).unwrap_or_else(|| show::hms(run.started));
+            let mut text = format!("{}  {}  {}", show::tag(t, run.state), run.title, planned);
+            if let Some(e) = run.ended {
+                text.push_str(&format!("  {}", show::hms(e)));
+            }
+            if let Some(d) = run.duration() {
+                text.push_str(&format!("  {}", show::duration(d)));
+            }
+            let on = self.run_sel.as_deref() == Some(run.id.as_str());
+            let colour = graph::colour(&c, run.state);
+            let r = ui.selectable_label(on, egui::RichText::new(format!("  {text}")).color(colour));
+            ito_a11y::say(&r, Role::Row, &text);
+            if r.clicked() {
+                pick = Some(run.id.clone());
+            }
+        }
+        if pick.is_some() {
+            self.run_sel = pick;
+            self.job_sel = None;
+            self.result = None;
+        }
+    }
+
+    /// The run: its line, the buttons, the picture, the jobs in words, the log.
+    fn run_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let Some(run) = self.selected_run().cloned() else {
+            ui.label(t.tr("run.none"));
+            return;
+        };
+        let head = show::run_line(t, &run);
+        ui.heading(&head);
+        ui.add_space(6.0);
+        ui.horizontal(|ui| {
+            let r = ui.add_enabled(!run.is_over(), egui::Button::new(t.tr("run.kill")));
+            ito_a11y::say(&r, Role::Button, t.tr("run.kill"));
+            if r.clicked() {
+                self.killing = Some(run.id.clone());
+                // The safe button first: Enter on a fresh box does not kill.
+                self.focus = 1;
+            }
+            ui.separator();
+            for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
+                let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
+                ito_a11y::say(&r, Role::Button, t.tr(key));
+                if r.clicked() && self.vertical != vertical {
+                    self.set_flow(vertical);
                 }
             }
         });
+        ui.add_space(6.0);
+        let watched = Self::watched_job(&run, self.job_sel.as_deref());
+        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        let mut pick = None;
+        egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
+            pick = graph::draw(ui, &run, self.vertical, watched.as_deref());
+        });
+        for j in &run.jobs {
+            let text = graph::words(t, j);
+            let on = watched.as_deref() == Some(j.id.as_str());
+            let r = ui.selectable_label(on, egui::RichText::new(&text).color(graph::colour(&c, j.state)));
+            ito_a11y::say(&r, Role::Row, &text);
+            if r.clicked() {
+                pick = Some(j.id.clone());
+            }
+        }
         if pick.is_some() {
-            self.selected = pick;
-            self.result = None;
+            self.job_sel = pick;
+        }
+        ui.add_space(8.0);
+        let title = match &watched {
+            Some(j) => format!("{}: {j}", t.tr("run.log")),
+            None => t.tr("run.log").to_owned(),
+        };
+        let r = ui.label(egui::RichText::new(&title).strong());
+        ito_a11y::say(&r, Role::Heading, &title);
+        let text = match (&self.log, &watched) {
+            (Some((r, j, text)), Some(w)) if *r == run.id && j == w => text.clone(),
+            _ => String::new(),
+        };
+        if text.is_empty() {
+            ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
+        } else {
+            egui::ScrollArea::vertical().id_salt("log").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
+                let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).wrap());
+                ito_a11y::say(&r, Role::Label, &text);
+            });
         }
     }
 
@@ -228,13 +451,21 @@ impl Browser {
             ui.label(l);
         }
         ui.add_space(8.0);
-        let can = def.standing == Standing::Unconfirmed && !self.blocked();
-        let r = ui.add_enabled(can, egui::Button::new(t.tr("confirm.approve")));
-        ito_a11y::say(&r, Role::Button, t.tr("confirm.approve"));
-        if r.clicked() {
-            self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
-            self.focus = 0;
-        }
+        ui.horizontal(|ui| {
+            let can = def.standing == Standing::Unconfirmed && !self.blocked();
+            let r = ui.add_enabled(can, egui::Button::new(t.tr("confirm.approve")));
+            ito_a11y::say(&r, Role::Button, t.tr("confirm.approve"));
+            if r.clicked() {
+                self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
+                self.focus = 0;
+            }
+            let can = def.standing == Standing::Confirmed && !self.blocked();
+            let r = ui.add_enabled(can, egui::Button::new(t.tr("run.now")));
+            ito_a11y::say(&r, Role::Button, t.tr("run.now"));
+            if r.clicked() {
+                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None });
+            }
+        });
         match &self.result {
             Some(Ok(m)) => {
                 ui.label(egui::RichText::new(format!("{} {m}", ito_a11y::State::Done.mark())).color(c.done));
@@ -243,6 +474,21 @@ impl Browser {
                 ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
             }
             None => {}
+        }
+    }
+
+    fn style() -> ito_confirm::Style {
+        let c = ito_theme::colors();
+        ito_confirm::Style {
+            panel: c.raised(),
+            border: c.border,
+            accent: Some(c.wait),
+            title: c.strong(),
+            text: c.fg,
+            dim: c.dim,
+            warn: c.wait_text(),
+            button_bg: c.chosen(),
+            button_text: c.fg,
         }
     }
 
@@ -258,18 +504,6 @@ impl Browser {
             self.asking = None;
             return;
         }
-        let c = ito_theme::colors();
-        let style = ito_confirm::Style {
-            panel: c.raised(),
-            border: c.border,
-            accent: Some(c.wait),
-            title: c.strong(),
-            text: c.fg,
-            dim: c.dim,
-            warn: c.wait_text(),
-            button_bg: c.chosen(),
-            button_text: c.fg,
-        };
         let body = review::body(t, &def);
         let diff = review::diff(&def);
         let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
@@ -285,13 +519,43 @@ impl Browser {
             primary: Some(0),
             ..Default::default()
         };
-        match ito_confirm::show(ctx, &q, &style).or(key) {
+        match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
             Some(0) => {
                 let (id, sha256) = (ask.id.clone(), ask.sha256.clone());
                 let _ = self.tx.send(Request::Approve { id, sha256 });
                 self.asking = None;
             }
             Some(_) => self.asking = None,
+            None => {}
+        }
+    }
+
+    /// The box that asks before a run is killed. A run that ended meanwhile closes it.
+    fn confirm_kill(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(id) = self.killing.clone() else { return };
+        let Some(run) = self.runs.iter().find(|r| r.id == id && !r.is_over()).cloned() else {
+            self.killing = None;
+            return;
+        };
+        let rows = [(t.tr("run.state").to_owned(), show::run_line(t, &run))];
+        let body = [t.trf("run.kill_ask", &[&run.title])];
+        let buttons = [t.tr("run.kill_yes").to_owned(), t.tr("run.kill_no").to_owned()];
+        let q = ito_confirm::Question {
+            title: t.tr("run.kill"),
+            rows: &rows,
+            body: &body,
+            buttons: &buttons,
+            hint: t.tr("confirm.hint"),
+            focus: Some(self.focus),
+            primary: Some(0),
+            ..Default::default()
+        };
+        match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
+            Some(0) => {
+                let _ = self.tx.send(Request::Kill { run: id, job: None });
+                self.killing = None;
+            }
+            Some(_) => self.killing = None,
             None => {}
         }
     }
@@ -318,15 +582,41 @@ mod tests {
             .collect()
     }
 
-    /// A browser on a fixed list with no engine behind it, asking about `bom`.
-    fn asking() -> Browser {
+    /// A browser on a fixed list with no engine behind it.
+    fn quiet(defs: Vec<Def>) -> Browser {
         let (_, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
+        let snap = Some(Snapshot { defs, warnings: Vec::new() });
+        Browser {
+            rx,
+            tx,
+            watch: Arc::default(),
+            snap,
+            runs: Vec::new(),
+            down: None,
+            starting: false,
+            selected: None,
+            run_sel: None,
+            job_sel: None,
+            log: None,
+            vertical: false,
+            flow: None,
+            asking: None,
+            killing: None,
+            focus: 0,
+            result: None,
+        }
+    }
+
+    /// A browser asking about `bom`.
+    fn asking() -> Browser {
         let defs = defs();
         let ask = Approval { id: defs[0].id.clone(), sha256: defs[0].sha256.clone() };
         let selected = Some(defs[0].id.clone());
-        let snap = Some(Snapshot { defs, warnings: Vec::new() });
-        Browser { rx, tx, snap, down: None, starting: false, selected, asking: Some(ask), focus: 0, result: None }
+        let mut b = quiet(defs);
+        b.selected = selected;
+        b.asking = Some(ask);
+        b
     }
 
     fn frame(ctx: &egui::Context, size: egui::Vec2, events: Vec<egui::Event>, b: &mut Browser) {
@@ -401,5 +691,64 @@ mod tests {
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(b.asking.is_none(), "Enter on the cancel button closes the box");
         assert_eq!(b.selected.as_deref(), Some("試験/bom"), "the tree did not pick another row");
+    }
+
+    /// A run of today that is still going draws, with its picture and its jobs, and a frame later too.
+    #[test]
+    fn a_running_run_draws_its_picture_and_watches_the_running_job() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{How, Outcome};
+        let job = |id: &str, after: &[&str]| Job {
+            id: id.into(),
+            name: None,
+            run: vec!["x".into()],
+            dir: None,
+            after: after.iter().map(|s| s.to_string()).collect(),
+            pos: None,
+        };
+        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])] };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        run.finish("a", Outcome::Exited(0), now);
+        run.start("b", now);
+        let mut b = quiet(defs());
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-01".into());
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        for _ in 0..3 {
+            frame(&ctx, size, Vec::new(), &mut b);
+        }
+        let watched = b.watch.lock().unwrap().clone();
+        assert_eq!(watched, Some(("20261030-090000-01".into(), "b".into())), "the running job's log is the one fetched");
+        assert!(b.killing.is_none());
+    }
+
+    /// The kill box starts on the safe button: a plain Enter does not kill.
+    #[test]
+    fn the_kill_box_starts_on_no() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::How;
+        let net = Jobnet {
+            name: None,
+            jobs: vec![Job { id: "a".into(), name: None, run: vec!["x".into()], dir: None, after: Vec::new(), pos: None }],
+        };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        b.runs = vec![run];
+        b.run_sel = Some("r1".into());
+        b.killing = Some("r1".into());
+        b.focus = 1;
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(b.killing.is_none(), "Enter answered the box");
+        assert!(rx_req.try_recv().is_err(), "and sent no kill");
     }
 }

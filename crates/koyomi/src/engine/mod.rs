@@ -9,18 +9,28 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
+use chrono::{Local, NaiveDate};
 use ito_ipc::door::{ask, Ask};
 use koyomi_core::approved::Store;
+use koyomi_core::config::Config;
+use koyomi_core::run::How;
 use koyomi_core::scan::{scan, Def, Standing};
 
-use crate::proto::{self, Request, Snapshot};
+use crate::proto::{self, Request, Runs, Snapshot};
+
+mod runner;
+use runner::Runner;
 
 /// Where everything of the engine's lives.
 #[derive(Clone, Debug)]
 pub struct Paths {
-    /// `app_dir("koyomi")`: the settings folder. Holds `jobnets/`.
+    /// `app_dir("koyomi")`: the settings folder. Holds `jobnets/` and `koyomi.toml`.
     pub app: PathBuf,
     pub jobnets: PathBuf,
+    /// `app_dir("koyomi")/koyomi.toml`.
+    pub config: PathBuf,
+    /// `state_dir("koyomi")`: `approved.toml`, `history/`, `logs/`.
+    pub state: PathBuf,
     /// `state_dir("koyomi")/approved.toml`.
     pub approved: PathBuf,
 }
@@ -29,7 +39,12 @@ impl Paths {
     pub fn find() -> Result<Paths, String> {
         let app = ito_common::app_dir("koyomi").ok_or("設定のフォルダーが分からない")?;
         let state = ito_common::state_dir("koyomi").ok_or("状態のフォルダーが分からない")?;
-        Ok(Paths { jobnets: app.join("jobnets"), app, approved: state.join("approved.toml") })
+        Ok(Paths { jobnets: app.join("jobnets"), config: app.join("koyomi.toml"), approved: state.join("approved.toml"), app, state })
+    }
+
+    /// `koyomi.toml`, or why it does not read.
+    pub fn config(&self) -> Result<Config, String> {
+        Config::load(&self.config).map_err(|e| format!("{} が読めない（{e}）。直すまで流さない", shown(&self.config)))
     }
 
     /// The approvals, or the line that says `approved.toml` does not read.
@@ -75,14 +90,33 @@ struct State {
     unreadable: Option<String>,
     defs: Vec<Def>,
     warnings: Vec<String>,
+    /// Why `koyomi.toml` does not read: until it does, nothing is started.
+    bad_config: Option<String>,
+    runner: Runner,
 }
 
 impl State {
     fn new(paths: Paths) -> State {
-        let mut s = State { paths, store: Store::default(), unreadable: None, defs: Vec::new(), warnings: Vec::new() };
+        let (config, bad_config) = match paths.config() {
+            Ok(c) => (c, None),
+            Err(e) => (Config::default(), Some(e)),
+        };
+        let runner = Runner::new(&paths.state, config);
+        let mut s = State { paths, store: Store::default(), unreadable: None, defs: Vec::new(), warnings: Vec::new(), bad_config, runner };
         s.reload();
         s.rescan();
         s
+    }
+
+    /// Reads `koyomi.toml` again.
+    fn reload_config(&mut self) {
+        match self.paths.config() {
+            Ok(c) => {
+                self.runner.set_config(c);
+                self.bad_config = None;
+            }
+            Err(e) => self.bad_config = Some(e),
+        }
     }
 
     /// Reads `approved.toml` again; only while it does not read (the engine is its one writer).
@@ -103,6 +137,7 @@ impl State {
         if self.unreadable.is_some() {
             self.reload();
         }
+        self.reload_config();
         self.defs = scan(&self.paths.jobnets, &self.store);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
@@ -110,12 +145,43 @@ impl State {
     }
 
     fn snapshot(&self) -> Snapshot {
-        Snapshot { defs: self.defs.clone(), warnings: self.warnings.clone() }
+        let mut warnings = self.warnings.clone();
+        warnings.extend(self.bad_config.clone());
+        Snapshot { defs: self.defs.clone(), warnings }
     }
 
     fn status(&self) -> String {
         let confirmed = self.defs.iter().filter(|d| d.standing == Standing::Confirmed).count();
-        format!("koyomi engine pid {}: 定義 {} 件（確認済み {}）", std::process::id(), self.defs.len(), confirmed)
+        let running = self.runner.runs().iter().filter(|r| !r.is_over()).count();
+        format!(
+            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}",
+            std::process::id(),
+            self.defs.len(),
+            confirmed,
+            running
+        )
+    }
+
+    /// Starts `id` by hand. Refused for every reason a run must not start quietly.
+    fn start(&mut self, id: &str, date: Option<&str>) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("流せない: {}", self.warnings.join(" / ")));
+        }
+        if let Some(e) = &self.bad_config {
+            return Err(format!("流せない: {e}"));
+        }
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        match def.standing {
+            Standing::Invalid => return Err(format!("定義の誤りがあり、流せない: {}", def.file)),
+            Standing::Unconfirmed => return Err(format!("未確認のため流さない: {}（koyomi approve {id}）", def.file)),
+            Standing::Confirmed => {}
+        }
+        let date = match date {
+            Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
+            None => Local::now().date_naive(),
+        };
+        let def = def.clone();
+        self.runner.start(&def, date, How::Manual)
     }
 
     fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
@@ -151,6 +217,10 @@ impl State {
                 toml::to_string(def).map_err(|e| e.to_string())
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
+            Request::Run { id, date } => self.start(id, date.as_deref()),
+            Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
+            Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
+            Request::Log { run, job } => self.runner.log_tail(run, job),
         }
     }
 }
@@ -215,6 +285,7 @@ pub fn run() -> i32 {
                     let _ = reply.send(out);
                 }
                 if stop {
+                    state.runner.flush();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -223,6 +294,7 @@ pub fn run() -> i32 {
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
+        state.runner.tick();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);
             return 1;

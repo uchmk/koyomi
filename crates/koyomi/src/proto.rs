@@ -1,14 +1,15 @@
 //! What the window and the CLI say to the engine through its door, and what the engine says back.
 //!
 //! One request and one reply per connection (`ito_ipc::door`). The reply is
-//! text: TOML for `List` and `Show`, a line for the rest.
+//! text: TOML for `List`, `Show` and `Runs`, the log's tail for `Log`, a line for the rest.
 
 use ito_ipc::door::Door;
+use koyomi_core::run::Run;
 use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 1;
+pub const PROTO: u32 = 2;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -24,6 +25,15 @@ pub enum Request {
     Show { id: String },
     /// Approve `id` as it reads now, if it still hashes to `sha256`.
     Approve { id: String, sha256: String },
+    /// Start the net `id` now for the business day `date` (`YYYY-MM-DD`; today when none).
+    /// The reply is the run's id.
+    Run { id: String, date: Option<String> },
+    /// Stop one job of a run, or the whole run.
+    Kill { run: String, job: Option<String> },
+    /// Today's runs and the ones still going, as [`Runs`].
+    Runs,
+    /// The tail of one job's log.
+    Log { run: String, job: String },
 }
 
 pub fn door() -> Door<Request> {
@@ -45,6 +55,23 @@ impl Snapshot {
     }
 
     pub fn parse(text: &str) -> Result<Snapshot, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// What `Runs` answers: oldest first.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Runs {
+    #[serde(default, rename = "run")]
+    pub runs: Vec<Run>,
+}
+
+impl Runs {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<Runs, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 }
