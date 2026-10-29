@@ -24,8 +24,10 @@ use koyomi_core::when;
 use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot};
 
+mod retain;
 mod runner;
 mod schedule;
+use retain::Retain;
 use runner::Runner;
 use schedule::Schedule;
 
@@ -103,6 +105,9 @@ struct State {
     runner: Runner,
     /// The clock: when `[[when]]` was last looked at.
     schedule: Schedule,
+    /// The sweep of logs and history older than `keep_days`.
+    retain: Retain,
+    keep_days: u32,
     /// `[notify]` as runs are told with: the `secret:` addresses read back
     /// (on a thread; until it answers they are not sent to).
     notify: NotifyCfg,
@@ -125,8 +130,10 @@ impl State {
             Ok(c) => (c, None),
             Err(e) => (Config::default(), Some(e)),
         };
+        let keep_days = config.keep_days;
         let runner = Runner::new(&paths.state, config);
         let schedule = Schedule::new(&paths.state);
+        let retain = Retain::new(&paths.state);
         let (reveal_tx, reveal_rx) = mpsc::channel();
         let mut s = State {
             paths,
@@ -137,6 +144,8 @@ impl State {
             bad_config,
             runner,
             schedule,
+            retain,
+            keep_days,
             notify: NotifyCfg::default(),
             notify_raw: None,
             notify_notes: Vec::new(),
@@ -170,6 +179,7 @@ impl State {
                         let _ = tx.send((gen, n, notes));
                     });
                 }
+                self.keep_days = c.keep_days;
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -261,12 +271,25 @@ impl State {
         let confirmed = self.defs.iter().filter(|d| d.standing == Standing::Confirmed).count();
         let running = self.runner.runs().iter().filter(|r| !r.is_over()).count();
         format!(
-            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}",
+            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}\n{}",
             std::process::id(),
             self.defs.len(),
             confirmed,
-            running
+            running,
+            self.retain.line()
         )
+    }
+
+    /// The sweep of old records: started for a new day or a new `keep_days`
+    /// (not while koyomi.toml does not read: a typo must not sweep), its
+    /// end told on the console.
+    fn tick_retain(&mut self) {
+        if self.bad_config.is_some() {
+            return;
+        }
+        if let Some(line) = self.retain.tick(self.keep_days) {
+            crate::say(&format!("koyomi: {line}"), false);
+        }
     }
 
     /// Starts `id` by hand. Refused for every reason a run must not start quietly.
@@ -394,6 +417,7 @@ pub fn run() -> i32 {
                 if stop {
                     state.runner.flush();
                     state.schedule.flush();
+                    state.retain.flush();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -404,6 +428,7 @@ pub fn run() -> i32 {
         }
         state.runner.tick();
         state.tick_schedule();
+        state.tick_retain();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);

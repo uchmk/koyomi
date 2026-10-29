@@ -29,9 +29,9 @@ pub enum Reload {
     /// keymap.toml's text (`None` when there is none), or why it could not
     /// be read.
     Keymap(Result<Option<String>, String>),
-    /// `[notify]` of koyomi.toml, with its `secret:` addresses read back,
-    /// and what to warn of; or why the file could not be read.
-    Config(Result<(NotifyCfg, Vec<String>), String>),
+    /// koyomi.toml: its limits, its `[notify]` with the `secret:` addresses
+    /// read back, and what to warn of; or why the file could not be read.
+    Config(Result<(Config, NotifyCfg, Vec<String>), String>),
     Failed(String),
 }
 
@@ -40,24 +40,24 @@ pub fn config_path(base: &Path) -> PathBuf {
     ito_common::app_dir_in(base, "koyomi").join("koyomi.toml")
 }
 
-/// `[notify]` of the koyomi.toml at `path` (none: the defaults) as the page
-/// shows it, the `secret:` addresses read back from the credential store.
-/// Blocks on the store: call it off the UI thread.
-fn read_config(path: &Path) -> Result<(NotifyCfg, Vec<String>), String> {
+/// The koyomi.toml at `path` (none: the defaults), and its `[notify]` as
+/// the page shows it, the `secret:` addresses read back from the credential
+/// store. Blocks on the store: call it off the UI thread.
+fn read_config(path: &Path) -> Result<(Config, NotifyCfg, Vec<String>), String> {
     let config = Config::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let (mut n, mut notes) = crate::notify::parse(&config);
     notes.extend(n.reveal("koyomi"));
-    Ok((n, notes))
+    Ok((config, n, notes))
 }
 
 /// One lock for every writer of koyomi.toml from the window.
 static CONFIG_ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-/// Set `edits` (`[notify]` keys, already TOML) and `webhooks` in the
-/// koyomi.toml at `path` (none yet is an empty one), written only when that
-/// changes it; the rest of the file keeps its lines and comments. Call it
-/// off the UI thread.
-pub fn write_config(path: &Path, edits: &[(&str, String)], webhooks: Option<&[Place]>) -> Result<(), String> {
+/// Set `edits` (keys of `table`, `None` for the top of the file, already
+/// TOML) and `webhooks` in the koyomi.toml at `path` (none yet is an empty
+/// one), written only when that changes it; the rest of the file keeps its
+/// lines and comments. Call it off the UI thread.
+pub fn write_config(path: &Path, table: Option<&str>, edits: &[(&str, String)], webhooks: Option<&[Place]>) -> Result<(), String> {
     let at = |e: String| format!("{}: {e}", path.display());
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -66,7 +66,7 @@ pub fn write_config(path: &Path, edits: &[(&str, String)], webhooks: Option<&[Pl
     };
     let mut new = text.clone();
     for (key, value) in edits {
-        new = ito_common::set_key(&new, Some("notify"), key, value).map_err(at)?;
+        new = ito_common::set_key(&new, table, key, value).map_err(at)?;
     }
     if let Some(places) = webhooks {
         new = ito_prefs::write_webhooks(&new, places, true).map_err(at)?;
@@ -152,6 +152,14 @@ pub struct Prefs {
     pub notify_warn: Vec<String>,
     /// The Notifications page's fields while they are typed in.
     pub notify_drafts: ito_prefs::Drafts,
+    /// koyomi.toml's limits (`keep_days`, `concurrency`, `log_max_mb`) as
+    /// the General page shows them; the defaults until it is read.
+    pub config: Config,
+    /// What the General page's number fields were last told off for, until
+    /// the file is read again.
+    pub config_warn: Option<String>,
+    /// The General page's number fields while they are typed in.
+    pub limit_drafts: ito_prefs::Drafts,
     tx: Sender<Reload>,
     rx: Receiver<Reload>,
     wake: Option<egui::Context>,
@@ -183,6 +191,9 @@ impl Prefs {
             notify: crate::notify::parse(&Config::default()).0,
             notify_warn: Vec::new(),
             notify_drafts: ito_prefs::Drafts::new(),
+            config: Config::default(),
+            config_warn: None,
+            limit_drafts: ito_prefs::Drafts::new(),
             tx,
             rx,
             wake: None,
@@ -276,7 +287,11 @@ impl Prefs {
                     self.keymap = t;
                     self.keymap_new = Some(None);
                 }
-                Reload::Config(Ok((n, w))) => (self.notify, self.notify_warn) = (n, w),
+                Reload::Config(Ok((c, n, w))) => {
+                    self.config = c;
+                    self.config_warn = None;
+                    (self.notify, self.notify_warn) = (n, w);
+                }
                 // Unreadable (being written, or a line the engine refuses
                 // too): the page keeps what it had, and says so.
                 Reload::Config(Err(e)) => self.notify_warn = vec![e],
@@ -385,11 +400,44 @@ impl Prefs {
             let path = config_path(&base);
             let edits = now.edits(&EVENTS, &page);
             let r = match now.webhooks_to_write("koyomi", &EVENTS, &page) {
-                Ok(webhooks) => match write_config(&path, &edits, webhooks.as_deref()) {
+                Ok(webhooks) => match write_config(&path, Some("notify"), &edits, webhooks.as_deref()) {
                     Ok(()) => Reload::Config(read_config(&path)),
                     Err(e) => Reload::Failed(e),
                 },
                 Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
+            };
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// Write `edits` (koyomi.toml's top-level numbers, `keep_days`,
+    /// `concurrency` and `log_max_mb`, as TOML) on a thread, then read the
+    /// file again. One already as the file has it is not written.
+    pub fn limits_edit(&self, edits: Vec<(&'static str, String)>, no_folder: &str) {
+        let c = &self.config;
+        let edits: Vec<(&str, String)> = edits
+            .into_iter()
+            .filter(|(k, v)| match *k {
+                "keep_days" => *v != c.keep_days.to_string(),
+                "concurrency" => *v != c.concurrency.to_string(),
+                "log_max_mb" => *v != c.log_max_mb.to_string(),
+                _ => true,
+            })
+            .collect();
+        if edits.is_empty() {
+            return;
+        }
+        let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let Some(base) = self.base.clone() else {
+            Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
+            return;
+        };
+        std::thread::spawn(move || {
+            let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let path = config_path(&base);
+            let r = match write_config(&path, None, &edits, None) {
+                Ok(()) => Reload::Config(read_config(&path)),
+                Err(e) => Reload::Failed(e),
             };
             Self::send_back(&tx, &wake, r);
         });

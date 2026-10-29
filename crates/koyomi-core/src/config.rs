@@ -32,6 +32,12 @@ impl Config {
         if c.concurrency == 0 {
             return Err("concurrency は 1 以上".to_owned());
         }
+        if c.keep_days == 0 {
+            return Err("keep_days は 1 以上".to_owned());
+        }
+        if c.log_max_mb == 0 {
+            return Err("log_max_mb は 1 以上".to_owned());
+        }
         Ok(c)
     }
 
@@ -64,6 +70,8 @@ mod tests {
     fn a_typo_is_an_error_not_a_default() {
         assert!(Config::parse("concurency = 2\n").is_err());
         assert!(Config::parse("concurrency = 0\n").is_err());
+        assert!(Config::parse("keep_days = 0\n").is_err());
+        assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
     }
 

@@ -1,10 +1,12 @@
 //! The settings screen (Ctrl+,): `ito-prefs` draws the nav and the cards, and
 //! the rows common to every uchmk app (the language, the size, the clock,
 //! the window, the theme) write common.toml. koyomi's own pages are the
-//! Notifications page (`[notify]` of koyomi.toml, the one table of it the
-//! screen writes) and the Keys page (each operation's keys, written to
-//! keymap.toml). The definitions and the rest of koyomi.toml are not
-//! settings: they stay files, as DECISIONS.md has it.
+//! Notifications page (`[notify]` of koyomi.toml), the General page's
+//! Records section (koyomi.toml's `keep_days`, `concurrency` and
+//! `log_max_mb`; shortening `keep_days` asks first, with how many days'
+//! records would go) and the Keys page (each operation's keys, written to
+//! keymap.toml). The definitions are not settings: they stay files, as
+//! DECISIONS.md has it.
 
 use egui::{vec2, Align2, FontId, Sense, Stroke, StrokeKind, Ui};
 use ito_common::{themes_dir, CommonChange};
@@ -43,6 +45,14 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (GENERAL, "scale"),
         (GENERAL, "[clock]"),
         (GENERAL, "[window]"),
+        (GENERAL, t.tr("settings.records")),
+        (GENERAL, t.tr("settings.keep_days")),
+        (GENERAL, t.tr("settings.concurrency")),
+        (GENERAL, t.tr("settings.log_max")),
+        (GENERAL, "keep_days"),
+        (GENERAL, "concurrency"),
+        (GENERAL, "log_max_mb"),
+        (GENERAL, "koyomi.toml"),
         (THEME, w.mode),
         (THEME, w.themes),
         (THEME, w.preview),
@@ -70,8 +80,14 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let w = Words::of(&app.lang);
     let more = MoreWords::of(&app.lang);
     poll_startup(ui, app);
-    // While a key is being set the page takes every key, Esc included.
-    let keys = if app.prefs.keys_edit.busy() { ito_prefs::Keys::default() } else { ito_prefs::Keys::standard(ui, false) };
+    let no_folder = app.table.tr("settings.no_folder").to_owned();
+    keep_ask(ui, app, &no_folder);
+    // While a key is being set, or the box asks, the page takes every key, Esc included.
+    let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() {
+        ito_prefs::Keys::default()
+    } else {
+        ito_prefs::Keys::standard(ui, false)
+    };
     let table = &app.table;
     let tr = |k: &str| table.tr(k).to_owned();
     let (adv, about) = (ito_prefs::Page::Advanced.words(more), ito_prefs::Page::About.words(more));
@@ -100,6 +116,17 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let prefs = &mut app.prefs;
     let keys_edit = &mut prefs.keys_edit;
     let (notify, notify_warn, drafts) = (&prefs.notify, &prefs.notify_warn, &mut prefs.notify_drafts);
+    // The Records section: the days picked, and the numbers typed (as typed).
+    let (config, config_warn, limit_drafts) = (&prefs.config, &prefs.config_warn, &mut prefs.limit_drafts);
+    let mut keep_pick: Option<u32> = None;
+    let mut limit_typed: Vec<(&'static str, String)> = Vec::new();
+    let mut day_words: Vec<(u32, String)> = KEEP_DAYS.iter().map(|d| (*d, table.trf("settings.days", &[&d.to_string()]))).collect();
+    if !KEEP_DAYS.contains(&config.keep_days) {
+        // Written by hand: shown as it is, among the choices.
+        day_words.push((config.keep_days, table.trf("settings.days", &[&config.keep_days.to_string()])));
+        day_words.sort();
+    }
+    let day_opts: Vec<(u32, &str)> = day_words.iter().map(|(d, s)| (*d, s.as_str())).collect();
     let mut bug = false;
     let mut forget = false;
     let mut startup_toggled = None;
@@ -120,6 +147,31 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             asked.extend(out.changes);
             forget |= out.forget;
             startup_toggled = ito_prefs::startup_card(ui, l, more, startup_now);
+            section(ui, l, &tr("settings.records"), |ui| {
+                if let Some(w) = config_warn {
+                    ito_prefs::status(ui, w, l.c.err);
+                }
+                let (label, note) = (tr("settings.keep_days"), tr("settings.keep_days_note"));
+                keep_pick = ito_prefs::keyed_row(ui, l, "keep_days", &label, &note, |ui| {
+                    ito_prefs::select(ui, "keep_days", config.keep_days, &day_opts)
+                });
+                ito_prefs::sep(ui, l);
+                let (label, note) = (tr("settings.concurrency"), tr("settings.concurrency_note"));
+                let now = config.concurrency.to_string();
+                if let Some(t) = ito_prefs::keyed_row(ui, l, "concurrency", &label, &note, |ui| {
+                    ito_prefs::field(ui, limit_drafts, "concurrency", &now, "4", 80.0)
+                }) {
+                    limit_typed.push(("concurrency", t));
+                }
+                ito_prefs::sep(ui, l);
+                let (label, note) = (tr("settings.log_max"), tr("settings.log_max_note"));
+                let now = config.log_max_mb.to_string();
+                if let Some(t) = ito_prefs::keyed_row(ui, l, "log_max_mb", &label, &note, |ui| {
+                    ito_prefs::field(ui, limit_drafts, "log_max_mb", &now, "10", 80.0)
+                }) {
+                    limit_typed.push(("log_max_mb", t));
+                }
+            });
         }
         THEME => {
             let (t, d, li) = common.theme_choice(Some(THEMES));
@@ -184,10 +236,29 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         }
         _ => {}
     });
-    let no_folder = app.table.tr("settings.no_folder").to_owned();
     if bug {
         app.report_bug(ui.ctx());
     }
+    // The numbers typed: whole, 1 or more; else told off under the section.
+    let mut limit_edits: Vec<(&'static str, String)> = Vec::new();
+    for (key, text) in limit_typed {
+        match text.trim().parse::<u64>() {
+            Ok(n) if n >= 1 => limit_edits.push((key, n.to_string())),
+            _ => app.prefs.config_warn = Some(tr("settings.bad_number")),
+        }
+    }
+    if let Some(d) = keep_pick {
+        let now = app.prefs.config.keep_days;
+        if d < now {
+            // Shorter: the box first, with what would go.
+            let today = chrono::Local::now().date_naive();
+            let lost = state_dir.as_deref().map_or(0, |s| koyomi_core::retain::days_lost(s, today, now, d));
+            app.keep_ask = Some((d, lost));
+        } else {
+            limit_edits.push(("keep_days", d.to_string()));
+        }
+    }
+    app.prefs.limits_edit(limit_edits, &no_folder);
     if let Some((what, n)) = test {
         crate::notify::test(&n, what, &tr("notify.test_title"), &tr("notify.test_body"));
     }
@@ -235,6 +306,49 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     app.prefs.keymap_edit(key_edits, &no_folder);
     app.prefs.common_change(asked, &no_folder);
+}
+
+/// The choices for `keep_days`, as DECISIONS.md has them: no "never".
+pub const KEEP_DAYS: [u32; 5] = [30, 60, 90, 180, 365];
+
+/// The box that asks before `keep_days` is shortened, over the settings:
+/// how many days' records go at once. Enter shortens, Esc keeps the days.
+fn keep_ask(ui: &mut Ui, app: &mut App, no_folder: &str) {
+    let Some((new, lost)) = app.keep_ask else { return };
+    let t = &app.table;
+    let now = app.prefs.config.keep_days;
+    let title = t.tr("settings.keep_ask_title").to_owned();
+    let rows = [(t.tr("settings.keep_days").to_owned(), t.trf("settings.keep_ask_change", &[&now.to_string(), &new.to_string()]))];
+    let body = [if lost == 0 { t.tr("settings.keep_ask_none").to_owned() } else { t.trf("settings.keep_ask_body", &[&lost.to_string()]) }];
+    let buttons = [t.tr("settings.keep_ask_yes").to_owned(), t.tr("confirm.no").to_owned()];
+    let hint = t.tr("settings.keep_ask_hint").to_owned();
+    let q = ito_confirm::Question {
+        title: &title,
+        rows: &rows,
+        body: &body,
+        buttons: &buttons,
+        hint: &hint,
+        focus: Some(0),
+        primary: Some(0),
+        ..Default::default()
+    };
+    let key = ui.input_mut(|i| {
+        if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
+            Some(0)
+        } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
+            Some(1)
+        } else {
+            None
+        }
+    });
+    match ito_confirm::show(ui.ctx(), &q, &crate::ui::Browser::style()).or(key) {
+        Some(0) => {
+            app.keep_ask = None;
+            app.prefs.limits_edit(vec![("keep_days", new.to_string())], no_folder);
+        }
+        Some(_) => app.keep_ask = None,
+        None => {}
+    }
 }
 
 /// Take the OS's answer about starting at sign-in, and ask when nothing is

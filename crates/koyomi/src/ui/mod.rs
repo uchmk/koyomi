@@ -593,7 +593,8 @@ impl Browser {
         }
     }
 
-    fn style() -> ito_confirm::Style {
+    /// The confirm boxes' colours, from the theme.
+    pub(crate) fn style() -> ito_confirm::Style {
         let c = ito_theme::colors();
         ito_confirm::Style {
             panel: c.raised(),

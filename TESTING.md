@@ -212,3 +212,17 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 17.9 | Edit `[notify]` with a text editor while the page is open | Within 2 s the page shows it; a line it cannot read is shown in red on the page and the switches stay |
 | 17.10 | Open the page with `concurrency = 2` and a comment in `koyomi.toml`, change a switch | Only `[notify]` changed; `concurrency`, the comment and the line order stay |
 | 17.11 | Search the settings for `webhook` or `[notify]` | The results show the Notifications page |
+
+## 18. Settings: Records
+
+| # | Do | Expect |
+|---|---|---|
+| 18.1 | With no `koyomi.toml`, open the settings' General page | Under "Records": Days of logs and history to keep = 90 days, Jobs at a time = 4, Log size = 10 MB; nothing is written |
+| 18.2 | Pick 180 days | `koyomi.toml` gets `keep_days = 180` at the top (before any table); no box asks (it is longer); `koyomi engine status` shows the sweep line again within 5 s |
+| 18.3 | Put `logs/2026-01-05/` and `history/2026/01/06.toml` in the state folder, then pick 30 days | A box says 30 days are kept, 180 → 30, and that 2 days of logs and history go at the engine's next sweep; Enter writes `keep_days = 30`; within 5 s the two are gone and `engine status` says `ログ 1 日・履歴 1 日を消した` |
+| 18.4 | Pick a shorter number again with nothing old there, and press Esc | The box says no days go right away; Esc keeps the file as it was; the row shows the days as before |
+| 18.5 | Type 2 in Jobs at a time and press Enter | `concurrency = 2` is written at the top; a net with 3 parallel jobs runs 2 at a time within 5 s |
+| 18.6 | Type 0, `abc` or 1.5 in Log size | A red note under "Records" says to enter a whole number of 1 or more; nothing is written; the field goes back to the number in the file |
+| 18.7 | Write `keep_days = 45` by hand with a comment above `[notify]`, open the page, pick 60 | The row showed "45 days" among the choices; only `keep_days` changed; the comment, `[notify]` and the line order stay |
+| 18.8 | Put `logs/notes/` and `logs/2026-01-05-old/` in the state folder and shorten the days | Neither is counted nor removed: only names that are a day (`2026-01-05`, `2026/01/05.toml`) are swept |
+| 18.9 | Search the settings for `keep_days`, `concurrency`, `log_max_mb` or `koyomi.toml` | The results show the General page |

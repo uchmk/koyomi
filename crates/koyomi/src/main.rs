@@ -53,6 +53,9 @@ struct App {
     /// the settings screen's state.
     prefs: prefs::Prefs,
     settings_open: bool,
+    /// The settings' box that asks before `keep_days` is shortened: the days
+    /// wanted, and how many days' records would go at once.
+    keep_ask: Option<(u32, usize)>,
     /// The key help (F1 or `?`) while it is open.
     help: help::Help,
     /// Starts at sign-in: what the OS says, and the thread asking it.
@@ -132,6 +135,7 @@ impl App {
             table,
             prefs,
             settings_open: false,
+            keep_ask: None,
             help: help::Help::default(),
             startup: None,
             startup_rx: None,
