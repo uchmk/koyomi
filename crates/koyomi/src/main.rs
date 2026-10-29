@@ -14,6 +14,7 @@ mod engine;
 mod envreport;
 mod i18n;
 mod icon;
+mod notify;
 mod proto;
 mod review;
 mod show;
@@ -39,9 +40,10 @@ struct App {
     lang: String,
     /// The last scale change, as the line the status bar shows.
     scale_note: Option<String>,
-    /// What the bell lists, oldest first. `()` is where a click goes: this app
-    /// has no place to jump to yet (use a type of the app's own for one).
-    notices: Vec<ito_notices::Notice<()>>,
+    /// What the bell lists, oldest first: a run that ended 異常 (a click opens
+    /// it, by its id) and the engine's notes about `[notify]`.
+    notices: Vec<ito_notices::Notice<String>>,
+    next_notice: u64,
     /// The list under the bell is open, and where the bell was last drawn.
     bell_open: bool,
     bell_at: egui::Rect,
@@ -104,6 +106,7 @@ impl App {
             lang,
             scale_note: None,
             notices: Vec::new(),
+            next_notice: 0,
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
@@ -291,13 +294,44 @@ impl App {
             kinds: [t.tr("notices.ok"), t.tr("notices.info"), t.tr("notices.warn"), t.tr("notices.err"), t.tr("notices.wait")],
         };
         match ito_notices::show(ctx, self.bell_at, &self.notices, &words) {
-            Some(ito_notices::Action::Open(_, id)) => {
+            Some(ito_notices::Action::Open(go, id)) => {
                 self.notices.iter_mut().filter(|n| n.id == id).for_each(|n| n.read = true);
                 self.bell_open = false;
+                if let Some(run) = go {
+                    self.browser.open_run(&run);
+                }
             }
             Some(ito_notices::Action::ReadAll) => self.notices.iter_mut().for_each(|n| n.read = true),
             Some(ito_notices::Action::Close) => self.bell_open = false,
             None => {}
+        }
+    }
+
+    /// A run that ended 異常, and a note about `[notify]`, go under the bell.
+    /// (The system's notification is the engine's: it is the same whoever
+    /// started the run, and shows with no window open.)
+    fn take_notices(&mut self) {
+        let mut add: Vec<(ito_notices::Kind, String, Option<String>, Option<String>)> = Vec::new();
+        for r in self.browser.take_ended() {
+            if r.state.is_error() {
+                let (_, title, body) = notify::words(&self.table, &r);
+                add.push((ito_notices::Kind::Err, title, Some(body), Some(r.id.clone())));
+            }
+        }
+        for n in self.browser.take_notes() {
+            add.push((ito_notices::Kind::Warn, n, None, None));
+        }
+        for (kind, title, note, go) in add {
+            self.next_notice += 1;
+            self.notices.push(ito_notices::Notice {
+                id: self.next_notice,
+                at: std::time::SystemTime::now(),
+                kind,
+                title,
+                note,
+                go,
+                read: false,
+            });
         }
     }
 
@@ -327,6 +361,7 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE.fill(ito_theme::colors().bg))
             .show(ui, |ui| self.title_bar(ui));
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
+        self.take_notices();
         self.notice_list(&ctx);
         self.command_palette(&ctx);
         self.take_font(&ctx);

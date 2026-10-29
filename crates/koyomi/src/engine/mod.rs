@@ -3,6 +3,9 @@
 //! It reads `jobnets/<group>/<name>.toml`, keeps `approved.toml`, watches the
 //! folder, and answers the window and the CLI through the door (`proto`). It
 //! outlives the window. Nothing here draws or asks a person anything.
+//!
+//! It is also the one place a run is told of (`notify`): the window and the
+//! console only start runs, so a run is told of the same way however it started.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -11,11 +14,13 @@ use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate};
 use ito_ipc::door::{ask, Ask};
+use ito_prefs::NotifyCfg;
 use koyomi_core::approved::Store;
 use koyomi_core::config::Config;
 use koyomi_core::run::How;
 use koyomi_core::scan::{scan, Def, Standing};
 
+use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot};
 
 mod runner;
@@ -93,6 +98,20 @@ struct State {
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
     bad_config: Option<String>,
     runner: Runner,
+    /// `[notify]` as runs are told with: the `secret:` addresses read back
+    /// (on a thread; until it answers they are not sent to).
+    notify: NotifyCfg,
+    /// `[notify]` as it last read, to see a change; `None` before the first read.
+    notify_raw: Option<NotifyCfg>,
+    /// What a person should see about `[notify]`: from the reading, then from the credential store.
+    notify_notes: Vec<String>,
+    reveal_notes: Vec<String>,
+    /// Which reading the thread is reading back for; an older answer is dropped.
+    reveal_gen: u64,
+    reveal_tx: mpsc::Sender<(u64, NotifyCfg, Vec<String>)>,
+    reveal_rx: mpsc::Receiver<(u64, NotifyCfg, Vec<String>)>,
+    /// The words a run is told in: common.toml's language.
+    words: ito_i18n::Table,
 }
 
 impl State {
@@ -102,20 +121,66 @@ impl State {
             Err(e) => (Config::default(), Some(e)),
         };
         let runner = Runner::new(&paths.state, config);
-        let mut s = State { paths, store: Store::default(), unreadable: None, defs: Vec::new(), warnings: Vec::new(), bad_config, runner };
+        let (reveal_tx, reveal_rx) = mpsc::channel();
+        let mut s = State {
+            paths,
+            store: Store::default(),
+            unreadable: None,
+            defs: Vec::new(),
+            warnings: Vec::new(),
+            bad_config,
+            runner,
+            notify: NotifyCfg::default(),
+            notify_raw: None,
+            notify_notes: Vec::new(),
+            reveal_notes: Vec::new(),
+            reveal_gen: 0,
+            reveal_tx,
+            reveal_rx,
+            words: crate::cli::table(),
+        };
         s.reload();
         s.rescan();
         s
     }
 
-    /// Reads `koyomi.toml` again.
+    /// Reads `koyomi.toml` again. A changed `[notify]` is used at once, and its
+    /// `secret:` addresses are read back on a thread (the store can be slow).
     fn reload_config(&mut self) {
         match self.paths.config() {
             Ok(c) => {
+                let (n, notes) = notify::read(&c);
+                if self.notify_raw.as_ref() != Some(&n) {
+                    self.notify_raw = Some(n.clone());
+                    self.notify_notes = notes;
+                    self.reveal_notes.clear();
+                    self.notify = n.clone();
+                    self.reveal_gen += 1;
+                    let (gen, tx) = (self.reveal_gen, self.reveal_tx.clone());
+                    std::thread::spawn(move || {
+                        let mut n = n;
+                        let notes = n.reveal("koyomi");
+                        let _ = tx.send((gen, n, notes));
+                    });
+                }
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
             Err(e) => self.bad_config = Some(e),
+        }
+    }
+
+    /// Takes in the addresses read back, and tells of the runs that ended.
+    fn pump(&mut self) {
+        while let Ok((gen, n, notes)) = self.reveal_rx.try_recv() {
+            if gen == self.reveal_gen {
+                self.notify = n;
+                self.reveal_notes = notes;
+            }
+        }
+        for r in self.runner.take_over() {
+            let (event, title, body) = notify::words(&self.words, &r);
+            notify::tell(&self.notify, event, &title, &body);
         }
     }
 
@@ -147,7 +212,8 @@ impl State {
     fn snapshot(&self) -> Snapshot {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
-        Snapshot { defs: self.defs.clone(), warnings }
+        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().collect();
+        Snapshot { defs: self.defs.clone(), warnings, notes }
     }
 
     fn status(&self) -> String {
@@ -295,6 +361,7 @@ pub fn run() -> i32 {
             Err(mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
         state.runner.tick();
+        state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);
             return 1;
@@ -324,7 +391,7 @@ mod tests {
         std::fs::write(dir.join("経理/月次締め.toml"), net).unwrap();
         std::fs::create_dir_all(dir.join("共通")).unwrap();
         std::fs::write(dir.join("共通/壊れ.toml"), "format = 1\nrnu = 1\n").unwrap();
-        let snap = Snapshot { defs: scan(&dir, &Store::default()), warnings: vec!["w".into()] };
+        let snap = Snapshot { defs: scan(&dir, &Store::default()), warnings: vec!["w".into()], notes: vec!["n".into()] };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
         assert_eq!(back.defs.len(), 2);

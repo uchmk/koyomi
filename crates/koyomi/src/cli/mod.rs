@@ -28,7 +28,7 @@ usage: koyomi [--version | --help | env]
 ";
 
 /// Words for the person at the console: common.toml's language.
-fn table() -> ito_i18n::Table {
+pub fn table() -> ito_i18n::Table {
     let common = ito_common::base_dir().and_then(|b| ito_common::Common::read(&b).ok()).map(|(c, _)| c).unwrap_or_default();
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
@@ -65,6 +65,9 @@ fn check(args: &[String]) -> i32 {
             return 1;
         }
     };
+    if name == "koyomi.toml" {
+        return check_config(&name, &text);
+    }
     let mut bad = false;
     // A file under the settings folder runs only if nobody else can change it.
     if let Ok(paths) = engine::Paths::find() {
@@ -85,6 +88,25 @@ fn check(args: &[String]) -> i32 {
         say(&format!("{name}: 問題なし"), false);
     }
     i32::from(bad)
+}
+
+/// `koyomi check koyomi.toml`: the settings read, and what `[notify]` would do.
+fn check_config(name: &str, text: &str) -> i32 {
+    let config = match koyomi_core::config::Config::parse(text) {
+        Ok(c) => c,
+        Err(e) => {
+            say(&format!("{name}: {e}"), true);
+            return 1;
+        }
+    };
+    let (_, notes) = crate::notify::read(&config);
+    for n in &notes {
+        say(n, true);
+    }
+    if notes.is_empty() {
+        say(&format!("{name}: 問題なし"), false);
+    }
+    i32::from(!notes.is_empty())
 }
 
 fn snapshot() -> Result<Snapshot, String> {
@@ -109,6 +131,9 @@ fn list(args: &[String]) -> i32 {
     } else {
         for w in &snap.warnings {
             say(&format!("! {w}"), false);
+        }
+        for n in &snap.notes {
+            say(&format!("注意: {n}"), false);
         }
         for line in review::tree(&table(), &snap.defs) {
             say(&line, false);

@@ -6,6 +6,7 @@
 //! list, the runs of today and the log being watched, and the window reads what that
 //! thread sent. An approval, a start and a kill are sent the same way.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -76,6 +77,14 @@ pub struct Browser {
     focus: usize,
     /// The last answer to an approval or a start, shown under the detail.
     result: Option<Result<String, String>>,
+    /// The runs that were over at the last poll; `None` before the first, so
+    /// what was over before the window opened is not told of again.
+    over: Option<BTreeSet<String>>,
+    /// The runs that ended since [`Browser::take_ended`], oldest first.
+    ended: Vec<Run>,
+    /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
+    seen_notes: BTreeSet<String>,
+    notes: Vec<String>,
 }
 
 impl Browser {
@@ -157,6 +166,10 @@ impl Browser {
             killing: None,
             focus: 0,
             result: None,
+            over: None,
+            ended: Vec::new(),
+            seen_notes: BTreeSet::new(),
+            notes: Vec::new(),
         }
     }
 
@@ -167,9 +180,21 @@ impl Browser {
                 Msg::Snapshot(s) => {
                     self.starting = false;
                     self.down = None;
+                    for n in &s.notes {
+                        if self.seen_notes.insert(n.clone()) {
+                            self.notes.push(n.clone());
+                        }
+                    }
                     self.snap = Some(s);
                 }
-                Msg::Runs(r) => self.runs = r.runs,
+                Msg::Runs(r) => {
+                    let now: BTreeSet<String> = r.runs.iter().filter(|r| r.is_over()).map(|r| r.id.clone()).collect();
+                    if let Some(before) = &self.over {
+                        self.ended.extend(r.runs.iter().filter(|r| r.is_over() && !before.contains(&r.id)).cloned());
+                    }
+                    self.over = Some(now);
+                    self.runs = r.runs;
+                }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Down(e) => {
                     self.starting = false;
@@ -185,6 +210,24 @@ impl Browser {
                 }
             }
         }
+    }
+
+    /// The runs that ended since the last call, each once (the bell).
+    pub fn take_ended(&mut self) -> Vec<Run> {
+        self.drain();
+        std::mem::take(&mut self.ended)
+    }
+
+    /// The engine's notes about `[notify]` not taken before, each once (the bell).
+    pub fn take_notes(&mut self) -> Vec<String> {
+        self.drain();
+        std::mem::take(&mut self.notes)
+    }
+
+    /// Shows run `id` in the detail (a click under the bell).
+    pub fn open_run(&mut self, id: &str) {
+        self.run_sel = Some(id.to_owned());
+        self.job_sel = None;
     }
 
     fn blocked(&self) -> bool {
@@ -586,7 +629,7 @@ mod tests {
     fn quiet(defs: Vec<Def>) -> Browser {
         let (_, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
-        let snap = Some(Snapshot { defs, warnings: Vec::new() });
+        let snap = Some(Snapshot { defs, warnings: Vec::new(), notes: Vec::new() });
         Browser {
             rx,
             tx,
@@ -605,6 +648,10 @@ mod tests {
             killing: None,
             focus: 0,
             result: None,
+            over: None,
+            ended: Vec::new(),
+            seen_notes: BTreeSet::new(),
+            notes: Vec::new(),
         }
     }
 

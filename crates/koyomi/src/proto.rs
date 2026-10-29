@@ -47,6 +47,9 @@ pub struct Snapshot {
     /// One line each: `<path> は <who> が書き換えられる`, or that `approved.toml` does not read.
     /// Not empty: nothing can be approved.
     pub warnings: Vec<String>,
+    /// One line each about `[notify]` (a plain-text address, an unknown event). Runs still start.
+    #[serde(default)]
+    pub notes: Vec<String>,
 }
 
 impl Snapshot {

@@ -70,6 +70,8 @@ pub struct Runner {
     rx: mpsc::Receiver<Done>,
     /// The second the last run id was made in, and how many were made in it.
     last_id: (String, u32),
+    /// The runs that ended since [`Runner::take_over`], for the engine to tell of.
+    over: Vec<Run>,
 }
 
 impl Runner {
@@ -86,6 +88,7 @@ impl Runner {
             tx,
             rx,
             last_id: (String::new(), 0),
+            over: Vec::new(),
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -105,8 +108,14 @@ impl Runner {
         }
         for run in closed {
             r.record(&run, history::run_end(&run));
+            r.over.push(run);
         }
         r
+    }
+
+    /// The runs that ended since the last call, oldest first: each once.
+    pub fn take_over(&mut self) -> Vec<Run> {
+        std::mem::take(&mut self.over)
     }
 
     pub fn set_config(&mut self, config: Config) {
@@ -207,6 +216,7 @@ impl Runner {
                 if r.is_over() {
                     // Nothing was running: the run ends here.
                     self.record(&r, history::run_end(&r));
+                    self.over.push(r);
                 }
                 Ok(format!("{run} を止める"))
             }
@@ -235,6 +245,7 @@ impl Runner {
         }
         for r in ended {
             self.record(&r, history::run_end(&r));
+            self.over.push(r);
         }
         self.start_ready();
     }
@@ -548,6 +559,10 @@ mod tests {
         assert_eq!(run.job("a").unwrap().state, State::Killed);
         assert_eq!(run.job("a").unwrap().reason, "強制終了");
         assert!(r.log_tail(&id, "a").unwrap().ends_with("! 強制終了\n"));
+        // The engine is handed the run once, to tell of it.
+        let over: Vec<String> = r.take_over().iter().map(|r| r.id.clone()).collect();
+        assert_eq!(over, vec![id.clone()]);
+        assert!(r.take_over().is_empty());
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
         assert!(r.kill(&id, None).unwrap_err().contains("もう終わっている"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -592,10 +607,11 @@ mod tests {
         run.start("a", now);
         day.events.push(history::job_start(&run, run.job("a").unwrap()));
         ito_common::write_atomic(&history::path(&hist, today), day.to_toml()).unwrap();
-        let r = Runner::new(&dir, Config::default());
+        let mut r = Runner::new(&dir, Config::default());
         let back = r.run("20260101-000000-00").unwrap();
         assert_eq!(back.state, State::Error);
         assert_eq!(back.job("a").unwrap().reason, "エンジンが止まった");
+        assert_eq!(r.take_over().len(), 1, "the closed run is told of too");
         r.flush();
         let day = Day::load(&history::path(&hist, today)).unwrap();
         assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));

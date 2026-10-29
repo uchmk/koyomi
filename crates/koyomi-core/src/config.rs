@@ -1,5 +1,6 @@
 //! `koyomi.toml` in the settings folder: how many jobs run at once, how long
-//! history is kept, how big one job's log may grow.
+//! history is kept, how big one job's log may grow, and `[notify]` (read by
+//! the app with ito-prefs's shape; kept whole here).
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -15,11 +16,13 @@ pub struct Config {
     pub keep_days: u32,
     /// One job's log stops growing here; the rest of its output is not written.
     pub log_max_mb: u64,
+    /// `[notify]` as written: which events are told how. The app reads it.
+    pub notify: toml::Table,
 }
 
 impl Default for Config {
     fn default() -> Config {
-        Config { concurrency: 4, keep_days: 90, log_max_mb: 10 }
+        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new() }
     }
 }
 
@@ -61,5 +64,13 @@ mod tests {
     fn a_typo_is_an_error_not_a_default() {
         assert!(Config::parse("concurency = 2\n").is_err());
         assert!(Config::parse("concurrency = 0\n").is_err());
+        assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    #[test]
+    fn the_notify_table_is_kept_as_written() {
+        let c = Config::parse("[notify]\nsystem = [\"failed\"]\n").unwrap();
+        assert_eq!(c.notify.get("system").and_then(|v| v.as_array()).map(Vec::len), Some(1));
+        assert!(Config::default().notify.is_empty());
     }
 }
