@@ -76,7 +76,8 @@ pub enum Overlap {
 pub struct Job {
     pub id: String,
     pub name: Option<String>,
-    /// The executable first, then one argument per element. Never a shell line.
+    /// The executable first, then one argument per element. Never a shell
+    /// line. Empty when the job has `shell` and `script` instead.
     pub run: Vec<String>,
     pub dir: Option<String>,
     pub after: Vec<String>,
@@ -87,6 +88,85 @@ pub struct Job {
     /// Run it again after an abnormal end, from `retry = { count = 2, wait = "5m" }`.
     #[serde(default)]
     pub retry: Option<Retry>,
+    /// `shell = "powershell"`: the engine runs `script` with that shell instead of `run`.
+    #[serde(default)]
+    pub shell: Option<String>,
+    /// The shell's script, as written (one argument to the shell, never joined with anything).
+    #[serde(default)]
+    pub script: Option<String>,
+    /// What each exit code means, from `judge = { warn = "1", error = "2.." }`.
+    /// Without it, 0 is 正常 and every other code 異常.
+    #[serde(default)]
+    pub judge: Option<Judge>,
+}
+
+/// Which exit codes end a job as 警告 and which as 異常. A code in neither
+/// list is 正常 only when it is 0; `error` wins where both lists have a code.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Judge {
+    #[serde(default)]
+    pub warn: Vec<Range>,
+    #[serde(default)]
+    pub error: Vec<Range>,
+}
+
+impl Judge {
+    /// The ranges as they are written: `1,3..5,10..`.
+    pub fn list(ranges: &[Range]) -> String {
+        ranges.iter().map(Range::text).collect::<Vec<_>>().join(",")
+    }
+}
+
+/// Exit codes from `from` to `to`, both inside.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Range {
+    pub from: i32,
+    pub to: i32,
+}
+
+impl Range {
+    pub fn has(&self, code: i32) -> bool {
+        (self.from..=self.to).contains(&code)
+    }
+
+    pub fn text(&self) -> String {
+        match (self.from, self.to) {
+            (a, b) if a == b => a.to_string(),
+            (i32::MIN, i32::MAX) => "..".to_owned(),
+            (i32::MIN, b) => format!("..{b}"),
+            (a, i32::MAX) => format!("{a}.."),
+            (a, b) => format!("{a}..{b}"),
+        }
+    }
+}
+
+/// `"1"`, `"2.."`, `"..-1"`, `"1..3"`, or several with commas: `"1,3..5"`.
+pub fn ranges(text: &str) -> Result<Vec<Range>, String> {
+    const HOW: &str = "は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）";
+    if text.trim().is_empty() {
+        return Err("が空".to_owned());
+    }
+    let code = |s: &str| s.trim().parse::<i32>().map_err(|_| format!("\"{}\" {HOW}", s.trim()));
+    let mut out = Vec::new();
+    for part in text.split(',') {
+        let part = part.trim();
+        let (from, to) = match part.split_once("..") {
+            None => {
+                let n = code(part)?;
+                (n, n)
+            }
+            Some((a, b)) => {
+                let from = if a.trim().is_empty() { i32::MIN } else { code(a)? };
+                let to = if b.trim().is_empty() { i32::MAX } else { code(b)? };
+                if from > to {
+                    return Err(format!("\"{part}\": 始まりが終わりより大きい"));
+                }
+                (from, to)
+            }
+        };
+        out.push(Range { from, to });
+    }
+    Ok(out)
 }
 
 /// How often a job is run again after it ends abnormally, and how long to
@@ -636,15 +716,58 @@ impl Checker<'_> {
         }
     }
 
+    /// `judge = { warn = "1", error = "2.." }`: either may be left out, not both.
+    fn judge(&mut self, field: &Field) -> Option<Judge> {
+        const SHAPE: &str = "judge は { warn = \"1\", error = \"2..\" } の形で書く";
+        let f = field.as_ref()?;
+        let at = f.span().start;
+        let toml::Value::Table(t) = f.get_ref() else {
+            self.add(at, SHAPE);
+            return None;
+        };
+        let mut ok = true;
+        let mut judge = Judge::default();
+        for (k, v) in t {
+            let into = match k.as_str() {
+                "warn" => &mut judge.warn,
+                "error" => &mut judge.error,
+                _ => {
+                    self.add(at, format!("judge に知らない欄 {k}"));
+                    ok = false;
+                    continue;
+                }
+            };
+            let text = match v {
+                toml::Value::String(s) => s.clone(),
+                toml::Value::Integer(n) => n.to_string(),
+                _ => {
+                    self.add(at, format!("judge の {k} は \"1\" や \"2..\" のように文字列で書く"));
+                    ok = false;
+                    continue;
+                }
+            };
+            match ranges(&text) {
+                Ok(r) => *into = r,
+                Err(e) => {
+                    self.add(at, format!("judge の {k} {e}"));
+                    ok = false;
+                }
+            }
+        }
+        if ok && judge.warn.is_empty() && judge.error.is_empty() {
+            self.add(at, format!("judge が空（{SHAPE}）"));
+            ok = false;
+        }
+        ok.then_some(judge)
+    }
+
     fn jobs(&mut self, raw: &[Spanned<RawJob>]) -> Vec<Job> {
         let mut jobs = Vec::new();
         let mut seen = BTreeSet::new();
         for entry in raw {
             let start = entry.span().start;
             let j = entry.get_ref();
-            for (field, name) in
-                [(&j.kind, "kind"), (&j.use_, "use"), (&j.to, "to"), (&j.shell, "shell"), (&j.script, "script"), (&j.judge, "judge")]
-            {
+            for (field, name) in [(&j.kind, "kind"), (&j.use_, "use"), (&j.to, "to")] {
                 self.not_yet(field, name);
             }
             let id = match &j.id {
@@ -665,14 +788,35 @@ impl Checker<'_> {
                     }
                 },
             };
-            let run = self.run(&j.run, start);
+            let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
+            let script = self.string(&j.script, "script");
+            // Either `run`, or a shell with its script: never both, never a shell line in `run`.
+            let run = match (&j.shell, &j.script) {
+                (Some(s), _) => {
+                    if let Some(f) = &j.run {
+                        self.add(f.span().start, "run と shell は両方書けない（run か、shell と script か）");
+                    }
+                    if j.script.is_none() {
+                        self.add(s.span().start, "shell には script が要る");
+                    } else if script.as_deref().is_some_and(|t| t.trim().is_empty()) {
+                        self.add(s.span().start, "script が空");
+                    }
+                    Vec::new()
+                }
+                (None, Some(f)) => {
+                    self.add(f.span().start, "script には shell = \"powershell\" が要る");
+                    self.run(&j.run, start)
+                }
+                (None, None) => self.run(&j.run, start),
+            };
             let after = self.after(&j.after);
             let dir = self.string(&j.dir, "dir");
             let name = self.string(&j.name, "name");
             let pos = self.pos(&j.pos);
             let timeout = self.timeout(&j.timeout);
             let retry = self.retry(&j.retry);
-            jobs.push(Job { id, name, run, dir, after, pos, timeout, retry });
+            let judge = self.judge(&j.judge);
+            jobs.push(Job { id, name, run, dir, after, pos, timeout, retry, shell, script, judge });
         }
         for (job, entry) in jobs.iter().zip(raw) {
             let at = entry.get_ref().after.as_ref().map_or(entry.span().start, |f| f.span().start);
@@ -901,7 +1045,7 @@ timeout = \"30\"
 
     #[test]
     fn missed_and_overlap_read_and_are_skip_when_not_written() {
-        let net = parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
+        let net = parse("format = 1\n[[job]]\nid = \"a\"\nshell = \"powershell\"\nscript = '''\nGet-Date\nexit 1'''\n").unwrap();
         assert_eq!((net.missed, net.overlap), (Missed::Skip, Overlap::Skip));
         let net = parse("format = 1\nmissed = \"once\"\noverlap = \"queue\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
         assert_eq!((net.missed, net.overlap), (Missed::Once, Overlap::Queue));
@@ -930,10 +1074,62 @@ timeout = \"30\"
     }
 
     #[test]
+    fn a_judge_reads_ranges_of_exit_codes() {
+        let job = |judge: &str| format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{judge}\n");
+        let r = |from, to| Range { from, to };
+        let net = parse(&job("judge = { warn = \"1\", error = \"2..\" }")).unwrap();
+        assert_eq!(net.jobs[0].judge, Some(Judge { warn: vec![r(1, 1)], error: vec![r(2, i32::MAX)] }));
+        let net = parse(&job("judge = { warn = \"1,3..5, ..-1\" }")).unwrap();
+        let warn = vec![r(1, 1), r(3, 5), r(i32::MIN, -1)];
+        assert_eq!(net.jobs[0].judge, Some(Judge { warn: warn.clone(), error: Vec::new() }));
+        assert_eq!(Judge::list(&warn), "1,3..5,..-1");
+        assert_eq!(Judge::list(&[r(i32::MIN, i32::MAX), r(2, i32::MAX)]), "..,2..");
+        assert_eq!(parse(&job("judge = { error = 1 }")).unwrap().jobs[0].judge, Some(Judge { warn: Vec::new(), error: vec![r(1, 1)] }));
+        assert_eq!(parse(&job("")).unwrap().jobs[0].judge, None);
+        let at = "a.toml の 5 行目: ";
+        let shape = "judge は { warn = \"1\", error = \"2..\" } の形で書く";
+        assert_eq!(problems(&job("judge = \"1\"")), [format!("{at}{shape}")]);
+        assert_eq!(problems(&job("judge = {}")), [format!("{at}judge が空（{shape}）")]);
+        assert_eq!(problems(&job("judge = { ok = \"0\" }")), [format!("{at}judge に知らない欄 ok")]);
+        assert_eq!(problems(&job("judge = { warn = true }")), [format!("{at}judge の warn は \"1\" や \"2..\" のように文字列で書く")]);
+        assert_eq!(problems(&job("judge = { warn = \"\" }")), [format!("{at}judge の warn が空")]);
+        assert_eq!(
+            problems(&job("judge = { warn = \"x\" }")),
+            [format!("{at}judge の warn \"x\" は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）")]
+        );
+        assert_eq!(problems(&job("judge = { error = \"5..2\" }")), [format!("{at}judge の error \"5..2\": 始まりが終わりより大きい")]);
+    }
+
+    #[test]
+    fn a_shell_job_has_a_script_and_no_run() {
+        let net = parse(
+            "format = 1
+[[job]]
+id = \"a\"
+shell = \"powershell\"
+script = '''
+Get-Date
+exit 1'''
+",
+        )
+        .unwrap();
+        let j = &net.jobs[0];
+        assert_eq!((j.shell.as_deref(), j.script.as_deref(), j.run.as_slice()), (Some("powershell"), Some("Get-Date\nexit 1"), &[][..]));
+        let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
+        assert_eq!(p("shell = \"powershell\""), ["a.toml の 4 行目: shell には script が要る"]);
+        assert_eq!(p("shell = \"powershell\"\nscript = \" \""), ["a.toml の 4 行目: script が空"]);
+        assert_eq!(p("shell = \"cmd\"\nscript = \"x\""), ["a.toml の 4 行目: shell は \"powershell\" のどれか"]);
+        assert_eq!(p("run = [\"x\"]\nscript = \"x\""), ["a.toml の 5 行目: script には shell = \"powershell\" が要る"]);
+        assert_eq!(
+            p("run = [\"x\"]\nshell = \"powershell\"\nscript = \"x\""),
+            ["a.toml の 4 行目: run と shell は両方書けない（run か、shell と script か）"]
+        );
+        assert_eq!(p("shell = \"powershell\"\nscript = 1"), ["a.toml の 5 行目: script は文字列で書く"]);
+    }
+
+    #[test]
     fn fields_that_do_not_run_yet_are_refused_not_ignored() {
-        for f in
-            ["judge = { warn = \"1\" }", "kind = \"notify\"", "shell = \"powershell\"", "script = \"x\"", "use = \"a/b\"", "to = \"c\""]
-        {
+        for f in ["kind = \"notify\"", "use = \"a/b\"", "to = \"c\""] {
             let text = format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{f}\n");
             let name = f.split(' ').next().unwrap();
             assert_eq!(problems(&text), [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")], "{f}");

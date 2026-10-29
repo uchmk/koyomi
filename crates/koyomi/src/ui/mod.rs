@@ -839,6 +839,9 @@ mod tests {
             pos: None,
             timeout: None,
             retry: None,
+            shell: None,
+            script: None,
+            judge: None,
         };
         let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
         let now = chrono::Local::now().naive_local();
@@ -875,6 +878,9 @@ mod tests {
                 pos: None,
                 timeout: None,
                 retry: None,
+                shell: None,
+                script: None,
+                judge: None,
             }],
             when: Vec::new(),
             ..Default::default()

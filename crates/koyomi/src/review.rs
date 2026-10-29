@@ -62,9 +62,17 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr("review.job"), j.id));
-        out.push(format!("  {}: {}", t.tr("review.exe"), j.run.first().map(String::as_str).unwrap_or("")));
-        for (i, a) in j.run.iter().skip(1).enumerate() {
-            out.push(format!("  {} {}: {a}", t.tr("review.arg"), i + 1));
+        if let (Some(shell), Some(script)) = (&j.shell, &j.script) {
+            out.push(format!("  {}: {shell}", t.tr("review.shell")));
+            for (i, line) in script.lines().enumerate() {
+                let head = if i == 0 { format!("  {}: ", t.tr("review.script")) } else { "    ".to_owned() };
+                out.push(format!("{head}{line}"));
+            }
+        } else {
+            out.push(format!("  {}: {}", t.tr("review.exe"), j.run.first().map(String::as_str).unwrap_or("")));
+            for (i, a) in j.run.iter().skip(1).enumerate() {
+                out.push(format!("  {} {}: {a}", t.tr("review.arg"), i + 1));
+            }
         }
         out.push(format!("  {}: {}", t.tr("review.dir"), j.dir.as_deref().unwrap_or(t.tr("review.nodir"))));
         if let Some(secs) = j.timeout {
@@ -73,6 +81,17 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         if let Some(r) = j.retry {
             let text = t.trf("review.retry_text", &[&r.count.to_string(), &koyomi_core::duration::text(r.wait)]);
             out.push(format!("  {}: {text}", t.tr("review.retry")));
+        }
+        if let Some(g) = &j.judge {
+            let mut parts = Vec::new();
+            if !g.warn.is_empty() {
+                parts.push(t.trf("review.judge_warn", &[&jobnet::Judge::list(&g.warn)]));
+            }
+            if !g.error.is_empty() {
+                parts.push(t.trf("review.judge_error", &[&jobnet::Judge::list(&g.error)]));
+            }
+            parts.push(t.tr("review.judge_rest").to_owned());
+            out.push(format!("  {}: {}", t.tr("review.judge"), parts.join("、")));
         }
     }
     out

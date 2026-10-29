@@ -171,6 +171,9 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         after: b.after.clone(),
                         timeout: None,
                         retry: None,
+                        shell: None,
+                        script: None,
+                        judge: None,
                         retried: 0,
                         state: State::NotRun,
                         started: None,
@@ -246,6 +249,9 @@ mod tests {
             pos: None,
             timeout: None,
             retry: None,
+            shell: None,
+            script: None,
+            judge: None,
         }
     }
 

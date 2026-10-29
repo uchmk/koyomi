@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::jobnet::{Job, Jobnet, Retry};
+use crate::jobnet::{Job, Jobnet, Judge, Retry};
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -154,7 +154,7 @@ pub enum How {
 /// How a job ended, as the engine saw it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome {
-    /// It ended by itself with this exit code (0 is 正常; the rest 異常 in this version).
+    /// It ended by itself with this exit code; the job's `judge` says what it means ([`verdict`]).
     Exited(i32),
     /// A person stopped it.
     Killed,
@@ -181,6 +181,14 @@ pub struct JobRun {
     /// How the engine runs it again after an abnormal end.
     #[serde(default)]
     pub retry: Option<Retry>,
+    /// The shell and its script, when the job has them instead of `run`.
+    #[serde(default)]
+    pub shell: Option<String>,
+    #[serde(default)]
+    pub script: Option<String>,
+    /// What each exit code means; without it only 0 is 正常.
+    #[serde(default)]
+    pub judge: Option<Judge>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -204,12 +212,37 @@ impl JobRun {
             after: job.after.clone(),
             timeout: job.timeout,
             retry: job.retry,
+            shell: job.shell.clone(),
+            script: job.script.clone(),
+            judge: job.judge.clone(),
             retried: 0,
             state: State::NotRun,
             started: None,
             ended: None,
             exit: None,
             reason: String::new(),
+        }
+    }
+
+    /// What the engine starts: `run` as written, or the shell with the
+    /// script as its one argument. The script goes as `-EncodedCommand`
+    /// (base64 of UTF-16), so no quote or `$` in it is read by anything but
+    /// the shell itself; no profile, nothing asked, and plain text in and
+    /// out (without `-InputFormat Text`, PowerShell writes its errors as
+    /// CLIXML when its input is not a console).
+    pub fn command(&self) -> Vec<String> {
+        match (self.shell.as_deref(), &self.script) {
+            (Some(_), Some(script)) => {
+                let exe = if cfg!(windows) { "powershell.exe" } else { "pwsh" };
+                let mut v: Vec<String> = [exe, "-NoProfile", "-NonInteractive", "-InputFormat", "Text", "-EncodedCommand"]
+                    .iter()
+                    .map(|s| (*s).to_owned())
+                    .collect();
+                let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
+                v.push(base64(&utf16));
+                v
+            }
+            _ => self.run.clone(),
         }
     }
 
@@ -225,6 +258,34 @@ impl JobRun {
 
     pub fn duration(&self) -> Option<chrono::Duration> {
         Some(self.ended? - self.started?)
+    }
+}
+
+/// Standard base64 with padding, as `-EncodedCommand` wants it.
+fn base64(bytes: &[u8]) -> String {
+    const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let n = chunk.iter().enumerate().fold(0u32, |n, (i, b)| n | (u32::from(*b) << (16 - 8 * i)));
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ABC[((n >> (18 - 6 * i)) & 63) as usize] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+/// What an exit code means for a job: 0 is 正常 and the rest 異常, unless
+/// the job's `judge` lists the code as 警告 or 異常 (異常 wins where both do).
+pub fn verdict(judge: Option<&Judge>, code: i32) -> State {
+    match judge {
+        Some(g) if g.error.iter().any(|r| r.has(code)) => State::Error,
+        Some(g) if g.warn.iter().any(|r| r.has(code)) => State::Warn,
+        _ if code == 0 => State::Ok,
+        _ => State::Error,
     }
 }
 
@@ -400,15 +461,22 @@ impl Run {
             j.ended = Some(now);
             j.exit = None;
             j.state = match outcome {
-                Outcome::Exited(0) => {
-                    j.exit = Some(0);
-                    j.reason.clear();
-                    State::Ok
-                }
                 Outcome::Exited(code) => {
                     j.exit = Some(code);
-                    j.reason = format!("終了コード {code}");
-                    State::Error
+                    match verdict(j.judge.as_ref(), code) {
+                        State::Ok => {
+                            j.reason.clear();
+                            State::Ok
+                        }
+                        State::Warn => {
+                            j.reason = format!("終了コード {code}（警告）");
+                            State::Warn
+                        }
+                        _ => {
+                            j.reason = format!("終了コード {code}");
+                            State::Error
+                        }
+                    }
                 }
                 Outcome::Killed => {
                     j.reason = "強制終了".to_owned();
@@ -579,7 +647,7 @@ pub fn layers(jobs: &[(&str, &[String])]) -> Vec<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobnet::{parse, Job};
+    use crate::jobnet::{parse, ranges, Job};
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
@@ -595,6 +663,9 @@ mod tests {
             pos: None,
             timeout: None,
             retry: None,
+            shell: None,
+            script: None,
+            judge: None,
         }
     }
 
@@ -766,6 +837,47 @@ mod tests {
         assert_eq!(marks.len(), all.len());
         let keys: std::collections::BTreeSet<&str> = all.iter().map(|s| s.key()).collect();
         assert_eq!(keys.len(), all.len());
+    }
+
+    #[test]
+    fn the_judge_says_what_an_exit_code_means() {
+        assert_eq!((verdict(None, 0), verdict(None, 1), verdict(None, -1)), (State::Ok, State::Error, State::Error));
+        let g = Judge { warn: ranges("1,3..5").unwrap(), error: ranges("2").unwrap() };
+        let v = |code| verdict(Some(&g), code);
+        assert_eq!((v(0), v(1), v(2), v(3), v(5)), (State::Ok, State::Warn, State::Error, State::Warn, State::Warn));
+        assert_eq!((v(6), v(-1)), (State::Error, State::Error));
+        // 異常 wins where both lists have the code; 0 can be made 警告.
+        let g = Judge { warn: ranges("0..9").unwrap(), error: ranges("4").unwrap() };
+        assert_eq!((verdict(Some(&g), 0), verdict(Some(&g), 4), verdict(Some(&g), 9)), (State::Warn, State::Error, State::Warn));
+        // A 警告 end lets what follows run, and the run ends 警告.
+        let mut a = job("a", &[]);
+        a.judge = Some(Judge { warn: ranges("1").unwrap(), error: Vec::new() });
+        let net = Jobnet { jobs: vec![a, job("b", &["a"])], ..Default::default() };
+        let mut r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
+        r.start("a", at("2026-10-30 09:00:01"));
+        r.finish("a", Outcome::Exited(1), at("2026-10-30 09:00:02"));
+        assert_eq!((r.job("a").unwrap().state, r.job("a").unwrap().reason.as_str()), (State::Warn, "終了コード 1（警告）"));
+        assert_eq!(r.ready(), vec!["b"]);
+        r.start("b", at("2026-10-30 09:00:03"));
+        r.finish("b", Outcome::Exited(0), at("2026-10-30 09:00:04"));
+        assert_eq!(r.state, State::Warn);
+    }
+
+    #[test]
+    fn a_shell_job_starts_the_shell_with_its_script_as_one_argument() {
+        let mut j = JobRun::from_job(&job("a", &[]));
+        assert_eq!(j.command(), j.run);
+        j.run.clear();
+        j.shell = Some("powershell".to_owned());
+        j.script = Some("Get-Date\nexit 1".to_owned());
+        let exe = if cfg!(windows) { "powershell.exe" } else { "pwsh" };
+        assert_eq!(
+            j.command(),
+            [exe, "-NoProfile", "-NonInteractive", "-InputFormat", "Text", "-EncodedCommand", "RwBlAHQALQBEAGEAdABlAAoAZQB4AGkAdAAgADEA"]
+        );
+        for (text, b64) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("foobar", "Zm9vYmFy")] {
+            assert_eq!(base64(text.as_bytes()), b64);
+        }
     }
 
     #[test]

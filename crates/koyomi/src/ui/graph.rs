@@ -131,6 +131,9 @@ mod tests {
             pos: None,
             timeout: None,
             retry: None,
+            shell: None,
+            script: None,
+            judge: None,
         };
         let net = Jobnet {
             name: None,

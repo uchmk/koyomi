@@ -251,3 +251,17 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 20.5 | `at = ["10:00", "10:01", "10:02"]` with the same job | 10:01 waits; 10:02 is スキップ with `前の回がまだ動いていました（その次の回が待っています）` |
 | 20.6 | Run `koyomi engine stop` while a time waits | The waiting time is recorded スキップ with `待っている間にエンジンが止まった`; nothing starts when the engine comes back |
 | 20.7 | Write `missed = "later"` or `overlap = 1` | `koyomi check` refuses with the line number: `missed は "skip"・"once" のどれか` / `overlap は "skip"・"queue" のどれか`; `missed = "skip"` and `overlap = "skip"` are accepted, as is leaving both out |
+
+## 21. Exit-code judge and PowerShell script jobs (`judge`, `shell`, `script`)
+
+| # | Do | Expect |
+|---|---|---|
+| 21.1 | Write `judge = { warn = "1", error = "2.." }` on a job and run `koyomi check`, then `koyomi approve` | check says OK; the approve text shows `判定: 警告 1、異常 2..、他は 0 だけ正常` under the job |
+| 21.2 | Make that job `cmd.exe /c exit 1` with a job after it, and run it | The job is 警告 with the reason `終了コード 1（警告）`, the next job runs, and the run ends 警告 (yellow) on the run screen, in `koyomi status`, in the history and in the notification title |
+| 21.3 | The same job with `exit 2`, and with `exit 5` and no `judge` at all | Both are 異常 with `終了コード 2` / `終了コード 5`; the next job is 止めた |
+| 21.4 | Give the warn job `retry = { count = 2, wait = "5s" }` and `exit 1` | No `! やり直し` line in the log: a 警告 end is not run again; `exit 2` is retried as before |
+| 21.5 | Write `shell = "powershell"` and `script = '''
+Write-Output "hi"
+exit 4'''` with `judge = { warn = "4" }`, approve and run | The approve text shows `シェル: powershell` and the script lines under `スクリプト:`; the log has `hi`; the job is 警告 with `終了コード 4（警告）`; no profile is loaded and nothing is asked (the job ends by itself) |
+| 21.6 | Put a `"`, a `$`, a `'` and a Japanese word in the script (`Write-Output "a `"b`" $env:USERNAME 'c' 日本語"`) | The log shows the line as PowerShell prints it: quotes and `$` reach the shell as written (the script is passed as `-EncodedCommand`) |
+| 21.7 | Write `judge = { warn = 1 }`, `judge = { warn = "5..2" }`, `judge = { ok = "0" }`, `judge = "1"`, `shell = "cmd"`, `shell = "powershell"` with no `script`, `script` with no `shell`, or both `run` and `shell` | `koyomi check` refuses each with the line number and what to write (strings like "1" or "2..", start not above end, unknown field, the shape, `"powershell" のどれか`, `shell には script が要る`, `script には shell = "powershell" が要る`, `run と shell は両方書けない`) |

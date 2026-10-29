@@ -31,8 +31,8 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
-use koyomi_core::jobnet::Retry;
-use koyomi_core::run::{How, Outcome, Run, State};
+use koyomi_core::jobnet::{Judge, Retry};
+use koyomi_core::run::{verdict, How, Outcome, Run, State};
 use koyomi_core::scan::Def;
 
 /// How much of a log `koyomi log` and the window get: the last 64 KB.
@@ -380,10 +380,11 @@ impl Runner {
                 jobnet: r.jobnet.clone(),
                 date: r.date.clone(),
                 id: job_id,
-                command: j.run.clone(),
+                command: j.command(),
                 dir: j.dir.clone(),
                 timeout: j.timeout,
                 retry: j.retry,
+                judge: j.judge.clone(),
                 log,
                 cap: self.config.log_max_bytes(),
             };
@@ -424,6 +425,8 @@ struct JobSpec {
     /// Seconds before the timer asks the job to stop.
     timeout: Option<u64>,
     retry: Option<Retry>,
+    /// What the exit codes mean: a 警告 end is not run again.
+    judge: Option<Judge>,
     log: PathBuf,
     cap: u64,
 }
@@ -472,7 +475,8 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
     let mut retried = 0;
     loop {
         let (outcome, reason) = attempt(job, exe, args, stop, why, &mut file, &mut size);
-        let abnormal = matches!(outcome, Outcome::Exited(code) if code != 0) || outcome == Outcome::Failed;
+        let abnormal =
+            matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) == State::Error) || outcome == Outcome::Failed;
         if !abnormal || retried >= count {
             return done(outcome, reason, retried);
         }
@@ -795,6 +799,47 @@ mod tests {
         assert_eq!(a.reason, "終了コード 3、やり直し 2 回");
         let log = r.log_tail(&id, "a").unwrap();
         assert!(log.contains("(1/2)") && log.contains("(2/2)"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_warn_exit_lets_the_next_job_run_and_is_not_run_again() {
+        let dir = scratch("warn");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"a\"\n{}\njudge = {{ warn = \"3\" }}\nretry = {{ count = 1, wait = \"1s\" }}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n",
+            fail_cmd(),
+            echo("two")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Warn, "{:?}", run.job("a"));
+        let a = run.job("a").unwrap();
+        assert_eq!((a.state, a.exit, a.retried, a.reason.as_str()), (State::Warn, Some(3), 0, "終了コード 3（警告）"));
+        assert_eq!(run.job("b").unwrap().state, State::Ok);
+        assert!(!r.log_tail(&id, "a").unwrap().contains("やり直し"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_powershell_script_runs_as_one_argument_and_its_exit_code_is_judged() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = scratch("shell");
+        let text = "format = 1\n[[job]]\nid = \"a\"\nshell = \"powershell\"\nscript = '''\nWrite-Output \"hi `\"there`\"\"\nexit 4'''\njudge = { warn = \"4\" }\n";
+        let d = def("net", text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let a = run.job("a").unwrap();
+        assert_eq!((a.state, a.exit), (State::Warn, Some(4)), "{a:?}");
+        // powershell.exe may write a CLIXML progress record ("preparing
+        // modules") to stderr; only its stdout is checked.
+        let log = r.log_tail(&id, "a").unwrap();
+        let out: Vec<&str> = log.lines().filter(|l| !l.starts_with("! ")).collect();
+        assert_eq!(out, ["hi \"there\""], "{log}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
