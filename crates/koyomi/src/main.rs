@@ -4,8 +4,7 @@
 //! bell and the notice list), common.toml's theme, language and scale (and
 //! the settings screen that writes them, Ctrl+,), `--version` / `--help`,
 //! F12 (the bug report), `--keys` (a script that drives the window for a
-//! test lane), and keymap.toml (Ctrl+Q quits; the help's key is bound, and
-//! says so until the help is wired).
+//! test lane), keymap.toml (Ctrl+Q quits) and the key help (F1 or `?`).
 //! What the uchmk apps also have and is still to wire is in TODO.md, each
 //! item with the ito crate and an app that already does it.
 
@@ -15,6 +14,7 @@ mod cli;
 mod client;
 mod engine;
 mod envreport;
+mod help;
 mod i18n;
 mod icon;
 mod keymap;
@@ -53,6 +53,8 @@ struct App {
     /// the settings screen's state.
     prefs: prefs::Prefs,
     settings_open: bool,
+    /// The key help (F1 or `?`) while it is open.
+    help: help::Help,
     /// Starts at sign-in: what the OS says, and the thread asking it.
     startup: Option<bool>,
     startup_rx: Option<std::sync::mpsc::Receiver<bool>>,
@@ -90,6 +92,7 @@ enum Command {
     ReportBug,
     ResetScale,
     Settings,
+    Help,
     Quit,
 }
 
@@ -129,6 +132,7 @@ impl App {
             table,
             prefs,
             settings_open: false,
+            help: help::Help::default(),
             startup: None,
             startup_rx: None,
             tracker: saved.tracker(),
@@ -193,15 +197,20 @@ impl App {
         }
     }
 
-    /// What a bound key does. The help is not wired yet: the status bar
-    /// says so, rather than nothing happening.
+    /// What a bound key does.
     fn run_key(&mut self, ctx: &egui::Context, c: keymap::Cmd) {
         match c {
             keymap::Cmd::Run("quit") => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
-            keymap::Cmd::Run("settings") => self.settings_open = true,
-            keymap::Cmd::Run("help") => self.scale_note = Some(self.table.trf("notices.not_yet", &[self.table.tr("keys.help")])),
+            keymap::Cmd::Run("settings") => self.open_settings(),
+            keymap::Cmd::Run("help") => self.help.toggle(),
             keymap::Cmd::Run(_) | keymap::Cmd::None => {}
         }
+    }
+
+    /// The settings cover the tree; the help, if open, goes with it.
+    fn open_settings(&mut self) {
+        self.help.close();
+        self.settings_open = true;
     }
 
     /// `<State:name>` and the done file: what the window shows, then `tail`.
@@ -429,6 +438,7 @@ impl App {
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
             ito_palette::Entry::new(t.tr("palette.reset_scale"), "Ctrl+0", Command::ResetScale),
             ito_palette::Entry::new(t.tr("palette.settings"), self.keys.label("settings"), Command::Settings),
+            ito_palette::Entry::new(t.tr("palette.help"), self.keys.label("help"), Command::Help),
             ito_palette::Entry::new(t.tr("palette.quit"), self.keys.label("quit"), Command::Quit),
         ]
     }
@@ -456,7 +466,8 @@ impl App {
             None => self.palette = Some(view),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),
             Some(ito_palette::Answer::Pick(Command::ResetScale)) => self.scale_to(ctx, ito_common::ScaleTo::Reset),
-            Some(ito_palette::Answer::Pick(Command::Settings)) => self.settings_open = true,
+            Some(ito_palette::Answer::Pick(Command::Settings)) => self.open_settings(),
+            Some(ito_palette::Answer::Pick(Command::Help)) => self.help.toggle(),
             Some(ito_palette::Answer::Pick(Command::Quit)) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Some(_) => {}
         }
@@ -565,8 +576,16 @@ impl eframe::App for App {
             self.browser.drain();
             settings::show(ui, self);
         } else {
+            let r = ui.max_rect();
+            if self.help.open {
+                // Esc and the scrolling keys are the help's before the keymap reads them.
+                self.help.keys(&ctx);
+            }
             self.read_keys(&ctx);
             self.browser.show(ui, &self.table);
+            if self.help.open {
+                help::show(ui, self, r);
+            }
         }
         self.script(&ctx);
         // Last, so the edges of the frameless window win over what is under them.

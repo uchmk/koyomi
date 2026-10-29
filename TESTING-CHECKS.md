@@ -1,6 +1,6 @@
 # Checklist
 
-104 checks in TESTING.md, 103 left for a person.
+113 checks in TESTING.md, 112 left for a person.
 
 ## 1. Start
 
@@ -124,7 +124,7 @@
 ## 14. Keys (`keymap.toml`)
 
 - [ ] **14.1** Press Ctrl+Q with the tree focused → The window closes (the engine keeps running) 〔未訳〕
-- [ ] **14.2** Press Ctrl+, and then F1 → Ctrl+, opens the settings; Esc closes them; F1 says in the status bar that the help is not wired yet 〔未訳〕
+- [ ] **14.2** Press Ctrl+, and then F1 → Ctrl+, opens the settings; Esc closes them; F1 opens the key help over the tree 〔未訳〕
 - [ ] **14.3** Open the palette (Ctrl+Shift+P) → "Quit" shows `Ctrl+Q` as its key 〔未訳〕
 - [ ] **14.4** Write `<uchmk>\koyomi\keymap.toml` with `[[app.keymap]]` `on = "<C-q>"` `run = "none"` and another binding `on = "<C-w>"` `run = "quit"`, restart → Ctrl+Q does nothing; Ctrl+W quits; the palette shows `Ctrl+W` 〔未訳〕
 - [ ] **14.5** Add a line with `run = "explode"` and one with `on = "<F12>"`, restart → The bell lists two warnings naming the file: `explode` is no action, F12 is fixed; the other keys still work 〔未訳〕
@@ -151,3 +151,15 @@
 - [ ] **15.17** About → The version, the commit, the OS line and the licence; "Report a bug" opens the issue form as F12 does 〔未訳〕
 - [ ] **15.18** Type `keymap` in the search box → The Keys page is offered; Enter opens it with its rows highlighted 〔未訳〕
 - [ ] **15.19** Open the settings while the engine runs a job → The run still ends (the bell still rings for a failed one) and the tree shows it once the settings close 〔未訳〕
+
+## 16. Help (F1, ?)
+
+- [ ] **16.1** Press F1, or `?` → A card over the tree, the tree dimmed behind it: Everywhere (Ctrl+Q, Ctrl+,, F1 / ?), Always (F12, Ctrl+Shift+P, Ctrl++ / Ctrl+-, Ctrl+0), A box over the tree, Keys 〔未訳〕
+- [ ] **16.2** Press Esc; open again and press F1; open again and press `?`; open again and click the dimmed tree → Each closes the card; the tree is as it was 〔未訳〕
+- [ ] **16.3** Make the window short (about 300 px tall) and open the help → The card is cut to the window; ↓ ↑ PgDn PgUp End Home and the wheel scroll the list; a wide window lays it out in two columns, a narrow one in one 〔未訳〕
+- [ ] **16.4** Open the palette (Ctrl+Shift+P) and type `?` in its search box → The search box gets the `?`; the help does not open 〔未訳〕
+- [ ] **16.5** In `keymap.toml` bind `<F2>` to `help` (and `<F1>` to `none`), then open the help with F2 → The Everywhere group shows F2 / ? for the help and no F1 〔未訳〕
+- [ ] **16.6** With the help open press Ctrl+Q → koyomi quits (the keymap still works under the help) 〔未訳〕
+- [ ] **16.7** Select a net, press Approve… so its box shows, then press F1 and Enter → The help closes nothing behind it: Enter does not press the box's button; Esc closes the help first, then the box 〔未訳〕
+- [ ] **16.8** Open the palette and look at the Keys entry → It shows F1 (the first key bound to `help`); picking it opens the help 〔未訳〕
+- [ ] **16.9** Press Ctrl+, while the help is open → The settings cover the tree and the help is closed; Esc brings back the tree without the help 〔未訳〕

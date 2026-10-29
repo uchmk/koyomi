@@ -21,7 +21,6 @@ fixed = "{} は koyomi が先に読むので、ここに割り当てても動き
 "Quit" = "終了"
 
 [notices]
-not_yet = "{0}はまだ使えません"
 title = "通知（未読 {0}）"
 mark_read = "すべて既読にする"
 empty = "通知はありません"
@@ -39,6 +38,19 @@ report_bug = "不具合を報告"
 reset_scale = "拡大率を戻す"
 quit = "終了"
 settings = "設定"
+help = "キー"
+
+[help]
+title = "キー"
+close = "F1・?・Esc で閉じる"
+fixed = "いつでも"
+scale = "大きく / 小さく"
+box = "木の上の箱"
+box_enter = "キーボードが乗っているボタン"
+box_tab = "もう一方のボタン"
+box_esc = "やめる"
+scroll = "この一覧を送る"
+close_row = "閉じる"
 
 [settings]
 general = "一般"

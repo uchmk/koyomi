@@ -22,7 +22,6 @@ fixed = "koyomi reads {} itself: bound here, it never runs."
 "Quit" = "Quit"
 
 [notices]
-not_yet = "{0}: not wired yet"
 title = "Notices ({0} unread)"
 mark_read = "Mark all read"
 empty = "No notices"
@@ -40,6 +39,19 @@ report_bug = "Report a bug"
 reset_scale = "Reset the scale"
 quit = "Quit"
 settings = "Settings"
+help = "Keys"
+
+[help]
+title = "Keys"
+close = "Press F1, ? or Esc to close"
+fixed = "Always"
+scale = "Larger / smaller"
+box = "A box over the tree"
+box_enter = "The button the keyboard is on"
+box_tab = "The other button"
+box_esc = "Cancel"
+scroll = "Scroll this list"
+close_row = "Close"
 
 [settings]
 general = "General"

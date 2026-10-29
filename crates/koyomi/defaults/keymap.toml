@@ -15,6 +15,11 @@ run = "help"
 desc = "Show the key help"
 
 [[app.keymap]]
+on = "?"
+run = "help"
+desc = "Show the key help"
+
+[[app.keymap]]
 on = "<C-q>"
 run = "quit"
 desc = "Quit"

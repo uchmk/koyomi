@@ -11,7 +11,9 @@
   `common.toml` と `keymap.toml` は 2 秒ごとに見張り、手で直しても同じ机の他のアプリが変えても窓が追う。「既定に戻す」は `common.toml` と `keymap.toml` を `*.bak-<時刻>` に退けるだけで、定義・`koyomi.toml`・確認・記録には触らない。
   閉じるときに窓の場所を書く（`Tracker::close`）。
 - `keymap.toml`（`ito-keymap`）: 既定のキーは `<C-q>` 終了・`<C-,>` 設定・`<F1>` ヘルプ。`<uchmk>\koyomi\keymap.toml` で変えられる（`run = "none"` で外す）。
-  ファイルの間違いはベルに出す。ヘルプはまだ配線されていないので、押すとステータス バーに「まだ使えません」と出る。パレットの「終了」にキーを添えた。
+  ファイルの間違いはベルに出す。パレットの「終了」にキーを添えた。
+- キーのヘルプ（`ito-help`、F1 か `?`、パレットの「キー」）: 木の上に札を出し、`keymap.toml` のキー（変えた分はその通りに）・koyomi が自分で読むキー（F12・パレット・倍率）・木の上の箱のキー・この一覧のキーを組ごとに並べる。
+  広ければ 2 列、低ければ矢印・PgUp/PgDn・Home/End・ホイールで送る。Esc・F1・`?`・札の外のクリックで閉じる。開いている間、Enter・Space・Tab は後ろの箱に届かない。
 - `--keys` の台本（`ito-keyscript`）: `koyomi --keys "<Wait:1500><Shot:start><State:s><Quit>"` で、人がいなくても窓を動かして絵と状態を残す。
   終わり方は `KOYOMI_KEYS_DONE` のファイルに（`keys: done` / `quit` / `closed` / `refused` / `panicked`）。台本の窓は場所も `state.toml` も残さない。
 - 定義を読んで確かめる: `jobnets/<グループ>/<名前>.toml` を読み、誤りは行番号つきで示す。確かめた定義は中身全体の hash で
