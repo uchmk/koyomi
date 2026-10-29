@@ -39,6 +39,7 @@ exe = "Run"
 arg = "Argument"
 dir = "Directory"
 nodir = "(none)"
+timeout = "Timeout"
 diff = "Changes since the version last approved:"
 
 [tree]

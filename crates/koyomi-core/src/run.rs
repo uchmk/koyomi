@@ -175,6 +175,9 @@ pub struct JobRun {
     pub dir: Option<String>,
     #[serde(default)]
     pub after: Vec<String>,
+    /// Seconds it may run before the engine stops it.
+    #[serde(default)]
+    pub timeout: Option<u64>,
     pub state: State,
     pub started: Option<NaiveDateTime>,
     /// When it ended, or when it became certain that it will not run.
@@ -193,6 +196,7 @@ impl JobRun {
             run: job.run.clone(),
             dir: job.dir.clone(),
             after: job.after.clone(),
+            timeout: job.timeout,
             state: State::NotRun,
             started: None,
             ended: None,
@@ -339,7 +343,10 @@ impl Run {
                     State::Killed
                 }
                 Outcome::Timeout => {
-                    j.reason = "打ち切り".to_owned();
+                    j.reason = match j.timeout {
+                        Some(secs) => format!("打ち切り（{} を超えた）", crate::duration::text(secs)),
+                        None => "打ち切り".to_owned(),
+                    };
                     State::Timeout
                 }
                 Outcome::Failed => {
@@ -503,7 +510,15 @@ mod tests {
     }
 
     fn job(id: &str, after: &[&str]) -> Job {
-        Job { id: id.into(), name: None, run: vec!["x".into()], dir: None, after: after.iter().map(|s| s.to_string()).collect(), pos: None }
+        Job {
+            id: id.into(),
+            name: None,
+            run: vec!["x".into()],
+            dir: None,
+            after: after.iter().map(|s| s.to_string()).collect(),
+            pos: None,
+            timeout: None,
+        }
     }
 
     /// a → b, a → c, (b, c) → d.
@@ -564,6 +579,11 @@ mod tests {
         r.finish("a", Outcome::Timeout, at("2026-10-30 09:00:02"));
         assert_eq!(r.job("a").unwrap().state, State::Timeout);
         assert_eq!(r.job("a").unwrap().reason, "打ち切り");
+        let mut t = diamond();
+        t.jobs[0].timeout = Some(1800);
+        t.start("a", at("2026-10-30 09:00:01"));
+        t.finish("a", Outcome::Timeout, at("2026-10-30 09:30:02"));
+        assert_eq!(t.job("a").unwrap().reason, "打ち切り（30m を超えた）");
         assert!(State::Timeout.is_error() && State::Killed.is_error());
         assert_eq!(State::Timeout.tone(), State::Error.tone());
         assert_eq!(r.state, State::Error);

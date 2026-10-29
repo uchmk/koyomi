@@ -4,12 +4,18 @@
 //! writes the lines to `logs/<day>/<run>/<job>.log` and tells the main loop
 //! how it ended. The order between jobs is `koyomi_core::run`'s; this file
 //! only starts what it says is ready and keeps the files current.
+//!
+//! A job is stopped through one flag, whoever asks: `kill` from a person, or
+//! the timer a `timeout` starts. `ito_proc` then kills the whole process tree.
+//! Which of the two asked first is kept beside the flag, so the job ends as
+//! 強制終了 or 打ち切り and never as the other.
 
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc};
+use std::time::{Duration, Instant};
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
@@ -29,11 +35,25 @@ struct Done {
     reason: String,
 }
 
+/// Nobody asked the job to stop yet.
+const WHY_NONE: u8 = 0;
+/// A person (or the run's kill) asked: 強制終了.
+const WHY_KILLED: u8 = 1;
+/// Its `timeout` passed: 打ち切り.
+const WHY_TIMEOUT: u8 = 2;
+
+/// Says who asked first; the second asker changes nothing.
+fn ask_stop(why: &AtomicU8, stop: &AtomicBool, who: u8) {
+    let _ = why.compare_exchange(WHY_NONE, who, Ordering::SeqCst, Ordering::SeqCst);
+    stop.store(true, Ordering::SeqCst);
+}
+
 /// One running job.
 struct Active {
     run: String,
     job: String,
     stop: Arc<AtomicBool>,
+    why: Arc<AtomicU8>,
 }
 
 pub struct Runner {
@@ -175,14 +195,14 @@ impl Runner {
                     return Err(format!("{}: 動いていない", j.label()));
                 }
                 let a = self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| format!("{job}: 動いていない"))?;
-                a.stop.store(true, Ordering::Relaxed);
+                ask_stop(&a.why, &a.stop, WHY_KILLED);
                 Ok(format!("{run} の {job} を止める"))
             }
             None => {
                 r.kill_pending(now);
                 let r = r.clone();
                 for a in self.active.iter().filter(|a| a.run == run) {
-                    a.stop.store(true, Ordering::Relaxed);
+                    ask_stop(&a.why, &a.stop, WHY_KILLED);
                 }
                 if r.is_over() {
                     // Nothing was running: the run ends here.
@@ -241,7 +261,8 @@ impl Runner {
             let Some(j) = r.job(&job_id) else { continue };
             self.record(&r, history::job_start(&r, j));
             let stop = Arc::new(AtomicBool::new(false));
-            self.active.push(Active { run: run_id.clone(), job: job_id.clone(), stop: stop.clone() });
+            let why = Arc::new(AtomicU8::new(WHY_NONE));
+            self.active.push(Active { run: run_id.clone(), job: job_id.clone(), stop: stop.clone(), why: why.clone() });
             let log = self.log_path(&run_id, &job_id);
             let job = JobSpec {
                 run: run_id,
@@ -250,12 +271,13 @@ impl Runner {
                 id: job_id,
                 command: j.run.clone(),
                 dir: j.dir.clone(),
+                timeout: j.timeout,
                 log,
                 cap: self.config.log_max_bytes(),
             };
             let tx = self.tx.clone();
             let _ = std::thread::Builder::new().name("koyomi-job".into()).spawn(move || {
-                let done = run_job(&job, &stop);
+                let done = run_job(&job, &stop, &why);
                 let _ = tx.send(done);
             });
         }
@@ -287,12 +309,32 @@ struct JobSpec {
     id: String,
     command: Vec<String>,
     dir: Option<String>,
+    /// Seconds before the timer asks the job to stop.
+    timeout: Option<u64>,
     log: PathBuf,
     cap: u64,
 }
 
+/// Raises `stop` for 打ち切り when `secs` pass before `stop` is raised by anyone.
+fn timer(secs: u64, stop: Arc<AtomicBool>, why: Arc<AtomicU8>) -> std::thread::JoinHandle<()> {
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    std::thread::Builder::new()
+        .name("koyomi-timer".into())
+        .spawn(move || {
+            while !stop.load(Ordering::SeqCst) {
+                let now = Instant::now();
+                if now >= deadline {
+                    ask_stop(&why, &stop, WHY_TIMEOUT);
+                    return;
+                }
+                std::thread::sleep((deadline - now).min(Duration::from_millis(100)));
+            }
+        })
+        .expect("spawn the timeout timer")
+}
+
 /// Runs one job to its end on this thread, writing its lines to the log.
-fn run_job(job: &JobSpec, stop: &AtomicBool) -> Done {
+fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
     let done = |outcome, reason: String| Done { run: job.run.clone(), job: job.id.clone(), outcome, reason };
     let Some((exe, args)) = job.command.split_first() else {
         return done(Outcome::Failed, "run が空".to_owned());
@@ -326,8 +368,24 @@ fn run_job(job: &JobSpec, stop: &AtomicBool) -> Done {
         }
         false
     };
-    match ito_proc::run_lines(cmd, stop, &mut on_line) {
-        Ok(lines) if lines.stopped() => done(Outcome::Killed, String::new()),
+    let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone()));
+    let result = ito_proc::run_lines(cmd, stop, &mut on_line);
+    // The job is over either way: let the timer go, and say in the log who stopped the job.
+    stop.store(true, Ordering::SeqCst);
+    if let Some(t) = timer {
+        let _ = t.join();
+    }
+    match result {
+        Ok(lines) if lines.stopped() => {
+            if why.load(Ordering::SeqCst) == WHY_TIMEOUT {
+                let text = koyomi_core::duration::text(job.timeout.unwrap_or(0));
+                let _ = writeln!(file, "! 打ち切り（{text} を超えた）");
+                done(Outcome::Timeout, String::new())
+            } else {
+                let _ = writeln!(file, "! 強制終了");
+                done(Outcome::Killed, String::new())
+            }
+        }
         Ok(lines) => {
             let code = lines.status.and_then(|s| s.code()).unwrap_or(-1);
             done(Outcome::Exited(code), String::new())
@@ -482,13 +540,42 @@ mod tests {
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
         assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
+        let asked = Instant::now();
         r.kill(&id, None).unwrap();
         let run = wait_over(&mut r, &id);
+        assert!(asked.elapsed() < Duration::from_secs(10), "the tree was not killed at once");
         assert_eq!(run.state, State::Error);
         assert_eq!(run.job("a").unwrap().state, State::Killed);
         assert_eq!(run.job("a").unwrap().reason, "強制終了");
+        assert!(r.log_tail(&id, "a").unwrap().ends_with("! 強制終了\n"));
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
         assert!(r.kill(&id, None).unwrap_err().contains("もう終わっている"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_timeout_stops_the_job_and_says_so_apart_from_a_kill() {
+        let dir = scratch("timeout");
+        let long = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"ping -n 30 127.0.0.1 > nul\"]" } else { "run = [\"sleep\", \"30\"]" };
+        let text =
+            format!("format = 1\n[[job]]\nid = \"a\"\n{long}\ntimeout = \"1s\"\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("two"));
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let started = Instant::now();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert!(started.elapsed() < Duration::from_secs(10), "the timeout did not stop the job");
+        assert_eq!(run.state, State::Error);
+        let a = run.job("a").unwrap();
+        assert_eq!(a.state, State::Timeout);
+        assert_eq!(a.reason, "打ち切り（1s を超えた）");
+        assert_eq!(run.job("b").unwrap().state, State::NotRun);
+        assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えた）\n"));
+        // A job that ends in time is not touched by its timer.
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\ntimeout = \"1h\"\n", echo("quick"));
+        let id = r.start(&def("quick", &text), Local::now().date_naive(), How::Manual).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

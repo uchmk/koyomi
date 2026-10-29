@@ -47,6 +47,9 @@ pub struct Job {
     pub dir: Option<String>,
     pub after: Vec<String>,
     pub pos: Option<(f64, f64)>,
+    /// Seconds the job may run before it is stopped, from `timeout = "30m"`.
+    #[serde(default)]
+    pub timeout: Option<u64>,
 }
 
 type Field = Option<Spanned<toml::Value>>;
@@ -153,6 +156,24 @@ impl Checker<'_> {
         }
     }
 
+    fn timeout(&mut self, field: &Field) -> Option<u64> {
+        let f = field.as_ref()?;
+        let text = match f.get_ref() {
+            toml::Value::String(s) => s.clone(),
+            _ => {
+                self.add(f.span().start, "timeout は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）");
+                return None;
+            }
+        };
+        match crate::duration::parse(&text) {
+            Ok(secs) => Some(secs),
+            Err(e) => {
+                self.add(f.span().start, format!("timeout {e}"));
+                None
+            }
+        }
+    }
+
     fn top(&mut self, raw: &RawNet) {
         match &raw.format {
             None => self.problems.push(Problem { line: 1, message: format!("format = {FORMAT} が要る") }),
@@ -179,7 +200,6 @@ impl Checker<'_> {
                 (&j.to, "to"),
                 (&j.shell, "shell"),
                 (&j.script, "script"),
-                (&j.timeout, "timeout"),
                 (&j.retry, "retry"),
                 (&j.judge, "judge"),
             ] {
@@ -208,7 +228,8 @@ impl Checker<'_> {
             let dir = self.string(&j.dir, "dir");
             let name = self.string(&j.name, "name");
             let pos = self.pos(&j.pos);
-            jobs.push(Job { id, name, run, dir, after, pos });
+            let timeout = self.timeout(&j.timeout);
+            jobs.push(Job { id, name, run, dir, after, pos, timeout });
         }
         for (job, entry) in jobs.iter().zip(raw) {
             let at = entry.get_ref().after.as_ref().map_or(entry.span().start, |f| f.span().start);
@@ -392,9 +413,52 @@ after = ["extract"]
     }
 
     #[test]
+    fn a_timeout_is_kept_in_seconds_and_a_bare_number_is_refused() {
+        let net = parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+timeout = \"1h30m\"
+",
+        )
+        .unwrap();
+        assert_eq!(net.jobs[0].timeout, Some(5400));
+        let net = parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        assert_eq!(net.jobs[0].timeout, None);
+        let text = "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+timeout = 30
+";
+        assert_eq!(problems(text), ["a.toml の 5 行目: timeout は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]);
+        let text = "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+timeout = \"0m\"
+";
+        assert_eq!(problems(text), ["a.toml の 5 行目: timeout 0m: 0 より長くする"]);
+        let text = "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+timeout = \"30\"
+";
+        assert_eq!(problems(text), ["a.toml の 5 行目: timeout 30: 30m・1h30m・90s のように書く（h・m・s、この順）"]);
+    }
+
+    #[test]
     fn fields_that_do_not_run_yet_are_refused_not_ignored() {
         for f in [
-            "timeout = \"5m\"",
             "retry = { count = 2, wait = \"5m\" }",
             "judge = { warn = \"1\" }",
             "kind = \"notify\"",

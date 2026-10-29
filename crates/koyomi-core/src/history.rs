@@ -161,6 +161,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         run: Vec::new(),
                         dir: None,
                         after: b.after.clone(),
+                        timeout: None,
                         state: State::NotRun,
                         started: None,
                         ended: None,
@@ -231,6 +232,7 @@ mod tests {
             dir: None,
             after: after.iter().map(|s| s.to_string()).collect(),
             pos: None,
+            timeout: None,
         }
     }
 

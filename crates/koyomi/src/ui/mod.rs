@@ -705,6 +705,7 @@ mod tests {
             dir: None,
             after: after.iter().map(|s| s.to_string()).collect(),
             pos: None,
+            timeout: None,
         };
         let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])] };
         let now = chrono::Local::now().naive_local();
@@ -732,7 +733,7 @@ mod tests {
         use koyomi_core::run::How;
         let net = Jobnet {
             name: None,
-            jobs: vec![Job { id: "a".into(), name: None, run: vec!["x".into()], dir: None, after: Vec::new(), pos: None }],
+            jobs: vec![Job { id: "a".into(), name: None, run: vec!["x".into()], dir: None, after: Vec::new(), pos: None, timeout: None }],
         };
         let now = chrono::Local::now().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);

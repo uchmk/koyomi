@@ -55,6 +55,9 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
             out.push(format!("  {} {}: {a}", t.tr("review.arg"), i + 1));
         }
         out.push(format!("  {}: {}", t.tr("review.dir"), j.dir.as_deref().unwrap_or(t.tr("review.nodir"))));
+        if let Some(secs) = j.timeout {
+            out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
+        }
     }
     out
 }
@@ -100,7 +103,7 @@ mod tests {
     }
 
     const NET: &str =
-        "format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"C:/bin/x.exe\", \"--month\", \"2026-10\"]\ndir = \"C:/work\"\n";
+        "format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"C:/bin/x.exe\", \"--month\", \"2026-10\"]\ndir = \"C:/work\"\ntimeout = \"30m\"\n";
 
     /// the row has a symbol and a word.
     #[test]
@@ -110,15 +113,18 @@ mod tests {
         assert_eq!(tree(&table(), &[d]), ["経理", "  ▲ 月次締め  未確認"]);
     }
 
-    /// the exe, each argument on its own line, and the directory.
+    /// the exe, each argument on its own line, the directory and the timeout.
     #[test]
-    fn the_body_shows_exe_args_one_per_line_and_dir() {
+    fn the_body_shows_exe_args_one_per_line_dir_and_timeout() {
         let d = def(NET, &Store::default());
         let b = body(&table(), &d);
         assert!(b.iter().any(|l| l.contains("C:/bin/x.exe")));
         assert!(b.iter().any(|l| l.ends_with(": --month")));
         assert!(b.iter().any(|l| l.ends_with(": 2026-10")));
         assert!(b.iter().any(|l| l.ends_with(": C:/work")));
+        assert!(b.iter().any(|l| l.ends_with("打ち切り: 30m")), "{b:?}");
+        let d = def(&NET.replace("timeout = \"30m\"\n", ""), &Store::default());
+        assert!(!body(&table(), &d).iter().any(|l| l.contains("打ち切り")));
     }
 
     /// a re-approval shows what changed since the approved text.

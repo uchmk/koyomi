@@ -5,6 +5,7 @@
 
 pub mod approved;
 pub mod config;
+pub mod duration;
 pub mod history;
 pub mod jobnet;
 pub mod run;
