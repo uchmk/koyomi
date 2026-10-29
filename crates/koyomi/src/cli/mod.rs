@@ -18,8 +18,11 @@ usage: koyomi [--version | --help | env]
        koyomi check <file>           read a definition and say what is wrong with it (exit 1 if anything)
        koyomi list [--toml]          the definitions and where each stands
        koyomi approve <group/name>   show what it would run, and approve it on `y`
-       koyomi run <group/name> [--date YYYY-MM-DD] [--wait]
-                                     start the net now (for that business day; --wait: stay until it ends)
+       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--wait]
+                                     start the net now (--from: at that job, the ones before it skipped;
+                                     --date: for that business day; --wait: stay until it ends)
+       koyomi rerun <run> [--from <job>] [--wait]
+                                     run it again: what passed is carried over, the rest runs (--from: that job and after it too)
        koyomi next <group/name> [--count N]
                                      the next 10 times its [[when]] comes (N: that many)
        koyomi status [--today] [--toml]
@@ -47,6 +50,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "list" => list(rest),
         "approve" => approve(rest),
         "run" => run_cmd(rest),
+        "rerun" => rerun_cmd(rest),
         "next" => next(rest),
         "status" => status(rest),
         "log" => log(rest),
@@ -273,18 +277,44 @@ fn run_cmd(args: &[String]) -> i32 {
     let mut rest = args.iter();
     let Some(id) = rest.next() else { return usage("run takes one group/name") };
     let id = id.replace('\\', "/");
-    let (mut date, mut wait) = (None, false);
+    let (mut date, mut from, mut wait) = (None, None, false);
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--date" => match rest.next() {
                 Some(d) => date = Some(d.clone()),
                 None => return usage("--date takes YYYY-MM-DD"),
             },
+            "--from" => match rest.next() {
+                Some(j) => from = Some(j.clone()),
+                None => return usage("--from takes a job"),
+            },
             "--wait" => wait = true,
-            _ => return usage("run takes --date and --wait"),
+            _ => return usage("run takes --from, --date and --wait"),
         }
     }
-    let run = match client::call(&Request::Run { id, date }) {
+    started(client::call(&Request::Run { id, date, from }), wait)
+}
+
+fn rerun_cmd(args: &[String]) -> i32 {
+    let mut rest = args.iter();
+    let Some(run) = rest.next() else { return usage("rerun takes one run") };
+    let (mut from, mut wait) = (None, false);
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--from" => match rest.next() {
+                Some(j) => from = Some(j.clone()),
+                None => return usage("--from takes a job"),
+            },
+            "--wait" => wait = true,
+            _ => return usage("rerun takes --from and --wait"),
+        }
+    }
+    started(client::call(&Request::Rerun { run: run.clone(), from }), wait)
+}
+
+/// Says the run started; with `wait`, stays until it ends and says how (exit 1 unless it passed).
+fn started(reply: Result<String, String>, wait: bool) -> i32 {
+    let run = match reply {
         Ok(r) => r,
         Err(e) => return fail(&e),
     };

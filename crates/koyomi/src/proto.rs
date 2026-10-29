@@ -9,7 +9,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 3;
+pub const PROTO: u32 = 4;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -25,9 +25,18 @@ pub enum Request {
     Show { id: String },
     /// Approve `id` as it reads now, if it still hashes to `sha256`.
     Approve { id: String, sha256: String },
-    /// Start the net `id` now for the business day `date` (`YYYY-MM-DD`; today when none).
+    /// Start the net `id` now for the business day `date` (`YYYY-MM-DD`; today when none),
+    /// at the job `from` when there is one (the jobs before it are skipped).
     /// The reply is the run's id.
-    Run { id: String, date: Option<String> },
+    Run {
+        id: String,
+        date: Option<String>,
+        #[serde(default)]
+        from: Option<String>,
+    },
+    /// Start `run` again with the definition it had: what passed is carried
+    /// over, the rest runs (from the job `from`, when there is one). The reply is the new run's id.
+    Rerun { run: String, from: Option<String> },
     /// Stop one job of a run, or the whole run.
     Kill { run: String, job: Option<String> },
     /// Today's runs and the ones still going, as [`Runs`].

@@ -308,8 +308,30 @@ impl State {
         }
     }
 
-    /// Starts `id` by hand. Refused for every reason a run must not start quietly.
-    fn start(&mut self, id: &str, date: Option<&str>) -> Result<String, String> {
+    /// Starts `id` by hand, at the job `from` when there is one. Refused for
+    /// every reason a run must not start quietly.
+    fn start(&mut self, id: &str, date: Option<&str>, from: Option<&str>) -> Result<String, String> {
+        let def = self.startable(id)?.clone();
+        let date = match date {
+            Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
+            None => Local::now().date_naive(),
+        };
+        match from {
+            Some(from) => self.runner.start_at(&def, date, from),
+            None => self.runner.start(&def, date, How::Manual, None),
+        }
+    }
+
+    /// Starts `run` again ([`Runner::rerun`]): with the definition that run
+    /// had, but only while the net is still confirmed as it stands now.
+    fn rerun(&mut self, run: &str, from: Option<&str>) -> Result<String, String> {
+        let prev = self.runner.previous(run)?;
+        self.startable(&prev.jobnet)?;
+        self.runner.rerun(run, from)
+    }
+
+    /// The definition `id` as it may be started: nothing warned, koyomi.toml reads, and it is confirmed.
+    fn startable(&self, id: &str) -> Result<&Def, String> {
         if !self.warnings.is_empty() {
             return Err(format!("流せない: {}", self.warnings.join(" / ")));
         }
@@ -318,16 +340,10 @@ impl State {
         }
         let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
         match def.standing {
-            Standing::Invalid => return Err(format!("定義の誤りがあり、流せない: {}", def.file)),
-            Standing::Unconfirmed => return Err(format!("未確認のため流さない: {}（koyomi approve {id}）", def.file)),
-            Standing::Confirmed => {}
+            Standing::Invalid => Err(format!("定義の誤りがあり、流せない: {}", def.file)),
+            Standing::Unconfirmed => Err(format!("未確認のため流さない: {}（koyomi approve {id}）", def.file)),
+            Standing::Confirmed => Ok(def),
         }
-        let date = match date {
-            Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
-            None => Local::now().date_naive(),
-        };
-        let def = def.clone();
-        self.runner.start(&def, date, How::Manual, None)
     }
 
     fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
@@ -363,7 +379,8 @@ impl State {
                 toml::to_string(def).map_err(|e| e.to_string())
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
-            Request::Run { id, date } => self.start(id, date.as_deref()),
+            Request::Run { id, date, from } => self.start(id, date.as_deref(), from.as_deref()),
+            Request::Rerun { run, from } => self.rerun(run, from.as_deref()),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::Log { run, job } => self.runner.log_tail(run, job),

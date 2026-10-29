@@ -265,3 +265,16 @@ Write-Output "hi"
 exit 4'''` with `judge = { warn = "4" }`, approve and run | The approve text shows `シェル: powershell` and the script lines under `スクリプト:`; the log has `hi`; the job is 警告 with `終了コード 4（警告）`; no profile is loaded and nothing is asked (the job ends by itself) |
 | 21.6 | Put a `"`, a `$`, a `'` and a Japanese word in the script (`Write-Output "a `"b`" $env:USERNAME 'c' 日本語"`) | The log shows the line as PowerShell prints it: quotes and `$` reach the shell as written (the script is passed as `-EncodedCommand`) |
 | 21.7 | Write `judge = { warn = 1 }`, `judge = { warn = "5..2" }`, `judge = { ok = "0" }`, `judge = "1"`, `shell = "cmd"`, `shell = "powershell"` with no `script`, `script` with no `shell`, or both `run` and `shell` | `koyomi check` refuses each with the line number and what to write (strings like "1" or "2..", start not above end, unknown field, the shape, `"powershell" のどれか`, `shell には script が要る`, `script には shell = "powershell" が要る`, `run と shell は両方書けない`) |
+
+## 22. Rerun and start at a job (`rerun`, `run --from`)
+
+| # | Do | Expect |
+|---|---|---|
+| 22.1 | Run a net whose second job fails (`exit 3`), then `koyomi rerun <run>` | A new run with the reason `再実行（<run>）`; the first job is ✓ with the reason `前の回の結果` and keeps its old times, and no new log for it appears under `logs/<day>/<new run>/`; the failed job runs again and has a log; `koyomi status --today` lists both runs |
+| 22.2 | `koyomi rerun <run> --from <first job>`, then `--from x` | The first job runs again too (a new log, the reason `再実行（<run> を <first job> から）`); `--from x` is refused with `ジョブがない: x` and nothing starts |
+| 22.3 | `koyomi rerun` while the run is still going; then a run where everything passed, without `--from` | `<run>: まだ終わっていない`; `<run>: 全部済んでいる（流し直すなら --from <ジョブ>）`; nothing starts either time |
+| 22.4 | Change the net's file (add a job) and `koyomi approve` it, then `koyomi rerun` the old run | The rerun uses the old copy (`logs/<day>/<run>/definition.toml`): the added job is not in it, and `definition.toml` under the new run is the old text |
+| 22.5 | Change the net's file without approving, then `koyomi rerun` | Refused with `未確認のため流さない: <file>（koyomi approve <group/name>）` |
+| 22.6 | `koyomi run <group/name> --from <second job>` | The jobs before it are ⊘ スキップ with the reason `<second job> から流したので飛ばした`, the run line reads `<second job> から`, and only the later logs exist |
+| 22.7 | In the window, open a run that is over and press 再実行; then pick a job in the flow and look at the second button | The new run opens (selected in 今日); the second button reads 「<job> から再実行」 and starts at that job; both buttons are grey while the run is going or while the top warning is shown |
+| 22.8 | `koyomi rerun` with yesterday's run id (from `koyomi history`), and with an id that never was | The rerun starts for yesterday's business day (`--date` is the old run's date); the unknown id is refused with `実行がない: <id>` |

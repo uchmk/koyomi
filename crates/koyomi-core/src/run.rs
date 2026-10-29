@@ -7,7 +7,7 @@
 //! net 異常 and the jobs after it 未実行; a run keeps the definition it started
 //! with to the end.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -149,6 +149,8 @@ pub enum How {
     Manual,
     /// A `[[when]]` line came due.
     Schedule,
+    /// `koyomi rerun` or 再実行: the jobs that passed before are carried over.
+    Rerun,
 }
 
 /// How a job ended, as the engine saw it.
@@ -316,6 +318,25 @@ pub struct Run {
 /// How a run that started after its time (`missed = "once"`) begins its reason.
 pub const LATE: &str = "遅れて実行";
 
+/// How a job carried over from the previous run begins its reason (a rerun).
+pub const CARRIED: &str = "前の回の結果";
+
+/// `from` and every job after it (by `after`, and on). `from` must be a job of `jobs`.
+fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
+    if !jobs.iter().any(|j| j.id == from) {
+        return Err(format!("ジョブがない: {from}"));
+    }
+    let mut out: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
+    loop {
+        let more: Vec<String> =
+            jobs.iter().filter(|j| !out.contains(&j.id) && j.after.iter().any(|a| out.contains(a))).map(|j| j.id.clone()).collect();
+        if more.is_empty() {
+            return Ok(out);
+        }
+        out.extend(more);
+    }
+}
+
 impl Run {
     /// A run that has not started a job yet: every job is 未実行 or 実行待ち.
     pub fn new(id: &str, jobnet: &str, title: &str, date: &str, how: How, net: &Jobnet, now: NaiveDateTime) -> Run {
@@ -369,6 +390,77 @@ impl Run {
             jobs,
             reason: reason.to_owned(),
         }
+    }
+
+    /// A run that starts at the job `from`: that job and everything after it
+    /// run; the rest are ⊘ スキップ from the start (`koyomi run --from`).
+    #[allow(clippy::too_many_arguments)]
+    pub fn starting_at(
+        id: &str,
+        jobnet: &str,
+        title: &str,
+        date: &str,
+        how: How,
+        net: &Jobnet,
+        from: &str,
+        now: NaiveDateTime,
+    ) -> Result<Run, String> {
+        let redo = downstream(&net.jobs, from)?;
+        let jobs = net
+            .jobs
+            .iter()
+            .map(|j| {
+                let mut jr = JobRun::from_job(j);
+                if !redo.contains(&jr.id) {
+                    jr.state = State::Skipped;
+                    jr.ended = Some(now);
+                    jr.reason = format!("{from} から流したので飛ばした");
+                }
+                jr
+            })
+            .collect();
+        let mut run = Run::with_jobs(id, jobnet, title, date, how, jobs, now);
+        run.reason = format!("{from} から");
+        Ok(run)
+    }
+
+    /// `previous` (over) run again with `net`, the definition it ran: the jobs
+    /// that passed (正常・警告・スキップ) are carried over as they ended, with
+    /// [`CARRIED`] as their reason, and the rest run again. With `from`, that
+    /// job and everything after it run again too. Finished work (an import, a
+    /// send) is never done twice: a run where everything passed is refused
+    /// unless `from` names a job.
+    pub fn rerun(id: &str, previous: &Run, net: &Jobnet, from: Option<&str>, now: NaiveDateTime) -> Result<Run, String> {
+        if !previous.is_over() {
+            return Err(format!("{}: まだ終わっていない", previous.id));
+        }
+        let mut redo: BTreeSet<String> = previous.jobs.iter().filter(|j| !j.state.passed()).map(|j| j.id.clone()).collect();
+        if let Some(from) = from {
+            redo.extend(downstream(&net.jobs, from)?);
+        }
+        if redo.is_empty() {
+            return Err(format!("{}: 全部済んでいる（流し直すなら --from <ジョブ>）", previous.id));
+        }
+        let mut jobs = Vec::with_capacity(net.jobs.len());
+        for j in &net.jobs {
+            let mut jr = JobRun::from_job(j);
+            if !redo.contains(&jr.id) {
+                let p = previous.job(&jr.id).ok_or_else(|| format!("{}: 前の回にジョブ {} はない", previous.id, jr.id))?;
+                jr.state = p.state;
+                jr.started = p.started;
+                jr.ended = Some(p.ended.unwrap_or(now));
+                jr.exit = p.exit;
+                jr.retried = p.retried;
+                jr.reason = if p.reason.is_empty() { CARRIED.to_owned() } else { format!("{CARRIED}: {}", p.reason) };
+            }
+            jobs.push(jr);
+        }
+        let mut run = Run::with_jobs(id, &previous.jobnet, &previous.title, &previous.date, How::Rerun, jobs, now);
+        run.reason = match from {
+            Some(f) => format!("再実行（{} を {f} から）", previous.id),
+            None => format!("再実行（{}）", previous.id),
+        };
+        Ok(run)
     }
 
     /// Marks a run of the schedule that started after its time (`missed =
@@ -670,14 +762,90 @@ mod tests {
     }
 
     /// a → b, a → c, (b, c) → d.
-    fn diamond() -> Run {
-        let net = Jobnet {
+    fn diamond_net() -> Jobnet {
+        Jobnet {
             name: None,
             jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])],
             when: Vec::new(),
             ..Default::default()
-        };
-        Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
+        }
+    }
+
+    fn diamond() -> Run {
+        Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &diamond_net(), at("2026-10-30 09:00:00"))
+    }
+
+    fn ended(r: &mut Run, id: &str, code: i32, t: &str) {
+        r.start(id, at(t));
+        r.finish(id, Outcome::Exited(code), at(t));
+    }
+
+    #[test]
+    fn a_rerun_carries_what_passed_and_runs_the_rest_again() {
+        let now = at("2026-10-30 10:00:00");
+        let net = diamond_net();
+        let mut prev = diamond();
+        ended(&mut prev, "a", 0, "2026-10-30 09:00:01");
+        ended(&mut prev, "b", 0, "2026-10-30 09:00:02");
+        ended(&mut prev, "c", 2, "2026-10-30 09:00:03");
+        assert_eq!(prev.state, State::Error);
+        assert_eq!(prev.job("d").unwrap().state, State::NotRun);
+        let r = Run::rerun("r2", &prev, &net, None, now).unwrap();
+        assert_eq!((r.how, r.state, r.reason.as_str()), (How::Rerun, State::Running, "再実行（r1）"));
+        assert_eq!((r.jobnet.as_str(), r.title.as_str(), r.date.as_str()), ("g/n", "n", "2026-10-30"));
+        let a = r.job("a").unwrap();
+        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), CARRIED));
+        assert_eq!((a.started, a.ended), (Some(at("2026-10-30 09:00:01")), Some(at("2026-10-30 09:00:01"))));
+        assert_eq!(r.job("b").unwrap().state, State::Ok);
+        assert_eq!(r.ready(), vec!["c"]);
+        assert_eq!(r.job("d").unwrap().reason, "c の終わりを待っています");
+        // From a chosen job: it and what follows run again, with whatever did not pass.
+        let r = Run::rerun("r3", &prev, &net, Some("b"), now).unwrap();
+        assert_eq!(r.reason, "再実行（r1 を b から）");
+        assert_eq!(r.job("a").unwrap().reason, CARRIED);
+        let mut ready = r.ready();
+        ready.sort();
+        assert_eq!(ready, vec!["b", "c"]);
+        assert!(Run::rerun("r4", &prev, &net, Some("x"), now).unwrap_err().contains("ジョブがない: x"));
+        // Not over yet: nothing to rerun. Everything passed: only from a job.
+        assert!(Run::rerun("r5", &diamond(), &net, None, now).unwrap_err().contains("まだ終わっていない"));
+        let mut done = diamond();
+        for id in ["a", "b", "c", "d"] {
+            ended(&mut done, id, 0, "2026-10-30 09:00:05");
+        }
+        assert!(Run::rerun("r6", &done, &net, None, now).unwrap_err().contains("全部済んでいる"));
+        let r = Run::rerun("r7", &done, &net, Some("d"), now).unwrap();
+        assert_eq!(r.ready(), vec!["d"]);
+        assert_eq!(r.job("b").unwrap().reason, CARRIED);
+    }
+
+    #[test]
+    fn a_warning_carried_over_keeps_its_reason() {
+        let net = diamond_net();
+        let mut prev = diamond();
+        ended(&mut prev, "a", 0, "2026-10-30 09:00:01");
+        prev.jobs[0].state = State::Warn;
+        prev.jobs[0].reason = "終了コード 1（警告）".into();
+        ended(&mut prev, "b", 3, "2026-10-30 09:00:02");
+        ended(&mut prev, "c", 0, "2026-10-30 09:00:03");
+        assert!(prev.is_over());
+        let r = Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap();
+        assert_eq!(r.job("a").unwrap().reason, "前の回の結果: 終了コード 1（警告）");
+        assert_eq!(r.job("a").unwrap().state, State::Warn);
+    }
+
+    #[test]
+    fn a_run_started_at_a_job_skips_the_ones_before() {
+        let net = diamond_net();
+        let now = at("2026-10-30 09:00:00");
+        let r = Run::starting_at("r1", "g/n", "n", "2026-10-30", How::Manual, &net, "b", now).unwrap();
+        let a = r.job("a").unwrap();
+        assert_eq!((a.state, a.ended, a.reason.as_str()), (State::Skipped, Some(now), "b から流したので飛ばした"));
+        assert_eq!(r.job("c").unwrap().state, State::Skipped);
+        assert_eq!(r.ready(), vec!["b"]);
+        assert_eq!(r.job("d").unwrap().reason, "b の終わりを待っています");
+        assert_eq!((r.state, r.reason.as_str()), (State::Running, "b から"));
+        assert!(Run::starting_at("r1", "g/n", "n", "2026-10-30", How::Manual, &net, "x", now).is_err());
     }
 
     #[test]

@@ -209,7 +209,7 @@ impl Browser {
                 }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
-                    if let (Request::Run { .. }, Ok(id)) = (&req, &r) {
+                    if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
                         self.run_sel = Some(id.clone());
                         self.job_sel = None;
                     }
@@ -483,6 +483,23 @@ impl Browser {
                 // The safe button first: Enter on a fresh box does not kill.
                 self.focus = 1;
             }
+            // Again, once it is over: what passed is carried over. From the picked job when one is picked.
+            let can = run.is_over() && !self.blocked();
+            let r = ui.add_enabled(can, egui::Button::new(t.tr("run.rerun")));
+            ito_a11y::say(&r, Role::Button, t.tr("run.rerun"));
+            if r.clicked() {
+                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
+            }
+            let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
+            let label = match &picked {
+                Some(j) => t.trf("run.rerun_from", &[j]),
+                None => t.tr("run.rerun_pick").to_owned(),
+            };
+            let r = ui.add_enabled(can && picked.is_some(), egui::Button::new(&label));
+            ito_a11y::say(&r, Role::Button, &label);
+            if r.clicked() {
+                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked });
+            }
             ui.separator();
             for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
                 let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
@@ -492,6 +509,7 @@ impl Browser {
                 }
             }
         });
+        self.show_result(ui);
         ui.add_space(6.0);
         let watched = Self::watched_job(&run, self.job_sel.as_deref());
         *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
@@ -579,9 +597,15 @@ impl Browser {
             let r = ui.add_enabled(can, egui::Button::new(t.tr("run.now")));
             ito_a11y::say(&r, Role::Button, t.tr("run.now"));
             if r.clicked() {
-                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None });
+                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None, from: None });
             }
         });
+        self.show_result(ui);
+    }
+
+    /// The engine's answer to the last request (approve, run, rerun), under the buttons.
+    fn show_result(&self, ui: &mut egui::Ui) {
+        let c = ito_theme::colors();
         match &self.result {
             Some(Ok(m)) => {
                 ui.label(egui::RichText::new(format!("{} {m}", ito_a11y::State::Done.mark())).color(c.done));

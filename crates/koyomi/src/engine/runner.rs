@@ -32,7 +32,7 @@ use ito_common::kept;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{Judge, Retry};
-use koyomi_core::run::{verdict, How, Outcome, Run, State};
+use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
 
 /// How much of a log `koyomi log` and the window get: the last 64 KB.
@@ -167,19 +167,83 @@ impl Runner {
     /// Starts `def` for the business day `date`; `planned` is the time a schedule
     /// meant it for. Refused while the same net runs.
     pub fn start(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>) -> Result<String, String> {
+        self.begin(def, date, how, planned, None)
+    }
+
+    /// Starts `def` at the job `from`: the jobs before it are ⊘ スキップ ([`Run::starting_at`]).
+    pub fn start_at(&mut self, def: &Def, date: NaiveDate, from: &str) -> Result<String, String> {
+        self.begin(def, date, How::Manual, None, Some(from))
+    }
+
+    fn begin(
+        &mut self,
+        def: &Def,
+        date: NaiveDate,
+        how: How,
+        planned: Option<NaiveDateTime>,
+        from: Option<&str>,
+    ) -> Result<String, String> {
         let net = def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?;
-        if self.runs.iter().any(|r| r.jobnet == def.id && !r.is_over()) {
-            return Err(format!("{}: 動いている間はもう一度は流せない", def.label()));
-        }
+        self.not_running(&def.id, def.label())?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
-        let mut run = Run::new(&id, &def.id, def.label(), &date.format("%Y-%m-%d").to_string(), how, net, now);
+        let date = date.format("%Y-%m-%d").to_string();
+        let mut run = match from {
+            Some(from) => Run::starting_at(&id, &def.id, def.label(), &date, how, net, from, now)?,
+            None => Run::new(&id, &def.id, def.label(), &date, how, net, now),
+        };
         run.planned = planned;
-        // The run keeps the definition it started with, beside its logs.
+        self.launch(run, &def.text)
+    }
+
+    /// Starts run `previous` again with the definition it ran, the copy beside
+    /// its logs ([`Run::rerun`]). `previous` may be of another day.
+    pub fn rerun(&mut self, previous: &str, from: Option<&str>) -> Result<String, String> {
+        let prev = self.previous(previous)?;
+        if !prev.is_over() {
+            return Err(format!("{}: まだ終わっていない", prev.id));
+        }
+        self.not_running(&prev.jobnet, &prev.title)?;
+        let path = self.run_dir(previous).join("definition.toml");
+        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let net = koyomi_core::jobnet::parse(&text)
+            .map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
+        let now = Local::now().naive_local();
+        let id = self.new_id(now);
+        let run = Run::rerun(&id, &prev, &net, from, now)?;
+        self.launch(run, &text)
+    }
+
+    /// The run `id`: one kept here, or one read back from the history of the day in its id.
+    pub fn previous(&self, id: &str) -> Result<Run, String> {
+        if let Some(r) = self.runs.iter().find(|r| r.id == id) {
+            return Ok(r.clone());
+        }
+        let day = id.get(0..8).and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok()).ok_or_else(|| format!("実行がない: {id}"))?;
+        let loaded = Day::load(&history::path(&self.history, day)).unwrap_or_default();
+        loaded.runs().into_iter().find(|r| r.id == id).ok_or_else(|| format!("実行がない: {id}"))
+    }
+
+    fn not_running(&self, jobnet: &str, label: &str) -> Result<(), String> {
+        if self.runs.iter().any(|r| r.jobnet == jobnet && !r.is_over()) {
+            return Err(format!("{label}: 動いている間はもう一度は流せない"));
+        }
+        Ok(())
+    }
+
+    /// Keeps the definition beside the run's logs, records the start (and the
+    /// jobs that are over from the start: skipped, or carried over from a
+    /// previous run), and starts what is ready.
+    fn launch(&mut self, run: Run, text: &str) -> Result<String, String> {
         let dir = self.run_dir(&run.id);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        std::fs::write(dir.join("definition.toml"), &def.text).map_err(|e| format!("{}: {e}", dir.display()))?;
+        std::fs::write(dir.join("definition.toml"), text).map_err(|e| format!("{}: {e}", dir.display()))?;
         self.record(&run, history::run_start(&run));
+        let over: Vec<JobRun> = run.jobs.iter().filter(|j| j.ended.is_some()).cloned().collect();
+        for j in &over {
+            self.record(&run, history::job_end(&run, j));
+        }
+        let id = run.id.clone();
         self.runs.push(run);
         self.tick();
         Ok(id)
@@ -654,6 +718,60 @@ mod tests {
         let mut r2 = Runner::new(&dir, Config::default());
         assert_eq!(r2.today().len(), 1);
         assert!(r2.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_rerun_runs_the_failed_job_again_and_carries_the_one_that_passed() {
+        let dir = scratch("rerun");
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), fail_cmd());
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let first = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        assert!(r.rerun(&first, None).unwrap_err().contains("まだ終わっていない"));
+        assert_eq!(wait_over(&mut r, &first).state, State::Error);
+        let second = r.rerun(&first, None).unwrap();
+        assert_ne!(second, first);
+        let run = wait_over(&mut r, &second);
+        assert_eq!((run.how, run.state), (How::Rerun, State::Error));
+        let a = run.job("a").unwrap();
+        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), koyomi_core::run::CARRIED));
+        assert!(!r.log_path(&second, "a").exists(), "a must not run again");
+        assert!(r.log_path(&second, "b").exists());
+        assert!(r.run_dir(&second).join("definition.toml").exists());
+        // The history has a's end from the start: a new runner reads the rerun as it was.
+        r.flush();
+        let r2 = Runner::new(&dir, Config::default());
+        let back = r2.run(&second).unwrap();
+        assert_eq!(back.state, State::Error);
+        assert_eq!(back.job("a").unwrap().state, State::Ok);
+        assert_eq!(back.job("a").unwrap().reason, koyomi_core::run::CARRIED);
+        // From a job: that one runs again too.
+        let third = r.rerun(&first, Some("a")).unwrap();
+        let run = wait_over(&mut r, &third);
+        assert_eq!(run.job("a").unwrap().exit, Some(0));
+        assert!(r.log_path(&third, "a").exists());
+        assert!(r.rerun(&first, Some("x")).unwrap_err().contains("ジョブがない: x"));
+        assert!(r.rerun("20200101-000000-00", None).unwrap_err().contains("実行がない"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_start_at_a_job_skips_the_ones_before_it() {
+        let dir = scratch("startat");
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start_at(&d, Local::now().date_naive(), "b").unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        assert_eq!(run.job("a").unwrap().state, State::Skipped);
+        assert!(!r.log_path(&id, "a").exists());
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "two");
+        r.flush();
+        let back = Runner::new(&dir, Config::default());
+        assert_eq!(back.run(&id).unwrap().job("a").unwrap().state, State::Skipped);
+        assert!(r.start_at(&d, Local::now().date_naive(), "x").unwrap_err().contains("ジョブがない: x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
