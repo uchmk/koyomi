@@ -6,6 +6,8 @@
 
 ### 追加
 
+- `--keys` の台本（`ito-keyscript`）: `koyomi --keys "<Wait:1500><Shot:start><State:s><Quit>"` で、人がいなくても窓を動かして絵と状態を残す。
+  終わり方は `KOYOMI_KEYS_DONE` のファイルに（`keys: done` / `quit` / `closed` / `refused` / `panicked`）。台本の窓は場所も `state.toml` も残さない。
 - 定義を読んで確かめる: `jobnets/<グループ>/<名前>.toml` を読み、誤りは行番号つきで示す。確かめた定義は中身全体の hash で
   `approved.toml` に覚え、1 字でも変わればまた未確認になる。窓の確かめの箱と `koyomi check` / `list` / `approve` / `engine`。
   他のユーザーが書ける場所があれば帯で知らせ、直るまで確かめない。

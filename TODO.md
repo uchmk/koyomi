@@ -55,7 +55,7 @@
 下は**依存は入っているが、まだ配線していないもの**。先に作った別のアプリが手本になる。自前で書かずに ito のクレートを使う
 （足りない所は ito に頼む。`scripts/ito-first.py` が見ている）。
 
-- [ ] `--keys` の台本: `ito-keyscript`（`Dialect`・`Runner`・`Press`）。手本は michi の `main.rs`。`lanes.conf` の `keys_env` と合わせる。
+- [x] `--keys` の台本: `ito-keyscript`（`Runner`、`KOYOMI_KEYS_DONE`）。`<State:名前>` は `ui::Browser::report`（エンジン・件数・選んだもの）。
 - [ ] `keymap.toml` と設定の「キー」ページ: `ito-keys`・`ito-keymap`・`ito-prefs` の `keys_page`。既定のキーは `defaults/keymap.toml`
   （`<C-,>` 設定・`<F1>` ヘルプ・`<C-q>` 終了）。手本は minato の `keymap.rs`・`prefs.rs`。
 - [ ] `?` と F1 のヘルプ: `ito-help`（`ito-keymap` の一覧を描く）。手本は michi の `app.rs`・`ui.rs`。
@@ -75,7 +75,7 @@
 
 - 秘密の値の `***` への置き換え（2）: v0.1 では `ito-secret` に登録する画面も欄もないので、置き換える対象がなく、ログはそのまま書く。登録の口を作るとき（4 の webhook）に一緒に入れる。
 - ジョブの作業フォルダー（2）: `dir` がないジョブはエンジンの作業フォルダーで動く（エンジンを起こした所。窓から起きたときはその exe の場所）。定義のフォルダーにする方がよければ直す。
-- `state.toml` の `flow`（2）: `--keys` がまだ配線されていないので、窓は今は必ず書く。`--keys` を配線するときに `Browser::start` の `state` を `None` にする。
+- `state.toml` の `flow`（2）: `--keys` の窓は `Browser::start` の `state` が `None` で、読みも書きもしない（配線で済み）。
 
 - 時間の文字列の読み（3）: `timeout = "30m"` を読む部品は ito にない（`ito_common::text` は書く向きだけ）ので、uchmk/ito#76 を立て、届くまで `koyomi-core/src/duration.rs` に置く（h・m・s をこの順、単位なしと 0 は誤り）。届いたら置き換える。
 - 打ち切りの出どころ（3）: 止めの合図は 1 つの旗で、先に立てた側（人の強制終了か、timeout のタイマーか）を記号に使う。同時なら先に来た方。`timeout` の時間はジョブが始まってから（待ちの時間は数えない）。
@@ -100,3 +100,6 @@
 - 7 日の予定の並べ方（6）: 増える回と消える回を日時の順に混ぜて 20 件（`+`・`-` の印で分ける）、残りは `… 他 N 件`。変わらない回は出さない。初めての確かめは全部の回を印なしで出す。
 - 前の版が今の読み方で読めないとき（6）: 前に確かめた版の `[[when]]` を今の読み方で読めなければ、前は 0 回として数える（今の回が全部 `+` で出る）。koyomi の版を上げて `[[when]]` の読み方が変わったときにだけ起きる。
 - 7 日の起点（6）: 確かめの箱を開いた時点（`koyomi approve` は打った時点）。箱を開いたままでは更新しない。
+
+- `<Theme:>`・`<Lang:>` の効き方（配線 `--keys`）: koyomi は common.toml の見張りをまだ持たないので、台本の切り替えはその窓のメモリーにだけ効かせ、common.toml は書かない（持ち主の設定を変えない）。設定の画面と見張りを配線したら michi と同じ「書いて見張りが効かせる」形に寄せてよい。
+- `<State:名前>` の中身（配線 `--keys`）: `engine:`（up / starting / waiting / down: 理由）、`nets:`、`warnings:`、`runs:`、`selected:`、`run:`、`job:`、`asking:`（approve <id> / kill <id> / -）、`flow:` の行。足りなければ足す。koyomi 固有の読み（`Dialect::reads`）はまだない。

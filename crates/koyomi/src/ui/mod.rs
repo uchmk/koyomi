@@ -272,6 +272,32 @@ impl Browser {
     ///
     /// While a box is up it is the only thing that answers: its keys are taken before anything
     /// behind it is drawn, what is behind is disabled, and no widget keeps the keyboard focus.
+    /// `<State:name>` under `--keys`: the engine, the counts and what is
+    /// picked, one `key: value` line each.
+    pub fn report(&self) -> String {
+        let engine = match (&self.down, self.starting, &self.snap) {
+            (Some(e), _, _) => format!("down: {e}"),
+            (None, true, _) => "starting".to_owned(),
+            (None, false, Some(_)) => "up".to_owned(),
+            (None, false, None) => "waiting".to_owned(),
+        };
+        let mut out = format!("engine: {engine}\n");
+        if let Some(s) = &self.snap {
+            out.push_str(&format!("nets: {}\nwarnings: {}\n", s.defs.len(), s.warnings.len()));
+        }
+        out.push_str(&format!("runs: {}\n", self.runs.len()));
+        out.push_str(&format!("selected: {}\n", self.selected.as_deref().unwrap_or("-")));
+        out.push_str(&format!("run: {}\n", self.run_sel.as_deref().unwrap_or("-")));
+        out.push_str(&format!("job: {}\n", self.job_sel.as_deref().unwrap_or("-")));
+        let asking = match (&self.asking, &self.killing) {
+            (Some(a), _) => format!("approve {}", a.id),
+            (None, Some(r)) => format!("kill {r}"),
+            (None, None) => "-".to_owned(),
+        };
+        out.push_str(&format!("asking: {asking}\nflow: {}\n", if self.vertical { "vertical" } else { "horizontal" }));
+        out
+    }
+
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
         let ctx = ui.ctx().clone();

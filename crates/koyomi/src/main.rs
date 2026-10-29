@@ -2,7 +2,8 @@
 //!
 //! What is wired here: the window (its place kept, its own title bar with the
 //! bell and the notice list), common.toml's theme, language and scale,
-//! `--version` / `--help`, and F12 (the bug report).
+//! `--version` / `--help`, F12 (the bug report), and `--keys` (a script
+//! that drives the window for a test lane).
 //! What the uchmk apps also have and is still to wire is in TODO.md, each
 //! item with the ito crate and an app that already does it.
 
@@ -20,7 +21,10 @@ mod review;
 mod show;
 mod ui;
 
+use std::path::PathBuf;
+
 use ito_common::window::{Saved, Tracker};
+use ito_keyscript::{Do, Runner, Step};
 
 /// The window's icon, in pixels square.
 const ICON_PX: u32 = 128;
@@ -30,7 +34,10 @@ const REPO: &str = "https://github.com/uchmk/koyomi";
 const ABOUT: &str = "koyomi — Small job scheduler and monitor (a light JP1)";
 
 fn usage_text() -> String {
-    format!("{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n", cli::USAGE.trim_end())
+    format!(
+        "{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n\n  --keys SCRIPT  press these keys once the window is up, as kura's --keys;\n                 KOYOMI_KEYS_DONE names the file that says how it ended\n",
+        cli::USAGE.trim_end()
+    )
 }
 
 struct App {
@@ -52,6 +59,9 @@ struct App {
     browser: ui::Browser,
     /// The Japanese face, read off the UI thread; `None` once it is registered.
     font: Option<std::sync::mpsc::Receiver<Option<Vec<u8>>>>,
+    /// The `--keys` script while it plays, and what its steps ask the frame to do.
+    script: Option<Runner>,
+    todo: Vec<Do>,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -64,7 +74,7 @@ enum Command {
 }
 
 impl App {
-    fn new(cc: &eframe::CreationContext<'_>, saved: &Saved) -> Self {
+    fn new(cc: &eframe::CreationContext<'_>, saved: &Saved, script: Option<Runner>) -> Self {
         saved.put(cc);
         // What this run drew with, for the bug report and `koyomi env`.
         let mut used = ito_common::runinfo::RunInfo::new(env!("CARGO_PKG_VERSION"));
@@ -110,8 +120,72 @@ impl App {
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
-            browser: ui::Browser::start(&cc.egui_ctx, ito_common::state_dir("koyomi")),
+            // A script plays on a window that keeps no state of its own.
+            browser: ui::Browser::start(&cc.egui_ctx, if script.is_some() { None } else { ito_common::state_dir("koyomi") }),
             font: Some(font_reader(&cc.egui_ctx)),
+            script,
+            todo: Vec::new(),
+        }
+    }
+
+    /// `<State:name>` and the done file: what the window shows, then `tail`.
+    fn write_state(&self, path: PathBuf, tail: &str) {
+        let text = format!("{}{tail}", self.browser.report());
+        if let Err(e) = std::fs::write(&path, text) {
+            say(&format!("koyomi --keys: {}: {e}", path.display()), true);
+        }
+    }
+
+    /// The steps of the `--keys` script that are not keys: pictures, state
+    /// files, the theme and the language (applied to this window only; the
+    /// owner's common.toml is not written), quit, and the done file.
+    fn script(&mut self, ctx: &egui::Context) {
+        let Some(script) = &mut self.script else { return };
+        if let Some(err) = script.shot(ctx) {
+            say(&format!("koyomi --keys: {err}"), true);
+        }
+        for d in std::mem::take(&mut self.todo) {
+            let Some(script) = &self.script else { return };
+            match d {
+                Do::State(name) => self.write_state(script.dir.join(format!("{name}.txt")), ""),
+                Do::Quit => {
+                    // `<Quit>` finishes the run itself, so `on_exit` finds it over and writes nothing.
+                    if let Some(done) = script.done.clone() {
+                        self.write_state(done, &ito_keyscript::quit_report(script.left()));
+                    }
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Do::Theme(name) => {
+                    let themes = ito_theme::builtin();
+                    let dark = self.common.dark_theme.as_deref().unwrap_or("koyomi Dark");
+                    let light = self.common.light_theme.as_deref().unwrap_or("koyomi Light");
+                    match ito_theme::pick(&themes, &name, dark, light, false) {
+                        Ok(theme) => {
+                            ito_theme::set(theme.colors);
+                            ctx.set_visuals(ito_theme::colors().visuals());
+                        }
+                        Err(e) => say(&format!("koyomi --keys: <Theme:{name}>: {e}"), true),
+                    }
+                }
+                Do::Lang(code) => {
+                    self.lang = i18n::resolve(Some(&code));
+                    let (table, errors) = i18n::table(&self.lang);
+                    self.table = table;
+                    for e in errors {
+                        say(&format!("koyomi --keys: <Lang:{code}>: {e}"), true);
+                    }
+                }
+                // koyomi defines no readings of its own.
+                Do::Read { .. } => {}
+                Do::Done => {
+                    if let Some(done) = script.done.clone() {
+                        self.write_state(done, "keys: done\n");
+                    }
+                }
+            }
+        }
+        if let Some(due) = self.script.as_ref().and_then(Runner::due) {
+            ctx.request_repaint_after(due);
         }
     }
 
@@ -371,6 +445,7 @@ impl eframe::App for App {
         self.command_palette(&ctx);
         self.take_font(&ctx);
         self.browser.show(ui, &self.table);
+        self.script(&ctx);
         // Last, so the edges of the frameless window win over what is under them.
         if !cfg!(target_os = "macos") {
             ito_titlebar::resize_edges(&ctx);
@@ -379,6 +454,39 @@ impl eframe::App for App {
 
     fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
         ito_theme::colors().bg.to_normalized_gamma_f32()
+    }
+
+    fn raw_input_hook(&mut self, ctx: &egui::Context, raw: &mut egui::RawInput) {
+        if let Some(script) = &mut self.script {
+            if let Some(d) = script.input(ctx, raw) {
+                self.todo.push(d);
+            }
+        }
+    }
+
+    /// The window closed from outside while a script ran: the done file says
+    /// so, else the lane waits out its timeout.
+    fn on_exit(&mut self) {
+        let Some(script) = &mut self.script else { return };
+        if !script.running() {
+            return;
+        }
+        let left = script.left();
+        script.finish();
+        let Some(done) = script.done.clone() else { return };
+        self.write_state(done, &ito_keyscript::closed_report(left));
+    }
+}
+
+/// `--keys SCRIPT` as its steps; `None` when the arguments are not that.
+/// `-x` after `--keys` is the script's text, not an option.
+fn keys_arg(args: &[String]) -> Result<Option<Vec<Step>>, String> {
+    match args {
+        [k, ..] if k != "--keys" => Ok(None),
+        [_] => Err("--keys needs a script".to_owned()),
+        [_, s] => ito_keyscript::parse(s).map(Some).map_err(|e| format!("--keys: {e}")),
+        [_, _, more, ..] => Err(format!("unknown argument `{more}`")),
+        [] => Ok(None),
     }
 }
 
@@ -410,7 +518,22 @@ fn main() -> eframe::Result {
     if let Some(code) = cli::run(&args) {
         std::process::exit(code);
     }
-    if let Some(a) = args.first() {
+    let done = std::env::var_os("KOYOMI_KEYS_DONE").filter(|v| !v.is_empty()).map(PathBuf::from);
+    let script = match keys_arg(&args) {
+        Ok(s) => s,
+        Err(e) => {
+            // A run started detached never sees the message: the done file carries it (ito #193).
+            if let Some(done) = &done {
+                let _ = std::fs::write(done, ito_keyscript::refused_report(&e));
+            }
+            say(&format!("koyomi: {e}\n\n{}", usage_text()), true);
+            std::process::exit(2);
+        }
+    };
+    if let (Some(_), Some(done)) = (&script, &done) {
+        ito_keyscript::install_panic_report(done.clone());
+    }
+    if let (Some(a), None) = (args.first(), &script) {
         match a.as_str() {
             "--version" | "-V" => say(&ito_bugreport::version_line("koyomi", env!("CARGO_PKG_VERSION")), false),
             "--help" | "-h" => say(&usage_text(), false),
@@ -422,7 +545,8 @@ fn main() -> eframe::Result {
         }
         return Ok(());
     }
-    let saved = Saved::load(ito_common::state_dir("koyomi"));
+    // A script plays on a window that keeps no place, and leaves none.
+    let saved = if script.is_none() { Saved::load(ito_common::state_dir("koyomi")) } else { Saved::load(None) };
     let viewport = egui::ViewportBuilder::default()
         .with_title("koyomi")
         .with_inner_size([1280.0, 800.0])
@@ -431,5 +555,33 @@ fn main() -> eframe::Result {
     // The bar is the app's own (the Mac keeps its traffic lights over it).
     let viewport = ito_titlebar::frameless(viewport);
     let options = eframe::NativeOptions { viewport: saved.viewport(viewport), ..Default::default() };
-    eframe::run_native("koyomi", options, Box::new(move |cc| Ok(Box::new(App::new(cc, &saved)))))
+    eframe::run_native(
+        "koyomi",
+        options,
+        Box::new(move |cc| {
+            let script = script.map(|steps| {
+                let mut r = Runner::new(steps, done);
+                r.watch(cc.egui_ctx.clone());
+                r
+            });
+            Ok(Box::new(App::new(cc, &saved, script)))
+        }),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_keys_argument_is_a_script_and_anything_after_it_is_refused() {
+        let a = |v: &[&str]| keys_arg(&v.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+        assert!(matches!(a(&[]), Ok(None)));
+        assert!(matches!(a(&["--version"]), Ok(None)));
+        assert_eq!(a(&["--keys", "j<Enter><Shot:cpu>"]).unwrap().unwrap().len(), 3);
+        assert!(matches!(a(&["--keys", "-x"]), Ok(Some(_))));
+        assert_eq!(a(&["--keys"]).unwrap_err(), "--keys needs a script");
+        assert!(a(&["--keys", "<Nope>"]).unwrap_err().starts_with("--keys:"));
+        assert_eq!(a(&["--keys", "j", "--more"]).unwrap_err(), "unknown argument `--more`");
+    }
 }
