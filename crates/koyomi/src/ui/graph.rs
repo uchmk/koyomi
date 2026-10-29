@@ -130,6 +130,7 @@ mod tests {
             after: after.iter().map(|s| s.to_string()).collect(),
             pos: None,
             timeout: None,
+            retry: None,
         };
         let net =
             Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])], when: Vec::new() };

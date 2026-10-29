@@ -56,6 +56,19 @@ pub struct Job {
     /// Seconds the job may run before it is stopped, from `timeout = "30m"`.
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// Run it again after an abnormal end, from `retry = { count = 2, wait = "5m" }`.
+    #[serde(default)]
+    pub retry: Option<Retry>,
+}
+
+/// How often a job is run again after it ends abnormally, and how long to
+/// wait before each time. A 打ち切り or 強制終了 is never run again.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Retry {
+    /// Times it is run again, at most.
+    pub count: u32,
+    /// Seconds between the abnormal end and the next time.
+    pub wait: u64,
 }
 
 type Field = Option<Spanned<toml::Value>>;
@@ -209,6 +222,58 @@ impl Checker<'_> {
                 self.add(f.span().start, format!("timeout {e}"));
                 None
             }
+        }
+    }
+
+    /// `retry = { count = 2, wait = "5m" }`: both are required.
+    fn retry(&mut self, field: &Field) -> Option<Retry> {
+        const SHAPE: &str = "retry は { count = 2, wait = \"5m\" } の形で書く";
+        let f = field.as_ref()?;
+        let at = f.span().start;
+        let toml::Value::Table(t) = f.get_ref() else {
+            self.add(at, SHAPE);
+            return None;
+        };
+        let mut ok = true;
+        for k in t.keys() {
+            if k != "count" && k != "wait" {
+                self.add(at, format!("retry に知らない欄 {k}"));
+                ok = false;
+            }
+        }
+        let count = match t.get("count") {
+            None => {
+                self.add(at, format!("retry に count が無い（{SHAPE}）"));
+                None
+            }
+            Some(v) => match v.as_integer() {
+                Some(n) if (1..=100).contains(&n) => Some(n as u32),
+                _ => {
+                    self.add(at, "retry の count は 1 から 100 の整数で書く");
+                    None
+                }
+            },
+        };
+        let wait = match t.get("wait") {
+            None => {
+                self.add(at, format!("retry に wait が無い（{SHAPE}）"));
+                None
+            }
+            Some(v) => match v
+                .as_str()
+                .ok_or_else(|| " は \"5m\" のように文字列で書く".to_owned())
+                .and_then(|s| crate::duration::parse(s).map_err(|e| format!(" {e}")))
+            {
+                Ok(secs) => Some(secs),
+                Err(e) => {
+                    self.add(at, format!("retry の wait{e}"));
+                    None
+                }
+            },
+        };
+        match (count, wait) {
+            (Some(count), Some(wait)) if ok => Some(Retry { count, wait }),
+            _ => None,
         }
     }
 
@@ -534,15 +599,9 @@ impl Checker<'_> {
         for entry in raw {
             let start = entry.span().start;
             let j = entry.get_ref();
-            for (field, name) in [
-                (&j.kind, "kind"),
-                (&j.use_, "use"),
-                (&j.to, "to"),
-                (&j.shell, "shell"),
-                (&j.script, "script"),
-                (&j.retry, "retry"),
-                (&j.judge, "judge"),
-            ] {
+            for (field, name) in
+                [(&j.kind, "kind"), (&j.use_, "use"), (&j.to, "to"), (&j.shell, "shell"), (&j.script, "script"), (&j.judge, "judge")]
+            {
                 self.not_yet(field, name);
             }
             let id = match &j.id {
@@ -569,7 +628,8 @@ impl Checker<'_> {
             let name = self.string(&j.name, "name");
             let pos = self.pos(&j.pos);
             let timeout = self.timeout(&j.timeout);
-            jobs.push(Job { id, name, run, dir, after, pos, timeout });
+            let retry = self.retry(&j.retry);
+            jobs.push(Job { id, name, run, dir, after, pos, timeout, retry });
         }
         for (job, entry) in jobs.iter().zip(raw) {
             let at = entry.get_ref().after.as_ref().map_or(entry.span().start, |f| f.span().start);
@@ -797,16 +857,32 @@ timeout = \"30\"
     }
 
     #[test]
+    fn a_retry_reads_its_count_and_wait_and_needs_both() {
+        let job = |retry: &str| format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{retry}\n");
+        let net = parse(&job("retry = { count = 2, wait = \"5m\" }")).unwrap();
+        assert_eq!(net.jobs[0].retry, Some(Retry { count: 2, wait: 300 }));
+        assert_eq!(parse(&job("")).unwrap().jobs[0].retry, None);
+        let at = "a.toml の 5 行目: ";
+        assert_eq!(problems(&job("retry = 2")), [format!("{at}retry は {{ count = 2, wait = \"5m\" }} の形で書く")]);
+        assert_eq!(
+            problems(&job("retry = { count = 2 }")),
+            [format!("{at}retry に wait が無い（retry は {{ count = 2, wait = \"5m\" }} の形で書く）")]
+        );
+        assert_eq!(
+            problems(&job("retry = { wait = \"5m\" }")),
+            [format!("{at}retry に count が無い（retry は {{ count = 2, wait = \"5m\" }} の形で書く）")]
+        );
+        assert_eq!(problems(&job("retry = { count = 0, wait = \"5m\" }")), [format!("{at}retry の count は 1 から 100 の整数で書く")]);
+        assert_eq!(problems(&job("retry = { count = 2, wait = 300 }")), [format!("{at}retry の wait は \"5m\" のように文字列で書く")]);
+        assert_eq!(problems(&job("retry = { count = 2, wait = \"0s\" }")), [format!("{at}retry の wait 0s: 0 より長くする")]);
+        assert_eq!(problems(&job("retry = { count = 2, wait = \"5m\", max = 1 }")), [format!("{at}retry に知らない欄 max")]);
+    }
+
+    #[test]
     fn fields_that_do_not_run_yet_are_refused_not_ignored() {
-        for f in [
-            "retry = { count = 2, wait = \"5m\" }",
-            "judge = { warn = \"1\" }",
-            "kind = \"notify\"",
-            "shell = \"powershell\"",
-            "script = \"x\"",
-            "use = \"a/b\"",
-            "to = \"c\"",
-        ] {
+        for f in
+            ["judge = { warn = \"1\" }", "kind = \"notify\"", "shell = \"powershell\"", "script = \"x\"", "use = \"a/b\"", "to = \"c\""]
+        {
             let text = format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{f}\n");
             let name = f.split(' ').next().unwrap();
             assert_eq!(problems(&text), [format!("a.toml の 5 行目: この版ではまだ使えない: {name}")], "{f}");

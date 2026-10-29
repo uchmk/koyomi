@@ -39,6 +39,9 @@ pub enum Event {
         state: State,
         exit: Option<i32>,
         reason: String,
+        /// How many times the engine ran it again.
+        #[serde(default)]
+        retried: u32,
     },
     /// The end, with every job's last state (the ones that never ran have theirs only here).
     RunEnd {
@@ -138,6 +141,7 @@ pub fn job_end(run: &Run, job: &JobRun) -> Event {
         state: job.state,
         exit: job.exit,
         reason: job.reason.clone(),
+        retried: job.retried,
     }
 }
 
@@ -166,6 +170,8 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         dir: None,
                         after: b.after.clone(),
                         timeout: None,
+                        retry: None,
+                        retried: 0,
                         state: State::NotRun,
                         started: None,
                         ended: None,
@@ -183,7 +189,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     r.start(job, *at);
                 }
             }
-            Event::JobEnd { at, run, job, state, exit, reason } => {
+            Event::JobEnd { at, run, job, state, exit, reason, retried } => {
                 if let Some(r) = runs.iter_mut().find(|r| &r.id == run) {
                     if let Some(j) = r.jobs.iter_mut().find(|j| &j.id == job) {
                         if j.started.is_none() {
@@ -193,6 +199,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         j.state = *state;
                         j.exit = *exit;
                         j.reason = reason.clone();
+                        j.retried = *retried;
                     }
                     // Re-derive what follows (未実行 after an error, the waits).
                     r.resettle(*at);
@@ -238,6 +245,7 @@ mod tests {
             after: after.iter().map(|s| s.to_string()).collect(),
             pos: None,
             timeout: None,
+            retry: None,
         }
     }
 

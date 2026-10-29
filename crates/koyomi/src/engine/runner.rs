@@ -9,6 +9,11 @@
 //! the timer a `timeout` starts. `ito_proc` then kills the whole process tree.
 //! Which of the two asked first is kept beside the flag, so the job ends as
 //! 強制終了 or 打ち切り and never as the other.
+//!
+//! A job with `retry` that ends abnormally (an exit code other than 0, or a
+//! start that failed) is run again on the same thread after `wait`, up to
+//! `count` times, into the same log; each time has its own `timeout`. A
+//! 打ち切り or 強制終了 ends it, and a kill during the wait does too.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -21,6 +26,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
+use koyomi_core::jobnet::Retry;
 use koyomi_core::run::{How, Outcome, Run, State};
 use koyomi_core::scan::Def;
 
@@ -33,6 +39,8 @@ struct Done {
     job: String,
     outcome: Outcome,
     reason: String,
+    /// How many times the job was run again before this end.
+    retried: u32,
 }
 
 /// Nobody asked the job to stop yet.
@@ -247,6 +255,7 @@ impl Runner {
             self.active.retain(|a| !(a.run == done.run && a.job == done.job));
             let now = Local::now().naive_local();
             let Some(r) = self.runs.iter_mut().find(|r| r.id == done.run) else { continue };
+            r.retried(&done.job, done.retried);
             if done.reason.is_empty() {
                 r.finish(&done.job, done.outcome, now);
             } else {
@@ -300,6 +309,7 @@ impl Runner {
                 command: j.run.clone(),
                 dir: j.dir.clone(),
                 timeout: j.timeout,
+                retry: j.retry,
                 log,
                 cap: self.config.log_max_bytes(),
             };
@@ -339,17 +349,19 @@ struct JobSpec {
     dir: Option<String>,
     /// Seconds before the timer asks the job to stop.
     timeout: Option<u64>,
+    retry: Option<Retry>,
     log: PathBuf,
     cap: u64,
 }
 
-/// Raises `stop` for 打ち切り when `secs` pass before `stop` is raised by anyone.
-fn timer(secs: u64, stop: Arc<AtomicBool>, why: Arc<AtomicU8>) -> std::thread::JoinHandle<()> {
+/// Raises `stop` for 打ち切り when `secs` pass before `stop` is raised by
+/// anyone or `over` says the process ended.
+fn timer(secs: u64, stop: Arc<AtomicBool>, why: Arc<AtomicU8>, over: Arc<AtomicBool>) -> std::thread::JoinHandle<()> {
     let deadline = Instant::now() + Duration::from_secs(secs);
     std::thread::Builder::new()
         .name("koyomi-timer".into())
         .spawn(move || {
-            while !stop.load(Ordering::SeqCst) {
+            while !stop.load(Ordering::SeqCst) && !over.load(Ordering::SeqCst) {
                 let now = Instant::now();
                 if now >= deadline {
                     ask_stop(&why, &stop, WHY_TIMEOUT);
@@ -361,45 +373,89 @@ fn timer(secs: u64, stop: Arc<AtomicBool>, why: Arc<AtomicU8>) -> std::thread::J
         .expect("spawn the timeout timer")
 }
 
-/// Runs one job to its end on this thread, writing its lines to the log.
+/// What the log has taken so far, against the cap.
+struct LogSize {
+    written: u64,
+    capped: bool,
+}
+
+/// Runs one job to its end on this thread, writing its lines to the log:
+/// once, or again after each abnormal end while its `retry` allows.
 fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
-    let done = |outcome, reason: String| Done { run: job.run.clone(), job: job.id.clone(), outcome, reason };
+    let done = |outcome, reason: String, retried: u32| Done { run: job.run.clone(), job: job.id.clone(), outcome, reason, retried };
     let Some((exe, args)) = job.command.split_first() else {
-        return done(Outcome::Failed, "run が空".to_owned());
+        return done(Outcome::Failed, "run が空".to_owned(), 0);
     };
     if let Some(dir) = job.log.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut file = match std::fs::File::create(&job.log) {
         Ok(f) => f,
-        Err(e) => return done(Outcome::Failed, format!("ログを作れない: {}: {e}", job.log.display())),
+        Err(e) => return done(Outcome::Failed, format!("ログを作れない: {}: {e}", job.log.display()), 0),
     };
+    let mut size = LogSize { written: 0, capped: false };
+    let (count, wait) = job.retry.map_or((0, 0), |r| (r.count, r.wait));
+    let mut retried = 0;
+    loop {
+        let (outcome, reason) = attempt(job, exe, args, stop, why, &mut file, &mut size);
+        let abnormal = matches!(outcome, Outcome::Exited(code) if code != 0) || outcome == Outcome::Failed;
+        if !abnormal || retried >= count {
+            return done(outcome, reason, retried);
+        }
+        let _ = writeln!(file, "! やり直し ({}/{count}): {} 待つ", retried + 1, koyomi_core::duration::text(wait));
+        // The wait, unless a person stops the job during it.
+        let until = Instant::now() + Duration::from_secs(wait);
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                let _ = writeln!(file, "! 強制終了");
+                return done(Outcome::Killed, String::new(), retried);
+            }
+            let now = Instant::now();
+            if now >= until {
+                break;
+            }
+            std::thread::sleep((until - now).min(Duration::from_millis(100)));
+        }
+        retried += 1;
+    }
+}
+
+/// Runs the job's process once, to its end.
+fn attempt(
+    job: &JobSpec,
+    exe: &str,
+    args: &[String],
+    stop: &Arc<AtomicBool>,
+    why: &Arc<AtomicU8>,
+    file: &mut std::fs::File,
+    size: &mut LogSize,
+) -> (Outcome, String) {
     let mut cmd = std::process::Command::new(exe);
     cmd.args(args);
     if let Some(dir) = &job.dir {
         cmd.current_dir(dir);
     }
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
-    let (mut written, mut capped) = (0u64, false);
     let mut on_line = |stream: ito_proc::Stream, line: &str| {
-        if capped {
+        if size.capped {
             return false;
         }
         let prefix = if stream == ito_proc::Stream::Err { "! " } else { "" };
         let text = format!("{prefix}{line}\n");
-        written += text.len() as u64;
-        if written > job.cap {
-            capped = true;
+        size.written += text.len() as u64;
+        if size.written > job.cap {
+            size.capped = true;
             let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", job.cap / (1024 * 1024));
         } else {
             let _ = file.write_all(text.as_bytes());
         }
         false
     };
-    let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone()));
+    let over = Arc::new(AtomicBool::new(false));
+    let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone(), over.clone()));
     let result = ito_proc::run_lines(cmd, stop, &mut on_line);
-    // The job is over either way: let the timer go, and say in the log who stopped the job.
-    stop.store(true, Ordering::SeqCst);
+    // The process is over either way: let the timer go, and say in the log who stopped the job.
+    over.store(true, Ordering::SeqCst);
     if let Some(t) = timer {
         let _ = t.join();
     }
@@ -408,19 +464,19 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
             if why.load(Ordering::SeqCst) == WHY_TIMEOUT {
                 let text = koyomi_core::duration::text(job.timeout.unwrap_or(0));
                 let _ = writeln!(file, "! 打ち切り（{text} を超えた）");
-                done(Outcome::Timeout, String::new())
+                (Outcome::Timeout, String::new())
             } else {
                 let _ = writeln!(file, "! 強制終了");
-                done(Outcome::Killed, String::new())
+                (Outcome::Killed, String::new())
             }
         }
         Ok(lines) => {
             let code = lines.status.and_then(|s| s.code()).unwrap_or(-1);
-            done(Outcome::Exited(code), String::new())
+            (Outcome::Exited(code), String::new())
         }
         Err(e) => {
             let _ = writeln!(file, "! {exe}: {e}");
-            done(Outcome::Failed, format!("{exe} を起動できない: {e}"))
+            (Outcome::Failed, format!("{exe} を起動できない: {e}"))
         }
     }
 }
@@ -608,6 +664,79 @@ mod tests {
         let id = r.start(&def("quick", &text), Local::now().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A command that fails until `flag` exists, and makes it on the way.
+    fn fail_once(flag: &Path) -> String {
+        // Backslashes doubled for the TOML string.
+        let f = flag.display().to_string().replace('\\', "\\\\");
+        if cfg!(windows) {
+            // No quotes: cmd.exe does not read the `\"` the process start writes (the temp folder has no space).
+            format!("run = [\"cmd.exe\", \"/c\", \"if exist {f} (exit 0) else (echo x> {f} & exit 3)\"]")
+        } else {
+            format!("run = [\"sh\", \"-c\", \"if [ -e '{f}' ]; then exit 0; else touch '{f}'; exit 3; fi\"]")
+        }
+    }
+
+    #[test]
+    fn a_retry_runs_the_job_again_after_the_wait_and_counts_the_times() {
+        let dir = scratch("retry");
+        let flag = dir.join("flag");
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 2, wait = \"1s\" }}\n", fail_once(&flag));
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let started = Instant::now();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert!(started.elapsed() >= Duration::from_secs(1), "the wait was not waited");
+        assert_eq!(run.state, State::Ok, "{:?}", run.job("a"));
+        let a = run.job("a").unwrap();
+        assert_eq!(a.retried, 1);
+        assert_eq!(a.reason, "やり直し 1 回");
+        let log = r.log_tail(&id, "a").unwrap();
+        assert!(log.contains("! やり直し (1/2): 1s 待つ"), "{log}");
+        assert!(!log.contains("(2/2)"), "{log}");
+        // The count is in the history too.
+        r.flush();
+        let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
+        assert_eq!(day.runs()[0].job("a").unwrap().retried, 1);
+        // Still failing after every time: an error that says how many times.
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 2, wait = \"1s\" }}\n", fail_cmd());
+        let id = r.start(&def("always", &text), Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Error);
+        let a = run.job("a").unwrap();
+        assert_eq!(a.retried, 2);
+        assert_eq!(a.exit, Some(3));
+        assert_eq!(a.reason, "終了コード 3、やり直し 2 回");
+        let log = r.log_tail(&id, "a").unwrap();
+        assert!(log.contains("(1/2)") && log.contains("(2/2)"), "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_kill_during_the_wait_ends_the_job_as_killed() {
+        let dir = scratch("retry-kill");
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 1, wait = \"30s\" }}\n", fail_cmd());
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        // Until the process has failed and the wait begun.
+        let until = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < until && !r.log_tail(&id, "a").map(|l| l.contains("やり直し")).unwrap_or(false) {
+            r.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let asked = Instant::now();
+        r.kill(&id, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert!(asked.elapsed() < Duration::from_secs(5), "the wait did not end at the kill");
+        let a = run.job("a").unwrap();
+        assert_eq!(a.state, State::Killed);
+        assert_eq!(a.retried, 0);
+        assert_eq!(a.reason, "強制終了");
+        assert!(r.log_tail(&id, "a").unwrap().ends_with("! 強制終了\n"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

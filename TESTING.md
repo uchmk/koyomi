@@ -228,3 +228,14 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 18.7 | Write `keep_days = 45` by hand with a comment above `[notify]`, open the page, pick 60 | The row showed "45 days" among the choices; only `keep_days` changed; the comment, `[notify]` and the line order stay |
 | 18.8 | Put `logs/notes/` and `logs/2026-01-05-old/` in the state folder and shorten the days | Neither is counted nor removed: only names that are a day (`2026-01-05`, `2026/01/05.toml`) are swept |
 | 18.9 | Search the settings for `keep_days`, `concurrency`, `log_max_mb` or `koyomi.toml` | The results show the General page |
+
+## 19. Retry
+
+| # | Do | Expect |
+|---|---|---|
+| 19.1 | Write a job with `retry = { count = 2, wait = "5s" }` and run `koyomi check`, then `koyomi approve` | check says OK; the approve text shows `やり直し: 2 回まで、5s おいて` under the job |
+| 19.2 | Make that job `cmd.exe /c exit 3` and run it | The log shows `! やり直し (1/2): 5s 待つ`, then `! やり直し (2/2): 5s 待つ`; the job turns 異常 after about 10 s with the reason `終了コード 3、やり直し 2 回`; the run screen and the history show the same reason |
+| 19.3 | Make the job fail once and succeed the second time (a flag file) | The run ends 正常; the job's reason is `やり直し 1 回`; the log has `(1/2)` and no `(2/2)` |
+| 19.4 | Give the job `timeout = "2s"` and a command that sleeps 10 s | 打ち切り after 2 s, no やり直し line: a timeout is not run again; the same for `koyomi kill` during the job (強制終了) |
+| 19.5 | With `wait = "60s"`, run `koyomi kill` while the log says やり直し | The job ends 強制終了 at once (not after the wait); the log ends with `! 強制終了` |
+| 19.6 | Write `retry = 2`, `retry = { count = 0, wait = "5m" }`, `retry = { count = 2 }` or `retry = { count = 2, wait = 300 }` | `koyomi check` refuses each with the line number and what to write (the shape, 1 to 100, wait missing, a string like "5m") |

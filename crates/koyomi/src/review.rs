@@ -64,6 +64,10 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         if let Some(secs) = j.timeout {
             out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
         }
+        if let Some(r) = j.retry {
+            let text = t.trf("review.retry_text", &[&r.count.to_string(), &koyomi_core::duration::text(r.wait)]);
+            out.push(format!("  {}: {text}", t.tr("review.retry")));
+        }
     }
     out
 }
@@ -180,6 +184,9 @@ mod tests {
         assert!(b.iter().any(|l| l.ends_with("打ち切り: 30m")), "{b:?}");
         let d = def(&NET.replace("timeout = \"30m\"\n", ""), &Store::default());
         assert!(!body(&table(), &d).iter().any(|l| l.contains("打ち切り")));
+        assert!(!body(&table(), &d).iter().any(|l| l.contains("やり直し")));
+        let d = def(&format!("{NET}retry = {{ count = 2, wait = \"5m\" }}\n"), &Store::default());
+        assert!(body(&table(), &d).iter().any(|l| l.ends_with("やり直し: 2 回まで、5m おいて")), "{:?}", body(&table(), &d));
     }
 
     /// a re-approval shows what changed since the approved text.

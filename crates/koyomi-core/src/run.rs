@@ -12,7 +12,7 @@ use std::collections::BTreeMap;
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::jobnet::{Job, Jobnet};
+use crate::jobnet::{Job, Jobnet, Retry};
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -178,6 +178,12 @@ pub struct JobRun {
     /// Seconds it may run before the engine stops it.
     #[serde(default)]
     pub timeout: Option<u64>,
+    /// How the engine runs it again after an abnormal end.
+    #[serde(default)]
+    pub retry: Option<Retry>,
+    /// How many times the engine ran it again.
+    #[serde(default)]
+    pub retried: u32,
     pub state: State,
     pub started: Option<NaiveDateTime>,
     /// When it ended, or when it became certain that it will not run.
@@ -197,6 +203,8 @@ impl JobRun {
             dir: job.dir.clone(),
             after: job.after.clone(),
             timeout: job.timeout,
+            retry: job.retry,
+            retried: 0,
             state: State::NotRun,
             started: None,
             ended: None,
@@ -357,7 +365,15 @@ impl Run {
         }
     }
 
-    /// Marks `id` ended, and everything that follows from it.
+    /// Says the engine ran `id` again `times` times, before it is finished.
+    pub fn retried(&mut self, id: &str, times: u32) {
+        if let Some(i) = self.index(id) {
+            self.jobs[i].retried = times;
+        }
+    }
+
+    /// Marks `id` ended, and everything that follows from it. The reason says
+    /// how many times the job was run again, when it was.
     pub fn finish(&mut self, id: &str, outcome: Outcome, now: NaiveDateTime) {
         if let Some(i) = self.index(id) {
             let j = &mut self.jobs[i];
@@ -395,6 +411,10 @@ impl Run {
                     State::Error
                 }
             };
+            if j.retried > 0 {
+                let note = format!("やり直し {} 回", j.retried);
+                j.reason = if j.reason.is_empty() { note } else { format!("{}、{note}", j.reason) };
+            }
         }
         self.settle(now);
     }
@@ -557,6 +577,7 @@ mod tests {
             after: after.iter().map(|s| s.to_string()).collect(),
             pos: None,
             timeout: None,
+            retry: None,
         }
     }
 
@@ -610,6 +631,26 @@ mod tests {
         r.finish("c", Outcome::Exited(0), at("2026-10-30 09:00:05"));
         assert_eq!(r.state, State::Error);
         assert!(r.is_over());
+    }
+
+    #[test]
+    fn the_times_a_job_was_run_again_are_in_its_reason() {
+        let mut r = diamond();
+        r.start("a", at("2026-10-30 09:00:01"));
+        r.retried("a", 2);
+        r.finish("a", Outcome::Exited(3), at("2026-10-30 09:00:02"));
+        assert_eq!(r.job("a").unwrap().state, State::Error);
+        assert_eq!(r.job("a").unwrap().reason, "終了コード 3、やり直し 2 回");
+        let mut r = diamond();
+        r.start("a", at("2026-10-30 09:00:01"));
+        r.retried("a", 1);
+        r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
+        assert_eq!(r.job("a").unwrap().state, State::Ok);
+        assert_eq!(r.job("a").unwrap().reason, "やり直し 1 回");
+        let mut r = diamond();
+        r.start("a", at("2026-10-30 09:00:01"));
+        r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
+        assert_eq!(r.job("a").unwrap().reason, "");
     }
 
     #[test]
