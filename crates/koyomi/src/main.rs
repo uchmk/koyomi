@@ -2,8 +2,10 @@
 //!
 //! What is wired here: the window (its place kept, its own title bar with the
 //! bell and the notice list), common.toml's theme, language and scale,
-//! `--version` / `--help`, F12 (the bug report), and `--keys` (a script
-//! that drives the window for a test lane).
+//! `--version` / `--help`, F12 (the bug report), `--keys` (a script that
+//! drives the window for a test lane), and keymap.toml (Ctrl+Q quits; the
+//! keys of the settings and the help are bound, and say so until those are
+//! wired).
 //! What the uchmk apps also have and is still to wire is in TODO.md, each
 //! item with the ito crate and an app that already does it.
 
@@ -15,6 +17,7 @@ mod engine;
 mod envreport;
 mod i18n;
 mod icon;
+mod keymap;
 mod notify;
 mod proto;
 mod review;
@@ -24,6 +27,8 @@ mod ui;
 use std::path::PathBuf;
 
 use ito_common::window::{Saved, Tracker};
+use ito_keymap::Match;
+use ito_keys::Key;
 use ito_keyscript::{Do, Runner, Step};
 
 /// The window's icon, in pixels square.
@@ -62,6 +67,12 @@ struct App {
     /// The `--keys` script while it plays, and what its steps ask the frame to do.
     script: Option<Runner>,
     todo: Vec<Do>,
+    /// The keys in force (defaults/keymap.toml under the person's own), the
+    /// chord typed so far, and what the person's file got wrong (under the
+    /// bell, once).
+    keys: keymap::Keys,
+    key_pending: Vec<Key>,
+    key_notes: Vec<String>,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -95,7 +106,9 @@ impl App {
         let lang = i18n::resolve(common.language.as_deref());
         let (table, errors) = i18n::table(&lang);
         warnings.extend(errors);
-        for w in warnings {
+        let own = base.as_deref().map(|b| ito_common::app_dir_in(b, "koyomi").join(keymap::FILE));
+        let (keys, key_notes) = load_keys(own.as_deref());
+        for w in warnings.iter().chain(&key_notes) {
             eprintln!("koyomi: {w}");
         }
         let themes = ito_theme::builtin();
@@ -125,6 +138,63 @@ impl App {
             font: Some(font_reader(&cc.egui_ctx)),
             script,
             todo: Vec::new(),
+            keys,
+            key_pending: Vec::new(),
+            key_notes,
+        }
+    }
+
+    /// The keys of the frame that the keymap may run: after the fixed ones
+    /// (F12, the palette, the scale) took theirs, and not while the palette
+    /// is open. A bare character goes to the widget that has the focus.
+    fn read_keys(&mut self, ctx: &egui::Context) {
+        if self.palette.is_some() {
+            return;
+        }
+        let typing = ctx.memory(|m| m.focused().is_some());
+        let events = ctx.input(|i| i.events.clone());
+        for e in events {
+            let k = match e {
+                egui::Event::Key { key, pressed: true, modifiers, .. } => ito_keys::from_egui(key, &modifiers),
+                egui::Event::Text(t) if !typing => t.chars().next().map(Key::char),
+                _ => None,
+            };
+            if let Some(k) = k {
+                self.press(ctx, k);
+            }
+        }
+    }
+
+    /// One key of a chord: run what it completes, wait for more, or drop
+    /// what led nowhere (and try the key alone).
+    fn press(&mut self, ctx: &egui::Context, k: Key) {
+        self.key_pending.push(k);
+        let run = match self.keys.resolve(&self.key_pending) {
+            Match::Exact(b) => b.run.clone(),
+            Match::Pending(_) => return,
+            Match::None => {
+                let chord = self.key_pending.len() > 1;
+                self.key_pending.clear();
+                if chord {
+                    self.press(ctx, k);
+                }
+                return;
+            }
+        };
+        self.key_pending.clear();
+        for c in run {
+            self.run_key(ctx, c);
+        }
+    }
+
+    /// What a bound key does. The settings and the help are not wired yet:
+    /// the status bar says so, rather than nothing happening.
+    fn run_key(&mut self, ctx: &egui::Context, c: keymap::Cmd) {
+        match c {
+            keymap::Cmd::Run("quit") => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            keymap::Cmd::Run("settings") => self.scale_note = Some(self.table.trf("notices.not_yet", &[self.table.tr("keys.settings")])),
+            keymap::Cmd::Run("help") => self.scale_note = Some(self.table.trf("notices.not_yet", &[self.table.tr("keys.help")])),
+            keymap::Cmd::Run(_) | keymap::Cmd::None => {}
         }
     }
 
@@ -321,7 +391,7 @@ impl App {
         vec![
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
             ito_palette::Entry::new(t.tr("palette.reset_scale"), "Ctrl+0", Command::ResetScale),
-            ito_palette::Entry::new(t.tr("palette.quit"), "", Command::Quit),
+            ito_palette::Entry::new(t.tr("palette.quit"), self.keys.label("quit"), Command::Quit),
         ]
     }
 
@@ -397,7 +467,7 @@ impl App {
             let (_, title, body) = notify::missed_words(&self.table, &runs);
             add.push((ito_notices::Kind::Warn, title, Some(body), Some(runs[0].id.clone())));
         }
-        for n in self.browser.take_notes() {
+        for n in self.browser.take_notes().into_iter().chain(std::mem::take(&mut self.key_notes)) {
             add.push((ito_notices::Kind::Warn, n, None, None));
         }
         for (kind, title, note, go) in add {
@@ -443,6 +513,7 @@ impl eframe::App for App {
         self.take_notices();
         self.notice_list(&ctx);
         self.command_palette(&ctx);
+        self.read_keys(&ctx);
         self.take_font(&ctx);
         self.browser.show(ui, &self.table);
         self.script(&ctx);
@@ -476,6 +547,24 @@ impl eframe::App for App {
         let Some(done) = script.done.clone() else { return };
         self.write_state(done, &ito_keyscript::closed_report(left));
     }
+}
+
+/// The keys: the person's keymap.toml at `own` (none is fine) over the
+/// defaults. What the file got wrong comes back as the lines to show.
+fn load_keys(own: Option<&std::path::Path>) -> (keymap::Keys, Vec<String>) {
+    let mut notes = Vec::new();
+    let text = own.and_then(|p| match std::fs::read_to_string(p) {
+        Ok(t) => Some(t),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
+        Err(e) => {
+            notes.push(format!("{}: {e}", p.display()));
+            None
+        }
+    });
+    let path = own.map(|p| p.display().to_string()).unwrap_or_default();
+    let (keys, warnings) = keymap::Keys::load(text.as_deref().map(|t| (path.as_str(), t)));
+    notes.extend(warnings);
+    (keys, notes)
 }
 
 /// `--keys SCRIPT` as its steps; `None` when the arguments are not that.

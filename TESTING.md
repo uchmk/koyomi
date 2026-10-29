@@ -148,15 +148,13 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 13.7 | `koyomi --keys "<Theme:light><Lang:en><Wait:500><Shot:en>"` | The picture is light and in English; `common.toml` is unchanged afterwards |
 | 13.8 | `koyomi --keys "<Wait:1500><Click:500,500><State:c>"` with a net in the tree at that point | `c.txt` says `selected: <group/name>` |
 
-## 13. `--keys`
+## 14. Keys (`keymap.toml`)
 
 | # | Do | Expect |
 |---|---|---|
-| 13.1 | `set KOYOMI_KEYS_DONE=<dir>\done.txt` then `koyomi --keys "<Wait:1500><Shot:start>"` | `start.png` is written beside the done file; the done file ends with `keys: done` |
-| 13.2 | `koyomi --keys "<Wait:1500><State:s><Quit>"` | `s.txt` holds `engine: up`, `nets: N`, `runs: N`, `selected: -`, `asking: -`, `flow: horizontal`; the window closes by itself; the done file has `quit: yes` then `keys: done` |
-| 13.3 | `koyomi --keys "<Wait:30000>"` and close the window with × while it waits | The done file says `keys: closed` and `left: 1 not pressed` |
-| 13.4 | `koyomi --keys "<Nope>"` | Exit code 2, the message starts `koyomi: --keys:`, and the done file says `keys: refused` |
-| 13.5 | `koyomi --keys` (no script) or `koyomi --keys j --more` | Exit code 2 and the usage; nothing opens |
-| 13.6 | Move the window under `--keys "<Wait:30000>"`, close it, then start `koyomi` without `--keys` | The window comes back where it was before the scripted run: a script keeps no place and writes no `state.toml` |
-| 13.7 | `koyomi --keys "<Theme:light><Lang:en><Wait:500><Shot:en>"` | The picture is light and in English; `common.toml` is unchanged afterwards |
-| 13.8 | `koyomi --keys "<Wait:1500><Click:500,500><State:c>"` with a net in the tree at that point | `c.txt` says `selected: <group/name>` |
+| 14.1 | Press Ctrl+Q with the tree focused | The window closes (the engine keeps running) |
+| 14.2 | Press Ctrl+, and then F1 | The status bar says the settings, then the help, are not wired yet; nothing else changes |
+| 14.3 | Open the palette (Ctrl+Shift+P) | "Quit" shows `Ctrl+Q` as its key |
+| 14.4 | Write `<uchmk>\koyomi\keymap.toml` with `[[app.keymap]]` `on = "<C-q>"` `run = "none"` and another binding `on = "<C-w>"` `run = "quit"`, restart | Ctrl+Q does nothing; Ctrl+W quits; the palette shows `Ctrl+W` |
+| 14.5 | Add a line with `run = "explode"` and one with `on = "<F12>"`, restart | The bell lists two warnings naming the file: `explode` is no action, F12 is fixed; the other keys still work |
+| 14.6 | Type Ctrl+Q while the search box of the palette has the focus | The palette takes the key (nothing quits); Esc, then Ctrl+Q quits |

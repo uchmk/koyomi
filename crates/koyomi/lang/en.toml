@@ -10,7 +10,17 @@ maximize = "Maximize"
 restore = "Restore"
 close = "Close"
 
+[keys]
+settings = "The settings"
+help = "The help"
+
+[keydesc]
+"Open the settings" = "Open the settings"
+"Show the key help" = "Show the key help"
+"Quit" = "Quit"
+
 [notices]
+not_yet = "{0}: not wired yet"
 title = "Notices ({0} unread)"
 mark_read = "Mark all read"
 empty = "No notices"
@@ -24,7 +34,8 @@ wait = "waiting"
 [palette]
 hint = "Type a command"
 none = "No command matches"
-report_reset_scale = "Reset the scale"
+report_bug = "Report a bug"
+reset_scale = "Reset the scale"
 quit = "Quit"
 
 [standing]

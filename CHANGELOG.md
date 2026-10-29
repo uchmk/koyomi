@@ -6,6 +6,8 @@
 
 ### 追加
 
+- `keymap.toml`（`ito-keymap`）: 既定のキーは `<C-q>` 終了・`<C-,>` 設定・`<F1>` ヘルプ。`<uchmk>\koyomi\keymap.toml` で変えられる（`run = "none"` で外す）。
+  ファイルの間違いはベルに出す。設定とヘルプはまだ配線されていないので、押すとステータス バーに「まだ使えません」と出る。パレットの「終了」にキーを添えた。
 - `--keys` の台本（`ito-keyscript`）: `koyomi --keys "<Wait:1500><Shot:start><State:s><Quit>"` で、人がいなくても窓を動かして絵と状態を残す。
   終わり方は `KOYOMI_KEYS_DONE` のファイルに（`keys: done` / `quit` / `closed` / `refused` / `panicked`）。台本の窓は場所も `state.toml` も残さない。
 - 定義を読んで確かめる: `jobnets/<グループ>/<名前>.toml` を読み、誤りは行番号つきで示す。確かめた定義は中身全体の hash で

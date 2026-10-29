@@ -58,6 +58,8 @@
 - [x] `--keys` の台本: `ito-keyscript`（`Runner`、`KOYOMI_KEYS_DONE`）。`<State:名前>` は `ui::Browser::report`（エンジン・件数・選んだもの）。
 - [ ] `keymap.toml` と設定の「キー」ページ: `ito-keys`・`ito-keymap`・`ito-prefs` の `keys_page`。既定のキーは `defaults/keymap.toml`
   （`<C-,>` 設定・`<F1>` ヘルプ・`<C-q>` 終了）。手本は minato の `keymap.rs`・`prefs.rs`。
+  - [x] `keymap.rs`（`Keys::load`・`resolve`・`label`）と `main.rs` の読み（`read_keys`・`press`・`run_key`）。利用者の `keymap.toml` は起動時に読み、間違いはベルに。
+  - [ ] 「キー」ページ（`keys_page`、`ito_keymap::edit` で書く、2 秒の見張り）は設定の画面と一緒に。
 - [ ] `?` と F1 のヘルプ: `ito-help`（`ito-keymap` の一覧を描く）。手本は michi の `app.rs`・`ui.rs`。
 - [ ] 通知と設定の「通知」ページ: `ito-notify`（システムの通知・音・webhook）と `ito-prefs` の `notify_page`。手本は minato の `app.rs`・`settings.rs`。
 - [ ] 設定の画面: `ito_prefs::show`（Language・CLOCK・Theme の共通のページ + キー）。手本は minato の `settings.rs`。
@@ -103,3 +105,5 @@
 
 - `<Theme:>`・`<Lang:>` の効き方（配線 `--keys`）: koyomi は common.toml の見張りをまだ持たないので、台本の切り替えはその窓のメモリーにだけ効かせ、common.toml は書かない（持ち主の設定を変えない）。設定の画面と見張りを配線したら michi と同じ「書いて見張りが効かせる」形に寄せてよい。
 - `<State:名前>` の中身（配線 `--keys`）: `engine:`（up / starting / waiting / down: 理由）、`nets:`、`warnings:`、`runs:`、`selected:`、`run:`、`job:`、`asking:`（approve <id> / kill <id> / -）、`flow:` の行。足りなければ足す。koyomi 固有の読み（`Dialect::reads`）はまだない。
+- 設定・ヘルプのキー（配線 keymap）: 設定の画面とヘルプが配線されるまで、`<C-,>`・`<F1>` はステータス バーに「まだ使えません」と出すだけ（黙って動かない）。配線したら差し替える。
+- パレットの `report_bug`・`reset_scale` の文言（配線 keymap）: `lang/*.toml` のキーが `report_reset_scale` 1 つに潰れていて、パレットにキー名がそのまま出ていた。`report_bug`・`reset_scale` の 2 つに直した。
