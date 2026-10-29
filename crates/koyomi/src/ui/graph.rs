@@ -132,8 +132,12 @@ mod tests {
             timeout: None,
             retry: None,
         };
-        let net =
-            Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])], when: Vec::new() };
+        let net = Jobnet {
+            name: None,
+            jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])],
+            when: Vec::new(),
+            ..Default::default()
+        };
         Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, chrono::Local::now().naive_local())
     }
 

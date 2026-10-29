@@ -239,3 +239,15 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 19.4 | Give the job `timeout = "2s"` and a command that sleeps 10 s | 打ち切り after 2 s, no やり直し line: a timeout is not run again; the same for `koyomi kill` during the job (強制終了) |
 | 19.5 | With `wait = "60s"`, run `koyomi kill` while the log says やり直し | The job ends 強制終了 at once (not after the wait); the log ends with `! 強制終了` |
 | 19.6 | Write `retry = 2`, `retry = { count = 0, wait = "5m" }`, `retry = { count = 2 }` or `retry = { count = 2, wait = 300 }` | `koyomi check` refuses each with the line number and what to write (the shape, 1 to 100, wait missing, a string like "5m") |
+
+## 20. A passed time run once, a time that waits (`missed`, `overlap`)
+
+| # | Do | Expect |
+|---|---|---|
+| 20.1 | Write `missed = "once"` at the top of a net with `at = ["02:00"]`, approve it, stop the engine, set the clock past 02:00 (or wait), and start the engine | The run starts at once with 遅れて実行（2:00 の予定を 8:12 に流しました） as its reason on the run screen, in `koyomi status` and in the history; the notification title reads `正常（遅れて実行）  <title>`; the approve text says 時刻を過ぎた回: 起動したとき最後の 1 回を流す（遅れて実行） |
+| 20.2 | The same with two passed times (`at = ["02:00", "03:00"]`) | Only the 03:00 run starts late; 02:00 is 時刻を過ぎた with `2:00 に PC が止まっていました` |
+| 20.3 | The same net, but unconfirmed, or with a definition folder writable by others | Nothing starts late: the passed time is 止めた with the same reason an on-time one gets |
+| 20.4 | Write `overlap = "queue"` and `at = ["10:00", "10:01"]` with a job that sleeps 3 minutes | At 10:01 nothing starts; `koyomi engine status` shows `待ち: <title>  10:01 の回は前の回が終わってから流す（10:01 から待っている）`; when the 10:00 run ends, the 10:01 run starts (how 予定, planned 10:01, no 遅れて実行) |
+| 20.5 | `at = ["10:00", "10:01", "10:02"]` with the same job | 10:01 waits; 10:02 is スキップ with `前の回がまだ動いていました（その次の回が待っています）` |
+| 20.6 | Run `koyomi engine stop` while a time waits | The waiting time is recorded スキップ with `待っている間にエンジンが止まった`; nothing starts when the engine comes back |
+| 20.7 | Write `missed = "later"` or `overlap = 1` | `koyomi check` refuses with the line number: `missed は "skip"・"once" のどれか` / `overlap は "skip"・"queue" のどれか`; `missed = "skip"` and `overlap = "skip"` are accepted, as is leaving both out |

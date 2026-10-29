@@ -840,7 +840,7 @@ mod tests {
             timeout: None,
             retry: None,
         };
-        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new() };
+        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
         let now = chrono::Local::now().naive_local();
         let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
@@ -877,6 +877,7 @@ mod tests {
                 retry: None,
             }],
             when: Vec::new(),
+            ..Default::default()
         };
         let now = chrono::Local::now().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);

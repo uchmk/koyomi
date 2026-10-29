@@ -34,7 +34,7 @@ impl Problem {
 }
 
 /// A job net that reads.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Jobnet {
     /// `name`, when the file has one.
     pub name: Option<String>,
@@ -42,6 +42,34 @@ pub struct Jobnet {
     /// The times it starts on its own; none: by hand only.
     #[serde(default)]
     pub when: Vec<When>,
+    /// What to do with a time that passed while the PC or the engine was off.
+    #[serde(default)]
+    pub missed: Missed,
+    /// What to do with a time that comes while the net's last run is not over.
+    #[serde(default)]
+    pub overlap: Overlap,
+}
+
+/// `missed`: a time of the schedule that passed while nothing could start.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Missed {
+    /// Recorded as 時刻を過ぎた; nothing runs.
+    #[default]
+    Skip,
+    /// The last passed time runs once when the engine starts, marked 遅れて実行.
+    Once,
+}
+
+/// `overlap`: a time of the schedule that comes while the last run still goes.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Overlap {
+    /// Recorded as スキップ.
+    #[default]
+    Skip,
+    /// Runs after the last run ends; one time waits at most.
+    Queue,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -157,11 +185,11 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
         }
     };
     let mut c = Checker { text, problems: Vec::new() };
-    c.top(&raw);
+    let (missed, overlap) = c.top(&raw);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when })
+        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -193,6 +221,19 @@ impl Checker<'_> {
     fn not_yet(&mut self, field: &Field, name: &str) {
         if let Some(f) = field {
             self.add(f.span().start, format!("この版ではまだ使えない: {name}"));
+        }
+    }
+
+    /// A field that is one of `choices` when written: `missed = "once"`.
+    fn choice<'a>(&mut self, field: &Field, name: &str, choices: &[&'a str]) -> Option<&'a str> {
+        let f = field.as_ref()?;
+        match f.get_ref().as_str().and_then(|s| choices.iter().copied().find(|c| *c == s)) {
+            Some(c) => Some(c),
+            None => {
+                let list = choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join("・");
+                self.add(f.span().start, format!("{name} は {list} のどれか"));
+                None
+            }
         }
     }
 
@@ -277,7 +318,7 @@ impl Checker<'_> {
         }
     }
 
-    fn top(&mut self, raw: &RawNet) {
+    fn top(&mut self, raw: &RawNet) -> (Missed, Overlap) {
         match &raw.format {
             None => self.problems.push(Problem { line: 1, message: format!("format = {FORMAT} が要る") }),
             Some(f) if f.get_ref().as_integer() != Some(FORMAT) => {
@@ -287,13 +328,15 @@ impl Checker<'_> {
         }
         self.string(&raw.name, "name");
         self.not_yet(&raw.calendar, "calendar");
-        for (field, name) in [(&raw.missed, "missed"), (&raw.overlap, "overlap")] {
-            if let Some(f) = field {
-                if f.get_ref().as_str() != Some("skip") {
-                    self.add(f.span().start, format!("この版ではまだ使えない: {name} = {}", f.get_ref()));
-                }
-            }
-        }
+        let missed = match self.choice(&raw.missed, "missed", &["skip", "once"]) {
+            Some("once") => Missed::Once,
+            _ => Missed::Skip,
+        };
+        let overlap = match self.choice(&raw.overlap, "overlap", &["skip", "queue"]) {
+            Some("queue") => Overlap::Queue,
+            _ => Overlap::Skip,
+        };
+        (missed, overlap)
     }
 
     /// The `[[when]]` entries that read; a mistake in one drops that entry.
@@ -857,6 +900,14 @@ timeout = \"30\"
     }
 
     #[test]
+    fn missed_and_overlap_read_and_are_skip_when_not_written() {
+        let net = parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
+        assert_eq!((net.missed, net.overlap), (Missed::Skip, Overlap::Skip));
+        let net = parse("format = 1\nmissed = \"once\"\noverlap = \"queue\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
+        assert_eq!((net.missed, net.overlap), (Missed::Once, Overlap::Queue));
+    }
+
+    #[test]
     fn a_retry_reads_its_count_and_wait_and_needs_both() {
         let job = |retry: &str| format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{retry}\n");
         let net = parse(&job("retry = { count = 2, wait = \"5m\" }")).unwrap();
@@ -889,8 +940,8 @@ timeout = \"30\"
         }
         assert_eq!(problems("format = 1\ncalendar = \"会社\"\n"), ["a.toml の 2 行目: この版ではまだ使えない: calendar"]);
         assert!(problems("format = 1\nmissed = \"skip\"\noverlap = \"skip\"\n").is_empty());
-        assert_eq!(problems("format = 1\nmissed = \"once\"\n"), ["a.toml の 2 行目: この版ではまだ使えない: missed = \"once\""]);
-        assert_eq!(problems("format = 1\noverlap = \"queue\"\n"), ["a.toml の 2 行目: この版ではまだ使えない: overlap = \"queue\""]);
+        assert_eq!(problems("format = 1\nmissed = \"later\"\n"), ["a.toml の 2 行目: missed は \"skip\"・\"once\" のどれか"]);
+        assert_eq!(problems("format = 1\noverlap = 1\n"), ["a.toml の 2 行目: overlap は \"skip\"・\"queue\" のどれか"]);
         let line = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nafter = [{ job = \"b\", on = \"error\" }]\n";
         assert_eq!(problems(line), ["a.toml の 5 行目: この版ではまだ使えない: after の線の種類（{ job, on }）"]);
     }

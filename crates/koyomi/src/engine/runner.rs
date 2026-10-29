@@ -14,6 +14,11 @@
 //! start that failed) is run again on the same thread after `wait`, up to
 //! `count` times, into the same log; each time has its own `timeout`. A
 //! 打ち切り or 強制終了 ends it, and a kill during the wait does too.
+//!
+//! A time of the schedule that comes while the net's last run goes may wait
+//! for it (`overlap = "queue"`): the wait is kept here, not in the history,
+//! and the time starts in the `tick` that sees the run end. One time waits
+//! per net; the engine records the rest as スキップ when it stops.
 
 use std::collections::BTreeMap;
 use std::io::Write;
@@ -64,6 +69,17 @@ struct Active {
     why: Arc<AtomicU8>,
 }
 
+/// A time of the schedule that waits for the net's last run to end.
+#[derive(Clone, Debug)]
+pub struct Queued {
+    pub def: Def,
+    pub planned: NaiveDateTime,
+    /// Marked 遅れて実行 when it starts (`missed = "once"`).
+    pub late: bool,
+    /// When it was put to wait.
+    pub since: NaiveDateTime,
+}
+
 pub struct Runner {
     /// `state_dir/logs`.
     logs: PathBuf,
@@ -80,6 +96,8 @@ pub struct Runner {
     last_id: (String, u32),
     /// The runs that ended since [`Runner::take_over`], for the engine to tell of.
     over: Vec<Run>,
+    /// The times that wait for a run of their net to end, oldest first.
+    queue: Vec<Queued>,
 }
 
 impl Runner {
@@ -97,6 +115,7 @@ impl Runner {
             rx,
             last_id: (String::new(), 0),
             over: Vec::new(),
+            queue: Vec::new(),
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -164,6 +183,53 @@ impl Runner {
         self.runs.push(run);
         self.tick();
         Ok(id)
+    }
+
+    /// Starts the time `planned` of `def` after its time (`missed = "once"`):
+    /// the run says 遅れて実行 with both times.
+    pub fn start_late(&mut self, def: &Def, planned: NaiveDateTime) -> Result<String, String> {
+        let id = self.start(def, planned.date(), How::Schedule, Some(planned))?;
+        if let Some(r) = self.runs.iter_mut().find(|r| r.id == id) {
+            r.mark_late();
+        }
+        Ok(id)
+    }
+
+    /// Puts the time `planned` of `def` to wait for the net's last run to
+    /// end (`overlap = "queue"`); it starts in the `tick` that sees that end,
+    /// late when `late`. One time waits per net: another is recorded as
+    /// スキップ, so nothing piles up behind a run that goes on and on. With
+    /// no run to wait for, it starts now.
+    pub fn queue(&mut self, def: &Def, planned: NaiveDateTime, late: bool) {
+        if self.queue.iter().any(|q| q.def.id == def.id) {
+            self.not_run(def, planned, State::Skipped, "前の回がまだ動いていました（その次の回が待っています）");
+        } else if self.runs.iter().any(|r| r.jobnet == def.id && !r.is_over()) {
+            self.queue.push(Queued { def: def.clone(), planned, late, since: Local::now().naive_local() });
+        } else {
+            self.go(def, planned, late);
+        }
+    }
+
+    /// The times that wait for a run to end, oldest first.
+    pub fn queued(&self) -> &[Queued] {
+        &self.queue
+    }
+
+    /// Records each waiting time as スキップ: the engine stops, and nothing
+    /// would start them.
+    pub fn drop_queue(&mut self) {
+        for q in std::mem::take(&mut self.queue) {
+            self.not_run(&q.def, q.planned, State::Skipped, "待っている間にエンジンが止まった");
+        }
+    }
+
+    /// Starts the schedule's time `planned` of `def`, late or not; what
+    /// refuses it is recorded as 止めた.
+    fn go(&mut self, def: &Def, planned: NaiveDateTime, late: bool) {
+        let out = if late { self.start_late(def, planned) } else { self.start(def, planned.date(), How::Schedule, Some(planned)) };
+        if let Err(e) = out {
+            self.not_run(def, planned, State::Locked, &e);
+        }
     }
 
     /// Records a scheduled time of `def` that did not start (時刻を過ぎた, スキップ,
@@ -269,11 +335,19 @@ impl Runner {
                 ended.push(r);
             }
         }
+        let freed: Vec<String> = ended.iter().map(|r| r.jobnet.clone()).collect();
         for r in ended {
             self.record(&r, history::run_end(&r));
             self.over.push(r);
         }
         self.start_ready();
+        // The time that waited for one of these runs starts now.
+        for net in freed {
+            if let Some(i) = self.queue.iter().position(|q| q.def.id == net) {
+                let q = self.queue.remove(i);
+                self.go(&q.def, q.planned, q.late);
+            }
+        }
     }
 
     fn start_ready(&mut self) {
@@ -510,6 +584,15 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    /// A command that takes about `secs` seconds.
+    fn sleep(secs: u32) -> String {
+        if cfg!(windows) {
+            format!("run = [\"cmd.exe\", \"/c\", \"ping -n {} 127.0.0.1 > nul\"]", secs + 1)
+        } else {
+            format!("run = [\"sleep\", \"{secs}\"]")
+        }
     }
 
     /// A command that exists on every machine the tests run on.
@@ -762,6 +845,68 @@ mod tests {
         let day = Day::load(&history::path(&hist, today)).unwrap();
         assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_late_start_says_both_times_and_a_queued_time_starts_when_the_run_ends() {
+        let dir = scratch("queue");
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+overlap = \"queue\"
+[[job]]
+id = \"a\"
+{}
+",
+                sleep(2)
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let p1 = NaiveDateTime::parse_from_str("2026-10-30 02:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let p2 = NaiveDateTime::parse_from_str("2026-10-30 02:01:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let p3 = NaiveDateTime::parse_from_str("2026-10-30 02:02:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let first = r.start_late(&d, p1).unwrap();
+        let run = r.run(&first).unwrap();
+        assert!(run.is_late());
+        assert!(run.reason.starts_with("遅れて実行（2:00 の予定を "), "{}", run.reason);
+        assert!(run.reason.ends_with(" に流しました）"), "{}", run.reason);
+        // The next time waits; a third is skipped, not piled up.
+        r.queue(&d, p2, false);
+        assert_eq!(r.queued().len(), 1);
+        assert_eq!(r.runs().len(), 1, "a waiting time is not a run yet");
+        r.queue(&d, p3, false);
+        assert_eq!(r.queued().len(), 1);
+        let skipped = r.runs().iter().find(|x| x.planned == Some(p3)).unwrap();
+        assert_eq!(skipped.state, State::Skipped);
+        assert_eq!(skipped.reason, "前の回がまだ動いていました（その次の回が待っています）");
+        let t0 = Instant::now();
+        loop {
+            r.tick();
+            if r.runs().iter().any(|x| x.planned == Some(p2)) {
+                break;
+            }
+            assert!(t0.elapsed() < Duration::from_secs(20), "the waiting time never started");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        assert!(r.run(&first).unwrap().is_over(), "it started once the first run was over");
+        let second = r.runs().iter().find(|x| x.planned == Some(p2)).unwrap();
+        assert_eq!(second.how, How::Schedule);
+        assert!(!second.is_late());
+        assert!(!second.is_over());
+        assert!(r.queued().is_empty());
+        // With no run to wait for, a queued time starts at once. Then the engine stops: what waits is recorded.
+        let mut r2 = Runner::new(&scratch("queue2"), Config::default());
+        r2.queue(&d, p1, true);
+        assert!(r2.queued().is_empty());
+        assert!(r2.runs()[0].is_late());
+        r2.queue(&d, p2, false);
+        assert_eq!(r2.queued().len(), 1);
+        r2.drop_queue();
+        assert!(r2.queued().is_empty());
+        let dropped = r2.runs().iter().find(|x| x.planned == Some(p2)).unwrap();
+        assert_eq!((dropped.state, dropped.reason.as_str()), (State::Skipped, "待っている間にエンジンが止まった"));
+        let _ = r2.kill(&r2.runs()[0].id.clone(), None);
     }
 
     #[test]

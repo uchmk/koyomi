@@ -250,7 +250,7 @@ mod tests {
     }
 
     fn net() -> Jobnet {
-        Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["b"])], when: Vec::new() }
+        Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["b"])], when: Vec::new(), ..Default::default() }
     }
 
     #[test]

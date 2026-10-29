@@ -53,6 +53,12 @@ pub fn tree(t: &Table, defs: &[Def]) -> Vec<String> {
 pub fn body(t: &Table, d: &Def) -> Vec<String> {
     let mut out = Vec::new();
     let Some(net) = &d.net else { return out };
+    if net.missed == koyomi_core::jobnet::Missed::Once {
+        out.push(t.tr("review.missed_once").to_owned());
+    }
+    if net.overlap == koyomi_core::jobnet::Overlap::Queue {
+        out.push(t.tr("review.overlap_queue").to_owned());
+    }
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr("review.job"), j.id));

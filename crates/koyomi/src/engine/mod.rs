@@ -217,16 +217,23 @@ impl State {
                 due.extend(when::due(&Local, &net.when, checked, now).into_iter().map(|(instant, planned)| (i, instant, planned)));
             }
         }
-        for (i, instant, planned) in &due {
+        for (k, (i, instant, planned)) in due.iter().enumerate() {
             let def = self.defs[*i].clone();
             let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
-            let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running);
+            let last = !due[k + 1..].iter().any(|(j, _, _)| j == i);
+            let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last);
             match verdict {
-                schedule::Verdict::Start => {
-                    if let Err(e) = self.runner.start(&def, planned.date(), How::Schedule, Some(*planned)) {
+                schedule::Verdict::Start { late } => {
+                    let out = if late {
+                        self.runner.start_late(&def, *planned)
+                    } else {
+                        self.runner.start(&def, planned.date(), How::Schedule, Some(*planned))
+                    };
+                    if let Err(e) = out {
                         self.runner.not_run(&def, *planned, RunState::Locked, &e);
                     }
                 }
+                schedule::Verdict::Queue { late } => self.runner.queue(&def, *planned, late),
                 schedule::Verdict::NotRun(state, reason) => {
                     self.runner.not_run(&def, *planned, state, &reason);
                 }
@@ -270,14 +277,23 @@ impl State {
     fn status(&self) -> String {
         let confirmed = self.defs.iter().filter(|d| d.standing == Standing::Confirmed).count();
         let running = self.runner.runs().iter().filter(|r| !r.is_over()).count();
-        format!(
+        let mut out = format!(
             "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}\n{}",
             std::process::id(),
             self.defs.len(),
             confirmed,
             running,
             self.retain.line()
-        )
+        );
+        for q in self.runner.queued() {
+            out.push_str(&format!(
+                "\n待ち: {}  {} の回は前の回が終わってから流す（{} から待っている）",
+                q.def.label(),
+                q.planned.format("%-H:%M"),
+                q.since.format("%-H:%M")
+            ));
+        }
+        out
     }
 
     /// The sweep of old records: started for a new day or a new `keep_days`
@@ -415,6 +431,7 @@ pub fn run() -> i32 {
                     let _ = reply.send(out);
                 }
                 if stop {
+                    state.runner.drop_queue();
                     state.runner.flush();
                     state.schedule.flush();
                     state.retain.flush();

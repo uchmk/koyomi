@@ -246,10 +246,14 @@ pub struct Run {
     pub ended: Option<NaiveDateTime>,
     pub state: State,
     pub jobs: Vec<JobRun>,
-    /// Why a run that never started was not run (時刻を過ぎた, スキップ, ロック).
+    /// Why a run that never started was not run (時刻を過ぎた, スキップ, ロック),
+    /// or that it started after its time (遅れて実行).
     #[serde(default)]
     pub reason: String,
 }
+
+/// How a run that started after its time (`missed = "once"`) begins its reason.
+pub const LATE: &str = "遅れて実行";
 
 impl Run {
     /// A run that has not started a job yet: every job is 未実行 or 実行待ち.
@@ -304,6 +308,19 @@ impl Run {
             jobs,
             reason: reason.to_owned(),
         }
+    }
+
+    /// Marks a run of the schedule that started after its time (`missed =
+    /// "once"`): the reason reads 遅れて実行（2:00 の予定を 8:12 に流しました）.
+    pub fn mark_late(&mut self) {
+        if let Some(p) = self.planned {
+            self.reason = format!("{LATE}（{} の予定を {} に流しました）", p.format("%-H:%M"), self.started.format("%-H:%M"));
+        }
+    }
+
+    /// Started after its time (`missed = "once"`).
+    pub fn is_late(&self) -> bool {
+        self.reason.starts_with(LATE)
     }
 
     pub fn job(&self, id: &str) -> Option<&JobRun> {
@@ -562,7 +579,7 @@ pub fn layers(jobs: &[(&str, &[String])]) -> Vec<Vec<usize>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::jobnet::Job;
+    use crate::jobnet::{parse, Job};
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
@@ -583,8 +600,12 @@ mod tests {
 
     /// a → b, a → c, (b, c) → d.
     fn diamond() -> Run {
-        let net =
-            Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])], when: Vec::new() };
+        let net = Jobnet {
+            name: None,
+            jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a"]), job("d", &["b", "c"])],
+            when: Vec::new(),
+            ..Default::default()
+        };
         Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
     }
 
@@ -631,6 +652,20 @@ mod tests {
         r.finish("c", Outcome::Exited(0), at("2026-10-30 09:00:05"));
         assert_eq!(r.state, State::Error);
         assert!(r.is_over());
+    }
+
+    #[test]
+    fn a_late_run_says_the_time_it_was_meant_for_and_the_time_it_started() {
+        let net = parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
+        let now = at("2026-10-30 08:12:30");
+        let mut run = Run::new("r1", "経理/月次締め", "月次締め", "2026-10-30", How::Schedule, &net, now);
+        assert!(!run.is_late());
+        run.mark_late();
+        assert_eq!(run.reason, "", "no planned time: nothing to be late for");
+        run.planned = Some(at("2026-10-30 02:00:00"));
+        run.mark_late();
+        assert_eq!(run.reason, "遅れて実行（2:00 の予定を 8:12 に流しました）");
+        assert!(run.is_late());
     }
 
     #[test]
@@ -714,7 +749,12 @@ mod tests {
     fn layers_follow_the_longest_path() {
         let r = diamond();
         assert_eq!(r.layers(), vec![vec![0], vec![1, 2], vec![3]]);
-        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a", "b"])], when: Vec::new() };
+        let net = Jobnet {
+            name: None,
+            jobs: vec![job("a", &[]), job("b", &["a"]), job("c", &["a", "b"])],
+            when: Vec::new(),
+            ..Default::default()
+        };
         let r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
         assert_eq!(r.layers(), vec![vec![0], vec![1], vec![2]]);
     }
