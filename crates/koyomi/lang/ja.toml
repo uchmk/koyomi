@@ -40,6 +40,10 @@ dir = "作業フォルダー"
 nodir = "（指定なし）"
 timeout = "打ち切り"
 diff = "前に確かめた版との違い:"
+week_count = "この先 7 日の予定: {0} 回"
+week_change = "7 日で {0} 回 → {1} 回（{2}）"
+week_more = "… 他 {0} 件"
+week_none = "7 日の予定はありません"
 
 [tree]
 empty = "定義がありません。jobnets フォルダーに <グループ>/<名前>.toml を置いてください"

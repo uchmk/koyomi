@@ -184,6 +184,9 @@ fn approve(args: &[String]) -> i32 {
     for l in review::body(&t, &def) {
         say(&l, false);
     }
+    for l in review::week(&t, &def, chrono::Local::now().naive_local()) {
+        say(&l, false);
+    }
     let diff = review::diff(&def);
     if !diff.is_empty() {
         say(t.tr("review.diff"), false);

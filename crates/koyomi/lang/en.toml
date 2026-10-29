@@ -41,6 +41,10 @@ dir = "Directory"
 nodir = "(none)"
 timeout = "Timeout"
 diff = "Changes since the version last approved:"
+week_count = "The next 7 days: {0} times"
+week_change = "7 days: {0} times → {1} ({2})"
+week_more = "… {0} more"
+week_none = "Nothing in the next 7 days"
 
 [tree]
 empty = "No definitions. Put <group>/<name>.toml in the jobnets folder"

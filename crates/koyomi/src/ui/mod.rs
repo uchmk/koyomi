@@ -594,7 +594,12 @@ impl Browser {
             self.asking = None;
             return;
         }
-        let body = review::body(t, &def);
+        let mut body = review::body(t, &def);
+        let week = review::week(t, &def, chrono::Local::now().naive_local());
+        if !week.is_empty() {
+            body.push(String::new());
+            body.extend(week);
+        }
         let diff = review::diff(&def);
         let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
         let buttons = [t.tr("confirm.yes").to_owned(), t.tr("confirm.no").to_owned()];

@@ -1,10 +1,16 @@
 //! What a person is shown about a definition: the tree's rows, and what an approval asks them to look at.
 //! The window and the CLI both draw from here, so they say the same thing.
 
+use chrono::{Days, NaiveDateTime};
 use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
+use koyomi_core::jobnet;
 use koyomi_core::scan::{Def, Standing};
+use koyomi_core::when;
+
+/// How many of the week's times are listed; the rest is a count.
+pub const WEEK_ROWS: usize = 20;
 
 /// The mark that goes before the standing: a symbol and a word, never colour alone.
 pub fn state(s: Standing) -> State {
@@ -58,6 +64,55 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         if let Some(secs) = j.timeout {
             out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
         }
+    }
+    out
+}
+
+/// How the next 7 days from `now` change with this approval: the count of
+/// times before and after, then each time that is added (`+`) or goes away
+/// (`-`), in order, `WEEK_ROWS` at most and the rest as a count. A first
+/// approval lists the times as they will be. A writing mistake in `[[when]]`
+/// (every minute, the month's end, a holiday) shows here as a number before
+/// anything runs. Empty when neither version has a `[[when]]`.
+pub fn week(t: &Table, d: &Def, now: NaiveDateTime) -> Vec<String> {
+    let Some(net) = &d.net else { return Vec::new() };
+    let until = now.checked_add_days(Days::new(7)).unwrap_or(now);
+    let new = when::between(&net.when, now, until);
+    let old: Option<Vec<NaiveDateTime>> = d.previous.as_deref().map(|text| match jobnet::parse(text) {
+        Ok(net) => when::between(&net.when, now, until),
+        Err(_) => Vec::new(),
+    });
+    if new.is_empty() && old.as_ref().is_none_or(|o| o.is_empty()) {
+        return if net.when.is_empty() && d.previous.is_none() { Vec::new() } else { vec![t.tr("review.week_none").to_owned()] };
+    }
+    let mut out = Vec::new();
+    // (time, mark): what is listed. Without a previous version, every time, unmarked.
+    let rows: Vec<(NaiveDateTime, &str)> = match &old {
+        None => {
+            out.push(t.trf("review.week_count", &[&new.len().to_string()]));
+            new.iter().map(|&at| (at, "  ")).collect()
+        }
+        Some(old) => {
+            let delta = new.len() as i64 - old.len() as i64;
+            let sign = if delta > 0 {
+                format!("+{delta}")
+            } else if delta < 0 {
+                delta.to_string()
+            } else {
+                "±0".to_owned()
+            };
+            out.push(t.trf("review.week_change", &[&old.len().to_string(), &new.len().to_string(), &sign]));
+            let mut rows: Vec<(NaiveDateTime, &str)> = new.iter().filter(|at| !old.contains(at)).map(|&at| (at, "+ ")).collect();
+            rows.extend(old.iter().filter(|at| !new.contains(at)).map(|&at| (at, "- ")));
+            rows.sort();
+            rows
+        }
+    };
+    for (at, mark) in rows.iter().take(WEEK_ROWS) {
+        out.push(format!("{mark}{}", crate::show::when_row(t, *at)));
+    }
+    if rows.len() > WEEK_ROWS {
+        out.push(t.trf("review.week_more", &[&(rows.len() - WEEK_ROWS).to_string()]));
     }
     out
 }
@@ -138,5 +193,72 @@ mod tests {
         assert!(lines.iter().any(|l| l.starts_with('-') && l.contains("2026-10")), "{lines:?}");
         assert!(lines.iter().any(|l| l.starts_with('+') && l.contains("2026-11")), "{lines:?}");
         assert!(diff(&first).is_empty(), "nothing to compare a first approval with");
+    }
+
+    const DAILY: &str = "format = 1
+name = \"月次締め\"
+[[when]]
+every = \"day\"
+at = [\"02:00\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+    const QUARTER: &str = "format = 1
+name = \"月次締め\"
+[[when]]
+every = \"minutes\"
+n = 15
+from = \"00:00\"
+to = \"23:59\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+
+    fn at(s: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    /// a first approval lists the week as it will be; a change shows the counts and what differs.
+    #[test]
+    fn the_week_counts_the_times_and_lists_what_is_added_or_gone() {
+        let now = at("2026-10-30 09:00:00");
+        let mut store = Store::default();
+        let first = def(DAILY, &store);
+        let w = week(&table(), &first, now);
+        assert_eq!(w[0], "この先 7 日の予定: 7 回");
+        assert_eq!(w[1], "  2026-10-31（土）02:00");
+        assert_eq!(w.len(), 8, "{w:?}");
+        store.approve(&first.id, &first.sha256, &first.text);
+        let d = def(QUARTER, &store);
+        let w = week(&table(), &d, now);
+        assert_eq!(w[0], "7 日で 7 回 → 672 回（+665）");
+        assert!(w[1].starts_with("+ 2026-10-30（金）09:15"), "{w:?}");
+        assert!(!w.iter().any(|l| l.contains("02:00")), "2:00 stays, so it is not listed: {w:?}");
+        assert_eq!(w.len(), 2 + WEEK_ROWS, "{w:?}");
+        assert_eq!(w[w.len() - 1], "… 他 645 件");
+        // Taking times away lists what goes.
+        let second = def(QUARTER, &store);
+        store.approve(&second.id, &second.sha256, &second.text);
+        let d = def(DAILY, &store);
+        let w = week(&table(), &d, now);
+        assert_eq!(w[0], "7 日で 672 回 → 7 回（-665）");
+        assert!(w[1].starts_with("- 2026-10-30（金）09:15"), "{w:?}");
+        store.approve(&first.id, &first.sha256, &first.text);
+        let d = def(
+            &DAILY.replace(
+                "at = [\"02:00\"]",
+                "at = [\"02:00\"]
+except = [\"2026-11-01\"]",
+            ),
+            &store,
+        );
+        assert_eq!(week(&table(), &d, now), vec!["7 日で 7 回 → 6 回（-1）", "- 2026-11-01（日）02:00"]);
+        let d = def(NET, &Store::default());
+        assert!(week(&table(), &d, now).is_empty(), "no [[when]] and nothing before: nothing to say");
+        store.approve(&d.id, &d.sha256, &d.text);
+        let d = def(&NET.replace("2026-10", "2026-11"), &store);
+        assert_eq!(week(&table(), &d, now), vec!["7 日の予定はありません"], "a change that leaves no time says so");
     }
 }
