@@ -1,6 +1,6 @@
 # Checklist
 
-399 checks in TESTING.md, 395 left for a person.
+403 checks in TESTING.md, 399 left for a person.
 
 ## 1. Start
 
@@ -568,3 +568,10 @@
 - [ ] **56.2** While a net is running → Its bar keeps growing to now 〔未訳〕
 - [ ] **56.3** Click a lane → That run opens under the chart 〔未訳〕
 - [ ] **56.4** With no runs today → 「今日の実行はありません」 〔未訳〕
+
+## 57. 月の予定表（plan）
+
+- [ ] **57.1** `koyomi plan` with the engine running → Each day of this month with the times approved nets start; days with none show `-` 〔未訳〕
+- [ ] **57.2** `koyomi plan 2026-02 --pdf out.pdf`, open the PDF → A4 pages titled with the month, text selectable, page numbers at the foot 〔未訳〕
+- [ ] **57.3** `koyomi plan --print` → The PDF path is printed, and the PDF goes to the printer (or opens in the viewer when it has no print verb) 〔未訳〕
+- [ ] **57.4** A net on a calendar that closes a day → That day shows no start for the net 〔未訳〕

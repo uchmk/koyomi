@@ -59,6 +59,9 @@ usage: koyomi [--version | --help | env]
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
+       koyomi plan [YYYY-MM] [--pdf <file>] [--print]
+                                     what starts on each day of the month (this month when none), by the approved
+                                     nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer
        koyomi new <group/name>       write a new definition from the template (one job, no time yet; unconfirmed)
        koyomi versions <group/name>  the versions kept before each save and restore, newest first
        koyomi restore <group/name> <version>
@@ -88,7 +91,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 30] = [
+const COMMANDS: [&str; 31] = [
     "check",
     "list",
     "show",
@@ -110,6 +113,7 @@ const COMMANDS: [&str; 30] = [
     "pause",
     "resume",
     "calendar",
+    "plan",
     "new",
     "versions",
     "restore",
@@ -149,6 +153,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "next" => next(rest),
         "status" => status(rest),
         "history" => history(rest),
+        "plan" => plan(rest),
         "log" => log(rest),
         "kill" => kill(rest),
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
@@ -627,6 +632,48 @@ fn day_row(date: NaiveDate, day: Day) -> DayRow {
 }
 
 /// `koyomi calendar <name> [--month YYYY-MM]`: the month's days as the engine counts them.
+fn plan(args: &[String]) -> i32 {
+    let (mut month, mut pdf, mut print) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--pdf" => match it.next() {
+                Some(f) => pdf = Some(std::path::PathBuf::from(f)),
+                None => return usage("--pdf takes a file"),
+            },
+            "--print" => print = true,
+            m if month.is_none() && !m.starts_with("--") => match NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d") {
+                Ok(d) => month = Some((d.year(), d.month())),
+                Err(_) => return usage("plan takes YYYY-MM"),
+            },
+            _ => return usage("plan takes YYYY-MM, --pdf <file> and --print"),
+        }
+    }
+    let snap = match snapshot() {
+        Ok(s) => s,
+        Err(e) => return fail(&format!("koyomi: {e}")),
+    };
+    let today = chrono::Local::now().date_naive();
+    let (y, m) = month.unwrap_or((today.year(), today.month()));
+    let days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
+    if pdf.is_none() && !print {
+        out(&crate::plan::text(&days), false);
+        return 0;
+    }
+    // --print alone writes the PDF where the OS keeps temporary files.
+    let file = pdf.unwrap_or_else(|| std::env::temp_dir().join(format!("koyomi-plan-{y}-{m:02}.pdf")));
+    if let Err(e) = crate::plan::pdf(&days, y, m, &file) {
+        return fail(&format!("koyomi: {e}"));
+    }
+    out(&file.display().to_string(), false);
+    if print {
+        if let Err(e) = ito_export::print(&file) {
+            return fail(&format!("koyomi: {e}"));
+        }
+    }
+    0
+}
+
 fn calendar(args: &[String]) -> i32 {
     let mut name = None;
     let mut month = None;

@@ -43,6 +43,8 @@ ito-notify = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a
 ito-bugreport = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # The window's own title bar (drag, caption buttons, the palette box, the bell).
 ito-titlebar = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
+# Pages out as a PDF or to the printer.
+ito-export = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # The bottom status bar: the app's items, the clock at the right end.
 ito-statusbar = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # The list the bell opens.

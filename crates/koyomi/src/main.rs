@@ -22,6 +22,7 @@ mod icon;
 mod keymap;
 mod mcp;
 mod notify;
+mod plan;
 mod prefs;
 mod proto;
 mod review;
