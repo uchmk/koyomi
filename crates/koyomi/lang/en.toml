@@ -257,6 +257,15 @@ missed = "time passed"
 locked = "locked"
 not_run = "not run"
 
+[today]
+unconfirmed = "To approve"
+col_state = "State"
+col_net = "Jobnet"
+col_planned = "Planned"
+col_start = "Start"
+col_end = "End"
+col_time = "Time"
+
 [tabs]
 today = "Today"
 net = "Jobnets"

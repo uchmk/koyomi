@@ -256,6 +256,15 @@ missed = "時刻を過ぎた"
 locked = "止めた"
 not_run = "未実行"
 
+[today]
+unconfirmed = "未対応"
+col_state = "状態"
+col_net = "ジョブネット"
+col_planned = "予定"
+col_start = "開始"
+col_end = "終了"
+col_time = "時間"
+
 [tabs]
 today = "今日"
 net = "ジョブネット"

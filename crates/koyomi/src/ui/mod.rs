@@ -1221,7 +1221,6 @@ impl Browser {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 self.tree(ui, t);
                 ui.add_space(10.0);
-                self.today(ui, t);
                 self.calendar_list(ui, t);
                 // The one switch over the whole schedule, below what it stops.
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
@@ -1386,13 +1385,11 @@ impl Browser {
         }
     }
 
-    /// Today's runs, newest first: symbol and state, net, planned or started, ended, duration.
-    fn today(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+    /// Today as a table: what is still to come (waiting), then the runs newest first, each with its
+    /// state, net, planned time, start, end and duration. A click on a run opens it.
+    fn today_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        let r = ui.label(egui::RichText::new(t.tr("run.today")).strong().color(c.dim));
-        ito_a11y::say(&r, Role::Heading, t.tr("run.today"));
         let Some(snap) = &self.snap else { return };
-        // What is still to come today, soonest first: a time, not a run, so not a row to open.
         let now = chrono::Local::now().naive_local();
         let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
         let mut coming: Vec<(chrono::NaiveDateTime, String, Option<String>)> = Vec::new();
@@ -1408,46 +1405,82 @@ impl Browser {
             }
         }
         coming.sort();
+        let unconfirmed = snap.defs.iter().filter(|d| d.standing == Standing::Unconfirmed).count();
         if self.runs.is_empty() && coming.is_empty() {
-            ui.add(egui::Label::new(t.tr("run.none")).wrap());
+            ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
             return;
         }
-        for (at, title, mark) in &coming {
-            let mut text = format!("{}  {title}  {}", show::tag(t, State::Waiting), show::hms(*at));
-            if let Some(m) = mark {
-                text.push_str(&format!("  {m}"));
+        // The counts: what needs a person, what is going on, what is still to come, what is done.
+        let count = |f: &dyn Fn(State) -> bool| self.runs.iter().filter(|r| f(r.state)).count();
+        let parts = [
+            (t.tr("today.unconfirmed").to_owned(), unconfirmed, c.wait_text()),
+            (show::tag(t, State::Error).to_owned(), count(&|s| s.is_error()), graph::colour(&c, State::Error)),
+            (
+                show::tag(t, State::Running).to_owned(),
+                count(&|s| matches!(s, State::Running | State::RunningError)),
+                graph::colour(&c, State::Running),
+            ),
+            (show::tag(t, State::Waiting).to_owned(), coming.len(), graph::colour(&c, State::Waiting)),
+            (show::tag(t, State::Ok).to_owned(), count(&|s| matches!(s, State::Ok | State::Warn)), graph::colour(&c, State::Ok)),
+        ];
+        ui.horizontal(|ui| {
+            for (label, n, colour) in &parts {
+                let text = format!("{label} {n}");
+                let r = ui.label(egui::RichText::new(&text).strong().color(if *n == 0 { c.dim } else { *colour }));
+                ito_a11y::say(&r, Role::Label, &text);
+                ui.add_space(8.0);
             }
-            let r = ui.label(egui::RichText::new(format!("  {text}")).color(graph::colour(&c, State::Waiting)));
-            ito_a11y::say(&r, Role::Row, &text);
-        }
+        });
+        ui.add_space(4.0);
         let mut pick = None;
         let mut runs: Vec<&Run> = self.runs.iter().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
-        for run in runs {
-            let planned = run.planned.map(show::hms).unwrap_or_else(|| show::hms(run.started));
-            let mut text = format!("{}  {}  {}", show::tag(t, run.state), run.title, planned);
-            if let Some(e) = run.ended {
-                text.push_str(&format!("  {}", show::hms(e)));
-            }
-            if let Some(d) = run.duration() {
-                text.push_str(&format!("  {}", show::duration(d)));
-            }
-            let on = self.run_sel.as_deref() == Some(run.id.as_str());
-            let colour = graph::colour(&c, run.state);
-            let r = ui.selectable_label(on, egui::RichText::new(format!("  {text}")).color(colour));
-            ito_a11y::say(&r, Role::Row, &text);
-            if r.clicked() {
-                pick = Some(run.id.clone());
-            }
-        }
+        egui::ScrollArea::vertical().id_salt("today_table").max_height(ui.available_height() * 0.4).show(ui, |ui| {
+            egui::Grid::new("today_grid").num_columns(6).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
+                for key in ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time"] {
+                    ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
+                }
+                ui.end_row();
+                for (at, title, mark) in &coming {
+                    let colour = graph::colour(&c, State::Waiting);
+                    ui.label(egui::RichText::new(show::tag(t, State::Waiting)).color(colour));
+                    let name = ui.label(title);
+                    ito_a11y::say(&name, Role::Row, title);
+                    let planned = match mark {
+                        Some(m) => format!("{}  {m}", show::hms(*at)),
+                        None => show::hms(*at),
+                    };
+                    ui.label(planned);
+                    for _ in 0..3 {
+                        ui.label("");
+                    }
+                    ui.end_row();
+                }
+                for run in runs {
+                    let colour = graph::colour(&c, run.state);
+                    let on = self.run_sel.as_deref() == Some(run.id.as_str());
+                    ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
+                    let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
+                    let planned = run.planned.map(show::hms).unwrap_or_default();
+                    let ended = run.ended.map(show::hms).unwrap_or_default();
+                    let took = run.duration().map(show::duration).unwrap_or_default();
+                    ito_a11y::say(&r, Role::Row, &format!("{} {} {}", show::tag(t, run.state), run.title, show::hms(run.started)));
+                    ui.label(planned);
+                    ui.label(show::hms(run.started));
+                    ui.label(ended);
+                    ui.label(took);
+                    ui.end_row();
+                    if r.clicked() {
+                        pick = Some(run.id.clone());
+                    }
+                }
+            });
+        });
         if pick.is_some() {
             self.run_sel = pick;
             self.cal_sel = None;
             self.job_sel = None;
             self.result = None;
-            self.hist = None;
-            self.gantt = false;
-            self.leave_editor();
         }
     }
 
@@ -1529,8 +1562,12 @@ impl Browser {
     /// ガント: today's runs, a lane each; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        ui.heading(t.tr("run.gantt"));
+        ui.heading(t.tr("run.today"));
         ui.add_space(6.0);
+        self.today_table(ui, t);
+        ui.add_space(8.0);
+        let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.dim));
+        ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
         if self.runs.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
             return;

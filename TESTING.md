@@ -405,7 +405,7 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.14 | Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 | The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay |
 | 28.15 | Pick a net in ジョブネット, then a state in 状態 | The rows narrow at once (no 検索 needed); the count follows; `該当する実行はありません` when nothing matches |
 | 28.16 | Click a row in 履歴 | Under the rows: the run's picture, its jobs' logs on click, 再実行 and the rest as under 今日; the row stays marked |
-| 28.17 | While 履歴 is open: click a net in the tree, a run under 今日, or a calendar; then the 履歴 tab again | Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed |
+| 28.17 | While 履歴 is open: click a net in the tree, a run in the 今日 table, or a calendar; then the 履歴 tab again | Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed |
 | 28.18 | Narrator / NVDA over 履歴 | The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) |
 | 28.19 | `koyomi --keys` report with 履歴 open | A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) |
 
@@ -431,7 +431,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 29.14 | Make a job with no `run` (or two jobs with one id), Ctrl+S | The problems show in red under the toolbar with the part named; 保存 is greyed out and Ctrl+S does nothing until they are fixed |
 | 29.15 | Fix the problems, 保存 (Ctrl+S) | 保存した appears; the file is rewritten from the editor (comments gone), the old text is under `versions/<group>/<name>/<time>.toml`, and the net is confirmed (no 未確認 badge, no `approve` needed) |
 | 29.16 | Edit the file by hand (or `koyomi restore`) while the editor is open, then 保存 | A box: ほかで変わっています, with the differences between what the editor started from and the file now; 読み直す drops the editor's changes and loads the file, やめる keeps editing, 上書きする saves over it (the hand edit is kept as a version); Escape = やめる |
-| 29.17 | With unsaved changes: ← , the tree, a run under 今日, 履歴, or the palette's 閉じる | A box: 変更を捨てて閉じますか; 捨てて閉じる leaves, やめる (the default, Escape) stays |
+| 29.17 | With unsaved changes: ← , the tree, a run in the 今日 table, 履歴, or the palette's 閉じる | A box: 変更を捨てて閉じますか; 捨てて閉じる leaves, やめる (the default, Escape) stays |
 | 29.18 | Without changes: ← | The editor closes at once and the picture is back |
 | 29.19 | Double-click a child jobnet part (or select it and Enter) | Its net opens in the editor on top; ← comes back to the parent (asking first when the child has changes) |
 | 29.20 | Ctrl+P while editing | The palette lists 保存 / 整列 / 横と縦 / 元に戻す / やり直す / 閉じる above the usual commands; they are gone when the editor is closed |
