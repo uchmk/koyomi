@@ -4,7 +4,7 @@
 //! Like the graph, the picture never stands alone: the lanes are also labelled
 //! in words, and a click on a lane picks the run.
 
-use chrono::{NaiveDateTime, Timelike};
+use chrono::NaiveDateTime;
 use egui::{Pos2, Rect, Sense, Stroke, Vec2};
 use koyomi_core::run::Run;
 
@@ -23,16 +23,11 @@ pub struct Bar {
     pub to: f32,
 }
 
-/// The axis (whole hours, at least one) and a bar per run, earliest start first.
+/// The axis (the whole day of `now`, 00:00 to 24:00) and a bar per run, earliest start first.
 pub fn bars(runs: &[&Run], now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Vec<Bar>) {
     let end_of = |r: &Run| r.ended.unwrap_or(now).max(r.started);
-    let Some(first) = runs.iter().map(|r| r.started).min() else { return (now, now, Vec::new()) };
-    let last = runs.iter().map(|r| end_of(r)).max().unwrap_or(first);
-    let lo = first.date().and_hms_opt(first.hour(), 0, 0).unwrap_or(first);
-    let mut hi = last.date().and_hms_opt(last.hour(), 0, 0).unwrap_or(last) + chrono::Duration::hours(1);
-    if hi <= lo {
-        hi = lo + chrono::Duration::hours(1);
-    }
+    let lo = now.date().and_hms_opt(0, 0, 0).unwrap_or(now);
+    let hi = lo + chrono::Duration::hours(24);
     let span = (hi - lo).num_seconds() as f32;
     let at = |t: NaiveDateTime| ((t - lo).num_seconds() as f32 / span).clamp(0.0, 1.0);
     let mut out: Vec<Bar> = runs.iter().enumerate().map(|(run, r)| Bar { run, from: at(r.started), to: at(end_of(r)) }).collect();
@@ -52,9 +47,13 @@ pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option
     let font = egui::FontId::proportional(12.0);
     for h in 0..=hours {
         let x = x_of(h as f32 / hours as f32);
-        painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, c.border));
-        let label = format!("{:02}", (lo + chrono::Duration::hours(h as i64)).hour());
-        painter.text(Pos2::new(x, origin.y), egui::Align2::CENTER_TOP, label, font.clone(), c.dim);
+        let major = h % 3 == 0;
+        let line = if major { c.border } else { c.border.gamma_multiply(0.4) };
+        painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, line));
+        if major {
+            let label = format!("{:02}", h);
+            painter.text(Pos2::new(x, origin.y), egui::Align2::CENTER_TOP, label, font.clone(), c.dim);
+        }
     }
     let mut clicked = None;
     for (row, bar) in list.iter().enumerate() {
@@ -76,6 +75,10 @@ pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option
             clicked = Some(run.id.clone());
         }
     }
+    // Now, over the bars.
+    let nowf = ((now - lo).num_seconds() as f32 / (hi - lo).num_seconds() as f32).clamp(0.0, 1.0);
+    let x = x_of(nowf);
+    painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.5, c.run));
     clicked
 }
 
@@ -98,15 +101,15 @@ mod tests {
     }
 
     #[test]
-    fn axis_is_whole_hours_and_bars_sit_inside_it() {
+    fn axis_is_the_whole_day_and_bars_sit_inside_it() {
         let a = run(at(9, 30), Some(at(10, 30)));
         let b = run(at(9, 45), None);
         let (lo, hi, list) = bars(&[&a, &b], at(11, 15));
-        assert_eq!((lo, hi), (at(9, 0), at(12, 0)));
+        assert_eq!((lo, hi), (at(0, 0), at(0, 0) + chrono::Duration::hours(24)));
         assert_eq!(list.len(), 2);
-        assert!((list[0].from - 0.5 / 3.0).abs() < 1e-5 && (list[0].to - 1.5 / 3.0).abs() < 1e-5);
+        assert!((list[0].from - 9.5 / 24.0).abs() < 1e-5 && (list[0].to - 10.5 / 24.0).abs() < 1e-5);
         // Still running: the bar reaches now.
-        assert!((list[1].to - 2.25 / 3.0).abs() < 1e-5);
+        assert!((list[1].to - 11.25 / 24.0).abs() < 1e-5);
     }
 
     #[test]
