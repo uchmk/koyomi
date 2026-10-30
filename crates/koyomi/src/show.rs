@@ -84,6 +84,15 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
     match &w.kind {
         when::Kind::File { file, settle: None } => Some(t.trf("run.event_file", &[file])),
         when::Kind::File { file, settle: Some(s) } => Some(t.trf("run.event_file_settle", &[file, &koyomi_core::duration::text(*s)])),
+        when::Kind::Log { log, contains } => Some(t.trf("run.event_log", &[log, contains])),
+        when::Kind::EventLog { eventlog, ids, source } => {
+            let mut what: Vec<String> = Vec::new();
+            if !ids.is_empty() {
+                what.push(format!("ID {}", ids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")));
+            }
+            what.extend(source.iter().cloned());
+            Some(t.trf("run.event_eventlog", &[eventlog, &what.join(" / ")]))
+        }
         when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
         when::Kind::AfterJobnet { jobnet, on } => {
             Some(t.trf("run.event_after", &[jobnet.as_str(), t.tr(&format!("run.after_{}", on.name()))]))

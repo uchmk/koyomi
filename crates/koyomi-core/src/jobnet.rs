@@ -578,6 +578,11 @@ struct RawWhen {
     shift: Field,
     file: Field,
     settle: Field,
+    log: Field,
+    contains: Field,
+    eventlog: Field,
+    ids: Field,
+    source: Field,
     on_start: Field,
     after_jobnet: Field,
     on: Field,
@@ -1249,16 +1254,22 @@ impl Checker<'_> {
                 "dates"
             } else if w.file.is_some() {
                 "file"
+            } else if w.log.is_some() {
+                "log"
+            } else if w.eventlog.is_some() {
+                "eventlog"
             } else if w.on_start.is_some() {
                 "on_start"
             } else if w.after_jobnet.is_some() {
                 "after_jobnet"
             } else {
-                self.add(head, "[[when]] には once か every か dates か file か on_start か after_jobnet が要る");
+                self.add(head, "[[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る");
                 continue;
             };
             let allowed: &[&str] = match kind {
                 "file" => &["file", "settle"],
+                "log" => &["log", "contains"],
+                "eventlog" => &["eventlog", "ids", "source"],
                 "on_start" => &["on_start"],
                 "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at", "wait_for", "wait_until"],
@@ -1286,6 +1297,11 @@ impl Checker<'_> {
                 (&w.shift, "shift"),
                 (&w.file, "file"),
                 (&w.settle, "settle"),
+                (&w.log, "log"),
+                (&w.contains, "contains"),
+                (&w.eventlog, "eventlog"),
+                (&w.ids, "ids"),
+                (&w.source, "source"),
                 (&w.on_start, "on_start"),
                 (&w.after_jobnet, "after_jobnet"),
                 (&w.on, "on"),
@@ -1306,9 +1322,10 @@ impl Checker<'_> {
                 _ => None,
             };
             // An event has no day to move to: it runs on its day or not at all.
-            if matches!(kind, "file" | "on_start") && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
+            if matches!(kind, "file" | "log" | "eventlog" | "on_start") && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
-                self.add(pos, "file / on_start では on_closed は \"skip\" か \"run\"");
+                let what = if matches!(kind, "log" | "eventlog") { "log / eventlog" } else { "file / on_start" };
+                self.add(pos, format!("{what} では on_closed は \"skip\" か \"run\""));
             }
             if kind == "after_jobnet" && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
@@ -1322,6 +1339,23 @@ impl Checker<'_> {
                     let settle = self.duration_of(&w.settle, "settle");
                     file.map(|file| Kind::File { file, settle })
                 }
+                "log" => {
+                    let log = self.log_file(&w.log);
+                    let contains = match (self.string(&w.contains, "contains"), &w.contains) {
+                        (Some(c), _) if !c.is_empty() => Some(c),
+                        (Some(_), Some(f)) => {
+                            self.add(f.span().start, "contains が空");
+                            None
+                        }
+                        (_, None) => {
+                            self.add(head, "contains が要る（例: contains = \"ERROR\"）");
+                            None
+                        }
+                        _ => None,
+                    };
+                    log.zip(contains).map(|(log, contains)| Kind::Log { log, contains })
+                }
+                "eventlog" => self.eventlog(w, head),
                 "after_jobnet" => {
                     let on = match self.choice(&w.on, "on", &["ok", "error", "any"]) {
                         Some("error") => AfterOn::Error,
@@ -1444,6 +1478,64 @@ impl Checker<'_> {
         out
     }
 
+    /// `[[when]] log`: an absolute path to one file (no `*` / `?`).
+    fn log_file(&mut self, field: &Field) -> Option<String> {
+        let f = field.as_ref()?;
+        let pos = f.span().start;
+        let text = self.string(field, "log")?;
+        if text.trim().is_empty() {
+            self.add(pos, "log が空");
+            return None;
+        }
+        if !absolute(&text) {
+            self.add(pos, "log は絶対パスで書く（例: log = 'D:\\app\\app.log'）");
+            return None;
+        }
+        if text.contains(['*', '?']) || text.ends_with(['/', '\\']) {
+            self.add(pos, "log は 1 つのファイルのパス（* / ? は使えない）");
+            return None;
+        }
+        Some(text)
+    }
+
+    /// `[[when]] eventlog = "Security"` with `ids = [4625]` or `source = "…"` (or both).
+    fn eventlog(&mut self, w: &RawWhen, head: usize) -> Option<Kind> {
+        let pos = w.eventlog.as_ref().map_or(head, |f| f.span().start);
+        let eventlog = self.string(&w.eventlog, "eventlog")?;
+        if eventlog.trim().is_empty() {
+            self.add(pos, "eventlog が空（例: eventlog = \"Application\"）");
+            return None;
+        }
+        let mut ids = Vec::new();
+        if let Some(f) = &w.ids {
+            let read: Option<Vec<u32>> = match f.get_ref() {
+                toml::Value::Array(items) => {
+                    items.iter().map(|v| v.as_integer().and_then(|n| u32::try_from(n).ok()).filter(|n| *n <= 65535)).collect()
+                }
+                _ => None,
+            };
+            match read {
+                Some(read) => ids = read,
+                None => {
+                    self.add(f.span().start, "ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）");
+                    return None;
+                }
+            }
+        }
+        let source = self.string(&w.source, "source");
+        if let (Some(s), Some(f)) = (&source, &w.source) {
+            if s.trim().is_empty() {
+                self.add(f.span().start, "source が空");
+                return None;
+            }
+        }
+        if ids.is_empty() && source.is_none() {
+            self.add(head, "eventlog には ids か source が要る（例: ids = [4625]）");
+            return None;
+        }
+        Some(Kind::EventLog { eventlog, ids, source })
+    }
+
     /// `[[when]] file`: an absolute path, `*` / `?` only in the name part.
     fn event_file(&mut self, field: &Field) -> Option<String> {
         let f = field.as_ref()?;
@@ -1455,8 +1547,7 @@ impl Checker<'_> {
         }
         // Split by either separator: the check reads the same on every OS.
         let (dir, name) = text.rsplit_once(['/', '\\']).unwrap_or(("", text.as_str()));
-        let drive = text.as_bytes().get(1) == Some(&b':') && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
-        if !(drive || text.starts_with("\\\\") || text.starts_with('/')) {
+        if !absolute(&text) {
             self.add(pos, "file は絶対パスで書く（例: file = 'D:\\受信\\*.csv'）");
             return None;
         }
@@ -1933,6 +2024,12 @@ impl Checker<'_> {
         self.add(f.span().start, "pos は [x, y] の数 2 つで書く");
         None
     }
+}
+
+/// Whether `text` is an absolute path: a drive (`D:\…`), a share (`\\server\…`) or `/…`.
+fn absolute(text: &str) -> bool {
+    let drive = text.as_bytes().get(1) == Some(&b':') && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+    drive || text.starts_with("\\\\") || text.starts_with('/')
 }
 
 /// A name Windows keeps for a device (`NUL`, `COM1`), also with an extension.
@@ -2786,7 +2883,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
         assert_eq!(
             p("at = [\"02:00\"]"),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
         );
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
@@ -2877,7 +2974,10 @@ after = [{ job = \"way\", code = \"else\" }]
             p("after_jobnet = \"a/b\"\non_closed = \"next\""),
             ["a.toml の 4 行目: after_jobnet では on_closed は \"skip\" か \"run\""]
         );
-        assert_eq!(p("on = \"ok\""), ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]);
+        assert_eq!(
+            p("on = \"ok\""),
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+        );
     }
 
     #[test]
@@ -2911,7 +3011,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
         assert_eq!(
             p("settle = \"10s\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
         );
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
@@ -2921,6 +3021,45 @@ after = [{ job = \"way\", code = \"else\" }]
                 "{f}"
             );
         }
+    }
+
+    #[test]
+    fn a_log_when_is_a_line_with_a_text_or_an_event_log_record() {
+        let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
+        let net = parse(
+            "format = 1\n[[when]]\nlog = 'D:\\app\\app.log'\ncontains = \"ERROR\"\n\
+             [[when]]\neventlog = \"Security\"\nids = [4625, 4740]\non_closed = \"run\"\n\
+             [[when]]\neventlog = \"Application\"\nsource = \"MyApp\"\n",
+        )
+        .unwrap();
+        assert_eq!(net.when[0].kind, Kind::Log { log: "D:\\app\\app.log".to_owned(), contains: "ERROR".to_owned() });
+        assert_eq!(net.when[1].kind, Kind::EventLog { eventlog: "Security".to_owned(), ids: vec![4625, 4740], source: None });
+        assert_eq!(
+            net.when[2].kind,
+            Kind::EventLog { eventlog: "Application".to_owned(), ids: Vec::new(), source: Some("MyApp".to_owned()) }
+        );
+        assert!(net.when.iter().all(When::is_event));
+        assert_eq!(p("log = 'D:\\app\\app.log'"), ["a.toml の 2 行目: contains が要る（例: contains = \"ERROR\"）"]);
+        assert_eq!(p("log = 'D:\\app\\app.log'\ncontains = \"\""), ["a.toml の 4 行目: contains が空"]);
+        assert_eq!(p("log = 'app.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は絶対パスで書く（例: log = 'D:\\app\\app.log'）"]);
+        assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は 1 つのファイルのパス（* / ? は使えない）"]);
+        assert_eq!(
+            p("contains = \"E\""),
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+        );
+        assert_eq!(p("eventlog = \"System\""), ["a.toml の 2 行目: eventlog には ids か source が要る（例: ids = [4625]）"]);
+        assert_eq!(
+            p("eventlog = \"System\"\nids = [70000]"),
+            ["a.toml の 4 行目: ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）"]
+        );
+        assert_eq!(p("eventlog = \"\"\nids = [1]"), ["a.toml の 3 行目: eventlog が空（例: eventlog = \"Application\"）"]);
+        assert_eq!(p("eventlog = \"System\"\nsource = \" \""), ["a.toml の 4 行目: source が空"]);
+        assert_eq!(p("eventlog = \"System\"\nids = [1]\ncontains = \"E\""), ["a.toml の 5 行目: contains は eventlog では使わない"]);
+        assert_eq!(p("log = 'D:\\a.log'\ncontains = \"E\"\nids = [1]"), ["a.toml の 5 行目: ids は log では使わない"]);
+        assert_eq!(
+            p("log = 'D:\\a.log'\ncontains = \"E\"\non_closed = \"next\""),
+            ["a.toml の 5 行目: log / eventlog では on_closed は \"skip\" か \"run\""]
+        );
     }
 
     #[test]

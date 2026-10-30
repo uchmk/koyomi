@@ -8,7 +8,8 @@ use koyomi_core::duration;
 use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
-pub const KINDS: [&str; 11] = ["day", "week", "month", "year", "minutes", "hours", "once", "dates", "file", "on_start", "after_jobnet"];
+pub const KINDS: [&str; 13] =
+    ["day", "week", "month", "year", "minutes", "hours", "once", "dates", "file", "log", "eventlog", "on_start", "after_jobnet"];
 
 /// The rules of `every = "month"`.
 pub const RULES: [&str; 4] = ["day", "last", "nth", "business_day"];
@@ -37,6 +38,13 @@ pub struct WhenEdit {
     pub dates: String,
     pub file: String,
     pub settle: String,
+    /// `log`: the file and the text a line must hold.
+    pub log: String,
+    pub contains: String,
+    /// `eventlog`: the log's name, ids comma separated, and the source.
+    pub eventlog: String,
+    pub ids: String,
+    pub source: String,
     pub jobnet: String,
     pub on: AfterOn,
     pub except: String,
@@ -69,6 +77,11 @@ impl Default for WhenEdit {
             dates: String::new(),
             file: String::new(),
             settle: String::new(),
+            log: String::new(),
+            contains: String::new(),
+            eventlog: "Application".into(),
+            ids: String::new(),
+            source: String::new(),
             jobnet: String::new(),
             on: AfterOn::Ok,
             except: String::new(),
@@ -195,6 +208,17 @@ impl WhenEdit {
                 e.file = file.clone();
                 e.settle = settle.map(duration::text).unwrap_or_default();
             }
+            Kind::Log { log, contains } => {
+                e.kind = "log".into();
+                e.log = log.clone();
+                e.contains = contains.clone();
+            }
+            Kind::EventLog { eventlog, ids, source } => {
+                e.kind = "eventlog".into();
+                e.eventlog = eventlog.clone();
+                e.ids = join(ids);
+                e.source = source.clone().unwrap_or_default();
+            }
             Kind::OnStart => e.kind = "on_start".into(),
             Kind::AfterJobnet { jobnet, on } => {
                 e.kind = "after_jobnet".into();
@@ -283,6 +307,29 @@ impl WhenEdit {
                 }
                 let settle = if self.settle.trim().is_empty() { None } else { Some(duration::parse(&self.settle)?) };
                 Kind::File { file: self.file.trim().into(), settle }
+            }
+            "log" => {
+                if self.log.trim().is_empty() {
+                    return Err("log は見るファイルのパス".into());
+                }
+                if self.contains.is_empty() {
+                    return Err("contains は行に含まれる文字（例: ERROR）".into());
+                }
+                Kind::Log { log: self.log.trim().into(), contains: self.contains.clone() }
+            }
+            "eventlog" => {
+                if self.eventlog.trim().is_empty() {
+                    return Err("eventlog はログの名前（例: Application）".into());
+                }
+                let ids = items(&self.ids)
+                    .into_iter()
+                    .map(|s| s.parse::<u32>().ok().filter(|n| *n <= 65535).ok_or(format!("ids はイベント ID（0〜65535）: \"{s}\"")))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let source = Some(self.source.trim()).filter(|s| !s.is_empty()).map(str::to_owned);
+                if ids.is_empty() && source.is_none() {
+                    return Err("eventlog には ids か source が要る".into());
+                }
+                Kind::EventLog { eventlog: self.eventlog.trim().into(), ids, source }
             }
             "on_start" => Kind::OnStart,
             "after_jobnet" => {
@@ -398,6 +445,15 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.file"), &mut self.file, 200.0);
                 changed |= field(ui, t.tr("when.settle"), &mut self.settle, 70.0);
             }
+            "log" => {
+                changed |= field(ui, t.tr("when.log"), &mut self.log, 200.0);
+                changed |= field(ui, t.tr("when.contains"), &mut self.contains, 160.0);
+            }
+            "eventlog" => {
+                changed |= field(ui, t.tr("when.eventlog"), &mut self.eventlog, 120.0);
+                changed |= field(ui, t.tr("when.ids"), &mut self.ids, 120.0);
+                changed |= field(ui, t.tr("when.source"), &mut self.source, 160.0);
+            }
             "after_jobnet" => {
                 changed |= field(ui, t.tr("when.jobnet"), &mut self.jobnet, 160.0);
                 ui.horizontal(|ui| {
@@ -414,7 +470,7 @@ impl WhenEdit {
             }
             _ => {}
         }
-        if self.kind != "on_start" && self.kind != "after_jobnet" && self.kind != "file" {
+        if !matches!(self.kind.as_str(), "on_start" | "after_jobnet" | "file" | "log" | "eventlog") {
             changed |= field(ui, t.tr("when.except"), &mut self.except, 200.0);
             changed |= field(ui, t.tr("when.start"), &mut self.start, 90.0);
             changed |= field(ui, t.tr("when.end"), &mut self.end, 90.0);
@@ -461,11 +517,14 @@ mod tests {
             [[when]]\ndates = [\"2026-04-01\"]\nat = [\"06:00\"]\n\
             [[when]]\nonce = 2026-04-01T07:00:00\n\
             [[when]]\nfile = \"C:/in/x.csv\"\nsettle = \"30s\"\n\
+            [[when]]\nlog = 'D:\\app\\a.log'\ncontains = \"ERROR\"\n\
+            [[when]]\neventlog = \"Security\"\nids = [4625, 4740]\n\
+            [[when]]\neventlog = \"Application\"\nsource = \"MyApp\"\n\
             [[when]]\non_start = true\n\
             [[when]]\nafter_jobnet = \"経理/集計\"\non = \"error\"\n\
             [[job]]\nid = \"a\"\nrun = [\"x\"]\n";
         let net = koyomi_core::jobnet::parse(text).unwrap();
-        assert_eq!(net.when.len(), 13);
+        assert_eq!(net.when.len(), 16);
         for w in &net.when {
             let e = WhenEdit::from_when(w);
             assert_eq!(e.to_when().as_ref(), Ok(w), "{e:?}");
@@ -496,6 +555,9 @@ mod tests {
         for k in KINDS {
             let mut e = WhenEdit::new(k);
             e.file = "x".into();
+            e.log = "x".into();
+            e.contains = "x".into();
+            e.ids = "1".into();
             e.jobnet = "a/b".into();
             e.once = "2026-04-01 02:00".into();
             e.dates = "2026-04-01".into();

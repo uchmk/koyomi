@@ -219,6 +219,19 @@ fn when(w: &When, out: &mut String) {
                 push(out, "settle", &q(&duration::text(*s)));
             }
         }
+        Kind::Log { log, contains } => {
+            push(out, "log", &q(log));
+            push(out, "contains", &q(contains));
+        }
+        Kind::EventLog { eventlog, ids, source } => {
+            push(out, "eventlog", &q(eventlog));
+            if !ids.is_empty() {
+                push(out, "ids", &format!("[{}]", ids.iter().map(u32::to_string).collect::<Vec<_>>().join(", ")));
+            }
+            if let Some(s) = source {
+                push(out, "source", &q(s));
+            }
+        }
         Kind::OnStart => push(out, "on_start", "true"),
         Kind::AfterJobnet { jobnet, on } => {
             push(out, "after_jobnet", &q(jobnet));

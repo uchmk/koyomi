@@ -85,6 +85,20 @@ pub enum Kind {
         #[serde(default)]
         settle: Option<u64>,
     },
+    /// `log = 'D:\app\app.log'`, `contains = "ERROR"`: a line with that text
+    /// written to the file (an event). Only lines written while the engine
+    /// watches count; each poll with such lines starts the net once.
+    Log { log: String, contains: String },
+    /// `eventlog = "Security"`, `ids = [4625]`, `source = "…"`: a record
+    /// written to that Windows event log (an event). `ids` empty: any id of
+    /// `source`; one of the two is always written.
+    EventLog {
+        eventlog: String,
+        #[serde(default)]
+        ids: Vec<u32>,
+        #[serde(default)]
+        source: Option<String>,
+    },
     /// `on_start = true`: when the engine starts (the PC's start or sign-in).
     OnStart,
     /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
@@ -101,7 +115,7 @@ impl Kind {
     /// time: it has no next time, and runs when it happens on a day
     /// `start` / `end` / `except` allow.
     pub fn is_event(&self) -> bool {
-        matches!(self, Kind::File { .. } | Kind::OnStart | Kind::AfterJobnet { .. })
+        matches!(self, Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::OnStart | Kind::AfterJobnet { .. })
     }
 }
 
@@ -229,7 +243,7 @@ impl When {
             Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
-            Kind::File { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => Vec::new(),
+            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => Vec::new(),
         }
     }
 
@@ -686,7 +700,9 @@ mod tests {
             wait_until: None,
         };
         let start = When { kind: Kind::OnStart, ..file.clone() };
-        for w in [&file, &start] {
+        let log = When { kind: Kind::Log { log: "D:\\app\\a.log".to_owned(), contains: "ERROR".to_owned() }, ..file.clone() };
+        let eventlog = When { kind: Kind::EventLog { eventlog: "Security".to_owned(), ids: vec![4625], source: None }, ..file.clone() };
+        for w in [&file, &start, &log, &eventlog] {
             assert!(w.is_event());
             assert_eq!(w.next_after(dt("2026-11-30 00:00")), None);
             assert!(w.times_on(d("2026-11-30")).is_empty());

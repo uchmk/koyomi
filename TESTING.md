@@ -982,3 +982,21 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 80.6 | `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore | Each is refused when read, with the line and why |
 | 80.7 | The editor: drag 古いファイルを消す from the parts; fill フォルダー and 名前 | The pane shows フォルダー・名前・何日より古いものを消すか, timeout and retry; saving writes `kind = "delete"`; `D:\` there shows the error and is not applied |
 | 80.8 | Approve a net with a chore | The confirm box shows each chore's paths and days instead of a command |
+
+## 81. ログの行・イベントログで起動する（`[[when]] log` / `eventlog`）
+
+| # | Do | Expect |
+|---|---|---|
+| 81.1 | A net with `[[when]] log = 'D:\app\app.log'` and `contains = "ERROR"`; `koyomi approve`; append `ok` and then `ERROR disk full` to the file | A run starts within a few seconds (only for the second line); `koyomi show` says `ログ`（`D:\app\app.log に行が書かれた: ERROR disk full`） |
+| 81.2 | The file already has `ERROR` lines when the net is approved (or the engine starts) | Nothing starts: only lines written after the watch starts count |
+| 81.3 | Append three `ERROR` lines at once | One run; the reason ends with `（ほか 2 件）` |
+| 81.4 | Append an `ERROR` line while the run is still going | No second run; a ⊘ スキップ row `… に行が書かれたが、前の回がまだ動いているので流さない: …` |
+| 81.5 | Rotate the log (rename `app.log` to `app.1.log` and make a new `app.log`), then append an `ERROR` line to the new file | A run starts: the new file is read from its start |
+| 81.6 | `[[when]] log = 'D:\nothere\app.log'`; then make the folder and the file with an `ERROR` line | Nothing is said while the file is not there; the new file is read from its start and the run starts |
+| 81.7 | `[[when]] eventlog = "Security"`, `ids = [4625]` (run the engine as administrator); sign in with a wrong password once | A run starts; `koyomi show` says `イベントログ Security に記録された: ID 4625 …` |
+| 81.8 | `[[when]] eventlog = "Application"`, `source = "MyApp"`; `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "boom"` | A run starts; an event from another source does not start one |
+| 81.9 | `eventlog = "NoSuchLog"`, or `Security` with the engine not as administrator | The window's 注意 says `<net>: イベントログ … を読めない（…）`; the net is still valid |
+| 81.10 | The net has `calendar = "会社"` and the line comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
+| 81.11 | The editor: add a `[[when]]` of ログに行が出たら and one of イベントログに出たら | The fields are ログのファイル・含む文字, and イベントログ・イベント ID・ソース; except / start / end / on_closed are not shown; saving writes `log` / `contains` and `eventlog` / `ids` / `source` |
+| 81.12 | `koyomi next` for the net | The rows `ログに「ERROR」の行が書かれたとき: D:\app\app.log` and `イベントログ Security に記録されたとき（ID 4625）` come first |
+| 81.13 | `koyomi check` a `[[when]]` with `log = 'app.log'`, with `log = 'D:\*.log'`, with `log = …` and no `contains`, with `eventlog = "Application"` and neither `ids` nor `source`, with `ids = [70000]` | `log は絶対パスで書く（例: …）`; `log は 1 つのファイルのパス（* / ? は使えない）`; `contains が要る（例: contains = "ERROR"）`; `eventlog には ids か source が要る（例: ids = [4625]）`; `ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）` |

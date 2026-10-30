@@ -35,6 +35,7 @@ mod alive;
 mod backup;
 mod events;
 mod files;
+mod logs;
 mod ping;
 mod retain;
 mod runner;
@@ -162,6 +163,8 @@ struct State {
     schedule: Schedule,
     /// The rest of `[[when]]`: files arriving and the engine's start.
     events: events::Events,
+    /// `[[when]] log` / `eventlog`: lines written to a log.
+    logs: logs::Logs,
     /// The sweep of logs and history older than `keep_days`.
     retain: Retain,
     /// The daily backup of the settings folder.
@@ -242,6 +245,7 @@ impl State {
             runner,
             schedule,
             events: events::Events::new(),
+            logs: logs::Logs::new(),
             retain,
             backup,
             alive,
@@ -745,6 +749,45 @@ impl State {
             }
             self.events.fired(&a.def_id, &a.pattern, &a.path);
         }
+        for hit in self.logs.due() {
+            let Some(def) = self.defs.iter().find(|d| d.id == hit.def_id).cloned() else { continue };
+            let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| w.kind == hit.kind)).cloned() else { continue };
+            let what = match &hit.kind {
+                Kind::Log { log, .. } => format!("{log} に行が書かれた"),
+                Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog} に記録された"),
+                _ => continue,
+            };
+            let more = if hit.count > 1 { format!("（ほか {} 件）", hit.count - 1) } else { String::new() };
+            let reason = format!("{what}: {}{more}", hit.first);
+            if let Some(why) = self.off_day(&def, &w, today, &what) {
+                self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}: {}{more}", hit.first));
+                continue;
+            }
+            if let Some((state, why)) = self.stopped(&def, today) {
+                self.runner.not_run(&def, now, state, &why);
+                continue;
+            }
+            // A line is not kept as a file is: one that comes while the net runs is told of, not run later.
+            if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
+                self.runner.not_run(
+                    &def,
+                    now,
+                    RunState::Skipped,
+                    &format!("{what}が、前の回がまだ動いているので流さない: {}{more}", hit.first),
+                );
+                continue;
+            }
+            match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
+                schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
+                    if let Err(e) = self.runner.start_event(&def, today, How::Log, &reason, None) {
+                        self.runner.not_run(&def, now, RunState::Locked, &e);
+                    }
+                }
+                schedule::Verdict::NotRun(state, reason) => {
+                    self.runner.not_run(&def, now, state, &reason);
+                }
+            }
+        }
     }
 
     /// Starts the nets with `[[when]] after_jobnet = …` on each run of `over`
@@ -838,6 +881,7 @@ impl State {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("見張り始めたときに既に {n} 個あった（{pattern}）: 流さない"));
             }
         }
+        self.logs.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         if !self.events.watching() {
@@ -864,6 +908,7 @@ impl State {
     fn snapshot(&self) -> Snapshot {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
+        warnings.extend(self.logs.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
         let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().chain(ping).collect();
         Snapshot {

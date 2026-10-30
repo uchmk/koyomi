@@ -158,6 +158,8 @@ pub enum How {
     Start,
     /// A run of the net before it ended (`[[when]] after_jobnet = …`).
     After,
+    /// A line came to a log (`[[when]] log = …` or `eventlog = …`).
+    Log,
 }
 
 /// How a job ended, as the engine saw it.
