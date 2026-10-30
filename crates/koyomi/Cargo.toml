@@ -39,6 +39,8 @@ ito-help = { git = "https://github.com/uchmk/ito", rev = "7c50a20b0ece3f8f829793
 ito-secret = { git = "https://github.com/uchmk/ito", rev = "7c50a20b0ece3f8f829793b5803388d7dbe2e0c0" }
 # System notification, sound, webhook.
 ito-notify = { git = "https://github.com/uchmk/ito", rev = "7c50a20b0ece3f8f829793b5803388d7dbe2e0c0" }
+# The system log line a monitoring tool watches (Event Viewer / syslog).
+ito-eventlog = { git = "https://github.com/uchmk/ito", rev = "7c50a20b0ece3f8f829793b5803388d7dbe2e0c0" }
 # F12: an issue form filled with the version, OS and what the app knows.
 ito-bugreport = { git = "https://github.com/uchmk/ito", rev = "7c50a20b0ece3f8f829793b5803388d7dbe2e0c0" }
 # The window's own title bar (drag, caption buttons, the palette box, the bell).

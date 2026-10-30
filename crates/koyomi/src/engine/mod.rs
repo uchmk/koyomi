@@ -342,14 +342,19 @@ impl State {
             let tail = notify::tail(&self.words, &r, |job| self.runner.log_tail(&r.id, job).ok());
             let places = notify::to(&self.notify, self.notify_to(&r.jobnet));
             notify::tell_tail(&places, event, &title, &body, &tail);
+            let (level, id) = crate::eventlog::of(r.state);
+            crate::eventlog::write(level, id, &title, &body);
             // An abnormal end told earlier is told to be over.
             if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
                 let (event, title, body) = notify::recovery_words(&self.words, &r, prev);
                 notify::tell(&places, event, &title, &body);
+                crate::eventlog::write(ito_eventlog::Level::Info, crate::eventlog::RECOVERED, &title, &body);
             }
         }
         for runs in missed {
             let (event, title, body) = notify::missed_words(&self.words, &runs);
+            let (level, id) = crate::eventlog::of(RunState::Missed);
+            crate::eventlog::write(level, id, &title, &body);
             notify::tell(&notify::to(&self.notify, self.notify_to(&runs[0].jobnet)), event, &title, &body);
         }
     }

@@ -17,6 +17,7 @@ mod compare;
 mod csv;
 mod engine;
 mod envreport;
+mod eventlog;
 mod glossary;
 mod help;
 mod i18n;

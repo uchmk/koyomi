@@ -199,7 +199,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "parking_lot",
  "percent-encoding",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
  "x11rb",
 ]
 
@@ -1121,7 +1121,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1849,6 +1849,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-eventlog"
+version = "0.140.0"
+source = "git+https://github.com/uchmk/ito?rev=7c50a20b0ece3f8f829793b5803388d7dbe2e0c0#7c50a20b0ece3f8f829793b5803388d7dbe2e0c0"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "ito-export"
 version = "0.140.0"
 source = "git+https://github.com/uchmk/ito?rev=7c50a20b0ece3f8f829793b5803388d7dbe2e0c0#7c50a20b0ece3f8f829793b5803388d7dbe2e0c0"
@@ -2229,6 +2237,7 @@ dependencies = [
  "ito-confirm",
  "ito-console",
  "ito-diff",
+ "ito-eventlog",
  "ito-export",
  "ito-fonts",
  "ito-glossary",
@@ -3471,7 +3480,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3952,7 +3961,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4837,7 +4846,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

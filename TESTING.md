@@ -939,3 +939,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 77.1 | `koyomi report` after a few runs | The month, then a line per net: runs, pass rate, usual time, and the jobs that failed most |
 | 77.2 | `koyomi report 2026-09 --csv r.csv` | A CSV with one row per net, rates in percent and averages in seconds |
 | 77.3 | History view, open 成績 | The same lines for the rows the filter shows |
+
+## 78. システムのイベントログ（Application ログ、ソース `koyomi`）
+
+| # | Do | Expect |
+|---|---|---|
+| 78.1 | Let a net end ✓, then a net that fails (`exit 1`) | Event Viewer → Windows ログ → Application, source `koyomi`: id 1000 (情報) and id 2000 (エラー) with the title and the failed jobs |
+| 78.2 | A net stopped at its `timeout`; one stopped with 強制終了 | id 2001 and id 2002 (エラー) |
+| 78.3 | The failed net runs well on the next start | id 1100 (情報) after the 1000 |
+| 78.4 | A net held with ⏸ | Nothing is written (a person did it) |
