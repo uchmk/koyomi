@@ -257,6 +257,12 @@ missed = "time passed"
 locked = "locked"
 not_run = "not run"
 
+[tabs]
+today = "Today"
+net = "Jobnets"
+calendar = "Calendars"
+history = "History"
+
 [run]
 today = "Today"
 none = "No runs today"

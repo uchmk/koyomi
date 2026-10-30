@@ -256,6 +256,12 @@ missed = "時刻を過ぎた"
 locked = "止めた"
 not_run = "未実行"
 
+[tabs]
+today = "今日"
+net = "ジョブネット"
+calendar = "カレンダー"
+history = "履歴"
+
 [run]
 today = "今日"
 none = "今日の実行はありません"

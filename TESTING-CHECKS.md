@@ -332,11 +332,11 @@
 - [ ] **28.10** `koyomi list --help`, `koyomi history -h`, `koyomi --toml list --help`, `koyomi pause --help` → Only that command's lines of the usage under `usage:`, then `every command takes --help …` (exit 0); `pause --help` prints the `pause \| resume` line 〔未訳〕
 - [x] **28.11** `koyomi list --group 経理`; `koyomi list --group nothing`; `koyomi list --toml --group 経理` → Only that group's nets in the tree (the warnings and notes still above); `koyomi: グループがない: nothing` (exit 1); the snapshot with only those defs 〔未訳〕
 - [x] **28.12** `koyomi show g/a` (confirmed, unconfirmed, held, and ✗ 誤り) → The file and its standing (`⏸ 保留` added when held), then what `approve` shows (the jobs, the times, the next week) without the question or the diff; a ✗ net prints its problems and nothing under them; exit 0 〔未訳〕
-- [ ] **28.13** The window: click 履歴 under 今日 → The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (`2026-10-29  ✓ 正常終了  売上取込  09:00:00  09:00:12  12 s`, coloured by state); the count above; the tree's and 今日's picks are off 〔未訳〕
+- [ ] **28.13** The window: click the 履歴 tab → The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (`2026-10-29  ✓ 正常終了  売上取込  09:00:00  09:00:12  12 s`, coloured by state); the count above; the tree's and 今日's picks are off 〔未訳〕
 - [ ] **28.14** Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 → The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay 〔未訳〕
 - [ ] **28.15** Pick a net in ジョブネット, then a state in 状態 → The rows narrow at once (no 検索 needed); the count follows; `該当する実行はありません` when nothing matches 〔未訳〕
 - [ ] **28.16** Click a row in 履歴 → Under the rows: the run's picture, its jobs' logs on click, 再実行 and the rest as under 今日; the row stays marked 〔未訳〕
-- [ ] **28.17** While 履歴 is open: click a net in the tree, a run under 今日, or a calendar; then 履歴 again → Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed 〔未訳〕
+- [ ] **28.17** While 履歴 is open: click a net in the tree, a run under 今日, or a calendar; then the 履歴 tab again → Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed 〔未訳〕
 - [ ] **28.18** Narrator / NVDA over 履歴 → The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) 〔未訳〕
 - [ ] **28.19** `koyomi --keys` report with 履歴 open → A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) 〔未訳〕
 
@@ -566,7 +566,7 @@
 
 ## 56. ガント（今日のチャート）
 
-- [ ] **56.1** Run two nets today, then click ガント in the left pane → A lane per run on an hour axis; the bar spans start to end, in the state's colour 〔未訳〕
+- [ ] **56.1** Run two nets today, then click the 今日 tab → A lane per run on an hour axis; the bar spans start to end, in the state's colour 〔未訳〕
 - [ ] **56.2** While a net is running → Its bar keeps growing to now 〔未訳〕
 - [ ] **56.3** Click a lane → That run opens under the chart 〔未訳〕
 - [ ] **56.4** With no runs today → 「今日の実行はありません」 〔未訳〕

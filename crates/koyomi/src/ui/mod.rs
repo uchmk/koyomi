@@ -374,7 +374,7 @@ impl Browser {
             cal_month: None,
             cal_result: None,
             hist: None,
-            gantt: false,
+            gantt: true,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1222,8 +1222,6 @@ impl Browser {
                 self.tree(ui, t);
                 ui.add_space(10.0);
                 self.today(ui, t);
-                self.gantt_link(ui, t);
-                self.history_link(ui, t);
                 self.calendar_list(ui, t);
                 // The one switch over the whole schedule, below what it stops.
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
@@ -1240,6 +1238,10 @@ impl Browser {
         egui::CentralPanel::default().show(ui, |ui| {
             if modal {
                 ui.disable();
+            }
+            if self.editor.is_none() {
+                self.tabs(ui, t);
+                ui.add_space(6.0);
             }
             if self.editor.is_some() {
                 self.editor_view(ui, t);
@@ -1449,15 +1451,61 @@ impl Browser {
         }
     }
 
-    /// The ガント row under today's runs: a click opens the runs on a time axis.
-    fn gantt_link(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+    /// The tabs over the detail, at the right: 今日 (the chart), ジョブネット (the net picked on the
+    /// left), カレンダー (the first one, or the one picked) and 履歴.
+    fn tabs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         if self.snap.is_none() {
             return;
         }
-        let r = ui.selectable_label(self.gantt, format!("  {}", t.tr("run.gantt")));
-        ito_a11y::say(&r, Role::Row, t.tr("run.gantt"));
-        if r.clicked() {
-            self.open_gantt();
+        let first_cal = self.snap.as_ref().and_then(|s| s.calendars.keys().next().cloned());
+        let (today, history, calendar) = (self.gantt, self.hist.is_some(), self.cal_sel.is_some() && !self.gantt && self.hist.is_none());
+        let net = !today && !history && !calendar;
+        let mut go = None;
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            // Right to left: the last tab is added first.
+            let tab = |ui: &mut egui::Ui, on: bool, key: &str, enabled: bool| {
+                let label = t.tr(key);
+                let r = ui.add_enabled(enabled, egui::Button::selectable(on, label));
+                ito_a11y::say(&r, Role::Button, label);
+                r.clicked()
+            };
+            if tab(ui, history, "tabs.history", true) {
+                go = Some(3);
+            }
+            if tab(ui, calendar, "tabs.calendar", first_cal.is_some()) {
+                go = Some(2);
+            }
+            if tab(ui, net, "tabs.net", true) {
+                go = Some(1);
+            }
+            if tab(ui, today, "tabs.today", true) {
+                go = Some(0);
+            }
+        });
+        match go {
+            Some(0) => self.open_gantt(),
+            Some(1) => {
+                self.hist = None;
+                self.gantt = false;
+                self.run_sel = None;
+                self.cal_sel = None;
+                self.job_sel = None;
+                self.result = None;
+            }
+            Some(2) => {
+                if let Some(name) = self.cal_sel.clone().or(first_cal) {
+                    self.hist = None;
+                    self.gantt = false;
+                    self.run_sel = None;
+                    self.job_sel = None;
+                    self.result = None;
+                    self.cal_month = None;
+                    self.cal_result = None;
+                    self.cal_sel = Some(name);
+                }
+            }
+            Some(3) => self.open_history(),
+            _ => {}
         }
     }
 
@@ -1506,18 +1554,6 @@ impl Browser {
             ui.add_space(10.0);
             ui.separator();
             self.run_view(ui, t);
-        }
-    }
-
-    /// The 履歴 row under today's runs: a click opens the last 7 days.
-    fn history_link(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
-        if self.snap.is_none() {
-            return;
-        }
-        let r = ui.selectable_label(self.hist.is_some(), format!("  {}", t.tr("run.history")));
-        ito_a11y::say(&r, Role::Row, t.tr("run.history"));
-        if r.clicked() {
-            self.open_history();
         }
     }
 
