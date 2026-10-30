@@ -262,6 +262,8 @@ pub struct Browser {
     cal_sel: Option<String>,
     /// Groups folded in the tree (this session only).
     folded: BTreeSet<String>,
+    /// The selection the tree last showed: a new one unfolds its group.
+    tree_seen: Option<String>,
     /// The month shown, when it is not this one.
     cal_month: Option<(i32, u32)>,
     /// What the last click on a day did to the file, shown under the month.
@@ -374,6 +376,7 @@ impl Browser {
             autostart_off: false,
             cal_sel: None,
             folded: BTreeSet::new(),
+            tree_seen: None,
             cal_month: None,
             cal_result: None,
             hist: None,
@@ -1363,21 +1366,36 @@ impl Browser {
         let mut make_in = None;
         let mut re: Option<(String, Option<Re>)> = None;
         let editing = self.editor.is_some();
+        if self.selected != self.tree_seen {
+            self.tree_seen.clone_from(&self.selected);
+            if let Some(d) = snap.defs.iter().find(|d| Some(&d.id) == self.selected.as_ref()) {
+                self.folded.remove(&d.group);
+            }
+        }
+        let mut todo: BTreeMap<&str, usize> = BTreeMap::new();
+        for d in snap.defs.iter().filter(|d| d.standing != Standing::Confirmed) {
+            *todo.entry(d.group.as_str()).or_default() += 1;
+        }
         let mut group: Option<&str> = None;
         for d in &snap.defs {
             if group != Some(d.group.as_str()) {
                 group = Some(&d.group);
                 let mark = if self.folded.contains(&d.group) { "▶" } else { "▼" };
-                let todo = snap.defs.iter().filter(|x| x.group == d.group && x.standing != Standing::Confirmed).count();
+                let todo = todo.get(d.group.as_str()).copied().unwrap_or(0);
                 let mut head = egui::text::LayoutJob::default();
                 let font = egui::TextStyle::Body.resolve(ui.style());
                 let fmt = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-                head.append(&format!("{mark} {}", d.group), 0.0, fmt(c.dim));
+                head.append(&format!("{mark} {}", d.group), 0.0, fmt(ui.visuals().strong_text_color()));
                 if todo > 0 {
                     head.append(&format!("  ✕{todo}"), 0.0, fmt(c.err));
                 }
                 let r = ui.add(egui::Label::new(head).sense(egui::Sense::click()));
-                ito_a11y::say(&r, Role::Heading, &d.group);
+                let state = t.tr(if self.folded.contains(&d.group) { "tree.folded" } else { "tree.open" });
+                let mut said = t.trf("tree.group", &[&d.group, state]);
+                if todo > 0 {
+                    said = format!("{said}, {}", t.trf("tree.todo", &[&todo.to_string()]));
+                }
+                ito_a11y::say(&r, Role::Heading, &said);
                 if r.clicked() && !self.folded.remove(&d.group) {
                     self.folded.insert(d.group.clone());
                 }
@@ -2344,6 +2362,7 @@ mod tests {
             autostart_off: false,
             cal_sel: None,
             folded: BTreeSet::new(),
+            tree_seen: None,
             cal_month: None,
             cal_result: None,
             hist: None,
@@ -2602,6 +2621,21 @@ mod tests {
         frame(&ctx, size, Vec::new(), &mut b);
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(rx_req.try_recv().is_err(), "Enter on the safe button deleted nothing");
+    }
+
+    /// A selection made elsewhere (the today table) unfolds its group in the tree.
+    #[test]
+    fn a_new_selection_unfolds_its_group() {
+        let mut b = quiet(defs());
+        let d = defs().remove(0);
+        b.folded.insert(d.group.clone());
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        assert!(b.folded.contains(&d.group), "nothing selected: stays folded");
+        b.selected = Some(b.snap.as_ref().unwrap().defs[0].id.clone());
+        frame(&ctx, size, Vec::new(), &mut b);
+        assert!(!b.folded.contains(&b.snap.as_ref().unwrap().defs[0].group));
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.
