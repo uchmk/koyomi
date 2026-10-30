@@ -35,7 +35,7 @@ pub fn month(defs: &[Def], calendars: &BTreeMap<String, Calendar>, year: i32, m:
     for def in defs.iter().filter(|d| d.standing == Standing::Confirmed) {
         let Some(net) = &def.net else { continue };
         let cal = def.calendar.as_deref().and_then(|c| calendars.get(c));
-        for at in when::between_in(&net.when, start, end, cal) {
+        for at in koyomi_core::quiet::starts(&net.quiet, net.on_quiet, when::between_in(&net.when, start, end, cal)) {
             if let Some((_, list)) = days.iter_mut().find(|(d, _)| *d == at.date()) {
                 list.push((at, def.label().to_owned()));
             }

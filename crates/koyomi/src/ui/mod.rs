@@ -513,7 +513,7 @@ impl Browser {
             .filter_map(|d| {
                 let net = d.net.as_ref()?;
                 let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                koyomi_core::when::next_times_in(&net.when, now, 1, cal).into_iter().next()
+                koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal).into_iter().next()
             })
             .min();
         (word, running, next)
@@ -1847,7 +1847,8 @@ impl Browser {
                 }
                 let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
                 let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
-                let rows = show::next_rows(t, &net.when, cal, chrono::Local::now().naive_local(), 10, power.as_ref());
+                let rows =
+                    show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, chrono::Local::now().naive_local(), 10, power.as_ref());
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
                 }

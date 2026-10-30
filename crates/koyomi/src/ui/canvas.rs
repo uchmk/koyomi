@@ -1265,7 +1265,15 @@ impl Editor {
                 let r = ui.label(&head);
                 ito_a11y::say(&r, Role::Heading, &head);
                 let sleep = show::Sleep::of(power, self.net.wake);
-                for row in show::next_rows(t, &self.net.when, cal, chrono::Local::now().naive_local(), 10, Some(&sleep)) {
+                for row in show::next_rows(
+                    t,
+                    &self.net.when,
+                    (&self.net.quiet, self.net.on_quiet),
+                    cal,
+                    chrono::Local::now().naive_local(),
+                    10,
+                    Some(&sleep),
+                ) {
                     ui.label(row);
                 }
                 if !closed {

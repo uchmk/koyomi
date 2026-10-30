@@ -17,7 +17,6 @@ use ito_ipc::door::ask;
 use koyomi_core::calendar::{Calendar, Calendars, Day, Table, TABLE_FILE};
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
-use koyomi_core::when;
 use serde::Serialize;
 
 use crate::proto::{self, Request, Runs, Snapshot};
@@ -649,7 +648,7 @@ fn next(args: &[String]) -> i32 {
         let mut next: Vec<NextRow> =
             net.when.iter().filter_map(|w| show::event_row(&t, w)).map(|e| NextRow { at: None, event: Some(e) }).collect();
         next.extend(
-            when::next_times_in(&net.when, now, count, cal)
+            koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, count, cal)
                 .into_iter()
                 .map(|at| NextRow { at: Some(at.format("%Y-%m-%d %H:%M:%S").to_string()), event: None }),
         );
@@ -663,7 +662,7 @@ fn next(args: &[String]) -> i32 {
     if unconfirmed {
         out(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
     }
-    let rows = show::next_rows(&t, &net.when, cal, now, count, Some(&show::Sleep::of(&snap.power, net.wake)));
+    let rows = show::next_rows(&t, &net.when, (&net.quiet, net.on_quiet), cal, now, count, Some(&show::Sleep::of(&snap.power, net.wake)));
     if rows.is_empty() {
         out(t.tr("run.next_over"), false);
     }

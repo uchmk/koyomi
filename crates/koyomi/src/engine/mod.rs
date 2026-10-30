@@ -1612,7 +1612,10 @@ fn next_due(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime
         .filter_map(|d| {
             let net = d.net.as_ref().filter(|n| n.wake || !wake)?;
             let cal = d.calendar.as_deref().and_then(|c| calendars.get(c));
-            when::next_times_in(&net.when, now, 1, cal).into_iter().next().map(|at| (at, d.id.clone()))
+            koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal)
+                .into_iter()
+                .next()
+                .map(|at| (at, d.id.clone()))
         })
         .min()
 }

@@ -82,6 +82,62 @@ pub fn named(spans: &[Span], at: NaiveDateTime) -> Option<String> {
     spans.iter().find(|s| s.contains(at.time())).map(Span::text)
 }
 
+/// When a time `at` of a net starts under its quiet hours: at their end
+/// (`wait`), not at all (`skip`), or at `at` when it is in none of them.
+pub fn start(spans: &[Span], on: OnQuiet, at: NaiveDateTime) -> Option<NaiveDateTime> {
+    match until(spans, at) {
+        None => Some(at),
+        Some(end) => (on == OnQuiet::Wait).then_some(end),
+    }
+}
+
+/// The starts of `times` (earliest first) under the quiet hours, as the engine
+/// makes them: each moved or dropped by [`start`], and the times that wait for
+/// the same end counted once (the later ones in the same hours are skipped).
+pub fn starts(spans: &[Span], on: OnQuiet, times: impl IntoIterator<Item = NaiveDateTime>) -> Vec<NaiveDateTime> {
+    let mut out: Vec<NaiveDateTime> = Vec::new();
+    for s in times.into_iter().filter_map(|at| start(spans, on, at)) {
+        if out.last() != Some(&s) {
+            out.push(s);
+        }
+    }
+    out
+}
+
+/// The next `n` starts after `after` of a net's `[[when]]` under its quiet
+/// hours ([`starts`]). Times are read in rounds, so hours that drop many of
+/// them still give `n` when there are that many; a net that never leaves its
+/// quiet hours gives none.
+pub fn next_starts(
+    whens: &[crate::when::When],
+    spans: &[Span],
+    on: OnQuiet,
+    after: NaiveDateTime,
+    n: usize,
+    cal: Option<&crate::calendar::Calendar>,
+) -> Vec<NaiveDateTime> {
+    if spans.is_empty() {
+        return crate::when::next_times_in(whens, after, n, cal);
+    }
+    let mut out: Vec<NaiveDateTime> = Vec::new();
+    let mut cursor = after;
+    for _ in 0..64 {
+        let times = crate::when::next_times_in(whens, cursor, n.max(16), cal);
+        let Some(&last) = times.last() else { break };
+        for s in starts(spans, on, times) {
+            if out.last().is_none_or(|l| *l < s) {
+                out.push(s);
+            }
+        }
+        if out.len() >= n {
+            break;
+        }
+        cursor = last;
+    }
+    out.truncate(n);
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +148,40 @@ mod tests {
 
     fn spans(list: &[&str]) -> Vec<Span> {
         list.iter().map(|s| Span::parse(s).unwrap()).collect()
+    }
+
+    #[test]
+    fn the_starts_wait_once_per_hours_or_are_dropped() {
+        let s = spans(&["12:00-13:00"]);
+        let times = ["11:30", "12:00", "12:30", "13:30"].map(|h| at(&format!("2026-10-30 {h}")));
+        let wait = starts(&s, OnQuiet::Wait, times);
+        assert_eq!(wait, ["11:30", "13:00", "13:30"].map(|h| at(&format!("2026-10-30 {h}"))));
+        let skip = starts(&s, OnQuiet::Skip, times);
+        assert_eq!(skip, ["11:30", "13:30"].map(|h| at(&format!("2026-10-30 {h}"))));
+        assert_eq!(start(&[], OnQuiet::Skip, times[1]), Some(times[1]));
+    }
+
+    #[test]
+    fn the_next_starts_look_past_hours_that_drop_many_times() {
+        let net = crate::jobnet::parse(
+            "format = 1
+quiet = [\"00:00-23:00\"]
+on_quiet = \"skip\"
+[[when]]
+every = \"minutes\"
+n = 10
+from = \"00:00\"
+to = \"23:59\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let got = next_starts(&net.when, &net.quiet, net.on_quiet, at("2026-10-30 00:00"), 3, None);
+        assert_eq!(got, ["23:00", "23:10", "23:20"].map(|h| at(&format!("2026-10-30 {h}"))));
+        let all = spans(&["00:00-12:00", "12:00-00:00"]);
+        assert!(next_starts(&net.when, &all, OnQuiet::Skip, at("2026-10-30 00:00"), 3, None).is_empty());
     }
 
     #[test]

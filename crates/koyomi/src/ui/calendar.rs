@@ -155,7 +155,7 @@ impl Browser {
                 }
                 let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
                 let now = chrono::Local::now().naive_local();
-                for row in show::next_rows(t, &net.when, Some(&cal), now, 10, power.as_ref()) {
+                for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(&cal), now, 10, power.as_ref()) {
                     ui.label(format!("  {row}"));
                 }
             }
