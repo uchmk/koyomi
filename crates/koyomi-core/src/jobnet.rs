@@ -131,7 +131,7 @@ impl Require {
             (_, Some(n)) => (n, 1),
             _ => return None,
         };
-        n.parse::<u64>().ok().filter(|n| *n > 0).map(|n| n * mul)
+        n.parse::<u64>().ok().filter(|n| *n > 0).and_then(|n| n.checked_mul(mul))
     }
 }
 
@@ -2889,7 +2889,7 @@ run = [\"x\"]
         .unwrap()
         .require
         .is_empty());
-        for bad in ["\"ac\"", "[\"wifi\"]", "[\"idle:0m\"]", "[\"idle:x\"]", "[\"idle:10分\"]"] {
+        for bad in ["\"ac\"", "[\"wifi\"]", "[\"idle:0m\"]", "[\"idle:x\"]", "[\"idle:10分\"]", "[\"idle:400000000000000000m\"]"] {
             let e = parse(&format!(
                 "format = 1
 require = {bad}
