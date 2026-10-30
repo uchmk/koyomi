@@ -1136,9 +1136,7 @@ impl Editor {
                         }
                     }
                 }
-                let r = ui.add_enabled(self.can_save(), egui::Button::new(t.tr("canvas.save")));
-                ito_a11y::say(&r, Role::Button, t.tr("canvas.save"));
-                if r.clicked() {
+                if super::primary(ui, self.can_save(), t.tr("canvas.save")).clicked() {
                     action = self.edit(Cmd::Save);
                 }
                 for (cmd, key) in

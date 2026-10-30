@@ -2218,14 +2218,10 @@ impl Browser {
             // A failure dealt with: it leaves the count in the status bar.
             let done = self.acked.contains(&run.id);
             let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
-            if run.is_over() && run.state.is_error() {
-                let r = ui.add_enabled(!done, egui::Button::new(words));
-                ito_a11y::say(&r, Role::Button, words);
-                if r.clicked() {
-                    self.acked.insert(run.id.clone());
-                    self.to_ack.push(run.id.clone());
-                    self.result = Some(Ok(t.tr("run.acked").to_owned()));
-                }
+            if run.is_over() && run.state.is_error() && primary(ui, !done, words).clicked() {
+                self.acked.insert(run.id.clone());
+                self.to_ack.push(run.id.clone());
+                self.result = Some(Ok(t.tr("run.acked").to_owned()));
             }
             // Skip the picked job before it starts: the jobs after it go on.
             let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
@@ -2664,6 +2660,14 @@ impl Browser {
             None => {}
         }
     }
+}
+
+/// A screen's one main button (D13): filled with the theme's accent, greyed when not `enabled`.
+pub(crate) fn primary(ui: &mut egui::Ui, enabled: bool, words: &str) -> egui::Response {
+    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+    let r = ui.add_enabled_ui(enabled, |ui| ito_prefs::button_with(ui, look, words, ito_prefs::Tone::Primary)).inner;
+    ito_a11y::say(&r, Role::Button, words);
+    r
 }
 
 /// Everything in the settings folder, as one file under `exports/` in the
