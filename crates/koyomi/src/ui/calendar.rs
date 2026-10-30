@@ -2,13 +2,16 @@
 //! table in the detail when one is picked. A click on a day writes
 //! `calendars/<name>.toml` (a weekend or holiday becomes `open`, a weekday
 //! `closed`, and a second click takes it back); the engine's watcher reads the
-//! file again and the table follows what the engine counts by. 新しいカレンダー
-//! writes a new `calendars/<name>.toml` from a box.
+//! file again and the table follows what the engine counts by. The boxes above
+//! the month set `holidays` and `weekly_off`. 新しいカレンダー writes a new
+//! `calendars/<name>.toml` from a box; the same box renames one, and 消す keeps
+//! the file under `versions/_calendars/` before it goes. Neither touches the
+//! files that name the calendar: the box lists them.
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use ito_a11y::Role;
 use koyomi_core::calendar::{Calendar, Day};
-use koyomi_core::scan::Standing;
+use koyomi_core::scan::{Def, Standing};
 
 use super::{bad_file_name, Browser, Why};
 use crate::show;
@@ -17,6 +20,8 @@ const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::T
 
 /// The 新しいカレンダー box: the name (the file's stem), Japan's holidays, and the days off each week.
 pub(super) struct NewCal {
+    /// The calendar the box renames; `None` makes a new one.
+    from: Option<String>,
     pub(super) name: String,
     holidays: bool,
     /// Monday first, as [`WEEK`].
@@ -48,6 +53,7 @@ impl Browser {
             ito_a11y::say(&r, Role::Label, t.tr("calendar.none"));
         }
         let mut pick = None;
+        let mut act = None;
         for name in snap.calendars.keys() {
             let on = self.cal_sel.as_deref() == Some(name.as_str());
             let r = ui.selectable_label(on, format!("  {name}"));
@@ -55,11 +61,24 @@ impl Browser {
             if r.clicked() {
                 pick = Some(name.clone());
             }
+            r.context_menu(|ui| {
+                for (i, key) in ["calendar.rename", "calendar.delete"].into_iter().enumerate() {
+                    if ui.button(t.tr(key)).clicked() {
+                        act = Some((i, name.clone()));
+                        ui.close();
+                    }
+                }
+            });
         }
         let r = ui.button(t.tr("calendar.new"));
         ito_a11y::say(&r, Role::Button, t.tr("calendar.new"));
         if r.clicked() || make {
             self.new_cal_box();
+        }
+        match act {
+            Some((0, name)) => self.rename_cal_box(&name),
+            Some((_, name)) => self.delete_cal_box(&name),
+            None => {}
         }
         if pick.is_some() {
             self.cal_sel = pick;
@@ -79,8 +98,13 @@ impl Browser {
         let Some(name) = self.cal_sel.clone() else { return };
         let Some(cal) = self.snap.as_ref().and_then(|s| s.calendars.get(&name)).cloned() else {
             match &self.cal_result {
-                // Just made: the engine has not read it yet.
-                Some(Ok(made)) => ui.label(egui::RichText::new(format!("{made} {}", t.tr("calendar.reading"))).color(c.dim)),
+                // Just made, renamed or deleted: what was done; a file there is one the engine has
+                // not read yet.
+                Some(Ok(done)) => {
+                    let there = ito_common::app_dir("koyomi").is_some_and(|d| d.join(format!("calendars/{name}.toml")).exists());
+                    let line = if there { format!("{done} {}", t.tr("calendar.reading")) } else { done.clone() };
+                    ui.label(egui::RichText::new(line).color(c.dim))
+                }
                 _ => ui.label(egui::RichText::new(t.trf("calendar.missing", &[&name])).color(c.err)),
             };
             return;
@@ -109,6 +133,39 @@ impl Browser {
             }
         });
         ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.hint")).color(c.dim)).wrap());
+        // The rules of the week, set in place; and the file itself.
+        let mut rules = None;
+        let mut act = None;
+        ui.horizontal_wrapped(|ui| {
+            let mut holidays = cal.holidays;
+            // egui names a checkbox for the screen reader itself.
+            let mut changed = ui.checkbox(&mut holidays, t.tr("newcal.holidays")).changed();
+            ui.label(t.tr("newcal.off"));
+            let mut off = WEEK.map(|w| cal.weekly_off.contains(&w));
+            for (w, on) in WEEK.iter().zip(off.iter_mut()) {
+                changed |= ui.checkbox(on, weekday(t, *w)).changed();
+            }
+            if changed {
+                rules = Some((holidays, off));
+            }
+            ui.separator();
+            for (i, key) in ["calendar.rename", "calendar.delete"].into_iter().enumerate() {
+                let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
+                ito_a11y::say(&r, Role::Button, t.tr(key));
+                if r.clicked() {
+                    act = Some(i);
+                }
+            }
+        });
+        if let Some((holidays, off)) = rules {
+            let off = days_off(off);
+            self.cal_result = Some(edit_file(t, &name, |text| set_rules(text, holidays, &off)));
+        }
+        match act {
+            Some(0) => self.rename_cal_box(&name),
+            Some(_) => self.delete_cal_box(&name),
+            None => {}
+        }
         ui.add_space(6.0);
         let days = show::month_days(&cal, y, m);
         let mut toggle: Option<(NaiveDate, Day)> = None;
@@ -205,6 +262,7 @@ impl Browser {
     pub fn new_cal_box(&mut self) {
         if !self.box_open() && self.snap.is_some() {
             self.new_cal = Some(NewCal {
+                from: None,
                 name: String::new(),
                 holidays: true,
                 off: [false, false, false, false, false, true, true],
@@ -215,18 +273,86 @@ impl Browser {
         }
     }
 
+    /// 名前を変える: the 新しいカレンダー box with the name only, filled in.
+    fn rename_cal_box(&mut self, name: &str) {
+        if !self.box_open() && self.snap.is_some() {
+            self.new_cal = Some(NewCal {
+                from: Some(name.to_owned()),
+                name: name.to_owned(),
+                holidays: false,
+                off: [false; 7],
+                error: None,
+                fresh: true,
+            });
+            self.focus = 0;
+        }
+    }
+
+    fn delete_cal_box(&mut self, name: &str) {
+        if !self.box_open() && self.snap.is_some() {
+            self.cal_deleting = Some(name.to_owned());
+            // The safe button first: Enter on a fresh box deletes nothing.
+            self.focus = 1;
+        }
+    }
+
+    /// The box that asks before a calendar is deleted: the files that still name it, and where
+    /// its content is kept.
+    pub(super) fn confirm_cal_delete(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(name) = self.cal_deleting.clone() else { return };
+        let users = self.snap.as_ref().map(|s| users(&s.defs, &name)).unwrap_or_default();
+        let rows = [(t.tr("calendar.heading").to_owned(), format!("calendars/{name}.toml"))];
+        let mut body = vec![t.trf("newcal.delete_ask", &[&name])];
+        if !users.is_empty() {
+            body.push(t.trf("calendar.users_left", &[&name, &users.join(", ")]));
+        }
+        let buttons = [t.tr("delete.yes").to_owned(), t.tr("make.cancel").to_owned()];
+        let q = ito_confirm::Question {
+            title: t.tr("newcal.delete_title"),
+            rows: &rows,
+            body: &body,
+            buttons: &buttons,
+            hint: t.tr("confirm.hint"),
+            focus: Some(self.focus),
+            primary: Some(1),
+            danger: true,
+            ..Default::default()
+        };
+        match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
+            Some(0) => {
+                self.cal_deleting = None;
+                self.cal_sel = Some(name.clone());
+                self.cal_result = Some(delete_file(t, &name));
+            }
+            Some(_) => self.cal_deleting = None,
+            None => {}
+        }
+    }
+
     pub(super) fn confirm_new_cal(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let users = match (&self.new_cal, &self.snap) {
+            (Some(NewCal { from: Some(from), .. }), Some(s)) => users(&s.defs, from),
+            _ => Vec::new(),
+        };
         let Some(m) = &mut self.new_cal else { return };
         let c = ito_theme::colors();
         let mut pressed = None;
-        egui::Window::new(t.tr("newcal.title"))
+        let (title, go) = match &m.from {
+            None => (t.tr("newcal.title"), t.tr("newcal.go")),
+            Some(_) => (t.tr("newcal.rename_title"), t.tr("newcal.rename_go")),
+        };
+        egui::Window::new(title)
             .id(egui::Id::new("new-cal"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_width(480.0);
-                ui.add(egui::Label::new(t.tr("newcal.lead")).wrap());
+                let lead = match &m.from {
+                    None => t.tr("newcal.lead").to_owned(),
+                    Some(from) => t.trf("newcal.rename_lead", &[from]),
+                };
+                ui.add(egui::Label::new(lead).wrap());
                 egui::Grid::new("new-cal-fields").num_columns(2).show(ui, |ui| {
                     ui.label(t.tr("newcal.name"));
                     let r = ui.add(egui::TextEdit::singleline(&mut m.name).hint_text(t.tr("newcal.name_hint")).desired_width(240.0));
@@ -236,6 +362,9 @@ impl Browser {
                         m.fresh = false;
                     }
                     ui.end_row();
+                    if m.from.is_some() {
+                        return;
+                    }
                     ui.label("");
                     // egui names a checkbox for the screen reader itself.
                     ui.checkbox(&mut m.holidays, t.tr("newcal.holidays"));
@@ -248,11 +377,15 @@ impl Browser {
                     });
                     ui.end_row();
                 });
+                if let (Some(from), false) = (&m.from, users.is_empty()) {
+                    let line = t.trf("calendar.users_left", &[from, &users.join(", ")]);
+                    ui.add(egui::Label::new(egui::RichText::new(line).color(c.wait_text())).wrap());
+                }
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
                 ui.horizontal(|ui| {
-                    for (i, label) in [t.tr("newcal.go"), t.tr("make.cancel")].into_iter().enumerate() {
+                    for (i, label) in [go, t.tr("make.cancel")].into_iter().enumerate() {
                         let r = ui.button(label);
                         ito_a11y::say(&r, Role::Button, label);
                         if r.clicked() {
@@ -269,25 +402,32 @@ impl Browser {
         }
     }
 
-    /// The box's 作る: writes the file and shows its month. Nothing is overwritten.
+    /// The box's 作る: writes the file (or renames it) and shows its month. Nothing is overwritten.
     fn new_cal_go(&mut self, t: &ito_i18n::Table) {
         let Some(m) = &mut self.new_cal else { return };
         let have = self.snap.iter().flat_map(|s| s.calendars.keys().map(String::as_str));
+        // A rename to the name it has, or only another case of it, is not taken.
+        let from = m.from.clone();
+        let have = have.filter(|h| from.as_deref().is_none_or(|f| !f.eq_ignore_ascii_case(h)));
         let dir = ito_common::app_dir("koyomi").map(|d| d.join("calendars"));
         let made = match new_name(&m.name, have) {
             Err(Why::Empty) => Err(t.tr("newcal.empty").to_owned()),
             Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
             Err(Why::Exists(n)) => Err(t.trf("make.exists", &[n.as_str()])),
             Ok(name) => {
-                let off: Vec<Weekday> = WEEK.iter().zip(m.off).filter(|(_, on)| *on).map(|(w, _)| *w).collect();
                 let file = format!("calendars/{name}.toml");
-                match &dir {
-                    None => Err(t.trf("calendar.write_failed", &[&file, "app_dir"])),
+                let same = |d: &std::path::Path| from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&name)) && d.exists();
+                match (&dir, &from) {
+                    (None, _) => Err(t.trf("calendar.write_failed", &[&file, "app_dir"])),
+                    (Some(_), Some(f)) if *f == name => Err(t.trf("make.exists", &[&name])),
                     // Not read by the engine yet, but there: made by hand a moment ago.
-                    Some(d) if d.join(format!("{name}.toml")).exists() => Err(t.trf("make.exists", &[&name])),
-                    Some(d) => ito_common::write_atomic(&d.join(format!("{name}.toml")), new_text(m.holidays, &off))
+                    (Some(d), _) if d.join(format!("{name}.toml")).exists() && !same(d) => Err(t.trf("make.exists", &[&name])),
+                    (Some(d), None) => ito_common::write_atomic(&d.join(format!("{name}.toml")), new_text(m.holidays, &days_off(m.off)))
                         .map(|()| (name, t.trf("calendar.written", &[&file])))
                         .map_err(|e| t.trf("calendar.write_failed", &[&file, &e])),
+                    (Some(d), Some(f)) => std::fs::rename(d.join(format!("{f}.toml")), d.join(format!("{name}.toml")))
+                        .map(|()| (name.clone(), t.trf("calendar.renamed", &[f, &name])))
+                        .map_err(|e| t.trf("calendar.rename_failed", &[&format!("calendars/{f}.toml"), &e.to_string()])),
                 }
             }
         };
@@ -327,13 +467,41 @@ fn new_name<'a>(name: &str, mut have: impl Iterator<Item = &'a str>) -> Result<S
 
 /// A new calendar's file.
 pub fn new_text(holidays: bool, off: &[Weekday]) -> String {
+    format!("format = {}\nholidays = {}\nweekly_off = {}\n", koyomi_core::calendar::FORMAT, holidays_text(holidays), off_text(off))
+}
+
+/// `holidays` and `weekly_off` of `text` set: what the boxes above the month write.
+pub fn set_rules(text: &str, holidays: bool, off: &[Weekday]) -> Result<String, String> {
+    let text = ito_common::set_key(text, None, "holidays", &holidays_text(holidays))?;
+    ito_common::set_key(&text, None, "weekly_off", &off_text(off))
+}
+
+fn holidays_text(on: bool) -> String {
+    format!("\"{}\"", if on { "japan" } else { "none" })
+}
+
+fn off_text(off: &[Weekday]) -> String {
     let days: Vec<String> = off.iter().map(|w| format!("\"{}\"", w.to_string().to_lowercase())).collect();
-    format!(
-        "format = {}\nholidays = \"{}\"\nweekly_off = [{}]\n",
-        koyomi_core::calendar::FORMAT,
-        if holidays { "japan" } else { "none" },
-        days.join(", ")
-    )
+    format!("[{}]", days.join(", "))
+}
+
+/// The ticked days of a row of seven, Monday first.
+fn days_off(on: [bool; 7]) -> Vec<Weekday> {
+    WEEK.iter().zip(on).filter(|(_, on)| *on).map(|(w, _)| *w).collect()
+}
+
+/// The files that make a net count by `name`: the net's own `calendar`, or its group's
+/// `_group.toml` when the net names none. What a rename or a delete leaves pointing nowhere.
+pub fn users(defs: &[Def], name: &str) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for d in defs.iter().filter(|d| d.calendar.as_deref() == Some(name)) {
+        let own = d.net.as_ref().is_some_and(|n| n.calendar.as_deref() == Some(name));
+        let file = if own { format!("jobnets/{}", d.file) } else { format!("jobnets/{}/_group.toml", d.group) };
+        if !out.contains(&file) {
+            out.push(file);
+        }
+    }
+    out
 }
 
 fn weekday(t: &ito_i18n::Table, w: Weekday) -> String {
@@ -375,17 +543,48 @@ pub fn rewrite(text: &str, cal: &Calendar) -> Result<String, String> {
 }
 
 fn toggle_day(t: &ito_i18n::Table, name: &str, cal: &Calendar, d: NaiveDate, day: &Day) -> Result<String, String> {
+    edit_file(t, name, |text| rewrite(text, &toggled(cal, d, day)))
+}
+
+/// `calendars/<name>.toml` read, changed by `change`, and written back; what to say under the month.
+fn edit_file(t: &ito_i18n::Table, name: &str, change: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
     let file = format!("calendars/{name}.toml");
     let path = ito_common::app_dir("koyomi").ok_or_else(|| t.trf("calendar.write_failed", &[&file, "app_dir"]))?.join(&file);
     let write = || -> Result<(), String> {
         let text = ito_common::read_or_empty(&path)?;
-        let text = rewrite(&text, &toggled(cal, d, day))?;
-        ito_common::write_atomic(&path, text)
+        ito_common::write_atomic(&path, change(&text)?)
     };
     match write() {
         Ok(()) => Ok(t.trf("calendar.written", &[&file])),
         Err(e) => Err(t.trf("calendar.write_failed", &[&file, &e])),
     }
+}
+
+/// `calendars/<name>.toml` copied to `versions/_calendars/<name>/<YYYYMMDD-HHMMSS>.toml` in the
+/// state folder (as an import keeps one it writes over), then deleted.
+fn delete_file(t: &ito_i18n::Table, name: &str) -> Result<String, String> {
+    let file = format!("calendars/{name}.toml");
+    let failed = |e: &str| t.trf("calendar.delete_failed", &[&file, e]);
+    let path = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join(&file);
+    let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join(name);
+    let kept = keep_and_delete(&path, &dir, &chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()).map_err(|e| failed(&e))?;
+    Ok(t.trf("calendar.deleted", &[&file, &kept.display().to_string()]))
+}
+
+/// `path` copied into `dir` as `<stamp>.toml` (or `<stamp>-2.toml` … when taken), then deleted;
+/// where the copy went. Nothing is deleted when the copy fails.
+fn keep_and_delete(path: &std::path::Path, dir: &std::path::Path, stamp: &str) -> Result<std::path::PathBuf, String> {
+    let text = std::fs::read(path).map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let mut kept = dir.join(format!("{stamp}.toml"));
+    let mut n = 1;
+    while kept.exists() {
+        n += 1;
+        kept = dir.join(format!("{stamp}-{n}.toml"));
+    }
+    ito_common::write_atomic(&kept, text)?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    Ok(kept)
 }
 
 #[cfg(test)]
@@ -411,6 +610,45 @@ mod tests {
         assert_eq!(new_name("会社.", have()), Err(Why::Bad));
         assert_eq!(new_name("会社", have()), Err(Why::Exists("会社".to_owned())));
         assert_eq!(new_name("factory", have()), Err(Why::Exists("factory".to_owned())));
+    }
+
+    #[test]
+    fn the_week_rules_are_set_in_place_and_the_rest_stays() {
+        let text = set_rules(CAL, false, &[Weekday::Sun]).unwrap();
+        assert_eq!(
+            text,
+            "format = 1
+holidays = \"none\"
+weekly_off = [\"sun\"]
+closed = [{ date = 2026-11-20, name = \"創立記念日\" }]
+"
+        );
+        let cal = Calendar::parse("会社", &text).unwrap();
+        assert!(!cal.holidays);
+        assert_eq!(cal.weekly_off, vec![Weekday::Sun]);
+        assert_eq!(cal.closed.len(), 1, "the named closed day stays");
+        let back = set_rules(&text, true, &[Weekday::Sat, Weekday::Sun]).unwrap();
+        assert_eq!(back, CAL);
+        assert_eq!(set_rules(&text, true, &[]).unwrap().lines().nth(2), Some("weekly_off = []"));
+        assert_eq!(days_off([true, false, false, false, false, false, true]), vec![Weekday::Mon, Weekday::Sun]);
+    }
+
+    #[test]
+    fn a_deleted_calendar_is_kept_first_under_a_stamp_that_is_free() {
+        let dir = std::env::temp_dir().join(format!("koyomi-caldel-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let keep = dir.join("versions/_calendars/会社");
+        std::fs::create_dir_all(&keep).unwrap();
+        std::fs::write(keep.join("20261031-120000.toml"), "old").unwrap();
+        let path = dir.join("会社.toml");
+        std::fs::write(&path, CAL).unwrap();
+        let kept = keep_and_delete(&path, &keep, "20261031-120000").unwrap();
+        assert_eq!(kept, keep.join("20261031-120000-2.toml"));
+        assert_eq!(std::fs::read_to_string(&kept).unwrap(), CAL);
+        assert!(!path.exists());
+        assert!(keep_and_delete(&path, &keep, "20261031-120001").is_err(), "nothing there: nothing kept");
+        assert!(!keep.join("20261031-120001.toml").exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

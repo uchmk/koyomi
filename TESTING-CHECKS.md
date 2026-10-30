@@ -1,6 +1,6 @@
 # Checklist
 
-545 checks in TESTING.md, 541 left for a person.
+546 checks in TESTING.md, 542 left for a person.
 
 ## 1. Start
 
@@ -264,6 +264,7 @@
 - [ ] **24.13** Pick a net that uses 会社 in the tree, then pick 会社 under カレンダー → The calendar view lists the net under 「このカレンダーで流す定義」 and its next 10 times under it, counted by 会社 〔未訳〕
 - [ ] **24.14** `koyomi approve` a net on 会社 with `every = "day"` → The week's count in the approval box and in the CLI skips the weekend (5 times, not 7) 〔未訳〕
 - [ ] **24.15** With `calendars/` empty: look under the tree, open the カレンダー tab; then 「＋ 新しいカレンダー」 (also from the heading's right-click and the palette's 「新しいカレンダー…」); Enter with no name, then the name 会社 when it exists, then `a/b`; then the name 工場, untick 日本の祝日, tick only 日 and 作る → The heading カレンダー and 「カレンダーはまだありません」 show, and the tab opens the box; `名前を入れてください`, `もうあります: 会社`, the bad-name line; `calendars/工場.toml` holds `format = 1`, `holidays = "none"`, `weekly_off = ["sun"]`, the month view of 工場 opens at once (「（読み込んでいます）」 until the engine reads it), and `koyomi calendar 工場` shows only Sundays off 〔未訳〕
+- [ ] **24.16** Open 工場 in the カレンダー view; untick 日 and tick 土; then 名前を変える… (also from the row's right-click) with the name 工場, then 倉庫; with a net `calendar = "倉庫"`, 消す…, press Enter once, then 消す… again and はい → `calendars/工場.toml` says `weekly_off = ["sat"]` and the month follows; `もうあります: 工場`, then the file is `倉庫.toml` with the same content; the delete box lists the net's file under 「calendar = "倉庫" と書いた所は直さない…」 and starts on いいえ, so Enter deletes nothing; はい removes the file, keeps it as `versions/_calendars/倉庫/<日時>.toml`, and the net turns invalid until fixed 〔未訳〕
 
 ## 25. Parts of the flow (lines `on` / `code`, branch, join, time, file, notify, child jobnet)
 

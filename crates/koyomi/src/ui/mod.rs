@@ -313,6 +313,8 @@ pub struct Browser {
     make: Option<Make>,
     /// The 新しいカレンダー box.
     new_cal: Option<calendar::NewCal>,
+    /// The calendar the カレンダーを消す box asks about.
+    cal_deleting: Option<String>,
     /// The values box of 今すぐ実行, while it is open.
     give: Option<Give>,
     /// The editors a child net was entered from, outermost first.
@@ -429,6 +431,7 @@ impl Browser {
             port: None,
             make: None,
             new_cal: None,
+            cal_deleting: None,
             give: None,
             easy: None,
         }
@@ -665,6 +668,7 @@ impl Browser {
             || self.port.is_some()
             || self.make.is_some()
             || self.new_cal.is_some()
+            || self.cal_deleting.is_some()
             || self.give.is_some()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing)
     }
@@ -1344,8 +1348,14 @@ impl Browser {
             self.focus = 1;
         }
         self.close_asked = closing;
-        let modal =
-            self.asking.is_some() || self.killing.is_some() || self.deleting.is_some() || conflict || closing || port.is_some() || making;
+        let modal = self.asking.is_some()
+            || self.killing.is_some()
+            || self.deleting.is_some()
+            || self.cal_deleting.is_some()
+            || conflict
+            || closing
+            || port.is_some()
+            || making;
         let buttons = if self.vers.is_some() {
             4
         } else if conflict {
@@ -1470,6 +1480,7 @@ impl Browser {
             self.make.is_some(),
             self.give.is_some(),
             self.new_cal.is_some(),
+            self.cal_deleting.is_some(),
         ];
         let first = open.iter().position(|o| *o);
         let key_for = |i: usize| if first == Some(i) { key } else { None };
@@ -1482,6 +1493,7 @@ impl Browser {
         self.confirm_make(&ctx, t, key_for(6));
         self.confirm_give(&ctx, t, key_for(7));
         self.confirm_new_cal(&ctx, t, key_for(8));
+        self.confirm_cal_delete(&ctx, t, key_for(9));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -2761,6 +2773,7 @@ mod tests {
             port: None,
             make: None,
             new_cal: None,
+            cal_deleting: None,
             give: None,
             easy: None,
         }
@@ -2850,6 +2863,52 @@ mod tests {
             self.show(vec![button(false)], b);
             self.settle(b);
         }
+    }
+
+    /// A calendar's rename and delete name the files that still say `calendar =`: a net's own, or
+    /// its group's `_group.toml` once; the delete box starts on the safe button.
+    #[test]
+    fn renaming_or_deleting_a_calendar_lists_what_names_it() {
+        let mut d = defs();
+        let own = koyomi_core::jobnet::parse(
+            "format = 1
+calendar = \"会社\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+",
+        )
+        .unwrap();
+        d[0].net = Some(own);
+        d[0].calendar = Some("会社".into());
+        d[1].calendar = Some("会社".into());
+        d[2].calendar = Some("会社".into());
+        assert_eq!(calendar::users(&d, "会社"), vec!["jobnets/試験/bom.toml".to_owned(), "jobnets/試験/_group.toml".to_owned()]);
+        assert!(calendar::users(&d, "工場").is_empty());
+        let mut b = quiet(d);
+        b.snap
+            .as_mut()
+            .unwrap()
+            .calendars
+            .insert("会社".into(), koyomi_core::calendar::Calendar { name: "会社".into(), ..Default::default() });
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.cal_sel = Some("会社".into());
+        s.settle(&mut b);
+        s.click("名前を変える…", &mut b);
+        assert_eq!(b.new_cal.as_ref().map(|m| m.name.as_str()), Some("会社"));
+        let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(shown(&s, "jobnets/試験/bom.toml, jobnets/試験/_group.toml"));
+        assert!(shown(&s, "会社 のファイルの名前を変えます"), "a rename says the content stays");
+        s.show(key(egui::Key::Enter), &mut b);
+        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("もうあります: 会社"), "the name it has is no rename");
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.new_cal.is_none());
+        s.click("消す…", &mut b);
+        assert_eq!(b.cal_deleting.as_deref(), Some("会社"));
+        assert!(shown(&s, "versions/_calendars/会社/"));
+        s.show(key(egui::Key::Enter), &mut b);
+        assert!(b.cal_deleting.is_none() && b.cal_result.is_none(), "Enter on the fresh box deletes nothing");
     }
 
     /// With no calendar the heading stays, says so, and its button opens the box; the box turns
