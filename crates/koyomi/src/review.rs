@@ -6,6 +6,7 @@ use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
+use koyomi_core::chore::Chore;
 use koyomi_core::jobnet::{self, Part, Wait};
 use koyomi_core::run::State as RunState;
 use koyomi_core::scan::{Def, Standing};
@@ -161,6 +162,27 @@ pub fn job_details(t: &Table, d: &Def) -> Vec<String> {
     out
 }
 
+/// What a chore works on, one line each.
+fn chore(t: &Table, c: &Chore) -> Vec<String> {
+    let line = |key: &str, v: &str| format!("  {}: {v}", t.tr(&format!("review.{key}")));
+    match c {
+        Chore::Delete { path, pattern, keep_days } => vec![
+            line("path", path),
+            line("match", pattern.as_deref().unwrap_or("*")),
+            line("keep_days", &t.trf("review.keep_days_text", &[&keep_days.to_string()])),
+        ],
+        Chore::Zip { from, into } => vec![line("from", from), line("into", into)],
+        Chore::Copy { from, into, pattern } => {
+            let mut v = vec![line("from", from), line("into", into)];
+            if let Some(p) = pattern {
+                v.push(line("match", p));
+            }
+            v
+        }
+        Chore::Empty { path } => vec![line("path", path)],
+    }
+}
+
 /// What each job would run (see [`body`]).
 pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
     let mut out = Vec::new();
@@ -204,6 +226,17 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
             }
             Part::Jobnet { use_ } => {
                 out.push(format!("  {}: {use_}", t.tr("review.use")));
+                continue;
+            }
+            Part::Chore(c) => {
+                out.extend(chore(t, c));
+                if let Some(secs) = j.timeout {
+                    out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
+                }
+                if let Some(r) = j.retry {
+                    let text = t.trf("review.retry_text", &[&r.count.to_string(), &koyomi_core::duration::text(r.wait)]);
+                    out.push(format!("  {}: {text}", t.tr("review.retry")));
+                }
                 continue;
             }
         }

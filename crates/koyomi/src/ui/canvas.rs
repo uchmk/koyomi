@@ -13,6 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
+use koyomi_core::chore::Chore;
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, Wait};
 use koyomi_core::scan::Def;
 #[cfg(test)]
@@ -112,6 +113,12 @@ pub struct Fields {
     /// A loop's `count`; its `file` is [`Fields::file`].
     pub count: String,
     pub use_: String,
+    /// A chore's `path`, `match`, `keep_days`, `from` and `into`.
+    pub path: String,
+    pub pattern: String,
+    pub keep_days: String,
+    pub from: String,
+    pub into: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -155,6 +162,23 @@ impl Fields {
                 f.count = count.map(|n| n.to_string()).unwrap_or_default();
             }
             Part::Jobnet { use_ } => f.use_ = use_.clone(),
+            Part::Chore(c) => match c {
+                Chore::Delete { path, pattern, keep_days } => {
+                    f.path = path.clone();
+                    f.pattern = pattern.clone().unwrap_or_default();
+                    f.keep_days = keep_days.to_string();
+                }
+                Chore::Empty { path } => f.path = path.clone(),
+                Chore::Zip { from, into } => {
+                    f.from = from.clone();
+                    f.into = into.clone();
+                }
+                Chore::Copy { from, into, pattern } => {
+                    f.from = from.clone();
+                    f.into = into.clone();
+                    f.pattern = pattern.clone().unwrap_or_default();
+                }
+            },
             _ => {}
         }
         f
@@ -178,6 +202,14 @@ impl Fields {
                 duration::parse(s).map(Some)
             }
         };
+        let retry = || -> Result<Option<Retry>, String> {
+            if self.retry_count.trim().is_empty() {
+                return Ok(None);
+            }
+            let count: u32 =
+                self.retry_count.trim().parse().map_err(|_| format!("retry の回数は数で書く: \"{}\"", self.retry_count.trim()))?;
+            Ok(Some(Retry { count, wait: opt_secs(&self.retry_wait)?.unwrap_or(0) }))
+        };
         match &job.part {
             Part::Job | Part::Loop { .. } => {
                 if matches!(job.part, Part::Loop { .. }) {
@@ -199,13 +231,7 @@ impl Fields {
                 out.run = self.run.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
                 out.dir = opt(&self.dir);
                 out.timeout = opt_secs(&self.timeout)?;
-                out.retry = if self.retry_count.trim().is_empty() {
-                    None
-                } else {
-                    let count: u32 =
-                        self.retry_count.trim().parse().map_err(|_| format!("retry の回数は数で書く: \"{}\"", self.retry_count.trim()))?;
-                    Some(Retry { count, wait: opt_secs(&self.retry_wait)?.unwrap_or(0) })
-                };
+                out.retry = retry()?;
                 out.shell = opt(&self.shell);
                 out.script = if self.script.trim().is_empty() { None } else { Some(self.script.clone()) };
                 out.encoding = self.encoding;
@@ -251,6 +277,27 @@ impl Fields {
                     return Err(format!("use は \"グループ/名前\": \"{}\"", self.use_.trim()));
                 }
                 out.part = Part::Jobnet { use_: self.use_.trim().into() };
+            }
+            Part::Chore(c) => {
+                let chore = match c {
+                    Chore::Delete { .. } => {
+                        let n = self.keep_days.trim();
+                        let keep_days = n.parse::<u32>().map_err(|_| format!("keep_days は日数で書く: \"{n}\""))?;
+                        Chore::Delete { path: self.path.trim().into(), pattern: opt(&self.pattern), keep_days }
+                    }
+                    Chore::Empty { .. } => Chore::Empty { path: self.path.trim().into() },
+                    Chore::Zip { .. } => Chore::Zip { from: self.from.trim().into(), into: self.into.trim().into() },
+                    Chore::Copy { .. } => {
+                        Chore::Copy { from: self.from.trim().into(), into: self.into.trim().into(), pattern: opt(&self.pattern) }
+                    }
+                };
+                chore.check()?;
+                for p in chore.paths() {
+                    koyomi_core::template::check(p)?;
+                }
+                out.part = Part::Chore(chore);
+                out.timeout = opt_secs(&self.timeout)?;
+                out.retry = retry()?;
             }
             Part::Branch | Part::Notify | Part::Approval => {}
         }
@@ -333,7 +380,7 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order.
-pub fn shelf() -> [Part; 9] {
+pub fn shelf() -> [Part; 13] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2) },
@@ -344,6 +391,10 @@ pub fn shelf() -> [Part; 9] {
         Part::File { file: String::new(), settle: None },
         Part::Notify,
         Part::Approval,
+        Part::Chore(Chore::blank("delete").unwrap()),
+        Part::Chore(Chore::blank("zip").unwrap()),
+        Part::Chore(Chore::blank("copy").unwrap()),
+        Part::Chore(Chore::blank("empty").unwrap()),
     ]
 }
 
@@ -358,6 +409,7 @@ fn prefix(p: &Part) -> &'static str {
         Part::Notify => "notify",
         Part::Approval => "approval",
         Part::Jobnet { .. } => "net",
+        Part::Chore(c) => c.key(),
     }
 }
 
@@ -1188,6 +1240,28 @@ impl Editor {
                             *action = Some(Action::Enter(f.use_.trim().to_owned()));
                         }
                     }
+                    Part::Chore(c) => {
+                        match c {
+                            Chore::Delete { .. } => {
+                                changed |= field(ui, "field.path", &mut f.path);
+                                changed |= field(ui, "field.match", &mut f.pattern);
+                                changed |= field(ui, "field.keep_days", &mut f.keep_days);
+                            }
+                            Chore::Empty { .. } => changed |= field(ui, "field.path", &mut f.path),
+                            Chore::Zip { .. } => {
+                                changed |= field(ui, "field.zip_from", &mut f.from);
+                                changed |= field(ui, "field.zip_into", &mut f.into);
+                            }
+                            Chore::Copy { .. } => {
+                                changed |= field(ui, "field.from", &mut f.from);
+                                changed |= field(ui, "field.into", &mut f.into);
+                                changed |= field(ui, "field.match", &mut f.pattern);
+                            }
+                        }
+                        changed |= field(ui, "field.timeout", &mut f.timeout);
+                        changed |= field(ui, "field.retry_count", &mut f.retry_count);
+                        changed |= field(ui, "field.retry_wait", &mut f.retry_wait);
+                    }
                     Part::Branch | Part::Notify | Part::Approval => {}
                 }
                 if changed {
@@ -1911,6 +1985,30 @@ mod tests {
         assert_eq!(e.net.jobs[4].part, Part::Jobnet { use_: "g/m".into() });
         assert_eq!(e.net.jobs.len(), 5);
         assert!(e.report().starts_with("editor: a/b dirty=true parts=5"));
+    }
+
+    #[test]
+    fn a_chore_from_the_shelf_takes_its_paths_and_refuses_a_root() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let blank = shelf().into_iter().find(|p| p.key() == "delete").unwrap();
+        let d = e.add(blank, Some("a"), None);
+        assert!(d.starts_with("delete"), "{d}");
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        assert_eq!(fields.keep_days, "30");
+        fields.path = "D:\\logs\\{date}".into();
+        fields.pattern = "*.log".into();
+        fields.retry_count = "2".into();
+        fields.retry_wait = "1m".into();
+        assert_eq!(e.apply_fields(&d, &fields), Ok(()));
+        let job = &e.net.jobs[1];
+        assert_eq!(job.part, Part::Chore(Chore::Delete { path: "D:\\logs\\{date}".into(), pattern: Some("*.log".into()), keep_days: 30 }));
+        assert_eq!(job.retry, Some(Retry { count: 2, wait: 60 }));
+        assert!(e.text().contains("kind = \"delete\""), "{}", e.text());
+        fields.path = "D:\\".into();
+        assert!(e.apply_fields(&d, &fields).is_err());
+        fields.path = "D:\\logs".into();
+        fields.keep_days = "0".into();
+        assert!(e.apply_fields(&d, &fields).is_err());
     }
 
     #[test]

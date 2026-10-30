@@ -1,6 +1,6 @@
 # Checklist
 
-555 checks in TESTING.md, 551 left for a person.
+563 checks in TESTING.md, 559 left for a person.
 
 ## 1. Start
 
@@ -793,3 +793,14 @@
 - [ ] **79.3** `require = ["network"]`, turn the network off, then on → Waits with 「ネットワークにつながるのを待っています」, then starts 〔未訳〕
 - [ ] **79.4** `require = ["idle:1m"]`, keep using the mouse → Waits with 「PC が 1 分使われなくなるのを待っています」; starts after a minute untouched 〔未訳〕
 - [ ] **79.5** `require = ["wifi"]` → The net is invalid, with the message 「require は …」 〔未訳〕
+
+## 80. よくある作業の部品（`kind = "delete"` / `"zip"` / `"copy"` / `"empty"`）
+
+- [ ] **80.1** A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it → Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` 〔未訳〕
+- [ ] **80.2** `kind = "zip"`, `from = 'D:\out\*.csv'`, `into = 'D:\arc\{date}.zip'` → `D:\arc\<today>.zip` holds the csv files; run again: replaced, ✓ 〔未訳〕
+- [ ] **80.3** `kind = "copy"` from a folder with subfolders into a new folder, then run again → All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays 〔未訳〕
+- [ ] **80.4** `kind = "copy"` with `into` on a share that does not exist → ✕ (robocopy 8 or more); `retry` tries again 〔未訳〕
+- [ ] **80.5** `kind = "empty"`, `path` = a folder with files and subfolders → The folder stays, empty; the log says how many items went 〔未訳〕
+- [ ] **80.6** `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore → Each is refused when read, with the line and why 〔未訳〕
+- [ ] **80.7** The editor: drag 古いファイルを消す from the parts; fill フォルダー and 名前 → The pane shows フォルダー・名前・何日より古いものを消すか, timeout and retry; saving writes `kind = "delete"`; `D:\` there shows the error and is not applied 〔未訳〕
+- [ ] **80.8** Approve a net with a chore → The confirm box shows each chore's paths and days instead of a command 〔未訳〕

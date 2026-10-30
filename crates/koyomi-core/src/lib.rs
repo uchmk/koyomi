@@ -7,6 +7,7 @@
 pub mod approved;
 pub mod bundle;
 pub mod calendar;
+pub mod chore;
 pub mod config;
 pub mod duration;
 pub mod group;

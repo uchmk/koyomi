@@ -11,6 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
+use crate::chore::Chore;
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
@@ -400,6 +401,8 @@ pub enum Part {
         #[serde(rename = "use")]
         use_: String,
     },
+    /// よくある作業: deletes, zips, copies or empties files with no script written (`kind = "delete"` …).
+    Chore(Chore),
 }
 
 impl Part {
@@ -409,7 +412,7 @@ impl Part {
 
     /// Runs a process: a job, or a loop of them. It takes a slot and has `run`.
     pub fn runs_process(&self) -> bool {
-        matches!(self, Part::Job | Part::Loop { .. })
+        matches!(self, Part::Job | Part::Loop { .. } | Part::Chore(_))
     }
 
     /// `job`, `branch` …: the `kind` as written, and the key of its word.
@@ -424,6 +427,7 @@ impl Part {
             Part::Notify => "notify",
             Part::Approval => "approval",
             Part::Jobnet { .. } => "jobnet",
+            Part::Chore(c) => c.key(),
         }
     }
 
@@ -601,6 +605,12 @@ struct RawJob {
     settle: Field,
     count: Field,
     to: Field,
+    path: Field,
+    #[serde(rename = "match")]
+    pattern: Field,
+    keep_days: Field,
+    from: Field,
+    into: Field,
     shell: Field,
     script: Field,
     timeout: Field,
@@ -826,8 +836,25 @@ impl Checker<'_> {
     /// `kind` and the fields that go with it, as a [`Part`].
     fn part(&mut self, j: &RawJob, start: usize) -> Part {
         let kind = self
-            .choice(&j.kind, "kind", &["job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet"])
+            .choice(
+                &j.kind,
+                "kind",
+                &["job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty"],
+            )
             .unwrap_or("job");
+        if kind != "delete" && kind != "empty" {
+            self.only(&j.path, "path", "\"delete\" か \"empty\"");
+        }
+        if kind != "delete" && kind != "copy" {
+            self.only(&j.pattern, "match", "\"delete\" か \"copy\"");
+        }
+        if kind != "delete" {
+            self.only(&j.keep_days, "keep_days", "\"delete\"");
+        }
+        if kind != "zip" && kind != "copy" {
+            self.only(&j.from, "from", "\"zip\" か \"copy\"");
+            self.only(&j.into, "into", "\"zip\" か \"copy\"");
+        }
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
         }
@@ -935,8 +962,56 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
+            "delete" | "zip" | "copy" | "empty" => Part::Chore(self.chore(j, kind, start)),
             _ => Part::Job,
         }
+    }
+
+    /// A chore's fields: the paths it needs, `match`, `keep_days`; each path a template.
+    fn chore(&mut self, j: &RawJob, kind: &str, start: usize) -> Chore {
+        let path_of = |c: &mut Self, field: &Field, name: &str| -> String {
+            let Some(f) = field else {
+                c.add(start, format!("kind = \"{kind}\" には {name} が要る"));
+                return String::new();
+            };
+            let s = c.string(field, name).unwrap_or_default();
+            if s.trim().is_empty() {
+                c.add(f.span().start, format!("{name} が空"));
+            } else if let Err(e) = c.template(&s) {
+                c.add(f.span().start, format!("{name}: {e}"));
+            }
+            s
+        };
+        let pattern = self.string(&j.pattern, "match").filter(|p| !p.trim().is_empty());
+        let chore = match kind {
+            "delete" => {
+                let path = path_of(self, &j.path, "path");
+                let keep_days = match &j.keep_days {
+                    None => {
+                        self.add(start, "kind = \"delete\" には keep_days が要る（何日より古いファイルを消すか。例: keep_days = 30）");
+                        1
+                    }
+                    Some(f) => match f.get_ref().as_integer() {
+                        Some(n) if (1..=36_500).contains(&n) => n as u32,
+                        _ => {
+                            self.add(f.span().start, "keep_days は 1 以上の整数で書く（全部を消すなら kind = \"empty\"）");
+                            1
+                        }
+                    },
+                };
+                Chore::Delete { path, pattern, keep_days }
+            }
+            "zip" => Chore::Zip { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into") },
+            "copy" => Chore::Copy { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into"), pattern },
+            _ => Chore::Empty { path: path_of(self, &j.path, "path") },
+        };
+        // A missing field is already told; what is left is a root or a zip's name.
+        if chore.paths().iter().all(|p| !p.trim().is_empty()) {
+            if let Err(e) = chore.check() {
+                self.add(start, e);
+            }
+        }
+        chore
     }
 
     /// `retry = { count = 2, wait = "5m" }`: both are required.
@@ -1675,7 +1750,7 @@ impl Checker<'_> {
                     }
                 },
             };
-            let (run, shell, script, dir, retry, judge) = if part.runs_process() {
+            let (run, shell, script, dir, retry, judge) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
                 let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
                 let script = self.string(&j.script, "script");
                 // Either `run`, or a shell with its script: never both, never a shell line in `run`.
@@ -1711,9 +1786,12 @@ impl Checker<'_> {
                 for (field, name) in
                     [(&j.run, "run"), (&j.shell, "shell"), (&j.script, "script"), (&j.dir, "dir"), (&j.retry, "retry"), (&j.judge, "judge")]
                 {
-                    self.only(field, name, "\"job\" か \"loop\"");
+                    if !(name == "retry" && matches!(part, Part::Chore(_))) {
+                        self.only(field, name, "\"job\" か \"loop\"");
+                    }
                 }
-                (Vec::new(), None, None, None, None, None)
+                let retry = if matches!(part, Part::Chore(_)) { self.retry(&j.retry) } else { None };
+                (Vec::new(), None, None, None, retry, None)
             };
             for (text, name) in
                 run.iter().map(|t| (t, "run")).chain(script.iter().map(|t| (t, "script"))).chain(dir.iter().map(|t| (t, "dir")))
@@ -1722,7 +1800,7 @@ impl Checker<'_> {
                     self.add(start, format!("{name}: {e}"));
                 }
             }
-            let (env, encoding) = if part.runs_process() {
+            let (env, encoding) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
                 let encoding = self.choice(&j.encoding, "encoding", &["auto", "sjis", "utf8"]).and_then(Encoding::of).unwrap_or_default();
                 (self.env(&j.env), encoding)
             } else {
@@ -1766,7 +1844,7 @@ impl Checker<'_> {
                 Part::Branch | Part::Join { .. } => (true, true),
                 Part::Time { .. } | Part::File { .. } | Part::Approval => (false, true),
                 Part::Notify => (true, false),
-                Part::Job | Part::Loop { .. } | Part::Jobnet { .. } => (false, false),
+                Part::Job | Part::Loop { .. } | Part::Jobnet { .. } | Part::Chore(_) => (false, false),
             };
             if needs_after && job.after.is_empty() {
                 self.add(entry.span().start, format!("孤立した部品: {}（after が無い）", job.id));
@@ -2436,6 +2514,44 @@ after = [{ job = \"way\", code = \"else\" }]
 
     /// each kind of part reads with its own fields, and refuses a job's fields.
     #[test]
+    fn the_chores_read_and_what_would_harm_is_refused() {
+        let net = |kind: &str, extra: &str| {
+            parse(&format!(
+                "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"p\"\nkind = \"{kind}\"\n{extra}after = [\"a\"]\n"
+            ))
+            .map(|n| (n.jobs[1].part.clone(), n.jobs[1].retry))
+            .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>())
+        };
+        assert_eq!(
+            net("delete", "path = 'D:\\logs'\nmatch = \"*.log\"\nkeep_days = 30\n"),
+            Ok((Part::Chore(Chore::Delete { path: "D:\\logs".into(), pattern: Some("*.log".into()), keep_days: 30 }), None))
+        );
+        assert_eq!(
+            net("copy", "from = 'D:\\out'\ninto = '\\\\nas\\share\\{date}'\nretry = { count = 2, wait = \"1m\" }\n"),
+            Ok((
+                Part::Chore(Chore::Copy { from: "D:\\out".into(), into: "\\\\nas\\share\\{date}".into(), pattern: None }),
+                Some(Retry { count: 2, wait: 60 })
+            ))
+        );
+        assert_eq!(
+            net("zip", "from = 'a'\ninto = 'b.zip'\n").map(|p| p.0),
+            Ok(Part::Chore(Chore::Zip { from: "a".into(), into: "b.zip".into() }))
+        );
+        assert_eq!(net("empty", "path = 'D:\\tmp'\n").map(|p| p.0), Ok(Part::Chore(Chore::Empty { path: "D:\\tmp".into() })));
+        let bad = |kind: &str, extra: &str| net(kind, extra).unwrap_err().join("\n");
+        assert!(bad("empty", "").contains("kind = \"empty\" には path が要る"));
+        assert!(bad("empty", "path = 'C:\\'\n").contains("ドライブや共有の一番上は扱わない"));
+        assert!(bad("empty", "path = ''\n").contains("path"), "{}", bad("empty", "path = ''\n"));
+        assert!(bad("delete", "path = 'D:\\logs'\n").contains("keep_days が要る"));
+        assert!(bad("delete", "path = 'D:\\logs'\nkeep_days = 0\n").contains("keep_days は 1 以上"));
+        assert!(bad("zip", "from = 'a'\ninto = 'b.7z'\n").contains(".zip"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nrun = [\"x\"]\n").contains("run"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\npath = 'c'\n").contains("path"));
+        assert!(bad("zip", "from = 'a'\ninto = 'b.zip'\nmatch = '*'\n").contains("match"));
+        assert!(bad("empty", "path = 'a'\nencoding = \"utf8\"\n").contains("encoding"));
+    }
+
+    #[test]
     fn each_kind_of_part_reads() {
         let net = |kind: &str, extra: &str| {
             parse(&format!(
@@ -2526,7 +2642,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

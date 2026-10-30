@@ -8,6 +8,7 @@
 
 use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
+use crate::chore::Chore;
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Wait};
 use crate::quiet::OnQuiet;
@@ -303,6 +304,21 @@ fn job(j: &Job, out: &mut String) {
             }
         }
         Part::Notify if !j.to.is_empty() => push(out, "to", &list(&j.to)),
+        Part::Chore(c) => {
+            match c {
+                Chore::Delete { path, .. } | Chore::Empty { path } => push(out, "path", &q(path)),
+                Chore::Zip { from, into } | Chore::Copy { from, into, .. } => {
+                    push(out, "from", &q(from));
+                    push(out, "into", &q(into));
+                }
+            }
+            if let Chore::Delete { pattern: Some(p), .. } | Chore::Copy { pattern: Some(p), .. } = c {
+                push(out, "match", &q(p));
+            }
+            if let Chore::Delete { keep_days, .. } = c {
+                push(out, "keep_days", &keep_days.to_string());
+            }
+        }
         Part::Job | Part::Branch | Part::Notify | Part::Approval => {}
     }
     if !j.run.is_empty() {
@@ -504,6 +520,37 @@ id = "k"
 kind = "jobnet"
 use = "経理/売上取込"
 after = ["n"]
+
+[[job]]
+id = "del"
+kind = "delete"
+path = "D:\\logs\\{date}"
+match = "*.log"
+keep_days = 30
+after = ["k"]
+
+[[job]]
+id = "zip"
+kind = "zip"
+from = "D:\\out\\*.csv"
+into = "D:\\arc\\out.zip"
+timeout = "10m"
+after = ["del"]
+
+[[job]]
+id = "cp"
+kind = "copy"
+from = "D:\\arc"
+into = "\\\\nas\\share"
+match = "*.zip"
+retry = { count = 2, wait = "1m" }
+after = ["zip"]
+
+[[job]]
+id = "em"
+kind = "empty"
+path = "D:\\work"
+after = ["cp"]
 "#;
 
     #[test]

@@ -19,7 +19,7 @@ use chrono::format::{Item, StrftimeItems};
 use chrono::{Months, NaiveDate};
 
 use crate::calendar::Calendar;
-use crate::jobnet::Jobnet;
+use crate::jobnet::{Jobnet, Part};
 
 /// One `{…}` found in a text.
 struct Token {
@@ -141,6 +141,11 @@ pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>, values:
         }
         if let Some(f) = j.judge.as_mut().and_then(|g| g.ok_file.as_mut()) {
             *f = both(f).map_err(|e| at("judge ok_file", e))?;
+        }
+        if let Part::Chore(c) = &mut j.part {
+            for (name, p) in c.paths_mut() {
+                *p = both(p).map_err(|e| at(name, e))?;
+            }
         }
     }
     Ok(out)

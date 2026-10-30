@@ -325,7 +325,9 @@ impl Runner {
         let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
         let values = template::values(&net, set)?;
-        template::expand_net(&net, date, cal, &values)
+        let mut net = template::expand_net(&net, date, cal, &values)?;
+        koyomi_core::chore::fill(&mut net)?;
+        Ok(net)
     }
 
     /// Each job of `def` as it would run for the business day `date`, one per line
@@ -811,7 +813,7 @@ impl Runner {
             let Some(j) = self.runs.iter().find(|r| r.id == run_id).and_then(|r| r.job(&job_id)) else { continue };
             let (part, timeout) = (j.part.clone(), j.timeout);
             match part {
-                Part::Job | Part::Loop { .. } => self.start_job(&run_id, &job_id, now),
+                Part::Job | Part::Loop { .. } | Part::Chore(_) => self.start_job(&run_id, &job_id, now),
                 Part::Notify => {
                     self.notices.push((run_id.clone(), job_id.clone()));
                     over.extend(self.end_part(&run_id, &job_id, State::Ok, "通知した", None, now));
@@ -1906,6 +1908,49 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let log = r.log_tail(&id, "a").unwrap();
         let out: Vec<&str> = log.lines().filter(|l| !l.starts_with("! ")).collect();
         assert_eq!(out, ["hi \"there\""], "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_chores_delete_old_files_empty_a_folder_and_copy() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = scratch("chores");
+        let (work, trash, into) = (dir.join("work"), dir.join("trash"), dir.join("into"));
+        std::fs::create_dir_all(trash.join("sub")).unwrap();
+        std::fs::create_dir_all(&work).unwrap();
+        for f in ["old.log", "new.log", "old.txt"] {
+            std::fs::write(work.join(f), "x").unwrap();
+        }
+        let old = std::time::SystemTime::now() - Duration::from_secs(20 * 86_400);
+        for f in ["old.log", "old.txt"] {
+            std::fs::File::options().write(true).open(work.join(f)).unwrap().set_modified(old).unwrap();
+        }
+        std::fs::write(trash.join("sub").join("a"), "x").unwrap();
+        std::fs::write(trash.join("b"), "x").unwrap();
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"d\"\nkind = \"delete\"\npath = '{}'\nmatch = \"*.log\"\nkeep_days = 10\n\
+             [[job]]\nid = \"e\"\nkind = \"empty\"\npath = '{}'\nafter = [\"d\"]\n\
+             [[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = '{}'\ninto = '{}'\nafter = [\"e\"]\n",
+            work.display(),
+            trash.display(),
+            work.display(),
+            into.display()
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        for j in ["d", "e", "c"] {
+            let job = run.job(j).unwrap();
+            assert_eq!(job.state, State::Ok, "{j}: {job:?}\n{}", r.log_tail(&id, j).unwrap_or_default());
+        }
+        assert!(!work.join("old.log").exists());
+        assert!(work.join("new.log").exists() && work.join("old.txt").exists());
+        assert!(trash.is_dir() && std::fs::read_dir(&trash).unwrap().next().is_none());
+        assert!(into.join("new.log").exists() && into.join("old.txt").exists());
+        assert!(r.log_tail(&id, "d").unwrap().contains("1 file(s) deleted"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
