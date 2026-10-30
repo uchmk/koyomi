@@ -543,6 +543,19 @@ impl Browser {
         self.leave_editor();
     }
 
+    /// Whether a box is up. The keys and `self.focus` belong to one box at a time, so another is not
+    /// opened over it: an Enter meant for the new one would press a button of the old one.
+    fn box_open(&self) -> bool {
+        self.asking.is_some()
+            || self.killing.is_some()
+            || self.deleting.is_some()
+            || self.vers.is_some()
+            || self.port.is_some()
+            || self.make.is_some()
+            || self.give.is_some()
+            || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing)
+    }
+
     fn blocked(&self) -> bool {
         self.snap.as_ref().is_some_and(|s| !s.warnings.is_empty())
     }
@@ -649,7 +662,7 @@ impl Browser {
 
     /// The palette's 取り込む: opens the box with the path field.
     pub fn import_box(&mut self) {
-        if self.port.is_none() {
+        if !self.box_open() {
             self.port = Some(Port { path: String::new(), text: None, plan: None, error: None, waiting: false, fresh: true });
             self.focus = 0;
         }
@@ -657,7 +670,7 @@ impl Browser {
 
     /// 新しいジョブネット: opens the box, with `group` filled in when it came from a group in the tree.
     pub fn new_box(&mut self, group: Option<&str>) {
-        if self.make.is_none() && self.port.is_none() && self.snap.is_some() {
+        if !self.box_open() && self.snap.is_some() {
             self.make = Some(Make {
                 group: group.unwrap_or_default().to_owned(),
                 name: String::new(),
@@ -673,7 +686,7 @@ impl Browser {
     /// 名前を変える・移す and 複製: the same box, with net `id`'s group and name filled in.
     fn re_box(&mut self, id: &str, re: Re) {
         let Some((group, name)) = id.split_once('/') else { return };
-        if self.make.is_none() && self.port.is_none() && self.editor.is_none() {
+        if !self.box_open() && self.editor.is_none() {
             let name = if re == Re::Copy { format!("{name}-2") } else { name.to_owned() };
             self.make = Some(Make { group: group.to_owned(), name, error: None, fresh: true, from: Some((id.to_owned(), re)), fix: false });
             self.focus = 0;
@@ -805,6 +818,9 @@ impl Browser {
 
     /// 今すぐ実行: starts the net, or first asks for its `[params]` when it has any.
     fn run_now(&mut self, id: String, params: Option<&BTreeMap<String, String>>) {
+        if self.box_open() {
+            return;
+        }
         match params.filter(|p| !p.is_empty()) {
             Some(p) => {
                 let values = p.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
@@ -1612,6 +1628,9 @@ impl Browser {
     pub fn open_versions(&mut self) {
         let id = self.editor.as_ref().map(|e| e.id.clone()).or_else(|| self.selected.clone());
         let Some(id) = id else { return };
+        if self.box_open() {
+            return;
+        }
         let _ = self.tx.send(Request::Versions { id: id.clone() });
         self.focus = 1;
         self.vers = Some(Vers { id, list: Vec::new(), idx: 0, texts: BTreeMap::new(), asked: BTreeSet::new(), error: None });
@@ -2532,6 +2551,25 @@ mod tests {
         b.make.as_mut().unwrap().name = "新".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rename { id, to, fix: false }) if id == "試験/bom" && to == "試験/新"));
+    }
+
+    /// A box is not opened over another: an Enter meant for the new one would press the old one.
+    #[test]
+    fn no_box_opens_over_another() {
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        b.deleting = Some("試験/bom".into());
+        b.focus = 1;
+        b.import_box();
+        b.new_box(None);
+        b.re_box("試験/bom", Re::Copy);
+        assert!(b.port.is_none() && b.make.is_none(), "the delete box stays alone");
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(rx_req.try_recv().is_err(), "Enter on the safe button deleted nothing");
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.
