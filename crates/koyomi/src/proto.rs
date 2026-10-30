@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 10;
+pub const PROTO: u32 = 11;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -82,6 +82,13 @@ pub enum Request {
     Skip {
         run: String,
         job: String,
+    },
+    /// Start the time `from` (`YYYY-MM-DD HH:MM`) of the net `id` at `to` this once; the definition stays.
+    /// Without `to` the move is taken back.
+    Shift {
+        id: String,
+        from: String,
+        to: Option<String>,
     },
     /// Stop the whole schedule: every time is written down as ⏸ 保留 until `Resume`. Runs by hand still go.
     Pause,

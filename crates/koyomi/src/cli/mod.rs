@@ -47,6 +47,9 @@ usage: koyomi [--version | --help | env]
        koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
        koyomi release <group/name>   take the net off hold
        koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
+       koyomi shift <group/name> <from> <to|--cancel>
+                                     start its time <from> at <to> this once (HH:MM is today, or YYYY-MM-DD HH:MM);
+                                     the definition does not change; --cancel takes the move back
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
@@ -78,9 +81,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 25] = [
-    "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "pause",
-    "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
+const COMMANDS: [&str; 26] = [
+    "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "shift",
+    "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -116,6 +119,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
         "release" => one_id(rest, "release", |id| Request::Release { id }),
         "skip" => skip(rest),
+        "shift" => shift(rest),
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
         "calendar" => calendar(rest),
@@ -1028,6 +1032,21 @@ fn skip(args: &[String]) -> i32 {
     match args {
         [run, job] => ask_and_say(&Request::Skip { run: run.clone(), job: job.clone() }),
         _ => usage("skip takes a run and a job"),
+    }
+}
+
+fn shift(args: &[String]) -> i32 {
+    let at = |t: &str| {
+        if t.contains(' ') {
+            t.to_owned()
+        } else {
+            format!("{} {t}", chrono::Local::now().format("%Y-%m-%d"))
+        }
+    };
+    match args {
+        [id, from, to] if to == "--cancel" => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: None }),
+        [id, from, to] => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: Some(at(to)) }),
+        _ => usage("shift takes a group/name, its time and the new time (or --cancel)"),
     }
 }
 

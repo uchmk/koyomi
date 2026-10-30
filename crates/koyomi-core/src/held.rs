@@ -16,6 +16,17 @@ pub struct Held {
     /// The ids (`経理/月次締め`) on hold: their times do not run, and neither does `koyomi run`.
     #[serde(default)]
     pub held: Vec<String>,
+    /// `koyomi shift`: times of nets that start at another time this once.
+    #[serde(default, rename = "shift", skip_serializing_if = "Vec::is_empty")]
+    pub shifts: Vec<Shift>,
+}
+
+/// One time moved for once: the net's time `from` starts at `to` instead (the definition is not changed).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shift {
+    pub id: String,
+    pub from: chrono::NaiveDateTime,
+    pub to: chrono::NaiveDateTime,
 }
 
 impl Held {
@@ -53,6 +64,25 @@ impl Held {
         true
     }
 
+    /// Moves the time `from` of `id` to `to`; an earlier move of the same time is replaced.
+    pub fn shift(&mut self, id: &str, from: chrono::NaiveDateTime, to: chrono::NaiveDateTime) {
+        self.unshift(id, from);
+        self.shifts.push(Shift { id: id.to_owned(), from, to });
+        self.shifts.sort_by(|a, b| (a.from, &a.id).cmp(&(b.from, &b.id)));
+    }
+
+    /// Puts the time `from` of `id` back; `false` when it was not moved.
+    pub fn unshift(&mut self, id: &str, from: chrono::NaiveDateTime) -> bool {
+        let before = self.shifts.len();
+        self.shifts.retain(|s| !(s.id == id && s.from == from));
+        self.shifts.len() != before
+    }
+
+    /// Whether the time `from` of `id` is moved.
+    pub fn is_shifted(&self, id: &str, from: chrono::NaiveDateTime) -> bool {
+        self.shifts.iter().any(|s| s.id == id && s.from == from)
+    }
+
     /// Takes `id` off hold; `false` when it was not on it.
     pub fn release(&mut self, id: &str) -> bool {
         let before = self.held.len();
@@ -64,6 +94,18 @@ impl Held {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_shift_is_kept_and_replaced_by_the_same_time() {
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        let mut h = Held::default();
+        h.shift("g/a", at("2026-10-30 09:00"), at("2026-10-30 10:00"));
+        h.shift("g/a", at("2026-10-30 09:00"), at("2026-10-30 11:00"));
+        assert_eq!(h.shifts.len(), 1);
+        assert_eq!(Held::parse(&h.to_toml()).unwrap(), h);
+        assert!(h.is_shifted("g/a", at("2026-10-30 09:00")) && !h.is_shifted("g/b", at("2026-10-30 09:00")));
+        assert!(h.unshift("g/a", at("2026-10-30 09:00")) && !h.unshift("g/a", at("2026-10-30 09:00")));
+    }
 
     #[test]
     fn a_hold_round_trips_and_a_release_takes_it_off() {

@@ -570,3 +570,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 41.2 | A job that exits 3 and leaves `C:/out/{date}.csv`, with `judge = { ok_file = "C:/out/{date}.csv" }` | The job ends 正常; the log says the file made it normal |
 | 41.3 | Same job with the file missing | The job ends 異常 (exit 3) |
 | 41.4 | In the editor open the job | Fields 出力にあれば失敗 / あれば成功にするファイル show and save; a bad regex is refused on save |
+
+## 42. 時刻を 1 回だけずらす
+
+| # | Do | Expect |
+|---|---|---|
+| 42.1 | `koyomi shift g/a 09:00 09:30` (a net with a time at 09:00 later today) | It answers that the time was moved; at 09:00 nothing starts; at 09:30 the net runs once with planned time 09:00 |
+| 42.2 | The next day | The net runs at 09:00 as the definition says (the file was not changed) |
+| 42.3 | `koyomi shift g/a 09:00 09:30` then `koyomi shift g/a 09:00 --cancel` | The move is taken back; 09:00 runs as usual |
+| 42.4 | A time the net does not have, or a new time before the old one or already past | It is refused with the reason |

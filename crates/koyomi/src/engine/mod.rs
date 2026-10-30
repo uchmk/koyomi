@@ -297,6 +297,10 @@ impl State {
         }
         for (k, (i, instant, planned)) in due.iter().enumerate() {
             let def = self.defs[*i].clone();
+            // Moved with `koyomi shift`: `tick_shift` starts it at the new time.
+            if self.held.is_shifted(&def.id, *planned) {
+                continue;
+            }
             if let Some((state, why)) = self.stopped(&def, planned.date()) {
                 self.runner.not_run(&def, *planned, state, &why);
                 continue;
@@ -731,6 +735,58 @@ impl State {
         self.save_held()?;
         Ok(format!("保留を解いた: {id}"))
     }
+    /// `koyomi shift`: the time `from` of `id` starts at `to` once (`None`: the move is taken back).
+    fn shift(&mut self, id: &str, from: &str, to: Option<&str>) -> Result<String, String> {
+        self.held_writable()?;
+        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").map_err(|_| format!("時刻は YYYY-MM-DD HH:MM で書く: {s}"));
+        let from = at(from)?;
+        let Some(to) = to else {
+            if !self.held.unshift(id, from) {
+                return Err(format!("{} の {} はずらしていない", id, from.format("%Y-%m-%d %H:%M")));
+            }
+            self.save_held()?;
+            return Ok("ずらしを戻した".to_owned());
+        };
+        let to = at(to)?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let net = def.net.as_ref().ok_or_else(|| format!("定義が読めない: {id}"))?;
+        let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
+        if !net.when.iter().any(|w| !w.is_event() && w.times_on_in(from.date(), cal).contains(&from.time())) {
+            return Err(format!("{id} にその時刻はない: {}（koyomi next {id} で見る）", from.format("%Y-%m-%d %H:%M")));
+        }
+        if to <= from {
+            return Err("ずらす先は、元の時刻より後にする".to_owned());
+        }
+        if to <= Local::now().naive_local() {
+            return Err("ずらす先が過ぎている".to_owned());
+        }
+        self.held.shift(id, from, to);
+        self.save_held()?;
+        Ok(format!("{} の {} を {} にずらした（定義は変えない）", id, from.format("%Y-%m-%d %H:%M"), to.format("%Y-%m-%d %H:%M")))
+    }
+    /// Starts the times that were moved once their new time comes.
+    fn tick_shift(&mut self) {
+        if self.held.shifts.is_empty() || self.held_bad.is_some() {
+            return;
+        }
+        let now = Local::now().naive_local();
+        let due: Vec<_> = self.held.shifts.iter().filter(|s| s.to <= now).cloned().collect();
+        if due.is_empty() {
+            return;
+        }
+        for s in &due {
+            self.held.unshift(&s.id, s.from);
+        }
+        let _ = self.save_held();
+        for s in due {
+            let Some(def) = self.defs.iter().find(|d| d.id == s.id).cloned() else { continue };
+            if let Some((state, why)) = self.stopped(&def, s.from.date()) {
+                self.runner.not_run(&def, s.from, state, &why);
+            } else if let Err(e) = self.runner.start(&def, s.from.date(), How::Schedule, Some(s.from)) {
+                self.runner.not_run(&def, s.from, RunState::Locked, &e);
+            }
+        }
+    }
     fn pause(&mut self, on: bool) -> Result<String, String> {
         self.held_writable()?;
         if self.held.paused == on {
@@ -960,6 +1016,7 @@ impl State {
             Request::Hold { id } => self.hold(id),
             Request::Release { id } => self.release(id),
             Request::Skip { run, job } => self.runner.skip(run, job),
+            Request::Shift { id, from, to } => self.shift(id, from, to.as_deref()),
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
@@ -1086,6 +1143,7 @@ pub fn run() -> i32 {
         state.tick_schedule();
         state.tick_events();
         state.tick_wait();
+        state.tick_shift();
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
