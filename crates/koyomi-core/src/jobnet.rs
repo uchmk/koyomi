@@ -2618,7 +2618,7 @@ id = \"a\"
 run = [\"x\"]
 timeout = \"30\"
 ";
-        assert_eq!(problems(text), ["a.toml の 5 行目: timeout 30: 30m・1h30m・90s のように書く（h・m・s、この順）"]);
+        assert_eq!(problems(text), ["a.toml の 5 行目: timeout `30` は単位がありません。30m・1h30m・90s のように書く"]);
     }
 
     #[test]

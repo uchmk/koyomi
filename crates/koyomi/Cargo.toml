@@ -20,62 +20,62 @@ name = "make-bugform"
 test = true
 
 [build-dependencies]
-ito-winres = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-winres = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 
 [dependencies]
 # Every ito crate at the same rev. scripts/ito-first.py says which crates an
 # app must have and which it must not replace; what ito lacks, ask ito for.
-ito-common = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["clock", "egui"] }
-ito-i18n = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["edit"] }
-ito-theme = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-common = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["clock", "egui"] }
+ito-i18n = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["edit"] }
+ito-theme = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The settings screen: language / clock / theme pages, keys_page, notify_page, update_card.
-ito-prefs = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-keys = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["egui"] }
-ito-keymap = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-prefs = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-keys = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["egui"] }
+ito-keymap = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # `--keys "<script>"`: the real window driven without a person.
-ito-keyscript = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-keyscript = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # `?` / F1: the key help.
-ito-help = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-secret = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-help = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-secret = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # System notification, sound, webhook.
-ito-notify = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-notify = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The system log line a monitoring tool watches (Event Viewer / syslog).
-ito-eventlog = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-eventlog = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # Follows a log file for `[[when]] log = …`.
-ito-tail = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-tail = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # F12: an issue form filled with the version, OS and what the app knows.
-ito-bugreport = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-bugreport = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The window's own title bar (drag, caption buttons, the palette box, the bell).
-ito-titlebar = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-titlebar = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # Pages out as a PDF or to the printer.
-ito-export = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-export = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The bottom status bar: the app's items, the clock at the right end.
-ito-statusbar = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-statusbar = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The list the bell opens.
-ito-notices = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-notices = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # Ctrl+Shift+P. Optional: drop it when the app has no commands to list.
-ito-palette = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-palette = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # `koyomi.com` and the answers `out` and `err` write.
-ito-console = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-console = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The engine's door (`koyomi engine` answers the window and the CLI), the folder watcher, the confirm box,
 # the state marks (symbol + word, not colour alone), child processes, and the bundled mono font.
-ito-ipc = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-watch = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-confirm = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-diff = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-ipc = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-watch = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-confirm = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-diff = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 # The first-run guide: an empty tree says what to do first.
-ito-guide = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["egui"] }
+ito-guide = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["egui"] }
 # Plain wording and hover text for the technical words (`easy = true` in common.toml).
-ito-glossary = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["egui"] }
-ito-match = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-a11y = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["egui"] }
-ito-openin = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-fonts = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0", features = ["egui"] }
+ito-glossary = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["egui"] }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-a11y = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["egui"] }
+ito-openin = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-fonts = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad", features = ["egui"] }
 # `koyomi mcp`: Claude Code reads the runs and (after the person agrees) starts and stops them.
-ito-mcp = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-power = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-tray = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
-ito-proc = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-mcp = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-power = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-tray = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
+ito-proc = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }
 koyomi-core = { path = "../koyomi-core" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 serde = { version = "1", features = ["derive"] }
@@ -88,4 +88,4 @@ egui = "0.36"
 
 [dev-dependencies]
 # TESTING.md -> the lanes' check tables (examples/make-testcheck.rs).
-ito-testcheck = { git = "https://github.com/uchmk/ito", rev = "d2522b6da582c79b5559416e3a2955573b1bdbb0" }
+ito-testcheck = { git = "https://github.com/uchmk/ito", rev = "1c87f3eeed450c1ae55061f3c8c54198737545ad" }

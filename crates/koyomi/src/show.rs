@@ -148,14 +148,10 @@ impl Sleep {
     }
 }
 
-/// `30 分` / `2 時間`.
+/// `30分` / `2時間` / `1時間5分`, rounded up to whole minutes.
 pub fn idle(t: &Table, secs: u64) -> String {
     let m = secs.div_ceil(60).max(1);
-    if m.is_multiple_of(60) {
-        t.trf("power.hours", &[&(m / 60).to_string()])
-    } else {
-        t.trf("power.minutes", &[&m.to_string()])
-    }
+    ito_common::text::duration_words(std::time::Duration::from_secs(m * 60), t.tr("app.lang"))
 }
 
 /// The mark for a time `at` that comes later than the PC would stay awake from `now`.
@@ -483,7 +479,7 @@ run = [\"x\"]
         let mut s = Sleep { after: Some(1800), wake: false, cannot: None };
         let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s));
         assert_eq!(rows[0], "2026-10-30（金）09:10", "within 30 minutes: awake still");
-        assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30 分で眠る設定。起こさなければ動かない");
+        assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30分で眠る設定。起こさなければ動かない");
         s.wake = true;
         assert!(next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s))[1].ends_with("PC を起こして流す"));
         s.cannot = Some("battery".into());
@@ -495,7 +491,8 @@ run = [\"x\"]
             "2026-10-30（金）10:00",
             "never sleeps: no mark"
         );
-        assert_eq!(idle(&ja, 7200), "2 時間");
+        assert_eq!(idle(&ja, 7200), "2時間");
+        assert_eq!(idle(&ja, 3870), "1時間5分");
         let (en, _) = crate::i18n::table("en");
         for why in ["timers_off", "battery", "unsupported", "failed"] {
             let key = format!("power.why_{why}");

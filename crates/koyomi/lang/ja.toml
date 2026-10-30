@@ -1,5 +1,6 @@
 [app]
 title = "koyomi"
+lang = "ja"
 
 [title]
 search = "コマンド パレット"
@@ -670,8 +671,6 @@ newer = "次の版"
 asleep = "この PC は {0}で眠る設定。起こさなければ動かない"
 wakes = "PC を起こして流す"
 cannot = "PC を起こして流す設定だが、起こせない: {0}"
-minutes = "{0} 分"
-hours = "{0} 時間"
 why_timers_off = "電源プランで復帰タイマーが無効"
 why_battery = "バッテリーで動いていて、電源プランが復帰タイマーを許していない"
 why_unsupported = "この OS では PC を起こせない"

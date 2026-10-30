@@ -1,6 +1,7 @@
 # The app's words by key (English first; ja.toml lays over it).
 [app]
 title = "koyomi"
+lang = "en"
 
 [title]
 search = "Command palette"
@@ -671,8 +672,6 @@ newer = "Newer"
 asleep = "this PC sleeps after {0}; it will not run unless woken"
 wakes = "wakes the PC to run"
 cannot = "set to wake the PC, but it cannot: {0}"
-minutes = "{0} min"
-hours = "{0} h"
 why_timers_off = "wake timers are off in the power plan"
 why_battery = "on battery, and the power plan allows no wake timers there"
 why_unsupported = "this system cannot wake the PC"

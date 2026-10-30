@@ -4,59 +4,17 @@
 //! number with its unit. A bare number is refused: `timeout = 30` could mean
 //! seconds or minutes, and the wrong guess hangs a night job or cuts it off.
 
-/// The seconds `text` says, or why it does not read.
+/// The seconds `text` says, or why it does not read. Zero is refused here:
+/// every length a definition writes (`timeout`, `wait`, `settle`) must pass.
 pub fn parse(text: &str) -> Result<u64, String> {
-    let bad = || format!("{text}: 30m・1h30m・90s のように書く（h・m・s、この順）");
-    let t = text.trim();
-    if t.is_empty() {
-        return Err(bad());
+    match ito_common::text::parse_duration(text)? {
+        0 => Err(format!("{text}: 0 より長くする")),
+        secs => Ok(secs),
     }
-    let mut secs = 0u64;
-    let mut number = String::new();
-    // The unit that came last, as its rank: h 3, m 2, s 1.
-    let mut last = 4;
-    for ch in t.chars() {
-        if ch.is_ascii_digit() {
-            number.push(ch);
-            continue;
-        }
-        let (rank, per) = match ch {
-            'h' => (3, 3600),
-            'm' => (2, 60),
-            's' => (1, 1),
-            _ => return Err(bad()),
-        };
-        if number.is_empty() || rank >= last {
-            return Err(bad());
-        }
-        let n: u64 = number.parse().map_err(|_| bad())?;
-        secs = n.checked_mul(per).and_then(|x| secs.checked_add(x)).ok_or_else(bad)?;
-        number.clear();
-        last = rank;
-    }
-    if !number.is_empty() {
-        return Err(bad());
-    }
-    if secs == 0 {
-        return Err(format!("{text}: 0 より長くする"));
-    }
-    Ok(secs)
 }
 
 /// The shortest text that [`parse`] reads back to `secs`: `30m`, `1h30m`, `90s` stays `1m30s`.
-pub fn text(secs: u64) -> String {
-    let (h, m, s) = (secs / 3600, secs / 60 % 60, secs % 60);
-    let mut out = String::new();
-    for (n, unit) in [(h, 'h'), (m, 'm'), (s, 's')] {
-        if n > 0 {
-            out.push_str(&format!("{n}{unit}"));
-        }
-    }
-    if out.is_empty() {
-        out.push_str("0s");
-    }
-    out
-}
+pub use ito_common::text::duration_text as text;
 
 #[cfg(test)]
 mod tests {
