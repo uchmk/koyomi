@@ -225,12 +225,15 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
         }
         match &j.part {
             Part::Job => {}
-            Part::Loop { file, count } => {
+            Part::Loop { file, count, max } => {
                 if let Some(f) = file {
                     out.push(format!("  {}: {f}", t.tr("review.loop_files")));
                 }
                 if let Some(n) = count {
                     out.push(format!("  {}: {}", t.tr("review.loop_count"), t.trf("review.loop_times", &[&n.to_string()])));
+                }
+                if let Some(n) = max {
+                    out.push(format!("  {}: {n}", t.tr("review.loop_max")));
                 }
             }
             Part::Branch | Part::Notify | Part::Approval => continue,

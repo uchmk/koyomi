@@ -110,8 +110,9 @@ pub struct Fields {
     pub days: String,
     pub file: String,
     pub settle: String,
-    /// A loop's `count`; its `file` is [`Fields::file`].
+    /// A loop's `count` and `max`; its `file` is [`Fields::file`].
     pub count: String,
+    pub max: String,
     pub use_: String,
     /// A chore's `path`, `match`, `keep_days`, `from` and `into`.
     pub path: String,
@@ -172,9 +173,10 @@ impl Fields {
                 f.file = file.clone();
                 f.settle = settle.map(duration::text).unwrap_or_default();
             }
-            Part::Loop { file, count } => {
+            Part::Loop { file, count, max } => {
                 f.file = file.clone().unwrap_or_default();
                 f.count = count.map(|n| n.to_string()).unwrap_or_default();
+                f.max = max.map(|n| n.to_string()).unwrap_or_default();
             }
             Part::Jobnet { use_ } => f.use_ = use_.clone(),
             Part::Chore(c) => match c {
@@ -257,7 +259,16 @@ impl Fields {
                     if file.is_some() == count.is_some() {
                         return Err("繰り返しには file か count のどちらか 1 つを書く".into());
                     }
-                    out.part = Part::Loop { file, count };
+                    let max = match self.max.trim() {
+                        "" => None,
+                        n => Some(
+                            n.parse::<u32>()
+                                .ok()
+                                .filter(|c| (1..=jobnet::LOOP_MAX).contains(c))
+                                .ok_or_else(|| format!("max は 1 から {} までの数で書く: \"{n}\"", jobnet::LOOP_MAX))?,
+                        ),
+                    };
+                    out.part = Part::Loop { file, count, max };
                 }
                 out.run = self.run.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
                 out.dir = opt(&self.dir);
@@ -464,7 +475,7 @@ pub struct Editor {
 pub fn shelf() -> [Part; 16] {
     [
         Part::Job,
-        Part::Loop { file: None, count: Some(2) },
+        Part::Loop { file: None, count: Some(2), max: None },
         Part::Jobnet { use_: String::new() },
         Part::Branch,
         Part::Join { wait: Wait::All },
@@ -1268,6 +1279,7 @@ impl Editor {
                         if matches!(part, Part::Loop { .. }) {
                             changed |= field(ui, "field.loop_file", &mut f.file);
                             changed |= field(ui, "field.count", &mut f.count);
+                            changed |= field(ui, "field.loop_max", &mut f.max);
                         }
                         ui.label(t.tr("field.run"));
                         let r = ui.add(egui::TextEdit::multiline(&mut f.run).desired_rows(3).desired_width(f32::INFINITY));

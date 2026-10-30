@@ -23,7 +23,7 @@
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 
@@ -73,6 +73,8 @@ struct Active {
     job: String,
     stop: Arc<AtomicBool>,
     why: Arc<AtomicU8>,
+    /// The slots it holds: 1, or the passes a loop part runs side by side.
+    slots: usize,
 }
 
 /// A time of the schedule that waits for the net's last run to end.
@@ -358,6 +360,11 @@ impl Runner {
     /// How many job processes are running now.
     pub fn busy(&self) -> usize {
         self.active.len()
+    }
+
+    /// How many slots the running jobs hold.
+    fn slots_used(&self) -> usize {
+        self.active.iter().map(|a| a.slots).sum()
     }
 
     #[cfg(test)]
@@ -772,8 +779,8 @@ impl Runner {
     /// Starts what is ready: a job's process, or a part's wait, notice, or end.
     fn start_ready(&mut self) {
         let limit = self.config.concurrency.max(1);
-        let mut running = self.active.len();
-        let mut starts: Vec<(String, String)> = Vec::new();
+        let mut running = self.slots_used();
+        let mut starts: Vec<(String, String, usize)> = Vec::new();
         // What needs a slot takes the free ones by the net's priority (5 first), then in the order
         // the runs began.
         let mut wanting: Vec<(usize, String)> = Vec::new();
@@ -791,7 +798,7 @@ impl Runner {
                 if r.job(&job).is_none_or(|j| j.part.runs_process()) {
                     wanting.push((i, job));
                 } else {
-                    starts.push((r.id.clone(), job));
+                    starts.push((r.id.clone(), job, 1));
                 }
             }
         }
@@ -801,19 +808,20 @@ impl Runner {
             if let Some(why) = unmet(&r.require) {
                 r.wait_because(&job, &why);
             } else if running < limit {
-                running += 1;
-                starts.push((r.id.clone(), job));
+                let width = r.job(&job).map_or(1, |j| width(&j.part, limit - running));
+                running += width;
+                starts.push((r.id.clone(), job, width));
             } else {
                 r.wait_for_slot(&job, limit);
             }
         }
         let mut over = Vec::new();
-        for (run_id, job_id) in starts {
+        for (run_id, job_id, width) in starts {
             let now = Local::now().naive_local();
             let Some(j) = self.runs.iter().find(|r| r.id == run_id).and_then(|r| r.job(&job_id)) else { continue };
             let (part, timeout) = (j.part.clone(), j.timeout);
             match part {
-                Part::Job | Part::Loop { .. } | Part::Chore(_) => self.start_job(&run_id, &job_id, now),
+                Part::Job | Part::Loop { .. } | Part::Chore(_) => self.start_job(&run_id, &job_id, now, width),
                 Part::Notify => {
                     self.notices.push((run_id.clone(), job_id.clone()));
                     over.extend(self.end_part(&run_id, &job_id, State::Ok, "通知した", None, now));
@@ -851,8 +859,8 @@ impl Runner {
         }
     }
 
-    /// Starts the job's process on a thread of its own.
-    fn start_job(&mut self, run_id: &str, job_id: &str, now: NaiveDateTime) {
+    /// Starts the job's process on a thread of its own, holding `width` slots.
+    fn start_job(&mut self, run_id: &str, job_id: &str, now: NaiveDateTime, width: usize) {
         let Some(r) = self.runs.iter_mut().find(|r| r.id == run_id) else { return };
         r.start(job_id, now);
         let r = r.clone();
@@ -860,7 +868,7 @@ impl Runner {
         self.record(&r, history::job_start(&r, j));
         let stop = Arc::new(AtomicBool::new(false));
         let why = Arc::new(AtomicU8::new(WHY_NONE));
-        self.active.push(Active { run: run_id.to_owned(), job: job_id.to_owned(), stop: stop.clone(), why: why.clone() });
+        self.active.push(Active { run: run_id.to_owned(), job: job_id.to_owned(), stop: stop.clone(), why: why.clone(), slots: width });
         let log = self.log_path(run_id, job_id);
         let job = JobSpec {
             run: run_id.to_owned(),
@@ -882,6 +890,8 @@ impl Runner {
                 _ => None,
             },
             index: None,
+            width,
+            io_ready: false,
             log,
             cap: self.config.log_max_bytes(),
         };
@@ -1020,8 +1030,24 @@ struct JobSpec {
     each: Option<Each>,
     /// The pass of a loop, from 1: `KOYOMI_INDEX`.
     index: Option<u32>,
+    /// How many passes of a loop run side by side: the slots it holds.
+    width: usize,
+    /// `KOYOMI_IN` is written and `KOYOMI_OUT` cleared already (by a loop whose passes run side by side).
+    io_ready: bool,
     log: PathBuf,
     cap: u64,
+}
+
+/// The slots a part takes when `free` are free: a loop with `max` as many of them as its
+/// passes may use (at least 1), anything else 1.
+fn width(part: &Part, free: usize) -> usize {
+    match part {
+        Part::Loop { max: Some(m), count, .. } => {
+            let most = count.map_or(*m, |n| n.min(*m));
+            (most as usize).min(free).max(1)
+        }
+        _ => 1,
+    }
 }
 
 /// What a loop part runs over.
@@ -1110,6 +1136,10 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
         let _ = writeln!(file, "! 合うファイルが無いので、1 回も動かさない");
         return done(Outcome::Exited(0), String::new(), 0);
     }
+    if job.width > 1 && total > 1 {
+        let (outcome, reason, retried) = side_by_side(job, (exe, args), &env, &passes, (stop, why), &mut file, &mut size);
+        return done(outcome, reason, retried);
+    }
     let mut retried = 0;
     let mut warned = None;
     for (i, f) in passes {
@@ -1140,6 +1170,117 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
     done(Outcome::Exited(warned.unwrap_or(0)), String::new(), retried)
 }
 
+/// What a pass that ran aside sends back: its place in the passes, how it ended, and its lines.
+type Pass = (usize, Outcome, String, u32, Vec<u8>);
+
+/// A loop's passes, `job.width` of them at a time, each on a thread with its own stop (so a
+/// pass's timeout ends only that pass). A pass writes its lines aside; they go into the log
+/// under its heading when it ends. After an abnormal pass no more start, and the running ones
+/// end as they would; a stop of the job reaches every running pass.
+fn side_by_side(
+    job: &JobSpec,
+    command: (&str, &[String]),
+    env: &Resolved,
+    passes: &[(u32, Option<String>)],
+    (stop, why): (&Arc<AtomicBool>, &Arc<AtomicU8>),
+    file: &mut std::fs::File,
+    size: &mut LogSize,
+) -> (Outcome, String, u32) {
+    let total = passes.len();
+    let _ = std::fs::remove_file(out_path(&job.log, &job.id));
+    let _ = std::fs::write(job.log.with_file_name(format!("{}.in.toml", job.id)), gather_outputs(&job.log, &job.id));
+    let _ = writeln!(file, "▶ {total} 回を {} つずつ並べて動かす", job.width);
+    let workers: Vec<_> =
+        (0..job.width.min(total)).map(|_| (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU8::new(WHY_NONE)))).collect();
+    let next = AtomicUsize::new(0);
+    let halt = AtomicBool::new(false);
+    let (tx, rx) = mpsc::channel::<Pass>();
+    let mut retried = 0;
+    let mut warned = None;
+    let mut first: Option<(Outcome, String)> = None;
+    std::thread::scope(|s| {
+        for (own_stop, own_why) in &workers {
+            let (tx, next, halt) = (tx.clone(), &next, &halt);
+            s.spawn(move || {
+                while !halt.load(Ordering::SeqCst) && !own_stop.load(Ordering::SeqCst) {
+                    let k = next.fetch_add(1, Ordering::SeqCst);
+                    let Some((i, f)) = passes.get(k) else { break };
+                    let mut pass = job.clone();
+                    pass.index = Some(*i);
+                    pass.io_ready = true;
+                    if f.is_some() {
+                        pass.file = f.clone();
+                    }
+                    let mut lines = Vec::new();
+                    let mut size = LogSize { written: 0, capped: false };
+                    let (outcome, reason, r) = tries(&pass, command, env, own_stop, own_why, &mut lines, &mut size);
+                    if !matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) != State::Error) {
+                        halt.store(true, Ordering::SeqCst);
+                    }
+                    let _ = tx.send((k, outcome, reason, r, lines));
+                }
+            });
+        }
+        drop(tx);
+        loop {
+            if stop.load(Ordering::SeqCst) {
+                let who = why.load(Ordering::SeqCst);
+                for (own_stop, own_why) in &workers {
+                    ask_stop(own_why, own_stop, who);
+                }
+            }
+            let (k, outcome, reason, r, lines) = match rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(p) => p,
+                Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                Err(mpsc::RecvTimeoutError::Disconnected) => break,
+            };
+            let (i, f) = &passes[k];
+            let what = f.as_deref().map(|f| format!(": {f}")).unwrap_or_default();
+            let mut text = format!("▶ {i}/{total}{what}\n").into_bytes();
+            text.extend_from_slice(&lines);
+            append(file, size, &text, job.cap);
+            retried += r;
+            let of = format!("{i}/{total} 回目{}", f.as_deref().map(|f| format!("（{f}）")).unwrap_or_default());
+            let bad = match outcome {
+                Outcome::Exited(code) => match verdict(job.judge.as_ref(), code) {
+                    State::Error => Some((Outcome::Failed, format!("{of}で異常: 終了コード {code}"))),
+                    State::Ok => None,
+                    _ => {
+                        warned = warned.or(Some(code));
+                        None
+                    }
+                },
+                Outcome::Failed => Some((Outcome::Failed, format!("{of}で異常: {reason}"))),
+                Outcome::Killed | Outcome::Timeout => Some((outcome, String::new())),
+            };
+            if first.is_none() {
+                first = bad;
+            }
+        }
+    });
+    if stop.load(Ordering::SeqCst) {
+        return (Outcome::Killed, String::new(), retried);
+    }
+    match first {
+        Some((outcome, reason)) => (outcome, reason, retried),
+        None => (Outcome::Exited(warned.unwrap_or(0)), String::new(), retried),
+    }
+}
+
+/// Puts `text` at the end of the log while it is under `cap`.
+fn append(file: &mut std::fs::File, size: &mut LogSize, text: &[u8], cap: u64) {
+    if size.capped {
+        return;
+    }
+    size.written += text.len() as u64;
+    if size.written > cap {
+        size.capped = true;
+        let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", cap / (1024 * 1024));
+    } else {
+        let _ = file.write_all(text);
+    }
+}
+
 /// Runs the job's process: once, or again after each abnormal end while its
 /// `retry` allows. The last outcome, its reason and how many times it ran again.
 fn tries(
@@ -1148,7 +1289,7 @@ fn tries(
     env: &Resolved,
     stop: &Arc<AtomicBool>,
     why: &Arc<AtomicU8>,
-    file: &mut std::fs::File,
+    file: &mut impl Write,
     size: &mut LogSize,
 ) -> (Outcome, String, u32) {
     let (count, wait) = job.retry.map_or((0, 0), |r| (r.count, r.wait));
@@ -1301,7 +1442,7 @@ fn attempt(
     env: &Resolved,
     stop: &Arc<AtomicBool>,
     why: &Arc<AtomicU8>,
-    file: &mut std::fs::File,
+    file: &mut impl Write,
     size: &mut LogSize,
 ) -> (Outcome, String) {
     let program = if env.logon.is_some() { full_program(exe) } else { exe.to_owned() };
@@ -1313,9 +1454,11 @@ fn attempt(
     // Values between jobs: the job writes TOML to KOYOMI_OUT; KOYOMI_IN is
     // what the other jobs of the run wrote, a table per job.
     let out = out_path(&job.log, &job.id);
-    let _ = std::fs::remove_file(&out);
     let input = job.log.with_file_name(format!("{}.in.toml", job.id));
-    let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
+    if !job.io_ready {
+        let _ = std::fs::remove_file(&out);
+        let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
+    }
     cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
@@ -2391,6 +2534,86 @@ after = [\"none\"]
         assert!(bad.reason.contains("2/3 回目で異常: 終了コード 3"), "{:?}", bad.reason);
         assert!(!r.log_tail(&id, "bad").unwrap().contains("▶ 3/3"));
         assert_eq!(run.state, State::Error);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A command that takes about `secs` seconds, then prints `KOYOMI_INDEX`.
+    fn slow_index(secs: u32) -> String {
+        if cfg!(windows) {
+            format!("run = [\"cmd.exe\", \"/c\", \"ping -n {} 127.0.0.1 > nul & echo %KOYOMI_INDEX%\"]", secs + 1)
+        } else {
+            format!("run = [\"sh\", \"-c\", \"sleep {secs}; echo $KOYOMI_INDEX\"]")
+        }
+    }
+
+    #[test]
+    fn a_loop_with_max_runs_its_passes_side_by_side_in_that_many_slots() {
+        let dir = scratch("loopmax");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"many\"\nkind = \"loop\"\ncount = 4\nmax = 2\n{}\n[[job]]\nid = \"other\"\n{}\n",
+            slow_index(2),
+            echo("x")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
+        let began = Instant::now();
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        // The loop holds both slots, so the other job waits for one.
+        let run = r.run(&id).unwrap();
+        assert_eq!(r.busy(), 1);
+        assert_eq!(run.job("other").unwrap().state, State::Waiting);
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        // Two at a time: about 4 s, where one after another takes 8 s.
+        assert!(began.elapsed() < Duration::from_secs(7), "{:?}", began.elapsed());
+        let log = r.log_tail(&id, "many").unwrap();
+        assert!(log.contains("4 回を 2 つずつ並べて動かす"), "{log}");
+        let mut lines: Vec<&str> = log.lines().filter(|l| !l.starts_with('▶')).map(str::trim).collect();
+        lines.sort_unstable();
+        assert_eq!(lines, ["1", "2", "3", "4"], "{log}");
+        for i in 1..=4 {
+            assert!(log.contains(&format!("▶ {i}/4")), "{log}");
+        }
+        // A loop takes no more slots than are free, nor than it has passes.
+        let free = Part::Loop { file: None, count: Some(3), max: Some(8) };
+        assert_eq!((width(&free, 5), width(&free, 2), width(&free, 0)), (3, 2, 1));
+        assert_eq!(width(&Part::Loop { file: Some("a".into()), count: None, max: Some(4) }, 9), 4);
+        assert_eq!(width(&Part::Loop { file: Some("a".into()), count: None, max: None }, 9), 1);
+        assert_eq!(width(&Part::Job, 9), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loop_side_by_side_starts_no_more_after_an_abnormal_pass_and_a_kill_reaches_every_pass() {
+        let dir = scratch("loopmaxbad");
+        let fail_first = if cfg!(windows) {
+            "run = [\"cmd.exe\", \"/c\", \"if %KOYOMI_INDEX%==1 (exit 3) else (ping -n 3 127.0.0.1 > nul)\"]".to_owned()
+        } else {
+            "run = [\"sh\", \"-c\", \"[ $KOYOMI_INDEX = 1 ] && exit 3; sleep 2\"]".to_owned()
+        };
+        let d = def("net", &format!("format = 1\n[[job]]\nid = \"bad\"\nkind = \"loop\"\ncount = 5\nmax = 2\n{fail_first}\n"));
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let bad = run.job("bad").unwrap();
+        assert_eq!(bad.state, State::Error);
+        assert!(bad.reason.contains("1/5 回目で異常: 終了コード 3"), "{:?}", bad.reason);
+        // The pass running beside it ends as it would; no more start.
+        let log = r.log_tail(&id, "bad").unwrap();
+        assert!(log.contains("▶ 2/5"), "{log}");
+        assert!(!log.contains("▶ 3/5"), "{log}");
+        // A kill stops both running passes at once.
+        let d = def("long", &format!("format = 1\n[[job]]\nid = \"a\"\nkind = \"loop\"\ncount = 2\nmax = 2\n{}\n", sleep(30)));
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let asked = Instant::now();
+        r.kill(&id, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert!(asked.elapsed() < Duration::from_secs(10), "the passes were not killed at once");
+        assert_eq!(run.job("a").unwrap().state, State::Killed);
+        let log = r.log_tail(&id, "a").unwrap();
+        assert_eq!(log.matches("! 強制終了").count(), 2, "{log}");
+        assert_eq!(r.busy(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

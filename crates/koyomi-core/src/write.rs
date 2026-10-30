@@ -308,12 +308,15 @@ fn job(j: &Job, out: &mut String) {
                 push(out, "settle", &q(&duration::text(*s)));
             }
         }
-        Part::Loop { file, count } => {
+        Part::Loop { file, count, max } => {
             if let Some(f) = file {
                 push(out, "file", &q(f));
             }
             if let Some(n) = count {
                 push(out, "count", &n.to_string());
+            }
+            if let Some(n) = max {
+                push(out, "max", &n.to_string());
             }
         }
         Part::Notify if !j.to.is_empty() => push(out, "to", &list(&j.to)),

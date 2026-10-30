@@ -139,6 +139,9 @@ impl Require {
 /// What `priority` is when it is not written.
 pub const DEFAULT_PRIORITY: u8 = 3;
 
+/// The most passes of a loop part that run side by side (`max`).
+pub const LOOP_MAX: u32 = 16;
+
 impl Jobnet {
     /// The priority for a free slot: `priority`, or [`DEFAULT_PRIORITY`].
     pub fn slot_priority(&self) -> u8 {
@@ -372,12 +375,15 @@ pub enum Part {
     #[default]
     Job,
     /// 繰り返し: runs `run` (or `shell` + `script`) once per file matching `file`, or `count`
-    /// times, one after another; each pass gets `KOYOMI_FILE` and `KOYOMI_INDEX`.
+    /// times; each pass gets `KOYOMI_FILE` and `KOYOMI_INDEX`. Up to `max` passes run side by
+    /// side (one after another when it is not written).
     Loop {
         #[serde(default)]
         file: Option<String>,
         #[serde(default)]
         count: Option<u32>,
+        #[serde(default)]
+        max: Option<u32>,
     },
     /// 分岐: ends at once with its one predecessor's exit code; `code` lines choose the way.
     Branch,
@@ -644,6 +650,7 @@ struct RawJob {
     file: Field,
     settle: Field,
     count: Field,
+    max: Field,
     to: Field,
     path: Field,
     #[serde(rename = "match")]
@@ -994,6 +1001,7 @@ impl Checker<'_> {
         }
         if kind != "loop" {
             self.only(&j.count, "count", "\"loop\"");
+            self.only(&j.max, "max", "\"loop\"");
         }
         if kind != "jobnet" {
             self.only(&j.use_, "use", "\"jobnet\"");
@@ -1014,6 +1022,13 @@ impl Checker<'_> {
                         None
                     }
                 });
+                let max = j.max.as_ref().and_then(|f| match f.get_ref().as_integer() {
+                    Some(n) if (1..=i64::from(LOOP_MAX)).contains(&n) => Some(n as u32),
+                    _ => {
+                        self.add(f.span().start, format!("max は 1 から {LOOP_MAX} までの整数で書く（いくつの回を並べて動かすか）"));
+                        None
+                    }
+                });
                 match (&j.file, &j.count) {
                     (Some(_), Some(f)) => self.add(f.span().start, "kind = \"loop\" には file か count のどちらか 1 つだけ書く"),
                     (None, None) => {
@@ -1021,7 +1036,7 @@ impl Checker<'_> {
                     }
                     _ => {}
                 }
-                Part::Loop { file, count }
+                Part::Loop { file, count, max }
             }
             "branch" => Part::Branch,
             "join" => {
@@ -2971,12 +2986,18 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(net("notify", ""), Ok(Part::Notify));
         assert_eq!(
             net("loop", "file = 'C:\\in\\*.csv'\nrun = [\"x\"]\n"),
-            Ok(Part::Loop { file: Some("C:\\in\\*.csv".into()), count: None })
+            Ok(Part::Loop { file: Some("C:\\in\\*.csv".into()), count: None, max: None })
         );
         assert_eq!(
             net("loop", "count = 3\nrun = [\"x\"]\nretry = { count = 1, wait = \"1s\" }\ntimeout = \"1m\"\n"),
-            Ok(Part::Loop { file: None, count: Some(3) })
+            Ok(Part::Loop { file: None, count: Some(3), max: None })
         );
+        assert_eq!(net("loop", "count = 3\nmax = 2\nrun = [\"x\"]\n"), Ok(Part::Loop { file: None, count: Some(3), max: Some(2) }));
+        assert_eq!(
+            net("loop", "count = 3\nmax = 17\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 9 行目: max は 1 から 16 までの整数で書く（いくつの回を並べて動かすか）".to_owned()])
+        );
+        assert_eq!(net("job", "max = 2\nrun = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: max は kind = \"loop\" にだけ書く".to_owned()]));
         assert_eq!(
             net("loop", "run = [\"x\"]\n"),
             Err(

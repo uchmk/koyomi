@@ -1044,3 +1044,17 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 84.9 | `koyomi check` with `password = "hunter2"`, `password = "secret:"`, no `user`, `user = "a b"`, an unknown key, `run_as` on a `"time"` part | Each is refused with the line and why; the plain password one says to use `koyomi secret set` |
 | 84.10 | The editor: a job's pane, fill 実行のアカウント and the secret name; save | The file has `run_as = { user = …, password = "secret:…" }`; only one of the two filled is refused |
 | 84.11 | Approve a net with `run_as` | The confirm box shows `実行のアカウント: CORP\batch（パスワードは秘密 batch）`, and no password |
+
+## 85. 繰り返しの回を並べて動かす（`max`）
+
+| # | Do | Expect |
+|---|---|---|
+| 85.1 | `concurrency = 4`; a loop `count = 6`, `max = 3`, `run = ["cmd.exe", "/c", "ping -n 6 127.0.0.1 > nul & echo %KOYOMI_INDEX%"]`; run it | It ends in about 10 s (not 30); Task Manager shows 3 `ping.exe` at a time; the log starts with `▶ 6 回を 3 つずつ並べて動かす` and has each `▶ i/6` once, each followed by its index |
+| 85.2 | `concurrency = 2`; the same loop with `max = 3`, and another net's job started while it runs | The loop runs 2 at a time (`▶ 6 回を 2 つずつ…`); the other job waits with `同時に動かす数（2）の空きを待っています` until the loop ends |
+| 85.3 | `file = 'C:\in\*.csv'` with 5 files, `max = 2`, a script that echoes `%KOYOMI_FILE%` | ✓; each file once, under its own heading |
+| 85.4 | `count = 6`, `max = 2`, where pass 1 exits 3 at once and the others sleep 5 s | ✕ with `1/6 回目で異常: 終了コード 3`; pass 2 ran to its end; passes 3–6 did not start |
+| 85.5 | `count = 4`, `max = 2`, `ping -n 600 127.0.0.1`; stop it from the window | 強制終了 at once; no `ping.exe` is left; the log has `! 強制終了` under both running passes |
+| 85.6 | `count = 4`, `max = 2`, `timeout = "5s"`, `ping -n 600 127.0.0.1` | ✕ 打ち切り after about 5 s; no more passes start |
+| 85.7 | `koyomi check` with `max = 0`, `max = 17`, `max = "2"`, `max` on a `"job"` | Each is refused with the line and why |
+| 85.8 | The editor: a loop's pane, fill max with 3; save; then empty it | The file has `max = 3`, then no `max`; `0` or `x` is refused |
+| 85.9 | Approve a net with `max = 3` | The confirm box shows `並べて動かす数: 3` under the loop |
