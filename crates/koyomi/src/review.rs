@@ -89,6 +89,11 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     if !net.watches_slow() {
         out.push(t.tr("review.late_slow_off").to_owned());
     }
+    match net.slot_priority().cmp(&koyomi_core::jobnet::DEFAULT_PRIORITY) {
+        std::cmp::Ordering::Greater => out.push(t.trf("review.priority_high", &[&net.slot_priority().to_string()])),
+        std::cmp::Ordering::Less => out.push(t.trf("review.priority_low", &[&net.slot_priority().to_string()])),
+        std::cmp::Ordering::Equal => {}
+    }
     if !net.notify_to.is_empty() {
         out.push(t.trf("review.notify_to", &[&net.notify_to.join(", ")]));
     }
@@ -317,6 +322,27 @@ mod tests {
         assert!(!body(&table(), &d).iter().any(|l| l.contains("やり直し")));
         let d = def(&format!("{NET}retry = {{ count = 2, wait = \"5m\" }}\n"), &Store::default());
         assert!(body(&table(), &d).iter().any(|l| l.ends_with("やり直し: 2 回まで、5m おいて")), "{:?}", body(&table(), &d));
+    }
+
+    /// a net that takes a free slot before the others, or gives way, says so; the usual 3 says nothing.
+    #[test]
+    fn a_priority_other_than_the_usual_is_shown() {
+        let with = |p: &str| {
+            def(
+                &NET.replacen(
+                    "[[job]]",
+                    &format!(
+                        "priority = {p}
+[[job]]"
+                    ),
+                    1,
+                ),
+                &Store::default(),
+            )
+        };
+        assert!(body(&table(), &with("5")).iter().any(|l| l == "空きの枠を先に取る（priority = 5）"));
+        assert!(body(&table(), &with("1")).iter().any(|l| l == "空きの枠を後に回す（priority = 1）"));
+        assert!(!body(&table(), &with("3")).iter().any(|l| l.contains("priority")));
     }
 
     /// a re-approval shows what changed since the approved text.

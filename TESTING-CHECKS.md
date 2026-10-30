@@ -1,6 +1,6 @@
 # Checklist
 
-534 checks in TESTING.md, 530 left for a person.
+535 checks in TESTING.md, 531 left for a person.
 
 ## 1. Start
 
@@ -666,6 +666,7 @@
 - [ ] **67.3** A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes → When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again 〔未訳〕
 - [ ] **67.4** A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it → After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 0:01:00、もう 0:02:00 動いている`, and the mark `⏰いつもより長い` 〔未訳〕
 - [ ] **67.5** The same net with `late_slow = false` → No notification for taking long 〔未訳〕
+- [ ] **67.5b** `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs → When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` 〔未訳〕
 - [ ] **67.6** `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` → `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved 〔未訳〕
 - [ ] **67.7** Stop and start the engine after 67.1 → The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again 〔未訳〕
 
