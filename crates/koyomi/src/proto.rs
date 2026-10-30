@@ -41,6 +41,9 @@ pub enum Request {
         date: Option<String>,
         #[serde(default)]
         from: Option<String>,
+        /// Start nothing: the reply is each job's command as it would run.
+        #[serde(default)]
+        dry: bool,
     },
     /// Start `run` again with the definition it had: what passed is carried
     /// over, the rest runs (from the job `from`, when there is one). The reply is the new run's id.

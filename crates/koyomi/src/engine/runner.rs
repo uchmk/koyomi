@@ -256,6 +256,23 @@ impl Runner {
         template::expand_net(&net, date, cal)
     }
 
+    /// Each job of `def` as it would run for the business day `date`, one per line
+    /// (`job: command`, the folder after `@`); nothing starts.
+    pub fn dry(&self, def: &Def, date: NaiveDate) -> Result<String, String> {
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date)?;
+        let mut out = String::new();
+        for j in &net.jobs {
+            let what = match (&j.script, j.run.is_empty()) {
+                (Some(s), _) => format!("[{}] {}", j.shell.as_deref().unwrap_or("powershell"), s.trim_end().replace('\n', " ⏎ ")),
+                (None, false) => j.run.join(" "),
+                (None, true) => continue,
+            };
+            let at = j.dir.as_ref().map(|d| format!(" @ {d}")).unwrap_or_default();
+            out.push_str(&format!("{}: {what}{at}\n", j.id));
+        }
+        Ok(out)
+    }
+
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
     }
@@ -1562,6 +1579,12 @@ id = \"b\"
         let mut r = Runner::new(&dir, Config::default());
         let cal = koyomi_core::calendar::Calendar { weekly_off: vec![chrono::Weekday::Sat, chrono::Weekday::Sun], ..Default::default() };
         r.set_calendars(BTreeMap::from([("会社".to_owned(), cal)]), BTreeMap::from([("net".to_owned(), "会社".to_owned())]));
+        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).unwrap();
+        assert!(seen.starts_with("b: ") && seen.contains("m202610_1030"), "{seen}");
+        assert!(r.runs().is_empty());
+        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).unwrap();
+        assert!(seen.starts_with("b: ") && seen.contains("m202610_1030"), "{seen}");
+        assert!(r.runs().is_empty());
         let id = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap();
         wait_over(&mut r, &id);
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "m202610_1030");

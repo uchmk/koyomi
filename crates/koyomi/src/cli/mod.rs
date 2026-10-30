@@ -29,9 +29,10 @@ usage: koyomi [--version | --help | env]
        koyomi list [--group <group>] the definitions and where each stands (--group: that group's only)
        koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
-       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--wait]
+       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--dry] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
-                                     --date: for that business day; --wait: stay until it ends)
+                                     --date: for that business day; --dry: start nothing, print each job's
+                                     command with the dates written out; --wait: stay until it ends)
        koyomi rerun <run> [--from <job>] [--wait]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too)
        koyomi next <group/name> [--count N]
@@ -626,9 +627,10 @@ fn run_cmd(args: &[String]) -> i32 {
     let mut rest = args.iter();
     let Some(id) = rest.next() else { return usage("run takes one group/name") };
     let id = id.replace('\\', "/");
-    let (mut date, mut from, mut wait) = (None, None, false);
+    let (mut date, mut from, mut wait, mut dry) = (None, None, false, false);
     while let Some(a) = rest.next() {
         match a.as_str() {
+            "--dry" => dry = true,
             "--date" => match rest.next() {
                 Some(d) => date = Some(d.clone()),
                 None => return usage("--date takes YYYY-MM-DD"),
@@ -638,10 +640,19 @@ fn run_cmd(args: &[String]) -> i32 {
                 None => return usage("--from takes a job"),
             },
             "--wait" => wait = true,
-            _ => return usage("run takes --from, --date and --wait"),
+            _ => return usage("run takes --from, --date, --dry and --wait"),
         }
     }
-    started(client::call(&Request::Run { id, date, from }), wait)
+    if dry {
+        return match client::call(&Request::Run { id, date, from, dry }) {
+            Ok(t) => {
+                out(t.trim_end(), false);
+                0
+            }
+            Err(e) => fail(&e),
+        };
+    }
+    started(client::call(&Request::Run { id, date, from, dry }), wait)
 }
 
 fn rerun_cmd(args: &[String]) -> i32 {

@@ -579,12 +579,15 @@ impl State {
 
     /// Starts `id` by hand, at the job `from` when there is one. Refused for
     /// every reason a run must not start quietly.
-    fn start(&mut self, id: &str, date: Option<&str>, from: Option<&str>) -> Result<String, String> {
+    fn start(&mut self, id: &str, date: Option<&str>, from: Option<&str>, dry: bool) -> Result<String, String> {
         let def = self.startable(id)?.clone();
         let date = match date {
             Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
             None => Local::now().date_naive(),
         };
+        if dry {
+            return self.runner.dry(&def, date);
+        }
         match from {
             Some(from) => self.runner.start_at(&def, date, from),
             None => self.runner.start(&def, date, How::Manual, None),
@@ -866,7 +869,7 @@ impl State {
                 toml::to_string(def).map_err(|e| e.to_string())
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
-            Request::Run { id, date, from } => self.start(id, date.as_deref(), from.as_deref()),
+            Request::Run { id, date, from, dry } => self.start(id, date.as_deref(), from.as_deref(), *dry),
             Request::Rerun { run, from } => self.rerun(run, from.as_deref()),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),

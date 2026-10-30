@@ -1,6 +1,6 @@
 # Checklist
 
-308 checks in TESTING.md, 304 left for a person.
+309 checks in TESTING.md, 305 left for a person.
 
 ## 1. Start
 
@@ -405,3 +405,4 @@
 - [ ] **32.4** Write `{date-1x}` in `run`; `koyomi check` → A problem with the line number: `run: {date-1x}: 単位が読めない…` 〔未訳〕
 - [ ] **32.5** A PowerShell `script` with `@{ a = 1 }` and `{ … }` → Runs as written; the braces are not touched 〔未訳〕
 - [ ] **32.6** `koyomi rerun` a run of an earlier day → The tokens are written for that run's business day, not today 〔未訳〕
+- [ ] **32.7** `koyomi run <net> --date 2026-11-02 --dry` → Each job prints as `id: command @ dir` with the dates written out; no run starts (`koyomi status` shows nothing new) 〔未訳〕

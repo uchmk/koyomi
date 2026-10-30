@@ -486,3 +486,4 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 32.4 | Write `{date-1x}` in `run`; `koyomi check` | A problem with the line number: `run: {date-1x}: 単位が読めない…` |
 | 32.5 | A PowerShell `script` with `@{ a = 1 }` and `{ … }` | Runs as written; the braces are not touched |
 | 32.6 | `koyomi rerun` a run of an earlier day | The tokens are written for that run's business day, not today |
+| 32.7 | `koyomi run <net> --date 2026-11-02 --dry` | Each job prints as `id: command @ dir` with the dates written out; no run starts (`koyomi status` shows nothing new) |

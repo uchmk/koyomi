@@ -1411,7 +1411,7 @@ impl Browser {
             let r = ui.add_enabled(can && !held, egui::Button::new(t.tr("run.now")));
             ito_a11y::say(&r, Role::Button, t.tr("run.now"));
             if r.clicked() {
-                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None, from: None });
+                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None, from: None, dry: false });
             }
             // On hold: its times are written down as ⏸ and nothing runs until it is released.
             let key = if held { "run.release" } else { "run.hold" };
