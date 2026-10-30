@@ -229,6 +229,9 @@ fn job(j: &Job, out: &mut String) {
     if let Some(n) = &j.name {
         push(out, "name", &q(n));
     }
+    if let Some(n) = &j.note {
+        push(out, "note", &q(n));
+    }
     if !j.part.is_job() {
         push(out, "kind", &q(j.part.key()));
     }
@@ -460,6 +463,20 @@ after = ["n"]
     fn the_smallest_net_is_a_few_lines() {
         let net = jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n").unwrap();
         assert_eq!(text(&net), "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n");
+    }
+
+    #[test]
+    fn a_sticky_note_survives_a_round_trip() {
+        let src = r#"format = 1
+
+[[job]]
+id = "a"
+note = "line1\nline2"
+run = ["x.exe"]
+"#;
+        let net = jobnet::parse(src).unwrap();
+        assert_eq!(net.jobs[0].note.as_deref(), Some("line1\nline2"));
+        assert_eq!(text(&net), src);
     }
 
     #[test]

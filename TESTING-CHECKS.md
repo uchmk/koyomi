@@ -1,6 +1,6 @@
 # Checklist
 
-371 checks in TESTING.md, 367 left for a person.
+374 checks in TESTING.md, 370 left for a person.
 
 ## 1. Start
 
@@ -513,3 +513,9 @@
 - [ ] **47.3** Press "Restore this version" → The box closes; the file is that version, the net is unapproved, and the file it replaced is kept under `versions/` 〔未訳〕
 - [ ] **47.4** Press Esc → The box closes without changing the file 〔未訳〕
 - [ ] **47.5** Open it on a net that was never saved twice → The box says "no versions kept" 〔未訳〕
+
+## 48. エディターの補い
+
+- [ ] **48.1** Spread parts wide, zoom in, pick "Edit: show everything" in the palette (or the toolbar button) → Every part is in view at once 〔未訳〕
+- [ ] **48.2** Break a part (e.g. a missing `run`), pan far away, click its row in the problem list → The part is selected, its fields open and it is brought to the middle 〔未訳〕
+- [ ] **48.3** Type a two-line sticky note in a part's fields → The note shows in a box under the part's name; saving and reopening keeps it 〔未訳〕

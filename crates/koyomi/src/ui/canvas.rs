@@ -34,6 +34,7 @@ const NEAR: f32 = 6.0;
 pub enum Cmd {
     Save,
     Align,
+    Fit,
     Flow,
     Undo,
     Redo,
@@ -86,6 +87,8 @@ enum Menu {
 pub struct Fields {
     pub id: String,
     pub name: String,
+    /// The sticky note, as typed.
+    pub note: String,
     /// One argument per line.
     pub run: String,
     pub dir: String,
@@ -113,6 +116,7 @@ impl Fields {
         let mut f = Fields {
             id: job.id.clone(),
             name: job.name.clone().unwrap_or_default(),
+            note: job.note.clone().unwrap_or_default(),
             run: job.run.join("\n"),
             dir: job.dir.clone().unwrap_or_default(),
             ..Default::default()
@@ -156,6 +160,7 @@ impl Fields {
         }
         out.id = id.into();
         out.name = opt(&self.name);
+        out.note = opt(&self.note);
         let opt_secs = |s: &str| -> Result<Option<u64>, String> {
             if s.trim().is_empty() {
                 Ok(None)
@@ -280,6 +285,9 @@ pub struct Editor {
     cursor: Option<String>,
     pan: Vec2,
     zoom: f32,
+    /// The canvas as last drawn: its size and the flow, for `fit` and `jump`.
+    view: Vec2,
+    vertical: bool,
     drag: Drag,
     /// `c` mode: the target chosen so far.
     connect: Option<Option<String>>,
@@ -377,6 +385,8 @@ impl Editor {
             cursor: None,
             pan: Vec2::ZERO,
             zoom: 1.0,
+            view: Vec2::ZERO,
+            vertical: false,
             drag: Drag::None,
             connect: None,
             menu: None,
@@ -760,6 +770,10 @@ impl Editor {
                 self.align();
                 None
             }
+            Cmd::Fit => {
+                self.fit();
+                None
+            }
             Cmd::Flow => Some(Action::Flow),
             Cmd::Undo => {
                 self.undo();
@@ -778,6 +792,39 @@ impl Editor {
                 }
             }
         }
+    }
+
+    /// Where the part `p` (model place) lies at zoom 1 with no pan, measured from the canvas corner.
+    fn flat(&self, p: (f64, f64)) -> Vec2 {
+        let (x, y) = if self.vertical { (p.1 + 60.0, p.0) } else { (p.0, p.1) };
+        Vec2::splat(MARGIN) + Vec2::new(x as f32, y as f32)
+    }
+
+    /// Zooms and pans so every part is in view (nothing to do before the first draw or with no parts).
+    pub fn fit(&mut self) {
+        let flat: Vec<Vec2> = self.positions().into_iter().map(|p| self.flat(p)).collect();
+        if flat.is_empty() || self.view.x < 1.0 || self.view.y < 1.0 {
+            return;
+        }
+        let pad = 48.0;
+        let min = flat.iter().fold(Vec2::splat(f32::MAX), |a, p| Vec2::new(a.x.min(p.x), a.y.min(p.y)));
+        let max = flat.iter().fold(Vec2::splat(f32::MIN), |a, p| Vec2::new(a.x.max(p.x), a.y.max(p.y)));
+        let size = (max - min).max(Vec2::splat(1.0));
+        let zoom = ((self.view.x - 2.0 * pad) / size.x).min((self.view.y - 2.0 * pad) / size.y).clamp(0.3, 1.5);
+        self.zoom = zoom;
+        // `flat` has MARGIN in it already; the pan moves the middle of the parts to the middle of the canvas.
+        self.pan = (self.view - (min + max) * zoom) / 2.0 - Vec2::splat(MARGIN) * (1.0 - zoom) * 0.0;
+    }
+
+    /// Selects the part `id`, opens its fields and brings it to the middle of the canvas.
+    pub fn jump(&mut self, id: &str) {
+        let Some(i) = self.index(id) else { return };
+        self.open_part(id);
+        if self.view.x < 1.0 {
+            return;
+        }
+        let flat = self.flat(self.positions()[i]);
+        self.pan = self.view / 2.0 - flat * self.zoom;
     }
 
     /// The nearest part from the cursor in the direction `(dx, dy)` on the canvas.
@@ -886,7 +933,9 @@ impl Editor {
                 if r.clicked() {
                     action = self.edit(Cmd::Save);
                 }
-                for (cmd, key) in [(Cmd::Align, "canvas.align"), (Cmd::Undo, "canvas.undo"), (Cmd::Redo, "canvas.redo")] {
+                for (cmd, key) in
+                    [(Cmd::Align, "canvas.align"), (Cmd::Fit, "canvas.fit"), (Cmd::Undo, "canvas.undo"), (Cmd::Redo, "canvas.redo")]
+                {
                     let can = match cmd {
                         Cmd::Undo => !self.undo.is_empty(),
                         Cmd::Redo => !self.redo.is_empty(),
@@ -922,12 +971,25 @@ impl Editor {
                 let head = t.tr("canvas.problems");
                 let r = ui.colored_label(c.err, Mark::Error.marked(head));
                 ito_a11y::say(&r, Role::Label, head);
+                let mut go = None;
                 for p in &self.problems {
-                    let text = match &p.job {
-                        Some(j) => format!("{j}: {}", p.message),
-                        None => p.message.clone(),
-                    };
-                    ui.colored_label(c.err, text);
+                    match &p.job {
+                        Some(j) => {
+                            let text = format!("{j}: {}", p.message);
+                            let r =
+                                ui.add(egui::Label::new(egui::RichText::new(text.clone()).color(c.err).underline()).sense(Sense::click()));
+                            ito_a11y::say(&r, Role::Button, &text);
+                            if r.on_hover_text(t.tr("canvas.jump")).clicked() {
+                                go = Some(j.clone());
+                            }
+                        }
+                        None => {
+                            ui.colored_label(c.err, p.message.clone());
+                        }
+                    }
+                }
+                if let Some(j) = go {
+                    self.jump(&j);
                 }
             }
             match &self.result {
@@ -1000,6 +1062,10 @@ impl Editor {
                 });
                 let mut changed = field(ui, "field.id", &mut f.id);
                 changed |= field(ui, "field.name", &mut f.name);
+                ui.label(t.tr("field.note"));
+                let r = ui.add(egui::TextEdit::multiline(&mut f.note).desired_rows(2).desired_width(f32::INFINITY));
+                ito_a11y::say(&r, Role::Label, t.tr("field.note"));
+                changed |= r.changed();
                 match part {
                     Part::Job => {
                         ui.label(t.tr("field.run"));
@@ -1160,6 +1226,8 @@ impl Editor {
         let (resp, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let rect = resp.rect;
         let origin = rect.min;
+        self.view = rect.size();
+        self.vertical = vertical;
         painter.rect_filled(rect, 0.0, c.bg);
         let at: Vec<Pos2> = self.positions().into_iter().map(|p| self.to_screen(origin, p, vertical)).collect();
         let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
@@ -1401,13 +1469,20 @@ impl Editor {
             painter.circle(port, 3.5, if hot { accent } else { c.border }, Stroke::new(1.0, c.fg));
             let name = j.name.clone().unwrap_or_else(|| j.id.clone());
             let label = if selected { Mark::Selected.marked(&name) } else { name };
-            painter.text(
+            let label_rect = painter.text(
                 p + Vec2::new(0.0, r + 4.0),
                 egui::Align2::CENTER_TOP,
                 label,
                 name_font.clone(),
                 if selected { accent } else { c.fg },
             );
+            if let Some(note) = j.note.as_deref().filter(|n| !n.is_empty()) {
+                let galley = painter.layout(note.to_owned(), small.clone(), c.wait_text(), 140.0 * self.zoom.max(0.6));
+                let top = label_rect.center_bottom() + Vec2::new(0.0, 4.0);
+                let box_rect = Rect::from_min_size(top - Vec2::new(galley.size().x / 2.0, 0.0), galley.size()).expand(3.0);
+                painter.rect(box_rect, 2.0, c.wait_bg(), Stroke::new(1.0, c.border), StrokeKind::Inside);
+                painter.galley(box_rect.min + Vec2::splat(3.0), galley, c.wait_text());
+            }
         }
         if let Drag::Range { from } = self.drag {
             if let Some(p) = pointer {

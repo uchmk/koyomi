@@ -487,6 +487,7 @@ impl App {
             for (key, hint, cmd) in [
                 ("palette.edit_save", "Ctrl+S", Cmd::Save),
                 ("palette.edit_align", "", Cmd::Align),
+                ("palette.edit_fit", "", Cmd::Fit),
                 ("palette.edit_flow", "", Cmd::Flow),
                 ("palette.edit_undo", "Ctrl+Z", Cmd::Undo),
                 ("palette.edit_redo", "Ctrl+Y", Cmd::Redo),

@@ -86,6 +86,8 @@ pub enum Overlap {
 pub struct Job {
     pub id: String,
     pub name: Option<String>,
+    /// A sticky note drawn under the part on the editor's canvas; the engine does not read it.
+    pub note: Option<String>,
     /// The executable first, then one argument per element. Never a shell
     /// line. Empty when the job has `shell` and `script` instead (or the
     /// job is a part that runs nothing).
@@ -421,6 +423,7 @@ struct RawWhen {
 struct RawJob {
     id: Field,
     name: Field,
+    note: Field,
     run: Field,
     dir: Field,
     after: Field,
@@ -1340,8 +1343,9 @@ impl Checker<'_> {
                 self.add(start, "kind = \"branch\" には after を 1 つ書く（その終了コードで分ける）");
             }
             let name = self.string(&j.name, "name");
+            let note = self.string(&j.note, "note");
             let pos = self.pos(&j.pos);
-            jobs.push(Job { id, name, run, dir, after, pos, part, timeout, retry, shell, script, judge, env });
+            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env });
         }
         let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
