@@ -1,6 +1,6 @@
 # Checklist
 
-395 checks in TESTING.md, 391 left for a person.
+399 checks in TESTING.md, 395 left for a person.
 
 ## 1. Start
 
@@ -561,3 +561,10 @@
 - [ ] **55.2** Ask it to run a net → Claude Code asks first; the first call only lists the commands, and nothing starts until it is called again with `confirm = true` 〔未訳〕
 - [ ] **55.3** Ask it to stop a running run → Same: nothing stops without `confirm = true` 〔未訳〕
 - [ ] **55.4** Stop the engine and ask for the runs → The tool answers with an error saying the engine is not running 〔未訳〕
+
+## 56. ガント（今日のチャート）
+
+- [ ] **56.1** Run two nets today, then click ガント in the left pane → A lane per run on an hour axis; the bar spans start to end, in the state's colour 〔未訳〕
+- [ ] **56.2** While a net is running → Its bar keeps growing to now 〔未訳〕
+- [ ] **56.3** Click a lane → That run opens under the chart 〔未訳〕
+- [ ] **56.4** With no runs today → 「今日の実行はありません」 〔未訳〕

@@ -688,3 +688,13 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 55.2 | Ask it to run a net | Claude Code asks first; the first call only lists the commands, and nothing starts until it is called again with `confirm = true` |
 | 55.3 | Ask it to stop a running run | Same: nothing stops without `confirm = true` |
 | 55.4 | Stop the engine and ask for the runs | The tool answers with an error saying the engine is not running |
+
+## 56. ガント（今日のチャート）
+
+| # | Do | Expect |
+|---|---|---|
+| 56.1 | Run two nets today, then click ガント in the left pane | A lane per run on an hour axis; the bar spans start to end, in the state's colour |
+| 56.2 | While a net is running | Its bar keeps growing to now |
+| 56.3 | Click a lane | That run opens under the chart |
+| 56.4 | With no runs today | 「今日の実行はありません」 |
+

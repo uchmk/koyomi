@@ -24,6 +24,7 @@ use crate::{client, engine, review, show};
 
 pub mod calendar;
 pub mod canvas;
+pub mod gantt;
 pub mod graph;
 pub mod whens;
 
@@ -234,6 +235,8 @@ pub struct Browser {
     cal_result: Option<Result<String, String>>,
     /// 履歴, when it is open: the detail is its rows.
     hist: Option<History>,
+    /// ガント, when it is open: the detail is today's runs on a time axis.
+    gantt: bool,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -336,6 +339,7 @@ impl Browser {
             cal_month: None,
             cal_result: None,
             hist: None,
+            gantt: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -493,6 +497,7 @@ impl Browser {
         self.run_sel = Some(id.to_owned());
         self.job_sel = None;
         self.hist = None;
+        self.gantt = false;
         self.leave_editor();
     }
 
@@ -635,6 +640,7 @@ impl Browser {
                 self.job_sel = None;
                 self.result = None;
                 self.hist = None;
+                self.gantt = false;
             }
         }
     }
@@ -1051,6 +1057,7 @@ impl Browser {
                 self.tree(ui, t);
                 ui.add_space(10.0);
                 self.today(ui, t);
+                self.gantt_link(ui, t);
                 self.history_link(ui, t);
                 self.calendar_list(ui, t);
                 // The one switch over the whole schedule, below what it stops.
@@ -1071,6 +1078,8 @@ impl Browser {
             }
             if self.editor.is_some() {
                 self.editor_view(ui, t);
+            } else if self.gantt {
+                self.gantt_view(ui, t);
             } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
@@ -1182,6 +1191,7 @@ impl Browser {
             self.job_sel = None;
             self.result = None;
             self.hist = None;
+            self.gantt = false;
             self.leave_editor();
         }
     }
@@ -1238,7 +1248,56 @@ impl Browser {
             self.job_sel = None;
             self.result = None;
             self.hist = None;
+            self.gantt = false;
             self.leave_editor();
+        }
+    }
+
+    /// The ガント row under today's runs: a click opens the runs on a time axis.
+    fn gantt_link(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        if self.snap.is_none() {
+            return;
+        }
+        let r = ui.selectable_label(self.gantt, format!("  {}", t.tr("run.gantt")));
+        ito_a11y::say(&r, Role::Row, t.tr("run.gantt"));
+        if r.clicked() {
+            self.hist = None;
+            self.run_sel = None;
+            self.cal_sel = None;
+            self.job_sel = None;
+            self.result = None;
+            self.gantt = true;
+        }
+    }
+
+    /// ガント: today's runs, a lane each; a click on a lane opens the run under the chart.
+    fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        ui.heading(t.tr("run.gantt"));
+        ui.add_space(6.0);
+        if self.runs.is_empty() {
+            ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
+            return;
+        }
+        let now = chrono::Local::now().naive_local();
+        if self.runs.iter().any(|r| !r.is_over()) {
+            ui.ctx().request_repaint_after(Duration::from_secs(1));
+        }
+        let runs: Vec<&Run> = self.runs.iter().collect();
+        let picked = self.run_sel.clone();
+        let mut pick = None;
+        egui::ScrollArea::both().id_salt("gantt").max_height(ui.available_height() * 0.5).show(ui, |ui| {
+            pick = gantt::draw(ui, &runs, now, picked.as_deref());
+        });
+        if pick.is_some() {
+            self.run_sel = pick;
+            self.job_sel = None;
+            self.result = None;
+        }
+        if self.run_sel.is_some() {
+            ui.add_space(10.0);
+            ui.separator();
+            self.run_view(ui, t);
         }
     }
 
@@ -1872,6 +1931,7 @@ mod tests {
             cal_month: None,
             cal_result: None,
             hist: None,
+            gantt: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
