@@ -226,6 +226,8 @@ pub struct Browser {
     selected: Option<String>,
     /// The run picked under 今日; when it is set, the detail is the run.
     run_sel: Option<String>,
+    /// The run marked to be compared with: the run picked next is shown against it.
+    compare_base: Option<String>,
     /// The job whose log is shown, when one was picked by hand.
     job_sel: Option<String>,
     /// What the log search box holds (a regular expression, smart case).
@@ -351,6 +353,7 @@ impl Browser {
             starting: true,
             selected: None,
             run_sel: None,
+            compare_base: None,
             job_sel: None,
             log_find: String::new(),
             log: None,
@@ -550,7 +553,11 @@ impl Browser {
     }
 
     fn selected_run(&self) -> Option<&Run> {
-        let id = self.run_sel.as_deref()?;
+        self.find_run(self.run_sel.as_deref()?)
+    }
+
+    /// The run `id`, from the runs of today or the history asked for.
+    fn find_run(&self, id: &str) -> Option<&Run> {
         self.runs.iter().find(|r| r.id == id).or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
     }
 
@@ -1599,7 +1606,7 @@ impl Browser {
         let Some(h) = self.hist.as_mut() else { return };
         ui.heading(t.tr("run.history"));
         ui.add_space(6.0);
-        let mut search = false;
+        let (mut search, mut csv) = (false, false);
         ui.horizontal(|ui| {
             ui.label(t.tr("run.history_from"));
             ui.add(egui::TextEdit::singleline(&mut h.from).desired_width(90.0));
@@ -1626,7 +1633,16 @@ impl Browser {
             let r = ui.button(t.tr("run.history_search"));
             ito_a11y::say(&r, Role::Button, t.tr("run.history_search"));
             search = r.clicked();
+            let r = ui.button(t.tr("run.history_csv"));
+            ito_a11y::say(&r, Role::Button, t.tr("run.history_csv"));
+            csv = r.clicked();
         });
+        if csv {
+            let mut shown = h.filtered();
+            shown.reverse();
+            let text = crate::csv::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
+            self.result = Some(export_csv("history", &text).map(|path| t.trf("run.history_csv_done", &[&path])));
+        }
         if search {
             let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
             match (day(&h.from), day(&h.to)) {
@@ -1664,6 +1680,7 @@ impl Browser {
                 pick = Some(run.id.clone());
             }
         }
+        self.show_result(ui);
         if pick.is_some() {
             self.run_sel = pick;
             self.job_sel = None;
@@ -1746,6 +1763,14 @@ impl Browser {
                     }
                 }
             }
+            // Mark this run, then pick another: the two are shown side by side under the buttons.
+            let marked = self.compare_base.as_deref() == Some(run.id.as_str());
+            let label = t.tr(if marked { "run.compare_clear" } else { "run.compare_mark" });
+            let r = ui.button(label);
+            ito_a11y::say(&r, Role::Button, label);
+            if r.clicked() {
+                self.compare_base = (!marked).then(|| run.id.clone());
+            }
             ui.separator();
             for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
                 let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
@@ -1756,6 +1781,15 @@ impl Browser {
             }
         });
         self.show_result(ui);
+        if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
+            ui.add_space(6.0);
+            let head = t.trf("run.compare_head", &[&base.id]);
+            ui.label(egui::RichText::new(&head).strong());
+            for l in crate::compare::lines(t, base, &run, &[]) {
+                let r = ui.add(egui::Label::new(egui::RichText::new(&l).monospace()).wrap());
+                ito_a11y::say(&r, Role::Label, &l);
+            }
+        }
         ui.add_space(6.0);
         let watched = Self::watched_job(&run, self.job_sel.as_deref());
         *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
@@ -2056,6 +2090,15 @@ fn export_all() -> Result<(String, usize), String> {
     Ok((path.display().to_string(), b.len()))
 }
 
+/// `text` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
+fn export_csv(what: &str, text: &str) -> Result<String, String> {
+    let dir = engine::Paths::find()?.state.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", dir.display()))?;
+    let path = dir.join(format!("{what}-{}.csv", chrono::Local::now().format("%Y%m%d-%H%M%S"))).display().to_string();
+    crate::csv::write(&path, text)?;
+    Ok(path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2148,6 +2191,7 @@ mod tests {
             starting: false,
             selected: None,
             run_sel: None,
+            compare_base: None,
             job_sel: None,
             log_find: String::new(),
             log: None,
