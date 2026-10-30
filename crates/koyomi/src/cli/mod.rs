@@ -83,8 +83,8 @@ usage: koyomi [--version | --help | env]
                                      refused while other nets use it, unless --fix points them at the new name too
        koyomi copy <group/name> <group/name>
                                      write the net again under the new name (unconfirmed)
-       koyomi replace <text> <text> [--apply]
-                                     every line of every net that holds the first text, as it is and as it would
+       koyomi replace <find> <with> [--apply]
+                                     every line of every net that holds <find>, as it is and as it would
                                      read; with --apply they are written so (unconfirmed; the old form is kept as a version)
        koyomi delete <group/name>    take the net away on `y` (kept as a version: restore brings it back);
                                      refused while other nets use it
@@ -1289,7 +1289,7 @@ fn replace(args: &[String]) -> i32 {
     let rest: Vec<&String> = args.iter().filter(|a| *a != "--apply").collect();
     match rest.as_slice() {
         [from, to] => ask_and_say(&Request::Replace { from: (*from).clone(), to: (*to).clone(), apply }),
-        _ => usage("replace takes the text to find, the text to put and --apply"),
+        _ => usage("replace takes the text to find, the text to put, and optionally --apply"),
     }
 }
 

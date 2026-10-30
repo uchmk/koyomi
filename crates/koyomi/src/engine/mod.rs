@@ -1436,6 +1436,9 @@ impl State {
         if from.is_empty() {
             return Err("探す文字が空".to_owned());
         }
+        if from == to {
+            return Err("探す文字と直す文字が同じ".to_owned());
+        }
         let mut ids: Vec<String> = self.defs.iter().map(|d| d.id.clone()).collect();
         ids.sort();
         // Every file is worked out before one is written.
@@ -1460,7 +1463,7 @@ impl State {
                     out.push(format!("  {}: + {}", h.line, h.after.trim()));
                 }
             }
-            out.push(format!("{} 個のジョブネットの {lines} 行（--apply で置き換える）", found.len()));
+            out.push(format!("{} 個のジョブネットの {lines} 行（--apply で置き換える。直したジョブネットは未確認に戻る）", found.len()));
             return Ok(out.join(
                 "
 ",
@@ -1473,10 +1476,20 @@ impl State {
             let new = koyomi_core::replace::apply(text, from, to).map_err(|e| format!("{id} が読めなくなる（{e}）。何も書かなかった"))?;
             next.push((id.clone(), path.clone(), new));
         }
+        let mut written: Vec<&str> = Vec::new();
         for (id, path, new) in &next {
             let (g, n) = split_id(id)?;
-            self.keep_version(path, g, n)?;
-            ito_common::write_atomic(path, new)?;
+            let put = self.keep_version(path, g, n).and_then(|()| ito_common::write_atomic(path, new));
+            if let Err(e) = put {
+                self.rescan();
+                let done = if written.is_empty() {
+                    "どれも書いていない".to_owned()
+                } else {
+                    format!("書いたのは {}", written.join(", "))
+                };
+                return Err(format!("{id} を書けない: {e}（{done}）"));
+            }
+            written.push(id);
         }
         self.rescan();
         Ok(format!("{} 個のジョブネットの {lines} 行を置き換えた（未確認。直す前の形は版に残した）", next.len()))
@@ -1585,7 +1598,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
         Request::Copy { id, to } => ("copy", format!("{id} {to}")),
-        Request::Replace { from, to, apply: true } => ("replace", format!("{from} {to}")),
+        Request::Replace { from, to, apply: true } => ("replace", format!("{from:?} → {to:?}")),
         Request::Delete { id } => ("delete", id.clone()),
         Request::Import { dry_run: false, .. } => ("import", String::new()),
         _ => return None,
@@ -2184,6 +2197,7 @@ run = [\"x.exe\"]
         assert!(s.save("経理/一", one, None, false).is_ok());
         assert!(s.save("経理/二", two, None, false).is_ok());
         assert_eq!(s.replace("", "x", false), Err("探す文字が空".to_owned()));
+        assert_eq!(s.replace("x", "x", true), Err("探す文字と直す文字が同じ".to_owned()));
         assert_eq!(s.replace("//nowhere", "x", true), Ok("見つからない: //nowhere".to_owned()));
         // Shown, not written.
         let shown = s.replace("//old", "//new", false).unwrap();
