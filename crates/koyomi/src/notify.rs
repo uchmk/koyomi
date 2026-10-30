@@ -296,6 +296,29 @@ pub fn tail(t: &Table, r: &Run, log: impl Fn(&str) -> Option<String>) -> Tail {
     out
 }
 
+/// The places of `n` a net's notice goes to: those `to` names (`notify_to`,
+/// or a notify part's `to`), or with no names, the places with no name.
+/// The system's notification and the sound are kept as they are.
+pub fn to(n: &NotifyCfg, to: &[String]) -> NotifyCfg {
+    if to.is_empty() {
+        n.unnamed()
+    } else {
+        n.only(&to.iter().map(String::as_str).collect::<Vec<_>>())
+    }
+}
+
+/// The names `net` sends to (`notify_to`, a notify part's `to`) that no
+/// place of `n` has: a notice for them would go to no webhook.
+pub fn unknown(n: &NotifyCfg, net: &Jobnet) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for name in net.notify_to.iter().chain(net.jobs.iter().flat_map(|j| &j.to)) {
+        if !n.places.iter().any(|p| &p.name == name) && !out.contains(name) {
+            out.push(name.clone());
+        }
+    }
+    out
+}
+
 /// Tells of `event` in every way `n` turns on for it.
 pub fn tell(n: &NotifyCfg, event: &str, title: &str, body: &str) {
     n.tell(&EVENTS, APP, icon, event, title, body);
@@ -323,6 +346,21 @@ mod tests {
 
     fn cfg(notify: &str) -> Config {
         Config::parse(&format!("[notify]\n{notify}")).unwrap()
+    }
+
+    #[test]
+    fn a_net_tells_the_places_it_names_or_else_the_unnamed_ones() {
+        let place = |name: &str, url: &str| ito_notify::webhook::Place { name: name.into(), url: url.into(), ..Default::default() };
+        let mut n = NotifyCfg::default();
+        n.places = vec![place("", "https://a"), place("経理", "https://b"), place("ops", "https://c")];
+        let urls = |c: NotifyCfg| c.places.into_iter().map(|p| p.url).collect::<Vec<_>>();
+        assert_eq!(urls(super::to(&n, &[])), ["https://a"]);
+        assert_eq!(urls(super::to(&n, &["ops".into(), "経理".into()])), ["https://b", "https://c"]);
+        let net = koyomi_core::jobnet::parse(
+            "format = 1\nnotify_to = [\"経理\", \"夜間\"]\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"n\"\nkind = \"notify\"\nafter = [\"a\"]\nto =[\"夜間\", \"ops\", \"保守\"]\n",
+        )
+        .unwrap();
+        assert_eq!(unknown(&n, &net), ["夜間", "保守"]);
     }
 
     #[test]

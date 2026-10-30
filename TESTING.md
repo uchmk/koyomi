@@ -840,3 +840,14 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 69.5 | `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` | `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved |
 | 69.6 | `quiet = ["23:00-01:00"]` on a net at 00:30 | The 00:30 time starts at 01:00 |
 | 69.7 | 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times | At the end the waited time starts first; the time due at the end is recorded `⊘ スキップ` `前の回がまだ動いていました` (`overlap = "queue"`: it runs after) |
+
+## 70. 通知の宛先
+
+| # | Do | Expect |
+|---|---|---|
+| 70.1 | `koyomi.toml`: `[[notify.webhooks]]` three times — one with no `name`, one `name = "経理"`, one `name = "ops"` (each a test URL that shows what it got); a failing net with no `notify_to` | Its `failed` notice reaches the place with no name only |
+| 70.2 | The same net with `notify_to = ["経理"]` | `koyomi show <net>` has `通知の宛先: 経理`; the notice reaches 経理 only; the system's notification still shows |
+| 70.3 | A net with `notify_to = ["経理"]` and a `kind = "notify"` part with `to = ["ops"]` | The part's notice reaches ops only; the run's end reaches 経理 only |
+| 70.4 | `notify_to = ["夜間"]` (no place has it); `koyomi check <file>` | `注意: koyomi.toml の [notify] にその名前の通知先がない: 夜間`; the file still reads (a warning) |
+| 70.5 | `notify_to = "経理"`, `notify_to = ["経理", "経理"]`, or `to = ["ops"]` on a plain job; `koyomi check <file>` | `notify_to は通知の場所の名前の配列で書く…` / `notify_to: 同じ名前が 2 つある: 経理` / `to は kind = "notify" にだけ書く`; the net cannot be approved |
+| 70.6 | Stop the engine for a while with webhooks named and not, then start it | The outage notice reaches every place |

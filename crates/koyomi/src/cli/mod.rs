@@ -336,6 +336,13 @@ fn check(args: &[String]) -> i32 {
             out(&format!("{name}: {}", f.text), true);
             bad |= !f.warn;
         }
+        // The places it names, in `koyomi.toml`: a name none has is told to no webhook.
+        if let Some(config) = paths.as_ref().and_then(|p| koyomi_core::config::Config::load(&p.config).ok()) {
+            let unknown = crate::notify::unknown(&crate::notify::read(&config).0, net);
+            if !unknown.is_empty() {
+                out(&format!("{name}: 注意: koyomi.toml の [notify] にその名前の通知先がない: {}", unknown.join(", ")), true);
+            }
+        }
     }
     if !bad {
         out(&format!("{name}: 問題なし"), false);

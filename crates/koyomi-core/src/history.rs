@@ -205,6 +205,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         judge: None,
                         env: Default::default(),
                         encoding: Default::default(),
+                        to: Vec::new(),
                         retried: 0,
                         state: State::NotRun,
                         started: None,

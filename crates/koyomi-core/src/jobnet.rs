@@ -78,6 +78,10 @@ pub struct Jobnet {
     /// `on_quiet = "skip"`: such a time is skipped, not started when the hours are over.
     #[serde(default)]
     pub on_quiet: OnQuiet,
+    /// `notify_to = ["accounting"]`: the notification places (by `name`) the
+    /// net's notices go to; empty: the places with no name.
+    #[serde(default)]
+    pub notify_to: Vec<String>,
 }
 
 impl Jobnet {
@@ -154,6 +158,10 @@ pub struct Job {
     /// How the process's output becomes text, from `encoding = "sjis"`.
     #[serde(default, skip_serializing_if = "Encoding::is_auto")]
     pub encoding: Encoding,
+    /// `to = ["ops"]` of a `kind = "notify"` part: the places (by `name`) it
+    /// tells, instead of the net's `notify_to`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
 }
 
 /// `encoding`: how a job's output is read into the log.
@@ -465,6 +473,7 @@ struct RawNet {
     late_slow: Field,
     quiet: Field,
     on_quiet: Field,
+    notify_to: Field,
 }
 
 #[derive(Deserialize)]
@@ -515,7 +524,6 @@ struct RawJob {
     days: Field,
     file: Field,
     settle: Field,
-    // Of the design, not run by this version.
     to: Field,
     shell: Field,
     script: Field,
@@ -556,6 +564,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
         Some("skip") => OnQuiet::Skip,
         _ => OnQuiet::Wait,
     };
+    let notify_to = c.names(&raw.notify_to, "notify_to");
     c.params = c.params(&raw.params);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
@@ -576,6 +585,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             late_slow,
             quiet,
             on_quiet,
+            notify_to,
         })
     } else {
         c.problems.sort_by_key(|p| p.line);
@@ -644,12 +654,6 @@ impl Checker<'_> {
     fn add(&mut self, offset: usize, message: impl Into<String>) {
         let line = line_of(self.text, offset);
         self.problems.push(Problem { line, message: message.into() });
-    }
-
-    fn not_yet(&mut self, field: &Field, name: &str) {
-        if let Some(f) = field {
-            self.add(f.span().start, format!("この版ではまだ使えない: {name}"));
-        }
     }
 
     /// A field that is one of `choices` when written: `missed = "once"`.
@@ -969,6 +973,35 @@ impl Checker<'_> {
             match v.as_str().ok_or_else(|| "\"12:00-13:00\" のような文字列で書く".to_owned()).and_then(Span::parse) {
                 Ok(s) => out.push(s),
                 Err(e) => self.add(at, format!("quiet: {e}")),
+            }
+        }
+        out
+    }
+
+    /// `notify_to = ["accounting"]` (or `to` of a notify part): names of
+    /// notification places, each once.
+    fn names(&mut self, field: &Field, name: &str) -> Vec<String> {
+        let Some(f) = field.as_ref() else { return Vec::new() };
+        let at = f.span().start;
+        let shape = format!("{name} は通知の場所の名前の配列で書く（例: {name} = [\"経理\"]）");
+        let Some(list) = f.get_ref().as_array() else {
+            self.add(at, shape);
+            return Vec::new();
+        };
+        let mut out: Vec<String> = Vec::new();
+        for v in list {
+            match v.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => {
+                    if out.iter().any(|o| o == s) {
+                        self.add(at, format!("{name}: 同じ名前が 2 つある: {s}"));
+                    } else {
+                        out.push(s.to_owned());
+                    }
+                }
+                _ => {
+                    self.add(at, shape.clone());
+                    return Vec::new();
+                }
             }
         }
         out
@@ -1476,7 +1509,6 @@ impl Checker<'_> {
         for entry in raw {
             let start = entry.span().start;
             let j = entry.get_ref();
-            self.not_yet(&j.to, "to");
             let part = self.part(j, start);
             let id = match &j.id {
                 None => {
@@ -1560,7 +1592,13 @@ impl Checker<'_> {
             let name = self.string(&j.name, "name");
             let note = self.string(&j.note, "note");
             let pos = self.pos(&j.pos);
-            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding });
+            let to = if part == Part::Notify {
+                self.names(&j.to, "to")
+            } else {
+                self.only(&j.to, "to", "\"notify\"");
+                Vec::new()
+            };
+            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding, to });
         }
         let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
@@ -2090,9 +2128,7 @@ exit 1'''
     }
 
     #[test]
-    fn fields_that_do_not_run_yet_are_refused_not_ignored() {
-        let text = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = \"c\"\n";
-        assert_eq!(problems(text), ["a.toml の 5 行目: この版ではまだ使えない: to"]);
+    fn the_top_level_fields_read() {
         assert_eq!(parse("format = 1\ncalendar = \"会社\"\n").unwrap().calendar.as_deref(), Some("会社"));
         assert_eq!(parse("format = 1\n").unwrap().calendar, None);
         let bad = "a.toml の 2 行目: calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）";
@@ -2101,6 +2137,36 @@ exit 1'''
         assert!(problems("format = 1\nmissed = \"skip\"\noverlap = \"skip\"\n").is_empty());
         assert_eq!(problems("format = 1\nmissed = \"later\"\n"), ["a.toml の 2 行目: missed は \"skip\"・\"once\" のどれか"]);
         assert_eq!(problems("format = 1\noverlap = 1\n"), ["a.toml の 2 行目: overlap は \"skip\"・\"queue\" のどれか"]);
+    }
+
+    #[test]
+    fn notices_go_to_the_places_a_net_or_a_part_names() {
+        let text = "format = 1
+notify_to = [\"経理\", \"ops\"]
+
+[[job]]
+id = \"a\"
+run = [\"x\"]
+
+[[job]]
+id = \"n\"
+kind = \"notify\"
+after = [\"a\"]
+to = [\"夜間\"]
+";
+        let n = parse(text).unwrap();
+        assert_eq!(n.notify_to, ["経理", "ops"]);
+        assert_eq!(n.jobs[1].to, ["夜間"]);
+        assert_eq!(parse(&crate::write::text(&n)).unwrap(), n);
+        assert!(parse("format = 1\n").unwrap().notify_to.is_empty());
+        let shape = "a.toml の 2 行目: notify_to は通知の場所の名前の配列で書く（例: notify_to = [\"経理\"]）";
+        assert_eq!(problems("format = 1\nnotify_to = \"経理\"\n"), [shape]);
+        assert_eq!(problems("format = 1\nnotify_to = [\"\"]\n"), [shape]);
+        assert_eq!(problems("format = 1\nnotify_to = [\"a\", \"a\"]\n"), ["a.toml の 2 行目: notify_to: 同じ名前が 2 つある: a"]);
+        assert_eq!(
+            problems("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = [\"c\"]\n"),
+            ["a.toml の 5 行目: to は kind = \"notify\" にだけ書く"]
+        );
     }
 
     const FLOW: &str = r#"format = 1

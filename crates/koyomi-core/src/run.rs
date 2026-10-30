@@ -210,6 +210,9 @@ pub struct JobRun {
     /// How its output is read into the log.
     #[serde(default, skip_serializing_if = "Encoding::is_auto")]
     pub encoding: Encoding,
+    /// The notification places (by name) a `kind = "notify"` part tells.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub to: Vec<String>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -240,6 +243,7 @@ impl JobRun {
             judge: job.judge.clone(),
             env: job.env.clone(),
             encoding: job.encoding,
+            to: job.to.clone(),
             retried: 0,
             state: State::NotRun,
             started: None,

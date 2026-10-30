@@ -56,6 +56,9 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if net.on_quiet != OnQuiet::Wait {
         push(&mut out, "on_quiet", "\"skip\"");
     }
+    if !net.notify_to.is_empty() {
+        push(&mut out, "notify_to", &list(&net.notify_to));
+    }
     if !net.params.is_empty() {
         out.push_str("\n[params]\n");
         for (k, v) in &net.params {
@@ -252,6 +255,11 @@ fn line(l: &Line) -> String {
     }
 }
 
+/// `["a", "b"]`.
+fn list(items: &[String]) -> String {
+    format!("[{}]", items.iter().map(|s| q(s)).collect::<Vec<_>>().join(", "))
+}
+
 fn job(j: &Job, out: &mut String) {
     out.push_str("\n[[job]]\n");
     push(out, "id", &q(&j.id));
@@ -279,6 +287,7 @@ fn job(j: &Job, out: &mut String) {
                 push(out, "settle", &q(&duration::text(*s)));
             }
         }
+        Part::Notify if !j.to.is_empty() => push(out, "to", &list(&j.to)),
         Part::Job | Part::Branch | Part::Notify | Part::Approval => {}
     }
     if !j.run.is_empty() {

@@ -158,6 +158,7 @@ late_end = "Tells when it is not over by: {0}"
 late_slow_off = "Does not tell when it takes twice its usual time (late_slow = false)"
 quiet_wait = "Quiet hours: {0} (a time in them runs when they are over)"
 quiet_skip = "Quiet hours: {0} (a time in them is skipped)"
+notify_to = "Notices go to: {0}"
 
 [part]
 job = "Job"

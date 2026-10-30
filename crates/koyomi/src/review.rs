@@ -80,6 +80,9 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     if !net.watches_slow() {
         out.push(t.tr("review.late_slow_off").to_owned());
     }
+    if !net.notify_to.is_empty() {
+        out.push(t.trf("review.notify_to", &[&net.notify_to.join(", ")]));
+    }
     if !net.quiet.is_empty() {
         let spans = net.quiet.iter().map(|s| s.text()).collect::<Vec<_>>().join(", ");
         let key = match net.on_quiet {

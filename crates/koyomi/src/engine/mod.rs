@@ -309,13 +309,15 @@ impl State {
         for (run, job) in self.runner.take_notices() {
             let Some(r) = self.runner.runs().iter().find(|r| r.id == run) else { continue };
             let (event, title, body) = notify::part_words(&self.words, r, &job);
-            notify::tell(&self.notify, event, &title, &body);
+            let part = r.job(&job).map(|j| j.to.as_slice()).filter(|to| !to.is_empty());
+            let places = notify::to(&self.notify, part.unwrap_or_else(|| self.notify_to(&r.jobnet)));
+            notify::tell(&places, event, &title, &body);
         }
         // A 確認待ち part asks a person.
         for (run, job) in self.runner.take_asks() {
             let Some(r) = self.runner.runs().iter().find(|r| r.id == run) else { continue };
             let (event, title, body) = notify::ask_words(&self.words, r, &job);
-            notify::tell(&self.notify, event, &title, &body);
+            notify::tell(&notify::to(&self.notify, self.notify_to(&r.jobnet)), event, &title, &body);
         }
         let over = self.runner.take_over();
         for r in &over {
@@ -327,17 +329,23 @@ impl State {
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
             let (event, title, body) = notify::words(&self.words, &r);
             let tail = notify::tail(&self.words, &r, |job| self.runner.log_tail(&r.id, job).ok());
-            notify::tell_tail(&self.notify, event, &title, &body, &tail);
+            let places = notify::to(&self.notify, self.notify_to(&r.jobnet));
+            notify::tell_tail(&places, event, &title, &body, &tail);
             // An abnormal end told earlier is told to be over.
             if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
                 let (event, title, body) = notify::recovery_words(&self.words, &r, prev);
-                notify::tell(&self.notify, event, &title, &body);
+                notify::tell(&places, event, &title, &body);
             }
         }
         for runs in missed {
             let (event, title, body) = notify::missed_words(&self.words, &runs);
-            notify::tell(&self.notify, event, &title, &body);
+            notify::tell(&notify::to(&self.notify, self.notify_to(&runs[0].jobnet)), event, &title, &body);
         }
+    }
+
+    /// The `notify_to` of the net `id` (empty when it is gone).
+    fn notify_to(&self, id: &str) -> &[String] {
+        self.defs.iter().find(|d| d.id == id).and_then(|d| d.net.as_ref()).map_or(&[], |n| &n.notify_to)
     }
 
     /// Tells of the runs that are late (`late_start`, `late_end`, `late_slow`),
@@ -372,7 +380,7 @@ impl State {
             let Some(net) = self.defs.iter().find(|d| d.id == r.jobnet).and_then(|d| d.net.as_ref()) else { continue };
             let usual = self.usual.get(&r.jobnet).copied().flatten();
             let (event, title, body) = notify::delay_words(&self.words, net, r, delay, usual, now);
-            notify::tell(&self.notify, event, &title, &body);
+            notify::tell(&notify::to(&self.notify, &net.notify_to), event, &title, &body);
         }
         let pending = self
             .runner
@@ -386,11 +394,12 @@ impl State {
             let Some(by) = def.net.as_ref().and_then(|n| n.late_start).map(|d| d.from(planned)) else { continue };
             if now >= by && self.late_told.insert((def.id.clone(), planned)) {
                 let title = def.title.clone().unwrap_or_else(|| def.name.clone());
-                tell.push(notify::pending_words(&self.words, &def.id, &title, planned, by, now));
+                let places = notify::to(&self.notify, def.net.as_ref().map_or(&[][..], |n| &n.notify_to));
+                tell.push((places, notify::pending_words(&self.words, &def.id, &title, planned, by, now)));
             }
         }
-        for (event, title, body) in tell {
-            notify::tell(&self.notify, event, &title, &body);
+        for (places, (event, title, body)) in tell {
+            notify::tell(&places, event, &title, &body);
         }
         // A time that never got a run (dropped from the queue) is not kept for ever.
         self.late_told.retain(|(_, p)| *p > now - chrono::Days::new(2));

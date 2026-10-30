@@ -157,6 +157,7 @@ late_end = "終わらなければ知らせる: {0}"
 late_slow_off = "いつもの 2 倍かかっても知らせない（late_slow = false）"
 quiet_wait = "流さない時間帯: {0}（来た回は終わってから流す）"
 quiet_skip = "流さない時間帯: {0}（来た回はスキップ）"
+notify_to = "通知の宛先: {0}"
 
 [part]
 job = "ジョブ"
