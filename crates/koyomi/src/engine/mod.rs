@@ -1431,6 +1431,57 @@ impl State {
         Ok(format!("複製した: {id} → {to}（未確認。確かめてから流す）"))
     }
 
+    /// See [`Request::Replace`].
+    fn replace(&mut self, from: &str, to: &str, apply: bool) -> Result<String, String> {
+        if from.is_empty() {
+            return Err("探す文字が空".to_owned());
+        }
+        let mut ids: Vec<String> = self.defs.iter().map(|d| d.id.clone()).collect();
+        ids.sort();
+        // Every file is worked out before one is written.
+        let mut found = Vec::new();
+        for id in ids {
+            let (path, text) = self.net_file(&id, "置き換えられない")?;
+            let hits = koyomi_core::replace::hits(&text, from, to);
+            if !hits.is_empty() {
+                found.push((id, path, text, hits));
+            }
+        }
+        if found.is_empty() {
+            return Ok(format!("見つからない: {from}"));
+        }
+        let lines = found.iter().map(|f| f.3.len()).sum::<usize>();
+        if !apply {
+            let mut out = Vec::new();
+            for (id, _, _, hits) in &found {
+                out.push(id.clone());
+                for h in hits {
+                    out.push(format!("  {}: - {}", h.line, h.before.trim()));
+                    out.push(format!("  {}: + {}", h.line, h.after.trim()));
+                }
+            }
+            out.push(format!("{} 個のジョブネットの {lines} 行（--apply で置き換える）", found.len()));
+            return Ok(out.join(
+                "
+",
+            ));
+        }
+        self.held_writable()?;
+        let mut next = Vec::new();
+        for (id, path, text, _) in &found {
+            self.not_running(id)?;
+            let new = koyomi_core::replace::apply(text, from, to).map_err(|e| format!("{id} が読めなくなる（{e}）。何も書かなかった"))?;
+            next.push((id.clone(), path.clone(), new));
+        }
+        for (id, path, new) in &next {
+            let (g, n) = split_id(id)?;
+            self.keep_version(path, g, n)?;
+            ito_common::write_atomic(path, new)?;
+        }
+        self.rescan();
+        Ok(format!("{} 個のジョブネットの {lines} 行を置き換えた（未確認。直す前の形は版に残した）", next.len()))
+    }
+
     /// See [`Request::Delete`].
     fn delete(&mut self, id: &str) -> Result<String, String> {
         let (path, _) = self.net_file(id, "消せない")?;
@@ -1498,6 +1549,7 @@ impl State {
             Request::Restore { id, version } => self.restore(id, version),
             Request::Rename { id, to, fix } => self.rename(id, to, *fix),
             Request::Copy { id, to } => self.copy(id, to),
+            Request::Replace { from, to, apply } => self.replace(from, to, *apply),
             Request::Delete { id } => self.delete(id),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
             Request::Uses { target } => Ok(koyomi_core::uses::find(&self.defs, target).join(
@@ -1533,6 +1585,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
         Request::Copy { id, to } => ("copy", format!("{id} {to}")),
+        Request::Replace { from, to, apply: true } => ("replace", format!("{from} {to}")),
         Request::Delete { id } => ("delete", id.clone()),
         Request::Import { dry_run: false, .. } => ("import", String::new()),
         _ => return None,
@@ -2109,6 +2162,47 @@ run = [\"x\"]
         // Brought back by a restore, unconfirmed.
         assert!(s.restore("経理/子", &versions[0]).is_ok());
         assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Unconfirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_replace_shows_the_lines_and_with_apply_writes_them_unconfirmed_and_kept() {
+        let paths = temp_paths("replace");
+        let mut s = State::new(paths.clone());
+        let one = "format = 1
+name = \"一\"
+[[job]]
+id = \"a\"
+run = [\"//old/tool.exe\", \"-v\"]
+";
+        let two = "format = 1
+name = \"二\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        assert!(s.save("経理/一", one, None, false).is_ok());
+        assert!(s.save("経理/二", two, None, false).is_ok());
+        assert_eq!(s.replace("", "x", false), Err("探す文字が空".to_owned()));
+        assert_eq!(s.replace("//nowhere", "x", true), Ok("見つからない: //nowhere".to_owned()));
+        // Shown, not written.
+        let shown = s.replace("//old", "//new", false).unwrap();
+        assert!(
+            shown.contains("経理/一") && shown.contains("5: + run = [\"//new/tool.exe\", \"-v\"]") && !shown.contains("経理/二"),
+            "{shown}"
+        );
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/一.toml")).unwrap(), one);
+        // A result that does not read is refused, and nothing is written.
+        let err = s.replace("\"a\"", "a", true).unwrap_err();
+        assert!(err.contains("何も書かなかった"), "{err}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/二.toml")).unwrap(), two);
+        // Applied: written, the old form kept, unconfirmed again; the other net stays confirmed.
+        let said = s.replace("//old", "//new", true).unwrap();
+        assert!(said.contains("1 個のジョブネットの 1 行"), "{said}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/一.toml")).unwrap(), one.replace("//old", "//new"));
+        assert_eq!(standing_of(&s, "経理/一"), Some(Standing::Unconfirmed));
+        assert_eq!(standing_of(&s, "経理/二"), Some(Standing::Confirmed));
+        assert_eq!(Versions::parse(&s.versions("経理/一").unwrap()).unwrap().versions.len(), 1);
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

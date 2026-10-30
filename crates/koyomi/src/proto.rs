@@ -143,6 +143,15 @@ pub enum Request {
         id: String,
         to: String,
     },
+    /// Every line of every net that holds `from`, as it is and as it would read with `to`. With
+    /// `apply` the files are written that way, each one under `versions/` first, and the nets
+    /// are unconfirmed again. Refused while a net it would change runs, or when a result no
+    /// longer reads as a net (nothing is written then).
+    Replace {
+        from: String,
+        to: String,
+        apply: bool,
+    },
     /// Take the net `id`'s file away (kept under `versions/` first, so `Restore` brings it
     /// back). Refused while it runs or other nets name it.
     Delete {

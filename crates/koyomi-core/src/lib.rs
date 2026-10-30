@@ -18,6 +18,7 @@ pub mod layout;
 pub mod preflight;
 pub mod quiet;
 pub mod rename;
+pub mod replace;
 pub mod report;
 pub mod retain;
 pub mod run;
