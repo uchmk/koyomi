@@ -1256,14 +1256,28 @@ impl Browser {
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
             }
         });
-        self.confirm(&ctx, t, key);
-        self.confirm_kill(&ctx, t, key);
-        self.confirm_delete(&ctx, t, key);
-        self.confirm_editor(&ctx, t, key);
-        self.confirm_versions(&ctx, t, key);
-        self.confirm_port(&ctx, t, key);
-        self.confirm_make(&ctx, t, key);
-        self.confirm_give(&ctx, t, key);
+        // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
+        // open one, so a single Enter cannot decide two of them.
+        let open = [
+            self.asking.is_some(),
+            self.killing.is_some(),
+            self.deleting.is_some(),
+            self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || closing,
+            self.vers.is_some(),
+            self.port.is_some(),
+            self.make.is_some(),
+            self.give.is_some(),
+        ];
+        let first = open.iter().position(|o| *o);
+        let key_for = |i: usize| if first == Some(i) { key } else { None };
+        self.confirm(&ctx, t, key_for(0));
+        self.confirm_kill(&ctx, t, key_for(1));
+        self.confirm_delete(&ctx, t, key_for(2));
+        self.confirm_editor(&ctx, t, key_for(3));
+        self.confirm_versions(&ctx, t, key_for(4));
+        self.confirm_port(&ctx, t, key_for(5));
+        self.confirm_make(&ctx, t, key_for(6));
+        self.confirm_give(&ctx, t, key_for(7));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).

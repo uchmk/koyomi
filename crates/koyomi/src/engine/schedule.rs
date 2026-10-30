@@ -28,6 +28,8 @@ use serde::{Deserialize, Serialize};
 /// A time that came due this much after its instant is 時刻を過ぎた: the PC
 /// (or the engine) was not running at it.
 pub const LATE: Duration = Duration::seconds(60);
+/// How far back the clock may be set and still be waited out.
+const BACK: Duration = Duration::days(1);
 /// How often `checked` is written while nothing happens.
 const WRITE_EVERY: Duration = Duration::seconds(10);
 
@@ -57,13 +59,17 @@ impl Schedule {
     }
 
     /// The instant last looked at, when a second passed since the last look
-    /// (else `None`: nothing to do yet). A clock set back is taken as a new
-    /// start: nothing between is due.
+    /// (else `None`: nothing to do yet). A clock set back by up to `BACK` waits
+    /// until it catches up, so the times it passes again do not start twice;
+    /// set back further, it is taken as a new start: nothing between is due.
     pub fn look(&mut self, now: DateTime<Utc>) -> Option<DateTime<Utc>> {
         if self.looked.is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(1)) {
             return None;
         }
         self.looked = Some(Instant::now());
+        if now < self.checked && self.checked - now <= BACK {
+            return None;
+        }
         if now < self.checked {
             self.checked = now;
             self.write(now);
@@ -293,6 +299,17 @@ mod tests {
         assert_eq!(s.checked(), looked);
         let text = std::fs::read_to_string(dir.join("schedule.toml")).unwrap();
         assert!(text.contains("checked = \"2026-10-28T17:00:00+00:00\""), "{text}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_clock_set_back_a_little_waits_for_the_time_to_pass_again() {
+        let dir = scratch("back-a-little");
+        let mut s = Schedule::new(&dir);
+        let before = Utc::now() + Duration::hours(1);
+        s.looked(before, false);
+        assert!(s.look(Utc::now()).is_none());
+        assert_eq!(s.checked(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
