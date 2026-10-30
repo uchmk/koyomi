@@ -1696,7 +1696,9 @@ impl Browser {
         let (today, history, calendar) = (self.gantt, self.hist.is_some(), self.cal_sel.is_some() && !self.gantt && self.hist.is_none());
         let net = !today && !history && !calendar;
         let mut go = None;
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+        // One row high: a centred layout would take the whole height and push the view below off the screen.
+        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
+        ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
             // Right to left: the last tab is added first.
             let tab = |ui: &mut egui::Ui, on: bool, key: &str, enabled: bool| {
                 let label = t.tr(key);
@@ -2990,6 +2992,32 @@ mod tests {
         s.click("確かめた", &mut b);
         assert!(b.asking.is_none());
         assert!(matches!(rx_req.try_recv(), Ok(Request::Approve { id, .. }) if id == def.id));
+    }
+
+    /// The 対応済みにする button hands over the run's id only for a run that ended in failure.
+    #[test]
+    fn a_press_on_ack_marks_only_a_failed_run() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{How, State};
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.state = State::Error;
+        run.ended = Some(now);
+        let mut b = quiet(defs());
+        b.runs = vec![run];
+        b.run_sel = Some("r1".into());
+        let mut s = Screen::new();
+        s.size = egui::vec2(1280.0, 800.0);
+        s.settle(&mut b);
+        s.click("対応済みにする", &mut b);
+        assert_eq!(b.take_acks(), vec!["r1".to_owned()]);
+        assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにした"));
+        // A run that ended well: the button does nothing.
+        b.runs[0].state = State::Ok;
+        s.settle(&mut b);
+        s.click("対応済みにする", &mut b);
+        assert!(b.take_acks().is_empty());
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.
