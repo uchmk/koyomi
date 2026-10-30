@@ -406,3 +406,34 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.17 | While 履歴 is open: click a net in the tree, a run under 今日, or a calendar; then 履歴 again | Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed |
 | 28.18 | Narrator / NVDA over 履歴 | The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) |
 | 28.19 | `koyomi --keys` report with 履歴 open | A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) |
+
+## 29. Editor (`ui/canvas.rs`, `koyomi new` / `versions` / `restore`)
+
+The 編集 button on a jobnet's detail opens the editor over the picture: a canvas with the parts, a shelf of the seven parts on the left, and a pane on the right for the part or the net that was double-clicked. The editor writes the whole file back from what it shows (comments in the file are lost; the previous text is kept under `versions/`), the engine checks the text before it is written, and a save from the editor counts as confirmed. Parts the person did not move get their place from 整列 and are not written.
+
+| # | Do | Expect |
+|---|---|---|
+| 29.1 | Select a jobnet in the tree, click 編集 | The canvas replaces the picture: the parts where the file (or 整列) puts them, the shelf on the left, 保存 / 整列 / 元に戻す / やり直す / ジョブネット / ← at the top; the tree stays usable |
+| 29.2 | A jobnet whose file does not read (a `問題` row) | 編集 is greyed out; nothing opens |
+| 29.3 | Drag a part from the shelf onto the canvas; click a part in the shelf | The part appears where it was dropped with a new id (`job2`, `notify1` …) and is selected; a click puts it after the cursor's part and links it with 成功したら |
+| 29.4 | Drag from the right port of a part to another part | A line (成功したら) from the first to the second; dropping on nothing or on the same part draws no line |
+| 29.5 | Right-click a line | A menu: 成功したら / 失敗したら / どちらでも / 線を消す; the choice changes or removes the line |
+| 29.6 | Double-click a job | The right pane shows its fields (id, 名前, 実行, フォルダー, 制限時間, 再試行, シェル, 警告にする/エラーにする); a bad value (an empty id, `制限時間 = abc`, an id already used) turns red and is not applied; a good one applies at once |
+| 29.7 | Double-click a branch, join, time, file or notify part | The pane shows that part's fields (the condition, the time, the path, the message); the same red rule |
+| 29.8 | Click ジョブネット at the top | The pane shows the net's fields (名前, カレンダー, 逃した回, 重なったら) and its `[[when]]` list: each with a kind chooser and its own fields, 追加 / 削除, and 次の 10 回 below; a bad field keeps the last good list and shows the error in red |
+| 29.9 | Drag on empty canvas; wheel; Ctrl+wheel; Shift+drag; Ctrl+click | Drag pans, the wheel scrolls, Ctrl+wheel zooms around the pointer, Shift+drag selects the parts in the box, Ctrl+click adds one to the selection |
+| 29.10 | Keys: arrows, `a`, `c` + arrow + Enter, Enter, Delete | Arrows move the cursor to the nearest part that way; `a` adds a job after the cursor; `c` starts a line from the cursor, arrows pick the target, Enter draws it (Escape cancels); Enter opens the cursor's pane; Delete removes the selected parts and their lines |
+| 29.11 | Ctrl+Z / Ctrl+Y / Ctrl+C / Ctrl+V / Ctrl+A | Undo and redo every change (a rename keeps the pane on the same part); copy and paste the selection (new ids, offset a little); select all |
+| 29.12 | 整列 | Every part moves to where `layout::align` puts it (layers along the flow, rows across); undo brings the old places back |
+| 29.13 | The flow button (横 / 縦) in the toolbar | The canvas and the pictures elsewhere switch between horizontal and vertical; the choice is kept in `state.toml` (`flow`) |
+| 29.14 | Make a job with no `run` (or two jobs with one id), Ctrl+S | The problems show in red under the toolbar with the part named; 保存 is greyed out and Ctrl+S does nothing until they are fixed |
+| 29.15 | Fix the problems, 保存 (Ctrl+S) | 保存した appears; the file is rewritten from the editor (comments gone), the old text is under `versions/<group>/<name>/<time>.toml`, and the net is confirmed (no 未確認 badge, no `approve` needed) |
+| 29.16 | Edit the file by hand (or `koyomi restore`) while the editor is open, then 保存 | A box: ほかで変わっています, with the differences between what the editor started from and the file now; 読み直す drops the editor's changes and loads the file, やめる keeps editing, 上書きする saves over it (the hand edit is kept as a version); Escape = やめる |
+| 29.17 | With unsaved changes: ← , the tree, a run under 今日, 履歴, or the palette's 閉じる | A box: 変更を捨てて閉じますか; 捨てて閉じる leaves, やめる (the default, Escape) stays |
+| 29.18 | Without changes: ← | The editor closes at once and the picture is back |
+| 29.19 | Double-click a child jobnet part (or select it and Enter) | Its net opens in the editor on top; ← comes back to the parent (asking first when the child has changes) |
+| 29.20 | Ctrl+P while editing | The palette lists 保存 / 整列 / 横と縦 / 元に戻す / やり直す / 閉じる above the usual commands; they are gone when the editor is closed |
+| 29.21 | `koyomi new 経理/新規` | `jobnets/経理/新規.toml` from the template (one job, no `[[when]]`), the net appears unconfirmed; `new` on an existing file refuses |
+| 29.22 | `koyomi versions 経理/新規`; `koyomi restore 経理/新規 <time>` | The versions newest first; restore writes that version back (today's text becomes a version too) and the net is unconfirmed until `approve` |
+| 29.23 | Narrator / NVDA over the editor | The toolbar buttons, the shelf's parts, the pane's fields and the box buttons are read |
+| 29.24 | `koyomi --keys` report with the editor open | An `editor: 経理/新規 dirty=false parts=1 selected=[] cursor=- pane=- problems=0 connect=false` line |

@@ -93,6 +93,7 @@ struct App {
 /// command the app gets.
 #[derive(Clone, Copy)]
 enum Command {
+    Edit(ui::canvas::Cmd),
     ReportBug,
     ResetScale,
     Settings,
@@ -439,13 +440,28 @@ impl App {
 
     fn commands(&self) -> Vec<ito_palette::Entry<Command>> {
         let t = &self.table;
-        vec![
+        let mut out = Vec::new();
+        if self.browser.editing() {
+            use ui::canvas::Cmd;
+            for (key, hint, cmd) in [
+                ("palette.edit_save", "Ctrl+S", Cmd::Save),
+                ("palette.edit_align", "", Cmd::Align),
+                ("palette.edit_flow", "", Cmd::Flow),
+                ("palette.edit_undo", "Ctrl+Z", Cmd::Undo),
+                ("palette.edit_redo", "Ctrl+Y", Cmd::Redo),
+                ("palette.edit_close", "", Cmd::Close),
+            ] {
+                out.push(ito_palette::Entry::new(t.tr(key), hint, Command::Edit(cmd)));
+            }
+        }
+        out.extend([
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
             ito_palette::Entry::new(t.tr("palette.reset_scale"), "Ctrl+0", Command::ResetScale),
             ito_palette::Entry::new(t.tr("palette.settings"), self.keys.label("settings"), Command::Settings),
             ito_palette::Entry::new(t.tr("palette.help"), self.keys.label("help"), Command::Help),
             ito_palette::Entry::new(t.tr("palette.quit"), self.keys.label("quit"), Command::Quit),
-        ]
+        ]);
+        out
     }
 
     /// Ctrl+Shift+P opens the palette; while it is open it takes the keys.
@@ -474,6 +490,7 @@ impl App {
             Some(ito_palette::Answer::Pick(Command::Settings)) => self.open_settings(),
             Some(ito_palette::Answer::Pick(Command::Help)) => self.help.toggle(),
             Some(ito_palette::Answer::Pick(Command::Quit)) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+            Some(ito_palette::Answer::Pick(Command::Edit(c))) => self.browser.edit(c),
             Some(_) => {}
         }
     }

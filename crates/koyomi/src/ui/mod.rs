@@ -6,7 +6,7 @@
 //! list, the runs of today and the log being watched, and the window reads what that
 //! thread sent. An approval, a start and a kill are sent the same way.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
@@ -23,7 +23,9 @@ use crate::proto::{Request, Runs, Snapshot};
 use crate::{client, review, show};
 
 pub mod calendar;
+pub mod canvas;
 pub mod graph;
+pub mod whens;
 
 /// How often the engine is asked for the list and the runs.
 const POLL: Duration = Duration::from_secs(1);
@@ -129,6 +131,10 @@ pub struct Browser {
     cal_result: Option<Result<String, String>>,
     /// 履歴, when it is open: the detail is its rows.
     hist: Option<History>,
+    /// The editor, when a net is open in it: the detail is its canvas.
+    editor: Option<canvas::Editor>,
+    /// The editors a child net was entered from, outermost first.
+    editors: Vec<canvas::Editor>,
 }
 
 impl Browser {
@@ -219,6 +225,8 @@ impl Browser {
             cal_month: None,
             cal_result: None,
             hist: None,
+            editor: None,
+            editors: Vec::new(),
         }
     }
 
@@ -267,6 +275,15 @@ impl Browser {
                         }
                     }
                 }
+                Msg::Answer(Request::Save { text, .. }, r) => {
+                    if let Some(e) = &mut self.editor {
+                        match r {
+                            Ok(said) => e.saved(&text, said),
+                            Err(m) if m.starts_with("ほかで変わっています") => e.conflict = Some(text),
+                            Err(m) => e.result = Some(Err(m)),
+                        }
+                    }
+                }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -296,6 +313,7 @@ impl Browser {
         self.run_sel = Some(id.to_owned());
         self.job_sel = None;
         self.hist = None;
+        self.leave_editor();
     }
 
     fn blocked(&self) -> bool {
@@ -364,14 +382,160 @@ impl Browser {
             (None, None) => "-".to_owned(),
         };
         out.push_str(&format!("asking: {asking}\nflow: {}\n", if self.vertical { "vertical" } else { "horizontal" }));
+        if let Some(e) = &self.editor {
+            out.push_str(&e.report());
+            out.push('\n');
+        }
         out
+    }
+
+    /// Opens net `id` in the editor (the 編集 button; a net that does not read says why instead).
+    pub fn open_editor(&mut self, id: &str) {
+        let Some(def) = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)) else { return };
+        match canvas::Editor::open(def) {
+            Ok(e) => {
+                self.editor = Some(e);
+                self.editors.clear();
+                self.result = None;
+            }
+            Err(m) => self.result = Some(Err(m)),
+        }
+    }
+
+    /// Whether the editor is open (the palette shows its commands then).
+    pub fn editing(&self) -> bool {
+        self.editor.is_some()
+    }
+
+    /// A command from the palette or a key, for the editor.
+    pub fn edit(&mut self, cmd: canvas::Cmd) {
+        let Some(e) = &mut self.editor else { return };
+        if let Some(a) = e.edit(cmd) {
+            self.act(a);
+        }
+    }
+
+    /// Leaves the editor for another view; with changes anywhere it asks first.
+    fn leave_editor(&mut self) {
+        let Some(e) = &mut self.editor else { return };
+        if e.dirty || self.editors.iter().any(|e| e.dirty) {
+            e.closing = true;
+        } else {
+            self.editor = None;
+            self.editors.clear();
+        }
+    }
+
+    /// What the editor asked for.
+    fn act(&mut self, a: canvas::Action) {
+        match a {
+            canvas::Action::Save { force } => {
+                if let Some(e) = &mut self.editor {
+                    e.result = None;
+                    let _ = self.tx.send(Request::Save { id: e.id.clone(), text: e.text(), base_sha256: e.base.clone(), force });
+                }
+            }
+            canvas::Action::Flow => self.set_flow(!self.vertical),
+            canvas::Action::Close => self.editor = self.editors.pop(),
+            canvas::Action::Enter(id) => {
+                let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
+                let opened = def.as_ref().ok_or_else(|| format!("ジョブネットがない: {id}")).and_then(canvas::Editor::open);
+                match (opened, &mut self.editor) {
+                    (Ok(inner), Some(outer)) => {
+                        let outer = std::mem::replace(outer, inner);
+                        self.editors.push(outer);
+                    }
+                    (Err(m), Some(e)) => e.result = Some(Err(m)),
+                    (_, None) => {}
+                }
+            }
+        }
+    }
+
+    fn editor_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let empty = BTreeMap::new();
+        let calendars = self.snap.as_ref().map(|s| &s.calendars).unwrap_or(&empty);
+        let depth = self.editors.len();
+        let Some(e) = &mut self.editor else { return };
+        let action = e.show(ui, t, self.vertical, calendars, depth);
+        if let Some(a) = action {
+            self.act(a);
+        }
+    }
+
+    /// The boxes over the editor: a save that met another change, and leaving with changes.
+    fn confirm_editor(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(e) = &self.editor else { return };
+        if let Some(text) = e.conflict.clone() {
+            let Some(def) = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == e.id)).cloned() else {
+                if let Some(e) = &mut self.editor {
+                    e.conflict = None;
+                }
+                return;
+            };
+            let diff = ito_diff::diff(&e.base_text, &def.text, 3);
+            let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
+            let body = [t.tr("canvas.conflict_body").to_owned()];
+            let buttons = [t.tr("canvas.reload").to_owned(), t.tr("canvas.cancel").to_owned(), t.tr("canvas.overwrite").to_owned()];
+            let q = ito_confirm::Question {
+                title: t.tr("canvas.conflict_title"),
+                rows: &rows,
+                body: &body,
+                diff: &diff,
+                buttons: &buttons,
+                hint: t.tr("confirm.hint"),
+                focus: Some(self.focus),
+                primary: Some(0),
+                danger: true,
+                ..Default::default()
+            };
+            let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+            let Some(e) = &mut self.editor else { return };
+            match answer {
+                Some(0) => e.reload(&def),
+                Some(2) => {
+                    e.conflict = None;
+                    e.result = None;
+                    let _ = self.tx.send(Request::Save { id: e.id.clone(), text, base_sha256: e.base.clone(), force: true });
+                }
+                Some(_) => e.conflict = None,
+                None => {}
+            }
+            return;
+        }
+        if e.closing {
+            let body = [t.tr("canvas.close_body").to_owned()];
+            let buttons = [t.tr("canvas.close_yes").to_owned(), t.tr("canvas.close_no").to_owned()];
+            let q = ito_confirm::Question {
+                title: t.tr("canvas.close_title"),
+                body: &body,
+                buttons: &buttons,
+                hint: t.tr("confirm.hint"),
+                focus: Some(self.focus),
+                primary: Some(1),
+                danger: true,
+                ..Default::default()
+            };
+            let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+            let Some(e) = &mut self.editor else { return };
+            match answer {
+                Some(0) => {
+                    e.closing = false;
+                    self.editor = None;
+                    self.editors.clear();
+                }
+                Some(_) => e.closing = false,
+                None => {}
+            }
+        }
     }
 
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
         let ctx = ui.ctx().clone();
-        let modal = self.asking.is_some() || self.killing.is_some();
-        let key = if modal { self.box_keys(&ctx) } else { None };
+        let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some());
+        let modal = self.asking.is_some() || self.killing.is_some() || conflict || self.editor.as_ref().is_some_and(|e| e.closing);
+        let key = if modal { self.box_keys(&ctx, if conflict { 3 } else { 2 }) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
             let lines: Vec<String> = snap.warnings.clone();
@@ -444,7 +608,9 @@ impl Browser {
             if modal {
                 ui.disable();
             }
-            if self.hist.is_some() {
+            if self.editor.is_some() {
+                self.editor_view(ui, t);
+            } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
                 self.run_view(ui, t);
@@ -456,6 +622,7 @@ impl Browser {
         });
         self.confirm(&ctx, t, key);
         self.confirm_kill(&ctx, t, key);
+        self.confirm_editor(&ctx, t, key);
         if modal {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -468,7 +635,7 @@ impl Browser {
     }
 
     /// Esc (cancel) and Enter (the button the keyboard is on) answer the box; Tab and Shift+Tab move between its two buttons.
-    fn box_keys(&mut self, ctx: &egui::Context) -> Option<usize> {
+    fn box_keys(&mut self, ctx: &egui::Context, buttons: usize) -> Option<usize> {
         ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 Some(1)
@@ -476,7 +643,7 @@ impl Browser {
                 Some(self.focus)
             } else {
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
-                    self.focus = (self.focus + 1) % 2;
+                    self.focus = (self.focus + 1) % buttons;
                 }
                 None
             }
@@ -523,6 +690,7 @@ impl Browser {
             self.job_sel = None;
             self.result = None;
             self.hist = None;
+            self.leave_editor();
         }
     }
 
@@ -578,6 +746,7 @@ impl Browser {
             self.job_sel = None;
             self.result = None;
             self.hist = None;
+            self.leave_editor();
         }
     }
 
@@ -833,6 +1002,12 @@ impl Browser {
                 self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
                 self.focus = 0;
             }
+            let r = ui.add_enabled(def.net.is_some(), egui::Button::new(t.tr("canvas.edit")));
+            ito_a11y::say(&r, Role::Button, t.tr("canvas.edit"));
+            if r.clicked() {
+                self.open_editor(&def.id);
+                self.focus = 0;
+            }
             let can = def.standing == Standing::Confirmed && !self.blocked();
             let r = ui.add_enabled(can && !held, egui::Button::new(t.tr("run.now")));
             ito_a11y::say(&r, Role::Button, t.tr("run.now"));
@@ -1047,6 +1222,8 @@ mod tests {
             cal_month: None,
             cal_result: None,
             hist: None,
+            editor: None,
+            editors: Vec::new(),
         }
     }
 
@@ -1193,5 +1370,46 @@ mod tests {
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(b.killing.is_none(), "Enter answered the box");
         assert!(rx_req.try_recv().is_err(), "and sent no kill");
+    }
+
+    /// The editor opens from a definition, reports itself, and asks before changes are dropped.
+    #[test]
+    fn the_editor_asks_before_dropping_changes() {
+        let mut b = quiet(defs());
+        let id = defs()[0].id.clone();
+        b.open_editor(&id);
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        assert!(b.editing());
+        assert!(b.report().contains(&format!("editor: {id} dirty=false")), "{}", b.report());
+        // Clean: closes at once.
+        b.edit(canvas::Cmd::Close);
+        assert!(!b.editing());
+        // Dirty: the close asks, and Escape keeps the editor.
+        b.open_editor(&id);
+        b.editor.as_mut().unwrap().add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
+        assert!(b.report().contains("dirty=true"), "{}", b.report());
+        b.edit(canvas::Cmd::Close);
+        assert!(b.editing());
+        assert!(b.editor.as_ref().unwrap().closing);
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Escape), &mut b);
+        assert!(b.editing());
+        assert!(!b.editor.as_ref().unwrap().closing);
+        // A click in the tree asks the same way; a save goes to the engine.
+        b.leave_editor();
+        assert!(b.editor.as_ref().unwrap().closing);
+        b.editor.as_mut().unwrap().closing = false;
+        let (tx, rx_req) = mpsc::channel();
+        b.tx = tx;
+        b.edit(canvas::Cmd::Save);
+        match rx_req.try_recv() {
+            Ok(Request::Save { id: saved, force, .. }) => {
+                assert_eq!(saved, id);
+                assert!(!force);
+            }
+            other => panic!("{other:?}"),
+        }
     }
 }
