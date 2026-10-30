@@ -11,6 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
+use crate::late::Deadline;
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The `format` this version reads.
@@ -61,9 +62,23 @@ pub struct Jobnet {
     /// may give another value (`koyomi run --set name=value`); a scheduled one uses the default.
     #[serde(default)]
     pub params: BTreeMap<String, String>,
+    /// `late_start = "02:10"` or `"10m"`: told when a run has not begun by then.
+    #[serde(default)]
+    pub late_start: Option<Deadline>,
+    /// `late_end = "06:00"` or `"4h"`: told when a run is not over by then.
+    #[serde(default)]
+    pub late_end: Option<Deadline>,
+    /// `late_slow = false`: not told when a run takes twice its usual time (told when not written).
+    #[serde(default)]
+    pub late_slow: Option<bool>,
 }
 
 impl Jobnet {
+    /// Whether a run that takes twice its usual time is told of (`late_slow`, on unless false).
+    pub fn watches_slow(&self) -> bool {
+        self.late_slow != Some(false)
+    }
+
     /// Whether a `[[when]]` counts business days or says `on_closed`, so the net must have a calendar.
     pub fn needs_calendar(&self) -> bool {
         self.when.iter().any(|w| w.on_closed.is_some() || matches!(&w.kind, Kind::Month { rule, .. } if rule.needs_calendar()))
@@ -438,6 +453,9 @@ struct RawNet {
     lock: Field,
     wake: Field,
     params: Field,
+    late_start: Field,
+    late_end: Field,
+    late_slow: Field,
 }
 
 #[derive(Deserialize)]
@@ -521,12 +539,28 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let calendar = c.calendar(&raw.calendar);
     let lock = c.lock(&raw.lock);
     let wake = c.wake(&raw.wake);
+    let late_start = c.deadline(&raw.late_start, "late_start");
+    let late_end = c.deadline(&raw.late_end, "late_end");
+    let late_slow = c.late_slow(&raw.late_slow);
     c.params = c.params(&raw.params);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
         let params = std::mem::take(&mut c.params);
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock, wake, params })
+        Ok(Jobnet {
+            name: c.string(&raw.name, "name"),
+            jobs,
+            when,
+            missed,
+            overlap,
+            calendar,
+            lock,
+            wake,
+            params,
+            late_start,
+            late_end,
+            late_slow,
+        })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -881,6 +915,29 @@ impl Checker<'_> {
                 false
             }
         }
+    }
+
+    /// `late_start` / `late_end`: a time of day (`"06:00"`) or a length (`"30m"`).
+    fn deadline(&mut self, field: &Field, name: &str) -> Option<Deadline> {
+        let f = field.as_ref()?;
+        match f.get_ref().as_str().ok_or_else(|| "\"06:00\"（時刻）か \"30m\"（長さ）の文字列で書く".to_owned()).and_then(Deadline::parse)
+        {
+            Ok(d) => Some(d),
+            Err(e) => {
+                self.add(f.span().start, format!("{name}: {e}"));
+                None
+            }
+        }
+    }
+
+    /// `late_slow = false`: do not tell of a run that takes twice its usual time.
+    fn late_slow(&mut self, field: &Field) -> Option<bool> {
+        let f = field.as_ref()?;
+        let b = f.get_ref().as_bool();
+        if b.is_none() {
+            self.add(f.span().start, "late_slow は true か false（false: いつもの 2 倍かかっても知らせない）");
+        }
+        b
     }
 
     /// The `[[when]]` entries that read; a mistake in one drops that entry.

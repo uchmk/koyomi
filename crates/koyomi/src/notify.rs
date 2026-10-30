@@ -8,10 +8,13 @@
 //! credential store (`secret:<name>`); one written in plain text is not sent
 //! to until `hide_webhooks = false` says that is meant.
 
+use chrono::{Duration, NaiveDateTime};
 use ito_i18n::Table;
 use ito_notify::toast::App;
 use ito_prefs::{Event, NotifyCfg, DONE_FAILED};
 use koyomi_core::config::Config;
+use koyomi_core::jobnet::Jobnet;
+use koyomi_core::late::{self, Delay};
 use koyomi_core::run::{Run, State};
 
 use crate::show;
@@ -150,6 +153,74 @@ pub fn part_words(t: &Table, r: &Run, job: &str) -> (&'static str, String, Strin
     }
     lines.push(format!("{}  {}", r.id, r.date));
     (event, title, lines.join("\n"))
+}
+
+/// `6:00`, or `10/31 6:00` when it is not the day of `now`.
+fn moment(at: NaiveDateTime, now: NaiveDateTime) -> String {
+    if at.date() == now.date() {
+        at.format("%-H:%M").to_string()
+    } else {
+        at.format("%-m/%-d %-H:%M").to_string()
+    }
+}
+
+/// The words for `r` of `net` being late in `delay` at `now`: `⏰ 遅れ  {title}`,
+/// what is late, then the id and the day. `usual` is the net's usual time
+/// (what made it [`Delay::Slow`]). The event is `failed`: a late run is
+/// something to look at, and that is told when nothing is written.
+pub fn delay_words(
+    t: &Table,
+    net: &Jobnet,
+    r: &Run,
+    delay: Delay,
+    usual: Option<Duration>,
+    now: NaiveDateTime,
+) -> (&'static str, String, String) {
+    let title = format!("{}  {}", t.tr("notify.late_title"), r.title);
+    let line = match delay {
+        Delay::Start => {
+            let by = net.late_start.zip(r.planned).map_or_else(String::new, |(d, p)| moment(d.from(p), now));
+            match late::begun(r) {
+                Some(b) => t.trf("notify.late_start_began", &[&r.title, &by, &moment(b, now)]),
+                None => t.trf("notify.late_start", &[&r.title, &by]),
+            }
+        }
+        Delay::End => {
+            let by = net.late_end.map_or_else(String::new, |d| moment(d.from(r.planned.unwrap_or(r.started)), now));
+            t.trf("notify.late_end", &[&r.title, &by])
+        }
+        Delay::Slow => {
+            let so_far = late::begun(r).map_or(Duration::zero(), |b| now - b);
+            t.trf("notify.late_slow", &[&r.title, &show::duration(usual.unwrap_or_default()), &show::duration(so_far)])
+        }
+    };
+    (
+        "failed",
+        title,
+        [line, format!("{}  {}", r.id, r.date)].join(
+            "
+",
+        ),
+    )
+}
+
+/// The words for a time of `net_id` (titled `title`) at `planned` that has not
+/// begun by `by` (`late_start`) and has no run yet: it waits for the last run
+/// to end or for another net. The event is `failed`, as [`delay_words`].
+pub fn pending_words(
+    t: &Table,
+    net_id: &str,
+    title: &str,
+    planned: NaiveDateTime,
+    by: NaiveDateTime,
+    now: NaiveDateTime,
+) -> (&'static str, String, String) {
+    let head = format!("{}  {title}", t.tr("notify.late_title"));
+    let body = [t.trf("notify.late_start", &[title, &moment(by, now)]), format!("{net_id}  {}", moment(planned, now))].join(
+        "
+",
+    );
+    ("failed", head, body)
 }
 
 /// Splits off the runs that are 時刻を過ぎた, in groups of one net each (in
@@ -333,6 +404,49 @@ mod tests {
         assert_eq!(event, "done");
         assert_eq!(title, "✓ 正常終了  月次締め");
         assert!(body.starts_with("✓ 正常終了  r  月次締め  2026-10-30"), "{body}");
+    }
+
+    #[test]
+    fn a_late_run_says_what_is_late_and_by_when() {
+        let (t, _) = crate::i18n::table("ja");
+        let net = koyomi_core::jobnet::parse(
+            "format = 1
+late_start = \"10m\"
+late_end = \"06:00\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let mut r = Run::new("r", "g/n", "夜間", "2026-10-30", How::Schedule, &net, at("2026-10-30 22:00:00"));
+        r.planned = Some(at("2026-10-30 22:00:00"));
+        let now = at("2026-10-30 22:10:00");
+        let (event, title, body) = delay_words(&t, &net, &r, Delay::Start, None, now);
+        assert_eq!(event, "failed");
+        assert_eq!(title, "⏰ 遅れ  夜間");
+        assert_eq!(
+            body,
+            "夜間: 22:10 になっても始まっていない
+r  2026-10-30"
+        );
+        r.start("a", at("2026-10-30 22:15:00"));
+        let (_, _, body) = delay_words(&t, &net, &r, Delay::Start, None, at("2026-10-30 22:15:00"));
+        assert!(body.starts_with("夜間: 22:10 を過ぎてから始まった（22:15）"), "{body}");
+        let (_, _, body) = delay_words(&t, &net, &r, Delay::End, None, at("2026-10-31 06:00:00"));
+        assert!(body.starts_with("夜間: 6:00 を過ぎても終わっていない"), "{body}");
+        let (_, _, body) = delay_words(&t, &net, &r, Delay::End, None, now);
+        assert!(body.starts_with("夜間: 10/31 6:00 を過ぎても"), "another day says the day: {body}");
+        let (_, _, body) = delay_words(&t, &net, &r, Delay::Slow, Some(chrono::Duration::minutes(20)), at("2026-10-30 22:55:00"));
+        assert!(body.starts_with("夜間: いつもは 0:20:00、もう 0:40:00 動いている"), "{body}");
+        let (event, title, body) = pending_words(&t, "g/n", "夜間", at("2026-10-30 22:00:00"), at("2026-10-30 22:10:00"), now);
+        assert_eq!((event, title.as_str()), ("failed", "⏰ 遅れ  夜間"));
+        assert_eq!(
+            body,
+            "夜間: 22:10 になっても始まっていない
+g/n  22:00"
+        );
     }
 
     #[test]

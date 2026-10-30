@@ -51,6 +51,9 @@ pub fn run_line(t: &Table, r: &Run) -> String {
             line.push_str(&format!("  {}", duration(d)));
         }
     }
+    for d in &r.delays {
+        line.push_str(&format!("  ⏰{}", t.tr(d.key())));
+    }
     if !r.reason.is_empty() {
         line.push_str(&format!("  {}", r.reason));
     }

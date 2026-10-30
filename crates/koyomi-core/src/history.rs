@@ -12,6 +12,7 @@ use chrono::{NaiveDate, NaiveDateTime};
 use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Line, Part};
+use crate::late::Delay;
 use crate::run::{How, JobRun, Run, State};
 
 /// One line of history.
@@ -54,6 +55,12 @@ pub enum Event {
         #[serde(default)]
         reason: String,
     },
+    /// The run was late (`late_start`, `late_end`, `late_slow`): told, and marked on it.
+    Late {
+        at: NaiveDateTime,
+        run: String,
+        delay: Delay,
+    },
     /// Something a person did by hand (`koyomi hold`, a save, a run by hand …); belongs to no run.
     Op {
         at: NaiveDateTime,
@@ -68,7 +75,11 @@ impl Event {
     pub fn run(&self) -> &str {
         match self {
             Event::Op { .. } => "",
-            Event::RunStart { run, .. } | Event::JobStart { run, .. } | Event::JobEnd { run, .. } | Event::RunEnd { run, .. } => run,
+            Event::RunStart { run, .. }
+            | Event::JobStart { run, .. }
+            | Event::JobEnd { run, .. }
+            | Event::RunEnd { run, .. }
+            | Event::Late { run, .. } => run,
         }
     }
 }
@@ -206,6 +217,13 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                 r.planned = *planned;
                 runs.retain(|x| x.id != r.id);
                 runs.push(r);
+            }
+            Event::Late { run, delay, .. } => {
+                if let Some(r) = runs.iter_mut().find(|r| &r.id == run) {
+                    if !r.delays.contains(delay) {
+                        r.delays.push(*delay);
+                    }
+                }
             }
             Event::JobStart { at, run, job } => {
                 if let Some(r) = runs.iter_mut().find(|r| &r.id == run) {

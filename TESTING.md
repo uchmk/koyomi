@@ -807,3 +807,15 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 66.6 | The window's 取り込む box with the same `t.xml` | The same plan and notes as the CLI |
 | 66.7 | An XML that is not a task (`<a/>`), and a task with only a ComHandler action | `取り込めない: タスク スケジューラの XML ではない（一番外が <a>）` / `取り込めない: 取り込めるプログラム（<Exec> の <Command>）が無い` |
 | 66.8 | From cmd, `schtasks /query /xml /tn "\koyomi-test\夜間" > t2.xml` (the console code page, CP932, with Japanese in it), then `koyomi import t2.xml --dry-run` | It reads, and the plan is the same as 66.1 |
+
+## 67. 遅延の監視
+
+| # | Do | Expect |
+|---|---|---|
+| 67.1 | A net with `late_end = "20s"` and a job `run = ["ping", "-n", "40", "127.0.0.1"]`; approve it and `koyomi run <net>`; wait 25 s | One notification `⏰ 遅れ  <name>` / `<name>: <time> を過ぎても終わっていない`; `koyomi status --today` shows `⏰終了の遅れ` on the run, and only one notification comes however long it runs |
+| 67.2 | `koyomi show <net>` for that net | A line `終わらなければ知らせる: 20s` |
+| 67.3 | A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes | When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again |
+| 67.4 | A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it | After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 0:01:00、もう 0:02:00 動いている`, and the mark `⏰いつもより長い` |
+| 67.5 | The same net with `late_slow = false` | No notification for taking long |
+| 67.6 | `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` | `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved |
+| 67.7 | Stop and start the engine after 67.1 | The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again |

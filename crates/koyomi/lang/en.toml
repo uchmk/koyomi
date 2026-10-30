@@ -153,6 +153,9 @@ days = " ({0} days later)"
 file_wait = "File"
 settle = "Unchanged for"
 use = "Uses"
+late_start = "Tells when it has not started by: {0}"
+late_end = "Tells when it is not over by: {0}"
+late_slow_off = "Does not tell when it takes twice its usual time (late_slow = false)"
 
 [part]
 job = "Job"
@@ -192,6 +195,16 @@ done_sound = "Sound when a run ended ok"
 failed_sound = "Sound when a run ended abnormally"
 test_title = "koyomi: test notification"
 test_body = "A run that ended is told like this."
+late_title = "⏰ Late"
+late_start = "{0}: not started by {1}"
+late_start_began = "{0}: started after {1} ({2})"
+late_end = "{0}: not over by {1}"
+late_slow = "{0}: usually {1}, running for {2} now"
+
+[late]
+start = "late start"
+end = "late end"
+slow = "longer than usual"
 
 [weekday]
 mon = "Mon"

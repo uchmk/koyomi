@@ -13,6 +13,7 @@ use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, Wait};
+use crate::late::Delay;
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -345,6 +346,9 @@ pub struct Run {
     /// The `[params]` values a person gave when starting it by hand (`--set`); the rest took their default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
+    /// What it was late in (`late_start`, `late_end`, `late_slow`), each told once.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub delays: Vec<Delay>,
 }
 
 /// How a run that started after its time (`missed = "once"`) begins its reason.
@@ -394,6 +398,7 @@ impl Run {
             file: None,
             lock: None,
             params: BTreeMap::new(),
+            delays: Vec::new(),
         };
         run.settle(now);
         run
@@ -429,6 +434,7 @@ impl Run {
             file: None,
             lock: None,
             params: BTreeMap::new(),
+            delays: Vec::new(),
         }
     }
 
@@ -972,6 +978,13 @@ pub fn layers(jobs: &[(&str, &[Line])]) -> Vec<Vec<usize>> {
         out[*d].push(i);
     }
     out
+}
+
+/// How long `jobnet` usually takes: the average of its last 10 runs that ended 正常, when
+/// there are at least [`crate::late::SLOW_RUNS`] (fewer do not say what is usual).
+pub fn usual_duration(runs: &[Run], jobnet: &str) -> Option<chrono::Duration> {
+    let done = runs.iter().filter(|r| r.jobnet == jobnet && r.state == State::Ok && r.ended.is_some()).count();
+    (done >= crate::late::SLOW_RUNS).then(|| average_duration(runs, jobnet, 10)).flatten()
 }
 
 /// The average time the last `last` runs of `jobnet` that ended 正常 took (none when no such run).

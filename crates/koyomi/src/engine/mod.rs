@@ -7,7 +7,7 @@
 //! It is also the one place a run is told of (`notify`): the window and the
 //! console only start runs, so a run is told of the same way however it started.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
@@ -23,6 +23,7 @@ use koyomi_core::config::Config;
 use koyomi_core::group;
 use koyomi_core::held::Held;
 use koyomi_core::jobnet::Jobnet;
+use koyomi_core::late::{self, Delay};
 use koyomi_core::run::{How, Run, State as RunState};
 use koyomi_core::scan::{def_of_text, link, scan_in, Def, Standing};
 use koyomi_core::when::{self, Kind, OnClosed};
@@ -183,7 +184,20 @@ struct State {
     reveal_rx: mpsc::Receiver<(u64, NotifyCfg, Vec<String>)>,
     /// The words a run is told in: common.toml's language.
     words: ito_i18n::Table,
+    /// When the runs were last looked at for being late (every [`LATE_EVERY`]).
+    late_look: Option<Instant>,
+    /// How long each net usually takes, read from the history when one of its
+    /// runs goes; dropped when a run of it ends.
+    usual: HashMap<String, Option<chrono::Duration>>,
+    /// The times (net, planned) told late in starting before they had a run:
+    /// when the run comes, it is marked and not told again.
+    late_told: HashSet<(String, NaiveDateTime)>,
 }
+
+/// How often the runs are looked at for being late.
+const LATE_EVERY: Duration = Duration::from_secs(5);
+/// How many days of history say how long a net usually takes.
+const USUAL_DAYS: u64 = 30;
 
 impl State {
     fn new(paths: Paths) -> State {
@@ -229,6 +243,9 @@ impl State {
             reveal_tx,
             reveal_rx,
             words: crate::cli::table(),
+            late_look: None,
+            usual: HashMap::new(),
+            late_told: HashSet::new(),
         };
         s.reload();
         s.rescan();
@@ -289,6 +306,9 @@ impl State {
             notify::tell(&self.notify, event, &title, &body);
         }
         let over = self.runner.take_over();
+        for r in &over {
+            self.usual.remove(&r.jobnet);
+        }
         self.tick_after(&over);
         let (runs, missed) = notify::group_missed(over);
         // A time stopped by hand (⏸) is not told of: the person did it.
@@ -306,6 +326,56 @@ impl State {
             let (event, title, body) = notify::missed_words(&self.words, &runs);
             notify::tell(&self.notify, event, &title, &body);
         }
+    }
+
+    /// Tells of the runs that are late (`late_start`, `late_end`, `late_slow`),
+    /// each delay once, and marks them; and of the times that wait to start
+    /// (`overlap = "queue"`, `wait_for`) past their `late_start`.
+    fn tick_late(&mut self) {
+        if self.late_look.is_some_and(|t| t.elapsed() < LATE_EVERY) {
+            return;
+        }
+        self.late_look = Some(Instant::now());
+        let now = Local::now().naive_local();
+        let going: Vec<String> = self.runner.runs().iter().filter(|r| !r.is_over()).map(|r| r.jobnet.clone()).collect();
+        for id in going {
+            if !self.usual.contains_key(&id) {
+                let today = now.date();
+                let runs = self.runner.history(today - chrono::Days::new(USUAL_DAYS), today).unwrap_or_default();
+                self.usual.insert(id.clone(), koyomi_core::run::usual_duration(&runs, &id));
+            }
+        }
+        let mut found: Vec<(String, Delay)> = Vec::new();
+        for r in self.runner.runs().iter().filter(|r| !r.is_over()) {
+            let Some(net) = self.defs.iter().find(|d| d.id == r.jobnet).and_then(|d| d.net.as_ref()) else { continue };
+            let usual = self.usual.get(&r.jobnet).copied().flatten();
+            found.extend(late::overdue(net, r, usual, now).into_iter().map(|d| (r.id.clone(), d)));
+        }
+        for (id, delay) in found {
+            self.runner.mark_delay(&id, delay, now);
+            let Some(r) = self.runner.runs().iter().find(|r| r.id == id) else { continue };
+            if delay == Delay::Start && r.planned.is_some_and(|p| self.late_told.remove(&(r.jobnet.clone(), p))) {
+                continue;
+            }
+            let Some(net) = self.defs.iter().find(|d| d.id == r.jobnet).and_then(|d| d.net.as_ref()) else { continue };
+            let usual = self.usual.get(&r.jobnet).copied().flatten();
+            let (event, title, body) = notify::delay_words(&self.words, net, r, delay, usual, now);
+            notify::tell(&self.notify, event, &title, &body);
+        }
+        let pending = self.runner.queued().iter().map(|q| (&q.def, q.planned)).chain(self.waiting.iter().map(|w| (&w.def, w.planned)));
+        let mut tell = Vec::new();
+        for (def, planned) in pending {
+            let Some(by) = def.net.as_ref().and_then(|n| n.late_start).map(|d| d.from(planned)) else { continue };
+            if now >= by && self.late_told.insert((def.id.clone(), planned)) {
+                let title = def.title.clone().unwrap_or_else(|| def.name.clone());
+                tell.push(notify::pending_words(&self.words, &def.id, &title, planned, by, now));
+            }
+        }
+        for (event, title, body) in tell {
+            notify::tell(&self.notify, event, &title, &body);
+        }
+        // A time that never got a run (dropped from the queue) is not kept for ever.
+        self.late_told.retain(|(_, p)| *p > now - chrono::Days::new(2));
     }
 
     /// Holds the PC awake while a job's process runs, or from a wake timer
@@ -1375,6 +1445,7 @@ pub fn run() -> i32 {
         state.alive.tick();
         state.tick_wake();
         state.tick_awake();
+        state.tick_late();
         state.pump();
         if let Some(tr) = tray.as_mut() {
             for want in tr.take() {

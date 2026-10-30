@@ -71,6 +71,15 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     if net.wake {
         out.push(t.tr("review.wake").to_owned());
     }
+    if let Some(d) = net.late_start {
+        out.push(t.trf("review.late_start", &[&d.text()]));
+    }
+    if let Some(d) = net.late_end {
+        out.push(t.trf("review.late_end", &[&d.text()]));
+    }
+    if !net.watches_slow() {
+        out.push(t.tr("review.late_slow_off").to_owned());
+    }
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr(&format!("part.{}", j.part.key())), j.id));

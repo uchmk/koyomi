@@ -33,6 +33,7 @@ use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry};
+use koyomi_core::late::Delay;
 use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
 use koyomi_core::template;
@@ -835,6 +836,17 @@ impl Runner {
         });
         d.events.push(event);
         w.save_toml(d);
+    }
+
+    /// Marks run `id` late in `delay` at `at`, and writes it down (once).
+    pub fn mark_delay(&mut self, id: &str, delay: Delay, at: NaiveDateTime) {
+        let Some(r) = self.runs.iter_mut().find(|r| r.id == id) else { return };
+        if r.delays.contains(&delay) {
+            return;
+        }
+        r.delays.push(delay);
+        let run = r.clone();
+        self.record(&run, history::Event::Late { at, run: run.id.clone(), delay });
     }
 
     /// Writes down a thing a person did by hand, in the file of today.

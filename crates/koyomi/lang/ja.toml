@@ -152,6 +152,9 @@ days = "（{0} 日後）"
 file_wait = "待つファイル"
 settle = "落ち着くまで"
 use = "使う定義"
+late_start = "開始が遅れたら知らせる: {0}"
+late_end = "終わらなければ知らせる: {0}"
+late_slow_off = "いつもの 2 倍かかっても知らせない（late_slow = false）"
 
 [part]
 job = "ジョブ"
@@ -191,6 +194,16 @@ done_sound = "正常終了の音"
 failed_sound = "異常終了の音"
 test_title = "koyomi: 試しの通知"
 test_body = "回が終わったときはこのように知らせます。"
+late_title = "⏰ 遅れ"
+late_start = "{0}: {1} になっても始まっていない"
+late_start_began = "{0}: {1} を過ぎてから始まった（{2}）"
+late_end = "{0}: {1} を過ぎても終わっていない"
+late_slow = "{0}: いつもは {1}、もう {2} 動いている"
+
+[late]
+start = "開始の遅れ"
+end = "終了の遅れ"
+slow = "いつもより長い"
 
 [weekday]
 mon = "月"

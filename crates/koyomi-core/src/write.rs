@@ -39,6 +39,15 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if net.wake {
         push(&mut out, "wake", "true");
     }
+    if let Some(d) = &net.late_start {
+        push(&mut out, "late_start", &q(&d.text()));
+    }
+    if let Some(d) = &net.late_end {
+        push(&mut out, "late_end", &q(&d.text()));
+    }
+    if let Some(b) = net.late_slow {
+        push(&mut out, "late_slow", &b.to_string());
+    }
     if !net.params.is_empty() {
         out.push_str("\n[params]\n");
         for (k, v) in &net.params {

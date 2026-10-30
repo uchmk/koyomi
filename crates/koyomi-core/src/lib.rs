@@ -13,6 +13,7 @@ pub mod group;
 pub mod held;
 pub mod history;
 pub mod jobnet;
+pub mod late;
 pub mod layout;
 pub mod preflight;
 pub mod retain;
