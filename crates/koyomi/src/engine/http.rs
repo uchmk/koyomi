@@ -4,6 +4,10 @@
 //! - `POST /runs` with `{"net": "<group>/<name>", "date"?, "from"?, "params"?}` is
 //!   `koyomi run`: 202 and `{"run": "<id>"}`, or 422 and the engine's reason.
 //! - `GET /runs/<id>` is the run as `koyomi status` / `history` know it, with `"over"`.
+//! - Read only, for another PC's window, the Web UI and an HA standby (TODO 80, 81, 87):
+//!   `GET /health` (the engine's status line), `GET /nets` (each definition's id, name,
+//!   standing and hold), `GET /runs` (today's and the running ones; `?from=&to=` for days)
+//!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //!
 //! Every request carries the bearer token kept as `secret:<name>` in the OS credential
 //! store (read once when the listener starts); ito-http turns a missing or wrong one away
@@ -19,7 +23,7 @@ use koyomi_core::config;
 use koyomi_core::run::Run;
 use serde::Deserialize;
 
-use crate::proto::{self, Request, Runs};
+use crate::proto::{self, Request, Runs, Snapshot};
 
 /// How long after a failed start the listener is tried again.
 const RETRY: Duration = Duration::from_secs(60);
@@ -137,13 +141,88 @@ struct Start {
 fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let path = req.path.trim_end_matches('/');
     let one = path.strip_prefix("/runs/").filter(|id| !id.is_empty() && !id.contains('/'));
-    match (req.method.as_str(), path, one) {
-        ("POST", "/runs", _) => start_run(req, ask),
-        ("GET", _, Some(id)) => look(id, ask),
-        (_, "/runs", _) => Response::error(405, "POST /runs で流す"),
-        (_, _, Some(_)) => Response::error(405, "GET /runs/<id> で読む"),
-        _ => Response::error(404, "POST /runs と GET /runs/<id> だけ"),
+    let log = path.strip_prefix("/runs/").and_then(|p| p.strip_suffix("/log")).filter(|id| !id.is_empty() && !id.contains('/'));
+    match (req.method.as_str(), path, one, log) {
+        ("POST", "/runs", ..) => start_run(req, ask),
+        ("GET", "/runs", ..) => list_runs(req, ask),
+        ("GET", "/health", ..) => health(ask),
+        ("GET", "/nets", ..) => nets(ask),
+        ("GET", _, Some(id), _) => look(id, ask),
+        ("GET", _, _, Some(id)) => job_log(req, id, ask),
+        (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
+        (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
+        _ => Response::error(404, "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・GET /nets・GET /health だけ"),
     }
+}
+
+/// `GET /health`: the engine answers, with its status line. What an HA standby polls.
+fn health(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    match ask(&Request::Status) {
+        Ok(line) => Response::ok(serde_json::json!({
+            "ok": true,
+            "version": env!("CARGO_PKG_VERSION"),
+            "proto": proto::PROTO,
+            "status": line.trim(),
+        })),
+        Err(e) => Response::error(503, &e),
+    }
+}
+
+/// `GET /nets`: each definition's id, name, standing and hold. Not the text (it stays on this PC).
+fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let snap = match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
+        Ok(s) => s,
+        Err(e) => return Response::error(500, &e),
+    };
+    let nets: Vec<_> = snap
+        .defs
+        .iter()
+        .map(|d| {
+            serde_json::json!({
+                "id": d.id,
+                "group": d.group,
+                "name": d.label(),
+                "standing": d.standing,
+                "held": snap.held.contains(&d.id),
+            })
+        })
+        .collect();
+    Response::ok(serde_json::json!({ "nets": nets, "paused": snap.paused, "warnings": snap.warnings }))
+}
+
+/// `GET /runs`: today's and the running ones, or with `from` and `to` (`YYYY-MM-DD`) the days'.
+fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let r = match (req.query("from"), req.query("to")) {
+        (None, None) => Request::Runs,
+        (Some(from), to) => Request::History { from: from.to_owned(), to: to.unwrap_or(from).to_owned() },
+        (None, Some(_)) => return Response::error(400, "to には from も要る"),
+    };
+    let days = matches!(r, Request::History { .. });
+    match ask(&r).and_then(|t| Runs::parse(&t)) {
+        Ok(runs) => Response::ok(serde_json::json!({ "runs": runs.runs.iter().map(run_json).collect::<Vec<_>>() })),
+        Err(e) if days => Response::error(400, &e),
+        Err(e) => Response::error(500, &e),
+    }
+}
+
+/// `GET /runs/<id>/log?job=<job>`: the tail of the job's log, as `koyomi log` shows it.
+fn job_log(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let Some(job) = req.query("job").filter(|j| !j.is_empty()) else {
+        return Response::error(400, "job が要る: /runs/<id>/log?job=<ジョブ>");
+    };
+    match ask(&Request::Log { run: run.to_owned(), job: job.to_owned() }) {
+        Ok(text) => Response::ok(serde_json::json!({ "run": run, "job": job, "log": text })),
+        Err(e) => Response::error(404, &e),
+    }
+}
+
+/// A run as JSON: `koyomi status`'s fields and `"over"`.
+fn run_json(run: &Run) -> serde_json::Value {
+    let mut v = serde_json::to_value(run).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        o.insert("over".into(), run.is_over().into());
+    }
+    v
 }
 
 fn start_run(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
@@ -170,14 +249,7 @@ fn look(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response 
         None => find(&Request::History { from: day.clone(), to: day }),
     });
     match found {
-        Ok(Some(run)) => {
-            let over = run.is_over();
-            let mut v = serde_json::to_value(&run).unwrap_or_default();
-            if let Some(o) = v.as_object_mut() {
-                o.insert("over".into(), over.into());
-            }
-            Response::ok(v)
-        }
+        Ok(Some(run)) => Response::ok(run_json(&run)),
         Ok(None) => Response::error(404, &format!("その実行はない: {id}")),
         Err(e) => Response::error(500, &e),
     }
@@ -234,8 +306,9 @@ mod tests {
         assert_eq!(handle(&req("POST", "/runs", ""), ask).status, 400);
         assert_eq!(handle(&req("POST", "/runs", r#"{"net": "g/a", "dry": true}"#), ask).status, 400);
         assert_eq!(handle(&req("POST", "/runs", "{"), ask).status, 400);
-        assert_eq!(handle(&req("GET", "/runs", ""), ask).status, 405);
+        assert_eq!(handle(&req("PUT", "/runs", ""), ask).status, 405);
         assert_eq!(handle(&req("DELETE", "/runs/20261031-090000-01", ""), ask).status, 405);
+        assert_eq!(handle(&req("POST", "/nets", ""), ask).status, 405);
         assert_eq!(handle(&req("GET", "/defs", ""), ask).status, 404);
     }
 
@@ -257,6 +330,48 @@ mod tests {
         assert_eq!(handle(&req("GET", "/runs/20261029-230000-01", ""), ask).status, 404);
         assert_eq!(handle(&req("GET", "/runs/nope", ""), ask).status, 404);
         assert_eq!(handle(&req("GET", "/runs/20261399-000000-01", ""), ask).status, 404);
+    }
+
+    fn with_query(mut r: ito_http::Request, q: &[(&str, &str)]) -> ito_http::Request {
+        r.query = q.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
+        r
+    }
+
+    /// the read-only paths answer from the same door requests as the CLI.
+    #[test]
+    fn the_read_paths_answer_from_the_door() {
+        let asked = RefCell::new(Vec::new());
+        let ask = |r: &Request| {
+            asked.borrow_mut().push(format!("{r:?}"));
+            match r {
+                Request::Status => Ok("動いている\n".to_owned()),
+                Request::Runs => Ok(runs(&["20261031-090000-01"])),
+                Request::History { from, .. } if from == "bad" => Err("日付は YYYY-MM-DD で書く: bad".to_owned()),
+                Request::History { .. } => Ok(runs(&["20261030-230000-01", "20261030-235000-01"])),
+                Request::Log { job, .. } if job == "copy" => Ok("line 1\n***\n".to_owned()),
+                Request::Log { .. } => Err("ログがない".to_owned()),
+                Request::List => Ok(Snapshot { held: vec!["g/b".into()], ..Default::default() }.to_toml()),
+                _ => Err("no".to_owned()),
+            }
+        };
+        let h = handle(&req("GET", "/health", ""), ask);
+        assert_eq!(
+            (h.status, h.json["status"].as_str(), h.json["proto"].as_u64()),
+            (200, Some("動いている"), Some(u64::from(proto::PROTO)))
+        );
+        let r = handle(&req("GET", "/runs", ""), ask);
+        assert_eq!((r.status, r.json["runs"][0]["over"].as_bool()), (200, Some(true)));
+        let r = handle(&with_query(req("GET", "/runs", ""), &[("from", "2026-10-30")]), ask);
+        assert_eq!(r.json["runs"].as_array().map(Vec::len), Some(2));
+        assert!(asked.borrow().last().is_some_and(|a| a.contains("to: \"2026-10-30\"")), "{:?}", asked.borrow());
+        assert_eq!(handle(&with_query(req("GET", "/runs", ""), &[("from", "bad")]), ask).status, 400);
+        assert_eq!(handle(&with_query(req("GET", "/runs", ""), &[("to", "2026-10-30")]), ask).status, 400);
+        let l = handle(&with_query(req("GET", "/runs/20261031-090000-01/log", ""), &[("job", "copy")]), ask);
+        assert_eq!((l.status, l.json["log"].as_str()), (200, Some("line 1\n***\n")));
+        assert_eq!(handle(&req("GET", "/runs/20261031-090000-01/log", ""), ask).status, 400);
+        assert_eq!(handle(&with_query(req("GET", "/runs/20261031-090000-01/log", ""), &[("job", "x")]), ask).status, 404);
+        let n = handle(&req("GET", "/nets", ""), ask);
+        assert_eq!((n.status, n.json["nets"].as_array().map(Vec::len), n.json["paused"].as_bool()), (200, Some(0), Some(false)));
     }
 
     /// The listener as the engine starts it: the token first, then the handler.

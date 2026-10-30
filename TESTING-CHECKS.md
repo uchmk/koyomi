@@ -1,6 +1,6 @@
 # Checklist
 
-642 checks in TESTING.md, 638 left for a person.
+647 checks in TESTING.md, 643 left for a person.
 
 ## 1. Start
 
@@ -910,3 +910,11 @@
 - [ ] **89.8** Sign out; wait past a net's scheduled time; sign in → The net ran while you were signed out; the tray (started at sign-in) shows the result 〔未訳〕
 - [ ] **89.9** Give a wrong password at install, then `koyomi service start` → Start says the service could not sign in, and that the password is wrong 〔未訳〕
 - [ ] **89.10** `koyomi service uninstall` (elevated) → The service is gone; `koyomi startup` points at the engine again; opening the window starts an engine as before 〔未訳〕
+
+## 90. Reading the engine over HTTP (`GET /health`, `/nets`, `/runs`, `/runs/<id>/log`; for TODO 80, 81, 87)
+
+- [ ] **90.1** `curl -H "Authorization: Bearer T" http://127.0.0.1:8790/health`; then the same with no token → `{"ok": true, "version": …, "proto": …, "status": "<koyomi status's line>"}`; 401 without the token 〔未訳〕
+- [ ] **90.2** `GET /nets` with the token, with one net held and one unconfirmed → Each net with `id`, `group`, `name`, `standing` (`confirmed`/`unconfirmed`/`invalid`) and `held`; no definition text; `paused` follows `koyomi pause` 〔未訳〕
+- [ ] **90.3** `GET /runs`; then `GET "/runs?from=2026-10-30&to=2026-10-31"`; then `?from=bad` and `?to=2026-10-31` → Today's and running runs, each with `"over"`; the two days' runs, oldest first; 400 for both bad ones 〔未訳〕
+- [ ] **90.4** `GET "/runs/<id>/log?job=<job>"` for a job whose command has a registered secret in its arguments → The log's tail as `koyomi log` shows it, the secret as `***`; without `job` 400; an unknown job 404 〔未訳〕
+- [ ] **90.5** `POST /nets`, `DELETE /health` → 405; nothing changes 〔未訳〕
