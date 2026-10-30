@@ -510,6 +510,21 @@ impl Runner {
         &self.queue
     }
 
+    /// Stops every run that is not over, so no job's process outlives the engine, and gives the
+    /// jobs `grace` to be reaped (and written down as 強制終了).
+    pub fn stop_all(&mut self, grace: std::time::Duration) {
+        let ids: Vec<String> = self.runs.iter().filter(|r| !r.is_over()).map(|r| r.id.clone()).collect();
+        for id in ids {
+            let _ = self.kill(&id, None);
+        }
+        let end = std::time::Instant::now() + grace;
+        while self.busy() > 0 && std::time::Instant::now() < end {
+            self.tick();
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+        self.tick();
+    }
+
     /// Records each waiting time as スキップ: the engine stops, and nothing
     /// would start them.
     pub fn drop_queue(&mut self) {
@@ -1511,6 +1526,31 @@ mod tests {
         assert!(r.take_over().is_empty());
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
         assert!(r.kill(&id, None).unwrap_err().contains("もう終わっている"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn stopping_the_engine_stops_the_running_jobs() {
+        let dir = scratch("stop-all");
+        let long = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"ping -n 30 127.0.0.1 > nul\"]" } else { "run = [\"sleep\", \"30\"]" };
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+[[job]]
+id = \"a\"
+{long}
+"
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        assert_eq!(r.busy(), 1);
+        let asked = Instant::now();
+        r.stop_all(Duration::from_secs(5));
+        assert_eq!(r.busy(), 0, "no process is left");
+        assert!(asked.elapsed() < Duration::from_secs(5));
+        assert_eq!(r.run(&id).unwrap().job("a").unwrap().state, State::Killed);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

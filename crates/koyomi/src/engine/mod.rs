@@ -421,6 +421,7 @@ impl State {
     /// What is left to do before the engine ends: the queue told why it will not run, the books written.
     fn shut_down(&mut self) {
         self.runner.drop_queue();
+        self.runner.stop_all(Duration::from_secs(5));
         self.runner.flush();
         self.schedule.flush();
         self.retain.flush();
