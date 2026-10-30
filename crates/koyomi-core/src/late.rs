@@ -123,9 +123,10 @@ pub fn overdue(net: &Jobnet, r: &Run, usual: Option<Duration>, now: NaiveDateTim
             out.push(Delay::End);
         }
     }
-    if let (Some(d), true, Some(u), Some(b)) = (net.late_end, running, usual, begun(r)) {
+    if let (Some(d), true, Some(u)) = (net.late_end, running, usual) {
         let by = d.from(r.planned.unwrap_or(r.started));
-        if now < by && b + u > by {
+        // `usual` counts from the run's start, so this does too.
+        if now < by && r.started + u > by {
             out.push(Delay::Miss);
         }
     }
@@ -199,6 +200,7 @@ mod tests {
     fn a_run_expected_to_end_after_late_end_is_told_before_it_passes() {
         let n = net(None, Some("06:00"));
         let mut r = run(&n, "2026-10-30 22:00");
+        r.started = at("2026-10-31 04:00");
         r.start("a", at("2026-10-31 04:00"));
         let usual = Some(Duration::hours(3));
         assert_eq!(overdue(&n, &r, usual, at("2026-10-31 04:01")), vec![Delay::Miss]);

@@ -195,7 +195,7 @@ pub fn delay_words(
         }
         Delay::Miss => {
             let by = net.late_end.map_or_else(String::new, |d| moment(d.from(r.planned.unwrap_or(r.started)), now));
-            let at = late::begun(r).zip(usual).map_or_else(String::new, |(b, u)| moment(b + u, now));
+            let at = usual.map_or_else(String::new, |u| moment(r.started + u, now));
             t.trf("notify.late_miss", &[&r.title, &by, &at])
         }
         Delay::Slow => {
