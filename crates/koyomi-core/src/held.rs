@@ -1,4 +1,4 @@
-//! What a person has stopped by hand: the nets on hold, and whether the whole
+//! What a person has stopped by hand: the nets and the jobs on hold, and whether the whole
 //! schedule is paused. Kept in `state_dir("koyomi")/held.toml`; the engine is
 //! its one writer. A held net's times, and every time while paused, are written
 //! down as ⏸ 保留 runs that did not start, so nothing is skipped in silence.
@@ -16,9 +16,20 @@ pub struct Held {
     /// The ids (`経理/月次締め`) on hold: their times do not run, and neither does `koyomi run`.
     #[serde(default)]
     pub held: Vec<String>,
+    /// `koyomi hold <net> <job>`: a run that comes to the job waits there as ⏸ 保留 (not started,
+    /// the jobs after it wait too) until the job is released, then goes on as the same run.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub jobs: Vec<HeldJob>,
     /// `koyomi shift`: times of nets that start at another time this once.
     #[serde(default, rename = "shift", skip_serializing_if = "Vec::is_empty")]
     pub shifts: Vec<Shift>,
+}
+
+/// One job on hold: `job` of the net `net`.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct HeldJob {
+    pub net: String,
+    pub job: String,
 }
 
 /// One time moved for once: the net's time `from` starts at `to` instead (the definition is not changed).
@@ -64,6 +75,43 @@ impl Held {
         true
     }
 
+    /// Whether the job `job` of `net` is on hold, or the child jobnet's station it is in
+    /// (`sub` for `sub/x`): holding a `kind = "jobnet"` part holds the whole call.
+    pub fn is_job_held(&self, net: &str, job: &str) -> bool {
+        self.job_held_by(net, job).is_some()
+    }
+
+    /// The held job that holds `job` of `net`: itself, or the child jobnet's station it is in.
+    pub fn job_held_by(&self, net: &str, job: &str) -> Option<&str> {
+        self.jobs
+            .iter()
+            .find(|h| h.net == net && (h.job == job || job.strip_prefix(h.job.as_str()).is_some_and(|r| r.starts_with('/'))))
+            .map(|h| h.job.as_str())
+    }
+
+    /// The jobs of `net` on hold.
+    pub fn jobs_of<'a>(&'a self, net: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+        self.jobs.iter().filter(move |h| h.net == net).map(|h| h.job.as_str())
+    }
+
+    /// Puts the job `job` of `net` on hold; `false` when it already was.
+    pub fn hold_job(&mut self, net: &str, job: &str) -> bool {
+        let h = HeldJob { net: net.to_owned(), job: job.to_owned() };
+        if self.jobs.contains(&h) {
+            return false;
+        }
+        self.jobs.push(h);
+        self.jobs.sort();
+        true
+    }
+
+    /// Takes the job `job` of `net` off hold; `false` when it was not on it.
+    pub fn release_job(&mut self, net: &str, job: &str) -> bool {
+        let before = self.jobs.len();
+        self.jobs.retain(|h| !(h.net == net && h.job == job));
+        self.jobs.len() != before
+    }
+
     /// Moves the time `from` of `id` to `to`; an earlier move of the same time is replaced.
     pub fn shift(&mut self, id: &str, from: chrono::NaiveDateTime, to: chrono::NaiveDateTime) {
         self.unshift(id, from);
@@ -103,7 +151,13 @@ impl Held {
             None => self.shifts.retain(|s| s.id != from),
         }
         let moved = self.shifts.iter().any(|s| to.is_some_and(|t| s.id == t));
-        held || moved || self.shifts.len() != before
+        let jobs = self.jobs.iter().any(|h| h.net == from);
+        match to {
+            Some(to) => self.jobs.iter_mut().filter(|h| h.net == from).for_each(|h| h.net = to.to_owned()),
+            None => self.jobs.retain(|h| h.net != from),
+        }
+        self.jobs.sort();
+        held || moved || jobs || self.shifts.len() != before
     }
 }
 
@@ -121,6 +175,34 @@ mod tests {
         assert_eq!(Held::parse(&h.to_toml()).unwrap(), h);
         assert!(h.is_shifted("g/a", at("2026-10-30 09:00")) && !h.is_shifted("g/b", at("2026-10-30 09:00")));
         assert!(h.unshift("g/a", at("2026-10-30 09:00")) && !h.unshift("g/a", at("2026-10-30 09:00")));
+    }
+
+    #[test]
+    fn a_job_hold_round_trips_and_an_old_file_still_reads() {
+        let old = Held::parse(
+            "paused = false
+held = [\"g/a\"]
+",
+        )
+        .unwrap();
+        assert!(old.jobs.is_empty() && old.is_held("g/a"));
+        assert!(!old.to_toml().contains("jobs"), "nothing is written for no job: {}", old.to_toml());
+        let mut h = old;
+        assert!(h.hold_job("g/b", "y"));
+        assert!(h.hold_job("g/b", "sub"));
+        assert!(!h.hold_job("g/b", "y"));
+        let back = Held::parse(&h.to_toml()).unwrap();
+        assert_eq!(back, h);
+        assert!(back.is_job_held("g/b", "y") && !back.is_job_held("g/a", "y") && !back.is_job_held("g/b", "yy"));
+        assert!(back.is_job_held("g/b", "sub/x"), "a job in a held call is held");
+        assert!(!back.is_job_held("g/b", "subway"));
+        assert_eq!(back.jobs_of("g/b").collect::<Vec<_>>(), ["sub", "y"]);
+        let mut h = back;
+        assert!(h.carry("g/b", Some("g/c")));
+        assert!(h.is_job_held("g/c", "y") && !h.is_job_held("g/b", "y"));
+        assert!(h.release_job("g/c", "y") && !h.release_job("g/c", "y"));
+        assert!(h.carry("g/c", None));
+        assert!(h.jobs.is_empty());
     }
 
     #[test]

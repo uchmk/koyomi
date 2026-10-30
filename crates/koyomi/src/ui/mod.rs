@@ -1613,6 +1613,9 @@ impl Browser {
             }
             let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started).map(|r| r.state);
             let mut text = review::row_with(t, d, snap.held.contains(&d.id), last);
+            if snap.held_jobs.iter().any(|h| h.net == d.id) {
+                text = format!("{text}  {} {}", State::Held.mark(), t.tr("state.job_held"));
+            }
             if twins.contains(&d.id) {
                 text = review::twin_row(text, d);
             }
@@ -1620,7 +1623,14 @@ impl Browser {
             let r = ui.selectable_label(on, format!("  {text}"));
             // The mark is a picture; the word for the last run's state is what is said.
             let said = match last {
-                Some(l) => format!("{}, {}", review::row(t, d, snap.held.contains(&d.id)), show::tag(t, l)),
+                Some(l) => {
+                    format!("{}, {}", review::row(t, d, snap.held.contains(&d.id)), show::tag(t, l))
+                        + &if snap.held_jobs.iter().any(|h| h.net == d.id) {
+                            format!(", {}", t.tr("state.job_held"))
+                        } else {
+                            String::new()
+                        }
+                }
                 None => text.clone(),
             };
             ito_a11y::say(&r, Role::Row, &said);
@@ -2125,6 +2135,23 @@ impl Browser {
         }
     }
 
+    /// Whether `job` of the net `net` is on hold (`held.toml`).
+    fn job_held(&self, net: &str, job: &str) -> bool {
+        self.snap.as_ref().is_some_and(|s| s.held_jobs.iter().any(|h| h.net == net && h.job == job))
+    }
+
+    /// 「保留 / 保留を解く」 for one job of a net.
+    fn hold_job_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, net: &str, job: &str) {
+        let held = self.job_held(net, job);
+        let label = t.trf(if held { "run.release_job" } else { "run.hold_job" }, &[job]);
+        let r = ui.add_enabled(!self.blocked(), egui::Button::new(&label));
+        ito_a11y::say(&r, Role::Button, &label);
+        if r.clicked() {
+            let (id, job) = (net.to_owned(), Some(job.to_owned()));
+            let _ = self.tx.send(if held { Request::Release { id, job } } else { Request::Hold { id, job } });
+        }
+    }
+
     /// The run: its line, the buttons, the picture, the jobs in words, the log.
     fn run_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
@@ -2212,6 +2239,10 @@ impl Browser {
                     }
                 }
             }
+            // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
+            if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
+                self.hold_job_button(ui, t, &run.jobnet, job);
+            }
             // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
             let asking: Vec<&str> = run
                 .jobs
@@ -2241,6 +2272,9 @@ impl Browser {
             ito_a11y::say(&r, Role::Button, label);
             if r.clicked() {
                 self.compare_base = (!marked).then(|| run.id.clone());
+            }
+            if run.is_over() && picked.is_none() {
+                ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
             }
         });
         self.show_result(ui);
@@ -2390,7 +2424,7 @@ impl Browser {
             ito_a11y::say(&r, Role::Button, t.tr(key));
             if r.clicked() {
                 let id = def.id.clone();
-                let _ = self.tx.send(if held { Request::Release { id } } else { Request::Hold { id } });
+                let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
             }
         });
         if held {
@@ -2412,10 +2446,29 @@ impl Browser {
         if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_graph");
             let now = chrono::Local::now().naive_local();
-            let preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
+            let mut preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
+            // A held job shows ⏸ on its station.
+            let mut any_held = false;
+            for j in preview.jobs.iter_mut().filter(|j| self.job_held(&def.id, &j.id)) {
+                j.state = State::Held;
+                any_held = true;
+            }
+            let picked = self.job_sel.clone().filter(|p| net.jobs.iter().any(|j| &j.id == p));
+            let mut pick = None;
             egui::ScrollArea::horizontal().id_salt("net_graph").auto_shrink([false, true]).show(ui, |ui| {
-                graph::draw(ui, &preview, self.vertical, None);
+                pick = graph::draw(ui, &preview, self.vertical, picked.as_deref());
             });
+            if pick.is_some() {
+                self.job_sel = if pick == picked { None } else { pick };
+            }
+            if any_held {
+                let text = t.tr("run.job_held_note");
+                let r = ui.label(egui::RichText::new(text).color(graph::colour(&c, State::Held)));
+                ito_a11y::say(&r, Role::Label, text);
+            }
+            if let Some(job) = picked {
+                ui.horizontal(|ui| self.hold_job_button(ui, t, &def.id, &job));
+            }
         }
         if let Some(net) = &def.net {
             section(ui, "net.sec_timing");
@@ -3150,7 +3203,8 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         let menu_says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
-        assert!(!menu_says(&s, "から再実行"), "one button until opened");
+        assert!(!menu_says(&s, "止まったところから"), "one button until opened");
+        assert!(menu_says(&s, "ジョブを選ぶとそこから再実行"), "the hint with no job picked");
         s.click("再実行 ▾", &mut b);
         s.click("止まったところから", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, next: None, .. })));
@@ -3162,6 +3216,13 @@ run = [\"x.exe\"]
         s.click("再実行 ▾", &mut b);
         s.click("a の次から（a は警告終了）", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), next: Some(State::Warn), .. }) if f == "a"));
+        // The picked job is held for the net (H3); held, the button lets it go.
+        s.click("a を保留", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
+        b.snap.as_mut().unwrap().held_jobs.push(koyomi_core::held::HeldJob { net: "試験/bom".into(), job: "a".into() });
+        s.settle(&mut b);
+        s.click("a の保留を解く", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
     }
 
     /// The kill box starts on the safe button: a plain Enter does not kill.

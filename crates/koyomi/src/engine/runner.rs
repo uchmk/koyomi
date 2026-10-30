@@ -31,6 +31,7 @@ use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
+use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry};
 use koyomi_core::late::Delay;
@@ -211,6 +212,8 @@ pub struct Runner {
     /// `calendars/*.toml` and the calendar each net counts by: what `{date-1bd}` in a job needs.
     calendars: BTreeMap<String, Calendar>,
     calendar_of: BTreeMap<String, String>,
+    /// The jobs on hold (`koyomi hold <net> <job>`): a run that comes to one waits there.
+    held: Held,
 }
 
 impl Runner {
@@ -235,6 +238,7 @@ impl Runner {
             waits: Vec::new(),
             notices: Vec::new(),
             asks: Vec::new(),
+            held: Held::default(),
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -268,6 +272,18 @@ impl Runner {
     /// confirmed net, or why the others cannot be used.
     pub fn set_children(&mut self, children: BTreeMap<String, Result<Jobnet, String>>) {
         self.children = children;
+    }
+
+    /// The jobs on hold, as `held.toml` has them now. A held job that a run waits at and is no
+    /// longer held goes on in the same run.
+    pub fn set_held(&mut self, held: &Held) {
+        self.held = Held { jobs: held.jobs.clone(), ..Held::default() };
+        let now = Local::now().naive_local();
+        for r in self.runs.iter_mut().filter(|r| !r.is_over()) {
+            let net = r.jobnet.clone();
+            r.unhold(|j| !self.held.is_job_held(&net, j), now);
+        }
+        self.start_ready();
     }
 
     /// The `kind = "notify"` parts that ended since the last call, oldest first: (run id, job id).
@@ -759,6 +775,14 @@ impl Runner {
         // What needs a slot takes the free ones by the net's priority (5 first), then in the order
         // the runs began.
         let mut wanting: Vec<(usize, String)> = Vec::new();
+        for r in self.runs.iter_mut() {
+            for job in r.ready() {
+                if let Some(by) = self.held.job_held_by(&r.jobnet, &job) {
+                    let reason = format!("保留中（koyomi release {} {by}）", r.jobnet);
+                    r.hold_job(&job, &reason);
+                }
+            }
+        }
         for (i, r) in self.runs.iter().enumerate() {
             for job in r.ready() {
                 // A part runs no process: it takes no slot.
@@ -1451,6 +1475,59 @@ mod tests {
         assert!(r.rerun(&first, None, Some(State::Skipped)).unwrap_err().contains("ジョブが要る"));
         assert!(r.rerun(&first, Some("x"), None).unwrap_err().contains("ジョブがない: x"));
         assert!(r.rerun("20200101-000000-00", None, None).unwrap_err().contains("実行がない"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_held_job_stops_its_run_there_and_a_release_goes_on_in_the_same_run() {
+        let dir = scratch("hold-job");
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"a\"
+{}
+[[job]]
+id = \"b\"
+after = [\"a\"]
+{}
+[[job]]
+id = \"c\"
+after = [\"b\"]
+{}
+[[job]]
+id = \"side\"
+{}
+",
+            echo("one"),
+            echo("two"),
+            echo("three"),
+            echo("side")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let mut held = Held::default();
+        held.hold_job(&d.id, "b");
+        r.set_held(&held);
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let until = Instant::now() + Duration::from_secs(20);
+        while r.run(&id).unwrap().job("b").unwrap().state != State::Held || r.run(&id).unwrap().job("side").unwrap().ended.is_none() {
+            assert!(Instant::now() < until, "b was not held");
+            r.tick();
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        let run = r.run(&id).unwrap().clone();
+        assert!(!run.is_over(), "a run held at b is not over");
+        assert_eq!(run.job("a").unwrap().state, State::Ok);
+        assert_eq!(run.job("side").unwrap().state, State::Ok, "a branch beside the held job goes on");
+        assert!(run.job("b").unwrap().reason.contains(&format!("koyomi release {} b", d.id)));
+        assert_eq!(run.job("c").unwrap().state, State::Waiting, "the jobs after it wait");
+        assert!(!r.log_path(&id, "b").exists());
+        r.tick();
+        assert_eq!(r.run(&id).unwrap().job("b").unwrap().state, State::Held, "a tick does not let it go");
+        r.set_held(&Held::default());
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        assert_eq!(r.log_tail(&id, "c").unwrap().trim(), "three");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

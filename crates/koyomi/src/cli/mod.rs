@@ -50,8 +50,12 @@ usage: koyomi [--version | --help | env]
        koyomi compare <run-a> <run-b>
                                      two runs side by side: how long each job took, its state and exit code, and how the logs differ
        koyomi kill <run> [<job>]     stop one job, or the whole run
-       koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
-       koyomi release <group/name>   take the net off hold
+       koyomi hold <group/name> [<job>]
+                                     hold the net: its times are written down as 保留 and nothing runs;
+                                     with <job>, a run that comes to that job waits there as 保留 (the jobs
+                                     after it wait too) and goes on as the same run once it is released
+       koyomi release <group/name> [<job>]
+                                     take the net (or its job) off hold
        koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
        koyomi approve-step <run> <job> [--no]
                                      answer a 確認待ち part: let the run go on, or --no to end it 異常
@@ -191,8 +195,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "log" => log(rest),
         "compare" => compare(rest),
         "kill" => kill(rest),
-        "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
-        "release" => one_id(rest, "release", |id| Request::Release { id }),
+        "hold" => id_and_job(rest, "hold", |id, job| Request::Hold { id, job }),
+        "release" => id_and_job(rest, "release", |id, job| Request::Release { id, job }),
         "skip" => skip(rest),
         "approve-step" => approve_step(rest),
         "shift" => shift(rest),
@@ -1436,7 +1440,10 @@ fn import(args: &[String]) -> i32 {
         return fail(&format!("問題が {} 件あるので取り込まない", plan.problems));
     }
     if plan.undecided {
-        return fail(&format!("今あるものと違うものが {} 件ある: --on-conflict overwrite（上書き。前の中身は versions/ に残る）、rename（名前を変えて足す）か skip（飛ばす）で決める", plan.conflicts));
+        return fail(&format!(
+            "今あるものと違うものが {} 件ある: --on-conflict overwrite（上書き。前の中身は versions/ に残る）、rename（名前を変えて足す）か skip（飛ばす）で決める",
+            plan.conflicts
+        ));
     }
     if !plan.writes {
         out("書くものはない（全部同じか、飛ばす）", false);
@@ -1457,10 +1464,11 @@ fn ask_and_say(request: &Request) -> i32 {
     }
 }
 
-fn one_id(args: &[String], name: &str, make: fn(String) -> Request) -> i32 {
+fn id_and_job(args: &[String], name: &str, make: fn(String, Option<String>) -> Request) -> i32 {
     match args {
-        [id] => ask_and_say(&make(id.clone())),
-        _ => usage(&format!("{name} takes a group/name")),
+        [id] => ask_and_say(&make(id.clone(), None)),
+        [id, job] => ask_and_say(&make(id.clone(), Some(job.clone()))),
+        _ => usage(&format!("{name} takes a group/name and maybe a job")),
     }
 }
 

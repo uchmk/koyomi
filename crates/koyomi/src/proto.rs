@@ -7,12 +7,13 @@ use std::collections::BTreeMap;
 
 use ito_ipc::door::Door;
 use koyomi_core::calendar::Calendar;
+use koyomi_core::held::HeldJob;
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 17;
+pub const PROTO: u32 = 18;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -77,12 +78,15 @@ pub enum Request {
         job: String,
     },
     /// Put the net `id` on hold: its times are written down as ⏸ 保留 and do not run, nor does `Run`.
+    /// With `job`, only that job: a run that comes to it waits there as ⏸ 保留 until it is released.
     Hold {
         id: String,
+        job: Option<String>,
     },
-    /// Take the net `id` off hold.
+    /// Take the net `id` (or its job `job`) off hold.
     Release {
         id: String,
+        job: Option<String>,
     },
     /// Skip the job `job` of `run` before it starts: ⊘, and the jobs after it go on.
     Skip {
@@ -216,6 +220,9 @@ pub struct Snapshot {
     /// The ids on hold (`koyomi hold`).
     #[serde(default)]
     pub held: Vec<String>,
+    /// The jobs on hold (`koyomi hold <net> <job>`).
+    #[serde(default)]
+    pub held_jobs: Vec<HeldJob>,
     /// `koyomi pause`: no time starts anything.
     #[serde(default)]
     pub paused: bool,

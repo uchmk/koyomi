@@ -603,7 +603,7 @@ impl Run {
         if j.state == State::Running {
             return Err(format!("{}: もう動いている", j.label()));
         }
-        if !j.pending() {
+        if !j.pending() && !(j.state == State::Held && j.ended.is_none()) {
             return Err(format!("{}: もう終わっている", j.label()));
         }
         j.state = State::Skipped;
@@ -724,6 +724,35 @@ impl Run {
         }
     }
 
+    /// A ready job on hold (`koyomi hold <net> <job>`): it waits as ⏸ 保留, not started, and the
+    /// jobs after it wait with it. [`unhold`](Run::unhold) lets it go as the same run.
+    pub fn hold_job(&mut self, id: &str, reason: &str) {
+        if let Some(i) = self.index(id) {
+            let j = &mut self.jobs[i];
+            if j.pending() {
+                j.state = State::Held;
+                j.reason = reason.to_owned();
+            }
+        }
+    }
+
+    /// The jobs held with [`hold_job`](Run::hold_job) for which `free` says so wait no longer;
+    /// what they were becomes ready again. The ids of the jobs let go.
+    pub fn unhold(&mut self, free: impl Fn(&str) -> bool, now: NaiveDateTime) -> Vec<String> {
+        let mut out = Vec::new();
+        for j in &mut self.jobs {
+            if j.state == State::Held && j.ended.is_none() && free(&j.id) {
+                j.state = State::Waiting;
+                j.reason.clear();
+                out.push(j.id.clone());
+            }
+        }
+        if !out.is_empty() {
+            self.settle(now);
+        }
+        out
+    }
+
     /// Says the engine ran `id` again `times` times, before it is finished.
     pub fn retried(&mut self, id: &str, times: u32) {
         if let Some(i) = self.index(id) {
@@ -797,7 +826,7 @@ impl Run {
     /// finished by the engine with [`Outcome::Killed`] once their processes are gone.
     pub fn kill_pending(&mut self, now: NaiveDateTime) {
         for j in &mut self.jobs {
-            if j.pending() {
+            if j.pending() || (j.state == State::Held && j.ended.is_none()) {
                 j.state = State::NotRun;
                 j.reason = "強制終了".to_owned();
                 j.ended = Some(now);
@@ -1424,6 +1453,39 @@ mod tests {
         assert!(r.is_over());
         assert_eq!(r.state, State::Ok);
         assert!(r.skip("d", at("2026-10-30 09:00:06")).is_err());
+    }
+
+    #[test]
+    fn a_held_job_waits_with_the_jobs_after_it_and_goes_on_when_let_go() {
+        let mut r = diamond();
+        ended(&mut r, "a", 0, "2026-10-30 09:00:01");
+        assert_eq!(r.ready(), vec!["b", "c"]);
+        r.hold_job("b", "保留中");
+        assert_eq!(r.job("b").unwrap().state, State::Held);
+        assert_eq!(r.ready(), vec!["c"], "the held job does not start, the other branch does");
+        ended(&mut r, "c", 0, "2026-10-30 09:00:02");
+        assert!(r.ready().is_empty() && !r.is_over(), "d waits for b, and the run is not over");
+        assert_eq!(r.job("d").unwrap().state, State::Waiting);
+        assert_eq!(r.state, State::Running);
+        assert!(r.unhold(|j| j == "c", at("2026-10-30 09:00:03")).is_empty(), "only the held are let go");
+        assert_eq!(r.unhold(|j| j == "b", at("2026-10-30 09:00:03")), vec!["b"]);
+        assert_eq!(r.ready(), vec!["b"], "the same run goes on");
+        ended(&mut r, "b", 0, "2026-10-30 09:00:04");
+        ended(&mut r, "d", 0, "2026-10-30 09:00:05");
+        assert_eq!(r.state, State::Ok);
+        // A held job may be skipped, and a kill ends it.
+        let mut r = diamond();
+        ended(&mut r, "a", 0, "2026-10-30 09:00:01");
+        r.hold_job("b", "保留中");
+        r.skip("b", at("2026-10-30 09:00:02")).unwrap();
+        assert_eq!(r.ready(), vec!["c"]);
+        let mut r = diamond();
+        ended(&mut r, "a", 0, "2026-10-30 09:00:01");
+        r.hold_job("b", "保留中");
+        r.hold_job("c", "保留中");
+        r.kill_pending(at("2026-10-30 09:00:02"));
+        assert!(r.is_over());
+        assert_eq!(r.job("b").unwrap().state, State::NotRun);
     }
 
     #[test]

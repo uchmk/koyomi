@@ -815,6 +815,7 @@ impl State {
                 self.held_bad = Some(e);
             }
         }
+        self.runner.set_held(&self.held);
     }
 
     fn rescan(&mut self) {
@@ -870,6 +871,7 @@ impl State {
             warnings,
             notes,
             held: self.held.held.clone(),
+            held_jobs: self.held.jobs.clone(),
             paused: self.held.paused,
             cautions: self.outage_line().into_iter().chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS)).collect(),
             calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
@@ -895,6 +897,9 @@ impl State {
         }
         for id in &self.held.held {
             out.push_str(&format!("\n保留中: {id}（koyomi release {id} で戻す）"));
+        }
+        for h in &self.held.jobs {
+            out.push_str(&format!("\n保留中: {} の {}（koyomi release {} {} で戻す）", h.net, h.job, h.net, h.job));
         }
         let p = self.power();
         if let (Some(at), Some(id)) = (&p.wake_at, &p.wake_for) {
@@ -1024,6 +1029,33 @@ impl State {
         }
         self.save_held()?;
         Ok(format!("保留を解いた: {id}"))
+    }
+    /// `koyomi hold <net> <job>`: a run of `id` that comes to `job` waits there as ⏸ 保留.
+    fn hold_job(&mut self, id: &str, job: &str) -> Result<String, String> {
+        self.held_writable()?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let net = def.net.as_ref().ok_or_else(|| format!("{id} が読めない"))?;
+        let label = net
+            .jobs
+            .iter()
+            .find(|j| j.id == job)
+            .map(|j| j.name.clone().unwrap_or_else(|| j.id.clone()))
+            .ok_or_else(|| format!("{id} にジョブがない: {job}"))?;
+        if !self.held.hold_job(id, job) {
+            return Err(format!("もう保留している: {id} の {job}"));
+        }
+        self.save_held()?;
+        self.runner.set_held(&self.held);
+        Ok(format!("保留した: {} の {label}（そこに着いた回は待つ。koyomi release {id} {job} で戻す）", def.label()))
+    }
+    fn release_job(&mut self, id: &str, job: &str) -> Result<String, String> {
+        self.held_writable()?;
+        if !self.held.release_job(id, job) {
+            return Err(format!("保留していない: {id} の {job}"));
+        }
+        self.save_held()?;
+        self.runner.set_held(&self.held);
+        Ok(format!("保留を解いた: {id} の {job}"))
     }
     /// `koyomi shift`: the time `from` of `id` starts at `to` once (`None`: the move is taken back).
     fn shift(&mut self, id: &str, from: &str, to: Option<&str>) -> Result<String, String> {
@@ -1560,8 +1592,10 @@ impl State {
                 Ok(Runs { runs: self.runner.history(day(from)?, day(to)?)? }.to_toml())
             }
             Request::Log { run, job } => self.runner.log_tail(run, job),
-            Request::Hold { id } => self.hold(id),
-            Request::Release { id } => self.release(id),
+            Request::Hold { id, job: None } => self.hold(id),
+            Request::Release { id, job: None } => self.release(id),
+            Request::Hold { id, job: Some(job) } => self.hold_job(id, job),
+            Request::Release { id, job: Some(job) } => self.release_job(id, job),
             Request::Skip { run, job } => self.runner.skip(run, job),
             Request::Answer { run, job, yes } => self.runner.answer(run, job, *yes),
             Request::Shift { id, from, to } => self.shift(id, from, to.as_deref()),
@@ -1598,8 +1632,8 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Run { id, dry: false, .. } => ("run", id.clone()),
         Request::Rerun { run, .. } => ("rerun", run.clone()),
         Request::Kill { run, job } => ("kill", job.as_ref().map_or(run.clone(), |j| format!("{run} {j}"))),
-        Request::Hold { id } => ("hold", id.clone()),
-        Request::Release { id } => ("release", id.clone()),
+        Request::Hold { id, job } => ("hold", job.as_ref().map_or(id.clone(), |j| format!("{id} {j}"))),
+        Request::Release { id, job } => ("release", job.as_ref().map_or(id.clone(), |j| format!("{id} {j}"))),
         Request::Skip { run, job } => ("skip", format!("{run} {job}")),
         Request::Answer { run, job, yes } => (if *yes { "approve-step" } else { "reject-step" }, format!("{run} {job}")),
         Request::Shift { id, .. } => ("shift", id.clone()),
@@ -2009,6 +2043,33 @@ run = [\"x\"]
         s.defs.iter().find(|d| d.id == id).map(|d| d.standing)
     }
 
+    /// H1: a job is held and let go through held.toml, which keeps the jobs.
+    #[test]
+    fn a_job_is_held_and_let_go_through_the_held_file() {
+        let paths = temp_paths("hold-job");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1
+
+[[job]]
+id = \"a\"
+name = \"取込\"
+run = [\"x.exe\"]
+";
+        assert!(s.save("経理/集計", net, None, false).is_ok());
+        assert!(s.hold_job("経理/集計", "nope").unwrap_err().contains("ジョブがない"));
+        assert!(s.hold_job("経理/無い", "a").is_err());
+        assert!(s.hold_job("経理/集計", "a").unwrap().contains("取込"));
+        assert!(s.hold_job("経理/集計", "a").unwrap_err().contains("もう保留している"));
+        let back = Held::parse(&std::fs::read_to_string(&paths.held).unwrap()).unwrap();
+        assert!(back.is_job_held("経理/集計", "a"));
+        assert!(!back.is_held("経理/集計"), "holding a job does not hold the net");
+        assert!(s.release_job("経理/集計", "a").is_ok());
+        assert!(s.release_job("経理/集計", "a").unwrap_err().contains("保留していない"));
+        let back = Held::parse(&std::fs::read_to_string(&paths.held).unwrap()).unwrap();
+        assert!(back.jobs.is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
     /// 30.4: a difference without a choice is refused and nothing is written.
     /// 30.5: overwrite keeps the old file as a version; the net comes in unconfirmed.
     /// 30.6: rename adds beside, skip leaves; a broken bundle is refused whatever the choice.
@@ -2291,6 +2352,7 @@ run = [\"x.exe\"]
             warnings: vec!["w".into()],
             notes: vec!["n".into()],
             held: vec!["共通/x".into()],
+            held_jobs: vec![koyomi_core::held::HeldJob { net: "共通/x".into(), job: "b".into() }],
             paused: true,
             cautions: vec!["c".into()],
             calendar_cautions: Default::default(),
