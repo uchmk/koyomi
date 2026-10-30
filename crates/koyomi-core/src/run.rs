@@ -501,7 +501,14 @@ impl Run {
                 jr.ended = Some(p.ended.unwrap_or(now));
                 jr.exit = p.exit;
                 jr.retried = p.retried;
-                jr.reason = if p.reason.is_empty() { CARRIED.to_owned() } else { format!("{CARRIED}: {}", p.reason) };
+                jr.reason = if p.reason.is_empty() {
+                    CARRIED.to_owned()
+                } else if p.reason.starts_with(CARRIED) {
+                    // Carried over again: keep the one mark instead of stacking it.
+                    p.reason.clone()
+                } else {
+                    format!("{CARRIED}: {}", p.reason)
+                };
             }
             jobs.push(jr);
         }
@@ -1276,6 +1283,21 @@ mod tests {
         let r = Run::rerun("r7", &done, &net, Some("d"), now).unwrap();
         assert_eq!(r.ready(), vec!["d"]);
         assert_eq!(r.job("b").unwrap().reason, CARRIED);
+    }
+
+    #[test]
+    fn a_job_carried_over_twice_is_marked_once() {
+        let net = diamond_net();
+        let now = at("2026-10-30 10:00:00");
+        let mut prev = diamond();
+        for id in ["a", "b", "c", "d"] {
+            ended(&mut prev, id, 0, "2026-10-30 09:00:05");
+        }
+        let r2 = Run::rerun("r2", &prev, &net, Some("d"), now).unwrap();
+        let mut r2 = r2;
+        ended(&mut r2, "d", 0, "2026-10-30 10:00:05");
+        let r3 = Run::rerun("r3", &r2, &net, Some("d"), now).unwrap();
+        assert_eq!(r3.job("a").unwrap().reason, CARRIED);
     }
 
     #[test]

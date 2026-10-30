@@ -1252,7 +1252,7 @@ impl Browser {
             } else if self.cal_sel.is_some() {
                 self.calendar_view(ui, t);
             } else {
-                self.detail(ui, t);
+                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
             }
         });
         self.confirm(&ctx, t, key);
@@ -1591,6 +1591,7 @@ impl Browser {
         let h = History::week(chrono::Local::now().date_naive());
         let _ = self.tx.send(h.request());
         self.hist = Some(h);
+        self.gantt = false;
         self.run_sel = None;
         self.cal_sel = None;
         self.job_sel = None;
