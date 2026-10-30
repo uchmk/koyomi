@@ -405,6 +405,7 @@ impl Runner {
         };
         run.planned = planned;
         run.lock = net.lock.clone();
+        run.priority = net.slot_priority();
         run.params = set.clone();
         Ok(run)
     }
@@ -432,6 +433,7 @@ impl Runner {
         let id = self.new_id(now);
         let mut run = Run::rerun(&id, &prev, &net, from, now)?;
         run.lock = net.lock.clone();
+        run.priority = net.slot_priority();
         run.params = set;
         self.launch(run, &text)
     }
@@ -723,18 +725,27 @@ impl Runner {
         let limit = self.config.concurrency.max(1);
         let mut running = self.active.len();
         let mut starts: Vec<(String, String)> = Vec::new();
-        for r in &mut self.runs {
+        // What needs a slot takes the free ones by the net's priority (5 first), then in the order
+        // the runs began.
+        let mut wanting: Vec<(usize, String)> = Vec::new();
+        for (i, r) in self.runs.iter().enumerate() {
             for job in r.ready() {
                 // A part runs no process: it takes no slot.
-                let is_job = r.job(&job).is_none_or(|j| j.part.runs_process());
-                if !is_job {
-                    starts.push((r.id.clone(), job));
-                } else if running < limit {
-                    running += 1;
-                    starts.push((r.id.clone(), job));
+                if r.job(&job).is_none_or(|j| j.part.runs_process()) {
+                    wanting.push((i, job));
                 } else {
-                    r.wait_for_slot(&job, limit);
+                    starts.push((r.id.clone(), job));
                 }
+            }
+        }
+        wanting.sort_by_key(|(i, _)| std::cmp::Reverse(self.runs[*i].priority));
+        for (i, job) in wanting {
+            let r = &mut self.runs[i];
+            if running < limit {
+                running += 1;
+                starts.push((r.id.clone(), job));
+            } else {
+                r.wait_for_slot(&job, limit);
             }
         }
         let mut over = Vec::new();
@@ -1503,6 +1514,56 @@ mod tests {
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         assert_eq!(r.busy(), 0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_free_slot_goes_to_the_net_with_the_higher_priority() {
+        let dir = scratch("priority");
+        let sleep = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"ping -n 2 127.0.0.1 > nul\"]" } else { "run = [\"sleep\", \"1\"]" };
+        let net = |p: &str| {
+            format!(
+                "format = 1
+{p}[[job]]
+id = \"a\"
+{sleep}
+"
+            )
+        };
+        let mut r = Runner::new(&dir, Config { concurrency: 1, ..Config::default() });
+        let today = Local::now().date_naive();
+        let first = r.start(&def("first", &net("")), today, How::Manual, None).unwrap();
+        let low = r
+            .start(
+                &def(
+                    "low",
+                    &net("priority = 1
+"),
+                ),
+                today,
+                How::Manual,
+                None,
+            )
+            .unwrap();
+        let high = r
+            .start(
+                &def(
+                    "high",
+                    &net("priority = 5
+"),
+                ),
+                today,
+                How::Manual,
+                None,
+            )
+            .unwrap();
+        assert_eq!(r.run(&high).unwrap().priority, 5);
+        wait_over(&mut r, &first);
+        r.tick();
+        assert_eq!(r.run(&high).unwrap().running(), 1, "the higher priority takes the slot first");
+        assert_eq!(r.run(&low).unwrap().running(), 0);
+        wait_over(&mut r, &high);
+        wait_over(&mut r, &low);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

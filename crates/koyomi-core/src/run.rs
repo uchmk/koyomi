@@ -347,12 +347,19 @@ pub struct Run {
     /// The net's `lock` name while it runs: no other run with it goes at the same time.
     #[serde(default)]
     pub lock: Option<String>,
+    /// The net's `priority`: whose ready job gets a free slot first (5 first).
+    #[serde(default = "default_priority")]
+    pub priority: u8,
     /// The `[params]` values a person gave when starting it by hand (`--set`); the rest took their default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
     /// What it was late in (`late_start`, `late_end`, `late_slow`), each told once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delays: Vec<Delay>,
+}
+
+fn default_priority() -> u8 {
+    crate::jobnet::DEFAULT_PRIORITY
 }
 
 /// How a run that started after its time (`missed = "once"`) begins its reason.
@@ -411,6 +418,7 @@ impl Run {
             reason: String::new(),
             file: None,
             lock: None,
+            priority: crate::jobnet::DEFAULT_PRIORITY,
             params: BTreeMap::new(),
             delays: Vec::new(),
         };
@@ -447,6 +455,7 @@ impl Run {
             reason: reason.to_owned(),
             file: None,
             lock: None,
+            priority: crate::jobnet::DEFAULT_PRIORITY,
             params: BTreeMap::new(),
             delays: Vec::new(),
         }

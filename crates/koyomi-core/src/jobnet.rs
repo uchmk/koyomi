@@ -72,6 +72,10 @@ pub struct Jobnet {
     /// `late_slow = false`: not told when a run takes twice its usual time (told when not written).
     #[serde(default)]
     pub late_slow: Option<bool>,
+    /// `priority = 1..5`: which net's job gets a free slot first when the slots are short
+    /// (5 first; 3 when not written).
+    #[serde(default)]
+    pub priority: Option<u8>,
     /// `quiet = ["12:00-13:00"]`: hours a time of `[[when]]` does not start in.
     #[serde(default)]
     pub quiet: Vec<Span>,
@@ -84,7 +88,15 @@ pub struct Jobnet {
     pub notify_to: Vec<String>,
 }
 
+/// What `priority` is when it is not written.
+pub const DEFAULT_PRIORITY: u8 = 3;
+
 impl Jobnet {
+    /// The priority for a free slot: `priority`, or [`DEFAULT_PRIORITY`].
+    pub fn slot_priority(&self) -> u8 {
+        self.priority.unwrap_or(DEFAULT_PRIORITY)
+    }
+
     /// Whether a run that takes twice its usual time is told of (`late_slow`, on unless false).
     pub fn watches_slow(&self) -> bool {
         self.late_slow != Some(false)
@@ -485,6 +497,7 @@ struct RawNet {
     late_start: Field,
     late_end: Field,
     late_slow: Field,
+    priority: Field,
     quiet: Field,
     on_quiet: Field,
     notify_to: Field,
@@ -574,6 +587,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let late_start = c.deadline(&raw.late_start, "late_start");
     let late_end = c.deadline(&raw.late_end, "late_end");
     let late_slow = c.late_slow(&raw.late_slow);
+    let priority = c.priority(&raw.priority);
     let quiet = c.quiet(&raw.quiet);
     let on_quiet = match c.choice(&raw.on_quiet, "on_quiet", &["wait", "skip"]) {
         Some("skip") => OnQuiet::Skip,
@@ -598,6 +612,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             late_start,
             late_end,
             late_slow,
+            priority,
             quiet,
             on_quiet,
             notify_to,
@@ -990,6 +1005,18 @@ impl Checker<'_> {
             Ok(d) => Some(d),
             Err(e) => {
                 self.add(f.span().start, format!("{name}: {e}"));
+                None
+            }
+        }
+    }
+
+    /// `priority = 1..5`: a whole number from 1 to 5.
+    fn priority(&mut self, field: &Field) -> Option<u8> {
+        let f = field.as_ref()?;
+        match f.get_ref().as_integer() {
+            Some(n) if (1..=5).contains(&n) => Some(n as u8),
+            _ => {
+                self.add(f.span().start, "priority は 1 から 5 の整数（5 が先に流れる。書かなければ 3）");
                 None
             }
         }
@@ -2725,5 +2752,43 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(line_of("a\nb\nc", 0), 1);
         assert_eq!(line_of("a\nb\nc", 2), 2);
         assert_eq!(line_of("a\nb\nc", 99), 3);
+    }
+
+    #[test]
+    fn priority_is_one_to_five_and_survives_a_round_trip() {
+        let text = "format = 1
+priority = 5
+
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let n = parse(text).unwrap();
+        assert_eq!((n.priority, n.slot_priority()), (Some(5), 5));
+        assert_eq!(parse(&crate::write::text(&n)).unwrap(), n);
+        assert_eq!(
+            parse(
+                "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+            )
+            .unwrap()
+            .slot_priority(),
+            DEFAULT_PRIORITY
+        );
+        for bad in ["0", "6", "\"high\""] {
+            let e = parse(&format!(
+                "format = 1
+priority = {bad}
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+            ))
+            .unwrap_err();
+            assert!(e[0].message.starts_with("priority は"), "{}", e[0].message);
+        }
     }
 }
