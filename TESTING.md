@@ -862,6 +862,10 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 71.4 | `name = "ops"` on the mail; a net with `notify_to = ["ops"]`, another with no `notify_to` | Only the first net's notice is mailed; `koyomi check` on a net naming `ops` gives no warning |
 | 71.5 | `password = "hunter2"` (plain text) | The engine's log and the settings page say `[[notify.mails]] 1: …password…` (write `secret:`) |
 | 71.6 | A wrong `host` or password | The failure is in the engine's log (stderr), after one retry 30 s later; the run's state is not changed |
+| 71.7 | Settings → Notifications, the Mail card: "Add a mail place", fill in the server, sender and recipients | `koyomi.toml` gets a `[[notify.mails]]` with them and no `states`; the note under Password names `koyomi secret set` |
+| 71.8 | With `password = "secret:mail-ops"` stored, "Send a test here" | A test mail arrives; with the secret not stored, the window's failure band says it is not in the credential store |
+| 71.9 | A mail with `password = "hunter2"` in the file; open the Mail card | The password is not shown, a warning says it is written plainly; changing the port writes the file without the plain password |
+| 71.10 | "Remove" on a mail place | Its `[[notify.mails]]` table goes from `koyomi.toml`; the other tables keep their comments |
 
 ## 72. 祝日の表を足す
 

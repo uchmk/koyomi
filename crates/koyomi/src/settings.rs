@@ -113,6 +113,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     // what "Send a test" asked for.
     let mut notify_new: Option<ito_prefs::Notify> = None;
     let mut test = None;
+    // The mail places as the page has them, when changed; the one to test.
+    let mut mails_new = None;
+    let mut mail_test = None;
     let prefs = &mut app.prefs;
     let keys_edit = &mut prefs.keys_edit;
     let (notify, notify_warn, drafts) = (&prefs.notify, &prefs.notify_warn, &mut prefs.notify_drafts);
@@ -205,6 +208,15 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             if n != was {
                 notify_new = Some(n);
             }
+            let mut mails = notify.mail_places.clone();
+            ito_prefs::section(ui, l, w.mail, |ui| {
+                if let Some(k) = ito_prefs::mail_rows(ui, l, w, &mut mails, "koyomi secret set", drafts) {
+                    mail_test = mails.get(k).cloned();
+                }
+            });
+            if mails != notify.mail_places {
+                mails_new = Some(mails);
+            }
         }
         KEYS => {
             let layer_name = |n: &str| LAYERS.iter().find(|(id, _)| *id == n).map_or_else(|| n.to_owned(), |(_, k)| tr(k));
@@ -264,6 +276,12 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     if let Some(n) = notify_new {
         app.prefs.notify_edit(n, &no_folder);
+    }
+    if let Some(m) = mail_test {
+        app.prefs.mail_test(m, tr("notify.test_title"), tr("notify.test_body"));
+    }
+    if let Some(m) = mails_new {
+        app.prefs.mails_edit(m, &no_folder);
     }
     if forget {
         if let Some(dir) = &state_dir {

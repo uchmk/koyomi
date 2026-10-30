@@ -24,7 +24,7 @@ pub const APP: App<'static> = App { id: "uchmk.koyomi", name: "koyomi" };
 /// The events a run can be told of: `done` (off unless written) and `failed`.
 pub const EVENTS: [Event; 2] = DONE_FAILED;
 /// The one event told when nothing is written.
-const QUIET: &str = "failed";
+pub const QUIET: &str = "failed";
 /// Where `[notify]` is read from, as the notes name it.
 const PATH: &str = "koyomi.toml";
 /// Said of a plain-text webhook address while `hide_webhooks` is on.

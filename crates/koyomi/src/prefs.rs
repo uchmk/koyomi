@@ -12,7 +12,8 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::Duration;
 
 use ito_common::{common_path, edit_common, themes_dir, write_atomic, Common, CommonChange};
-use ito_notify::webhook::Place;
+use ito_notify::mail::Mail;
+use ito_notify::webhook::{Level, Place};
 use ito_prefs::{Notify, NotifyCfg, State};
 use ito_theme::Theme;
 use koyomi_core::config::Config;
@@ -54,10 +55,16 @@ fn read_config(path: &Path) -> Result<(Config, NotifyCfg, Vec<String>), String> 
 static CONFIG_ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// Set `edits` (keys of `table`, `None` for the top of the file, already
-/// TOML) and `webhooks` in the koyomi.toml at `path` (none yet is an empty
-/// one), written only when that changes it; the rest of the file keeps its
-/// lines and comments. Call it off the UI thread.
-pub fn write_config(path: &Path, table: Option<&str>, edits: &[(&str, String)], webhooks: Option<&[Place]>) -> Result<(), String> {
+/// TOML), `webhooks` and `mails` in the koyomi.toml at `path` (none yet is
+/// an empty one), written only when that changes it; the rest of the file
+/// keeps its lines and comments. Call it off the UI thread.
+pub fn write_config(
+    path: &Path,
+    table: Option<&str>,
+    edits: &[(&str, String)],
+    webhooks: Option<&[Place]>,
+    mails: Option<&[Mail]>,
+) -> Result<(), String> {
     let at = |e: String| format!("{}: {e}", path.display());
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
@@ -71,6 +78,9 @@ pub fn write_config(path: &Path, table: Option<&str>, edits: &[(&str, String)], 
     if let Some(places) = webhooks {
         new = ito_prefs::write_webhooks(&new, places, true).map_err(at)?;
     }
+    if let Some(mails) = mails {
+        new = write_mails(&new, mails).map_err(at)?;
+    }
     if new != text {
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
@@ -78,6 +88,16 @@ pub fn write_config(path: &Path, table: Option<&str>, edits: &[(&str, String)], 
         write_atomic(path, &new).map_err(at)?;
     }
     Ok(())
+}
+
+/// `text` with `mails` as its `[[notify.mails]]`. A place just added (no
+/// `states`) is told of `failed` only, as one written without `states`;
+/// `states` is written only when a place's differ from that.
+fn write_mails(text: &str, mails: &[Mail]) -> Result<String, String> {
+    let quiet = [crate::notify::QUIET.to_owned()];
+    let mails: Vec<Mail> =
+        mails.iter().map(|m| if m.states.is_empty() { Mail { states: quiet.to_vec(), ..m.clone() } } else { m.clone() }).collect();
+    ito_prefs::write_mails(text, &mails, mails.iter().any(|m| m.states != quiet))
 }
 
 /// keymap.toml in `base`'s `koyomi` folder.
@@ -400,13 +420,47 @@ impl Prefs {
             let path = config_path(&base);
             let edits = now.edits(&EVENTS, &page);
             let r = match now.webhooks_to_write("koyomi", &EVENTS, &page) {
-                Ok(webhooks) => match write_config(&path, Some("notify"), &edits, webhooks.as_deref()) {
+                Ok(webhooks) => match write_config(&path, Some("notify"), &edits, webhooks.as_deref(), None) {
                     Ok(()) => Reload::Config(read_config(&path)),
                     Err(e) => Reload::Failed(e),
                 },
                 Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
             };
             Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// Write the mail places as the Notifications page has them into
+    /// koyomi.toml's `[[notify.mails]]` on a thread, then read it again.
+    pub fn mails_edit(&self, mails: Vec<Mail>, no_folder: &str) {
+        if mails == self.notify.mail_places {
+            return;
+        }
+        let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let Some(base) = self.base.clone() else {
+            Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
+            return;
+        };
+        std::thread::spawn(move || {
+            let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let path = config_path(&base);
+            let r = match write_config(&path, Some("notify"), &[], None, Some(&mails)) {
+                Ok(()) => Reload::Config(read_config(&path)),
+                Err(e) => Reload::Failed(e),
+            };
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// "Send a test here" on a mail place, as the page has it: its password
+    /// is read from the credential store on a thread; what keeps it from
+    /// going is said as a failure.
+    pub fn mail_test(&self, m: Mail, title: String, body: String) {
+        let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        std::thread::spawn(move || {
+            if let Err(e) = ito_prefs::test_mail("koyomi", &m, Level::Done, &title, &body) {
+                Self::send_back(&tx, &wake, Reload::Failed(e));
+            }
         });
     }
 
@@ -435,7 +489,7 @@ impl Prefs {
         std::thread::spawn(move || {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let path = config_path(&base);
-            let r = match write_config(&path, None, &edits, None) {
+            let r = match write_config(&path, None, &edits, None, None) {
                 Ok(()) => Reload::Config(read_config(&path)),
                 Err(e) => Reload::Failed(e),
             };
@@ -553,6 +607,25 @@ mod tests {
     }
 
     /// Only what is changed is written; put back, nothing of it stays.
+    #[test]
+    fn a_mail_place_added_is_told_of_failed_and_states_is_written_only_when_it_differs() {
+        let m = Mail {
+            host: "smtp.example.com".into(),
+            from: "a@example.com".into(),
+            to: vec!["b@example.com".into()],
+            port: 587,
+            ..Mail::default()
+        };
+        let text = write_mails("", std::slice::from_ref(&m)).unwrap();
+        assert!(text.contains("[[notify.mails]]") && text.contains("host = \"smtp.example.com\"") && !text.contains("states"));
+        let (n, _) = crate::notify::parse(&Config::parse(&text).unwrap());
+        assert_eq!(n.mail_places[0].states, ["failed"]);
+        let both = Mail { states: vec!["done".into(), "failed".into()], ..m.clone() };
+        let text = write_mails(&text, &[m, both]).unwrap();
+        assert!(text.contains("states = [\"failed\"]") && text.contains("states = [\"done\", \"failed\"]"));
+        assert!(!write_mails(&text, &[]).unwrap().contains("[[notify.mails]]"));
+    }
+
     #[test]
     fn the_keymap_gets_only_the_changes() {
         let dir = std::env::temp_dir().join(format!("koyomi-keymap-{}", std::process::id()));
