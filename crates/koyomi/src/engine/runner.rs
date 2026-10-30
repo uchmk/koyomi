@@ -85,6 +85,30 @@ pub struct Queued {
     pub since: NaiveDateTime,
 }
 
+/// What of `require` the PC is not in yet, as a reason; `None` when it is met (or cannot be known).
+fn unmet(req: &koyomi_core::jobnet::Require) -> Option<String> {
+    if cfg!(test) || req.is_empty() {
+        return None;
+    }
+    unmet_by(req, ito_power::on_ac(), ito_power::network_up(), ito_power::idle_for())
+}
+
+/// [`unmet`] for the PC's state as given; a state that is `None` cannot be known and counts as met.
+fn unmet_by(req: &koyomi_core::jobnet::Require, ac: Option<bool>, network: Option<bool>, idle: Option<Duration>) -> Option<String> {
+    if req.ac && ac == Some(false) {
+        return Some("AC 電源につながるのを待っています（require = \"ac\"）".to_owned());
+    }
+    if req.network && network == Some(false) {
+        return Some("ネットワークにつながるのを待っています（require = \"network\"）".to_owned());
+    }
+    if let Some(s) = req.idle {
+        if idle.is_some_and(|d| d.as_secs() < s) {
+            return Some(format!("PC が {} 分使われなくなるのを待っています（require = \"idle\"）", s.div_ceil(60)));
+        }
+    }
+    None
+}
+
 /// A part that waits: `kind = "time"` for a time, `kind = "file"` for a file.
 struct Waiting {
     run: String,
@@ -406,6 +430,7 @@ impl Runner {
         run.planned = planned;
         run.lock = net.lock.clone();
         run.priority = net.slot_priority();
+        run.require = net.require;
         run.params = set.clone();
         Ok(run)
     }
@@ -434,6 +459,7 @@ impl Runner {
         let mut run = Run::rerun(&id, &prev, &net, from, now)?;
         run.lock = net.lock.clone();
         run.priority = net.slot_priority();
+        run.require = net.require;
         run.params = set;
         self.launch(run, &text)
     }
@@ -741,7 +767,9 @@ impl Runner {
         wanting.sort_by_key(|(i, _)| std::cmp::Reverse(self.runs[*i].priority));
         for (i, job) in wanting {
             let r = &mut self.runs[i];
-            if running < limit {
+            if let Some(why) = unmet(&r.require) {
+                r.wait_because(&job, &why);
+            } else if running < limit {
                 running += 1;
                 starts.push((r.id.clone(), job));
             } else {
@@ -2386,5 +2414,18 @@ id = \"b\"
         let (a, x, b) = (run.job("a").unwrap(), run.job("c/x").unwrap(), run.job("b").unwrap());
         assert!(a.ended.unwrap() <= x.started.unwrap() && x.ended.unwrap() <= b.started.unwrap());
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_condition_of_the_pc_holds_a_job_until_it_is_met() {
+        use koyomi_core::jobnet::Require;
+        let req = Require { ac: true, network: true, idle: Some(600) };
+        let idle = Some(Duration::from_secs(900));
+        assert!(unmet_by(&req, Some(false), Some(true), idle).unwrap().contains("AC"));
+        assert!(unmet_by(&req, Some(true), Some(false), idle).unwrap().contains("ネットワーク"));
+        assert!(unmet_by(&req, Some(true), Some(true), Some(Duration::from_secs(30))).unwrap().contains("10 分"));
+        assert_eq!(unmet_by(&req, Some(true), Some(true), idle), None);
+        assert_eq!(unmet_by(&req, None, None, None), None, "unknown is not a reason to hold");
+        assert_eq!(unmet_by(&Require::default(), Some(false), Some(false), Some(Duration::ZERO)), None);
     }
 }

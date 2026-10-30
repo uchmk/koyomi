@@ -52,6 +52,10 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if let Some(p) = net.priority {
         push(&mut out, "priority", &p.to_string());
     }
+    if !net.require.is_empty() {
+        let words = net.require.words().iter().map(|w| q(w)).collect::<Vec<_>>().join(", ");
+        push(&mut out, "require", &format!("[{words}]"));
+    }
     if !net.quiet.is_empty() {
         let list = net.quiet.iter().map(|s| q(&s.text())).collect::<Vec<_>>().join(", ");
         push(&mut out, "quiet", &format!("[{list}]"));

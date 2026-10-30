@@ -1,6 +1,6 @@
 # Checklist
 
-539 checks in TESTING.md, 535 left for a person.
+544 checks in TESTING.md, 540 left for a person.
 
 ## 1. Start
 
@@ -774,3 +774,11 @@
 - [ ] **78.2** A net stopped at its `timeout`; one stopped with 強制終了 → id 2001 and id 2002 (エラー) 〔未訳〕
 - [ ] **78.3** The failed net runs well on the next start → id 1100 (情報) after the 1000 〔未訳〕
 - [ ] **78.4** A net held with ⏸ → Nothing is written (a person did it) 〔未訳〕
+
+## 79. 動かす条件（`require`）
+
+- [ ] **79.1** Write `require = ["ac"]` in a net; unplug the laptop; run it → The job waits (待機) with the reason 「AC 電源につながるのを待っています」; no slot is taken 〔未訳〕
+- [ ] **79.2** Plug the AC in again → The job starts within a few seconds 〔未訳〕
+- [ ] **79.3** `require = ["network"]`, turn the network off, then on → Waits with 「ネットワークにつながるのを待っています」, then starts 〔未訳〕
+- [ ] **79.4** `require = ["idle:1m"]`, keep using the mouse → Waits with 「PC が 1 分使われなくなるのを待っています」; starts after a minute untouched 〔未訳〕
+- [ ] **79.5** `require = ["wifi"]` → The net is invalid, with the message 「require は …」 〔未訳〕

@@ -76,6 +76,9 @@ pub struct Jobnet {
     /// (5 first; 3 when not written).
     #[serde(default)]
     pub priority: Option<u8>,
+    /// `require = ["ac", "network", "idle:10m"]`: what the PC must be in before a job starts.
+    #[serde(default)]
+    pub require: Require,
     /// `quiet = ["12:00-13:00"]`: hours a time of `[[when]]` does not start in.
     #[serde(default)]
     pub quiet: Vec<Span>,
@@ -86,6 +89,51 @@ pub struct Jobnet {
     /// net's notices go to; empty: the places with no name.
     #[serde(default)]
     pub notify_to: Vec<String>,
+}
+
+/// `require`: the conditions of the PC a job waits for (the Task Scheduler's 条件 tab).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Require {
+    /// `"ac"`: only on AC power.
+    #[serde(default)]
+    pub ac: bool,
+    /// `"network"`: only while the network is up.
+    #[serde(default)]
+    pub network: bool,
+    /// `"idle:10m"`: only after the PC has been left alone this many seconds.
+    #[serde(default)]
+    pub idle: Option<u64>,
+}
+
+impl Require {
+    pub fn is_empty(&self) -> bool {
+        *self == Require::default()
+    }
+
+    /// The words that write it back: `["ac", "network", "idle:10m"]`.
+    pub fn words(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.ac {
+            out.push("ac".to_owned());
+        }
+        if self.network {
+            out.push("network".to_owned());
+        }
+        if let Some(s) = self.idle {
+            out.push(if s % 60 == 0 { format!("idle:{}m", s / 60) } else { format!("idle:{s}s") });
+        }
+        out
+    }
+
+    fn parse_idle(s: &str) -> Option<u64> {
+        let (n, unit) = s.split_at(s.len().checked_sub(1)?);
+        let n: u64 = n.parse().ok().filter(|n| *n > 0)?;
+        match unit {
+            "m" => Some(n * 60),
+            "s" => Some(n),
+            _ => None,
+        }
+    }
 }
 
 /// What `priority` is when it is not written.
@@ -498,6 +546,7 @@ struct RawNet {
     late_end: Field,
     late_slow: Field,
     priority: Field,
+    require: Field,
     quiet: Field,
     on_quiet: Field,
     notify_to: Field,
@@ -588,6 +637,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let late_end = c.deadline(&raw.late_end, "late_end");
     let late_slow = c.late_slow(&raw.late_slow);
     let priority = c.priority(&raw.priority);
+    let require = c.require(&raw.require);
     let quiet = c.quiet(&raw.quiet);
     let on_quiet = match c.choice(&raw.on_quiet, "on_quiet", &["wait", "skip"]) {
         Some("skip") => OnQuiet::Skip,
@@ -613,6 +663,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             late_end,
             late_slow,
             priority,
+            require,
             quiet,
             on_quiet,
             notify_to,
@@ -1020,6 +1071,31 @@ impl Checker<'_> {
                 None
             }
         }
+    }
+
+    /// `require = ["ac", "network", "idle:10m"]`: what the PC must be in to start a job.
+    fn require(&mut self, field: &Field) -> Require {
+        let mut out = Require::default();
+        let Some(f) = field.as_ref() else { return out };
+        let shape = "require は [\"ac\", \"network\", \"idle:10m\"] のように書く（ac: AC 電源のとき・network: つながっているとき・idle:10m: 10 分使われていないとき）";
+        let Some(list) = f.get_ref().as_array() else {
+            self.add(f.span().start, shape);
+            return out;
+        };
+        for v in list {
+            match v.as_str().map(str::trim) {
+                Some("ac") => out.ac = true,
+                Some("network") => out.network = true,
+                Some(w) if w.strip_prefix("idle:").and_then(Require::parse_idle).is_some() => {
+                    out.idle = w.strip_prefix("idle:").and_then(Require::parse_idle);
+                }
+                _ => {
+                    self.add(f.span().start, shape);
+                    return Require::default();
+                }
+            }
+        }
+        out
     }
 
     /// `late_slow = false`: do not tell of a run that takes twice its usual time.
@@ -2789,6 +2865,42 @@ run = [\"x\"]
             ))
             .unwrap_err();
             assert!(e[0].message.starts_with("priority は"), "{}", e[0].message);
+        }
+    }
+
+    #[test]
+    fn require_reads_ac_network_and_idle_and_survives_a_round_trip() {
+        let text = "format = 1
+require = [\"ac\", \"network\", \"idle:10m\"]
+
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let n = parse(text).unwrap();
+        assert_eq!(n.require, Require { ac: true, network: true, idle: Some(600) });
+        assert_eq!(parse(&crate::write::text(&n)).unwrap(), n);
+        assert!(parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+        )
+        .unwrap()
+        .require
+        .is_empty());
+        for bad in ["\"ac\"", "[\"wifi\"]", "[\"idle:0m\"]", "[\"idle:x\"]"] {
+            let e = parse(&format!(
+                "format = 1
+require = {bad}
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+            ))
+            .unwrap_err();
+            assert!(e[0].message.starts_with("require は"), "{}", e[0].message);
         }
     }
 }

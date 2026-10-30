@@ -350,6 +350,9 @@ pub struct Run {
     /// The net's `priority`: whose ready job gets a free slot first (5 first).
     #[serde(default = "default_priority")]
     pub priority: u8,
+    /// The net's `require`: what the PC must be in before a job of it starts.
+    #[serde(default, skip_serializing_if = "crate::jobnet::Require::is_empty")]
+    pub require: crate::jobnet::Require,
     /// The `[params]` values a person gave when starting it by hand (`--set`); the rest took their default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, String>,
@@ -419,6 +422,7 @@ impl Run {
             file: None,
             lock: None,
             priority: crate::jobnet::DEFAULT_PRIORITY,
+            require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),
             delays: Vec::new(),
         };
@@ -456,6 +460,7 @@ impl Run {
             file: None,
             lock: None,
             priority: crate::jobnet::DEFAULT_PRIORITY,
+            require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),
             delays: Vec::new(),
         }
@@ -685,6 +690,15 @@ impl Run {
             let j = &mut self.jobs[i];
             j.state = State::Waiting;
             j.reason = format!("同時に動かす数（{limit}）の空きを待っています");
+        }
+    }
+
+    /// Says `id` waits, ready, for `reason` (the PC's condition not met yet).
+    pub fn wait_because(&mut self, id: &str, reason: &str) {
+        if let Some(i) = self.index(id) {
+            let j = &mut self.jobs[i];
+            j.state = State::Waiting;
+            j.reason = reason.to_owned();
         }
     }
 
