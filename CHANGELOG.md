@@ -5,6 +5,11 @@
 ## [Unreleased]
 
 ### 追加
+- ほかの PC のエンジンを呼べるようにした（TODO 80 の 1 つ目）。
+  - `[http]` に `lan = true` と書くと、エンジンが LAN で待ち受ける。TLS だけで、平文では開かない。証明書は初めに自己署名で作り、設定のフォルダーの `tls` に置く。`koyomi status` に指紋が出る。
+  - `koyomi http fingerprint` でこの PC の証明書の指紋を出す。呼ぶ側の koyomi.toml の `[[remote]]` に `name`・`url = "https://<PC>:<ポート>"`・`fingerprint`・`token = "secret:<名前>"`（向こうの `[http]` のトークン）を書く。証明書が指紋と違えば何も送らない。
+  - `koyomi remote peek <url>` で向こうが見せる指紋を確かめ、`koyomi remote`（一覧と答えるか）・`remote status|nets|runs <名前>`・`remote run <名前> <ネット>` で見る・流す。
+  - 窓での PC の切り替えはこのあと。ito を 0.155.0（99966b0）に上げた。
 - HTTP で読むだけの道を足した（ほかの PC の窓・Web UI・HA の見張りの下ごしらえ。TODO 80・81・87）。`GET /health`（エンジンの状態の 1 行と版）、`GET /nets`（ネットの id・名前・確認の状態・保留。定義の中身は出さない）、`GET /runs`（今日と動いている回。`?from=&to=` で日の範囲）、`GET /runs/<id>/log?job=<ジョブ>`（ジョブのログの末尾。秘密は `***` のまま）。どれも Bearer のトークンが要り、待ち受けは今もこの PC の中だけ。
 - エンジンを Windows のサービスとして動かせるようにした（TODO 86）。サインインしていなくてもネットが流れる。
   - 入れるのは `koyomi service install`。管理者として開いたターミナルで回し、今のアカウントの Windows のパスワードを聞く。パスワードは Windows のサービスの管理に渡し、koyomi は書かない。

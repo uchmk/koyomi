@@ -1,8 +1,9 @@
 //! `koyomi.toml` in the settings folder: how many jobs run at once, how long
 //! history is kept, how big one job's log may grow, `[notify]` (read by
 //! the app with ito-prefs's shape; kept whole here), `[ping]`, the
-//! address the engine calls while it is alive, and `[http]`, where it
-//! listens for other programs on this PC.
+//! address the engine calls while it is alive, `[http]`, where it
+//! listens for other programs (on this PC, or with `lan` on the network over
+//! TLS), and `[[remote]]`, the other PCs' engines this one calls.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -24,6 +25,8 @@ pub struct Config {
     pub ping: Option<Ping>,
     /// `[http]`: start nets and read runs over HTTP from this PC. Off when not written.
     pub http: Option<Http>,
+    /// `[[remote]]`: other PCs' engines, called over HTTPS with their certificate pinned.
+    pub remote: Vec<Remote>,
 }
 
 /// `[ping]`: the engine calls `url` every `every`, so a watcher elsewhere
@@ -63,8 +66,9 @@ impl Ping {
     }
 }
 
-/// `[http]`: the engine listens on `port` of 127.0.0.1 (and ::1 with `ipv6`) only, and
-/// answers a caller with the bearer token kept in the OS credential store as `token`.
+/// `[http]`: the engine listens on `port` of 127.0.0.1 (and ::1 with `ipv6`), or with `lan`
+/// on every address over TLS only, and answers a caller with the bearer token kept in the OS
+/// credential store as `token`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Http {
@@ -73,6 +77,51 @@ pub struct Http {
     pub token: String,
     #[serde(default)]
     pub ipv6: bool,
+    /// Listen on the network, over TLS with a self-signed certificate (kept in `app_dir`).
+    #[serde(default)]
+    pub lan: bool,
+}
+
+/// `[[remote]]`: another PC's engine. `fingerprint` is its certificate's SHA-256 as
+/// `koyomi http fingerprint` shows it there; a certificate that differs is refused.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Remote {
+    /// What this PC calls it (`koyomi remote status <name>`).
+    pub name: String,
+    /// `https://host:port`.
+    pub url: String,
+    pub fingerprint: String,
+    /// `secret:<name>`: the other PC's `[http]` token, kept here in the OS credential store.
+    pub token: String,
+}
+
+impl Remote {
+    /// The name the token is kept under; [`Config::parse`] has checked there is one.
+    pub fn secret(&self) -> &str {
+        self.token.trim().strip_prefix("secret:").map(str::trim).unwrap_or_default()
+    }
+
+    fn check(&self) -> Result<(), String> {
+        let name = self.name.trim();
+        if name.is_empty() || name.contains(char::is_whitespace) {
+            return Err("[[remote]] の name は空白を含まない名前".to_owned());
+        }
+        let host = self.url.strip_prefix("https://").unwrap_or_default().trim_end_matches('/');
+        if host.is_empty() || host.contains(['/', '?', '#', '@', ' ']) {
+            return Err(format!("[[remote]] {name} の url は https://<PC>:<port> で書く（LAN では TLS だけ）"));
+        }
+        let hex: Vec<char> = self.fingerprint.chars().filter(|c| !matches!(c, ':' | ' ' | '-')).collect();
+        if hex.len() != 64 || !hex.iter().all(char::is_ascii_hexdigit) {
+            return Err(format!(
+                "[[remote]] {name} の fingerprint は SHA-256（向こうで koyomi http fingerprint、こちらで koyomi remote peek <url>）"
+            ));
+        }
+        if self.secret().is_empty() {
+            return Err(format!("[[remote]] {name} の token は secret:<名前> で書く"));
+        }
+        Ok(())
+    }
 }
 
 impl Http {
@@ -94,7 +143,7 @@ impl Http {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new(), ping: None, http: None }
+        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new(), ping: None, http: None, remote: Vec::new() }
     }
 }
 
@@ -115,6 +164,12 @@ impl Config {
         }
         if let Some(h) = &c.http {
             h.check()?;
+        }
+        for (i, r) in c.remote.iter().enumerate() {
+            r.check()?;
+            if c.remote[..i].iter().any(|o| o.name.trim() == r.name.trim()) {
+                return Err(format!("[[remote]] の name {} が 2 つある", r.name.trim()));
+            }
         }
         Ok(c)
     }
@@ -205,7 +260,8 @@ evry = \"5m\"
     fn http_takes_a_port_and_the_token_only_as_a_secret() {
         let c = Config::parse("[http]\nport = 8790\ntoken = \"secret:koyomi-http\"\n").unwrap();
         let h = c.http.unwrap();
-        assert_eq!((h.port, h.secret(), h.ipv6), (8790, "koyomi-http", false));
+        assert_eq!((h.port, h.secret(), h.ipv6, h.lan), (8790, "koyomi-http", false, false));
+        assert!(Config::parse("[http]\nport = 8790\ntoken = \"secret:t\"\nlan = true\n").unwrap().http.unwrap().lan);
         assert!(Config::parse("").unwrap().http.is_none());
         for bad in [
             "[http]\nport = 8790\ntoken = \"plain-token\"\n",
@@ -216,6 +272,28 @@ evry = \"5m\"
             "[http]\nport = 8790\ntoken = \"secret:t\"\nhost = \"0.0.0.0\"\n",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// a remote needs an https address, a SHA-256 fingerprint and the token as a secret.
+    #[test]
+    fn remotes_are_pinned_https_with_a_secret_token() {
+        let fp = "AB:".repeat(31) + "CD";
+        let one = |name: &str, url: &str, fp: &str, token: &str| {
+            format!("[[remote]]\nname = \"{name}\"\nurl = \"{url}\"\nfingerprint = \"{fp}\"\ntoken = \"{token}\"\n")
+        };
+        let c = Config::parse(&one("pc2", "https://pc2:8790", &fp, "secret:pc2")).unwrap();
+        assert_eq!((c.remote[0].name.as_str(), c.remote[0].secret()), ("pc2", "pc2"));
+        assert!(Config::parse("").unwrap().remote.is_empty());
+        for bad in [
+            one("pc2", "http://pc2:8790", &fp, "secret:pc2"),
+            one("pc2", "https://pc2:8790/runs", &fp, "secret:pc2"),
+            one("pc2", "https://pc2:8790", "AB:CD", "secret:pc2"),
+            one("pc2", "https://pc2:8790", &fp, "plain"),
+            one("", "https://pc2:8790", &fp, "secret:pc2"),
+            one("pc2", "https://a:1", &fp, "secret:a") + &one("pc2", "https://b:1", &fp, "secret:b"),
+        ] {
+            assert!(Config::parse(&bad).is_err(), "{bad}");
         }
     }
 

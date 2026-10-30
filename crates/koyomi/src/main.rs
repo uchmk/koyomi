@@ -28,6 +28,7 @@ mod notify;
 mod plan;
 mod prefs;
 mod proto;
+mod remote;
 mod report;
 mod review;
 mod service;

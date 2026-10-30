@@ -158,14 +158,14 @@
 
 以下は競合にあるが、これまでの方針から外れるもの（持ち主の指示で項目にした。作る前に `DECISIONS.md` の該当する決めを持ち主と決め直す）。
 
-- [ ] 80. 複数の PC・エージェント（L）: 1 つの窓から LAN の別の PC のエンジンを見る・別の PC でジョブを流す。JP1 のエージェント・Rundeck のノード。「ノードの考えを持たない」と G8 の見送りを決め直す。（2026-10-31 に形を決めた: DECISIONS「複数の PC・Web UI・利用者とロール・HA」。中央のサーバーを持たず、各 PC のエンジンの HTTP を LAN に TLS で開き、指紋を固定して呼ぶ。読む API は入れた。LAN・TLS・呼ぶ側は uchmk/ito#104 待ち）
+- [ ] 80. 複数の PC・エージェント（L）: 1 つの窓から LAN の別の PC のエンジンを見る・別の PC でジョブを流す。JP1 のエージェント・Rundeck のノード。「ノードの考えを持たない」と G8 の見送りを決め直す。（2026-10-31 に形を決めた: DECISIONS「複数の PC・Web UI・利用者とロール・HA」。中央のサーバーを持たず、各 PC のエンジンの HTTP を LAN に TLS で開き、指紋を固定して呼ぶ。読む API は入れた。`[http] lan = true`（TLS）・`[[remote]]`・`koyomi http fingerprint`・`koyomi remote` も入れた。残りは窓で PC を切り替えること）
 - [ ] 81. Web UI（L）: ブラウザーから一覧・実行・ログを見る。Rundeck・Airflow。（2026-10-31 に形を決めた: エンジンの HTTP が `/` で HTML を返す。見る・流す・止める・ログまで。HTML とクッキーは uchmk/ito#104 待ち）
 - [x] 82. REST API と HTTP で起動（M）: 外のシステムから webhook でネットを流す・状態を取る。Rundeck・Airflow。（2026-10-31。koyomi.toml の `[http]`、`POST /runs`・`GET /runs/<id>`、この PC の中だけ・Bearer のトークンは secret:。DECISIONS の「HTTP で起動する」）
 - [ ] 83. 利用者とロール（L）: 見るだけ・流せる・定義を変えられる、を人ごとに分ける。JP1・Rundeck。81・82 が前提。（2026-10-31 に形を決めた: `[[http.user]]` に人ごとのトークンと view・run・edit。edit で出した定義も窓の確認を通す。名前付きの複数のトークンは uchmk/ito#104 待ち）
 - [x] 84. メールを受けて起動（M）: 決めた件名・差出人のメールが来たらネットを流す。JP1 のメール受信監視ジョブ。（`[[when]] mail` + `secret:`。DECISIONS の「メールを受けて起動する」）
 - [x] 85. G4 繰り返しの回を並べて動かす（M）: `max = 2`。枠の数の約束を決め直す。
 - [x] 86. E6 Windows のサービスとして動かす（L）: サインインしなくても流れる。秘密・通知・トレイ・`state_dir` の置き場と、誰の権限で流すかを決め直す。（2026-10-31。使う人のアカウントで動かす `koyomi service install/uninstall/start/stop/status`、トレイは `koyomi tray`。DECISIONS「Windows のサービスとして動かす」。UAC の確認を出すのは uchmk/ito#103 待ちで、それまでは管理者のターミナルで回す）
-- [ ] 87. HA（L）: 2 台目のエンジンが待機し、1 台目が落ちたら引き継ぐ。JP1 のクラスター構成。80 と 86 が前提。（2026-10-31 に形を決めた: 待つ側が `GET /health` を見張り、答えなければ引き継ぐ。戻すのは人が `koyomi standby giveback`。80 の呼ぶ側を待つ）
+- [ ] 87. HA（L）: 2 台目のエンジンが待機し、1 台目が落ちたら引き継ぐ。JP1 のクラスター構成。80 と 86 が前提。（2026-10-31 に形を決めた: 待つ側が `GET /health` を見張り、答えなければ引き継ぐ。戻すのは人が `koyomi standby giveback`。80 の呼ぶ側はできた）
 - [x] 88. G5 HTTP を呼ぶ部品（M）: `kind = "http"`、状態コードで判定。API を叩くだけのジョブに curl を書かずに済むように。
 
 ## デザイン（画面の見本との差）

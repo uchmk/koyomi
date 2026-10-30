@@ -1,5 +1,8 @@
 //! `[http]` of koyomi.toml: while the engine runs it listens on this PC's loopback
 //! (ito-http), so another program can start a net and follow its run without the CLI.
+//! With `lan = true` it listens on the network instead, over TLS only, with a self-signed
+//! certificate kept in `app_dir`'s `tls` folder; another PC pins its fingerprint
+//! (`koyomi http fingerprint`, TODO 80).
 //!
 //! - `POST /runs` with `{"net": "<group>/<name>", "date"?, "from"?, "params"?}` is
 //!   `koyomi run`: 202 and `{"run": "<id>"}`, or 422 and the engine's reason.
@@ -62,7 +65,7 @@ impl Http {
             self.starting = false;
             match r {
                 Ok(s) => {
-                    crate::say(&format!("koyomi: {}", listening(self.cfg.as_ref(), s.port())), false);
+                    crate::say(&format!("koyomi: {}", listening(self.cfg.as_ref(), &s)), false);
                     self.server = Some(s);
                     self.note = None;
                 }
@@ -103,13 +106,30 @@ impl Http {
 
     /// The status line while it listens.
     pub fn line(&self) -> Option<String> {
-        self.server.as_ref().map(|s| listening(self.cfg.as_ref(), s.port()))
+        self.server.as_ref().map(|s| listening(self.cfg.as_ref(), s))
     }
 }
 
-fn listening(cfg: Option<&config::Http>, port: u16) -> String {
+fn listening(cfg: Option<&config::Http>, s: &Server) -> String {
+    let port = s.port();
+    if let Some(fp) = s.fingerprint() {
+        return format!("HTTP: LAN の :{port} で TLS で待ち受けている（指紋 {}）", ito_http::tls::format(&fp));
+    }
     let v6 = if cfg.is_some_and(|c| c.ipv6) { format!("・[::1]:{port}") } else { String::new() };
     format!("HTTP: 127.0.0.1:{port}{v6} で待ち受けている")
+}
+
+/// Where the LAN listener's certificate and key are kept: `app_dir`'s `tls`, beside the
+/// person's other secrets.
+pub fn cert_dir() -> Option<std::path::PathBuf> {
+    ito_common::app_dir("koyomi").map(|d| d.join("tls"))
+}
+
+/// `koyomi http fingerprint`: this PC's certificate's fingerprint, made if there is none yet.
+/// What another PC writes in its `[[remote]]`.
+pub fn fingerprint() -> Result<String, String> {
+    let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
+    ito_http::tls::fingerprint(&dir).map(|fp| ito_http::tls::format(&fp)).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
 fn start(cfg: &config::Http) -> Result<Server, String> {
@@ -117,7 +137,14 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     let token = ito_http::token_from_secret("koyomi", name).map_err(|e| format!("token の秘密 {name}: {e}（koyomi secret set {name}）"))?;
     let mut c = ito_http::Config::new(cfg.port, token);
     c.ipv6 = cfg.ipv6;
-    Server::start(c, |req| handle(&req, |r| ito_ipc::door::ask(&proto::door(), r)), log).map_err(|e| format!("127.0.0.1:{}: {e}", cfg.port))
+    let at = if cfg.lan {
+        let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
+        c.bind = ito_http::Bind::Lan { addr: None, tls: ito_http::TlsCfg::new(dir) };
+        format!("LAN :{}", cfg.port)
+    } else {
+        format!("127.0.0.1:{}", cfg.port)
+    };
+    Server::start(c, |req| handle(&req, |r| ito_ipc::door::ask(&proto::door(), r)), log).map_err(|e| format!("{at}: {e}"))
 }
 
 fn log(l: &ito_http::LogLine) {
@@ -397,6 +424,31 @@ mod tests {
         let ok = send("Authorization: Bearer tok\r\n");
         assert!(ok.starts_with("HTTP/1.1 202") && ok.contains("20261031-090000-01"), "{ok}");
         server.stop();
+    }
+
+    /// on the LAN another PC reaches the same paths over TLS, only with the pinned certificate.
+    #[test]
+    fn another_pc_reads_over_tls_with_the_pinned_certificate() {
+        let dir = std::env::temp_dir().join(format!("koyomi-http-tls-{}", std::process::id()));
+        let mut cfg = ito_http::Config::new(0, "tok");
+        cfg.bind = ito_http::Bind::Lan { addr: Some([127, 0, 0, 1].into()), tls: ito_http::TlsCfg::new(&dir) };
+        let ask = |r: &Request| match r {
+            Request::Status => Ok("動いている".to_owned()),
+            _ => Err("no".to_owned()),
+        };
+        let server = Server::start(cfg, move |r| handle(&r, ask), |_| {}).expect("listen");
+        let fp = ito_http::tls::format(&server.fingerprint().expect("a LAN bind has a certificate"));
+        let url = format!("https://127.0.0.1:{}", server.port());
+        assert_eq!(ito_http::client::peek_fingerprint(&url, Duration::from_secs(5)).as_deref(), Ok(fp.as_str()));
+        let c = ito_http::client::Client::new(&url, &fp, "tok").expect("client");
+        let h = c.get("/health").expect("health");
+        assert_eq!((h.status, h.json["status"].as_str()), (200, Some("動いている")));
+        let other = ito_http::tls::format(&[7; 32]);
+        let wrong = ito_http::client::Client::new(&url, &other, "tok").expect("client").get("/health");
+        assert!(matches!(wrong, Err(ito_http::client::Error::Fingerprint(ref got)) if *got == fp), "{wrong:?}");
+        assert_eq!(ito_http::client::Client::new(&url, &fp, "nope").expect("client").get("/health").map(|r| r.status), Ok(401));
+        server.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

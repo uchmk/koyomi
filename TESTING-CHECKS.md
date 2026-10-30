@@ -1,6 +1,6 @@
 # Checklist
 
-658 checks in TESTING.md, 654 left for a person.
+668 checks in TESTING.md, 664 left for a person.
 
 ## 1. Start
 
@@ -932,3 +932,16 @@
 - [ ] **91.9** The editor: add a `[[when]]` of メールが来たら → The fields are メールボックス・パスワード・差出人・件名; except / start / end / on_closed are not shown; saving writes `mail` / `password` / `sender` / `subject`; a password not starting with `secret:` is refused 〔未訳〕
 - [ ] **91.10** `koyomi next` for the net; approve it → The row `メールが来たとき: imaps://…（件名「請求」）` comes first; the confirm box shows the same 〔未訳〕
 - [ ] **91.11** `koyomi check` a `[[when]]` with `mail = "imap://me@host"`, with `mail = "me@host"`, with `password = "hunter2"`, with no `password`, with neither `sender` nor `subject` → `mail は imaps:// だけ…`; `mail は "imaps://ユーザー@サーバー/フォルダー" で書く…`; `password は "secret:<名前>" で書く…`; `mail には password = "secret:<名前>" が要る…`; `mail には sender か subject が要る…` 〔未訳〕
+
+## 92. Another PC over the LAN (`[http] lan = true`, `[[remote]]`, `koyomi remote`; TODO 80)
+
+- [ ] **92.1** On A: `koyomi http fingerprint`; start the engine; `koyomi status` → 64 hex digits in pairs with `:`; the status says `HTTP: LAN の :8790 で TLS で待ち受けている（指紋 …）` with the same fingerprint; the certificate is in the settings folder's `tls`, and the same after a restart 〔未訳〕
+- [ ] **92.2** From B: `curl http://A:8790/health`; `curl -k -H "Authorization: Bearer T" https://A:8790/health` → Plain HTTP gets no answer; over TLS the same JSON as §90.1 〔未訳〕
+- [ ] **92.3** On B: `koyomi remote peek https://A:8790` → `fingerprint = "…"`, the same as 92.1 shows on A; an address with nothing listening says it cannot reach it 〔未訳〕
+- [ ] **92.4** On B: `koyomi secret set a-token` (T); koyomi.toml gets `[[remote]]` with `name = "a"`, `url = "https://A:8790"`, the fingerprint and `token = "secret:a-token"`; `koyomi remote` → `a  https://A:8790  <A's status line>` 〔未訳〕
+- [ ] **92.5** On B: `koyomi remote status a`, `remote nets a`, `remote runs a` → A's status line and version; A's nets with their standing and 保留; today's runs, the running ones marked 動いている 〔未訳〕
+- [ ] **92.6** On B: `koyomi remote run a <group/name>` → `a: <group/name> を流した（<run id>）`; the run shows on A as started over HTTP 〔未訳〕
+- [ ] **92.7** On B: change one digit of the fingerprint; `koyomi remote status a` → `証明書が koyomi.toml の fingerprint と違う（今見えたのは …）…`; nothing is sent 〔未訳〕
+- [ ] **92.8** On B: `koyomi secret set a-token` with a wrong value; or delete it → `token が合わない…`; `token の秘密 a-token がない…` 〔未訳〕
+- [ ] **92.9** `koyomi check` koyomi.toml with `url = "http://A:8790"`, a short fingerprint, `token = "T"`, two `[[remote]]` with the same name → Each refused: `url は https://<PC>:<port> で書く…`, `fingerprint は SHA-256…`, `token は secret:<名前> で書く`, `name … が 2 つある` 〔未訳〕
+- [ ] **92.10** `koyomi remote status nope`; `koyomi remote frob` → `nope: [[remote]] にない（あるのは a）`; the usage line, exit 2 〔未訳〕

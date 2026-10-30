@@ -35,7 +35,7 @@ mod alive;
 mod backup;
 mod events;
 mod files;
-mod http;
+pub mod http;
 mod logs;
 mod mails;
 mod ping;

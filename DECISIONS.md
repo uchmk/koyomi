@@ -769,6 +769,9 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - **ito に頼むもの（uchmk/ito#104）:** ito-http に、LAN の待ち受けと TLS（自己署名の証明書を作る・指紋）、指紋を固定する HTTPS の呼び出し、人ごとの複数のトークン（どれで入ったかを handler に渡す）、JSON 以外の答え（HTML）とブラウザーのクッキー。koyomi には書かない。
 - **今作るもの（ito を待たずにできるもの）:** 82 の API に読むだけの道を足す。窓（80）・Web UI（81）・HA の見張り（87）がどれも使う。
   - `GET /health`・`GET /nets`・`GET /runs`（`?from=&to=` で日の範囲）・`GET /runs/<id>/log?job=<job>`。
+- **入れた形（80 の 1 つ目、ito 0.155.0）:** 証明書と鍵は `app_dir` の `tls`。指紋は `koyomi status` と `koyomi http fingerprint` に出す。
+  - 呼ぶ側は CLI から: `koyomi remote [list]`・`peek <url>`・`status|nets|runs <name>`・`run <name> <net>`。指紋を固定せずに証明書を見るのは `peek` だけで、向こうの `koyomi http fingerprint` と比べてから `[[remote]]` に書く。
+  - `[[remote]]` の `url` は `https://` だけ（パスは書かない）。`fingerprint` は `:` 区切りでもなくてもよい。`name` は重ねない。
 
 ## メールを受けて起動する（TODO 84、2026-10-31）
 
