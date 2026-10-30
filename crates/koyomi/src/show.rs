@@ -92,6 +92,13 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
             what.extend(source.iter().cloned());
             Some(t.trf("run.event_eventlog", &[eventlog, &what.join(" / ")]))
         }
+        when::Kind::Mail { mail, sender, subject, .. } => {
+            let what: Vec<String> = [("from", sender), ("subject", subject)]
+                .into_iter()
+                .filter_map(|(k, v)| v.as_ref().map(|v| format!("{}「{v}」", t.tr(&format!("run.mail_{k}")))))
+                .collect();
+            Some(t.trf("run.event_mail", &[mail, &what.join(" / ")]))
+        }
         when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
         when::Kind::AfterJobnet { jobnet, on } => {
             Some(t.trf("run.event_after", &[jobnet.as_str(), t.tr(&format!("run.after_{}", on.name()))]))

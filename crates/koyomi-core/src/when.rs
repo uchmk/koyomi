@@ -99,6 +99,19 @@ pub enum Kind {
         #[serde(default)]
         source: Option<String>,
     },
+    /// `mail = "imaps://user@host/INBOX"`, `password = "secret:<name>"`,
+    /// `sender = "…"`, `subject = "…"`: a mail with that sender / subject
+    /// arriving in the mailbox (an event). Only mail that comes while the
+    /// engine watches counts; each poll with such mail starts the net once.
+    /// `secret` is the name in ito-secret, never the password itself.
+    Mail {
+        mail: String,
+        secret: String,
+        #[serde(default)]
+        sender: Option<String>,
+        #[serde(default)]
+        subject: Option<String>,
+    },
     /// `on_start = true`: when the engine starts (the PC's start or sign-in).
     OnStart,
     /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
@@ -115,7 +128,10 @@ impl Kind {
     /// time: it has no next time, and runs when it happens on a day
     /// `start` / `end` / `except` allow.
     pub fn is_event(&self) -> bool {
-        matches!(self, Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::OnStart | Kind::AfterJobnet { .. })
+        matches!(
+            self,
+            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::Mail { .. } | Kind::OnStart | Kind::AfterJobnet { .. }
+        )
     }
 }
 
@@ -243,7 +259,9 @@ impl When {
             Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
-            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => Vec::new(),
+            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::Mail { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => {
+                Vec::new()
+            }
         }
     }
 
@@ -474,6 +492,42 @@ pub fn month_day(s: &str) -> Result<(u32, u32), String> {
     Ok((m, d))
 }
 
+/// The mailbox a `mail` start watches, read from `imaps://user@host[:port][/folder]`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Mailbox {
+    pub user: String,
+    pub host: String,
+    pub port: u16,
+    pub folder: String,
+}
+
+/// `imaps://user@host[:port][/folder]`: only IMAP over TLS; the port is 993
+/// and the folder `INBOX` when left out. The user may be a mail address
+/// (`me@example.com@imap.example.com`): the last `@` before the folder ends it.
+pub fn mailbox(s: &str) -> Result<Mailbox, String> {
+    const SHAPE: &str = "mail は \"imaps://ユーザー@サーバー/フォルダー\" で書く（例: imaps://me@example.com@imap.example.com/INBOX）";
+    let s = s.trim();
+    let rest = s.strip_prefix("imaps://").ok_or_else(|| {
+        if s.starts_with("imap://") {
+            "mail は imaps:// だけ（暗号化しない imap:// は使えない）".to_owned()
+        } else {
+            SHAPE.to_owned()
+        }
+    })?;
+    let (auth, folder) = rest.split_once('/').unwrap_or((rest, ""));
+    let (user, server) = auth.rsplit_once('@').ok_or_else(|| SHAPE.to_owned())?;
+    let (host, port) = match server.rsplit_once(':') {
+        Some((h, p)) => (h, p.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| format!("mail のポートは 1〜65535: \"{p}\""))?),
+        None => (server, 993),
+    };
+    let bad = |t: &str| t.is_empty() || t.chars().any(|c| c.is_whitespace() || c == '"');
+    if bad(user) || bad(host) {
+        return Err(SHAPE.to_owned());
+    }
+    let folder = if folder.trim().is_empty() { "INBOX" } else { folder.trim() };
+    Ok(Mailbox { user: user.to_owned(), host: host.to_owned(), port, folder: folder.to_owned() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -481,6 +535,18 @@ mod tests {
 
     fn d(s: &str) -> NaiveDate {
         NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()
+    }
+
+    #[test]
+    fn mailbox_reads_user_host_port_and_folder() {
+        let m = mailbox("imaps://me@example.com@imap.example.com/INBOX/請求").unwrap();
+        assert_eq!(m, Mailbox { user: "me@example.com".into(), host: "imap.example.com".into(), port: 993, folder: "INBOX/請求".into() });
+        let m = mailbox("imaps://batch@mail.corp.local:1993").unwrap();
+        assert_eq!((m.user.as_str(), m.port, m.folder.as_str()), ("batch", 1993, "INBOX"));
+        assert!(mailbox("imap://a@b").unwrap_err().contains("imaps://"));
+        for bad in ["imaps://host", "imaps://@host", "imaps://a@", "imaps://a@b:0", "imaps://a@b:x", "https://a@b", "imaps://a b@c"] {
+            assert!(mailbox(bad).is_err(), "{bad}");
+        }
     }
     fn t(s: &str) -> NaiveTime {
         time(s).unwrap()

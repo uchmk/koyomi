@@ -1,6 +1,6 @@
 # Checklist
 
-647 checks in TESTING.md, 643 left for a person.
+658 checks in TESTING.md, 654 left for a person.
 
 ## 1. Start
 
@@ -918,3 +918,17 @@
 - [ ] **90.3** `GET /runs`; then `GET "/runs?from=2026-10-30&to=2026-10-31"`; then `?from=bad` and `?to=2026-10-31` → Today's and running runs, each with `"over"`; the two days' runs, oldest first; 400 for both bad ones 〔未訳〕
 - [ ] **90.4** `GET "/runs/<id>/log?job=<job>"` for a job whose command has a registered secret in its arguments → The log's tail as `koyomi log` shows it, the secret as `***`; without `job` 400; an unknown job 404 〔未訳〕
 - [ ] **90.5** `POST /nets`, `DELETE /health` → 405; nothing changes 〔未訳〕
+
+## 91. メールを受けて起動する（`[[when]] mail`）
+
+- [ ] **91.1** `koyomi secret set m` (the mailbox's password); a net with `[[when]] mail = "imaps://me@example.com@imap.example.com/INBOX"`, `password = "secret:m"`, `subject = "請求"`; `koyomi approve`; send a mail with the subject `11月の請求書` to the mailbox → A run starts within about a minute; `koyomi show` says `メール`（`imaps://… にメールが来た: 差出人 <…>「11月の請求書」`） 〔未訳〕
+- [ ] **91.2** The mailbox already has mail with `請求` when the net is approved (or the engine starts) → Nothing starts: only mail that comes after the watch starts counts 〔未訳〕
+- [ ] **91.3** Send three matching mails within the same minute → One run; the reason ends with `（ほか 2 件）` 〔未訳〕
+- [ ] **91.4** `sender = "billing@"`, no `subject`; send one mail from `Billing <BILLING@corp.example>` and one from another address → Only the first starts a run (any case) 〔未訳〕
+- [ ] **91.5** Send a matching mail while the run is still going → No second run; a ⊘ スキップ row `… にメールが来たが、前の回がまだ動いているので流さない: …` 〔未訳〕
+- [ ] **91.6** Open the mailbox in a mail client after the run → The mail is still unread and in its folder: koyomi does not mark, move or delete mail 〔未訳〕
+- [ ] **91.7** `password = "secret:nothere"`; or a wrong password with `koyomi secret set`; or `/NoSuchFolder` → The window's 注意 says `<net>: メールボックス … を読めない（…）`; the net is still valid; after fixing it the warning goes within about a minute; the password never appears in the log or the warning 〔未訳〕
+- [ ] **91.8** The net has `calendar = "会社"` and the mail comes on a closed day; or the net is held → ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards 〔未訳〕
+- [ ] **91.9** The editor: add a `[[when]]` of メールが来たら → The fields are メールボックス・パスワード・差出人・件名; except / start / end / on_closed are not shown; saving writes `mail` / `password` / `sender` / `subject`; a password not starting with `secret:` is refused 〔未訳〕
+- [ ] **91.10** `koyomi next` for the net; approve it → The row `メールが来たとき: imaps://…（件名「請求」）` comes first; the confirm box shows the same 〔未訳〕
+- [ ] **91.11** `koyomi check` a `[[when]]` with `mail = "imap://me@host"`, with `mail = "me@host"`, with `password = "hunter2"`, with no `password`, with neither `sender` nor `subject` → `mail は imaps:// だけ…`; `mail は "imaps://ユーザー@サーバー/フォルダー" で書く…`; `password は "secret:<名前>" で書く…`; `mail には password = "secret:<名前>" が要る…`; `mail には sender か subject が要る…` 〔未訳〕

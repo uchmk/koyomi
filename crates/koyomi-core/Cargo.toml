@@ -11,8 +11,8 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 sha2 = "0.10"
-ito-common = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
-ito-match = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
-ito-proc = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
+ito-common = { git = "https://github.com/uchmk/ito", rev = "94fd3132a9caedf595853b3610b5781daf84cc91" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "94fd3132a9caedf595853b3610b5781daf84cc91" }
+ito-proc = { git = "https://github.com/uchmk/ito", rev = "94fd3132a9caedf595853b3610b5781daf84cc91" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 roxmltree = "0.20"

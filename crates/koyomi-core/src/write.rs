@@ -232,6 +232,16 @@ fn when(w: &When, out: &mut String) {
                 push(out, "source", &q(s));
             }
         }
+        Kind::Mail { mail, secret, sender, subject } => {
+            push(out, "mail", &q(mail));
+            push(out, "password", &q(&format!("secret:{secret}")));
+            if let Some(s) = sender {
+                push(out, "sender", &q(s));
+            }
+            if let Some(s) = subject {
+                push(out, "subject", &q(s));
+            }
+        }
         Kind::OnStart => push(out, "on_start", "true"),
         Kind::AfterJobnet { jobnet, on } => {
             push(out, "after_jobnet", &q(jobnet));

@@ -160,6 +160,8 @@ pub enum How {
     After,
     /// A line came to a log (`[[when]] log = …` or `eventlog = …`).
     Log,
+    /// A mail came to a mailbox (`[[when]] mail = …`).
+    Mail,
 }
 
 /// How a job ended, as the engine saw it.

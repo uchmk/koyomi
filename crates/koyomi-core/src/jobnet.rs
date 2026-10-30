@@ -624,6 +624,10 @@ struct RawWhen {
     eventlog: Field,
     ids: Field,
     source: Field,
+    mail: Field,
+    password: Field,
+    sender: Field,
+    subject: Field,
     on_start: Field,
     after_jobnet: Field,
     on: Field,
@@ -1486,18 +1490,24 @@ impl Checker<'_> {
                 "log"
             } else if w.eventlog.is_some() {
                 "eventlog"
+            } else if w.mail.is_some() {
+                "mail"
             } else if w.on_start.is_some() {
                 "on_start"
             } else if w.after_jobnet.is_some() {
                 "after_jobnet"
             } else {
-                self.add(head, "[[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る");
+                self.add(
+                    head,
+                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る",
+                );
                 continue;
             };
             let allowed: &[&str] = match kind {
                 "file" => &["file", "settle"],
                 "log" => &["log", "contains"],
                 "eventlog" => &["eventlog", "ids", "source"],
+                "mail" => &["mail", "password", "sender", "subject"],
                 "on_start" => &["on_start"],
                 "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at", "wait_for", "wait_until"],
@@ -1530,6 +1540,10 @@ impl Checker<'_> {
                 (&w.eventlog, "eventlog"),
                 (&w.ids, "ids"),
                 (&w.source, "source"),
+                (&w.mail, "mail"),
+                (&w.password, "password"),
+                (&w.sender, "sender"),
+                (&w.subject, "subject"),
                 (&w.on_start, "on_start"),
                 (&w.after_jobnet, "after_jobnet"),
                 (&w.on, "on"),
@@ -1550,9 +1564,15 @@ impl Checker<'_> {
                 _ => None,
             };
             // An event has no day to move to: it runs on its day or not at all.
-            if matches!(kind, "file" | "log" | "eventlog" | "on_start") && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
+            if matches!(kind, "file" | "log" | "eventlog" | "mail" | "on_start")
+                && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next))
+            {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
-                let what = if matches!(kind, "log" | "eventlog") { "log / eventlog" } else { "file / on_start" };
+                let what = match kind {
+                    "log" | "eventlog" => "log / eventlog",
+                    "mail" => "mail",
+                    _ => "file / on_start",
+                };
                 self.add(pos, format!("{what} では on_closed は \"skip\" か \"run\""));
             }
             if kind == "after_jobnet" && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
@@ -1584,6 +1604,7 @@ impl Checker<'_> {
                     log.zip(contains).map(|(log, contains)| Kind::Log { log, contains })
                 }
                 "eventlog" => self.eventlog(w, head),
+                "mail" => self.mail(w, head),
                 "after_jobnet" => {
                     let on = match self.choice(&w.on, "on", &["ok", "error", "any"]) {
                         Some("error") => AfterOn::Error,
@@ -1762,6 +1783,58 @@ impl Checker<'_> {
             return None;
         }
         Some(Kind::EventLog { eventlog, ids, source })
+    }
+
+    /// `[[when]] mail = "imaps://…"` with `password = "secret:<name>"` and
+    /// `sender` or `subject` (or both): text the mail's sender / subject holds.
+    fn mail(&mut self, w: &RawWhen, head: usize) -> Option<Kind> {
+        let before = self.problems.len();
+        let pos = w.mail.as_ref().map_or(head, |f| f.span().start);
+        let mail = self.string(&w.mail, "mail")?;
+        if let Err(e) = when::mailbox(&mail) {
+            self.add(pos, e);
+        }
+        let secret = match (&w.password, self.string(&w.password, "password")) {
+            (None, _) => {
+                self.add(head, "mail には password = \"secret:<名前>\" が要る（koyomi secret set <名前> で OS の資格情報に置く）");
+                None
+            }
+            (Some(f), Some(p)) => match p.strip_prefix("secret:") {
+                Some(name) if !name.trim().is_empty() => Some(name.to_owned()),
+                Some(_) => {
+                    self.add(f.span().start, "password: secret: の後に名前が要る");
+                    None
+                }
+                None => {
+                    self.add(
+                        f.span().start,
+                        "password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）",
+                    );
+                    None
+                }
+            },
+            (Some(_), None) => None,
+        };
+        let sender = self.mail_text(&w.sender, "sender");
+        let subject = self.mail_text(&w.subject, "subject");
+        if self.problems.len() != before {
+            return None;
+        }
+        if sender.is_none() && subject.is_none() {
+            self.add(head, "mail には sender か subject が要る（例: subject = \"請求書\"）");
+            return None;
+        }
+        Some(Kind::Mail { mail, secret: secret?, sender, subject })
+    }
+
+    /// `sender` / `subject` of a `mail` start: text, not empty.
+    fn mail_text(&mut self, field: &Field, name: &str) -> Option<String> {
+        let s = self.string(field, name)?;
+        if s.trim().is_empty() {
+            self.add(field.as_ref().map_or(0, |f| f.span().start), format!("{name} が空"));
+            return None;
+        }
+        Some(s)
     }
 
     /// `[[when]] file`: an absolute path, `*` / `?` only in the name part.
@@ -3212,7 +3285,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
         assert_eq!(
             p("at = [\"02:00\"]"),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
         );
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
@@ -3305,7 +3378,7 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(
             p("on = \"ok\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
         );
     }
 
@@ -3340,7 +3413,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
         assert_eq!(
             p("settle = \"10s\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
         );
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
@@ -3374,7 +3447,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は 1 つのファイルのパス（* / ? は使えない）"]);
         assert_eq!(
             p("contains = \"E\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
         );
         assert_eq!(p("eventlog = \"System\""), ["a.toml の 2 行目: eventlog には ids か source が要る（例: ids = [4625]）"]);
         assert_eq!(
@@ -3389,6 +3462,54 @@ after = [{ job = \"way\", code = \"else\" }]
             p("log = 'D:\\a.log'\ncontains = \"E\"\non_closed = \"next\""),
             ["a.toml の 5 行目: log / eventlog では on_closed は \"skip\" か \"run\""]
         );
+    }
+
+    #[test]
+    fn a_mail_when_is_a_mailbox_a_secret_and_a_sender_or_subject() {
+        let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
+        let net = parse(
+            "format = 1\n[[when]]\nmail = \"imaps://me@example.com@imap.example.com\"\npassword = \"secret:mail\"\n\
+             subject = \"請求書\"\non_closed = \"run\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            net.when[0].kind,
+            Kind::Mail {
+                mail: "imaps://me@example.com@imap.example.com".to_owned(),
+                secret: "mail".to_owned(),
+                sender: None,
+                subject: Some("請求書".to_owned())
+            }
+        );
+        assert!(net.when[0].is_event());
+        let m = "mail = \"imaps://a@b\"\n";
+        assert_eq!(
+            p(&format!("{m}password = \"secret:m\"")),
+            ["a.toml の 2 行目: mail には sender か subject が要る（例: subject = \"請求書\"）"]
+        );
+        assert_eq!(
+            p(&format!("{m}sender = \"x\"")),
+            ["a.toml の 2 行目: mail には password = \"secret:<名前>\" が要る（koyomi secret set <名前> で OS の資格情報に置く）"]
+        );
+        assert_eq!(
+            p(&format!("{m}password = \"hunter2\"\nsender = \"x\"")),
+            ["a.toml の 4 行目: password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）"]
+        );
+        assert_eq!(p(&format!("{m}password = \"secret:\"\nsender = \"x\"")), ["a.toml の 4 行目: password: secret: の後に名前が要る"]);
+        assert_eq!(p(&format!("{m}password = \"secret:m\"\nsender = \"\"")), ["a.toml の 5 行目: sender が空"]);
+        assert_eq!(
+            p("mail = \"imap://a@b\"\npassword = \"secret:m\"\nsender = \"x\""),
+            ["a.toml の 3 行目: mail は imaps:// だけ（暗号化しない imap:// は使えない）"]
+        );
+        assert_eq!(
+            p(&format!("{m}password = \"secret:m\"\nsender = \"x\"\ncontains = \"E\"")),
+            ["a.toml の 6 行目: contains は mail では使わない"]
+        );
+        assert_eq!(
+            p(&format!("{m}password = \"secret:m\"\nsender = \"x\"\non_closed = \"prev\"")),
+            ["a.toml の 6 行目: mail では on_closed は \"skip\" か \"run\""]
+        );
+        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nsubject = \"x\""), ["a.toml の 5 行目: subject は day では使わない"]);
     }
 
     #[test]

@@ -85,6 +85,7 @@ fn how(h: How) -> &'static str {
         How::Start => "how_start",
         How::After => "how_after",
         How::Log => "how_log",
+        How::Mail => "how_mail",
     }
 }
 

@@ -8,8 +8,8 @@ use koyomi_core::duration;
 use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
-pub const KINDS: [&str; 13] =
-    ["day", "week", "month", "year", "minutes", "hours", "once", "dates", "file", "log", "eventlog", "on_start", "after_jobnet"];
+pub const KINDS: [&str; 14] =
+    ["day", "week", "month", "year", "minutes", "hours", "once", "dates", "file", "log", "eventlog", "mail", "on_start", "after_jobnet"];
 
 /// The rules of `every = "month"`.
 pub const RULES: [&str; 4] = ["day", "last", "nth", "business_day"];
@@ -45,6 +45,12 @@ pub struct WhenEdit {
     pub eventlog: String,
     pub ids: String,
     pub source: String,
+    /// `mail`: the mailbox, the password as `secret:<name>`, and the texts
+    /// the sender / subject hold.
+    pub mail: String,
+    pub password: String,
+    pub sender: String,
+    pub subject: String,
     pub jobnet: String,
     pub on: AfterOn,
     pub except: String,
@@ -82,6 +88,10 @@ impl Default for WhenEdit {
             eventlog: "Application".into(),
             ids: String::new(),
             source: String::new(),
+            mail: String::new(),
+            password: String::new(),
+            sender: String::new(),
+            subject: String::new(),
             jobnet: String::new(),
             on: AfterOn::Ok,
             except: String::new(),
@@ -219,6 +229,13 @@ impl WhenEdit {
                 e.ids = join(ids);
                 e.source = source.clone().unwrap_or_default();
             }
+            Kind::Mail { mail, secret, sender, subject } => {
+                e.kind = "mail".into();
+                e.mail = mail.clone();
+                e.password = format!("secret:{secret}");
+                e.sender = sender.clone().unwrap_or_default();
+                e.subject = subject.clone().unwrap_or_default();
+            }
             Kind::OnStart => e.kind = "on_start".into(),
             Kind::AfterJobnet { jobnet, on } => {
                 e.kind = "after_jobnet".into();
@@ -330,6 +347,19 @@ impl WhenEdit {
                     return Err("eventlog には ids か source が要る".into());
                 }
                 Kind::EventLog { eventlog: self.eventlog.trim().into(), ids, source }
+            }
+            "mail" => {
+                when::mailbox(&self.mail)?;
+                let secret = match self.password.trim().strip_prefix("secret:") {
+                    Some(n) if !n.trim().is_empty() => n.to_owned(),
+                    _ => return Err("password は \"secret:<名前>\" で書く（koyomi secret set <名前> で OS の資格情報に置く）".into()),
+                };
+                let text = |s: &str| Some(s.to_owned()).filter(|s| !s.trim().is_empty());
+                let (sender, subject) = (text(&self.sender), text(&self.subject));
+                if sender.is_none() && subject.is_none() {
+                    return Err("mail には sender か subject が要る".into());
+                }
+                Kind::Mail { mail: self.mail.trim().into(), secret, sender, subject }
             }
             "on_start" => Kind::OnStart,
             "after_jobnet" => {
@@ -454,6 +484,12 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.ids"), &mut self.ids, 120.0);
                 changed |= field(ui, t.tr("when.source"), &mut self.source, 160.0);
             }
+            "mail" => {
+                changed |= field(ui, t.tr("when.mail"), &mut self.mail, 240.0);
+                changed |= field(ui, t.tr("when.password"), &mut self.password, 120.0);
+                changed |= field(ui, t.tr("when.sender"), &mut self.sender, 160.0);
+                changed |= field(ui, t.tr("when.subject"), &mut self.subject, 160.0);
+            }
             "after_jobnet" => {
                 changed |= field(ui, t.tr("when.jobnet"), &mut self.jobnet, 160.0);
                 ui.horizontal(|ui| {
@@ -470,7 +506,7 @@ impl WhenEdit {
             }
             _ => {}
         }
-        if !matches!(self.kind.as_str(), "on_start" | "after_jobnet" | "file" | "log" | "eventlog") {
+        if !matches!(self.kind.as_str(), "on_start" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
             changed |= field(ui, t.tr("when.except"), &mut self.except, 200.0);
             changed |= field(ui, t.tr("when.start"), &mut self.start, 90.0);
             changed |= field(ui, t.tr("when.end"), &mut self.end, 90.0);
@@ -520,11 +556,12 @@ mod tests {
             [[when]]\nlog = 'D:\\app\\a.log'\ncontains = \"ERROR\"\n\
             [[when]]\neventlog = \"Security\"\nids = [4625, 4740]\n\
             [[when]]\neventlog = \"Application\"\nsource = \"MyApp\"\n\
+            [[when]]\nmail = \"imaps://me@example.com@imap.example.com/INBOX\"\npassword = \"secret:mail\"\nsender = \"billing@\"\nsubject = \"請求\"\n\
             [[when]]\non_start = true\n\
             [[when]]\nafter_jobnet = \"経理/集計\"\non = \"error\"\n\
             [[job]]\nid = \"a\"\nrun = [\"x\"]\n";
         let net = koyomi_core::jobnet::parse(text).unwrap();
-        assert_eq!(net.when.len(), 16);
+        assert_eq!(net.when.len(), 17);
         for w in &net.when {
             let e = WhenEdit::from_when(w);
             assert_eq!(e.to_when().as_ref(), Ok(w), "{e:?}");
@@ -559,6 +596,9 @@ mod tests {
             e.contains = "x".into();
             e.ids = "1".into();
             e.jobnet = "a/b".into();
+            e.mail = "imaps://a@b".into();
+            e.password = "secret:m".into();
+            e.subject = "x".into();
             e.once = "2026-04-01 02:00".into();
             e.dates = "2026-04-01".into();
             assert!(e.to_when().is_ok(), "{k}: {:?}", e.to_when());

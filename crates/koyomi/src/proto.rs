@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 26;
+pub const PROTO: u32 = 27;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
