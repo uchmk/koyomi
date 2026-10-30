@@ -40,6 +40,34 @@ pub fn retarget(text: &str, from: &str, to: &str) -> Result<String, String> {
     }
 }
 
+/// `text` with the net's own `name` written as `to` when it is `from` (the old file name) or
+/// empty, so a copy or a moved net is not still titled by the old name. A custom title stays.
+/// Only the line changes, so comments and order stay; text without such a line is returned as is.
+pub fn retitle(text: &str, from: &str, to: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut top = true;
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with('[') {
+            top = false;
+        }
+        match top.then(|| retitle_line(line, from, to)).flatten() {
+            Some(new) => out.push_str(&new),
+            None => out.push_str(line),
+        }
+    }
+    out
+}
+
+/// `name = "from"` (or `''`, or `""`) on this line written as `name = "to"`.
+fn retitle_line(line: &str, from: &str, to: &str) -> Option<String> {
+    let value = line.trim_start().strip_prefix("name")?.trim_start_matches([' ', '\t']).strip_prefix('=')?;
+    let value = value.trim_start_matches([' ', '\t']);
+    [q(from), format!("'{from}'"), q(""), "''".to_owned()].iter().find_map(|old| {
+        let tail = value.strip_prefix(old.as_str())?;
+        Some(format!("{}{}{tail}", &line[..line.len() - value.len()], q(to)))
+    })
+}
+
 /// One line with each `key = "from"` (or `'from'`) of [`KEYS`] naming `to`; inside a string
 /// and after a comment's `#` nothing is changed.
 fn retarget_line(line: &str, from: &str, to: &str) -> String {
@@ -105,6 +133,57 @@ mod tests {
                        [[job]]\nid = \"d\"\nrun = [\"echo\", \"g/a\"]\n\
                        [[when]]\nafter_jobnet = 'g/a' # the end of a\non = \"ok\"\n\
                        [[when]]\nevery = \"day\"\nat = [\"02:00\"]\nwait_for = \"g/a\"\n";
+
+    #[test]
+    fn a_title_that_was_the_old_file_name_follows_the_new_one_and_a_custom_title_stays() {
+        let t = "# keep
+format = 1
+name = \"ab\" # the title
+[[job]]
+id = \"j\"
+name = \"ab\"
+";
+        assert_eq!(
+            retitle(t, "ab", "ab-2"),
+            "# keep
+format = 1
+name = \"ab-2\" # the title
+[[job]]
+id = \"j\"
+name = \"ab\"
+"
+        );
+        assert_eq!(
+            retitle(
+                "name = \"Month end\"
+",
+                "ab",
+                "ab-2"
+            ),
+            "name = \"Month end\"
+"
+        );
+        assert_eq!(
+            retitle(
+                "name = \"\"
+",
+                "ab",
+                "ab-2"
+            ),
+            "name = \"ab-2\"
+"
+        );
+        assert_eq!(
+            retitle(
+                "format = 1
+",
+                "ab",
+                "ab-2"
+            ),
+            "format = 1
+"
+        );
+    }
 
     #[test]
     fn the_three_keys_are_pointed_at_the_new_name_and_nothing_else_changes() {

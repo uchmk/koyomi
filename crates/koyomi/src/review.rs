@@ -65,16 +65,33 @@ pub fn row_with(t: &Table, d: &Def, held: bool, last: Option<RunState>) -> Strin
     out
 }
 
+/// The ids of the definitions whose label another one in the same group shares: the tree adds
+/// the file name to these (see [`twin_row`]) so two rows are never alike.
+pub fn twins(defs: &[Def]) -> std::collections::HashSet<String> {
+    let mut seen: std::collections::HashMap<(&str, &str), Vec<&str>> = std::collections::HashMap::new();
+    for d in defs {
+        seen.entry((d.group.as_str(), d.label())).or_default().push(&d.id);
+    }
+    seen.into_values().filter(|v| v.len() > 1).flatten().map(str::to_owned).collect()
+}
+
+/// `row` with the file name after it (`ab  · ab-2`), for a definition in [`twins`].
+pub fn twin_row(row: String, d: &Def) -> String {
+    format!("{row}  · {}", d.name)
+}
+
 /// The tree as text: a line per group, then its definitions indented. `koyomi list` prints this.
 pub fn tree(t: &Table, defs: &[Def], held: &[String]) -> Vec<String> {
     let mut out = Vec::new();
     let mut group: Option<&str> = None;
+    let twin = twins(defs);
     for d in defs {
         if group != Some(d.group.as_str()) {
             group = Some(&d.group);
             out.push(d.group.clone());
         }
-        out.push(format!("  {}", row(t, d, held.contains(&d.id))));
+        let r = row(t, d, held.contains(&d.id));
+        out.push(format!("  {}", if twin.contains(&d.id) { twin_row(r, d) } else { r }));
     }
     out
 }
@@ -456,5 +473,23 @@ except = [\"2026-11-01\"]",
         let w = week(&table(), &d, Some(&cal), now);
         assert_eq!(w[0], "この先 7 日の予定: 5 回");
         assert_eq!(w[1], "  2026-11-02（月）02:00");
+    }
+
+    #[test]
+    fn two_rows_with_one_label_in_a_group_get_the_file_name() {
+        let text = "format = 1
+name = \"ab\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let mut a = def(text, &Store::default());
+        (a.id, a.group, a.name) = ("g/ab".to_owned(), "g".to_owned(), "ab".to_owned());
+        let mut b = a.clone();
+        (b.id, b.name) = ("g/ab-2".to_owned(), "ab-2".to_owned());
+        let both = twins(&[a.clone(), b.clone()]);
+        assert!(both.contains("g/ab") && both.contains("g/ab-2"));
+        assert_eq!(twin_row("ab".to_owned(), &b), "ab  · ab-2");
+        assert!(twins(&[a]).is_empty());
     }
 }

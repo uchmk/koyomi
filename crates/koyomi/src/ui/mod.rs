@@ -1506,6 +1506,7 @@ impl Browser {
         for d in snap.defs.iter().filter(|d| d.is_todo()) {
             *todo.entry(d.group.as_str()).or_default() += 1;
         }
+        let twins = review::twins(&snap.defs);
         let mut group: Option<&str> = None;
         for d in &snap.defs {
             if group != Some(d.group.as_str()) {
@@ -1541,7 +1542,10 @@ impl Browser {
                 continue;
             }
             let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started).map(|r| r.state);
-            let text = review::row_with(t, d, snap.held.contains(&d.id), last);
+            let mut text = review::row_with(t, d, snap.held.contains(&d.id), last);
+            if twins.contains(&d.id) {
+                text = review::twin_row(text, d);
+            }
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
             let r = ui.selectable_label(on, format!("  {text}"));
             // The mark is a picture; the word for the last run's state is what is said.
@@ -2257,7 +2261,10 @@ impl Browser {
         let c = ito_theme::colors();
         let Some(def) = self.selected_def().cloned() else { return };
         let held = self.snap.as_ref().is_some_and(|s| s.held.contains(&def.id));
-        let head = review::row(t, &def, held);
+        let mut head = review::row(t, &def, held);
+        if self.snap.as_ref().is_some_and(|s| review::twins(&s.defs).contains(&def.id)) {
+            head = review::twin_row(head, &def);
+        }
         ui.heading(&head);
         ui.label(egui::RichText::new(&def.file).color(c.dim));
         ui.add_space(6.0);

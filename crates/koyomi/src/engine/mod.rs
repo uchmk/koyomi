@@ -1353,15 +1353,16 @@ impl State {
         }
         // Every file is worked out before one is written.
         let confirmed = |def_id: &str| self.defs.iter().any(|d| d.id == def_id && d.standing == Standing::Confirmed);
+        let (from_group, from_name) = split_id(id)?;
+        let (to_group, to_name) = split_id(to)?;
         let own = koyomi_core::rename::retarget(&text, id, to).unwrap_or_else(|_| text.clone());
+        let own = koyomi_core::rename::retitle(&own, from_name, to_name);
         let mut others = Vec::new();
         for r in &by {
             let (path, old) = self.net_file(r, "名前を変えられない")?;
             let new = koyomi_core::rename::retarget(&old, id, to).map_err(|e| format!("{r} の参照を直せない（{e}）。手で直してから"))?;
             others.push((r.clone(), path, new, confirmed(r)));
         }
-        let (from_group, from_name) = split_id(id)?;
-        let (to_group, to_name) = split_id(to)?;
         let mut next = self.store.clone();
         let was_confirmed = confirmed(id);
         if let Some(dir) = to_path.parent() {
@@ -1423,6 +1424,7 @@ impl State {
     fn copy(&mut self, id: &str, to: &str) -> Result<String, String> {
         let (_, text) = self.net_file(id, "複製できない")?;
         let to_path = self.free_id(to)?;
+        let text = koyomi_core::rename::retitle(&text, split_id(id)?.1, split_id(to)?.1);
         if let Some(dir) = to_path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
         }
@@ -2175,6 +2177,36 @@ run = [\"x\"]
         // Brought back by a restore, unconfirmed.
         assert!(s.restore("経理/子", &versions[0]).is_ok());
         assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Unconfirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_copy_or_rename_retitles_a_net_still_named_by_its_old_file_and_keeps_a_custom_title() {
+        let paths = temp_paths("retitle");
+        let mut s = State::new(paths.clone());
+        let plain = "# note
+format = 1
+name = \"ab\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let custom = plain.replace("name = \"ab\"", "name = \"Month end\"");
+        assert!(s.save("g/ab", plain, None, false).is_ok());
+        assert!(s.save("g/me", &custom, None, false).is_ok());
+        let label = |s: &State, id: &str| s.defs.iter().find(|d| d.id == id).map(|d| d.label().to_owned());
+        assert!(s.copy("g/ab", "g/ab-2").is_ok());
+        assert_eq!(label(&s, "g/ab-2").as_deref(), Some("ab-2"));
+        assert!(std::fs::read_to_string(paths.jobnets.join("g/ab-2.toml")).unwrap().starts_with(
+            "# note
+"
+        ));
+        assert!(s.copy("g/me", "g/me-2").is_ok());
+        assert_eq!(label(&s, "g/me-2").as_deref(), Some("Month end"));
+        assert!(s.rename("g/ab-2", "g/cd", false).is_ok());
+        assert_eq!(label(&s, "g/cd").as_deref(), Some("cd"));
+        assert!(s.rename("g/me-2", "g/other", false).is_ok());
+        assert_eq!(label(&s, "g/other").as_deref(), Some("Month end"));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
