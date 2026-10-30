@@ -1,6 +1,6 @@
 # Checklist
 
-374 checks in TESTING.md, 370 left for a person.
+376 checks in TESTING.md, 372 left for a person.
 
 ## 1. Start
 
@@ -519,3 +519,8 @@
 - [ ] **48.1** Spread parts wide, zoom in, pick "Edit: show everything" in the palette (or the toolbar button) → Every part is in view at once 〔未訳〕
 - [ ] **48.2** Break a part (e.g. a missing `run`), pan far away, click its row in the problem list → The part is selected, its fields open and it is brought to the middle 〔未訳〕
 - [ ] **48.3** Type a two-line sticky note in a part's fields → The note shows in a box under the part's name; saving and reopening keeps it 〔未訳〕
+
+## 49. 回復の通知
+
+- [ ] **49.1** Run a net whose job exits 3, then change it to exit 0 and run it again → The second end shows "Back to normal" naming the abnormal run, after the usual ok end 〔未訳〕
+- [ ] **49.2** Run it ok once more → No recovery notice (the run before it was ok) 〔未訳〕

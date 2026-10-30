@@ -96,6 +96,33 @@ pub fn words(t: &Table, r: &Run) -> (&'static str, String, String) {
     (event, title, lines.join("\n"))
 }
 
+/// The run of the same net that ended just before `r` ended ok, if it ended
+/// abnormally: what `r` has set right. `all` holds the runs known (`r` too).
+pub fn recovered_from<'a>(all: &'a [Run], r: &Run) -> Option<&'a Run> {
+    if !matches!(r.state, State::Ok | State::Warn) {
+        return None;
+    }
+    let prev = all
+        .iter()
+        .filter(|p| {
+            p.id != r.id && p.jobnet == r.jobnet && p.state.is_final() && !matches!(p.state, State::Held | State::Skipped | State::Missed)
+        })
+        .filter(|p| p.started < r.started)
+        .max_by_key(|p| p.started)?;
+    prev.state.is_error().then_some(prev)
+}
+
+/// The words for a net that ran well again after `prev` ended abnormally.
+/// The event is `failed`: a person who is told of the trouble is told it is over.
+pub fn recovery_words(t: &Table, r: &Run, prev: &Run) -> (&'static str, String, String) {
+    let title = format!("{}  {}", t.tr("notify.recovered_title"), r.title);
+    let body = [t.trf("notify.recovered", &[&r.title, &prev.id]), format!("{}  {}", r.id, r.date)].join(
+        "
+",
+    );
+    ("failed", title, body)
+}
+
 /// The words a `kind = "notify"` part sends: the run as it stands, headed
 /// `{state}  {title}: {part}`, the jobs that ended abnormally so far (or the
 /// run's line), then the id and the day. The event is `failed` once a job
@@ -242,6 +269,40 @@ mod tests {
         assert_eq!(event, "done");
         assert_eq!(title, "✓ 正常終了  月次締め");
         assert!(body.starts_with("✓ 正常終了  r  月次締め  2026-10-30"), "{body}");
+    }
+
+    #[test]
+    fn a_net_that_ends_ok_after_an_abnormal_run_is_told_as_recovered() {
+        let (t, _) = crate::i18n::table("ja");
+        let net = koyomi_core::jobnet::parse(
+            "format = 1
+name = \"月次締め\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let run = |id: &str, when: &str, code: i32| {
+            let mut r = Run::new(id, "g/n", "月次締め", "2026-10-30", How::Manual, &net, at(when));
+            r.start("a", at(when));
+            r.finish("a", Outcome::Exited(code), at(when));
+            r
+        };
+        let bad = run("r1", "2026-10-30 09:00:00", 3);
+        let good = run("r2", "2026-10-30 10:00:00", 0);
+        let again = run("r3", "2026-10-30 11:00:00", 0);
+        let all = vec![bad.clone(), good.clone(), again.clone()];
+        assert_eq!(recovered_from(&all, &good).map(|p| p.id.as_str()), Some("r1"));
+        // The next ok run follows an ok run: nothing to tell.
+        assert!(recovered_from(&all, &again).is_none());
+        // An abnormal run is not a recovery.
+        assert!(recovered_from(&all, &bad).is_none());
+        let (event, title, body) = recovery_words(&t, &good, &bad);
+        assert_eq!(event, "failed");
+        assert!(title.ends_with("月次締め"), "{title}");
+        assert!(body.contains("r1") && body.ends_with("r2  2026-10-30"), "{body}");
     }
 
     #[test]

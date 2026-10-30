@@ -276,6 +276,11 @@ impl State {
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
             let (event, title, body) = notify::words(&self.words, &r);
             notify::tell(&self.notify, event, &title, &body);
+            // An abnormal end told earlier is told to be over.
+            if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
+                let (event, title, body) = notify::recovery_words(&self.words, &r, prev);
+                notify::tell(&self.notify, event, &title, &body);
+            }
         }
         for runs in missed {
             let (event, title, body) = notify::missed_words(&self.words, &runs);

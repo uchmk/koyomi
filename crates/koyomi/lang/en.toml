@@ -179,6 +179,8 @@ caution = "About the calendars"
 
 [notify]
 missed = "{0}: the run at {1} was passed over (the PC was off)"
+recovered_title = "↺ Back to normal"
+recovered = "{0} ended ok again after the abnormal run {1}"
 done = "Ended ok"
 failed = "Ended abnormally"
 done_sound = "Sound when a run ended ok"
