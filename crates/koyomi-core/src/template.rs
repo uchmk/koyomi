@@ -7,7 +7,13 @@
 //!   `{date-1bd}` by business days (the net's calendar; without one it is an error).
 //! - `{month}` is `202610`, `{month-1}` the month before (`{month-1:%Y-%m}` to write it another way).
 //!
+//! - `{param:month}` is the value of `month` in the net's `[params]`: its default, or what
+//!   `koyomi run --set month=2026-09` (or the window's box) gave. It is put in first, so a
+//!   default may itself be `{month-1:%Y-%m}`.
+//!
 //! A `{` that does not start one of these is left as it is (PowerShell scripts are full of braces).
+
+use std::collections::BTreeMap;
 
 use chrono::format::{Item, StrftimeItems};
 use chrono::{Months, NaiveDate};
@@ -65,28 +71,76 @@ pub fn expand(text: &str, date: NaiveDate, cal: Option<&Calendar>) -> Result<Str
     })
 }
 
-/// The net with every job's `run`, `script` and `dir` expanded for `date`.
-pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>) -> Result<Jobnet, String> {
+/// The names of the `{param:…}` in `text`, in order (an empty one as `""`).
+pub fn param_names(text: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = text;
+    while let Some(at) = rest.find("{param:") {
+        let tail = &rest[at + "{param:".len()..];
+        let Some(end) = tail.find('}') else { break };
+        out.push(&tail[..end]);
+        rest = &tail[end + 1..];
+    }
+    out
+}
+
+/// `text` with every `{param:…}` replaced by its value in `values`.
+pub fn fill(text: &str, values: &BTreeMap<String, String>) -> Result<String, String> {
+    let mut out = String::with_capacity(text.len());
+    let mut rest = text;
+    while let Some(at) = rest.find("{param:") {
+        let tail = &rest[at + "{param:".len()..];
+        let Some(end) = tail.find('}') else { break };
+        let name = &tail[..end];
+        let v = values.get(name).ok_or_else(|| format!("{{param:{name}}}: [params] にない"))?;
+        out.push_str(&rest[..at]);
+        out.push_str(v);
+        rest = &tail[end + 1..];
+    }
+    out.push_str(rest);
+    Ok(out)
+}
+
+/// The net's `[params]` with `set` laid over them: a name `set` gives that the net does not have is an error.
+pub fn values(net: &Jobnet, set: &BTreeMap<String, String>) -> Result<BTreeMap<String, String>, String> {
+    let mut out = net.params.clone();
+    for (k, v) in set {
+        match out.get_mut(k) {
+            Some(slot) => *slot = v.clone(),
+            None if net.params.is_empty() => return Err(format!("値 {k} を渡せない（このジョブネットに [params] がない）")),
+            None => {
+                let known: Vec<&str> = net.params.keys().map(String::as_str).collect();
+                return Err(format!("値 {k} は [params] にない（あるのは {}）", known.join("・")));
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// The net with every job's `run`, `script`, `env`, `dir` and `judge.ok_file` written out:
+/// first the `{param:…}` from `values` ([`values`]), then the day's tokens for `date`.
+pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>, values: &BTreeMap<String, String>) -> Result<Jobnet, String> {
+    let both = |t: &str| fill(t, values).and_then(|t| expand(&t, date, cal));
     let mut out = net.clone();
     for j in &mut out.jobs {
         let id = j.id.clone();
         let at = |what: &str, e: String| format!("{id} の {what}: {e}");
         for a in &mut j.run {
-            *a = expand(a, date, cal).map_err(|e| at("run", e))?;
+            *a = both(a).map_err(|e| at("run", e))?;
         }
         if let Some(s) = &mut j.script {
-            *s = expand(s, date, cal).map_err(|e| at("script", e))?;
+            *s = both(s).map_err(|e| at("script", e))?;
         }
         for (k, v) in &mut j.env {
             if !v.starts_with("secret:") {
-                *v = expand(v, date, cal).map_err(|e| at(&format!("env {k}"), e))?;
+                *v = both(v).map_err(|e| at(&format!("env {k}"), e))?;
             }
         }
         if let Some(d) = &mut j.dir {
-            *d = expand(d, date, cal).map_err(|e| at("dir", e))?;
+            *d = both(d).map_err(|e| at("dir", e))?;
         }
         if let Some(f) = j.judge.as_mut().and_then(|g| g.ok_file.as_mut()) {
-            *f = expand(f, date, cal).map_err(|e| at("judge ok_file", e))?;
+            *f = both(f).map_err(|e| at("judge ok_file", e))?;
         }
     }
     Ok(out)
@@ -218,5 +272,18 @@ mod tests {
             assert!(check(bad).is_err(), "{bad}");
         }
         assert!(check("{date-1bd:%Y%m} {month}").is_ok());
+    }
+
+    #[test]
+    fn params_go_in_first_and_may_hold_date_tokens() {
+        let net = Jobnet { params: BTreeMap::from([("m".to_owned(), "{month-1:%Y-%m}".to_owned())]), ..Jobnet::default() };
+        let day = d("2026-10-30");
+        let dflt = values(&net, &BTreeMap::new()).unwrap();
+        assert_eq!(expand(&fill("x{param:m}.csv", &dflt).unwrap(), day, None).unwrap(), "x2026-09.csv");
+        let set = values(&net, &BTreeMap::from([("m".to_owned(), "2026-07".to_owned())])).unwrap();
+        assert_eq!(fill("{param:m} {0}", &set).unwrap(), "2026-07 {0}");
+        assert!(fill("{param:n}", &set).unwrap_err().contains("[params] にない"));
+        assert!(values(&net, &BTreeMap::from([("n".to_owned(), "1".to_owned())])).unwrap_err().contains("あるのは m"));
+        assert_eq!(param_names("a {param:m} {param:} {date}"), ["m", ""]);
     }
 }

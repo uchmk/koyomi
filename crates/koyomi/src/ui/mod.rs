@@ -69,6 +69,22 @@ struct Make {
     fresh: bool,
 }
 
+/// The box 今すぐ実行 opens for a net with `[params]`: each value, its default filled in.
+struct Give {
+    id: String,
+    /// Name, default, what the field holds.
+    values: Vec<(String, String, String)>,
+    /// The first field takes the keyboard on the first frame.
+    fresh: bool,
+}
+
+impl Give {
+    /// The values that differ from their default: what the run is sent with.
+    fn set(&self) -> BTreeMap<String, String> {
+        self.values.iter().filter(|(_, d, v)| v != d).map(|(k, _, v)| (k.clone(), v.clone())).collect()
+    }
+}
+
 /// Why the 新しいジョブネット box cannot make its id yet.
 #[derive(Debug, PartialEq, Eq)]
 enum Why {
@@ -245,6 +261,8 @@ pub struct Browser {
     port: Option<Port>,
     /// The 新しいジョブネット box, while it is open.
     make: Option<Make>,
+    /// The values box of 今すぐ実行, while it is open.
+    give: Option<Give>,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
 }
@@ -345,6 +363,7 @@ impl Browser {
             editors: Vec::new(),
             port: None,
             make: None,
+            give: None,
             easy: None,
         }
     }
@@ -567,6 +586,10 @@ impl Browser {
             (None, None) => "-".to_owned(),
         };
         out.push_str(&format!("asking: {asking}\nflow: {}\n", if self.vertical { "vertical" } else { "horizontal" }));
+        if let Some(g) = &self.give {
+            let vals: Vec<String> = g.values.iter().map(|(k, _, v)| format!("{k}={v}")).collect();
+            out.push_str(&format!("give: {} {}\n", g.id, vals.join(" ")));
+        }
         if let Some(m) = &self.make {
             out.push_str(&format!("make: {}/{}{}\n", m.group, m.name, m.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()));
         }
@@ -702,6 +725,68 @@ impl Browser {
         match pressed.or(key) {
             Some(0) => self.make_go(t),
             Some(_) => self.make = None,
+            None => {}
+        }
+    }
+
+    /// 今すぐ実行: starts the net, or first asks for its `[params]` when it has any.
+    fn run_now(&mut self, id: String, params: Option<&BTreeMap<String, String>>) {
+        match params.filter(|p| !p.is_empty()) {
+            Some(p) => {
+                let values = p.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
+                self.give = Some(Give { id, values, fresh: true });
+                self.focus = 0;
+            }
+            None => {
+                let _ = self.tx.send(Request::Run { id, date: None, from: None, dry: false, params: BTreeMap::new() });
+            }
+        }
+    }
+
+    /// The values box of 今すぐ実行: one field a value, then 流す or やめる.
+    fn confirm_give(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(g) = &mut self.give else { return };
+        let c = ito_theme::colors();
+        let mut pressed = None;
+        egui::Window::new(t.tr("give.title"))
+            .id(egui::Id::new("give"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.add(egui::Label::new(t.trf("give.lead", &[g.id.as_str()])).wrap());
+                egui::Grid::new("give-fields").num_columns(2).show(ui, |ui| {
+                    for (i, (name, default, value)) in g.values.iter_mut().enumerate() {
+                        ui.label(name.as_str());
+                        let r = ui.add(egui::TextEdit::singleline(value).hint_text(default.as_str()).desired_width(300.0));
+                        ito_a11y::say(&r, Role::Label, name);
+                        if i == 0 && g.fresh {
+                            r.request_focus();
+                            g.fresh = false;
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.horizontal(|ui| {
+                    for (i, label) in [t.tr("give.go"), t.tr("give.cancel")].into_iter().enumerate() {
+                        let r = ui.button(label);
+                        ito_a11y::say(&r, Role::Button, label);
+                        if r.clicked() {
+                            pressed = Some(i);
+                        }
+                    }
+                });
+                ui.label(egui::RichText::new(t.tr("give.hint")).color(c.dim).small());
+            });
+        match pressed.or(key) {
+            Some(0) => {
+                let params = g.set();
+                let id = g.id.clone();
+                self.give = None;
+                let _ = self.tx.send(Request::Run { id, date: None, from: None, dry: false, params });
+            }
+            Some(_) => self.give = None,
             None => {}
         }
     }
@@ -989,7 +1074,7 @@ impl Browser {
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
-        let making = self.make.is_some();
+        let making = self.make.is_some() || self.give.is_some();
         let closing = self.editor.as_ref().is_some_and(|e| e.closing);
         if closing && !self.close_asked {
             // The safe button first: Enter on a fresh box does not throw the changes away.
@@ -1098,6 +1183,7 @@ impl Browser {
         self.confirm_versions(&ctx, t, key);
         self.confirm_port(&ctx, t, key);
         self.confirm_make(&ctx, t, key);
+        self.confirm_give(&ctx, t, key);
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -1703,7 +1789,7 @@ impl Browser {
             let r = ui.add_enabled(can && !held, egui::Button::new(t.tr("run.now")));
             ito_a11y::say(&r, Role::Button, t.tr("run.now"));
             if r.clicked() {
-                let _ = self.tx.send(Request::Run { id: def.id.clone(), date: None, from: None, dry: false });
+                self.run_now(def.id.clone(), def.net.as_ref().map(|n| &n.params));
             }
             // On hold: its times are written down as ⏸ and nothing runs until it is released.
             let key = if held { "run.release" } else { "run.hold" };
@@ -1960,6 +2046,7 @@ mod tests {
             editors: Vec::new(),
             port: None,
             make: None,
+            give: None,
             easy: None,
         }
     }
@@ -2086,6 +2173,38 @@ mod tests {
     }
 
     /// The kill box starts on the safe button: a plain Enter does not kill.
+    /// 今すぐ実行 starts a net without `[params]` at once, and asks first for one with them,
+    /// sending only the values that were changed.
+    #[test]
+    fn run_now_asks_for_params_and_sends_only_the_changed_ones() {
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        b.run_now("試験/bom".into(), None);
+        match rx_req.try_recv() {
+            Ok(Request::Run { params, .. }) => assert!(params.is_empty()),
+            other => panic!("not a run: {other:?}"),
+        }
+        let params = BTreeMap::from([("month".to_owned(), "{month-1:%Y-%m}".to_owned()), ("dept".to_owned(), "all".to_owned())]);
+        b.run_now("試験/bom".into(), Some(&params));
+        assert!(rx_req.try_recv().is_err(), "the box asks first");
+        assert!(b.report().contains("give: 試験/bom dept=all month={month-1:%Y-%m}"), "{}", b.report());
+        let g = b.give.as_mut().unwrap();
+        g.values.iter_mut().find(|(k, _, _)| k == "dept").unwrap().2 = "経理".into();
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(b.give.is_none(), "Enter answered the box");
+        match rx_req.try_recv() {
+            Ok(Request::Run { id, params, .. }) => {
+                assert_eq!(id, "試験/bom");
+                assert_eq!(params, BTreeMap::from([("dept".to_owned(), "経理".to_owned())]));
+            }
+            other => panic!("not a run: {other:?}"),
+        }
+    }
+
     #[test]
     fn the_kill_box_starts_on_no() {
         use koyomi_core::jobnet::{Job, Jobnet};

@@ -44,6 +44,9 @@ pub enum Request {
         /// Start nothing: the reply is each job's command as it would run.
         #[serde(default)]
         dry: bool,
+        /// Values for the net's `[params]` in place of their defaults (`--set name=value`).
+        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        params: BTreeMap<String, String>,
     },
     /// Start `run` again with the definition it had: what passed is carried
     /// over, the rest runs (from the job `from`, when there is one). The reply is the new run's id.

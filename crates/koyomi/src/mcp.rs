@@ -9,6 +9,7 @@
 //! are marked as writing, so the client asks the person, and they also do nothing until called
 //! again with `confirm = true`: without it they only say what they would do.
 
+use std::collections::BTreeMap;
 use std::io;
 
 use ito_mcp::serde_json::{json, Value};
@@ -66,11 +67,16 @@ fn write_tools() -> Vec<Tool> {
             |a| {
                 let id = arg_str(a, "id")?.to_owned();
                 let (date, from) = (opt(a, "date").map(str::to_owned), opt(a, "from").map(str::to_owned));
+                let params: BTreeMap<String, String> = a
+                    .get("params")
+                    .and_then(Value::as_object)
+                    .map(|o| o.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect())
+                    .unwrap_or_default();
                 if !confirmed(a) {
-                    let preview = ask(&Request::Run { id, date, from, dry: true })?;
+                    let preview = ask(&Request::Run { id, date, from, dry: true, params })?;
                     return Ok(format!("Nothing started. It would run:\n{preview}\nAsk the person, then call again with confirm = true."));
                 }
-                ask(&Request::Run { id, date, from, dry: false }).map(|run| format!("started: {run}"))
+                ask(&Request::Run { id, date, from, dry: false, params }).map(|run| format!("started: {run}"))
             },
         )
         .input(json!({
@@ -79,6 +85,7 @@ fn write_tools() -> Vec<Tool> {
                 "id": { "type": "string", "description": "group/name" },
                 "date": { "type": "string", "description": "the business day, YYYY-MM-DD (today when left out)" },
                 "from": { "type": "string", "description": "start at this job; the ones before it are skipped" },
+                "params": { "type": "object", "additionalProperties": { "type": "string" }, "description": "values for the net's [params] in place of their defaults" },
                 "confirm": { "type": "boolean", "description": "true only after the person agreed" },
             },
             "required": ["id"],

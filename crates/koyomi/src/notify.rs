@@ -188,9 +188,61 @@ pub fn missed_words(t: &Table, runs: &[Run]) -> (&'static str, String, String) {
     ("failed", title, lines.join("\n"))
 }
 
+/// How many of the last lines of a failed job's log a webhook is sent.
+pub const TAIL_LINES: usize = 10;
+/// How long the one line the system's notification gets may be, in characters.
+const LINE_CHARS: usize = 200;
+
+/// The ends of the logs of the jobs that went wrong: one line for the
+/// system's notification, the last [`TAIL_LINES`] of each for a webhook.
+/// The logs are written with the secrets already as `***`.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct Tail {
+    pub line: String,
+    pub lines: String,
+}
+
+/// The [`Tail`] of `r`'s jobs that ended abnormally; `log` reads a job's log
+/// (its end), and a job without one (a wait, a log not there) is passed over.
+pub fn tail(t: &Table, r: &Run, log: impl Fn(&str) -> Option<String>) -> Tail {
+    let mut out = Tail::default();
+    let mut blocks = Vec::new();
+    for j in r.jobs.iter().filter(|j| j.state.is_error()) {
+        let Some(text) = log(&j.id) else { continue };
+        let lines: Vec<&str> = text.lines().map(str::trim_end).filter(|l| !l.is_empty()).collect();
+        let Some(last) = lines.last() else { continue };
+        if out.line.is_empty() {
+            let mut line: String = format!("{}: {last}", j.label());
+            if line.chars().count() > LINE_CHARS {
+                line = line.chars().take(LINE_CHARS - 1).collect::<String>() + "…";
+            }
+            out.line = line;
+        }
+        let from = lines.len().saturating_sub(TAIL_LINES);
+        blocks.push(format!("{}\n{}", t.trf("notify.tail", &[j.label()]), lines[from..].join("\n")));
+    }
+    out.lines = blocks.join("\n\n");
+    out
+}
+
 /// Tells of `event` in every way `n` turns on for it.
 pub fn tell(n: &NotifyCfg, event: &str, title: &str, body: &str) {
     n.tell(&EVENTS, APP, icon, event, title, body);
+}
+
+/// Like [`tell`], with the end of the failed jobs' logs: the system's
+/// notification (and the sound) gets its one line, the webhooks its lines.
+pub fn tell_tail(n: &NotifyCfg, event: &str, title: &str, body: &str, tail: &Tail) {
+    if tail.lines.is_empty() {
+        return tell(n, event, title, body);
+    }
+    let mut here = n.clone();
+    here.places.clear();
+    here.tell(&EVENTS, APP, icon, event, title, &format!("{body}\n{}", tail.line));
+    let mut hooks = n.clone();
+    hooks.system = Some(Vec::new());
+    hooks.sound = Some(Vec::new());
+    hooks.tell(&EVENTS, APP, icon, event, title, &format!("{body}\n\n{}", tail.lines));
 }
 
 #[cfg(test)]
@@ -281,6 +333,32 @@ mod tests {
         assert_eq!(event, "done");
         assert_eq!(title, "✓ 正常終了  月次締め");
         assert!(body.starts_with("✓ 正常終了  r  月次締め  2026-10-30"), "{body}");
+    }
+
+    #[test]
+    fn a_failed_job_hands_its_last_line_to_the_system_and_ten_lines_to_webhooks() {
+        let (t, _) = crate::i18n::table("ja");
+        let net = koyomi_core::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nname = \"転記\"\nrun = [\"y\"]\n",
+        )
+        .unwrap();
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let now = at("2026-10-30 09:00:00");
+        let mut r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, now);
+        r.start("a", now);
+        r.finish("a", Outcome::Exited(0), now);
+        r.start("b", now);
+        r.finish("b", Outcome::Exited(2), now);
+        let log: String = (1..=14).map(|i| format!("line {i}\n")).collect::<String>() + "! pw=***\n\n";
+        let got = tail(&t, &r, |job| (job != "c").then(|| log.clone()));
+        assert_eq!(got.line, "転記: ! pw=***");
+        let want: Vec<String> = (6..=14).map(|i| format!("line {i}")).chain(["! pw=***".to_owned()]).collect();
+        assert_eq!(got.lines, format!("転記 のログの末尾\n{}", want.join("\n")));
+        // The ok job's log is not sent, and a run with no log to read has no tail.
+        assert!(!got.lines.contains("a のログ"));
+        assert_eq!(tail(&t, &r, |_| None), Tail::default());
+        let long = "x".repeat(300);
+        assert_eq!(tail(&t, &r, |_| Some(long.clone())).line.chars().count(), 200);
     }
 
     #[test]

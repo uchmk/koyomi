@@ -50,6 +50,8 @@ struct Done {
     retried: u32,
 }
 
+/// The `[params]` values a run by hand was given, beside its `definition.toml`.
+const PARAMS: &str = "params.toml";
 /// Nobody asked the job to stop yet.
 const WHY_NONE: u8 = 0;
 /// A person (or the run's kill) asked: 強制終了.
@@ -276,17 +278,19 @@ impl Runner {
         self.calendar_of = calendar_of;
     }
 
-    /// The net with its child nets in, and `{date}` in its jobs written out for the business day `date`.
-    fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate) -> Result<Jobnet, String> {
+    /// The net with its child nets in, and `{param:…}` (`set` over the defaults) and `{date}`
+    /// in its jobs written out for the business day `date`.
+    fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<Jobnet, String> {
         let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
-        template::expand_net(&net, date, cal)
+        let values = template::values(&net, set)?;
+        template::expand_net(&net, date, cal, &values)
     }
 
     /// Each job of `def` as it would run for the business day `date`, one per line
     /// (`job: command`, the folder after `@`); nothing starts.
-    pub fn dry(&self, def: &Def, date: NaiveDate) -> Result<String, String> {
-        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date)?;
+    pub fn dry(&self, def: &Def, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<String, String> {
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
         let mut out = String::new();
         for j in &net.jobs {
             let what = match (&j.script, j.run.is_empty()) {
@@ -352,13 +356,20 @@ impl Runner {
     /// Starts `def` for the business day `date`; `planned` is the time a schedule
     /// meant it for. Refused while the same net runs.
     pub fn start(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>) -> Result<String, String> {
-        let run = self.prepare(def, date, how, planned, None)?;
+        let run = self.prepare(def, date, how, planned, None, &BTreeMap::new())?;
         self.launch(run, &def.text)
     }
 
-    /// Starts `def` at the job `from`: the jobs before it are ⊘ スキップ ([`Run::starting_at`]).
-    pub fn start_at(&mut self, def: &Def, date: NaiveDate, from: &str) -> Result<String, String> {
-        let run = self.prepare(def, date, How::Manual, None, Some(from))?;
+    /// Starts `def` by hand with the `[params]` values `set` (the rest take their default),
+    /// at the job `from` when there is one: the jobs before it are ⊘ スキップ ([`Run::starting_at`]).
+    pub fn start_manual(
+        &mut self,
+        def: &Def,
+        date: NaiveDate,
+        from: Option<&str>,
+        set: &BTreeMap<String, String>,
+    ) -> Result<String, String> {
+        let run = self.prepare(def, date, How::Manual, None, from, set)?;
         self.launch(run, &def.text)
     }
 
@@ -366,15 +377,23 @@ impl Runner {
     /// (a file came, the engine started), `reason` goes on the run, and `file`
     /// is the file that came, `KOYOMI_FILE` for its jobs.
     pub fn start_event(&mut self, def: &Def, date: NaiveDate, how: How, reason: &str, file: Option<String>) -> Result<String, String> {
-        let mut run = self.prepare(def, date, how, None, None)?;
+        let mut run = self.prepare(def, date, how, None, None, &BTreeMap::new())?;
         run.reason = reason.to_owned();
         run.file = file;
         self.launch(run, &def.text)
     }
 
     /// A new run of `def`, not launched yet: the net expanded, no other run of it going.
-    fn prepare(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>, from: Option<&str>) -> Result<Run, String> {
-        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date)?;
+    fn prepare(
+        &mut self,
+        def: &Def,
+        date: NaiveDate,
+        how: How,
+        planned: Option<NaiveDateTime>,
+        from: Option<&str>,
+        set: &BTreeMap<String, String>,
+    ) -> Result<Run, String> {
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
         self.not_running(&def.id, def.label(), net.lock.as_deref())?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
@@ -385,6 +404,7 @@ impl Runner {
         };
         run.planned = planned;
         run.lock = net.lock.clone();
+        run.params = set.clone();
         Ok(run)
     }
 
@@ -404,11 +424,14 @@ impl Runner {
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let net =
             jobnet::parse(&text).map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
-        let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?)?;
+        // The values a person gave the first time go again (`params.toml` beside the definition).
+        let set: BTreeMap<String, String> = kept::read(&self.run_dir(previous).join(PARAMS)).unwrap_or_default();
+        let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?, &set)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let mut run = Run::rerun(&id, &prev, &net, from, now)?;
         run.lock = net.lock.clone();
+        run.params = set;
         self.launch(run, &text)
     }
 
@@ -441,6 +464,10 @@ impl Runner {
         let dir = self.run_dir(&run.id);
         std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
         std::fs::write(dir.join("definition.toml"), text).map_err(|e| format!("{}: {e}", dir.display()))?;
+        if !run.params.is_empty() {
+            let kept = toml::to_string(&run.params).map_err(|e| e.to_string())?;
+            std::fs::write(dir.join(PARAMS), kept).map_err(|e| format!("{}: {e}", dir.display()))?;
+        }
         self.record(&run, history::run_start(&run));
         let over: Vec<JobRun> = run.jobs.iter().filter(|j| j.ended.is_some()).cloned().collect();
         for j in &over {
@@ -1308,7 +1335,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start_at(&d, Local::now().date_naive(), "b").unwrap();
+        let id = r.start_manual(&d, Local::now().date_naive(), Some("b"), &BTreeMap::new()).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         assert_eq!(run.job("a").unwrap().state, State::Skipped);
@@ -1317,7 +1344,7 @@ mod tests {
         r.flush();
         let back = Runner::new(&dir, Config::default());
         assert_eq!(back.run(&id).unwrap().job("a").unwrap().state, State::Skipped);
-        assert!(r.start_at(&d, Local::now().date_naive(), "x").unwrap_err().contains("ジョブがない: x"));
+        assert!(r.start_manual(&d, Local::now().date_naive(), Some("x"), &BTreeMap::new()).unwrap_err().contains("ジョブがない: x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1976,10 +2003,10 @@ id = \"b\"
         let mut r = Runner::new(&dir, Config::default());
         let cal = koyomi_core::calendar::Calendar { weekly_off: vec![chrono::Weekday::Sat, chrono::Weekday::Sun], ..Default::default() };
         r.set_calendars(BTreeMap::from([("会社".to_owned(), cal)]), BTreeMap::from([("net".to_owned(), "会社".to_owned())]));
-        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).unwrap();
+        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), &BTreeMap::new()).unwrap();
         assert!(seen.starts_with("b: ") && seen.contains("m202610_1030"), "{seen}");
         assert!(r.runs().is_empty());
-        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap()).unwrap();
+        let seen = r.dry(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), &BTreeMap::new()).unwrap();
         assert!(seen.starts_with("b: ") && seen.contains("m202610_1030"), "{seen}");
         assert!(r.runs().is_empty());
         let id = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap();
@@ -1999,6 +2026,40 @@ id = \"b\"
         );
         let err = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap_err();
         assert!(err.contains("calendar が要る"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn params_given_by_hand_fill_the_job_and_a_rerun_keeps_them() {
+        let dir = scratch("params");
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+[params]
+month = \"{{month-1}}\"
+dept = \"all\"
+[[job]]
+id = \"b\"
+{}
+",
+                echo("{param:dept}_{param:month}")
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let day = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let seen = r.dry(&d, day, &BTreeMap::new()).unwrap();
+        assert!(seen.contains("all_202610"), "the defaults, date tokens and all: {seen}");
+        let bad = r.dry(&d, day, &BTreeMap::from([("nope".to_owned(), "x".to_owned())])).unwrap_err();
+        assert!(bad.contains("nope"), "{bad}");
+        let set = BTreeMap::from([("dept".to_owned(), "acct".to_owned())]);
+        let id = r.start_manual(&d, day, None, &set).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.params, set);
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "acct_202610");
+        let again = r.rerun(&id, Some("b")).unwrap();
+        wait_over(&mut r, &again);
+        assert_eq!(r.log_tail(&again, "b").unwrap().trim(), "acct_202610");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

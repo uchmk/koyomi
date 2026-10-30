@@ -771,3 +771,25 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 63.7 | Right-click → スケジュールを止める | The badge turns grey –, the tip reads `スケジュールを止めている`, the window's band says the schedule is paused; the menu now reads スケジュールを戻す |
 | 63.8 | Right-click while a job runs | 終了（ジョブ 1 件が実行中） is greyed |
 | 63.9 | Right-click → 終了（エンジンを止める） with nothing running | The icon goes away; `koyomi engine status` says the engine is not running |
+
+## 64. 手で流すときに値を渡す（`[params]`、`run --set`）
+
+| # | Do | Expect |
+|---|---|---|
+| 64.1 | A net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`, and a job `run = ["cmd.exe", "/c", "echo", "{param:dept}", "{param:month}"]`; `koyomi run <net> --dry` | The job's line shows `all` and last month as `YYYY-MM` |
+| 64.2 | `koyomi run <net> --set dept=経理 --set month=2026-09 --wait`, then `koyomi log` | The log has `経理 2026-09` |
+| 64.3 | `koyomi run <net> --set nope=1` | Refused: `値 nope は [params] にない（あるのは dept・month）`; nothing runs |
+| 64.4 | `koyomi rerun <that run> --from <job>` | The log has `経理 2026-09` again (the values of the first run) |
+| 64.5 | The net's scheduled time comes | The job runs with the defaults |
+| 64.6 | In the window, select the net and press 今すぐ実行 | A box 値を決めて実行 lists dept and month with the defaults filled in; change dept, press Enter, and the run's log has the new dept |
+| 64.7 | Press 今すぐ実行 on a net without `[params]` | It starts at once, with no box |
+| 64.8 | Write `{param:x}` in a job of a net whose `[params]` has no `x`; open the window | The net shows the problem `{param:x}: [params] にない` and cannot be approved |
+
+## 65. 通知に失敗したジョブのログの末尾
+
+| # | Do | Expect |
+|---|---|---|
+| 65.1 | A job `run = ["cmd.exe", "/c", "for /l %i in (1,1,15) do @echo line %i & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
+| 65.2 | With a webhook on for `failed` (e.g. ntfy), the same run | The message ends with `<job> のログの末尾` and `line 6` … `line 15` |
+| 65.3 | A job with `env = { PW = "secret:db" }` that echoes `%PW%` and exits 1 | Both the notification and the webhook show `***`, not the secret |
+| 65.4 | A run that ends 正常, or a job that fails before writing anything | The notice is as before, with no log lines |

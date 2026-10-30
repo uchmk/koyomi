@@ -342,6 +342,9 @@ pub struct Run {
     /// The net's `lock` name while it runs: no other run with it goes at the same time.
     #[serde(default)]
     pub lock: Option<String>,
+    /// The `[params]` values a person gave when starting it by hand (`--set`); the rest took their default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub params: BTreeMap<String, String>,
 }
 
 /// How a run that started after its time (`missed = "once"`) begins its reason.
@@ -390,6 +393,7 @@ impl Run {
             reason: String::new(),
             file: None,
             lock: None,
+            params: BTreeMap::new(),
         };
         run.settle(now);
         run
@@ -424,6 +428,7 @@ impl Run {
             reason: reason.to_owned(),
             file: None,
             lock: None,
+            params: BTreeMap::new(),
         }
     }
 

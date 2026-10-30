@@ -57,6 +57,10 @@ pub struct Jobnet {
     /// `wake = true`: the engine wakes a sleeping PC a little before the net's next time.
     #[serde(default)]
     pub wake: bool,
+    /// `[params]`: a value's name and its default, put in for `{param:name}`. A run by hand
+    /// may give another value (`koyomi run --set name=value`); a scheduled one uses the default.
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
 }
 
 impl Jobnet {
@@ -433,6 +437,7 @@ struct RawNet {
     calendar: Field,
     lock: Field,
     wake: Field,
+    params: Field,
 }
 
 #[derive(Deserialize)]
@@ -511,15 +516,17 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             return Err(vec![Problem { line, message: explain(e.message(), at) }]);
         }
     };
-    let mut c = Checker { text, problems: Vec::new() };
+    let mut c = Checker { text, problems: Vec::new(), params: BTreeMap::new() };
     let (missed, overlap) = c.top(&raw);
     let calendar = c.calendar(&raw.calendar);
     let lock = c.lock(&raw.lock);
     let wake = c.wake(&raw.wake);
+    c.params = c.params(&raw.params);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock, wake })
+        let params = std::mem::take(&mut c.params);
+        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock, wake, params })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -540,9 +547,50 @@ fn explain(message: &str, at: Option<&str>) -> String {
 struct Checker<'a> {
     text: &'a str,
     problems: Vec<Problem>,
+    /// The net's `[params]`, read before its jobs so `{param:…}` can be checked against them.
+    params: BTreeMap<String, String>,
+}
+
+/// A name `env` and `[params]` take: letters, digits and `_`, not starting with a digit.
+fn plain_name(k: &str) -> bool {
+    !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl Checker<'_> {
+    /// Whether the `{date…}` / `{month…}` of `text` read and its `{param:…}` are in `[params]`.
+    fn template(&self, text: &str) -> Result<(), String> {
+        crate::template::check(text)?;
+        match crate::template::param_names(text).into_iter().find(|n| !self.params.contains_key(*n)) {
+            Some(n) => Err(format!("{{param:{n}}}: [params] にない")),
+            None => Ok(()),
+        }
+    }
+
+    /// `[params]`: names and their default values.
+    fn params(&mut self, field: &Field) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let Some(f) = field.as_ref() else { return out };
+        let at = f.span().start;
+        let Some(t) = f.get_ref().as_table() else {
+            self.add(at, "params は表で書く（[params] の下に month = \"2026-09\"）");
+            return out;
+        };
+        for (k, v) in t {
+            if !plain_name(k) {
+                self.add(at, format!("params の名前に使えない: {k}（英数字と _ だけ）"));
+            }
+            let Some(s) = v.as_str() else {
+                self.add(at, format!("params の値は文字列で書く: {k}"));
+                continue;
+            };
+            if let Err(e) = crate::template::check(s) {
+                self.add(at, format!("params {k}: {e}"));
+            }
+            out.insert(k.clone(), s.to_owned());
+        }
+        out
+    }
+
     fn add(&mut self, offset: usize, message: impl Into<String>) {
         let line = line_of(self.text, offset);
         self.problems.push(Problem { line, message: message.into() });
@@ -588,9 +636,7 @@ impl Checker<'_> {
             return out;
         };
         for (k, v) in t {
-            let name_ok =
-                !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
-            if !name_ok {
+            if !plain_name(k) {
                 self.add(at, format!("env の名前に使えない: {k}（英数字と _ だけ）"));
             } else if k.to_ascii_uppercase().starts_with("KOYOMI_") {
                 self.add(at, format!("env の名前に使えない: {k}（KOYOMI_ は koyomi が渡す）"));
@@ -603,7 +649,7 @@ impl Checker<'_> {
                 Some("") => self.add(at, format!("env {k}: secret: の後に名前が要る")),
                 Some(_) => {}
                 None => {
-                    if let Err(e) = crate::template::check(s) {
+                    if let Err(e) = self.template(s) {
                         self.add(at, format!("env {k}: {e}"));
                     }
                 }
@@ -1295,7 +1341,7 @@ impl Checker<'_> {
                         }
                         judge.error_output = Some(s.clone());
                     } else {
-                        if let Err(e) = crate::template::check(s) {
+                        if let Err(e) = self.template(s) {
                             self.add(at, format!("judge の ok_file: {e}"));
                             ok = false;
                         }
@@ -1398,7 +1444,7 @@ impl Checker<'_> {
             for (text, name) in
                 run.iter().map(|t| (t, "run")).chain(script.iter().map(|t| (t, "script"))).chain(dir.iter().map(|t| (t, "dir")))
             {
-                if let Err(e) = crate::template::check(text) {
+                if let Err(e) = self.template(text) {
                     self.add(start, format!("{name}: {e}"));
                 }
             }
@@ -1603,6 +1649,10 @@ fn expand_in(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>, stac
         stack.push(use_.clone());
         let child = expand_in(&child, lookup, stack)?;
         stack.pop();
+        // The child's `{param:…}` take the parent's value of the same name, else the child's default.
+        for (k, v) in &child.params {
+            out.params.entry(k.clone()).or_insert_with(|| v.clone());
+        }
         let prefix = format!("{}/", j.id);
         let label = j.name.clone().filter(|n| !n.is_empty()).unwrap_or_else(|| j.id.clone());
         let followed: BTreeSet<&str> = child.jobs.iter().flat_map(|c| c.after.iter().map(|l| l.job.as_str())).collect();

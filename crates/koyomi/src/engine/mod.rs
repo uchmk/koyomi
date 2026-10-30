@@ -294,7 +294,8 @@ impl State {
         // A time stopped by hand (⏸) is not told of: the person did it.
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
             let (event, title, body) = notify::words(&self.words, &r);
-            notify::tell(&self.notify, event, &title, &body);
+            let tail = notify::tail(&self.words, &r, |job| self.runner.log_tail(&r.id, job).ok());
+            notify::tell_tail(&self.notify, event, &title, &body, &tail);
             // An abnormal end told earlier is told to be over.
             if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
                 let (event, title, body) = notify::recovery_words(&self.words, &r, prev);
@@ -773,19 +774,23 @@ impl State {
 
     /// Starts `id` by hand, at the job `from` when there is one. Refused for
     /// every reason a run must not start quietly.
-    fn start(&mut self, id: &str, date: Option<&str>, from: Option<&str>, dry: bool) -> Result<String, String> {
+    fn start(
+        &mut self,
+        id: &str,
+        date: Option<&str>,
+        from: Option<&str>,
+        dry: bool,
+        set: &BTreeMap<String, String>,
+    ) -> Result<String, String> {
         let def = self.startable(id)?.clone();
         let date = match date {
             Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
             None => Local::now().date_naive(),
         };
         if dry {
-            return self.runner.dry(&def, date);
+            return self.runner.dry(&def, date, set);
         }
-        match from {
-            Some(from) => self.runner.start_at(&def, date, from),
-            None => self.runner.start(&def, date, How::Manual, None),
-        }
+        self.runner.start_manual(&def, date, from, set)
     }
 
     /// Starts `run` again ([`Runner::rerun`]): with the definition that run
@@ -1141,7 +1146,7 @@ impl State {
                 toml::to_string(def).map_err(|e| e.to_string())
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
-            Request::Run { id, date, from, dry } => self.start(id, date.as_deref(), from.as_deref(), *dry),
+            Request::Run { id, date, from, dry, params } => self.start(id, date.as_deref(), from.as_deref(), *dry, params),
             Request::Rerun { run, from } => self.rerun(run, from.as_deref()),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),

@@ -183,6 +183,7 @@ caution = "About the calendars"
 missed = "{0}: the run at {1} was passed over (the PC was off)"
 recovered_title = "↺ Back to normal"
 recovered = "{0} ended ok again after the abnormal run {1}"
+tail = "The end of the log of {0}"
 ask_title = "✋ Waiting for you"
 ask = "{0}: {1} is waiting for approval (koyomi approve-step, or the window)"
 done = "Ended ok"
@@ -455,6 +456,13 @@ empty = "Enter a group and a name"
 bad = "/ \\ : * ? \" < > | and a trailing . cannot be used"
 exists = "Already there: {0}"
 unsaved = "Save or close the changes you are editing first"
+
+[give]
+title = "Run with values"
+lead = "The [params] values of {0}. Only the ones you change are used for this run (an emptied field gives an empty value)."
+go = "Run"
+cancel = "Cancel"
+hint = "Enter: run   Esc: cancel   Tab: next field"
 
 [versions]
 title = "Compare versions"

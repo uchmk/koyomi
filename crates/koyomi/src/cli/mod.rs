@@ -9,6 +9,7 @@
 //! 2 used wrongly.
 
 use std::cell::RefCell;
+use std::collections::BTreeMap;
 use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
@@ -29,10 +30,11 @@ usage: koyomi [--version | --help | env]
        koyomi list [--group <group>] the definitions and where each stands (--group: that group's only)
        koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
-       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD]] [--dry] [--wait]
+       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD]] [--set name=value]... [--dry] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
                                      --date: for that business day, or each day of A..B in turn; --dry: start nothing, print each job's
-                                     command with the dates written out; --wait: stay until it ends)
+                                     command with the dates written out; --set: a value for the net's [params];
+                                     --wait: stay until it ends)
        koyomi rerun <run> [--from <job>] [--wait]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too)
        koyomi next <group/name> [--count N]
@@ -767,9 +769,16 @@ fn run_cmd(args: &[String]) -> i32 {
     let Some(id) = rest.next() else { return usage("run takes one group/name") };
     let id = id.replace('\\', "/");
     let (mut date, mut from, mut wait, mut dry) = (None, None, false, false);
+    let mut params = BTreeMap::new();
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--dry" => dry = true,
+            "--set" => match rest.next().and_then(|kv| kv.split_once('=')) {
+                Some((k, v)) if !k.trim().is_empty() => {
+                    params.insert(k.trim().to_owned(), v.to_owned());
+                }
+                _ => return usage("--set takes name=value"),
+            },
             "--date" => match rest.next() {
                 Some(d) => date = Some(d.clone()),
                 None => return usage("--date takes YYYY-MM-DD or YYYY-MM-DD..YYYY-MM-DD"),
@@ -779,7 +788,7 @@ fn run_cmd(args: &[String]) -> i32 {
                 None => return usage("--from takes a job"),
             },
             "--wait" => wait = true,
-            _ => return usage("run takes --from, --date, --dry and --wait"),
+            _ => return usage("run takes --from, --date, --set, --dry and --wait"),
         }
     }
     if let Some(range) = date.as_deref().filter(|d| d.contains("..")) {
@@ -791,7 +800,7 @@ fn run_cmd(args: &[String]) -> i32 {
         for day in days {
             let date = Some(day.to_string());
             let code = if dry {
-                match client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry }) {
+                match client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry, params: params.clone() }) {
                     Ok(t) => {
                         out(t.trim_end(), false);
                         0
@@ -799,7 +808,7 @@ fn run_cmd(args: &[String]) -> i32 {
                     Err(e) => fail(&e),
                 }
             } else {
-                started(client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry }), true)
+                started(client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry, params: params.clone() }), true)
             };
             if code != 0 {
                 return code;
@@ -808,7 +817,7 @@ fn run_cmd(args: &[String]) -> i32 {
         return 0;
     }
     if dry {
-        return match client::call(&Request::Run { id, date, from, dry }) {
+        return match client::call(&Request::Run { id, date, from, dry, params }) {
             Ok(t) => {
                 out(t.trim_end(), false);
                 0
@@ -816,7 +825,7 @@ fn run_cmd(args: &[String]) -> i32 {
             Err(e) => fail(&e),
         };
     }
-    started(client::call(&Request::Run { id, date, from, dry }), wait)
+    started(client::call(&Request::Run { id, date, from, dry, params }), wait)
 }
 
 /// The days of `A..B` (both ends included, at most a year).

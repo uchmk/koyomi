@@ -39,6 +39,12 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if net.wake {
         push(&mut out, "wake", "true");
     }
+    if !net.params.is_empty() {
+        out.push_str("\n[params]\n");
+        for (k, v) in &net.params {
+            push(&mut out, k, &q(v));
+        }
+    }
     for w in &net.when {
         when(w, &mut out);
     }
@@ -514,6 +520,26 @@ run = [\"x.exe\"]
             .wake
         );
         assert!(jobnet::parse(&src.replace("true", "\"yes\"")).is_err());
+    }
+
+    #[test]
+    fn params_survive_a_round_trip_and_are_checked() {
+        let src = "format = 1
+
+[params]
+month = \"{month-1:%Y-%m}\"
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\", \"{param:month}\"]
+";
+        let net = jobnet::parse(src).unwrap();
+        assert_eq!(net.params["month"], "{month-1:%Y-%m}");
+        assert_eq!(text(&net), src);
+        let msg = |e: Vec<jobnet::Problem>| e.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join(" / ");
+        assert!(msg(jobnet::parse(&src.replace("{param:month}", "{param:day}")).unwrap_err()).contains("{param:day}: [params] にない"));
+        assert!(msg(jobnet::parse(&src.replace("month = ", "1m = ")).unwrap_err()).contains("params の名前に使えない"));
+        assert!(msg(jobnet::parse(&src.replace("\"{month-1:%Y-%m}\"", "3")).unwrap_err()).contains("params の値は文字列"));
     }
 
     #[test]
