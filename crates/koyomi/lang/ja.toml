@@ -512,6 +512,9 @@ pick = "今あるものと違うものが {0} 件あります。どうするか�
 hint_path = "Enter: 読む　Esc: やめる"
 hint_pick = "Tab で選び Enter　Esc: やめる"
 exported = "書いた: {0}（{1} 件。webhook の宛先は *** にした）"
+export_empty = "書き出すものがない"
+no_dir = "{0} を作れない: {1}"
+plain = "{0}"
 
 [make]
 title = "新しいジョブネット"

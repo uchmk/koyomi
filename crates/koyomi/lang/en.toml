@@ -513,6 +513,9 @@ pick = "{0} differ from what is there. Choose what to do (the old contents are k
 hint_path = "Enter: read  Esc: cancel"
 hint_pick = "Tab picks, Enter  Esc: cancel"
 exported = "Written: {0} ({1} items; webhook addresses as ***)"
+export_empty = "Nothing to export"
+no_dir = "Cannot create {0}: {1}"
+plain = "{0}"
 
 [make]
 title = "New jobnet"

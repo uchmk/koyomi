@@ -41,7 +41,7 @@ enum Msg {
     /// The engine's answer to a request the window sent.
     Answer(Request, Result<String, String>),
     /// File work done off the UI thread: a line for under the detail, or why not.
-    Done(Result<Said, String>),
+    Done(Result<Said, Said>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
     PortText(String, Result<String, String>),
 }
@@ -227,7 +227,7 @@ pub struct Browser {
     /// Where threads started by [`Browser::background`] report, and the window to wake.
     io: (Sender<Msg>, egui::Context),
     /// What [`Msg::Done`] brought, until [`Browser::show`] has the words for it.
-    done: Option<Result<Said, String>>,
+    done: Option<Result<Said, Said>>,
     tx: Sender<Request>,
     watch: Watch,
     snap: Option<Snapshot>,
@@ -1004,7 +1004,7 @@ impl Browser {
     }
 
     /// Runs file work on its own thread; the line it returns shows under the detail.
-    fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<Said, String> + Send + 'static) {
+    fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<Said, Said> + Send + 'static) {
         let (tx, ctx) = io.clone();
         std::thread::spawn(move || {
             let _ = tx.send(Msg::Done(work()));
@@ -1288,7 +1288,8 @@ impl Browser {
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
         if let Some(done) = self.done.take() {
-            self.result = Some(done.map(|(key, args)| t.trf(key, &args.iter().map(String::as_str).collect::<Vec<_>>())));
+            let words = |(key, args): Said| t.trf(key, &args.iter().map(String::as_str).collect::<Vec<_>>());
+            self.result = Some(done.map(words).map_err(words));
         }
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
@@ -2454,27 +2455,36 @@ impl Browser {
 
 /// Everything in the settings folder, as one file under `exports/` in the
 /// state folder: its path and how many things it carries.
-fn export_all() -> Result<(String, usize), String> {
-    let paths = engine::Paths::find()?;
+fn export_all() -> Result<(String, usize), Said> {
+    let paths = engine::Paths::find().map_err(plain)?;
     let src = koyomi_core::bundle::Source::read(&paths.app);
-    let b = koyomi_core::bundle::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() })?;
+    let b = koyomi_core::bundle::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() }).map_err(plain)?;
     if b.is_empty() {
-        return Err("書き出すものがない".to_owned());
+        return Err(("port.export_empty", Vec::new()));
     }
     let dir = paths.state.join("exports");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", dir.display()))?;
+    std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{}.toml", chrono::Local::now().format("%Y%m%d-%H%M%S")));
-    ito_common::write_atomic(&path, b.to_toml())?;
+    ito_common::write_atomic(&path, b.to_toml()).map_err(plain)?;
     Ok((path.display().to_string(), b.len()))
 }
 
 /// `text` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
-fn export_csv(what: &str, text: &str) -> Result<String, String> {
-    let dir = engine::Paths::find()?.state.join("exports");
-    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", dir.display()))?;
+fn export_csv(what: &str, text: &str) -> Result<String, Said> {
+    let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{what}-{}.csv", chrono::Local::now().format("%Y%m%d-%H%M%S"))).display().to_string();
-    crate::csv::write(&path, text)?;
+    crate::csv::write(&path, text).map_err(plain)?;
     Ok(path)
+}
+
+/// A failure from below, whose words are already made: told as they are.
+fn plain(e: String) -> Said {
+    ("port.plain", vec![e])
+}
+
+fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
+    ("port.no_dir", vec![dir.display().to_string(), e.to_string()])
 }
 
 #[cfg(test)]
@@ -3023,6 +3033,10 @@ mod tests {
         let mut s = Screen::new();
         s.settle(&mut b);
         assert!(matches!(&b.result, Some(Ok(m)) if m == "書いた: C:/x.csv"), "{:?}", b.result);
+        // A failure is worded the same way.
+        b.io.0.send(Msg::Done(Err(("port.no_dir", vec!["C:/e".to_owned(), "denied".to_owned()])))).unwrap();
+        s.settle(&mut b);
+        assert!(matches!(&b.result, Some(Err(m)) if m == "C:/e を作れない: denied"), "{:?}", b.result);
     }
 
     /// The 対応済みにする button hands over the run's id only for a run that ended in failure.
