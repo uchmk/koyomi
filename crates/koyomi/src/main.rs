@@ -718,6 +718,9 @@ impl eframe::App for App {
             .show(ui, |ui| self.title_bar(ui));
         let acks = self.browser.take_acks();
         self.acked.ack(acks.iter().map(String::as_str));
+        if let Some(ids) = self.acked.take_changed() {
+            self.browser.set_acked(ids);
+        }
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();

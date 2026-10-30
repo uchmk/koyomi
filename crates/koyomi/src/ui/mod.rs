@@ -261,6 +261,8 @@ pub struct Browser {
     ended: Vec<Run>,
     /// The runs 対応済みにする was pressed for, until [`Browser::take_acks`].
     to_ack: Vec<String>,
+    /// The runs already dealt with, as the app keeps them: the button says so.
+    acked: BTreeSet<String>,
     /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
     seen_notes: BTreeSet<String>,
     notes: Vec<String>,
@@ -390,6 +392,7 @@ impl Browser {
             over: None,
             ended: Vec::new(),
             to_ack: Vec::new(),
+            acked: BTreeSet::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
@@ -607,6 +610,10 @@ impl Browser {
     }
 
     /// The runs the person marked 対応済み since the last call (the app keeps them in `acked.toml`).
+    pub fn set_acked(&mut self, ids: BTreeSet<String>) {
+        self.acked = ids;
+    }
+
     pub fn take_acks(&mut self) -> Vec<String> {
         std::mem::take(&mut self.to_ack)
     }
@@ -2052,9 +2059,12 @@ impl Browser {
                 let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
             }
             // A failure dealt with: it leaves the count in the status bar.
-            let r = ui.add_enabled(run.is_over() && run.state.is_error(), egui::Button::new(t.tr("run.ack")));
-            ito_a11y::say(&r, Role::Button, t.tr("run.ack"));
+            let done = self.acked.contains(&run.id);
+            let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
+            let r = ui.add_enabled(run.is_over() && run.state.is_error() && !done, egui::Button::new(words));
+            ito_a11y::say(&r, Role::Button, words);
             if r.clicked() {
+                self.acked.insert(run.id.clone());
                 self.to_ack.push(run.id.clone());
                 self.result = Some(Ok(t.tr("run.acked").to_owned()));
             }
@@ -2569,6 +2579,7 @@ mod tests {
             over: None,
             ended: Vec::new(),
             to_ack: Vec::new(),
+            acked: BTreeSet::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
@@ -3015,7 +3026,12 @@ mod tests {
         s.click("対応済みにする", &mut b);
         assert_eq!(b.take_acks(), vec!["r1".to_owned()]);
         assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにした"));
+        // Dealt with: the button says so and is off.
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|n| n.0 == "対応済み"));
+        assert!(!s.nodes.values().any(|n| n.0 == "対応済みにする"));
         // A run that ended well: the button does nothing.
+        b.acked.clear();
         b.runs[0].state = State::Ok;
         s.settle(&mut b);
         s.click("対応済みにする", &mut b);
