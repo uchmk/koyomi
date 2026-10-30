@@ -1,6 +1,6 @@
 # Checklist
 
-482 checks in TESTING.md, 478 left for a person.
+488 checks in TESTING.md, 484 left for a person.
 
 ## 1. Start
 
@@ -693,3 +693,12 @@
 - [ ] **70.4** `notify_to = ["夜間"]` (no place has it); `koyomi check <file>` → `注意: koyomi.toml の [notify] にその名前の通知先がない: 夜間`; the file still reads (a warning) 〔未訳〕
 - [ ] **70.5** `notify_to = "経理"`, `notify_to = ["経理", "経理"]`, or `to = ["ops"]` on a plain job; `koyomi check <file>` → `notify_to は通知の場所の名前の配列で書く…` / `notify_to: 同じ名前が 2 つある: 経理` / `to は kind = "notify" にだけ書く`; the net cannot be approved 〔未訳〕
 - [ ] **70.6** Stop the engine for a while with webhooks named and not, then start it → The outage notice reaches every place 〔未訳〕
+
+## 71. メールの通知
+
+- [ ] **71.1** `koyomi secret set mail-ops` (the SMTP password); `koyomi.toml`: `[[notify.mails]]` with `host`, `user`, `password = "secret:mail-ops"`, `from`, `to = ["<your address>"]` (port left out: 587, STARTTLS); a net that fails → A mail of the net's failure, with the run's last lines; no mail when the net ends well (only `failed` unless `states` says more) 〔未訳〕
+- [ ] **71.2** The same with `port = 465` and a server that takes TLS from the start → The mail arrives 〔未訳〕
+- [ ] **71.3** `states = ["done", "failed"]` on the mail; a net that ends well → A mail arrives for `done` too 〔未訳〕
+- [ ] **71.4** `name = "ops"` on the mail; a net with `notify_to = ["ops"]`, another with no `notify_to` → Only the first net's notice is mailed; `koyomi check` on a net naming `ops` gives no warning 〔未訳〕
+- [ ] **71.5** `password = "hunter2"` (plain text) → The engine's log and the settings page say `[[notify.mails]] 1: …password…` (write `secret:`) 〔未訳〕
+- [ ] **71.6** A wrong `host` or password → The failure is in the engine's log (stderr), after one retry 30 s later; the run's state is not changed 〔未訳〕

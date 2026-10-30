@@ -4,6 +4,16 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-30
+
+### 追加
+
+- メールの通知。`koyomi.toml` に `[[notify.mails]]`（`host`・`port`・`user`・`password`・`from`・`to`）を書くと、ネットの知らせをメールでも送る。ポートは既定で 587（STARTTLS）、465 は最初から TLS。パスワードは `koyomi secret set <名前>` で資格情報に入れ、`password = "secret:<名前>"` で指す（平文は注意を出す）。何も書かないときに送るのは `failed` だけ（webhook と同じ）。`name` を付ければ `notify_to` の宛先として指せる。送れなかったときは 30 秒後に 1 度だけ送り直し、だめならエンジンのログに書く。
+
+### 変更
+
+- ito を v0.136.0 に上げた（`ito-notify` のメール）。
+
 ## [0.7.0] - 2026-10-30
 
 ### 追加

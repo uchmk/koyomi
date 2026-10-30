@@ -128,7 +128,7 @@
 - [x] 60. F4 2 つの実行を比べる（S）: ジョブごとの所要・終了コード・ログの差分。`ito-diff`。
 - [x] 61. F5 流さない時間帯（S）: `quiet = ["12:00-13:00"]`。来た回は終わりまで待つか、スキップ。
 - [x] 62. E3 ジョブネットごとの通知の宛先（S）: `to`。`ito-notify`。E2 と組みで形を決める。
-- [ ] 63. E2 メールの通知（M）: SMTP、パスワードは `secret:`。先に uchmk/ito に `crate-request` を立てる（`ito-notify` にメール）。
+- [x] 63. E2 メールの通知（M）: SMTP、パスワードは `secret:`。先に uchmk/ito に `crate-request` を立てる（`ito-notify` にメール）。
 
 ## 雛形の配線
 

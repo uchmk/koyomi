@@ -1,12 +1,13 @@
-//! Telling of a run that ended: the system's notification, the sound and the
-//! webhooks, as `[notify]` in `koyomi.toml` turns them on (ito-prefs's shape,
-//! the same table every uchmk app reads).
+//! Telling of a run that ended: the system's notification, the sound, the
+//! webhooks and the mails, as `[notify]` in `koyomi.toml` turns them on
+//! (ito-prefs's shape, the same table every uchmk app reads).
 //!
 //! Nothing written: only 異常 is told, through the system's notification, and
 //! without a sound. The way a run was started (a time, the window, the
 //! console) changes nothing here. A webhook address is kept in the OS
 //! credential store (`secret:<name>`); one written in plain text is not sent
-//! to until `hide_webhooks = false` says that is meant.
+//! to until `hide_webhooks = false` says that is meant. A mail's password is
+//! only ever `secret:<name>`.
 
 use chrono::{Duration, NaiveDateTime};
 use ito_i18n::Table;
@@ -69,6 +70,9 @@ pub fn parse(config: &Config) -> (NotifyCfg, Vec<String>) {
     n.webhook_states.get_or_insert_with(quiet);
     for h in &mut n.webhooks {
         h.states.get_or_insert_with(quiet);
+    }
+    for m in &mut n.mails {
+        m.states.get_or_insert_with(quiet);
     }
     n.hide_webhooks.get_or_insert(true);
     n.check(&EVENTS, PATH, &mut notes);
@@ -308,11 +312,12 @@ pub fn to(n: &NotifyCfg, to: &[String]) -> NotifyCfg {
 }
 
 /// The names `net` sends to (`notify_to`, a notify part's `to`) that no
-/// place of `n` has: a notice for them would go to no webhook.
+/// place of `n` has: a notice for them would go to no webhook and no mail.
 pub fn unknown(n: &NotifyCfg, net: &Jobnet) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     for name in net.notify_to.iter().chain(net.jobs.iter().flat_map(|j| &j.to)) {
-        if !n.places.iter().any(|p| &p.name == name) && !out.contains(name) {
+        let known = n.places.iter().any(|p| &p.name == name) || n.mail_places.iter().any(|m| &m.name == name);
+        if !known && !out.contains(name) {
             out.push(name.clone());
         }
     }
@@ -325,13 +330,14 @@ pub fn tell(n: &NotifyCfg, event: &str, title: &str, body: &str) {
 }
 
 /// Like [`tell`], with the end of the failed jobs' logs: the system's
-/// notification (and the sound) gets its one line, the webhooks its lines.
+/// notification (and the sound) gets its one line, the webhooks and the mails its lines.
 pub fn tell_tail(n: &NotifyCfg, event: &str, title: &str, body: &str, tail: &Tail) {
     if tail.lines.is_empty() {
         return tell(n, event, title, body);
     }
     let mut here = n.clone();
     here.places.clear();
+    here.mail_places.clear();
     here.tell(&EVENTS, APP, icon, event, title, &format!("{body}\n{}", tail.line));
     let mut hooks = n.clone();
     hooks.system = Some(Vec::new());
@@ -361,6 +367,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown(&n, &net), ["夜間", "保守"]);
+        n.mail_places = vec![ito_notify::mail::Mail { name: "保守".into(), ..Default::default() }];
+        assert_eq!(unknown(&n, &net), ["夜間"]);
+        let urls = |c: NotifyCfg| c.mail_places.into_iter().map(|m| m.name).collect::<Vec<_>>();
+        assert_eq!(urls(super::to(&n, &["保守".into()])), ["保守"]);
+        assert!(urls(super::to(&n, &[])).is_empty());
+    }
+
+    #[test]
+    fn a_mail_is_told_of_failed_unless_written_and_its_password_is_a_secret() {
+        let (n, notes) = read(&cfg(
+            "[[notify.mails]]\nname = \"ops\"\nhost = \"smtp.example.com\"\nuser = \"jobs\"\npassword = \"secret:mail-ops\"\nfrom = \"jobs@example.com\"\nto = [\"ops@example.com\"]\n",
+        ));
+        assert!(notes.is_empty(), "{notes:?}");
+        assert_eq!(n.mail_places.len(), 1);
+        let m = &n.mail_places[0];
+        assert_eq!((m.name.as_str(), m.port, m.states.clone()), ("ops", 587, vec!["failed".to_owned()]));
+        let (_, notes) = read(&cfg(
+            "[[notify.mails]]\nhost = \"smtp.example.com\"\nuser = \"jobs\"\npassword = \"hunter2\"\nfrom = \"jobs@example.com\"\nto = [\"ops@example.com\"]\n",
+        ));
+        assert!(notes.iter().any(|w| w.contains("[[notify.mails]] 1") && w.contains("password")), "{notes:?}");
     }
 
     #[test]
