@@ -387,6 +387,8 @@ pub fn valid_name(name: &str) -> bool {
         && name != "."
         && name != ".."
         && !name.starts_with('_')
+        && !name.ends_with(['.', ' '])
+        && !crate::jobnet::reserved(name)
         && !name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
 }
 
@@ -648,6 +650,7 @@ mod tests {
         assert_eq!(p("format = 1\nfoo = 1\n"), "知らない欄 foo");
         assert!(valid_name("会社") && valid_name("本社 2026"));
         assert!(!valid_name("") && !valid_name("..") && !valid_name("a/b") && !valid_name("a\\b") && !valid_name("_x"));
+        assert!(!valid_name("NUL") && !valid_name("com1") && !valid_name("a.") && !valid_name("a "));
     }
 
     #[test]
