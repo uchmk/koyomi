@@ -189,7 +189,11 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
             let t = time.fract() as f32;
             painter.circle_stroke(p, RADIUS + 2.0 + 10.0 * t, Stroke::new(3.0 * (1.0 - t) + 0.5, ito_theme::mix(col, c.bg, t)));
         }
-        let (fill, stroke) = if quiet { (c.panel, Stroke::new(2.5, c.border_strong())) } else { (col, Stroke::new(3.0, c.bg)) };
+        let (fill, stroke) = if quiet {
+            (c.panel, Stroke::new(2.5, if j.state == State::NotRun { c.dim } else { c.border_strong() }))
+        } else {
+            (col, Stroke::new(3.0, c.bg))
+        };
         if j.part.runs_process() {
             painter.circle(p, RADIUS, fill, stroke);
         } else {

@@ -2361,6 +2361,23 @@ impl Browser {
         let lines = review::jobs(t, &def);
         if !lines.is_empty() {
             section(ui, "net.sec_jobs");
+            if let Some(net) = &def.net {
+                egui::Grid::new("net_jobs").striped(true).num_columns(4).show(ui, |ui| {
+                    for h in ["net.col_id", "net.col_kind", "net.col_name", "net.col_after"] {
+                        ui.label(egui::RichText::new(t.tr(h)).strong());
+                    }
+                    ui.end_row();
+                    for j in &net.jobs {
+                        ui.label(&j.id);
+                        ui.label(t.tr(&format!("part.{}", j.part.key())));
+                        ui.label(j.name.as_deref().unwrap_or(""));
+                        let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
+                        ui.label(after.join(", "));
+                        ui.end_row();
+                    }
+                });
+                ui.add_space(4.0);
+            }
             for l in lines {
                 ui.label(l);
             }
