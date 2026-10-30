@@ -474,3 +474,15 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 31.11 | Make a net and press 閉じる without saving | The discard question comes first, with the keyboard on やめる (Enter keeps the editor); Tab, then Enter on 捨てて閉じる leaves no file |
 | 31.12 | `koyomi --keys "<Wait:2500><C-n><Wait:400>shime<Enter><Wait:300><State:b><S-Tab>keiri<Enter><Wait:500><State:c><Quit>"` | `b.txt` has `make: /shime (グループと名前を入れてください)`; `c.txt` has `editor: keiri/shime dirty=true parts=1 … new=true` (with no nets yet; once a group exists, its list sits between the two fields, so press `<S-Tab>` twice) |
 | 31.13 | Narrator / NVDA over the box | The fields are read as グループ and 名前, the buttons by their labels; the error is read as text |
+
+
+## 32. 日付の埋め込み
+
+| # | Do | Expect |
+|---|---|---|
+| 32.1 | A job `run = ["cmd.exe", "/c", "echo", "{date}", "{month-1}"]`; `koyomi run <net> --date 2026-01-15 --wait`, then `koyomi log` | The log has `2026-01-15 202512` |
+| 32.2 | A net with `calendar = "会社"` (土日 off) and `{date-1bd:%m%d}`; run it with `--date 2026-11-02` | The log has `1030` (the Friday) |
+| 32.3 | The same `{date-1bd}` in a net with no calendar; `koyomi run` | Refused: `… 営業日で動かすには calendar が要る`; no run starts |
+| 32.4 | Write `{date-1x}` in `run`; `koyomi check` | A problem with the line number: `run: {date-1x}: 単位が読めない…` |
+| 32.5 | A PowerShell `script` with `@{ a = 1 }` and `{ … }` | Runs as written; the braces are not touched |
+| 32.6 | `koyomi rerun` a run of an earlier day | The tokens are written for that run's business day, not today |

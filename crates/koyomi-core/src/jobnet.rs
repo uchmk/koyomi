@@ -1221,6 +1221,13 @@ impl Checker<'_> {
                 }
                 (Vec::new(), None, None, None, None, None)
             };
+            for (text, name) in
+                run.iter().map(|t| (t, "run")).chain(script.iter().map(|t| (t, "script"))).chain(dir.iter().map(|t| (t, "dir")))
+            {
+                if let Err(e) = crate::template::check(text) {
+                    self.add(start, format!("{name}: {e}"));
+                }
+            }
             let timeout = if part.is_job() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
             } else {
@@ -1493,6 +1500,18 @@ after = ["extract"]
         let p = problems("format = 1\nname = \n");
         assert_eq!(p.len(), 1);
         assert!(p[0].starts_with("a.toml の 2 行目: TOML の書き方が違う"), "{p:?}");
+    }
+
+    #[test]
+    fn date_tokens_are_checked_in_run_script_and_dir() {
+        let head = "format = 1\n[[job]]\nid = \"a\"\n";
+        assert!(
+            problems(&format!("{head}run = [\"x.exe\", \"{{month-1}}\", \"{{date-1bd:%Y%m%d}}\"]\ndir = 'D:\\{{date:%Y}}'\n")).is_empty()
+        );
+        let p = problems(&format!("{head}run = [\"x.exe\", \"{{date-1x}}\"]\n"));
+        assert!(p.len() == 1 && p[0].contains("run: {date-1x}: 単位が読めない"), "{p:?}");
+        let p = problems(&format!("{head}shell = \"powershell\"\nscript = \"Get-Date -f {{date:%Q}}\"\n"));
+        assert!(p.len() == 1 && p[0].contains("script: ") && p[0].contains("書式が読めない"), "{p:?}");
     }
 
     #[test]

@@ -29,11 +29,13 @@ use std::time::{Duration, Instant, SystemTime};
 
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
+use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
 use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry};
 use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
+use koyomi_core::template;
 
 /// How much of a log `koyomi log` and the window get: the last 64 KB.
 pub const TAIL: u64 = 64 * 1024;
@@ -174,6 +176,9 @@ pub struct Runner {
     waits: Vec<Waiting>,
     /// The `kind = "notify"` parts that ended since [`Runner::take_notices`]: (run, job).
     notices: Vec<(String, String)>,
+    /// `calendars/*.toml` and the calendar each net counts by: what `{date-1bd}` in a job needs.
+    calendars: BTreeMap<String, Calendar>,
+    calendar_of: BTreeMap<String, String>,
 }
 
 impl Runner {
@@ -193,6 +198,8 @@ impl Runner {
             over: Vec::new(),
             queue: Vec::new(),
             children: BTreeMap::new(),
+            calendars: BTreeMap::new(),
+            calendar_of: BTreeMap::new(),
             waits: Vec::new(),
             notices: Vec::new(),
         };
@@ -236,8 +243,17 @@ impl Runner {
     }
 
     /// `net` with its child jobnets' jobs in place of their parts ([`jobnet::expand`]).
-    fn expand(&self, net: &Jobnet) -> Result<Jobnet, String> {
-        jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))
+    /// The calendars, and the one each net counts by (`jobnet id` → `calendar name`).
+    pub fn set_calendars(&mut self, calendars: BTreeMap<String, Calendar>, calendar_of: BTreeMap<String, String>) {
+        self.calendars = calendars;
+        self.calendar_of = calendar_of;
+    }
+
+    /// The net with its child nets in, and `{date}` in its jobs written out for the business day `date`.
+    fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate) -> Result<Jobnet, String> {
+        let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
+        let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
+        template::expand_net(&net, date, cal)
     }
 
     pub fn set_config(&mut self, config: Config) {
@@ -309,7 +325,7 @@ impl Runner {
 
     /// A new run of `def`, not launched yet: the net expanded, no other run of it going.
     fn prepare(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>, from: Option<&str>) -> Result<Run, String> {
-        let net = self.expand(def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?)?;
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date)?;
         self.not_running(&def.id, def.label())?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
@@ -334,7 +350,7 @@ impl Runner {
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let net =
             jobnet::parse(&text).map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
-        let net = self.expand(&net)?;
+        let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let run = Run::rerun(&id, &prev, &net, from, now)?;
@@ -1525,6 +1541,44 @@ id = \"a\"
         let run = wait_over(&mut r, &id3);
         assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
         assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn date_tokens_in_a_job_are_written_out_for_the_business_day() {
+        let dir = scratch("tokens");
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+calendar = \"会社\"
+[[job]]
+id = \"b\"
+{}
+",
+                echo("m{month-1}_{date-1bd:%m%d}")
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let cal = koyomi_core::calendar::Calendar { weekly_off: vec![chrono::Weekday::Sat, chrono::Weekday::Sun], ..Default::default() };
+        r.set_calendars(BTreeMap::from([("会社".to_owned(), cal)]), BTreeMap::from([("net".to_owned(), "会社".to_owned())]));
+        let id = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap();
+        wait_over(&mut r, &id);
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "m202610_1030");
+        // `bd` without a calendar is refused before anything runs.
+        let d = def(
+            "bare",
+            &format!(
+                "format = 1
+[[job]]
+id = \"b\"
+{}
+",
+                echo("{date-1bd}")
+            ),
+        );
+        let err = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap_err();
+        assert!(err.contains("calendar が要る"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

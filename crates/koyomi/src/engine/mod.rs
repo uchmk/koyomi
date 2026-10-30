@@ -479,6 +479,10 @@ impl State {
         self.calendars = Calendars::load(&self.paths.calendars);
         self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
         self.runner.set_children(Self::children_of(&self.defs));
+        self.runner.set_calendars(
+            self.calendars.map.clone(),
+            self.defs.iter().filter_map(|d| Some((d.id.clone(), d.calendar.clone()?))).collect(),
+        );
         // Files there before the watch began are not run: they may be old, and
         // a restart must not run them again. The record says they were there.
         let now = Local::now().naive_local();

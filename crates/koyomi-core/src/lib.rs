@@ -17,5 +17,6 @@ pub mod layout;
 pub mod retain;
 pub mod run;
 pub mod scan;
+pub mod template;
 pub mod when;
 pub mod write;
