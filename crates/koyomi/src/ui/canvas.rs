@@ -121,6 +121,8 @@ pub struct Fields {
     pub from: String,
     pub into: String,
     pub key: String,
+    pub host_key: String,
+    pub password: String,
     /// An `http`'s call; `headers` one `Name: value` a line, `expect` the codes with `,`.
     pub url: String,
     pub method: String,
@@ -195,10 +197,12 @@ impl Fields {
                     f.into = into.clone();
                     f.pattern = pattern.clone().unwrap_or_default();
                 }
-                Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => {
+                Chore::Send { from, into, key, host_key, password } | Chore::Fetch { from, into, key, host_key, password } => {
                     f.from = from.clone();
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
+                    f.host_key = host_key.clone().unwrap_or_default();
+                    f.password = password.clone().unwrap_or_default();
                 }
                 Chore::Http { url, method, body, content_type, headers, expect } => {
                     f.url = url.clone();
@@ -333,10 +337,20 @@ impl Fields {
                     Chore::Copy { .. } => {
                         Chore::Copy { from: self.from.trim().into(), into: self.into.trim().into(), pattern: opt(&self.pattern) }
                     }
-                    Chore::Send { .. } => Chore::Send { from: self.from.trim().into(), into: self.into.trim().into(), key: opt(&self.key) },
-                    Chore::Fetch { .. } => {
-                        Chore::Fetch { from: self.from.trim().into(), into: self.into.trim().into(), key: opt(&self.key) }
-                    }
+                    Chore::Send { .. } => Chore::Send {
+                        from: self.from.trim().into(),
+                        into: self.into.trim().into(),
+                        key: opt(&self.key),
+                        host_key: opt(&self.host_key),
+                        password: opt(&self.password),
+                    },
+                    Chore::Fetch { .. } => Chore::Fetch {
+                        from: self.from.trim().into(),
+                        into: self.into.trim().into(),
+                        key: opt(&self.key),
+                        host_key: opt(&self.host_key),
+                        password: opt(&self.password),
+                    },
                     Chore::Http { .. } => self.http()?,
                 };
                 chore.check()?;
@@ -1360,6 +1374,8 @@ impl Editor {
                                 changed |= field(ui, if send { "field.send_from" } else { "field.fetch_from" }, &mut f.from);
                                 changed |= field(ui, if send { "field.send_into" } else { "field.fetch_into" }, &mut f.into);
                                 changed |= field(ui, "field.key", &mut f.key);
+                                changed |= field(ui, "field.host_key", &mut f.host_key);
+                                changed |= field(ui, "field.password", &mut f.password);
                             }
                             Chore::Http { .. } => {
                                 changed |= field(ui, "field.url", &mut f.url);

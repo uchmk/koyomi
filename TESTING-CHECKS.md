@@ -825,12 +825,12 @@
 
 - [ ] **82.1** `kind = "send"`, `from = 'D:\out\*.csv'`, `into = '\\nas\share\in\{date}'`; run it → The csv files are in the share's folder for today (made when missing); the log says `sent: …` for each; ✓ 〔未訳〕
 - [ ] **82.2** `kind = "fetch"`, `from = '\\nas\share\out\*.csv'`, `into = 'D:\in'`; run it; then once more with no csv in the share → ✓ and the files are in `D:\in`; the second run is ⚠ 警告 with `no file to fetch: …` 〔未訳〕
-- [ ] **82.3** An SFTP server you can reach with a key; connect once with `ssh user@host` as the engine's account (accept the host key); `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` → ✓; the files are in `/in` on the server; the log has sftp's `put` lines and `sent: …` 〔未訳〕
+- [ ] **82.3** An SFTP server you can reach with a key; `koyomi sftp hostkey host` prints `host_key = "SHA256:…"`; `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` and that `host_key` → ✓; the files are in `/in` on the server; the log says `sent: <name> (<n> bytes)` for each; `known_hosts` is not used 〔未訳〕
 - [ ] **82.4** `kind = "fetch"`, `from = "sftp://user@host/~/out/*.csv"`, `into = 'D:\in'` → ✓; each csv under the home's `out` is in `D:\in`; a folder that matches is not fetched; no match is ⚠ 警告 〔未訳〕
-- [ ] **82.5** The same send to a host not in `known_hosts`, to a wrong port, or with a key the server does not take → ✕ with exit code 2 and sftp's reason in the log; nothing asks for a password or a yes/no; `retry` tries again 〔未訳〕
-- [ ] **82.6** `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy` → Each is refused with the line and why 〔未訳〕
-- [ ] **82.7** The editor: drag ファイルを送る and ファイルを受け取る from the parts → The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key` 〔未訳〕
-- [ ] **82.8** Approve a net with a send → The confirm box shows 元・先・SSH の鍵 instead of a command 〔未訳〕
+- [ ] **82.5** The same send with a wrong `host_key`, to a wrong port, or with a key the server does not take; then `password = "secret:sftp"` instead of `key` after `koyomi secret set sftp` → ✕ with exit code 2 and `! <why>` in the log; nothing asks anything; `retry` tries again; with the password it is ✓ and the log never shows it 〔未訳〕
+- [ ] **82.6** `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy`, an sftp:// send without `host_key`, `password = "plain"`, both `key` and `password` → Each is refused with the line and why; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
+- [ ] **82.7** The editor: drag ファイルを送る and ファイルを受け取る from the parts → The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; and ホスト鍵・パスワード; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key`・`host_key`・`password` 〔未訳〕
+- [ ] **82.8** Approve a net with a send → The confirm box shows 元・先・SSH の鍵・ホスト鍵・パスワード instead of a command 〔未訳〕
 
 ## 83. HTTP で呼ぶ部品（`kind = "http"`）
 

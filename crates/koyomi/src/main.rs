@@ -31,6 +31,7 @@ mod proto;
 mod report;
 mod review;
 mod settings;
+mod sftp;
 mod show;
 mod ui;
 

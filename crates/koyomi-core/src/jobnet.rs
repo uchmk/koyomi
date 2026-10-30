@@ -659,6 +659,8 @@ struct RawJob {
     from: Field,
     into: Field,
     key: Field,
+    host_key: Field,
+    password: Field,
     url: Field,
     method: Field,
     body: Field,
@@ -973,6 +975,8 @@ impl Checker<'_> {
         }
         if kind != "send" && kind != "fetch" {
             self.only(&j.key, "key", "\"send\" か \"fetch\"");
+            self.only(&j.host_key, "host_key", "\"send\" か \"fetch\"");
+            self.only(&j.password, "password", "\"send\" か \"fetch\"");
         }
         if kind != "http" {
             for (field, name) in [
@@ -1146,15 +1150,20 @@ impl Checker<'_> {
                 let from = path_of(self, &j.from, "from");
                 let into = path_of(self, &j.into, "into");
                 let key = self.string(&j.key, "key").filter(|k| !k.trim().is_empty());
-                if let (Some(k), Some(f)) = (&key, &j.key) {
-                    if let Err(e) = self.template(k) {
-                        self.add(f.span().start, format!("key: {e}"));
+                let host_key = self.string(&j.host_key, "host_key").map(|h| h.trim().to_owned()).filter(|h| !h.is_empty());
+                for (value, field, name) in [(&key, &j.key, "key"), (&host_key, &j.host_key, "host_key")] {
+                    if let (Some(v), Some(f)) = (value, field) {
+                        if let Err(e) = self.template(v) {
+                            self.add(f.span().start, format!("{name}: {e}"));
+                        }
                     }
                 }
+                // A `secret:` name, not a template: nothing in it is filled in.
+                let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
                 if kind == "send" {
-                    Chore::Send { from, into, key }
+                    Chore::Send { from, into, key, host_key, password }
                 } else {
-                    Chore::Fetch { from, into, key }
+                    Chore::Fetch { from, into, key, host_key, password }
                 }
             }
             "http" => self.http(j, start),
@@ -2902,22 +2911,35 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("zip", "from = 'a'\ninto = 'b.zip'\nmatch = '*'\n").contains("match"));
         assert!(bad("empty", "path = 'a'\nencoding = \"utf8\"\n").contains("encoding"));
         assert_eq!(
-            net("send", "from = 'D:\\out\\*.csv'\ninto = \"sftp://partner@ftp.example.com/in/{date}\"\nkey = 'C:\\keys\\partner'\n")
-                .map(|p| p.0),
+            net(
+                "send",
+                "from = 'D:\\out\\*.csv'\ninto = \"sftp://partner@ftp.example.com/in/{date}\"\nkey = 'C:\\keys\\partner'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+            )
+            .map(|p| p.0),
             Ok(Part::Chore(Chore::Send {
                 from: "D:\\out\\*.csv".into(),
                 into: "sftp://partner@ftp.example.com/in/{date}".into(),
-                key: Some("C:\\keys\\partner".into())
+                key: Some("C:\\keys\\partner".into()),
+                host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+                password: None,
             }))
         );
         assert_eq!(
             net("fetch", "from = '\\\\nas\\share\\out\\*.csv'\ninto = 'D:\\in'\n").map(|p| p.0),
-            Ok(Part::Chore(Chore::Fetch { from: "\\\\nas\\share\\out\\*.csv".into(), into: "D:\\in".into(), key: None }))
+            Ok(Part::Chore(Chore::Fetch {
+                from: "\\\\nas\\share\\out\\*.csv".into(),
+                into: "D:\\in".into(),
+                key: None,
+                host_key: None,
+                password: None
+            }))
         );
         assert!(bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n").contains("send の from はこのマシンのファイル"));
         assert!(bad("fetch", "from = 'sftp://h/out/*.csv'\ninto = 'sftp://h/in'\n").contains("fetch の into はこのマシンのフォルダー"));
         assert!(bad("send", "from = 'a'\ninto = 'sftp://-oProxyCommand=calc/in'\n").contains("使えない文字"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nkey = 'c'\n").contains("key"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\npassword = 'secret:c'\n").contains("password"));
+        assert!(bad("send", "from = 'a'\ninto = 'sftp://h/in'\n").contains("host_key が要る"));
         assert!(bad("send", "from = 'a'\n").contains("kind = \"send\" には into が要る"));
         assert_eq!(
             net(

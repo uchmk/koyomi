@@ -1460,6 +1460,10 @@ fn attempt(
         let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
     }
     cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
+    // An SFTP `send` or `fetch` runs `koyomi sftp run` (chore.rs).
+    if let Ok(exe) = std::env::current_exe() {
+        cmd.env("KOYOMI_EXE", exe);
+    }
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
@@ -2164,7 +2168,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
     }
 
     #[test]
-    fn send_and_fetch_copy_between_folders_and_a_dead_sftp_host_is_an_error() {
+    fn send_and_fetch_copy_between_folders() {
         if !cfg!(windows) {
             return;
         }
@@ -2174,8 +2178,9 @@ judge = {{ ok_file = '{ok_file}.none' }}
         for f in ["a.csv", "b.csv", "c.txt"] {
             std::fs::write(out.join(f), "x").unwrap();
         }
-        let has_sftp = std::path::Path::new(&std::env::var("SystemRoot").unwrap_or_default()).join("System32\\OpenSSH\\sftp.exe").exists();
-        let mut text = format!(
+        // An sftp:// side runs `koyomi sftp run` (KOYOMI_EXE), which is the test binary here:
+        // chore.rs and sftp.rs are tested on their own.
+        let text = format!(
             "format = 1\n[[job]]\nid = \"s\"\nkind = \"send\"\nfrom = '{}\\*.csv'\ninto = '{}'\n\
              [[job]]\nid = \"f\"\nkind = \"fetch\"\nfrom = '{}\\*.csv'\ninto = '{}'\nafter = [\"s\"]\n\
              [[job]]\nid = \"none\"\nkind = \"fetch\"\nfrom = '{}\\*.zip'\ninto = '{}'\nafter = [\"f\"]\n",
@@ -2186,15 +2191,6 @@ judge = {{ ok_file = '{ok_file}.none' }}
             share.display(),
             back.display()
         );
-        if has_sftp {
-            // Nothing listens on port 1: sftp.exe fails at once, without asking anything.
-            text.push_str("[[job]]\nid = \"dead\"\nkind = \"send\"\nfrom = '");
-            text.push_str(&out.display().to_string());
-            text.push_str("'\ninto = \"sftp://nobody@127.0.0.1:1/in\"\ntimeout = \"1m\"\nafter = [\"none\"]\n");
-            text.push_str("[[job]]\nid = \"deadf\"\nkind = \"fetch\"\nfrom = \"sftp://nobody@127.0.0.1:1/out/*.csv\"\ninto = '");
-            text.push_str(&back.display().to_string());
-            text.push_str("'\ntimeout = \"1m\"\nafter = [\"none\"]\n");
-        }
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
@@ -2207,13 +2203,6 @@ judge = {{ ok_file = '{ok_file}.none' }}
         assert!(back.join("a.csv").exists() && back.join("b.csv").exists());
         assert!(log("s").contains("sent: "), "{}", log("s"));
         assert!(log("none").contains("no file to fetch"), "{}", log("none"));
-        if has_sftp {
-            let dead = run.job("dead").unwrap();
-            assert_eq!(dead.state, State::Error, "{}", log("dead"));
-            assert_eq!(dead.exit, Some(2), "{}", log("dead"));
-            let deadf = run.job("deadf").unwrap();
-            assert_eq!((deadf.state, deadf.exit), (State::Error, Some(2)), "{}", log("deadf"));
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -104,6 +104,7 @@ usage: koyomi [--version | --help | env]
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
+       koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send or fetch job takes (host_key = SHA256:…)
        koyomi mcp                    an MCP server on stdin/stdout for Claude Code: claude mcp add koyomi -- koyomi mcp
 ";
 
@@ -120,7 +121,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 38] = [
+const COMMANDS: [&str; 39] = [
     "check",
     "list",
     "show",
@@ -158,6 +159,7 @@ const COMMANDS: [&str; 38] = [
     "engine",
     "startup",
     "secret",
+    "sftp",
     "mcp",
 ];
 
@@ -217,6 +219,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
+        "sftp" => crate::sftp::cmd(rest),
         "mcp" => crate::mcp::run(),
         _ => return None,
     };

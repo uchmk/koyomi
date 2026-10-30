@@ -3,7 +3,8 @@
 //! files over SFTP or to and from a shared folder, call a web API. Each is
 //! written in the file as its own `kind` and runs as a PowerShell script the
 //! engine writes when the run starts, so it has the job's slot, log,
-//! `timeout` and `retry`.
+//! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`, which
+//! reads what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -40,9 +41,16 @@ pub enum Chore {
     Send {
         from: String,
         into: String,
-        /// The SSH private key for `sftp://`; without it, the account's own keys.
+        /// The SSH private key for `sftp://`; without it and `password`, the account's own
+        /// key in `~/.ssh`.
         #[serde(default)]
         key: Option<String>,
+        /// The server's host key for `sftp://`, as `SHA256:…` (`koyomi sftp hostkey`).
+        #[serde(default)]
+        host_key: Option<String>,
+        /// `secret:<name>`: log in with the password kept under that name.
+        #[serde(default)]
+        password: Option<String>,
     },
     /// ファイルを受け取る: the files `from`, either `sftp://[user@]host[:port]/folder/*.csv`
     /// or a folder or share (a wildcard allowed), into the folder `into` here.
@@ -51,6 +59,10 @@ pub enum Chore {
         into: String,
         #[serde(default)]
         key: Option<String>,
+        #[serde(default)]
+        host_key: Option<String>,
+        #[serde(default)]
+        password: Option<String>,
     },
     /// HTTP で呼ぶ: `method` to `url` with `body`, judged by the status code: one of
     /// `expect` (empty: 200–299) is 正常, another is 異常.
@@ -86,7 +98,7 @@ pub const BODY_MAX: usize = 8000;
 const NO_ANSWER: i32 = 2;
 
 /// The exit code of a `send` or `fetch` that found no file: 警告.
-const NOTHING: i32 = 3;
+pub const NOTHING: i32 = 3;
 
 impl Chore {
     /// The `kind` as written, and the key of its word.
@@ -109,8 +121,8 @@ impl Chore {
             "zip" => Chore::Zip { from: String::new(), into: String::new() },
             "copy" => Chore::Copy { from: String::new(), into: String::new(), pattern: None },
             "empty" => Chore::Empty { path: String::new() },
-            "send" => Chore::Send { from: String::new(), into: String::new(), key: None },
-            "fetch" => Chore::Fetch { from: String::new(), into: String::new(), key: None },
+            "send" => Chore::Send { from: String::new(), into: String::new(), key: None, host_key: None, password: None },
+            "fetch" => Chore::Fetch { from: String::new(), into: String::new(), key: None, host_key: None, password: None },
             "http" => Chore::Http {
                 url: String::new(),
                 method: "GET".into(),
@@ -128,10 +140,13 @@ impl Chore {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![("path", path)],
             Chore::Zip { from, into } | Chore::Copy { from, into, .. } => vec![("from", from), ("into", into)],
-            Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => {
+            Chore::Send { from, into, key, host_key, .. } | Chore::Fetch { from, into, key, host_key, .. } => {
                 let mut v = vec![("from", from), ("into", into)];
                 if let Some(k) = key {
                     v.push(("key", k));
+                }
+                if let Some(h) = host_key {
+                    v.push(("host_key", h));
                 }
                 v
             }
@@ -150,7 +165,9 @@ impl Chore {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![path],
             Chore::Zip { from, into } | Chore::Copy { from, into, .. } => vec![from, into],
-            Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => [from, into].into_iter().chain(key).collect(),
+            Chore::Send { from, into, key, host_key, .. } | Chore::Fetch { from, into, key, host_key, .. } => {
+                [from, into].into_iter().chain(key).chain(host_key).collect()
+            }
             Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
         }
     }
@@ -183,25 +200,28 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
             }
-            Chore::Send { from, into, .. } => {
+            Chore::Send { from, into, key, host_key, password } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(from).is_some() {
                     return Err("send の from はこのマシンのファイル（sftp:// は into に書く）".into());
                 }
-                sftp(into).transpose()?;
+                let far = sftp(into).transpose()?;
+                login(far.as_ref(), key, host_key, password)?;
             }
-            Chore::Fetch { from, into, .. } => {
+            Chore::Fetch { from, into, key, host_key, password } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(into).is_some() {
                     return Err("fetch の into はこのマシンのフォルダー（sftp:// は from に書く）".into());
                 }
-                if let Some(at) = sftp(from).transpose()? {
+                let far = sftp(from).transpose()?;
+                if let Some(at) = &far {
                     if at.path == "." || at.path.ends_with('/') {
                         return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
                     }
                 }
+                login(far.as_ref(), key, host_key, password)?;
             }
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 need("url", url)?;
@@ -286,54 +306,12 @@ impl Chore {
                 );
                 (s, None)
             }
-            Chore::Send { from, into, key } => {
+            Chore::Send { from, into, .. } | Chore::Fetch { from, into, .. } => {
                 let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
-                let s = match sftp(into) {
-                    Some(Ok(to)) => format!(
-                        "$ErrorActionPreference = 'Stop'\n\
-                         $files = @(Get-ChildItem -Path {f} -File)\n\
-                         if ($files.Count -eq 0) {{ Write-Output ('no file to send: ' + {f}); exit {NOTHING} }}\n\
-                         $lines = @({cd}) + @($files | ForEach-Object {{ 'put \"' + $_.FullName.Replace('\\', '/') + '\"' }})\n\
-                         {run}\
-                         foreach ($x in $files) {{ Write-Output \"sent: $($x.FullName)\" }}\n",
-                        f = quote(from),
-                        cd = quote(&format!("cd \"{}\"", batch(&to.path))),
-                        run = run_sftp(&to, key.as_deref(), "$lines", false),
-                    ),
-                    _ => shared(from, into, "send", "sent"),
-                };
-                (s, warn)
-            }
-            Chore::Fetch { from, into, key } => {
-                let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
-                let s = match sftp(from) {
-                    Some(Ok(at)) => {
-                        // `ls -l` lists the files (a line starting with `-`) the path matches; each
-                        // is then fetched by its own name from the folder of the path.
-                        let dir = match at.path.rsplit_once('/') {
-                            Some((d, _)) => format!("{}/", batch(d)),
-                            None => String::new(),
-                        };
-                        format!(
-                            "$ErrorActionPreference = 'Stop'\n\
-                             $into = {i}\n\
-                             New-Item -ItemType Directory -Force -Path $into | Out-Null\n\
-                             $lines = @({ls})\n\
-                             {list}\
-                             $names = @($out | ForEach-Object {{ if ($_ -match '^-\\S+(?:\\s+\\S+){{7}}\\s+(.+)$') {{ ($Matches[1] -split '/')[-1] }} }})\n\
-                             if ($names.Count -eq 0) {{ Write-Output ('no file to fetch: ' + {f}); exit {NOTHING} }}\n\
-                             $local = (Resolve-Path -LiteralPath $into).ProviderPath.Replace('\\', '/').TrimEnd('/')\n\
-                             $lines = @($names | ForEach-Object {{ 'get \"' + {dir} + $_.Replace('\\', '\\\\').Replace('\"', '\\\"') + '\" \"' + $local + '/' + $_ + '\"' }})\n\
-                             {get}\
-                             foreach ($n in $names) {{ Write-Output \"fetched: $n\" }}\n",
-                            i = quote(into),
-                            f = quote(from),
-                            ls = quote(&format!("-ls -l \"{}\"", batch(&at.path))),
-                            list = run_sftp(&at, key.as_deref(), "$lines", true),
-                            dir = quote(&dir),
-                            get = run_sftp(&at, key.as_deref(), "$lines", false),
-                        )
-                    }
+                let s = match (self, sftp(from).or_else(|| sftp(into))) {
+                    // What to do is in the environment (env()): no path or secret is written here.
+                    (_, Some(Ok(_))) => SFTP_SCRIPT.to_owned(),
+                    (Chore::Send { .. }, _) => shared(from, into, "send", "sent"),
                     _ => shared(from, into, "fetch", "fetched"),
                 };
                 (s, warn)
@@ -345,10 +323,27 @@ impl Chore {
     }
 
     /// The environment the script reads, beside the job's own: an `http` header's
-    /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`.
+    /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`;
+    /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
+    /// (the password as `secret:<name>`, read when the job starts).
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
+            Chore::Send { from, into, key, host_key, password } | Chore::Fetch { from, into, key, host_key, password }
+                if sftp(from).or_else(|| sftp(into)).is_some() =>
+            {
+                let mut v = vec![
+                    ("KOYOMI_SFTP_OP".to_owned(), self.key().to_owned()),
+                    ("KOYOMI_SFTP_FROM".to_owned(), from.trim().to_owned()),
+                    ("KOYOMI_SFTP_INTO".to_owned(), into.trim().to_owned()),
+                ];
+                for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        v.push((format!("KOYOMI_SFTP_{name}"), x.to_owned()));
+                    }
+                }
+                v
+            }
             _ => Vec::new(),
         }
     }
@@ -475,11 +470,17 @@ fn not_root(path: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// What an SFTP `send` or `fetch` runs. Through a pipe, so PowerShell waits for koyomi
+/// (a windowed program) and reads its UTF-8 lines.
+const SFTP_SCRIPT: &str =
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n& $env:KOYOMI_EXE sftp run | ForEach-Object { $_ }\nexit $LASTEXITCODE\n";
+
 /// Where an `sftp://[user@]host[:port]/path` points.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sftp {
-    /// `user@host` or `host`, as ssh takes it.
-    pub dest: String,
+    /// The user to log in as; without one, the account's own name.
+    pub user: Option<String>,
+    pub host: String,
     pub port: Option<u16>,
     /// The path on the server: `/in` from `…/in`, `in` (below the home) from `…/~/in`,
     /// `.` (the home) when there is none.
@@ -503,51 +504,62 @@ fn read_sftp(rest: &str) -> Result<Sftp, String> {
         },
         _ => (auth, None),
     };
-    let host = dest.rsplit_once('@').map_or(dest, |(_, h)| h);
-    if host.is_empty() || dest.starts_with('@') {
+    let (user, host) = match dest.rsplit_once('@') {
+        Some((u, h)) => (Some(u), h),
+        None => (None, dest),
+    };
+    if host.is_empty() || user == Some("") {
         return Err("sftp:// には [ユーザー@]ホスト が要る".into());
     }
-    // A leading `-` would be read by sftp.exe as an option.
-    if dest.starts_with('-') || host.starts_with('-') || dest.chars().any(|c| c.is_whitespace() || "\"'`;&|<>".contains(c)) {
+    if host.starts_with('-') || dest.chars().any(|c| c.is_whitespace() || "\"'`;&|<>".contains(c)) {
         return Err("ユーザーとホストに使えない文字がある".into());
     }
-    if path.contains(['"', '\n', '\r']) {
-        return Err("パスに \" や改行は使えない".into());
+    if path.contains(['\n', '\r']) {
+        return Err("パスに改行は使えない".into());
     }
     let path = match path.strip_prefix('~') {
         _ if path.is_empty() || path == "~" => ".".to_owned(),
         Some(below) => below.trim_start_matches('/').to_owned(),
         None => format!("/{path}"),
     };
-    Ok(Sftp { dest: dest.to_owned(), port, path })
+    Ok(Sftp { user: user.map(str::to_owned), host: host.to_owned(), port, path })
 }
 
-/// A path for a line of sftp's batch file, inside `"…"`.
-fn batch(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+/// How an SFTP `send` or `fetch` logs in, against `far` (its `sftp://` side, if any):
+/// `host_key` is needed there, `password` is a `secret:`, and `key` and `password` go
+/// one at a time. Without `sftp://`, none of them is written.
+fn login(far: Option<&Sftp>, key: &Option<String>, host_key: &Option<String>, password: &Option<String>) -> Result<(), String> {
+    let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
+    if far.is_none() {
+        if let Some((name, _)) = [("key", key), ("host_key", host_key), ("password", password)].into_iter().find(|(_, v)| set(v)) {
+            return Err(format!("{name} は sftp:// の相手にだけ書く"));
+        }
+        return Ok(());
+    }
+    match host_key.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        None => return Err("sftp:// には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）".into()),
+        // `{param:…}` is told once it is filled in.
+        Some(h) if h.starts_with('{') => {}
+        Some(h) => host_key_ok(h)?,
+    }
+    if let Some(p) = password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
+            return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+        }
+        if set(key) {
+            return Err("key と password はどちらか一方".into());
+        }
+    }
+    Ok(())
 }
 
-/// The lines that write the batch file from `lines` (a PowerShell variable), run
-/// Windows' own sftp.exe on it without asking anything (no password, no unknown
-/// host), and stop with 2 when it fails. `capture` keeps its output in `$out`.
-fn run_sftp(to: &Sftp, key: Option<&str>, lines: &str, capture: bool) -> String {
-    let port = to.port.map(|p| format!(" -P {p}")).unwrap_or_default();
-    let key = key.filter(|k| !k.trim().is_empty()).map(|k| format!(" -i {}", quote(k))).unwrap_or_default();
-    let (keep, show) = if capture { ("$out = @(", ")") } else { ("", "") };
-    format!(
-        "$sftp = Join-Path $env:SystemRoot 'System32\\OpenSSH\\sftp.exe'\n\
-         if (-not (Test-Path -LiteralPath $sftp)) {{ $sftp = 'sftp' }}\n\
-         $b = [IO.Path]::GetTempFileName()\n\
-         [IO.File]::WriteAllLines($b, [string[]]{lines})\n\
-         $ErrorActionPreference = 'Continue'\n\
-         {keep}& $sftp -b $b -o BatchMode=yes -o StrictHostKeyChecking=yes{port}{key} {dest}{show}\n\
-         $c = $LASTEXITCODE\n\
-         $ErrorActionPreference = 'Stop'\n\
-         Remove-Item -LiteralPath $b -Force\n\
-         if ($c -ne 0) {{ {print}exit 2 }}\n",
-        dest = quote(&to.dest),
-        print = if capture { "$out; " } else { "" },
-    )
+/// `SHA256:` and the digest in base64, as `ssh-keygen -l` and `koyomi sftp hostkey` print it.
+pub fn host_key_ok(h: &str) -> Result<(), String> {
+    let digest = h.get(..7).filter(|p| p.eq_ignore_ascii_case("sha256:")).map(|_| h[7..].trim_end_matches('='));
+    match digest {
+        Some(d) if d.len() == 43 && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/') => Ok(()),
+        _ => Err(format!("host_key は SHA256:… の形で書く（koyomi sftp hostkey <ホスト> が出すもの）: {h}")),
+    }
 }
 
 /// `send` and `fetch` between folders and shares: each file `from` matches is
@@ -595,62 +607,106 @@ mod tests {
         assert!(Chore::Zip { from: "a".into(), into: "b.ZIP".into() }.check().is_ok());
     }
 
+    const HK: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+
     #[test]
-    fn an_sftp_address_reads_and_what_sftp_would_take_as_an_option_is_refused() {
+    fn an_sftp_address_reads_and_a_strange_user_or_host_is_refused() {
         let a = sftp("sftp://partner@ftp.example.com:2222/in").unwrap().unwrap();
-        assert_eq!(a, Sftp { dest: "partner@ftp.example.com".into(), port: Some(2222), path: "/in".into() });
+        assert_eq!(a, Sftp { user: Some("partner".into()), host: "ftp.example.com".into(), port: Some(2222), path: "/in".into() });
         assert_eq!(sftp("SFTP://h/~/out/*.csv").unwrap().unwrap().path, "out/*.csv");
-        assert_eq!(sftp("sftp://h").unwrap().unwrap().path, ".");
-        assert_eq!(sftp("sftp://{param:user}@h/in").unwrap().unwrap().dest, "{param:user}@h");
+        let home = sftp("sftp://h").unwrap().unwrap();
+        assert_eq!((home.user, home.path), (None, ".".into()));
+        assert_eq!(sftp("sftp://{param:user}@h/in").unwrap().unwrap().user.as_deref(), Some("{param:user}"));
+        assert_eq!(sftp("sftp://h/a\"b").unwrap().unwrap().path, "/a\"b");
         assert!(sftp("\\\\nas\\share").is_none());
-        for bad in [
-            "sftp:///in",
-            "sftp://@h/in",
-            "sftp://h:0/in",
-            "sftp://h:x/in",
-            "sftp://-oProxyCommand=x/in",
-            "sftp://u@-h/in",
-            "sftp://a b/in",
-            "sftp://h/a\"b",
-        ] {
+        for bad in
+            ["sftp:///in", "sftp://@h/in", "sftp://h:0/in", "sftp://h:x/in", "sftp://-oProxyCommand=x/in", "sftp://a b/in", "sftp://h/a\nb"]
+        {
             assert!(sftp(bad).unwrap().is_err(), "{bad}");
         }
     }
 
     #[test]
     fn send_and_fetch_take_sftp_on_the_far_side_only() {
-        let send = |from: &str, into: &str| Chore::Send { from: from.into(), into: into.into(), key: None }.check();
-        let fetch = |from: &str, into: &str| Chore::Fetch { from: from.into(), into: into.into(), key: None }.check();
-        assert!(send("D:\\out\\*.csv", "sftp://u@h/in").is_ok());
-        assert!(send("D:\\out\\*.csv", "\\\\nas\\share\\in").is_ok());
-        assert!(send("sftp://u@h/out", "D:\\in").is_err());
-        assert!(send("D:\\out", "sftp://-x/in").is_err());
-        assert!(fetch("sftp://u@h/out/*.csv", "D:\\in").is_ok());
-        assert!(fetch("sftp://u@h/out/", "D:\\in").is_err());
-        assert!(fetch("sftp://u@h", "D:\\in").is_err());
-        assert!(fetch("D:\\out\\*.csv", "sftp://u@h/in").is_err());
-        assert!(fetch("\\\\nas\\share\\out\\*.csv", "D:\\in").is_ok());
+        let hk = Some(HK.to_owned());
+        let send = |from: &str, into: &str, host_key: &Option<String>| {
+            Chore::Send { from: from.into(), into: into.into(), key: None, host_key: host_key.clone(), password: None }.check()
+        };
+        let fetch = |from: &str, into: &str, host_key: &Option<String>| {
+            Chore::Fetch { from: from.into(), into: into.into(), key: None, host_key: host_key.clone(), password: None }.check()
+        };
+        assert!(send("D:\\out\\*.csv", "sftp://u@h/in", &hk).is_ok());
+        assert!(send("D:\\out\\*.csv", "\\\\nas\\share\\in", &None).is_ok());
+        assert!(send("sftp://u@h/out", "D:\\in", &hk).is_err());
+        assert!(send("D:\\out", "sftp://-x/in", &hk).is_err());
+        assert!(fetch("sftp://u@h/out/*.csv", "D:\\in", &hk).is_ok());
+        assert!(fetch("sftp://u@h/out/", "D:\\in", &hk).is_err());
+        assert!(fetch("sftp://u@h", "D:\\in", &hk).is_err());
+        assert!(fetch("D:\\out\\*.csv", "sftp://u@h/in", &hk).is_err());
+        assert!(fetch("\\\\nas\\share\\out\\*.csv", "D:\\in", &None).is_ok());
     }
 
     #[test]
-    fn the_sftp_scripts_ask_nothing_and_judge_no_file_as_a_warning() {
-        let s = Chore::Send { from: "D:\\out\\*.csv".into(), into: "sftp://u@h:2222/in box".into(), key: Some("C:\\keys\\id".into()) };
+    fn sftp_needs_the_host_key_and_a_password_only_as_a_secret() {
+        let send = |key: Option<&str>, host_key: Option<&str>, password: Option<&str>, into: &str| {
+            Chore::Send {
+                from: "D:\\out".into(),
+                into: into.into(),
+                key: key.map(Into::into),
+                host_key: host_key.map(Into::into),
+                password: password.map(Into::into),
+            }
+            .check()
+        };
+        let far = "sftp://u@h/in";
+        assert!(send(None, None, None, far).unwrap_err().contains("koyomi sftp hostkey"));
+        assert!(send(None, Some("47DEQpj8"), None, far).unwrap_err().contains("SHA256:"));
+        assert_eq!(send(None, Some(&HK.to_lowercase().replacen("sha256", "SHA256", 1)), None, far), Ok(()));
+        assert_eq!(send(None, Some(&format!("{HK}=")), None, far), Ok(()));
+        assert_eq!(send(None, Some("{param:hk}"), None, far), Ok(()));
+        assert_eq!(send(None, Some(HK), Some("secret:partner"), far), Ok(()));
+        assert!(send(None, Some(HK), Some("hunter2"), far).unwrap_err().contains("secret:<名前>"));
+        assert!(send(Some("C:\\keys\\id"), Some(HK), Some("secret:partner"), far).unwrap_err().contains("どちらか一方"));
+        assert!(send(None, Some(HK), None, "\\\\nas\\share\\in").unwrap_err().contains("host_key は sftp://"));
+        assert!(send(None, None, Some("secret:p"), "D:\\in").unwrap_err().contains("password は sftp://"));
+    }
+
+    #[test]
+    fn the_sftp_script_leaves_the_work_to_koyomi_and_judges_no_file_as_a_warning() {
+        let s = Chore::Send {
+            from: "D:\\out\\*.csv".into(),
+            into: "sftp://u@h:2222/in box".into(),
+            key: None,
+            host_key: Some(HK.into()),
+            password: Some("secret:partner".into()),
+        };
         let (script, judge) = s.script();
-        assert!(script.contains("-o BatchMode=yes -o StrictHostKeyChecking=yes -P 2222 -i 'C:\\keys\\id' 'u@h'"), "{script}");
-        assert!(script.contains("@('cd \"/in box\"')"), "{script}");
-        assert!(script.contains("Get-ChildItem -Path 'D:\\out\\*.csv' -File"), "{script}");
+        assert!(script.contains("& $env:KOYOMI_EXE sftp run | ForEach-Object"), "{script}");
+        assert!(!script.contains("u@h") && !script.contains("partner"), "{script}");
         assert_eq!(judge.unwrap().warn, vec![Range { from: NOTHING, to: NOTHING }]);
-        let f = Chore::Fetch { from: "sftp://u@h/~/out/*.csv".into(), into: "D:\\in".into(), key: None };
-        let (script, _) = f.script();
-        assert!(script.contains("@('-ls -l \"out/*.csv\"')"), "{script}");
-        assert!(script.contains("$out = @(& $sftp -b $b -o BatchMode=yes -o StrictHostKeyChecking=yes 'u@h')"), "{script}");
-        assert!(script.contains("'get \"' + 'out/' + "), "{script}");
-        assert!(!script.contains(" -i "), "{script}");
-        let share = Chore::Send { from: "D:\\out".into(), into: "\\\\nas\\share\\in".into(), key: None };
+        let env = s.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_SFTP_OP"), Some("send"));
+        assert_eq!(get("KOYOMI_SFTP_FROM"), Some("D:\\out\\*.csv"));
+        assert_eq!(get("KOYOMI_SFTP_INTO"), Some("sftp://u@h:2222/in box"));
+        assert_eq!(get("KOYOMI_SFTP_HOST_KEY"), Some(HK));
+        assert_eq!(get("KOYOMI_SFTP_PASSWORD"), Some("secret:partner"));
+        assert_eq!(get("KOYOMI_SFTP_KEY"), None);
+        let f = Chore::Fetch {
+            from: "sftp://u@h/~/out/*.csv".into(),
+            into: "D:\\in".into(),
+            key: Some("C:\\keys\\id".into()),
+            host_key: Some(HK.into()),
+            password: None,
+        };
+        assert!(f.env().contains(&("KOYOMI_SFTP_OP".to_owned(), "fetch".to_owned())));
+        assert!(f.env().contains(&("KOYOMI_SFTP_KEY".to_owned(), "C:\\keys\\id".to_owned())));
+        let share = Chore::Send { from: "D:\\out".into(), into: "\\\\nas\\share\\in".into(), key: None, host_key: None, password: None };
         let (script, judge) = share.script();
         assert!(script.contains("Copy-Item -LiteralPath $x.FullName -Destination $into -Force"), "{script}");
         assert!(!script.contains("sftp"), "{script}");
         assert!(judge.is_some());
+        assert!(share.env().is_empty());
     }
 
     fn http(method: &str, body: Option<&str>, headers: &[(&str, &str)], expect: &[u16]) -> Chore {

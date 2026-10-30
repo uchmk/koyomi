@@ -186,10 +186,12 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             v
         }
         Chore::Empty { path } => vec![line("path", path)],
-        Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => {
+        Chore::Send { from, into, key, host_key, password } | Chore::Fetch { from, into, key, host_key, password } => {
             let mut v = vec![line("from", from), line("into", into)];
-            if let Some(k) = key {
-                v.push(line("key", k));
+            for (name, value) in [("key", key), ("host_key", host_key), ("password", password)] {
+                if let Some(x) = value {
+                    v.push(line(name, x));
+                }
             }
             v
         }
