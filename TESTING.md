@@ -534,3 +534,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 37.1 | Open a finished run; click a job that failed | A table above the log shows state, start, end, took, 終了コード, リトライ, コマンド |
 | 37.2 | Click a job that retried | リトライ shows `回数 / 上限` |
 | 37.3 | Click a branch or join part | No コマンド row |
+
+## 38. ログの検索
+
+| # | Do | Expect |
+|---|---|---|
+| 38.1 | Open a run with a log; type `error` in the box above the log | Only the lines with error/ERROR stay; `N / M 行が一致` shows |
+| 38.2 | Type `ERROR` | Only upper-case ERROR lines stay (smart case) |
+| 38.3 | Type `(` | A red regex error; the whole log stays |
+| 38.4 | Clear the box | The whole log is back |

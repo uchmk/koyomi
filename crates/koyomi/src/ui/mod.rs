@@ -190,6 +190,8 @@ pub struct Browser {
     run_sel: Option<String>,
     /// The job whose log is shown, when one was picked by hand.
     job_sel: Option<String>,
+    /// What the log search box holds (a regular expression, smart case).
+    log_find: String,
     /// The last log tail fetched: run, job, text.
     log: Option<(String, String, String)>,
     vertical: bool,
@@ -302,6 +304,7 @@ impl Browser {
             selected: None,
             run_sel: None,
             job_sel: None,
+            log_find: String::new(),
             log: None,
             vertical,
             flow,
@@ -1365,6 +1368,18 @@ impl Browser {
         if text.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
         } else {
+            ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
+            let text = match show::filter_log(&text, &self.log_find) {
+                Ok(None) => text,
+                Ok(Some((hits, shown, all))) => {
+                    ui.label(egui::RichText::new(t.trf("run.log_hits", &[&shown.to_string(), &all.to_string()])).color(c.dim));
+                    hits
+                }
+                Err(e) => {
+                    ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
+                    text
+                }
+            };
             egui::ScrollArea::vertical().id_salt("log").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
                 let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).wrap());
                 ito_a11y::say(&r, Role::Label, &text);
@@ -1660,6 +1675,7 @@ mod tests {
             selected: None,
             run_sel: None,
             job_sel: None,
+            log_find: String::new(),
             log: None,
             vertical: false,
             flow: None,

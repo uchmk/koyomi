@@ -190,6 +190,25 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
     line
 }
 
+/// The lines of `log` that match `query` (smart-case regex), and how many of how many.
+/// `None` for an empty query: the log as it is.
+pub fn filter_log(log: &str, query: &str) -> Result<Option<(String, usize, usize)>, String> {
+    if query.is_empty() {
+        return Ok(None);
+    }
+    let m = ito_match::Matcher::new(query)?;
+    let all = log.lines().count();
+    let hits: Vec<&str> = log.lines().filter(|l| m.is_match(l)).collect();
+    Ok(Some((
+        hits.join(
+            "
+",
+        ),
+        hits.len(),
+        all,
+    )))
+}
+
 /// The picked job's facts, one `label: value` per line: start, end, took, exit code, retries, command.
 pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
     let mut rows = Vec::new();
@@ -235,6 +254,28 @@ pub fn kind(t: &Table, p: &Part) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_log_search_keeps_matching_lines_with_smart_case() {
+        let log = "start
+ERROR disk
+error low
+end";
+        assert_eq!(filter_log(log, "").unwrap(), None);
+        let (text, n, all) = filter_log(log, "error").unwrap().unwrap();
+        assert_eq!(
+            (text.as_str(), n, all),
+            (
+                "ERROR disk
+error low",
+                2,
+                4
+            )
+        );
+        let (text, n, _) = filter_log(log, "ERROR").unwrap().unwrap();
+        assert_eq!((text.as_str(), n), ("ERROR disk", 1));
+        assert!(filter_log(log, "(").is_err());
+    }
 
     #[test]
     fn job_facts_list_exit_code_and_retries() {
