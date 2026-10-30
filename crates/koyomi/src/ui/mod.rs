@@ -329,6 +329,16 @@ impl Browser {
         }
     }
 
+    /// Whether the engine has answered once.
+    pub fn snapshot_known(&self) -> bool {
+        self.snap.is_some()
+    }
+
+    /// Whether the engine answered and has no definition at all.
+    pub fn tree_is_empty(&self) -> bool {
+        self.snap.as_ref().is_some_and(|s| s.defs.is_empty())
+    }
+
     pub fn drain(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
@@ -1724,6 +1734,13 @@ mod tests {
             port: None,
             make: None,
         }
+    }
+
+    #[test]
+    fn an_empty_tree_is_known_only_after_the_engine_answered() {
+        let b = quiet(Vec::new());
+        assert!(b.snapshot_known() && b.tree_is_empty());
+        assert!(!quiet(defs()).tree_is_empty());
     }
 
     /// A browser asking about `bom`.

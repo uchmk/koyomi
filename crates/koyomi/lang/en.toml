@@ -58,6 +58,16 @@ new_jobnet = "New jobnet…"
 quit = "Quit"
 settings = "Settings"
 help = "Keys"
+guide = "First steps"
+
+[guide]
+title = "First steps"
+lead = "No job net yet. Three commands take you from nothing to a first run (click one to copy it)."
+empty = "The jobnets folder is empty"
+new_cli = "Writes a template job net (or use \"+ New jobnet\" in the tree)"
+approve = "Checks it and marks it confirmed; nothing runs before this"
+run = "Runs it once now; the result shows in the tree"
+footer = "Esc or a click outside closes this. Palette > First steps opens it again."
 
 [help]
 title = "Keys"

@@ -1,6 +1,6 @@
 # Checklist
 
-359 checks in TESTING.md, 355 left for a person.
+363 checks in TESTING.md, 359 left for a person.
 
 ## 1. Start
 
@@ -492,3 +492,10 @@
 - [ ] **44.2** `koyomi uses g/a` where g/b has a child-net job `use = "g/a"` and `after_jobnet = "g/a"` → `child net  g/b (job …)` and `follows    g/b (on Ok)` 〔未訳〕
 - [ ] **44.3** `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) → `program    g/x (job …)`; the folder and `.exe` do not matter 〔未訳〕
 - [ ] **44.4** `koyomi uses nothing-here` → `(not used)` 〔未訳〕
+
+## 45. 初めての起動の案内
+
+- [ ] **45.1** Start the window with an empty jobnets folder → A panel "First steps" with three commands appears under the title bar 〔未訳〕
+- [ ] **45.2** Click a command → It is on the clipboard; the panel stays 〔未訳〕
+- [ ] **45.3** Press Esc, then Ctrl+Shift+P > "First steps" → Esc closes it; the palette opens it again 〔未訳〕
+- [ ] **45.4** Start the window with at least one job net → No panel; the palette entry opens nothing 〔未訳〕

@@ -57,6 +57,8 @@ ito-ipc = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a059
 ito-watch = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 ito-confirm = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 ito-diff = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
+# The first-run guide: an empty tree says what to do first.
+ito-guide = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18", features = ["egui"] }
 ito-match = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 ito-a11y = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18", features = ["egui"] }
 ito-fonts = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18", features = ["egui"] }

@@ -598,3 +598,11 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 44.3 | `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) | `program    g/x (job …)`; the folder and `.exe` do not matter |
 | 44.4 | `koyomi uses nothing-here` | `(not used)` |
 
+## 45. 初めての起動の案内
+
+| # | Do | Expect |
+|---|---|---|
+| 45.1 | Start the window with an empty jobnets folder | A panel "First steps" with three commands appears under the title bar |
+| 45.2 | Click a command | It is on the clipboard; the panel stays |
+| 45.3 | Press Esc, then Ctrl+Shift+P > "First steps" | Esc closes it; the palette opens it again |
+| 45.4 | Start the window with at least one job net | No panel; the palette entry opens nothing |

@@ -60,6 +60,9 @@ struct App {
     keep_ask: Option<(u32, usize)>,
     /// The key help (F1 or `?`) while it is open.
     help: help::Help,
+    /// The first-run guide (an empty tree), and whether it has been offered this run.
+    guide: ito_guide::Guide,
+    guide_offered: bool,
     /// Starts at sign-in: what the OS says, and the thread asking it.
     startup: Option<bool>,
     startup_rx: Option<std::sync::mpsc::Receiver<bool>>,
@@ -98,6 +101,7 @@ struct App {
 enum Command {
     Edit(ui::canvas::Cmd),
     NewJobnet,
+    Guide,
     Export,
     Import,
     ReportBug,
@@ -145,6 +149,8 @@ impl App {
             settings_open: false,
             keep_ask: None,
             help: help::Help::default(),
+            guide: ito_guide::Guide::default(),
+            guide_offered: false,
             startup: None,
             startup_rx: None,
             tracker: saved.tracker(),
@@ -489,6 +495,7 @@ impl App {
         }
         out.extend([
             ito_palette::Entry::new(t.tr("palette.new_jobnet"), self.keys.label("new_jobnet"), Command::NewJobnet),
+            ito_palette::Entry::new(t.tr("palette.guide"), "", Command::Guide),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
             ito_palette::Entry::new(t.tr("palette.import"), "", Command::Import),
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
@@ -522,6 +529,10 @@ impl App {
         match ito_palette::show(ctx, &mut view, &self.commands(), &style, &words) {
             None => self.palette = Some(view),
             Some(ito_palette::Answer::Pick(Command::NewJobnet)) => self.browser.new_box(None),
+            Some(ito_palette::Answer::Pick(Command::Guide)) => {
+                self.guide_problems();
+                self.guide.reopen();
+            }
             Some(ito_palette::Answer::Pick(Command::Export)) => self.browser.export(&self.table),
             Some(ito_palette::Answer::Pick(Command::Import)) => self.browser.import_box(),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),
@@ -531,6 +542,41 @@ impl App {
             Some(ito_palette::Answer::Pick(Command::Quit)) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Some(ito_palette::Answer::Pick(Command::Edit(c))) => self.browser.edit(c),
             Some(_) => {}
+        }
+    }
+
+    /// What a beginner meets first: the tree has no definition yet.
+    fn guide_problems(&mut self) {
+        let t = &self.table;
+        let problems = if self.browser.tree_is_empty() {
+            vec![ito_guide::Problem::new(
+                t.tr("guide.empty"),
+                vec![
+                    ito_guide::Step::new("koyomi new sample/hello", t.tr("guide.new_cli")),
+                    ito_guide::Step::new("koyomi approve sample/hello", t.tr("guide.approve")),
+                    ito_guide::Step::new("koyomi run sample/hello", t.tr("guide.run")),
+                ],
+            )]
+        } else {
+            Vec::new()
+        };
+        self.guide.set(problems);
+    }
+
+    /// The guide opens once, when the engine has answered and there is nothing to run yet.
+    fn show_guide(&mut self, ctx: &egui::Context) {
+        if !self.guide_offered && self.browser.snapshot_known() {
+            self.guide_offered = true;
+            self.guide_problems();
+        }
+        if self.guide.is_open() && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.guide.escape();
+        }
+        let t = &self.table;
+        let footer = [t.tr("guide.footer")];
+        let words = ito_guide::Words { title: t.tr("guide.title"), lead: t.tr("guide.lead"), footer: &footer };
+        if let Some(text) = ito_guide::show(ctx, &mut self.guide, &words).copy {
+            ctx.copy_text(text);
         }
     }
 
@@ -637,6 +683,7 @@ impl eframe::App for App {
             self.command_palette(&ctx);
         }
         self.take_font(&ctx);
+        self.show_guide(&ctx);
         if self.settings_open {
             // The engine's news still comes in while the settings cover the tree.
             self.browser.drain();
