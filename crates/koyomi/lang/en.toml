@@ -274,6 +274,7 @@ col_end = "End"
 col_time = "Time"
 col_next = "Next"
 col_date = "Date"
+average = "(avg {0})"
 
 [tabs]
 today = "Today"

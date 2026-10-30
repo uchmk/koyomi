@@ -274,6 +274,9 @@ pub struct Browser {
     cal_month: Option<(i32, u32)>,
     /// What the last click on a day did to the file, shown under the month.
     cal_result: Option<Result<String, String>>,
+    /// The runs of the last 30 days, for the average time of a net, and the day they were asked for.
+    past: Vec<Run>,
+    past_asked: Option<chrono::NaiveDate>,
     /// 履歴, when it is open: the detail is its rows.
     hist: Option<History>,
     /// ガント, when it is open: the detail is today's runs on a time axis.
@@ -361,6 +364,8 @@ impl Browser {
             watch,
             snap: None,
             runs: Vec::new(),
+            past: Vec::new(),
+            past_asked: None,
             down: None,
             starting: true,
             selected: None,
@@ -409,11 +414,28 @@ impl Browser {
         self.snap.as_ref().is_some_and(|s| s.defs.is_empty())
     }
 
+    /// The days the averages are made from: the last 30 days. `to` is tomorrow, so that it
+    /// cannot be the range the 履歴 box asks for.
+    fn past_range(today: chrono::NaiveDate) -> (String, String) {
+        ((today - chrono::Duration::days(30)).to_string(), (today + chrono::Duration::days(1)).to_string())
+    }
+
+    /// Asks the engine for the last 30 days once a day.
+    fn ask_past(&mut self) {
+        let today = chrono::Local::now().date_naive();
+        if self.past_asked != Some(today) {
+            self.past_asked = Some(today);
+            let (from, to) = Self::past_range(today);
+            let _ = self.tx.send(Request::History { from, to });
+        }
+    }
+
     pub fn drain(&mut self) {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,
                 Msg::Snapshot(s) => {
+                    self.ask_past();
                     self.starting = false;
                     self.down = None;
                     for n in &s.notes {
@@ -440,6 +462,15 @@ impl Browser {
                 Msg::Down(e) => {
                     self.starting = false;
                     self.down = Some(e);
+                }
+                Msg::Answer(Request::History { from, to }, r)
+                    if self.past_asked.is_some_and(|d| Self::past_range(d) == (from.clone(), to.clone())) =>
+                {
+                    match r.and_then(|text| Runs::parse(&text)) {
+                        Ok(rs) => self.past = rs.runs,
+                        // Asked again with the next snapshot.
+                        Err(_) => self.past_asked = None,
+                    }
                 }
                 Msg::Answer(Request::History { .. }, r) => {
                     // The days asked for: the rows of 履歴, or why there are none.
@@ -1524,6 +1555,7 @@ impl Browser {
             .filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id))
             .map(|d| (d.id.as_str(), d))
             .collect();
+        let average = |id: &str| koyomi_core::run::average_duration(&self.past, id, 10);
         let next_of = |id: &str, from: chrono::NaiveDateTime| -> String {
             by_id
                 .get(id)
@@ -1581,9 +1613,9 @@ impl Browser {
                         None => show::hms(*at),
                     };
                     ui.label(planned);
-                    for _ in 0..3 {
-                        ui.label("");
-                    }
+                    ui.label("");
+                    ui.label("");
+                    ui.label(average(id).map(|a| t.trf("today.average", &[&show::duration(a)])).unwrap_or_default());
                     ui.label(next_of(id, *at));
                     ui.end_row();
                 }
@@ -1594,8 +1626,15 @@ impl Browser {
                     let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
                     let planned = run.planned.map(show::hms).unwrap_or_default();
                     let ended = run.ended.map(show::hms).unwrap_or_default();
-                    let took = run.duration().map(show::duration).unwrap_or_default();
-                    ito_a11y::say(&r, Role::Row, &format!("{} {} {}", show::tag(t, run.state), run.title, show::hms(run.started)));
+                    let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(a)]));
+                    let took = match (run.duration(), &usual) {
+                        (Some(d), _) => show::duration(d),
+                        (None, Some(u)) => format!("{}… {u}", show::duration(now - run.started)),
+                        (None, None) => format!("{}…", show::duration(now - run.started)),
+                    };
+                    let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
+                    let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
+                    ito_a11y::say(&r, Role::Row, &said.join(" "));
                     ui.label(planned);
                     ui.label(show::hms(run.started));
                     ui.label(ended);
@@ -1922,15 +1961,15 @@ impl Browser {
                 ui.label(run.started.date().to_string());
                 ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
                 let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
-                let said = format!(
-                    "{} {} {} {} {} {}",
-                    run.started.date(),
-                    show::tag(t, run.state),
-                    run.title,
+                let said = [
+                    run.started.date().to_string(),
+                    show::tag(t, run.state).to_owned(),
+                    run.title.clone(),
                     show::hms(run.started),
-                    ended,
-                    took
-                );
+                    ended.clone(),
+                    took.clone(),
+                ];
+                let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
                 ito_a11y::say(&r, Role::Row, &said);
                 ui.label(show::hms(run.started));
                 ui.label(ended);
@@ -2468,6 +2507,8 @@ mod tests {
             watch: Arc::default(),
             snap,
             runs: Vec::new(),
+            past: Vec::new(),
+            past_asked: None,
             down: None,
             starting: false,
             selected: None,
