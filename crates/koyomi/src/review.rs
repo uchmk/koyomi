@@ -118,6 +118,10 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         for (k, v) in &j.env {
             out.push(format!("  {} {k}: {v}", t.tr("review.env")));
         }
+        if !j.encoding.is_auto() {
+            let key = format!("field.encoding_{}", j.encoding.text());
+            out.push(format!("  {}: {}", t.tr("field.encoding"), t.tr(&key)));
+        }
         if let Some(secs) = j.timeout {
             out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
         }

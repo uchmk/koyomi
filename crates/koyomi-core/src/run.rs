@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::jobnet::{Job, Jobnet, Judge, Line, On, Part, Range, Retry, Wait};
+use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, Wait};
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -206,6 +206,9 @@ pub struct JobRun {
     /// Environment variables for the process (`secret:<name>` values are read when it starts).
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// How its output is read into the log.
+    #[serde(default, skip_serializing_if = "Encoding::is_auto")]
+    pub encoding: Encoding,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -235,6 +238,7 @@ impl JobRun {
             script: job.script.clone(),
             judge: job.judge.clone(),
             env: job.env.clone(),
+            encoding: job.encoding,
             retried: 0,
             state: State::NotRun,
             started: None,

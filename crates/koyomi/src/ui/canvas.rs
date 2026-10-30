@@ -13,7 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, Wait};
+use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, Wait};
 use koyomi_core::scan::Def;
 #[cfg(test)]
 use koyomi_core::scan::Standing;
@@ -101,6 +101,7 @@ pub struct Fields {
     pub error: String,
     pub error_output: String,
     pub ok_file: String,
+    pub encoding: Encoding,
     pub wait: Wait,
     pub at: String,
     pub days: String,
@@ -128,6 +129,7 @@ impl Fields {
         }
         f.shell = job.shell.clone().unwrap_or_default();
         f.script = job.script.clone().unwrap_or_default();
+        f.encoding = job.encoding;
         if let Some(j) = &job.judge {
             f.warn = Judge::list(&j.warn);
             f.error = Judge::list(&j.error);
@@ -182,6 +184,7 @@ impl Fields {
                 };
                 out.shell = opt(&self.shell);
                 out.script = if self.script.trim().is_empty() { None } else { Some(self.script.clone()) };
+                out.encoding = self.encoding;
                 let ranges = |s: &str| -> Result<Vec<_>, String> {
                     if s.trim().is_empty() {
                         Ok(Vec::new())
@@ -1004,11 +1007,11 @@ impl Editor {
                 None => {}
             }
         });
-        egui::Panel::left("shelf").default_size(110.0).resizable(false).show(ui, |ui| {
+        egui::Panel::left("shelf").default_size(130.0).size_range(90.0..=320.0).resizable(true).show(ui, |ui| {
             let r = ui.label(t.tr("canvas.shelf"));
             ito_a11y::say(&r, Role::Heading, t.tr("canvas.shelf"));
             for part in shelf() {
-                let label = show::kind(t, &part);
+                let label = show::part_name(t, &part);
                 let r = ui.add(egui::Button::new(&label).sense(Sense::click_and_drag()));
                 ito_a11y::say(&r, Role::Button, &label);
                 if r.drag_started() {
@@ -1055,7 +1058,7 @@ impl Editor {
                 let part = self.net.jobs[i].part.clone();
                 let mut closed = false;
                 ui.horizontal(|ui| {
-                    let head = show::kind(t, &part);
+                    let head = show::part_name(t, &part);
                     let r = ui.heading(&head);
                     ito_a11y::say(&r, Role::Heading, &head);
                     let r = ui.button(t.tr("canvas.close_pane"));
@@ -1087,6 +1090,16 @@ impl Editor {
                         changed |= field(ui, "field.error", &mut f.error);
                         changed |= field(ui, "field.error_output", &mut f.error_output);
                         changed |= field(ui, "field.ok_file", &mut f.ok_file);
+                        ui.horizontal(|ui| {
+                            ui.label(t.tr("field.encoding"));
+                            for e in [Encoding::Auto, Encoding::Sjis, Encoding::Utf8] {
+                                let key = format!("field.encoding_{}", e.text());
+                                if ui.selectable_label(f.encoding == e, t.tr(&key)).clicked() && f.encoding != e {
+                                    f.encoding = e;
+                                    changed = true;
+                                }
+                            }
+                        });
                     }
                     Part::Join { .. } => {
                         ui.horizontal(|ui| {

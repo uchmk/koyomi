@@ -752,6 +752,7 @@ impl Runner {
             retry: j.retry,
             judge: j.judge.clone(),
             env: j.env.clone(),
+            encoding: j.encoding,
             file: r.file_for(job_id),
             log,
             cap: self.config.log_max_bytes(),
@@ -869,10 +870,21 @@ struct JobSpec {
     judge: Option<Judge>,
     /// The job's `env`; `secret:<name>` values are read when it starts.
     env: BTreeMap<String, String>,
+    /// How the process's output is read.
+    encoding: jobnet::Encoding,
     /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
     file: Option<String>,
     log: PathBuf,
     cap: u64,
+}
+
+/// The `encoding` of a job as ito-proc reads it.
+fn decoding(e: jobnet::Encoding) -> ito_proc::Encoding {
+    match e {
+        jobnet::Encoding::Auto => ito_proc::Encoding::Auto,
+        jobnet::Encoding::Sjis => ito_proc::Encoding::ShiftJis,
+        jobnet::Encoding::Utf8 => ito_proc::Encoding::Utf8,
+    }
 }
 
 /// Raises `stop` for 打ち切り when `secs` pass before `stop` is raised by
@@ -1060,7 +1072,7 @@ fn attempt(
     };
     let over = Arc::new(AtomicBool::new(false));
     let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone(), over.clone()));
-    let result = ito_proc::run_lines(cmd, stop, &mut on_line);
+    let result = ito_proc::run_lines_with(cmd, stop, decoding(job.encoding), &mut on_line);
     // The process is over either way: let the timer go, and say in the log who stopped the job.
     over.store(true, Ordering::SeqCst);
     if let Some(t) = timer {
@@ -1193,6 +1205,22 @@ mod tests {
         let mut r2 = Runner::new(&dir, Config::default());
         assert_eq!(r2.today().len(), 1);
         assert!(r2.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encoding_sjis_reads_the_output_as_shift_jis() {
+        let dir = scratch("sjis");
+        // "日本" in Shift_JIS.
+        std::fs::write(dir.join("out.txt"), [0x93, 0xFA, 0x96, 0x7B, b'\r', b'\n']).unwrap();
+        let file = dir.join("out.txt").display().to_string();
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"cmd.exe\", \"/c\", \"type\", '{file}']\nencoding = \"sjis\"\n");
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        assert_eq!(wait_over(&mut r, &id).state, State::Ok);
+        assert_eq!(r.log_tail(&id, "a").unwrap().trim(), "日本");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

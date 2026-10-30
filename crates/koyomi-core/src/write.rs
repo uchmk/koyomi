@@ -297,6 +297,9 @@ fn job(j: &Job, out: &mut String) {
             push(out, "judge", &format!("{{ {} }}", parts.join(", ")));
         }
     }
+    if !j.encoding.is_auto() {
+        push(out, "encoding", &q(j.encoding.text()));
+    }
     if let Some((x, y)) = j.pos {
         push(out, "pos", &format!("[{x:?}, {y:?}]"));
     }
@@ -392,6 +395,7 @@ dir = "C:\\work"
 timeout = "30m"
 retry = { count = 2, wait = "5m" }
 judge = { warn = "1", error = "2.." }
+encoding = "sjis"
 pos = [0.0, 0.0]
 
 [[job]]

@@ -247,8 +247,13 @@ pub fn kind(t: &Table, p: &Part) -> String {
     if p.is_job() {
         String::new()
     } else {
-        format!("【{}】", t.tr(&format!("part.{}", p.key())))
+        part_name(t, p)
     }
+}
+
+/// `【ジョブ】`, `【分岐】` …: what a part is, a job included (the shelf and the pane's heading).
+pub fn part_name(t: &Table, p: &Part) -> String {
+    format!("【{}】", t.tr(&format!("part.{}", p.key())))
 }
 
 #[cfg(test)]

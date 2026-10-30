@@ -122,6 +122,42 @@ pub struct Job {
     /// A value `secret:<name>` is read from the OS credential store when the job starts.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub env: BTreeMap<String, String>,
+    /// How the process's output becomes text, from `encoding = "sjis"`.
+    #[serde(default, skip_serializing_if = "Encoding::is_auto")]
+    pub encoding: Encoding,
+}
+
+/// `encoding`: how a job's output is read into the log.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Encoding {
+    /// UTF-8 for a line that is valid UTF-8, the console code page (Shift_JIS on
+    /// Japanese Windows) for one that is not.
+    #[default]
+    Auto,
+    /// Shift_JIS (CP932), whatever the system.
+    Sjis,
+    /// UTF-8, bad bytes replaced.
+    Utf8,
+}
+
+impl Encoding {
+    pub fn is_auto(&self) -> bool {
+        *self == Encoding::Auto
+    }
+
+    /// As it is written in the file.
+    pub fn text(self) -> &'static str {
+        match self {
+            Encoding::Auto => "auto",
+            Encoding::Sjis => "sjis",
+            Encoding::Utf8 => "utf8",
+        }
+    }
+
+    pub fn of(text: &str) -> Option<Encoding> {
+        [Encoding::Auto, Encoding::Sjis, Encoding::Utf8].into_iter().find(|e| e.text() == text)
+    }
 }
 
 /// A line from the job `job` to the one that has it in `after`: which
@@ -451,6 +487,7 @@ struct RawJob {
     retry: Field,
     judge: Field,
     env: Field,
+    encoding: Field,
 }
 
 /// The 1-based line of byte `offset` in `text`.
@@ -1348,11 +1385,13 @@ impl Checker<'_> {
                     self.add(start, format!("{name}: {e}"));
                 }
             }
-            let env = if part.is_job() {
-                self.env(&j.env)
+            let (env, encoding) = if part.is_job() {
+                let encoding = self.choice(&j.encoding, "encoding", &["auto", "sjis", "utf8"]).and_then(Encoding::of).unwrap_or_default();
+                (self.env(&j.env), encoding)
             } else {
                 self.only(&j.env, "env", "\"job\"");
-                BTreeMap::new()
+                self.only(&j.encoding, "encoding", "\"job\"");
+                (BTreeMap::new(), Encoding::Auto)
             };
             let timeout = if part.is_job() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
@@ -1367,7 +1406,7 @@ impl Checker<'_> {
             let name = self.string(&j.name, "name");
             let note = self.string(&j.note, "note");
             let pos = self.pos(&j.pos);
-            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env });
+            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding });
         }
         let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
@@ -1878,6 +1917,18 @@ exit 1'''
             ["a.toml の 4 行目: run と shell は両方書けない（run か、shell と script か）"]
         );
         assert_eq!(p("shell = \"powershell\"\nscript = 1"), ["a.toml の 5 行目: script は文字列で書く"]);
+    }
+
+    #[test]
+    fn encoding_says_how_the_output_is_read() {
+        let enc = |text: &str| parse(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{text}\n")).unwrap().jobs[0].encoding;
+        assert_eq!(enc(""), Encoding::Auto);
+        assert_eq!(enc("encoding = \"sjis\""), Encoding::Sjis);
+        assert_eq!(enc("encoding = \"utf8\""), Encoding::Utf8);
+        assert_eq!(enc("encoding = \"auto\""), Encoding::Auto);
+        let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
+        assert_eq!(p("run = [\"x\"]\nencoding = \"cp932\""), ["a.toml の 5 行目: encoding は \"auto\"・\"sjis\"・\"utf8\" のどれか"]);
+        assert!(p("kind = \"notify\"\nencoding = \"sjis\"").contains(&"a.toml の 5 行目: encoding は kind = \"job\" にだけ書く".to_owned()));
     }
 
     #[test]

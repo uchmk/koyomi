@@ -716,3 +716,21 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 58.3 | `koyomi map --mermaid`, paste into a Mermaid viewer | A left-to-right flowchart of the same links |
 | 58.4 | With no links | `(no links)` |
 
+
+## 59. 出力の文字コード（encoding）
+
+| # | Do | Expect |
+|---|---|---|
+| 59.1 | A job that prints a Shift_JIS file (`run = ["cmd.exe", "/c", "type", 'sjis.txt']`) with `encoding = "sjis"`, run it | The log shows the Japanese text, not mojibake |
+| 59.2 | The same job with `encoding = "utf8"` | The log does not show the Japanese text (the bytes are not UTF-8) |
+| 59.3 | No `encoding` (auto), a program that prints UTF-8, then one that prints in the console code page | Both read right |
+| 59.4 | `encoding = "cp932"` | The problem 「encoding は "auto"・"sjis"・"utf8" のどれか」 on that line |
+| 59.5 | Open the job in the editor, pick Shift_JIS under 出力の文字コード, save | The file gets `encoding = "sjis"`; the review shows 出力の文字コード: Shift_JIS; picking 自動 removes the line |
+
+## 60. エディターの部品の棚
+
+| # | Do | Expect |
+|---|---|---|
+| 60.1 | Open a jobnet in the editor | Every shelf button has a name, the first one 【ジョブ】 |
+| 60.2 | Drag the shelf's right border | The shelf gets wider or narrower (between about 90 and 320 px); the canvas follows |
+| 60.3 | Click a job on the canvas | The pane's heading reads 【ジョブ】 |

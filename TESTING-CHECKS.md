@@ -1,6 +1,6 @@
 # Checklist
 
-407 checks in TESTING.md, 403 left for a person.
+415 checks in TESTING.md, 411 left for a person.
 
 ## 1. Start
 
@@ -582,3 +582,17 @@
 - [ ] **58.2** `koyomi map --dot \| dot -Tsvg > map.svg`, open it → The nets as boxes, arrows from the first to the dependent, labelled 〔未訳〕
 - [ ] **58.3** `koyomi map --mermaid`, paste into a Mermaid viewer → A left-to-right flowchart of the same links 〔未訳〕
 - [ ] **58.4** With no links → `(no links)` 〔未訳〕
+
+## 59. 出力の文字コード（encoding）
+
+- [ ] **59.1** A job that prints a Shift_JIS file (`run = ["cmd.exe", "/c", "type", 'sjis.txt']`) with `encoding = "sjis"`, run it → The log shows the Japanese text, not mojibake 〔未訳〕
+- [ ] **59.2** The same job with `encoding = "utf8"` → The log does not show the Japanese text (the bytes are not UTF-8) 〔未訳〕
+- [ ] **59.3** No `encoding` (auto), a program that prints UTF-8, then one that prints in the console code page → Both read right 〔未訳〕
+- [ ] **59.4** `encoding = "cp932"` → The problem 「encoding は "auto"・"sjis"・"utf8" のどれか」 on that line 〔未訳〕
+- [ ] **59.5** Open the job in the editor, pick Shift_JIS under 出力の文字コード, save → The file gets `encoding = "sjis"`; the review shows 出力の文字コード: Shift_JIS; picking 自動 removes the line 〔未訳〕
+
+## 60. エディターの部品の棚
+
+- [ ] **60.1** Open a jobnet in the editor → Every shelf button has a name, the first one 【ジョブ】 〔未訳〕
+- [ ] **60.2** Drag the shelf's right border → The shelf gets wider or narrower (between about 90 and 320 px); the canvas follows 〔未訳〕
+- [ ] **60.3** Click a job on the canvas → The pane's heading reads 【ジョブ】 〔未訳〕
