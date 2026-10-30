@@ -27,7 +27,9 @@ pub const USAGE: &str = "\
 usage: koyomi [--version | --help | env]
        koyomi check <file>           read a definition (or koyomi.toml, _group.toml, calendars/<name>.toml)
                                      and say what is wrong with it (exit 1 if anything)
-       koyomi list [--group <group>] the definitions and where each stands (--group: that group's only)
+       koyomi list [--group <group>] [--csv <file>]
+                                     the definitions and where each stands (--group: that group's only;
+                                     --csv: every job of them as a CSV table, - for standard output)
        koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
        koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD]] [--set name=value]... [--dry] [--wait]
@@ -40,10 +42,10 @@ usage: koyomi [--version | --help | env]
        koyomi next <group/name> [--count N]
                                      the next 10 times its [[when]] comes (N: that many)
        koyomi status [--today]       the runs still going (--today: every run of today)
-       koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [<group/name>]
+       koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [--csv <file>] [<group/name>]
                                      the runs of those days, oldest first (the last 7 days when none;
                                      --status: ok, warn, error, timeout, killed, running, running_error,
-                                     waiting, held, skipped, missed, locked or not_run)
+                                     waiting, held, skipped, missed, locked or not_run; --csv: one row per run)
        koyomi log <run> <job>        the tail of one job's log
        koyomi compare <run-a> <run-b>
                                      two runs side by side: how long each job took, its state and exit code, and how the logs differ
@@ -63,9 +65,10 @@ usage: koyomi [--version | --help | env]
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
-       koyomi plan [YYYY-MM] [--pdf <file>] [--print]
+       koyomi plan [YYYY-MM] [--pdf <file>] [--print] [--csv <file>]
                                      what starts on each day of the month (this month when none), by the approved
-                                     nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer
+                                     nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer;
+                                     --csv: one row per start
        koyomi map [--dot | --mermaid]
                                      how the nets depend on each other (child net, after_jobnet, wait_for), one line each;
                                      --dot: a Graphviz graph; --mermaid: a Mermaid flowchart
@@ -88,7 +91,8 @@ usage: koyomi [--version | --help | env]
 ";
 
 /// What every command takes, under the usage.
-pub const NOTE: &str = "every command takes --help (its lines) and --toml (the answer as TOML, for other programs)\n";
+pub const NOTE: &str = "every command takes --help (its lines) and --toml (the answer as TOML, for other programs)\n\
+a --csv file is UTF-8 with a BOM, for Excel\n";
 
 /// What the sign-in entry runs: the engine, not the window.
 pub const STARTUP_ARGS: [&str; 1] = ["engine"];
@@ -426,16 +430,35 @@ fn check_config(name: &str, text: &str) -> i32 {
     i32::from(!notes.is_empty())
 }
 
+/// `--csv <to>`: writes `text` and says where (nothing said for `-`, the table is the output).
+fn wrote(to: &str, text: &str) -> i32 {
+    if let Err(e) = crate::csv::write(to, text) {
+        return fail(&format!("koyomi: {e}"));
+    }
+    if to != "-" {
+        out(to, false);
+    }
+    0
+}
+
 fn snapshot() -> Result<Snapshot, String> {
     Snapshot::parse(&client::call(&Request::List)?)
 }
 
 fn list(args: &[String]) -> i32 {
-    let group = match args {
-        [] => None,
-        [a, g] if a == "--group" => Some(g.clone()),
-        _ => return usage("list takes --group <group>"),
-    };
+    let (mut group, mut csv) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let slot = match a.as_str() {
+            "--group" => &mut group,
+            "--csv" => &mut csv,
+            _ => return usage("list takes --group <group> and --csv <file>"),
+        };
+        match it.next() {
+            Some(v) => *slot = Some(v.clone()),
+            None => return usage(&format!("{a} takes a value")),
+        }
+    }
     let mut snap = match snapshot() {
         Ok(s) => s,
         Err(e) => return fail(&e),
@@ -445,6 +468,9 @@ fn list(args: &[String]) -> i32 {
             return fail(&format!("グループがない: {g}"));
         }
         snap.defs.retain(|d| &d.group == g);
+    }
+    if let Some(to) = csv {
+        return wrote(&to, &crate::csv::jobs(&table(), &snap.defs));
     }
     if toml() {
         emit(&snap.to_toml());
@@ -685,7 +711,7 @@ fn day_row(date: NaiveDate, day: Day) -> DayRow {
 
 /// `koyomi calendar <name> [--month YYYY-MM]`: the month's days as the engine counts them.
 fn plan(args: &[String]) -> i32 {
-    let (mut month, mut pdf, mut print) = (None, None, false);
+    let (mut month, mut pdf, mut print, mut csv) = (None, None, false, None);
     let mut it = args.iter();
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -694,11 +720,15 @@ fn plan(args: &[String]) -> i32 {
                 None => return usage("--pdf takes a file"),
             },
             "--print" => print = true,
+            "--csv" => match it.next() {
+                Some(f) => csv = Some(f.clone()),
+                None => return usage("--csv takes a file"),
+            },
             m if month.is_none() && !m.starts_with("--") => match NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d") {
                 Ok(d) => month = Some((d.year(), d.month())),
                 Err(_) => return usage("plan takes YYYY-MM"),
             },
-            _ => return usage("plan takes YYYY-MM, --pdf <file> and --print"),
+            _ => return usage("plan takes YYYY-MM, --pdf <file>, --print and --csv <file>"),
         }
     }
     let snap = match snapshot() {
@@ -708,6 +738,12 @@ fn plan(args: &[String]) -> i32 {
     let today = chrono::Local::now().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
     let days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
+    if let Some(to) = csv {
+        let code = wrote(&to, &crate::csv::plan(&table(), &days));
+        if code != 0 || (pdf.is_none() && !print) {
+            return code;
+        }
+    }
     if pdf.is_none() && !print {
         out(&crate::plan::text(&days), false);
         return 0;
@@ -986,7 +1022,7 @@ fn say_runs(t: &ito_i18n::Table, rs: &[Run]) {
 /// `koyomi history [--from D] [--to D] [--status <state>] [<group/name>]`: the runs that
 /// started on those days (the last 7 when none), oldest first, narrowed by state and net here.
 fn history(args: &[String]) -> i32 {
-    let (mut from, mut to, mut state, mut net) = (None, None, None, None);
+    let (mut from, mut to, mut state, mut net, mut csv) = (None, None, None, None, None);
     let day = |d: Option<&String>| d.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1006,8 +1042,12 @@ fn history(args: &[String]) -> i32 {
                     return usage(&format!("--status takes one of {}", keys.join(", ")));
                 }
             },
+            "--csv" => match it.next() {
+                Some(f) => csv = Some(f.clone()),
+                None => return usage("--csv takes a file"),
+            },
             _ if net.is_none() && !a.starts_with("--") => net = Some(a.replace('\\', "/")),
-            _ => return usage("history takes --from, --to, --status and one group/name"),
+            _ => return usage("history takes --from, --to, --status, --csv and one group/name"),
         }
     }
     let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
@@ -1019,6 +1059,9 @@ fn history(args: &[String]) -> i32 {
     };
     let rs: Vec<Run> =
         rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
+    if let Some(to) = csv {
+        return wrote(&to, &crate::csv::runs(&table(), &rs));
+    }
     if toml() {
         emit(&Runs { runs: rs }.to_toml());
         return 0;

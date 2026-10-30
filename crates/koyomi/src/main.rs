@@ -14,6 +14,7 @@ mod acked;
 mod cli;
 mod client;
 mod compare;
+mod csv;
 mod engine;
 mod envreport;
 mod glossary;

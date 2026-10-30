@@ -1,6 +1,6 @@
 # Checklist
 
-498 checks in TESTING.md, 494 left for a person.
+504 checks in TESTING.md, 500 left for a person.
 
 ## 1. Start
 
@@ -715,3 +715,12 @@
 - [ ] **72.4** Write a line `x,y` in the middle of the file → The band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x`; nets run on the built-in rules 〔未訳〕
 - [ ] **72.5** Remove the file (with today near the end of 2027) → The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on 〔未訳〕
 - [ ] **72.6** `koyomi export -o out.zip --calendars` with the file in `calendars/` → The bundle has the calendars' `.toml` but not `syukujitsu.csv` 〔未訳〕
+
+## 73. CSV の書き出し
+
+- [ ] **73.1** `koyomi list --csv jobs.csv`; open it in Excel → One row per job of every definition, with the heads グループ・ジョブネット・名前・確認・カレンダー・ジョブ…; Japanese is not garbled 〔未訳〕
+- [ ] **73.2** `koyomi history --from <a week ago> --csv runs.csv` → One row per run, oldest first; 秒 is the run's length; 異常のジョブ names the jobs that ended 異常 〔未訳〕
+- [ ] **73.3** `koyomi plan --csv plan.csv` → Every day of this month; a day with no start is one row with only its date and weekday 〔未訳〕
+- [ ] **73.4** `koyomi plan --csv -` → The table on the console with no BOM, and no file name said 〔未訳〕
+- [ ] **73.5** A net whose name has a comma; `koyomi list --csv -` → The name is in double quotes; Excel shows it in one cell 〔未訳〕
+- [ ] **73.6** Set the language to English in Settings; `koyomi plan --csv -` → The heads are Day,Weekday,Time,Jobnet 〔未訳〕
