@@ -28,6 +28,8 @@ engine_starting = "エンジンを起動中"
 paused = "スケジュール停止中"
 running = "実行中 {0}"
 next = "次の回 {0}"
+engine_ok = "稼働中"
+todo = "未承認 {0}"
 
 [notices]
 title = "通知（未読 {0}）"

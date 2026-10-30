@@ -502,6 +502,11 @@ impl Browser {
         self.runs.iter().filter(|r| r.state.is_error()).map(|r| r.id.as_str())
     }
 
+    /// How many definitions are not approved or do not read (the status bar's count).
+    pub fn todo_count(&self) -> usize {
+        self.snap.as_ref().map_or(0, |s| s.defs.iter().filter(|d| d.standing != Standing::Confirmed).count())
+    }
+
     /// The status bar's engine facts: `(engine word, running count, next time)`.
     /// The word is `None` while all is well and the engine answers.
     pub fn engine_facts(&self, t: &ito_i18n::Table) -> (Option<String>, usize, Option<chrono::NaiveDateTime>) {

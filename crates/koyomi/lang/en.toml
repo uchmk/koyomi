@@ -28,6 +28,8 @@ engine_starting = "Starting the engine"
 paused = "Schedule paused"
 running = "{0} running"
 next = "Next {0}"
+engine_ok = "Running"
+todo = "Not approved {0}"
 unacked = "{0} failures waiting"
 
 [notices]

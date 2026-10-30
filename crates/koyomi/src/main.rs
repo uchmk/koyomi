@@ -426,11 +426,13 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         let clock = self.prefs.common.clock_or(None);
         let spec = ito_statusbar::Spec { clock: &clock, lang: &self.lang, opacity: 1.0 };
-        let version = env!("CARGO_PKG_VERSION");
         let waiting = self.acked.waiting(self.browser.failed_ids());
         let (engine, running, next) = self.browser.engine_facts(&self.table);
         let running_line = (running > 0).then(|| self.table.trf("status.running", &[&running.to_string()]));
         let next_line = next.map(|n| self.table.trf("status.next", &[&n.format("%m-%d %H:%M").to_string()]));
+        let todo = self.browser.todo_count();
+        let todo_line = (todo > 0).then(|| self.table.trf("status.todo", &[&todo.to_string()]));
+        let ok_line = engine.is_none().then(|| self.table.tr("status.engine_ok").to_owned());
         let line = (waiting > 0).then(|| self.table.trf("status.unacked", &[&waiting.to_string()]));
         ito_statusbar::show(
             ui,
@@ -439,16 +441,21 @@ impl App {
                 if let Some(l) = &engine {
                     ito_statusbar::item(ui, l, ito_theme::colors().err);
                 }
+                if let Some(l) = &ok_line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().dim);
+                }
                 if let Some(l) = &running_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().run);
                 }
                 if let Some(l) = &next_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().dim);
                 }
+                if let Some(l) = &todo_line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().wait);
+                }
                 if let Some(l) = &line {
                     ito_statusbar::item(ui, l, ito_theme::colors().err);
                 }
-                ito_statusbar::item(ui, version, ito_theme::colors().dim)
             },
             |_| {},
         );
