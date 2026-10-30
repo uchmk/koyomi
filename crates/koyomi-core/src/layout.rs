@@ -4,8 +4,11 @@
 //! Layers by the longest path from a start (`run::layers`), then the rows of
 //! each layer ordered by the mean row of the parts before them, and again by
 //! the parts after them, a few times over: the lines cross as little as this
-//! simple sweep gets them to. The positions are horizontal (along = x);
-//! the vertical flow swaps the axes when it draws.
+//! simple sweep gets them to. A part with no line before or after it is not
+//! stacked in layer 0: the loose parts stand in one row along the flow, below
+//! the connected ones, in the order they stood (then the file's). The
+//! positions are horizontal (along = x); the vertical flow swaps the axes when
+//! it draws.
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -36,6 +39,11 @@ pub fn places(jobs: &[Job]) -> Vec<(usize, usize)> {
             }
         }
     }
+    // The loose parts leave the layers and get their own row at the end.
+    let loose: Vec<usize> = (0..n).filter(|&i| preds[i].is_empty() && succs[i].is_empty()).collect();
+    for layer in &mut layers {
+        layer.retain(|i| !loose.contains(i));
+    }
     let mut row = vec![0.0f64; n];
     for layer in &layers {
         for (r, &i) in layer.iter().enumerate() {
@@ -55,6 +63,21 @@ pub fn places(jobs: &[Job]) -> Vec<(usize, usize)> {
         for (r, &i) in layer.iter().enumerate() {
             out[i] = (l, r);
         }
+    }
+    let below = layers.iter().map(Vec::len).max().unwrap_or(0);
+    let mut loose = loose;
+    // Stable: the file's order among parts at the same place, and after the placed ones.
+    loose.sort_by(|&a, &b| {
+        let along = |i: usize| jobs[i].pos.map(|p| p.0);
+        match (along(a), along(b)) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(Ordering::Equal),
+            (Some(_), None) => Ordering::Less,
+            (None, Some(_)) => Ordering::Greater,
+            (None, None) => Ordering::Equal,
+        }
+    });
+    for (l, &i) in loose.iter().enumerate() {
+        out[i] = (l, below);
     }
     out
 }
@@ -106,6 +129,24 @@ mod tests {
         // In file order y (after b) comes before x (after a): the sweep uncrosses them.
         let jobs = vec![job("a", &[]), job("b", &[]), job("y", &["b"]), job("x", &["a"])];
         assert_eq!(places(&jobs), [(0, 0), (0, 1), (1, 1), (1, 0)]);
+    }
+
+    #[test]
+    fn loose_parts_stand_in_a_row_along_the_flow() {
+        let jobs = vec![job("a", &[]), job("b", &[]), job("c", &[])];
+        assert_eq!(places(&jobs), [(0, 0), (1, 0), (2, 0)]);
+    }
+
+    #[test]
+    fn loose_parts_go_below_the_connected_ones_in_the_order_they_stood() {
+        let mut jobs = vec![job("a", &[]), job("p", &[]), job("b", &["a"]), job("c", &["a"]), job("q", &[]), job("d", &["b", "c"])];
+        jobs[1].pos = Some((300.0, 0.0));
+        jobs[4].pos = Some((10.0, 400.0));
+        let p = places(&jobs);
+        assert_eq!([p[0], p[2], p[3], p[5]], [(0, 0), (1, 0), (1, 1), (2, 0)], "the diamond is as before");
+        assert_eq!((p[4], p[1]), ((0, 2), (1, 2)), "q stood left of p");
+        align(&mut jobs);
+        assert_eq!(jobs[1].pos, Some((STEP_ALONG, 2.0 * STEP_ACROSS)));
     }
 
     #[test]
