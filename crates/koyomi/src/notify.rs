@@ -123,6 +123,18 @@ pub fn recovery_words(t: &Table, r: &Run, prev: &Run) -> (&'static str, String, 
     ("failed", title, body)
 }
 
+/// The words a `kind = "approval"` part sends when it begins to wait. The event is `failed`:
+/// the one that is on when nothing is written, and a run that waits for a person is stuck.
+pub fn ask_words(t: &Table, r: &Run, job: &str) -> (&'static str, String, String) {
+    let label = r.job(job).map_or(job, |j| j.label());
+    let title = format!("{}  {}: {label}", t.tr("notify.ask_title"), r.title);
+    let body = [t.trf("notify.ask", &[&r.title, label]), format!("{}  {}", r.id, r.date)].join(
+        "
+",
+    );
+    ("failed", title, body)
+}
+
 /// The words a `kind = "notify"` part sends: the run as it stands, headed
 /// `{state}  {title}: {part}`, the jobs that ended abnormally so far (or the
 /// run's line), then the id and the day. The event is `failed` once a job

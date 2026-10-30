@@ -269,6 +269,12 @@ impl State {
             let (event, title, body) = notify::part_words(&self.words, r, &job);
             notify::tell(&self.notify, event, &title, &body);
         }
+        // A 確認待ち part asks a person.
+        for (run, job) in self.runner.take_asks() {
+            let Some(r) = self.runner.runs().iter().find(|r| r.id == run) else { continue };
+            let (event, title, body) = notify::ask_words(&self.words, r, &job);
+            notify::tell(&self.notify, event, &title, &body);
+        }
         let over = self.runner.take_over();
         self.tick_after(&over);
         let (runs, missed) = notify::group_missed(over);
@@ -1047,6 +1053,7 @@ impl State {
             Request::Hold { id } => self.hold(id),
             Request::Release { id } => self.release(id),
             Request::Skip { run, job } => self.runner.skip(run, job),
+            Request::Answer { run, job, yes } => self.runner.answer(run, job, *yes),
             Request::Shift { id, from, to } => self.shift(id, from, to.as_deref()),
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
@@ -1080,6 +1087,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Hold { id } => ("hold", id.clone()),
         Request::Release { id } => ("release", id.clone()),
         Request::Skip { run, job } => ("skip", format!("{run} {job}")),
+        Request::Answer { run, job, yes } => (if *yes { "approve-step" } else { "reject-step" }, format!("{run} {job}")),
         Request::Shift { id, .. } => ("shift", id.clone()),
         Request::Pause => ("pause", String::new()),
         Request::Resume => ("resume", String::new()),

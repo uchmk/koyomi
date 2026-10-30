@@ -76,7 +76,7 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         }
         match &j.part {
             Part::Job => {}
-            Part::Branch | Part::Notify => continue,
+            Part::Branch | Part::Notify | Part::Approval => continue,
             Part::Join { wait } => {
                 let how = t.tr(if *wait == Wait::All { "review.wait_all" } else { "review.wait_any" });
                 out.push(format!("  {}: {how}", t.tr("review.wait")));

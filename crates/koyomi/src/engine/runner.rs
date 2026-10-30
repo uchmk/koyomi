@@ -92,6 +92,8 @@ struct Waiting {
 enum Due {
     /// The time, and how it reads (`06:00`, or with the day when it is another).
     Time { at: NaiveDateTime, text: String },
+    /// A person's answer ([`Runner::answer`]); nothing ends it by itself.
+    Person,
     File {
         pattern: String,
         /// Seconds the file must stay the same before it counts as arrived.
@@ -108,6 +110,7 @@ impl Due {
     /// What ends the wait now, when something does: the state, the reason, and the file found.
     fn check(&mut self, now: NaiveDateTime) -> Option<(State, String, Option<String>)> {
         match self {
+            Due::Person => None,
             Due::Time { at, text } => (now >= *at).then(|| (State::Ok, format!("{text} になった"), None)),
             Due::File { pattern, settle, timeout, since, seen } => {
                 let found = super::files::find_file(pattern);
@@ -176,6 +179,8 @@ pub struct Runner {
     waits: Vec<Waiting>,
     /// The `kind = "notify"` parts that ended since [`Runner::take_notices`]: (run, job).
     notices: Vec<(String, String)>,
+    /// The `kind = "approval"` parts that began to wait since [`Runner::take_asks`]: (run, job).
+    asks: Vec<(String, String)>,
     /// `calendars/*.toml` and the calendar each net counts by: what `{date-1bd}` in a job needs.
     calendars: BTreeMap<String, Calendar>,
     calendar_of: BTreeMap<String, String>,
@@ -202,6 +207,7 @@ impl Runner {
             calendar_of: BTreeMap::new(),
             waits: Vec::new(),
             notices: Vec::new(),
+            asks: Vec::new(),
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -238,6 +244,27 @@ impl Runner {
     }
 
     /// The `kind = "notify"` parts that ended since the last call, oldest first: (run id, job id).
+    pub fn take_asks(&mut self) -> Vec<(String, String)> {
+        std::mem::take(&mut self.asks)
+    }
+
+    /// A person answers the 確認待ち part `job` of `run`: `yes` ends it 正常, else 異常 (却下).
+    pub fn answer(&mut self, run: &str, job: &str, yes: bool) -> Result<String, String> {
+        let i = self
+            .waits
+            .iter()
+            .position(|w| w.run == run && w.job == job && matches!(w.due, Due::Person))
+            .ok_or_else(|| format!("{run} の {job}: 確認を待っていない"))?;
+        self.waits.remove(i);
+        let now = Local::now().naive_local();
+        let (state, reason) = if yes { (State::Ok, "承認された") } else { (State::Error, "却下された") };
+        if let Some(r) = self.end_part(run, job, state, reason, None, now) {
+            self.ended(r);
+        }
+        self.start_ready();
+        Ok(format!("{run} の {job} を{}", if yes { "承認した" } else { "却下した" }))
+    }
+
     pub fn take_notices(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.notices)
     }
@@ -685,6 +712,10 @@ impl Runner {
                         }
                         None => over.extend(self.end_part(&run_id, &job_id, State::Error, "日付が読めない", None, now)),
                     }
+                }
+                Part::Approval => {
+                    self.wait_on(&run_id, &job_id, "確認を待っています", Due::Person, now);
+                    self.asks.push((run_id.clone(), job_id.clone()));
                 }
                 Part::File { file, settle } => {
                     let due = Due::File { pattern: file.clone(), settle, timeout, since: Instant::now(), seen: None };
@@ -1764,6 +1795,42 @@ id = \"a\"
         let run = wait_over(&mut r, &id3);
         assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
         assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_approval_part_waits_for_a_person() {
+        let dir = scratch("approval");
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+[[job]]
+id = \"ok\"
+kind = \"approval\"
+[[job]]
+id = \"b\"
+after = [\"ok\"]
+{}
+",
+                echo("x")
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let day = Local::now().date_naive();
+        let id = r.start(&d, day, How::Manual, None).unwrap();
+        r.tick();
+        assert_eq!(r.take_asks(), vec![(id.clone(), "ok".to_owned())]);
+        assert!(r.answer(&id, "nope", true).is_err());
+        r.answer(&id, "ok", true).unwrap();
+        assert_eq!(wait_over(&mut r, &id).state, State::Ok);
+        // A rejection ends the run 異常 and the job after it does not run.
+        let id2 = r.start(&d, day, How::Manual, None).unwrap();
+        r.tick();
+        r.answer(&id2, "ok", false).unwrap();
+        let run = wait_over(&mut r, &id2);
+        assert_eq!(run.state, State::Error);
+        assert_eq!(run.job("b").unwrap().state, State::NotRun);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

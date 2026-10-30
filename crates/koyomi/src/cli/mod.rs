@@ -47,6 +47,8 @@ usage: koyomi [--version | --help | env]
        koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
        koyomi release <group/name>   take the net off hold
        koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
+       koyomi approve-step <run> <job> [--no]
+                                     answer a 確認待ち part: let the run go on, or --no to end it 異常
        koyomi shift <group/name> <from> <to|--cancel>
                                      start its time <from> at <to> this once (HH:MM is today, or YYYY-MM-DD HH:MM);
                                      the definition does not change; --cancel takes the move back
@@ -85,9 +87,36 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 28] = [
-    "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "shift",
-    "ops", "uses", "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
+const COMMANDS: [&str; 29] = [
+    "check",
+    "list",
+    "show",
+    "approve",
+    "run",
+    "rerun",
+    "next",
+    "status",
+    "history",
+    "log",
+    "kill",
+    "hold",
+    "release",
+    "skip",
+    "approve-step",
+    "shift",
+    "ops",
+    "uses",
+    "pause",
+    "resume",
+    "calendar",
+    "new",
+    "versions",
+    "restore",
+    "export",
+    "import",
+    "engine",
+    "startup",
+    "secret",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -123,6 +152,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
         "release" => one_id(rest, "release", |id| Request::Release { id }),
         "skip" => skip(rest),
+        "approve-step" => approve_step(rest),
         "shift" => shift(rest),
         "ops" => ops(rest),
         "uses" => uses(rest),
@@ -1031,6 +1061,15 @@ fn plain(args: &[String], name: &str, request: Request) -> i32 {
         ask_and_say(&request)
     } else {
         usage(&format!("{name} takes nothing"))
+    }
+}
+
+fn approve_step(args: &[String]) -> i32 {
+    let yes = !args.iter().any(|a| a == "--no");
+    let rest: Vec<&String> = args.iter().filter(|a| *a != "--no").collect();
+    match rest.as_slice() {
+        [run, job] => ask_and_say(&Request::Answer { run: (*run).clone(), job: (*job).clone(), yes }),
+        _ => usage("approve-step takes a run and a job"),
     }
 }
 

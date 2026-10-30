@@ -253,7 +253,7 @@ fn job(j: &Job, out: &mut String) {
                 push(out, "settle", &q(&duration::text(*s)));
             }
         }
-        Part::Job | Part::Branch | Part::Notify => {}
+        Part::Job | Part::Branch | Part::Notify | Part::Approval => {}
     }
     if !j.run.is_empty() {
         push(out, "run", &format!("[{}]", j.run.iter().map(|s| q(s)).collect::<Vec<_>>().join(", ")));
@@ -466,6 +466,23 @@ after = ["n"]
     fn the_smallest_net_is_a_few_lines() {
         let net = jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n").unwrap();
         assert_eq!(text(&net), "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n");
+    }
+
+    #[test]
+    fn an_approval_part_survives_a_round_trip() {
+        let src = "format = 1
+
+[[job]]
+id = \"ok\"
+kind = \"approval\"
+
+[[job]]
+id = \"b\"
+run = [\"x.exe\"]
+after = [\"ok\"]
+";
+        let net = jobnet::parse(src).unwrap();
+        assert_eq!(jobnet::parse(&text(&net)).unwrap().jobs.len(), 2);
     }
 
     #[test]

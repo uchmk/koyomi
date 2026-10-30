@@ -99,7 +99,7 @@
 - [ ] 44. C1 タスクトレイの常駐アイコン（M）: **uchmk/ito#73 待ち**。
 - [x] 45. A9 ジョブの間で値を渡す（M）: `KOYOMI_OUT` の TOML。
 - [x] 46. A10 排他（M）: `lock = "名前"`。
-- [ ] 47. A11 人の確認待ちの部品（M）: 画面か `koyomi approve-step`。`ito-confirm`・`ito-notify`。
+- [x] 47. A11 人の確認待ちの部品（M）: 画面か `koyomi approve-step`。`ito-confirm`・`ito-notify`。
 - [ ] 48. A12 期間を指定してまとめて流す（M）: `run --date A..B`。
 - [ ] 49. B5 かかった時間の平均と予想の終了時刻（M）。
 - [ ] 50. B7 MCP（M）: 読むのは自由、流す・止めるは確認つき。`ito-mcp`。

@@ -225,7 +225,7 @@ impl Fields {
                 }
                 out.part = Part::Jobnet { use_: self.use_.trim().into() };
             }
-            Part::Branch | Part::Notify => {}
+            Part::Branch | Part::Notify | Part::Approval => {}
         }
         Ok(out)
     }
@@ -304,7 +304,7 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order.
-pub fn shelf() -> [Part; 7] {
+pub fn shelf() -> [Part; 8] {
     [
         Part::Job,
         Part::Jobnet { use_: String::new() },
@@ -313,6 +313,7 @@ pub fn shelf() -> [Part; 7] {
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
         Part::File { file: String::new(), settle: None },
         Part::Notify,
+        Part::Approval,
     ]
 }
 
@@ -324,6 +325,7 @@ fn prefix(p: &Part) -> &'static str {
         Part::Time { .. } => "time",
         Part::File { .. } => "file",
         Part::Notify => "notify",
+        Part::Approval => "approval",
         Part::Jobnet { .. } => "net",
     }
 }
@@ -1113,7 +1115,7 @@ impl Editor {
                             *action = Some(Action::Enter(f.use_.trim().to_owned()));
                         }
                     }
-                    Part::Branch | Part::Notify => {}
+                    Part::Branch | Part::Notify | Part::Approval => {}
                 }
                 if changed {
                     f.msg = self.apply_fields(&id, &f).err();

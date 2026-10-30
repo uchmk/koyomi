@@ -1,6 +1,6 @@
 # Checklist
 
-381 checks in TESTING.md, 377 left for a person.
+384 checks in TESTING.md, 380 left for a person.
 
 ## 1. Start
 
@@ -535,3 +535,9 @@
 - [ ] **51.1** Give two nets `lock = "db"`; start the first (a slow job), then start the second by hand → The second is refused with a message naming the lock and the net that holds it 〔未訳〕
 - [ ] **51.2** Start a net without `lock` meanwhile → It starts normally 〔未訳〕
 - [ ] **51.3** Wait for the first to end, start the second again → It starts 〔未訳〕
+
+## 52. 人の確認待ち
+
+- [ ] **52.1** Add an "approval" part (shelf) between two jobs and start the net → The run waits at the approval part and a notification arrives 〔未訳〕
+- [ ] **52.2** Press "承認する" on the run's toolbar → The part ends 正常 and the next job runs 〔未訳〕
+- [ ] **52.3** Start again and press "却下する" (or `koyomi approve-step <run> <job> --no`) → The part ends 異常, the run fails and the next job does not run 〔未訳〕

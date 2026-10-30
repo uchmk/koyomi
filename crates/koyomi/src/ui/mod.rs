@@ -1464,6 +1464,28 @@ impl Browser {
                     let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
                 }
             }
+            // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
+            let asking: Vec<&str> = run
+                .jobs
+                .iter()
+                .filter(|j| j.state == State::Running && j.part == koyomi_core::jobnet::Part::Approval)
+                .map(|j| j.id.as_str())
+                .collect();
+            let target =
+                picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
+            for (yes, key) in [(true, "run.approve"), (false, "run.reject")] {
+                let label = match target {
+                    Some(j) => t.trf(&format!("{key}_from"), &[j]),
+                    None => t.tr(key).to_owned(),
+                };
+                let r = ui.add_enabled(target.is_some(), egui::Button::new(&label));
+                ito_a11y::say(&r, Role::Button, &label);
+                if r.clicked() {
+                    if let Some(job) = target {
+                        let _ = self.tx.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
+                    }
+                }
+            }
             ui.separator();
             for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
                 let r = ui.selectable_label(self.vertical == vertical, t.tr(key));

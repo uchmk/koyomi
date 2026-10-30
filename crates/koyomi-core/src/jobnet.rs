@@ -253,6 +253,8 @@ pub enum Part {
     },
     /// 通知: sends the run's notification as it stands, then ends.
     Notify,
+    /// 確認待ち: waits for a person to approve or reject (screen, or `koyomi approve-step`).
+    Approval,
     /// 子ジョブネット: `use = "グループ/名前"`'s jobs run here, in its place.
     Jobnet {
         #[serde(rename = "use")]
@@ -274,6 +276,7 @@ impl Part {
             Part::Time { .. } => "time",
             Part::File { .. } => "file",
             Part::Notify => "notify",
+            Part::Approval => "approval",
             Part::Jobnet { .. } => "jobnet",
         }
     }
@@ -285,7 +288,7 @@ impl Part {
 
     /// Waits for the clock or a file: the engine polls it.
     pub fn waits(&self) -> bool {
-        matches!(self, Part::Time { .. } | Part::File { .. })
+        matches!(self, Part::Time { .. } | Part::File { .. } | Part::Approval)
     }
 }
 
@@ -600,7 +603,8 @@ impl Checker<'_> {
 
     /// `kind` and the fields that go with it, as a [`Part`].
     fn part(&mut self, j: &RawJob, start: usize) -> Part {
-        let kind = self.choice(&j.kind, "kind", &["job", "branch", "join", "time", "file", "notify", "jobnet"]).unwrap_or("job");
+        let kind =
+            self.choice(&j.kind, "kind", &["job", "branch", "join", "time", "file", "notify", "approval", "jobnet"]).unwrap_or("job");
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
         }
@@ -662,6 +666,7 @@ impl Checker<'_> {
                 Part::File { file: file.unwrap_or_default(), settle }
             }
             "notify" => Part::Notify,
+            "approval" => Part::Approval,
             "jobnet" => {
                 let use_ = match &j.use_ {
                     Some(f) => self.string(&j.use_, "use").filter(|u| {
@@ -1377,7 +1382,7 @@ impl Checker<'_> {
             // A part that nothing leads to, or that leads nowhere, does nothing: a mistake, not a quiet no-op.
             let (needs_after, needs_next) = match job.part {
                 Part::Branch | Part::Join { .. } => (true, true),
-                Part::Time { .. } | Part::File { .. } => (false, true),
+                Part::Time { .. } | Part::File { .. } | Part::Approval => (false, true),
                 Part::Notify => (true, false),
                 Part::Job | Part::Jobnet { .. } => (false, false),
             };
@@ -2023,7 +2028,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"jobnet\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.
