@@ -305,6 +305,7 @@ kill_ask = "{0} を強制終了します。動いているジョブは止まり�
 kill_yes = "強制終了する"
 kill_no = "やめる"
 rerun = "再実行"
+rerun_rest = "止まったところから（済んだジョブは引き継ぐ）"
 ack = "対応済みにする"
 acked = "対応済みにした"
 acked_already = "対応済み"

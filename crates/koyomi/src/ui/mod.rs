@@ -2123,14 +2123,33 @@ impl Browser {
                     self.focus = 1;
                 }
             }
-            // Again, once it is over: what passed is carried over. From the picked job when one is picked.
-            let can = run.is_over() && !self.blocked();
+            // Again, once it is over, from one menu: what passed is carried over, or from the picked
+            // job on. A run where everything passed can only go again from a picked job.
+            let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
             if run.is_over() {
-                let r = ui.add_enabled(can, egui::Button::new(t.tr("run.rerun")));
-                ito_a11y::say(&r, Role::Button, t.tr("run.rerun"));
-                if r.clicked() {
-                    let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
-                }
+                let head = format!("{} ▾", t.tr("run.rerun"));
+                let tx = &self.tx;
+                let r = ui.add_enabled_ui(!self.blocked(), |ui| {
+                    ui.menu_button(&head, |ui| {
+                        let rest = !run.jobs.iter().all(|j| j.state.passed());
+                        let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
+                        ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
+                        if r.clicked() {
+                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None });
+                        }
+                        let label = match &picked {
+                            Some(j) => t.trf("run.rerun_from", &[j]),
+                            None => t.tr("run.rerun_pick").to_owned(),
+                        };
+                        let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
+                        ito_a11y::say(&r, Role::Button, &label);
+                        if r.clicked() {
+                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
+                        }
+                    })
+                    .response
+                });
+                ito_a11y::say(&r.inner, Role::Button, &head);
             }
             // A failure dealt with: it leaves the count in the status bar.
             let done = self.acked.contains(&run.id);
@@ -2142,18 +2161,6 @@ impl Browser {
                     self.acked.insert(run.id.clone());
                     self.to_ack.push(run.id.clone());
                     self.result = Some(Ok(t.tr("run.acked").to_owned()));
-                }
-            }
-            let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
-            let label = match &picked {
-                Some(j) => t.trf("run.rerun_from", &[j]),
-                None => t.tr("run.rerun_pick").to_owned(),
-            };
-            if run.is_over() && picked.is_some() {
-                let r = ui.add_enabled(can, egui::Button::new(&label));
-                ito_a11y::say(&r, Role::Button, &label);
-                if r.clicked() {
-                    let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
                 }
             }
             // Skip the picked job before it starts: the jobs after it go on.
@@ -3004,6 +3011,44 @@ mod tests {
         let watched = b.watch.lock().unwrap().clone();
         assert_eq!(watched, Some(("20261030-090000-01".into(), "b".into())), "the running job's log is the one fetched");
         assert!(b.killing.is_none());
+    }
+
+    /// An over run has one 再実行 ▾ menu: from where it stopped, or from the picked job.
+    #[test]
+    fn rerun_is_one_menu() {
+        use koyomi_core::jobnet::{Job, Jobnet, Line};
+        use koyomi_core::run::{How, Outcome};
+        let job = |id: &str, after: &[&str]| Job {
+            id: id.into(),
+            run: vec!["x".into()],
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
+        };
+        let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        run.finish("a", Outcome::Exited(0), now);
+        run.start("b", now);
+        run.finish("b", Outcome::Exited(1), now);
+        assert!(run.is_over());
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let menu_says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(!menu_says(&s, "から再実行"), "one button until opened");
+        s.click("再実行 ▾", &mut b);
+        s.click("止まったところから", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, .. })));
+        b.job_sel = Some("a".into());
+        s.settle(&mut b);
+        s.click("再実行 ▾", &mut b);
+        s.click("a から再実行", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), .. }) if f == "a"));
     }
 
     /// The kill box starts on the safe button: a plain Enter does not kill.
