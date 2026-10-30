@@ -4,6 +4,14 @@
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-10-30
+
+### 修正
+
+- `koyomi check <net>.toml` が `[[when]] after_jobnet` を確かめていなかった。先行のジョブネットが無いとき（`先行のジョブネットがない: g/none`）と、輪になっているとき（`after_jobnet が輪になっている: g/a → g/b → g/a`）を、窓や `list` と同じに誤りとして出す。
+- `koyomi --toml list --help` のように `--toml` を命令の前に置くと「unknown argument」で失敗していた。`--toml` はどこに置いてもよい。
+- TESTING.md の手の確かめの行を、今の動きに合わせて直した（`retry` の書き方、`holidays = "japan"` の暦、`on_closed`、分岐の線を `on = "any"` にすること、`koyomi review` を `koyomi show` に、`history --toml` の `[[run]]`、書き出しの設定の扱い）。
+
 ## [0.2.1] - 2026-10-30
 
 ### 修正

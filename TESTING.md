@@ -52,7 +52,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 |---|---|---|
 | 6.1 | `koyomi check <file>` on a good file and on files with a typo'd field, bad syntax, no/empty `run`, an unknown `after`, a cycle, a duplicate id | 0 for the good one; for the others the file, the line and the cause, and exit 1 |
 | 6.2 | Look at a broken file in the tree and try `approve` | `✖ 定義の誤り`; it cannot be approved |
-| 6.3 | A file with `timeout = 60` (no unit) and one with `retry = { count = 2 }` | `timeout は "30m" のように文字列で書く…` for the first, "この版ではまだ使えない: retry" for the second; neither can be approved |
+| 6.3 | A file with `timeout = 60` (no unit) and one with `retry = { count = 2 }` | `timeout は "30m" のように文字列で書く…` for the first, `retry に wait が無い（retry は { count = 2, wait = "5m" } の形で書く）` for the second; neither can be approved |
 
 ## 7. Safety of the places
 
@@ -122,7 +122,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 11.8 | Start the engine for the first time on a PC (delete `schedule.toml` in the state folder with the engine stopped) | No `時刻を過ぎた` rows for times before this start |
 | 11.9 | Set the PC clock back an hour while the engine runs | Nothing runs twice; the times between are not reported as passed |
 | 11.10 | A net with `[[when]] every = "month" day = "last"` at 02:00 | `koyomi next` lists the last day of each coming month |
-| 11.11 | A net with `[[when]] every = "week" on = ["mon"]` and `calendar = "jp"` | The rows skip Japanese holidays that fall on a Monday |
+| 11.11 | `calendars/jp.toml` with `holidays = "japan"`; a net with `calendar = "jp"` and `[[when]] every = "week" days = ["mon"] at = ["02:00"]`; `koyomi next <net> --count 12` | The rows skip Japanese holidays that fall on a Monday (no 2026-11-23, no 2027-01-11) |
 | 11.12 | A confirmed net with `[[when]]` exists and `koyomi` is not set to start at sign-in | A band under the title: `時刻で流す定義がありますが、サインイン時に koyomi は起動しません…`; it goes away once the setting is on, or when no confirmed net has `[[when]]` |
 | 11.13 | While 11.6's engine is stopped, write a `[[when]]` whose `at` is in the past of today into an unconfirmed net, then start the engine | The row is `🔒 止めた`, never `↷ 時刻を過ぎた` for a time the engine never knew of |
 
@@ -265,7 +265,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 Write-Output "hi"
 exit 4'''` with `judge = { warn = "4" }`, approve and run | The approve text shows `シェル: powershell` and the script lines under `スクリプト:`; the log has `hi`; the job is 警告 with `終了コード 4（警告）`; no profile is loaded and nothing is asked (the job ends by itself) |
 | 21.6 | Put a `"`, a `$`, a `'` and a Japanese word in the script (`Write-Output "a `"b`" $env:USERNAME 'c' 日本語"`) | The log shows the line as PowerShell prints it: quotes and `$` reach the shell as written (the script is passed as `-EncodedCommand`) |
-| 21.7 | Write `judge = { warn = 1 }`, `judge = { warn = "5..2" }`, `judge = { ok = "0" }`, `judge = "1"`, `shell = "cmd"`, `shell = "powershell"` with no `script`, `script` with no `shell`, or both `run` and `shell` | `koyomi check` refuses each with the line number and what to write (strings like "1" or "2..", start not above end, unknown field, the shape, `"powershell" のどれか`, `shell には script が要る`, `script には shell = "powershell" が要る`, `run と shell は両方書けない`) |
+| 21.7 | Write `judge = { warn = "5..2" }`, `judge = { ok = "0" }`, `judge = "1"`, `shell = "cmd"`, `shell = "powershell"` with no `script`, `script` with no `shell`, or both `run` and `shell` | `koyomi check` refuses each with the line number and what to write (start not above end, unknown field, the shape, `"powershell" のどれか`, `shell には script が要る`, `script には shell = "powershell" が要る`, `run と shell は両方書けない`) |
 
 ## 22. Rerun and start at a job (`rerun`, `run --from`)
 
@@ -304,8 +304,8 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 | 24.1 | Write `calendars/会社.toml` with `format = 1`, `holidays = "japan"`, `weekly_off = ["sat", "sun"]`, `closed = [{ date = 2026-11-20, name = "創立記念日" }]`, `open = [2026-11-28]`; then `koyomi calendar 会社 --month 2026-11` | The heading `会社 2026-11（営業日 19 日）`, a weekday header 月〜日, the weeks with `( 3)`, `( 7)( 8)`, `(20)`, `(23)` and `[28]`, then the lines `3 文化の日`, `20 創立記念日`, `23 勤労感謝の日`, `28 休日出勤`, `祝日の表: 2027-12-31 まで` |
 | 24.2 | `koyomi calendar 工場` (no such file), `koyomi calendar 会社 --month 2026-13` | `カレンダーがない: 工場` (exit 1); `--month takes YYYY-MM` |
 | 24.3 | A net with `calendar = "会社"` and `[[when]] every = "month", business_day = 5, at = ["09:00"]`; `koyomi next 経理/<name>`, the window's detail | The next times are the 5th business day of each month (2026-11: 11-09, since 11-03 is 文化の日 and the weekend is off); the window shows the same rows under 次の 10 回 |
-| 24.4 | `business_day = -1`, then `day = 20, shift = -3` (same net), `koyomi next` | The last business day of each month (2026-11-30, 2026-12-30 if 12-31 is not in `closed`); 3 business days before the 20th (2026-11-17 since 11-20 is closed: 19→18→17) |
-| 24.5 | `[[when]] every = "day", at = ["02:00"]` with `calendar = "会社"` and no `on_closed`; then `on_closed = "prev"`, `"next"`, `"run"` | `skip` is the default: Saturday, Sunday and 文化の日 have no time; `prev` runs the weekend's and holiday's times on the Friday before (one each, in order), `next` on the Monday after, `run` on the day itself |
+| 24.4 | `business_day = -1`, then `day = 20, shift = -3` (same net), `koyomi next` | The last business day of each month (2026-11-30, 2026-12-31 since 12-31 is not in `closed`); 3 business days before the 20th (2026-11-17 since 11-20 is closed: 19→18→17) |
+| 24.5 | `calendar = "会社"`, `[[when]] every = "week" days = ["sat"] at = ["02:00"]` and `[[when]] every = "day" at = ["03:00"]`, `koyomi next`; then `on_closed = "prev"`, `"next"`, `"run"` on the first | `skip` is the default: no 02:00 at all, and Saturday, Sunday and 文化の日 have no 03:00; `prev` adds 02:00 on the Friday before (2026-11-06), `next` on the Monday after (2026-11-02, 11-09), `run` on the Saturday itself; a moved time that meets one already on that day runs once |
 | 24.6 | `business_day = 5` in a net without `calendar` and no `_group.toml` naming one; `koyomi check <file>` and `koyomi list` | `calendar が要る（business_day・shift・on_closed を使うとき）`; the net is ✕ 無効 and does not run |
 | 24.7 | Write `jobnets/経理/_group.toml` with `format = 1` and `calendar = "会社"`; a net of 経理 without `calendar`; `koyomi check` the net and the window's detail | The net counts by 会社 (its 次の 10 回 skip the weekend); `koyomi check jobnets/経理/_group.toml` says `_group.toml: 問題なし`; write `x = 1` into `_group.toml`: every net of 経理 is ✕ 無効 with `_group.toml: 知らない欄 x` |
 | 24.8 | `calendar = "工場"` (no file), then write `calendars/工場.toml` with `holidays = 1` | `カレンダーがない: calendars/工場.toml`, then `calendars/工場.toml が読めない（…）`; the window's band 「カレンダーの注意」 and `koyomi list`'s `注意:` line show `calendars/工場.toml: …`; nothing else stops |
@@ -323,9 +323,9 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 | # | Do | Expect |
 |---|---|---|
 | 25.1 | A net: `a` (fails, exit 3), `b` with `after = [{ job = "a", on = "error" }]`, `c` with `after = ["a"]`; run it | `b` runs, `c` ends `－ 実行なし`（理由 `a が異常終了`）; the run is ✕ 異常（`a` failed）even though the error line led on; the thick line a→c stays in the border colour, the thin line a→b takes `a`'s colour |
-| 25.2 | `d` with `after = [{ job = "a", on = "any" }]` after a failing and after a passing `a` | `d` runs both times; `koyomi review` of the net lists `線: a (any)` under `d` |
+| 25.2 | `d` with `after = [{ job = "a", on = "any" }]` after a failing and after a passing `a` | `d` runs both times; `koyomi show` of the net lists `線: a (any)` under `d` |
 | 25.3 | `a` ends by `timeout = "1s"`, then by `koyomi kill`; `b` has `on = "error"`, `c` has `on = "ok"` | Both times `b` runs and `c` is 実行なし: 打ち切り and 強制終了 count as abnormal on a line |
-| 25.4 | `p` with `kind = "branch"`, `after = ["a"]`; `x` with `after = [{ job = "p", code = "0" }]`, `y` with `code = "1..3"`, `z` with `code = "else"`; `a` exits 0, 2, 9 in turn | Exactly one of x / y / z runs each time (0 → x, 2 → y, 9 → z); the others are 実行なし; `p` reads `【分岐】p` and ends ○ with `a` 's code as its reason |
+| 25.4 | `p` with `kind = "branch"`, `after = [{ job = "a", on = "any" }]` (a plain `after = ["a"]` follows only a 0 from `a`); `x` with `after = [{ job = "p", code = "0" }]`, `y` with `code = "1..3"`, `z` with `code = "else"`; `a` exits 0, 2, 9 in turn | Exactly one of x / y / z runs each time (0 → x, 2 → y, 9 → z); the others are 未実行 (`p の線の条件に合わなかった`); `p` reads `【分岐】p` and ends ○ with `a` 's code as its reason |
 | 25.5 | `j` with `kind = "join"`, `wait = "all"`, `after = ["a", "b"]` (a 1 s, b 5 s), `c` after `j`; then `wait = "any"` | `all`: `c` starts after `b` ends; `any`: `c` starts right after `a`, `b` keeps running and the run ends when `b` does |
 | 25.6 | `k` (a plain job) with `after = ["a", "b"]` | `k` waits for both, like `wait = "all"`: a job with 2 or more lines waits for all of them |
 | 25.7 | `t` with `kind = "time"`, `at` 2 minutes ahead, `after = ["a"]`, `c` after `t`; then `at = "00:00"` | `t` reads 実行中 `【時刻待ち】t` with the reason `HH:MM を待っています` and a dashed line; at the time it ends ○ `HH:MM になった` and `c` runs; `00:00`: it ends at once with `00:00 を過ぎていた` |
@@ -336,9 +336,9 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 | 25.12 | `n` after a passing `a` | The notification is a `done` one (`○ 正常  <title>: n`) with the run's line |
 | 25.13 | `jobnets/共通/バックアップ.toml` (confirmed, jobs `x`, `y`); a net with `c` `kind = "jobnet"`, `use = "共通/バックアップ"`, `after = ["a"]`, `b` after `c`; run it | The run lists `a`, `c/x`, `c/y`, `【子ジョブネット】c`, `b` in that order; `c/x` and `c/y` run after `a`, `b` after them; `c` ends with the child's result; the child's own `[[when]]` is not used |
 | 25.14 | `use = "共通/無い"`; then make `バックアップ.toml` invalid (`x = 1`); then leave it unconfirmed (edit it) | `koyomi check` and `koyomi list`: `子ジョブネットがない: 共通/無い`, `子ジョブネット 共通/バックアップ に定義の誤りがある`; the parent is ✕ 無効 and does not run; unconfirmed: `koyomi run` says `子ジョブネット 共通/バックアップ が未確認` and nothing starts |
-| 25.15 | `バックアップ.toml` gets a `kind = "jobnet"` part with `use` = the parent | Both are ✕ 無効 with `子ジョブネットの呼び合いが輪になっている: 共通/バックアップ → <parent> → 共通/バックアップ` (the ids in the order they call) |
+| 25.15 | `バックアップ.toml` gets a `kind = "jobnet"` part with `use` = the parent | Both are ✕ 無効 with `子ジョブネットの呼び合いが輪になっている: 共通/バックアップ → <parent> → 共通/バックアップ` (the ids in the order they call, from the net it uses first: the parent's line starts at `共通/バックアップ`, `バックアップ`'s at `<parent>`) |
 | 25.16 | A part with no `after` (`kind = "join"`) and a job nothing follows that has `kind = "time"` | `孤立した部品: j（after が無い）` and `孤立した部品: t（後に続くものが無い）`; `after = ["a", "b"]` with `b` after `a` after `b`: `after が輪になっている: a → b → a` |
-| 25.17 | `koyomi review` / the approval box of a net with every kind of part | Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` |
+| 25.17 | `koyomi show` / the approval box of a net with every kind of part | Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` |
 | 25.18 | `koyomi run` a net with 3 running jobs and `concurrency = 2`, one of them a `kind = "time"` part | The part waits without taking a slot: the two jobs run and the part is 実行中 at the same time |
 
 ## 26. Starts by events (`[[when]] file = …` + `settle`, `on_start = true`)
@@ -379,7 +379,7 @@ A `[[when]]` with `after_jobnet = "経理/売上取込"` starts the net when a r
 | 27.9 | `g/b` with `calendar = "会社"`, and `koyomi rerun` a run of `g/a` whose business day is a Sunday | ⊘ スキップ `g/a が終わった（正常終了）が、休業日なので流さない（on_closed = "run" で流せる）`; with `on_closed = "run"` in the `[[when]]`, `g/b` runs with that Sunday as `KOYOMI_DATE` |
 | 27.10 | `koyomi check` with `after_jobnet = "g/none"`; and with `g/a` after `g/b` and `g/b` after `g/a` | `先行のジョブネットがない: g/none`; `after_jobnet が輪になっている: g/a → g/b → g/a` on both (the window shows them as ✗ 誤り and does not run them); a net after `g/a` that is not itself in the loop is fine |
 | 27.11 | `koyomi check` a `[[when]]` with `after_jobnet = "売上取込"`; with `on = "sometimes"`; with `every = "day"` and `on = "ok"`; with `after_jobnet = …` and `on_closed = "prev"` | `after_jobnet は "グループ/名前" で書く（例: …）`; `on は "ok"・"error"・"any" のどれか`; `on は day では使わない`; `after_jobnet では on_closed は "skip" か "run"` |
-| 27.12 | `koyomi next`, the net's 予定 in the window, and `koyomi review` for `g/b` | A row with no time: `g/a が終わったとき（正常終了・警告終了のとき）` (`異常終了のとき` / `どう終わっても` for the other `on`s) |
+| 27.12 | `koyomi next`, the net's 予定 in the window, and `koyomi show` for `g/b` | A row with no time: `g/a が終わったとき（正常終了・警告終了のとき）` (`異常終了のとき` / `どう終わっても` for the other `on`s) |
 | 27.13 | Three nets `g/a` → `g/b` → `g/c` (each after the one before); `koyomi rerun` a run of `g/a` from 3 days ago | `g/b` and then `g/c` run, each with `g/a`'s business day; the history has the three rows with that date |
 
 ## 28. History search and the rest of the CLI (`history`, `show`, `list --group`, `--help`, `--toml`)
@@ -393,7 +393,7 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.3 | `koyomi history --status error`; `--status ok g/a`; `koyomi history g\a` | Only the runs of that state; only that net's; `\` reads as `/` |
 | 28.4 | `koyomi history --status nope`; `--from 2026/10/01`; `--from 2026-10-20 --to 2026-10-01`; `--from 2024-01-01` | `--status takes one of ok, warn, …` and the usage (exit 2); `--from takes YYYY-MM-DD` (exit 2); `koyomi: 範囲が逆: …` (exit 1); `koyomi: 範囲は 1 年まで` (exit 1) |
 | 28.5 | `koyomi history --status held` with no held run in the days | `該当する実行はありません` (exit 0) |
-| 28.6 | `koyomi history --toml`, `koyomi status --toml`, `koyomi list --toml`, `koyomi show g/a --toml` | The runs as `[[runs]]` tables (the same shape as the history files); the snapshot (`[[defs]]`, `warnings`, `held`, `paused`, …); the definition as the engine read it (`id`, `file`, `standing`, `[net]`, `[[problems]]`) |
+| 28.6 | `koyomi history --toml`, `koyomi status --toml`, `koyomi list --toml`, `koyomi show g/a --toml` | The runs as `[[run]]` tables, each with its `[[run.jobs]]`; the snapshot (`[[defs]]`, `warnings`, `held`, `paused`, …); the definition as the engine read it (`id`, `file`, `standing`, `[net]`, `[[problems]]`, where `line = 0` is a problem of the whole file such as a missing child) |
 | 28.7 | `koyomi next g/a --toml`; `koyomi calendar 会社 --toml`; `koyomi log <run> <job> --toml` | `unconfirmed = …` and `[[next]]` with `at = "2026-11-02 09:00:00"` or `event = "…"`; `calendar`, `month`, `business_days` and a `[[day]]` per date with `kind = "business" / "open" / "closed" / "holiday" / "weekly_off"` and `name` when it has one; `run`, `job`, `text` |
 | 28.8 | `koyomi hold g/a --toml`; `koyomi engine status --toml` with the engine down; `koyomi check bad.toml --toml` | `ok = true` + `lines = ["…"]`; `ok = false` + `lines = ["koyomi: エンジンは動いていない"]` (exit 1); `ok = false` and the problems as `lines` (exit 1) |
 | 28.9 | `koyomi approve g/a --toml` on an unconfirmed net | The preview and `確かめたなら y を入力` are still said as text (a person answers); after `y`, `ok = true` + `lines` |
@@ -443,7 +443,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 30.1 | `koyomi export -o out.toml --all` with nets, a group file, a calendar and `koyomi.toml` that has `webhook = "secret:x"` | One TOML with `[[calendar]]`, `[[group]]`, `[[jobnet]]` (each file's text as it is, comments kept) and `[settings]` whose webhook addresses are `***`; the count is printed |
+| 30.1 | `koyomi export -o out.toml --all` with nets, a group file, a calendar and `koyomi.toml` that has `webhook = "secret:x"` | One TOML with `[[calendar]]`, `[[group]]`, `[[jobnet]]` (each file's text as it is, comments kept) and `[settings]` (`koyomi.toml` as a table: its comments are not kept) whose webhook addresses are `***` (a `secret:<name>` stays, since it is only a name); the count is printed |
 | 30.2 | `koyomi export -o out.toml` again; `-n 経理/月次締め` alone; `--group 経理`; `--calendars`; `--settings` | The second write is refused (`もうある`); a net comes with its group file, calendar and child nets; a group brings its nets; the other flags pick only those |
 | 30.3 | `koyomi import out.toml --dry-run` on a PC where one net differs | The plan: `追加`/`上書き`/`同じ` per thing with a `+`/`-` diff under what differs; exit 1 and nothing written |
 | 30.4 | `koyomi import out.toml` with a difference and no `--on-conflict` | Refused with the three choices named; nothing written |

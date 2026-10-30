@@ -136,7 +136,9 @@ const COMMANDS: [&str; 32] = [
 /// `--help` anywhere after the command prints its lines of the usage. `--toml` anywhere
 /// makes the answer TOML (see [`finish`]).
 pub fn run(args: &[String]) -> Option<i32> {
-    let (first, rest) = args.split_first()?;
+    // `--toml` may come before the command too (`koyomi --toml list`).
+    let bare: Vec<String> = args.iter().filter(|a| *a != "--toml").cloned().collect();
+    let (first, rest) = bare.split_first()?;
     if !COMMANDS.contains(&first.as_str()) {
         return None;
     }
@@ -144,11 +146,9 @@ pub fn run(args: &[String]) -> Option<i32> {
         say(&help_for(first), false);
         return Some(0);
     }
-    let rest: Vec<String> = rest.iter().filter(|a| *a != "--toml").cloned().collect();
-    if rest.len() + 1 != args.len() {
+    if bare.len() != args.len() {
         CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
     }
-    let rest = rest.as_slice();
     let code = match first.as_str() {
         "check" => check(rest),
         "list" => list(rest),
@@ -309,6 +309,9 @@ fn check(args: &[String]) -> i32 {
         // The child jobnets it uses, as the engine would find them.
         let defs = koyomi_core::scan::scan_plain(&paths.jobnets, &Default::default(), &cals);
         problems.extend(koyomi_core::scan::child_problem(net, &defs).map(|message| koyomi_core::jobnet::Problem { line: 0, message }));
+        // And the nets it runs after: there, and not coming round to it.
+        let id = format!("{parent}/{stem}");
+        problems.extend(koyomi_core::scan::after_problem(&id, net, &defs).map(|message| koyomi_core::jobnet::Problem { line: 0, message }));
     }
     for p in &problems {
         out(&p.in_file(&name), true);
