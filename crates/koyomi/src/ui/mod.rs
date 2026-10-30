@@ -2483,6 +2483,7 @@ fn plain(e: String) -> Said {
     ("port.plain", vec![e])
 }
 
+/// A folder that could not be made, worded when shown.
 fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
     ("port.no_dir", vec![dir.display().to_string(), e.to_string()])
 }
