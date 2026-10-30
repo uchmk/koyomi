@@ -325,6 +325,13 @@ impl App {
                 }
                 // koyomi defines no readings of its own.
                 Do::Read { .. } => {}
+                Do::Failed { step, why } => {
+                    say(&format!("koyomi --keys: {step}: {why}"), true);
+                    if let Some(done) = script.done.clone() {
+                        self.write_state(done, &ito_keyscript::failed_report(&step, &why, script.left()));
+                    }
+                    std::process::exit(ito_keyscript::FAILED_EXIT);
+                }
                 Do::Done => {
                     if let Some(done) = script.done.clone() {
                         self.write_state(done, "keys: done\n");

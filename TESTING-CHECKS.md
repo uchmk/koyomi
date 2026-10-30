@@ -1,6 +1,6 @@
 # Checklist
 
-616 checks in TESTING.md, 612 left for a person.
+625 checks in TESTING.md, 621 left for a person.
 
 ## 1. Start
 
@@ -875,3 +875,15 @@
 - [ ] **86.2** A job of a few seconds; open the run in the window and pick the job → 所要 reads `3秒`; a 41-minute one reads `41分`; a 65-minute one `1時間5分` 〔未訳〕
 - [ ] **86.3** Set `lang = "en"` in common.toml; repeat 86.1 → `1 min 5 s` 〔未訳〕
 - [ ] **86.4** `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` → `1分  →  1分10秒  (+10秒)`; いつもは in words 〔未訳〕
+
+## 87. Start over HTTP (`[http]`, TODO 82)
+
+- [ ] **87.1** `koyomi secret set koyomi-http` (a long random value); koyomi.toml `[http]` `port = 8790`, `token = "secret:koyomi-http"`; wait a few seconds; `koyomi status` → The status has `HTTP: 127.0.0.1:8790 で待ち受けている`; `netstat -an` shows 127.0.0.1:8790 only, not 0.0.0.0 〔未訳〕
+- [ ] **87.2** `curl -i -X POST http://127.0.0.1:8790/runs -d '{"net":"g/a"}'` with no token, then with `-H "Authorization: Bearer wrong"` → 401 both times; no run starts; the engine's log has `http: POST /runs 401 …` and never the token 〔未訳〕
+- [ ] **87.3** The same with the right token and `-d '{"net":"g/a","params":{"day":"2026-10-31"}}'` → 202 and `{"run":"<id>"}`; the run goes with that param; 操作の記録 has a by-hand run 〔未訳〕
+- [ ] **87.4** `curl -H "Authorization: Bearer …" http://127.0.0.1:8790/runs/<id>` while it runs and after it ends; then a run id of yesterday → JSON with `state`, `jobs`, `"over": false`, then `true`; yesterday's run is found too 〔未訳〕
+- [ ] **87.5** POST a net that is held, unconfirmed or does not exist; POST `{}`, `{"net":"g/a","dry":true}`, `not json`; GET `/runs/nope`; `PUT /runs` → 422 with the same reason `koyomi run` gives; 400 for the bodies; 404; 405 〔未訳〕
+- [ ] **87.6** Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` → Each is refused when koyomi.toml is read (the band says why); nothing listens 〔未訳〕
+- [ ] **87.7** `koyomi secret delete koyomi-http` and restart the engine; or take 8790 with another program first → A note says it cannot listen and why; it is tried again every 60 s; once fixed it listens without a restart 〔未訳〕
+- [ ] **87.8** Remove `[http]` while the engine runs → It stops listening within a few seconds; `koyomi status` has no HTTP line 〔未訳〕
+- [ ] **87.9** `ipv6 = true`; `curl -g "http://[::1]:8790/runs/<id>"` with the token → Answers the same as on 127.0.0.1 〔未訳〕

@@ -35,6 +35,7 @@ mod alive;
 mod backup;
 mod events;
 mod files;
+mod http;
 mod logs;
 mod ping;
 mod retain;
@@ -175,6 +176,9 @@ struct State {
     ping_cfg: Option<koyomi_core::config::Ping>,
     /// `[notify] hide_webhooks` is off: a plain-text `[ping]` address may be called.
     ping_plain_ok: bool,
+    /// `[http]`: the loopback listener that starts nets and reads runs for other programs.
+    http: http::Http,
+    http_cfg: Option<koyomi_core::config::Http>,
     /// Keeps the PC from sleeping while a job's process runs.
     awake: Option<ito_power::Awake>,
     /// The wake timer for the soonest time of a `wake = true` net; `None`: no net asks.
@@ -252,6 +256,8 @@ impl State {
             ping: ping::Ping::default(),
             ping_cfg: None,
             ping_plain_ok: false,
+            http: http::Http::default(),
+            http_cfg: None,
             awake: None,
             wake: None,
             power_look: None,
@@ -305,6 +311,7 @@ impl State {
                 }
                 self.keep_days = c.keep_days;
                 self.ping_cfg = c.ping.clone();
+                self.http_cfg = c.http.clone();
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -436,6 +443,7 @@ impl State {
         self.retain.flush();
         self.backup.flush();
         self.alive.stopped();
+        self.http.stop();
     }
 
     /// What the tray shows now.
@@ -910,7 +918,7 @@ impl State {
         warnings.extend(self.bad_config.clone());
         warnings.extend(self.logs.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
-        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().chain(ping).collect();
+        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().chain(ping).chain(self.http.notes()).collect();
         Snapshot {
             defs: self.defs.clone(),
             warnings,
@@ -937,6 +945,9 @@ impl State {
             self.retain.line(),
             self.backup.line()
         );
+        if let Some(line) = self.http.line() {
+            out.push_str(&format!("\n{line}"));
+        }
         if self.held.paused {
             out.push_str("\nスケジュールを止めている（koyomi resume で戻す）");
         }
@@ -1877,6 +1888,7 @@ pub fn run() -> i32 {
         state.tick_backup();
         state.alive.tick();
         state.ping.tick(state.ping_cfg.as_ref(), state.ping_plain_ok);
+        state.http.tick(state.http_cfg.as_ref());
         state.tick_wake();
         state.tick_awake();
         state.tick_late();

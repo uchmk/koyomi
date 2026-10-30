@@ -145,7 +145,7 @@ fn target(far: &Sftp, host_key: String) -> Result<ito_sftp::Target, String> {
         ito_sftp::Auth::Password(p)
     } else {
         let ssh = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".ssh")).ok_or("USERPROFILE がない")?;
-        let key = ["id_ed25519", "id_ecdsa", "id_rsa"]
+        let key = ["id_ed25519", "id_ecdsa"]
             .iter()
             .map(|n| ssh.join(n))
             .find(|p| p.is_file())

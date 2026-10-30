@@ -1,7 +1,8 @@
 //! `koyomi.toml` in the settings folder: how many jobs run at once, how long
 //! history is kept, how big one job's log may grow, `[notify]` (read by
-//! the app with ito-prefs's shape; kept whole here) and `[ping]`, the
-//! address the engine calls while it is alive.
+//! the app with ito-prefs's shape; kept whole here), `[ping]`, the
+//! address the engine calls while it is alive, and `[http]`, where it
+//! listens for other programs on this PC.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -21,6 +22,8 @@ pub struct Config {
     pub notify: toml::Table,
     /// `[ping]`: an outside watcher (healthchecks.io and the like) to call while the engine runs.
     pub ping: Option<Ping>,
+    /// `[http]`: start nets and read runs over HTTP from this PC. Off when not written.
+    pub http: Option<Http>,
 }
 
 /// `[ping]`: the engine calls `url` every `every`, so a watcher elsewhere
@@ -60,9 +63,38 @@ impl Ping {
     }
 }
 
+/// `[http]`: the engine listens on `port` of 127.0.0.1 (and ::1 with `ipv6`) only, and
+/// answers a caller with the bearer token kept in the OS credential store as `token`.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Http {
+    pub port: u16,
+    /// `secret:<name>`: never the token itself.
+    pub token: String,
+    #[serde(default)]
+    pub ipv6: bool,
+}
+
+impl Http {
+    /// The name the token is kept under; [`Config::parse`] has checked there is one.
+    pub fn secret(&self) -> &str {
+        self.token.trim().strip_prefix("secret:").map(str::trim).unwrap_or_default()
+    }
+
+    fn check(&self) -> Result<(), String> {
+        if self.port == 0 {
+            return Err("[http] の port は 1 から 65535".to_owned());
+        }
+        if self.secret().is_empty() {
+            return Err("[http] の token は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".to_owned());
+        }
+        Ok(())
+    }
+}
+
 impl Default for Config {
     fn default() -> Config {
-        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new(), ping: None }
+        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new(), ping: None, http: None }
     }
 }
 
@@ -80,6 +112,9 @@ impl Config {
         }
         if let Some(p) = &c.ping {
             p.check()?;
+        }
+        if let Some(h) = &c.http {
+            h.check()?;
         }
         Ok(c)
     }
@@ -161,6 +196,24 @@ every = \"5\"
 url = \"secret:p\"
 evry = \"5m\"
 ",
+        ] {
+            assert!(Config::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn http_takes_a_port_and_the_token_only_as_a_secret() {
+        let c = Config::parse("[http]\nport = 8790\ntoken = \"secret:koyomi-http\"\n").unwrap();
+        let h = c.http.unwrap();
+        assert_eq!((h.port, h.secret(), h.ipv6), (8790, "koyomi-http", false));
+        assert!(Config::parse("").unwrap().http.is_none());
+        for bad in [
+            "[http]\nport = 8790\ntoken = \"plain-token\"\n",
+            "[http]\nport = 8790\ntoken = \"secret: \"\n",
+            "[http]\nport = 0\ntoken = \"secret:t\"\n",
+            "[http]\nport = 70000\ntoken = \"secret:t\"\n",
+            "[http]\ntoken = \"secret:t\"\n",
+            "[http]\nport = 8790\ntoken = \"secret:t\"\nhost = \"0.0.0.0\"\n",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
         }
