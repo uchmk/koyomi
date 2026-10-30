@@ -18,6 +18,7 @@ pub mod preflight;
 pub mod retain;
 pub mod run;
 pub mod scan;
+pub mod task;
 pub mod template;
 pub mod uses;
 pub mod when;

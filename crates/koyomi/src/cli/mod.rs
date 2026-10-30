@@ -78,6 +78,7 @@ usage: koyomi [--version | --help | env]
                                      bring such a file in: say what would change, and do it when nothing is
                                      different there or --on-conflict says what to do (what is written over is
                                      kept under versions/; the nets come in unconfirmed; --dry-run: only say)
+                                     a Task Scheduler task's XML (schtasks /query /xml) comes in as one net
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env (secret:<name>)
@@ -1136,6 +1137,12 @@ fn export(args: &[String]) -> i32 {
 /// `koyomi import <file> [--dry-run] [--on-conflict …]`: the engine plans and does it.
 /// Exit 1 when it was not done: a choice is needed, something is wrong, or `--dry-run`
 /// found something to do.
+/// A file to import as text: UTF-8 or UTF-16, or a task's XML in the console code page
+/// (what `schtasks /query /xml > file` writes from cmd).
+pub(crate) fn port_text(bytes: &[u8]) -> Option<String> {
+    koyomi_core::task::decode(bytes).or_else(|| Some(ito_proc::Encoding::Console.decode(bytes)).filter(|t| koyomi_core::task::is_xml(t)))
+}
+
 fn import(args: &[String]) -> i32 {
     let mut file: Option<String> = None;
     let (mut dry_run, mut on_conflict) = (false, None);
@@ -1157,8 +1164,11 @@ fn import(args: &[String]) -> i32 {
         }
     }
     let Some(file) = file else { return usage("import takes one file") };
-    let text = match std::fs::read_to_string(&file) {
-        Ok(t) => t,
+    let text = match std::fs::read(&file) {
+        Ok(b) => match port_text(&b) {
+            Some(t) => t,
+            None => return fail(&format!("{file} を読めない: UTF-8 でも UTF-16 でもない")),
+        },
         Err(e) => return fail(&format!("{file} を読めない: {e}")),
     };
     let answer = match client::call(&Request::Import { text, dry_run, on_conflict }) {

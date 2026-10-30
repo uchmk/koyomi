@@ -821,7 +821,10 @@ impl Browser {
         if path.is_empty() {
             return;
         }
-        match std::fs::read_to_string(&path) {
+        match std::fs::read(&path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| crate::cli::port_text(&b).ok_or_else(|| "UTF-8 でも UTF-16 でもない".to_owned()))
+        {
             Ok(text) => {
                 p.error = None;
                 p.text = Some(text.clone());

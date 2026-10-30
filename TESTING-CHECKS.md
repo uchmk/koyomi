@@ -1,6 +1,6 @@
 # Checklist
 
-450 checks in TESTING.md, 446 left for a person.
+458 checks in TESTING.md, 454 left for a person.
 
 ## 1. Start
 
@@ -646,3 +646,14 @@
 - [ ] **65.2** With a webhook on for `failed` (e.g. ntfy), the same run → The message ends with `<job> のログの末尾` and `line 6` … `line 15` 〔未訳〕
 - [ ] **65.3** A job with `env = { PW = "secret:db" }` that echoes `%PW%` and exits 1 → Both the notification and the webhook show `***`, not the secret 〔未訳〕
 - [ ] **65.4** A run that ends 正常, or a job that fails before writing anything → The notice is as before, with no log lines 〔未訳〕
+
+## 66. タスク スケジューラの XML の取り込み
+
+- [ ] **66.1** `schtasks /create /tn "\koyomi-test\夜間" /tr "cmd.exe /c echo hi" /sc daily /st 02:30 /f`, then `schtasks /query /xml /tn "\koyomi-test\夜間" > t.xml` and `koyomi import t.xml --dry-run` → `追加: ジョブネット koyomi-test/夜間`; nothing is written (the file is UTF-16 and reads) 〔未訳〕
+- [ ] **66.2** `koyomi import t.xml`, then `koyomi show koyomi-test/夜間` and `koyomi next koyomi-test/夜間` → The net has `every = "day"` `at = ["02:30"]` and one job `run = ["cmd.exe", "/c", "echo", "hi"]`; it is 未確認, and after approving `next` shows 02:30 each day 〔未訳〕
+- [ ] **66.3** A task with `/sc weekly /d MON,FRI /st 08:00 /ri 15 /du 10:00` → `every = "minutes"`, `n = 15`, `from = "08:00"`, `to = "17:59"`, `days = ["mon", "fri"]` 〔未訳〕
+- [ ] **66.4** A task with `/sc monthly /mo LAST /d TUE` or `/sc daily /mo 2`, or an event trigger → The plan ends with `注意:` lines saying which trigger did not come over; the rest comes in 〔未訳〕
+- [ ] **66.5** A task that runs as SYSTEM, or with `%windir%` in its command → `注意:` lines on the user and on `%…%` 〔未訳〕
+- [ ] **66.6** The window's 取り込む box with the same `t.xml` → The same plan and notes as the CLI 〔未訳〕
+- [ ] **66.7** An XML that is not a task (`<a/>`), and a task with only a ComHandler action → `取り込めない: タスク スケジューラの XML ではない（一番外が <a>）` / `取り込めない: 取り込めるプログラム（<Exec> の <Command>）が無い` 〔未訳〕
+- [ ] **66.8** From cmd, `schtasks /query /xml /tn "\koyomi-test\夜間" > t2.xml` (the console code page, CP932, with Japanese in it), then `koyomi import t2.xml --dry-run` → It reads, and the plan is the same as 66.1 〔未訳〕

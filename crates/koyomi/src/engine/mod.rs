@@ -1009,7 +1009,12 @@ impl State {
             return Err(format!("取り込めない: {}", self.warnings.join(" / ")));
         }
         let on_conflict = on_conflict.map(bundle::Conflict::parse).transpose()?;
-        let b = bundle::parse(text).map_err(|e| format!("取り込めない: {e}"))?;
+        // A Task Scheduler task comes as its XML: one net, and notes on what did not come over.
+        let (b, notes) = if koyomi_core::task::is_xml(text) {
+            koyomi_core::task::bundle(text).map_err(|e| format!("取り込めない: {e}"))?
+        } else {
+            (bundle::parse(text).map_err(|e| format!("取り込めない: {e}"))?, Vec::new())
+        };
         if b.is_empty() {
             return Err("取り込めない: ファイルに何も入っていない".to_owned());
         }
@@ -1025,6 +1030,7 @@ impl State {
             }
             lines.extend(item.problems.iter().map(|p| format!("  問題: {p}")));
         }
+        lines.extend(notes);
         lines.extend(p.notes.iter().cloned());
         let mut reply = proto::Plan {
             lines,
