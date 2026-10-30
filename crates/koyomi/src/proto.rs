@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 15;
+pub const PROTO: u32 = 16;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -45,7 +45,8 @@ pub enum Request {
         #[serde(default)]
         dry: bool,
         /// Values for the net's `[params]` in place of their defaults (`--set name=value`).
-        #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+        /// Always written: postcard is not self-describing, so a skipped field shifts the rest.
+        #[serde(default)]
         params: BTreeMap<String, String>,
     },
     /// Start `run` again with the definition it had: what passed is carried
@@ -285,5 +286,28 @@ impl Runs {
 
     pub fn parse(text: &str) -> Result<Runs, String> {
         toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A request as the door sends it (postcard), read back.
+    fn round(request: &Request) -> Request {
+        let mut wire = Vec::new();
+        ito_ipc::frame::write(&mut wire, &(PROTO, request)).unwrap();
+        let (proto, back): (u32, Request) = ito_ipc::frame::read(&mut wire.as_slice()).unwrap();
+        assert_eq!(proto, PROTO);
+        back
+    }
+
+    #[test]
+    fn a_run_reads_back_with_and_without_params() {
+        for params in [BTreeMap::new(), BTreeMap::from([("month".to_owned(), "2026-09".to_owned())])] {
+            let sent = Request::Run { id: "g/a".into(), date: None, from: Some("b".into()), dry: true, params: params.clone() };
+            let Request::Run { id, date, from, dry, params: got } = round(&sent) else { panic!("not a run") };
+            assert_eq!((id.as_str(), date, from.as_deref(), dry, got), ("g/a", None, Some("b"), true, params));
+        }
     }
 }

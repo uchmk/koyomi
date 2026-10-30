@@ -106,6 +106,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 10.11 | `webhook = "secret:nothing"` (no such credential) | `koyomi list` prints a note that it does not read; nothing is sent; runs still start |
 | 10.12 | `koyomi check koyomi.toml` with `system = ["failed", "exploded"]` | A line naming `exploded`, exit code 1; with a clean file, `koyomi.toml: 問題なし` and exit code 0 |
 | 10.13 | Edit `[notify]` while the engine runs | Within about 5 s `koyomi list` reflects the change; no restart |
+| 10.14 | With the default `[notify]`, `koyomi run <net> --wait` a failing net four times in a row on the same engine | Four `✕ 異常終了` notifications; `koyomi engine status` shows the same pid afterwards (the engine did not crash) |
 
 ## 11. Schedule
 

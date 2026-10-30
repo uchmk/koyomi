@@ -11,5 +11,5 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 sha2 = "0.10"
-ito-match = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a00dcced4c663a306a1c" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "37831f135291648293fa52ae1dc92148e45099be" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
