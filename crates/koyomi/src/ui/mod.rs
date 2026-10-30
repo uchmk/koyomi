@@ -1338,26 +1338,30 @@ impl Browser {
                 });
             });
         }
-        if self.autostart_off {
-            egui::Panel::top("autostart").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
-                let head = format!("{} {}", ito_a11y::State::Warning.mark(), t.tr("band.autostart"));
-                let r = ui.add(egui::Label::new(egui::RichText::new(head.clone()).color(c.wait_text())).wrap());
-                ito_a11y::say(&r, Role::Label, &head);
-            });
-        }
-        // The calendars: a file that does not read, a holiday table near its end. Nothing stops for these.
-        if let Some(snap) = self.snap.as_ref().filter(|s| !s.cautions.is_empty()) {
-            let lines: Vec<String> = snap.cautions.clone();
+        // The lesser notes (autostart off; the calendars: a file that does not read, a holiday table
+        // near its end) share one band that stays folded: nothing stops for these.
+        let cautions: Vec<String> = self.snap.as_ref().map(|s| s.cautions.clone()).unwrap_or_default();
+        let notes = usize::from(self.autostart_off) + cautions.len();
+        if notes > 0 {
             egui::Panel::top("cautions").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
-                let head = format!("{} {}", ito_a11y::State::Warning.mark(), t.tr("band.caution"));
-                let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
-                ito_a11y::say(&r, Role::Label, &head);
-                for l in &lines {
-                    ui.add(egui::Label::new(egui::RichText::new(l).color(c.wait_text())).wrap());
-                }
+                let head = format!("{} {} {notes}", ito_a11y::State::Warning.mark(), t.tr("band.caution"));
+                egui::CollapsingHeader::new(egui::RichText::new(head).strong().color(c.wait_text()))
+                    .id_salt("cautions_fold")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        let mut lines = Vec::new();
+                        if self.autostart_off {
+                            lines.push(t.tr("band.autostart").to_owned());
+                        }
+                        lines.extend(cautions.iter().cloned());
+                        for l in &lines {
+                            let r = ui.add(egui::Label::new(egui::RichText::new(l).color(c.wait_text())).wrap());
+                            ito_a11y::say(&r, Role::Label, l);
+                        }
+                    });
             });
         }
-        egui::Panel::left("tree").default_size(320.0).show(ui, |ui| {
+        egui::Panel::left("tree").default_size(200.0).show(ui, |ui| {
             if modal {
                 ui.disable();
             }
@@ -1936,6 +1940,7 @@ impl Browser {
             ui.label(t.tr("run.history_to"));
             ui.add(egui::TextEdit::singleline(&mut h.to).desired_width(90.0));
             let all = t.tr("run.history_all");
+            ui.label(t.tr("run.history_net"));
             let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
             egui::ComboBox::from_id_salt("history_net").selected_text(net_text).show_ui(ui, |ui| {
                 ui.selectable_value(&mut h.net, String::new(), all);
@@ -1943,6 +1948,7 @@ impl Browser {
                     ui.selectable_value(&mut h.net, id.clone(), id);
                 }
             });
+            ui.label(t.tr("run.history_state"));
             let state_text = match h.state {
                 Some(s) => show::tag(t, s),
                 None => all.to_owned(),
