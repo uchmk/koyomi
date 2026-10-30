@@ -47,6 +47,11 @@ pub struct Def {
 }
 
 impl Def {
+    /// Whether it is not approved or does not read (the tree's and the status bar's count).
+    pub fn is_todo(&self) -> bool {
+        self.standing != Standing::Confirmed
+    }
+
     /// What the tree calls it.
     pub fn label(&self) -> &str {
         self.title.as_deref().filter(|t| !t.is_empty()).unwrap_or(&self.name)

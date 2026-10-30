@@ -504,7 +504,7 @@ impl Browser {
 
     /// How many definitions are not approved or do not read (the status bar's count).
     pub fn todo_count(&self) -> usize {
-        self.snap.as_ref().map_or(0, |s| s.defs.iter().filter(|d| d.standing != Standing::Confirmed).count())
+        self.snap.as_ref().map_or(0, |s| s.defs.iter().filter(|d| d.is_todo()).count())
     }
 
     /// The status bar's engine facts: `(engine word, running count, next time)`.
@@ -1383,7 +1383,7 @@ impl Browser {
             }
         }
         let mut todo: BTreeMap<&str, usize> = BTreeMap::new();
-        for d in snap.defs.iter().filter(|d| d.standing != Standing::Confirmed) {
+        for d in snap.defs.iter().filter(|d| d.is_todo()) {
             *todo.entry(d.group.as_str()).or_default() += 1;
         }
         let mut group: Option<&str> = None;
@@ -2632,6 +2632,22 @@ mod tests {
         frame(&ctx, size, Vec::new(), &mut b);
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(rx_req.try_recv().is_err(), "Enter on the safe button deleted nothing");
+    }
+
+    /// The status bar's facts: no word while the engine answers, and the unapproved count.
+    #[test]
+    fn the_status_facts_follow_the_snapshot() {
+        let t = ito_i18n::Table::default();
+        let mut b = quiet(defs());
+        let (word, running, _) = b.engine_facts(&t);
+        assert!(word.is_none() && running == 0, "a snapshot and no pause: all well");
+        assert_eq!(b.todo_count(), b.snap.as_ref().unwrap().defs.iter().filter(|d| d.is_todo()).count());
+        assert!(b.todo_count() > 0, "the test defs are not approved");
+        b.snap.as_mut().unwrap().paused = true;
+        assert!(b.engine_facts(&t).0.is_some(), "paused is a word");
+        b.snap = None;
+        assert!(b.engine_facts(&t).0.is_some(), "no snapshot: the engine is starting or down");
+        assert_eq!(b.todo_count(), 0);
     }
 
     /// A selection made elsewhere (the today table) unfolds its group in the tree.
