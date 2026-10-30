@@ -64,6 +64,9 @@ usage: koyomi [--version | --help | env]
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
+       koyomi report [YYYY-MM] [--csv <file>]
+                                     the month's report (this month when none): for each net how many runs, the share that
+                                     passed, how long the good ones took on average, and the jobs that ended 異常 most
        koyomi plan [YYYY-MM] [--pdf <file>] [--print] [--csv <file>]
                                      what starts on each day of the month (this month when none), by the approved
                                      nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer;
@@ -109,7 +112,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 36] = [
+const COMMANDS: [&str; 37] = [
     "check",
     "list",
     "show",
@@ -133,6 +136,7 @@ const COMMANDS: [&str; 36] = [
     "resume",
     "calendar",
     "plan",
+    "report",
     "map",
     "new",
     "versions",
@@ -177,6 +181,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "status" => status(rest),
         "history" => history(rest),
         "plan" => plan(rest),
+        "report" => report(rest),
         "map" => map_cmd(rest),
         "log" => log(rest),
         "compare" => compare(rest),
@@ -1083,6 +1088,54 @@ fn history(args: &[String]) -> i32 {
         out(t.tr("run.history_none"), false);
     }
     say_runs(&t, &rs);
+    0
+}
+
+/// `koyomi report [YYYY-MM] [--csv <file>]`: the runs that started in the month, summed up per net.
+fn report(args: &[String]) -> i32 {
+    let (mut month, mut csv) = (None, None);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--csv" => match it.next() {
+                Some(f) => csv = Some(f.clone()),
+                None => return usage("--csv takes a file"),
+            },
+            m if month.is_none() && !m.starts_with("--") => match NaiveDate::parse_from_str(&format!("{m}-01"), "%Y-%m-%d") {
+                Ok(d) => month = Some(d),
+                Err(_) => return usage("report takes YYYY-MM"),
+            },
+            _ => return usage("report takes YYYY-MM and --csv <file>"),
+        }
+    }
+    let first = month.unwrap_or_else(|| {
+        let today = chrono::Local::now().date_naive();
+        today.with_day(1).unwrap_or(today)
+    });
+    let last = (first + chrono::Duration::days(31)).with_day(1).map_or(first, |n| n - chrono::Duration::days(1));
+    let reply = client::call(&Request::History { from: first.to_string(), to: last.to_string() });
+    let runs = match reply.and_then(|s| Runs::parse(&s)) {
+        Ok(r) => r.runs,
+        Err(e) => return fail(&e),
+    };
+    let rows = koyomi_core::report::summarize(&runs);
+    let t = table();
+    if let Some(to) = csv {
+        return wrote(&to, &crate::csv::report(&t, &rows));
+    }
+    if toml() {
+        #[derive(Serialize)]
+        struct Month {
+            month: String,
+            net: Vec<koyomi_core::report::Row>,
+        }
+        emit(&toml::to_string(&Month { month: first.format("%Y-%m").to_string(), net: rows }).unwrap_or_default());
+        return 0;
+    }
+    out(&first.format("%Y-%m").to_string(), false);
+    for l in crate::report::lines(&t, &rows) {
+        out(&l, false);
+    }
     0
 }
 

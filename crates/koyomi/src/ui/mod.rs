@@ -1664,6 +1664,15 @@ impl Browser {
         if rows.is_empty() && h.error.is_none() {
             ui.label(t.tr("run.history_none"));
         }
+        if !rows.is_empty() {
+            let owned: Vec<Run> = rows.iter().map(|r| (*r).clone()).collect();
+            let lines = crate::report::lines(t, &koyomi_core::report::summarize(&owned));
+            egui::CollapsingHeader::new(t.tr("report.heading")).id_salt("history_report").show(ui, |ui| {
+                for l in &lines {
+                    ui.label(l);
+                }
+            });
+        }
         let mut pick = None;
         for run in rows {
             let mut text = format!("{}  {}  {}  {}", run.started.date(), show::tag(t, run.state), run.title, show::hms(run.started));

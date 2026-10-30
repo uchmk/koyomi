@@ -931,3 +931,10 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 76.6 | `every = "30s"`, or `url = "hc-ping.com/x"` | koyomi.toml does not read; the engine says why and runs nothing until it is fixed |
 | 76.7 | Remove `[ping]` while the engine runs | The pings stop within a minute, with no note |
 
+## 77. 月の成績（report）
+
+| # | Do | Expect |
+|---|---|---|
+| 77.1 | `koyomi report` after a few runs | The month, then a line per net: runs, pass rate, usual time, and the jobs that failed most |
+| 77.2 | `koyomi report 2026-09 --csv r.csv` | A CSV with one row per net, rates in percent and averages in seconds |
+| 77.3 | History view, open 成績 | The same lines for the rows the filter shows |

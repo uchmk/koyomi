@@ -1,6 +1,6 @@
 # Checklist
 
-531 checks in TESTING.md, 527 left for a person.
+534 checks in TESTING.md, 530 left for a person.
 
 ## 1. Start
 
@@ -760,3 +760,9 @@
 - [ ] **76.5** `url = "secret:nope"` (not in the store) → No ping goes; the notes say `nope` is not in the credential store 〔未訳〕
 - [ ] **76.6** `every = "30s"`, or `url = "hc-ping.com/x"` → koyomi.toml does not read; the engine says why and runs nothing until it is fixed 〔未訳〕
 - [ ] **76.7** Remove `[ping]` while the engine runs → The pings stop within a minute, with no note 〔未訳〕
+
+## 77. 月の成績（report）
+
+- [ ] **77.1** `koyomi report` after a few runs → The month, then a line per net: runs, pass rate, usual time, and the jobs that failed most 〔未訳〕
+- [ ] **77.2** `koyomi report 2026-09 --csv r.csv` → A CSV with one row per net, rates in percent and averages in seconds 〔未訳〕
+- [ ] **77.3** History view, open 成績 → The same lines for the rows the filter shows 〔未訳〕

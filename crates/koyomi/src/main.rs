@@ -27,6 +27,7 @@ mod notify;
 mod plan;
 mod prefs;
 mod proto;
+mod report;
 mod review;
 mod settings;
 mod show;

@@ -108,6 +108,28 @@ pub fn runs(t: &Table, rs: &[Run]) -> String {
     text(t, &["run_id", "jobnet", "title", "date", "how", "planned", "started", "ended", "seconds", "state", "reason", "failed"], &rows)
 }
 
+/// One row per net: its runs, how many passed and failed, the share that passed, the usual time
+/// of the good ones and the jobs that failed most.
+pub fn report(t: &Table, rows: &[koyomi_core::report::Row]) -> String {
+    let rows: Vec<Vec<String>> = rows
+        .iter()
+        .map(|r| {
+            vec![
+                r.jobnet.clone(),
+                r.title.clone(),
+                r.runs.to_string(),
+                r.passed.to_string(),
+                r.failed.to_string(),
+                r.other.to_string(),
+                r.rate.map(|p| p.to_string()).unwrap_or_default(),
+                r.average.map(|s| s.to_string()).unwrap_or_default(),
+                crate::report::worst(r),
+            ]
+        })
+        .collect();
+    text(t, &["jobnet", "title", "runs", "passed", "failed_runs", "other", "rate", "average", "worst"], &rows)
+}
+
 /// One row per start; a day with none as one row with only its date and weekday.
 pub fn plan(t: &Table, days: &[crate::plan::Day]) -> String {
     use chrono::Datelike;
