@@ -2641,8 +2641,11 @@ mod tests {
         let mut b = quiet(defs());
         let (word, running, _) = b.engine_facts(&t);
         assert!(word.is_none() && running == 0, "a snapshot and no pause: all well");
-        assert_eq!(b.todo_count(), b.snap.as_ref().unwrap().defs.iter().filter(|d| d.is_todo()).count());
-        assert!(b.todo_count() > 0, "the test defs are not approved");
+        assert_eq!(b.todo_count(), 3, "the three test defs are not approved");
+        b.snap.as_mut().unwrap().defs[0].standing = Standing::Confirmed;
+        assert_eq!(b.todo_count(), 2, "an approved one is no longer counted");
+        b.snap.as_mut().unwrap().defs[1].standing = Standing::Invalid;
+        assert_eq!(b.todo_count(), 2, "one that does not read still is");
         b.snap.as_mut().unwrap().paused = true;
         assert!(b.engine_facts(&t).0.is_some(), "paused is a word");
         b.snap = None;
