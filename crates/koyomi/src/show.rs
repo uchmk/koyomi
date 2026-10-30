@@ -41,24 +41,35 @@ pub fn span(started: Option<NaiveDateTime>, ended: Option<NaiveDateTime>) -> Str
 
 /// One line for the run: tag, id, net, business day, times, duration.
 pub fn run_line(t: &Table, r: &Run) -> String {
-    let mut line = format!("{}  {}  {}  {}", tag(t, r.state), r.id, r.title, r.date);
+    format!("{}  {}  {}  {}{}", tag(t, r.state), r.id, r.title, r.date, run_tail(t, r))
+}
+
+/// The run's heading in two parts: the state and the name to set big (`✓ 正常終了  月次締め`),
+/// and the rest for one small line under it (`#12  2026-10-30  09:30:00–09:31:02  1:02`).
+pub fn run_head(t: &Table, r: &Run) -> (String, String) {
+    (format!("{}  {}", tag(t, r.state), r.title), format!("{}  {}{}", r.id, r.date, run_tail(t, r)))
+}
+
+/// The time, how long it took, the delays and the reason, each led by two spaces.
+fn run_tail(t: &Table, r: &Run) -> String {
+    let mut out = String::new();
     if r.not_started() {
         if let Some(p) = r.planned {
-            line.push_str(&format!("  {}", hms(p)));
+            out.push_str(&format!("  {}", hms(p)));
         }
     } else {
-        line.push_str(&format!("  {}", span(Some(r.started), r.ended)));
+        out.push_str(&format!("  {}", span(Some(r.started), r.ended)));
         if let Some(d) = r.duration() {
-            line.push_str(&format!("  {}", duration(d)));
+            out.push_str(&format!("  {}", duration(d)));
         }
     }
     for d in &r.delays {
-        line.push_str(&format!("  ⏰{}", t.tr(d.key())));
+        out.push_str(&format!("  ⏰{}", t.tr(d.key())));
     }
     if !r.reason.is_empty() {
-        line.push_str(&format!("  {}", r.reason));
+        out.push_str(&format!("  {}", r.reason));
     }
-    line
+    out
 }
 
 /// `2026-11-02（月）02:00`: a day, its weekday in the table's words, a time.

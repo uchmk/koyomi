@@ -2050,43 +2050,53 @@ impl Browser {
             ui.label(t.tr("run.none"));
             return;
         };
-        let head = show::run_line(t, &run);
-        ui.heading(&head);
+        let (big, small) = show::run_head(t, &run);
+        ui.heading(&big);
+        ui.label(egui::RichText::new(small).small().color(c.dim));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let r = ui.add_enabled(!run.is_over(), egui::Button::new(t.tr("run.kill")));
-            ito_a11y::say(&r, Role::Button, t.tr("run.kill"));
-            if r.clicked() && !self.box_open() {
-                self.killing = Some(run.id.clone());
-                // The safe button first: Enter on a fresh box does not kill.
-                self.focus = 1;
+            // Only the buttons that mean something for this run are drawn.
+            if !run.is_over() {
+                let r = ui.button(t.tr("run.kill"));
+                ito_a11y::say(&r, Role::Button, t.tr("run.kill"));
+                if r.clicked() && !self.box_open() {
+                    self.killing = Some(run.id.clone());
+                    // The safe button first: Enter on a fresh box does not kill.
+                    self.focus = 1;
+                }
             }
             // Again, once it is over: what passed is carried over. From the picked job when one is picked.
             let can = run.is_over() && !self.blocked();
-            let r = ui.add_enabled(can, egui::Button::new(t.tr("run.rerun")));
-            ito_a11y::say(&r, Role::Button, t.tr("run.rerun"));
-            if r.clicked() {
-                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
+            if run.is_over() {
+                let r = ui.add_enabled(can, egui::Button::new(t.tr("run.rerun")));
+                ito_a11y::say(&r, Role::Button, t.tr("run.rerun"));
+                if r.clicked() {
+                    let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
+                }
             }
             // A failure dealt with: it leaves the count in the status bar.
             let done = self.acked.contains(&run.id);
             let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
-            let r = ui.add_enabled(run.is_over() && run.state.is_error() && !done, egui::Button::new(words));
-            ito_a11y::say(&r, Role::Button, words);
-            if r.clicked() {
-                self.acked.insert(run.id.clone());
-                self.to_ack.push(run.id.clone());
-                self.result = Some(Ok(t.tr("run.acked").to_owned()));
+            if run.is_over() && run.state.is_error() {
+                let r = ui.add_enabled(!done, egui::Button::new(words));
+                ito_a11y::say(&r, Role::Button, words);
+                if r.clicked() {
+                    self.acked.insert(run.id.clone());
+                    self.to_ack.push(run.id.clone());
+                    self.result = Some(Ok(t.tr("run.acked").to_owned()));
+                }
             }
             let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
             let label = match &picked {
                 Some(j) => t.trf("run.rerun_from", &[j]),
                 None => t.tr("run.rerun_pick").to_owned(),
             };
-            let r = ui.add_enabled(can && picked.is_some(), egui::Button::new(&label));
-            ito_a11y::say(&r, Role::Button, &label);
-            if r.clicked() {
-                let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
+            if run.is_over() && picked.is_some() {
+                let r = ui.add_enabled(can, egui::Button::new(&label));
+                ito_a11y::say(&r, Role::Button, &label);
+                if r.clicked() {
+                    let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
+                }
             }
             // Skip the picked job before it starts: the jobs after it go on.
             let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
@@ -2094,11 +2104,13 @@ impl Browser {
                 Some(j) => t.trf("run.skip_from", &[j]),
                 None => t.tr("run.skip_pick").to_owned(),
             };
-            let r = ui.add_enabled(!run.is_over() && pending, egui::Button::new(&label));
-            ito_a11y::say(&r, Role::Button, &label);
-            if r.clicked() {
-                if let Some(job) = picked.clone() {
-                    let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
+            if !run.is_over() && pending {
+                let r = ui.button(&label);
+                ito_a11y::say(&r, Role::Button, &label);
+                if r.clicked() {
+                    if let Some(job) = picked.clone() {
+                        let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
+                    }
                 }
             }
             // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
@@ -2110,12 +2122,12 @@ impl Browser {
                 .collect();
             let target =
                 picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
-            for (yes, key) in [(true, "run.approve"), (false, "run.reject")] {
+            for (yes, key) in [(true, "run.approve"), (false, "run.reject")].into_iter().filter(|_| target.is_some()) {
                 let label = match target {
                     Some(j) => t.trf(&format!("{key}_from"), &[j]),
                     None => t.tr(key).to_owned(),
                 };
-                let r = ui.add_enabled(target.is_some(), egui::Button::new(&label));
+                let r = ui.button(&label);
                 ito_a11y::say(&r, Role::Button, &label);
                 if r.clicked() {
                     if let Some(job) = target {
@@ -2131,14 +2143,6 @@ impl Browser {
             if r.clicked() {
                 self.compare_base = (!marked).then(|| run.id.clone());
             }
-            ui.separator();
-            for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
-                let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
-                ito_a11y::say(&r, Role::Button, t.tr(key));
-                if r.clicked() && self.vertical != vertical {
-                    self.set_flow(vertical);
-                }
-            }
         });
         self.show_result(ui);
         if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
@@ -2153,6 +2157,16 @@ impl Browser {
         ui.add_space(6.0);
         let watched = Self::watched_job(&run, self.job_sel.as_deref());
         *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        // The direction of the picture sits next to the picture.
+        ui.horizontal(|ui| {
+            for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
+                let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
+                ito_a11y::say(&r, Role::Button, t.tr(key));
+                if r.clicked() && self.vertical != vertical {
+                    self.set_flow(vertical);
+                }
+            }
+        });
         let mut pick = None;
         egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
             pick = graph::draw(ui, &run, self.vertical, watched.as_deref());
@@ -3066,11 +3080,11 @@ mod tests {
         s.settle(&mut b);
         assert!(s.nodes.values().any(|n| n.0 == "対応済み"));
         assert!(!s.nodes.values().any(|n| n.0 == "対応済みにする"));
-        // A run that ended well: the button does nothing.
+        // A run that ended well: there is nothing to deal with, so no button.
         b.acked.clear();
         b.runs[0].state = State::Ok;
         s.settle(&mut b);
-        s.click("対応済みにする", &mut b);
+        assert!(!s.nodes.values().any(|n| n.0 == "対応済みにする"));
         assert!(b.take_acks().is_empty());
     }
 
