@@ -1424,7 +1424,12 @@ impl Browser {
             let text = review::row_with(t, d, snap.held.contains(&d.id), last);
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
             let r = ui.selectable_label(on, format!("  {text}"));
-            ito_a11y::say(&r, Role::Row, &text);
+            // The mark is a picture; the word for the last run's state is what is said.
+            let said = match last {
+                Some(l) => format!("{}, {}", review::row(t, d, snap.held.contains(&d.id)), show::tag(t, l)),
+                None => text.clone(),
+            };
+            ito_a11y::say(&r, Role::Row, &said);
             if r.clicked() {
                 pick = Some(d.id.clone());
             }
