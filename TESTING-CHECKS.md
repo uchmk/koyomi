@@ -1,6 +1,6 @@
 # Checklist
 
-403 checks in TESTING.md, 399 left for a person.
+407 checks in TESTING.md, 403 left for a person.
 
 ## 1. Start
 
@@ -575,3 +575,10 @@
 - [ ] **57.2** `koyomi plan 2026-02 --pdf out.pdf`, open the PDF → A4 pages titled with the month, text selectable, page numbers at the foot 〔未訳〕
 - [ ] **57.3** `koyomi plan --print` → The PDF path is printed, and the PDF goes to the printer (or opens in the viewer when it has no print verb) 〔未訳〕
 - [ ] **57.4** A net on a calendar that closes a day → That day shows no start for the net 〔未訳〕
+
+## 58. ネット間のつながり（map）
+
+- [ ] **58.1** `koyomi map` with a net that follows another (`after_jobnet`) and one that uses a child net → One line each: `g/a -> g/b (after ok)`, `g/a -> g/b (child)` 〔未訳〕
+- [ ] **58.2** `koyomi map --dot \| dot -Tsvg > map.svg`, open it → The nets as boxes, arrows from the first to the dependent, labelled 〔未訳〕
+- [ ] **58.3** `koyomi map --mermaid`, paste into a Mermaid viewer → A left-to-right flowchart of the same links 〔未訳〕
+- [ ] **58.4** With no links → `(no links)` 〔未訳〕

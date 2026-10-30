@@ -62,6 +62,9 @@ usage: koyomi [--version | --help | env]
        koyomi plan [YYYY-MM] [--pdf <file>] [--print]
                                      what starts on each day of the month (this month when none), by the approved
                                      nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer
+       koyomi map [--dot | --mermaid]
+                                     how the nets depend on each other (child net, after_jobnet, wait_for), one line each;
+                                     --dot: a Graphviz graph; --mermaid: a Mermaid flowchart
        koyomi new <group/name>       write a new definition from the template (one job, no time yet; unconfirmed)
        koyomi versions <group/name>  the versions kept before each save and restore, newest first
        koyomi restore <group/name> <version>
@@ -91,7 +94,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 31] = [
+const COMMANDS: [&str; 32] = [
     "check",
     "list",
     "show",
@@ -114,6 +117,7 @@ const COMMANDS: [&str; 31] = [
     "resume",
     "calendar",
     "plan",
+    "map",
     "new",
     "versions",
     "restore",
@@ -154,6 +158,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "status" => status(rest),
         "history" => history(rest),
         "plan" => plan(rest),
+        "map" => map_cmd(rest),
         "log" => log(rest),
         "kill" => kill(rest),
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
@@ -670,6 +675,33 @@ fn plan(args: &[String]) -> i32 {
         if let Err(e) = ito_export::print(&file) {
             return fail(&format!("koyomi: {e}"));
         }
+    }
+    0
+}
+
+fn map_cmd(args: &[String]) -> i32 {
+    let (mut dot, mut mermaid) = (false, false);
+    for a in args {
+        match a.as_str() {
+            "--dot" => dot = true,
+            "--mermaid" => mermaid = true,
+            _ => return usage("map takes --dot or --mermaid"),
+        }
+    }
+    if dot && mermaid {
+        return usage("map takes --dot or --mermaid, not both");
+    }
+    let snap = match snapshot() {
+        Ok(s) => s,
+        Err(e) => return fail(&format!("koyomi: {e}")),
+    };
+    let links = koyomi_core::uses::links(&snap.defs);
+    if dot || mermaid {
+        out(&koyomi_core::uses::diagram(&links, mermaid), false);
+    } else if links.is_empty() {
+        out("(no links)", false);
+    } else {
+        out(&koyomi_core::uses::lines(&links), false);
     }
     0
 }

@@ -6,6 +6,7 @@
 
 ### 追加
 
+- ジョブネットの間のつながりの図。`koyomi map` は、子ジョブネット・`after_jobnet`・`wait_for` でつながるジョブネットを 1 行ずつ出す。`--dot` で Graphviz、`--mermaid` で Mermaid の図にする（`koyomi map --dot | dot -Tsvg > map.svg`）。
 - 月の予定表と印刷・PDF。`koyomi plan [YYYY-MM]` は、承認済みのジョブネットが月の各日の何時に始まるかを、それぞれのカレンダーで数えて一覧にする。`--pdf <file>` で A4 の PDF に、`--print` でそのままプリンターに送る。
 - 今日のガントチャート。左の「ガント」の行で、今日の実行を 1 本ずつ横棒（開始から終了まで、動いている間は今まで）にして時間軸に並べる。色は状態の色で、行を押すとその実行が下に開く。
 - MCP。`claude mcp add koyomi -- koyomi mcp` で Claude Code から、今日の実行・定義の一覧・履歴・ログを読める（読むだけのツールは確認なし）。ネットを流す `koyomi_run` と止める `koyomi_kill` は、Claude Code が確認を取るうえ、`confirm = true` を付けて呼ぶまでは何もせず「こうなる」とだけ答える。

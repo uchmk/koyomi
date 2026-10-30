@@ -40,6 +40,126 @@ pub fn find(defs: &[Def], target: &str) -> Vec<String> {
     out
 }
 
+/// How one net depends on another.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Link {
+    /// `from` runs `to` as a child net.
+    Child,
+    /// `to` starts after `from` ends (the word is `on`: ok, error ...).
+    After(String),
+    /// `to` waits for `from` to be free.
+    WaitFor,
+}
+
+impl Link {
+    pub fn label(&self) -> String {
+        match self {
+            Link::Child => "child".to_owned(),
+            Link::After(on) => format!("after {on}"),
+            Link::WaitFor => "waits".to_owned(),
+        }
+    }
+}
+
+/// Every link between nets as `(first, then, how)`: the arrow goes from the net that comes first
+/// (or is used) to the one that depends on it. Sorted, each once; a net that is not in `defs` is
+/// still named.
+pub fn links(defs: &[Def]) -> Vec<(String, String, Link)> {
+    let mut out = Vec::new();
+    for d in defs {
+        let Some(net) = &d.net else { continue };
+        for j in &net.jobs {
+            if let Part::Jobnet { use_ } = &j.part {
+                out.push((use_.clone(), d.id.clone(), Link::Child));
+            }
+        }
+        for w in &net.when {
+            if let Some(n) = &w.wait_for {
+                out.push((n.clone(), d.id.clone(), Link::WaitFor));
+            }
+            if let Kind::AfterJobnet { jobnet, on } = &w.kind {
+                out.push((jobnet.clone(), d.id.clone(), Link::After(format!("{on:?}").to_lowercase())));
+            }
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// The links as a Graphviz graph (`dot -Tsvg`), or as Mermaid when `mermaid`.
+pub fn diagram(links: &[(String, String, Link)], mermaid: bool) -> String {
+    let mut ids: Vec<&str> = links.iter().flat_map(|(a, b, _)| [a.as_str(), b.as_str()]).collect();
+    ids.sort_unstable();
+    ids.dedup();
+    let node = |id: &str| format!("n{}", ids.iter().position(|x| *x == id).unwrap_or(0));
+    let q = |s: &str| s.replace('"', "'");
+    let mut s = String::new();
+    if mermaid {
+        s.push_str(
+            "flowchart LR
+",
+        );
+        for (i, id) in ids.iter().enumerate() {
+            s.push_str(&format!(
+                "  n{i}[\"{}\"]
+",
+                q(id)
+            ));
+        }
+        for (a, b, l) in links {
+            s.push_str(&format!(
+                "  {} -->|{}| {}
+",
+                node(a),
+                l.label(),
+                node(b)
+            ));
+        }
+    } else {
+        s.push_str(
+            "digraph koyomi {
+  rankdir=LR;
+",
+        );
+        for (i, id) in ids.iter().enumerate() {
+            s.push_str(&format!(
+                "  n{i} [label=\"{}\"];
+",
+                q(id)
+            ));
+        }
+        for (a, b, l) in links {
+            s.push_str(&format!(
+                "  {} -> {} [label=\"{}\"];
+",
+                node(a),
+                node(b),
+                l.label()
+            ));
+        }
+        s.push_str(
+            "}
+",
+        );
+    }
+    s
+}
+
+/// The links as one line each: `g/a -> g/b (after ok)`.
+pub fn lines(links: &[(String, String, Link)]) -> String {
+    links
+        .iter()
+        .map(|(a, b, l)| {
+            format!(
+                "{a} -> {b} ({})
+",
+                l.label()
+            )
+        })
+        .collect()
+}
+
 /// The program's file name without a folder or `.exe`, lower case: what two spellings of one program share.
 fn program(command: &str) -> String {
     let name = command.rsplit([char::from(92), '/']).next().unwrap_or(command).to_lowercase();
@@ -84,5 +204,10 @@ mod tests {
         let n = find(&defs, "g/a");
         assert!(n.iter().any(|l| l.starts_with("child net  g/b")) && n.iter().any(|l| l.starts_with("follows    g/b")), "{n:?}");
         assert!(find(&defs, "nothing").is_empty());
+        let l = links(&defs);
+        assert_eq!(l.len(), 2, "{l:?}");
+        assert_eq!(lines(&l), "g/a -> g/b (child)\ng/a -> g/b (after ok)\n");
+        assert!(diagram(&l, false).contains("n0 -> n1"));
+        assert!(diagram(&l, true).starts_with("flowchart LR"));
     }
 }

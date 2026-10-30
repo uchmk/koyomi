@@ -707,3 +707,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 57.3 | `koyomi plan --print` | The PDF path is printed, and the PDF goes to the printer (or opens in the viewer when it has no print verb) |
 | 57.4 | A net on a calendar that closes a day | That day shows no start for the net |
 
+## 58. ネット間のつながり（map）
+
+| # | Do | Expect |
+|---|---|---|
+| 58.1 | `koyomi map` with a net that follows another (`after_jobnet`) and one that uses a child net | One line each: `g/a -> g/b (after ok)`, `g/a -> g/b (child)` |
+| 58.2 | `koyomi map --dot \| dot -Tsvg > map.svg`, open it | The nets as boxes, arrows from the first to the dependent, labelled |
+| 58.3 | `koyomi map --mermaid`, paste into a Mermaid viewer | A left-to-right flowchart of the same links |
+| 58.4 | With no links | `(no links)` |
+
