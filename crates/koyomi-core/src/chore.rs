@@ -1,9 +1,11 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
-//! files over SFTP or to and from a shared folder. Each is
+//! files over SFTP or to and from a shared folder, call a web API. Each is
 //! written in the file as its own `kind` and runs as a PowerShell script the
 //! engine writes when the run starts, so it has the job's slot, log,
 //! `timeout` and `retry`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -50,10 +52,38 @@ pub enum Chore {
         #[serde(default)]
         key: Option<String>,
     },
+    /// HTTP で呼ぶ: `method` to `url` with `body`, judged by the status code: one of
+    /// `expect` (empty: 200–299) is 正常, another is 異常.
+    Http {
+        url: String,
+        method: String,
+        #[serde(default)]
+        body: Option<String>,
+        /// The body's type; without it, JSON (`application/json; charset=utf-8`).
+        #[serde(default)]
+        content_type: Option<String>,
+        /// Header values may be `secret:<name>`; they reach the script as
+        /// environment variables, so a secret is never written into it.
+        #[serde(default)]
+        headers: BTreeMap<String, String>,
+        #[serde(default)]
+        expect: Vec<u16>,
+    },
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
-pub const KINDS: [&str; 6] = ["delete", "zip", "copy", "empty", "send", "fetch"];
+pub const KINDS: [&str; 7] = ["delete", "zip", "copy", "empty", "send", "fetch", "http"];
+
+/// The methods `kind = "http"` takes.
+pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
+
+/// The longest `body` (characters): the script goes on the command line, which
+/// Windows cuts at 32767 characters.
+pub const BODY_MAX: usize = 8000;
+
+/// The exit code of an `http` that got no answer (the name, the connection, TLS,
+/// the time): 異常, told apart from a status code that is not expected (1).
+const NO_ANSWER: i32 = 2;
 
 /// The exit code of a `send` or `fetch` that found no file: 警告.
 const NOTHING: i32 = 3;
@@ -68,6 +98,7 @@ impl Chore {
             Chore::Empty { .. } => "empty",
             Chore::Send { .. } => "send",
             Chore::Fetch { .. } => "fetch",
+            Chore::Http { .. } => "http",
         }
     }
 
@@ -80,6 +111,14 @@ impl Chore {
             "empty" => Chore::Empty { path: String::new() },
             "send" => Chore::Send { from: String::new(), into: String::new(), key: None },
             "fetch" => Chore::Fetch { from: String::new(), into: String::new(), key: None },
+            "http" => Chore::Http {
+                url: String::new(),
+                method: "GET".into(),
+                body: None,
+                content_type: None,
+                headers: BTreeMap::new(),
+                expect: Vec::new(),
+            },
             _ => return None,
         })
     }
@@ -96,6 +135,13 @@ impl Chore {
                 }
                 v
             }
+            Chore::Http { url, body, .. } => {
+                let mut v = vec![("url", url)];
+                if let Some(b) = body {
+                    v.push(("body", b));
+                }
+                v
+            }
         }
     }
 
@@ -105,6 +151,7 @@ impl Chore {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![path],
             Chore::Zip { from, into } | Chore::Copy { from, into, .. } => vec![from, into],
             Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => [from, into].into_iter().chain(key).collect(),
+            Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
         }
     }
 
@@ -154,6 +201,32 @@ impl Chore {
                     if at.path == "." || at.path.ends_with('/') {
                         return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
                     }
+                }
+            }
+            Chore::Http { url, method, body, content_type, headers, expect } => {
+                need("url", url)?;
+                // A url that starts with `{param:…}` is told once it is filled in.
+                let u = url.trim().to_ascii_lowercase();
+                if !u.starts_with('{') && !u.starts_with("http://") && !u.starts_with("https://") {
+                    return Err(format!("url は http:// か https:// で始める: {url}"));
+                }
+                if !METHODS.contains(&method.as_str()) {
+                    return Err(format!("method は {} のどれか: {method}", METHODS.join("・")));
+                }
+                if body.is_some() && (method == "GET" || method == "HEAD") {
+                    return Err(format!("method = \"{method}\" には body を書けない（送るなら method = \"POST\" など）"));
+                }
+                if body.as_ref().is_some_and(|b| b.chars().count() > BODY_MAX) {
+                    return Err(format!("body は {BODY_MAX} 文字まで"));
+                }
+                if content_type.is_some() && body.is_none() {
+                    return Err("content_type は body を書いたときだけ".into());
+                }
+                for k in headers.keys() {
+                    header_name(k)?;
+                }
+                if let Some(c) = expect.iter().find(|c| !(100..=599).contains(*c)) {
+                    return Err(format!("expect は 100〜599 の状態コード: {c}"));
                 }
             }
         }
@@ -265,8 +338,84 @@ impl Chore {
                 };
                 (s, warn)
             }
+            Chore::Http { url, method, body, content_type, headers, expect } => {
+                (http(url, method, body, content_type, headers, expect), None)
+            }
         }
     }
+
+    /// The environment the script reads, beside the job's own: an `http` header's
+    /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`.
+    pub fn env(&self) -> Vec<(String, String)> {
+        match self {
+            Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
+/// A header name as HTTP takes it; `Content-Type` is `content_type`.
+pub fn header_name(k: &str) -> Result<(), String> {
+    if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)) {
+        return Err(format!("headers の名前に使えない: {k}（英数字と - など）"));
+    }
+    if k.eq_ignore_ascii_case("content-type") {
+        return Err("Content-Type は headers でなく content_type に書く".into());
+    }
+    Ok(())
+}
+
+/// The script of an `http`: Windows PowerShell 5.1's `Invoke-WebRequest` (TLS 1.2
+/// turned on, no progress bar: it slows the download and reaches stderr as CLIXML),
+/// the status code and the start of the answer to the log, then the exit code: 0
+/// when the code is expected, 1 when it is not, [`NO_ANSWER`] when there was no
+/// answer.
+fn http(
+    url: &str,
+    method: &str,
+    body: &Option<String>,
+    content_type: &Option<String>,
+    headers: &BTreeMap<String, String>,
+    expect: &[u16],
+) -> String {
+    let mut s = format!(
+        "$ErrorActionPreference = 'Stop'\n\
+         $ProgressPreference = 'SilentlyContinue'\n\
+         [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12\n\
+         $p = @{{ Uri = {u}; Method = '{method}'; UseBasicParsing = $true; Headers = @{{}} }}\n",
+        u = quote(url),
+    );
+    for (i, k) in headers.keys().enumerate() {
+        s += &format!("$p.Headers[{}] = $env:KOYOMI_HEADER_{i}\n", quote(k));
+    }
+    if let Some(b) = body {
+        // As UTF-8 bytes: a string would go as the system's code page.
+        s += &format!(
+            "$p.Body = [Text.Encoding]::UTF8.GetBytes({})\n$p.ContentType = {}\n",
+            quote_raw(b),
+            quote(content_type.as_deref().unwrap_or("application/json; charset=utf-8")),
+        );
+    }
+    let ok = if expect.is_empty() {
+        "$code -ge 200 -and $code -le 299".to_owned()
+    } else {
+        format!("@({}) -contains $code", expect.iter().map(u16::to_string).collect::<Vec<_>>().join(","))
+    };
+    s += &format!(
+        "try {{ $r = Invoke-WebRequest @p; $code = [int]$r.StatusCode; $text = $r.Content }}\n\
+         catch {{\n\
+         \x20 $res = $_.Exception.Response\n\
+         \x20 if ($null -eq $res) {{ Write-Output \"no answer: $($_.Exception.Message)\"; exit {NO_ANSWER} }}\n\
+         \x20 $code = [int]$res.StatusCode\n\
+         \x20 $text = $_.ErrorDetails.Message\n\
+         }}\n\
+         Write-Output \"HTTP $code\"\n\
+         if ($text -is [byte[]]) {{ $text = [Text.Encoding]::UTF8.GetString($text) }}\n\
+         if ($text) {{ if ($text.Length -gt 4000) {{ $text = $text.Substring(0, 4000) + ' ...' }}; Write-Output $text }}\n\
+         if ({ok}) {{ exit 0 }}\n\
+         exit 1\n",
+    );
+    s
 }
 
 /// Gives each chore of `net` (its paths filled in) the script that does it, so it
@@ -279,6 +428,7 @@ pub fn fill(net: &mut Jobnet) -> Result<(), String> {
             j.shell = Some("powershell".to_owned());
             j.script = Some(script);
             j.judge = judge;
+            j.env.extend(c.env());
             j.run.clear();
         }
     }
@@ -287,7 +437,21 @@ pub fn fill(net: &mut Jobnet) -> Result<(), String> {
 
 /// A PowerShell string that is `s` as it is: `'…'`, a `'` doubled.
 fn quote(s: &str) -> String {
-    format!("'{}'", s.trim().replace('\'', "''"))
+    quote_raw(s.trim())
+}
+
+/// [`quote`] without the trim, for a body. PowerShell also ends a `'…'` at the
+/// typographic quotes, so they are doubled too.
+fn quote_raw(s: &str) -> String {
+    let mut out = String::from("'");
+    for c in s.chars() {
+        if matches!(c, '\'' | '\u{2018}' | '\u{2019}' | '\u{201A}' | '\u{201B}') {
+            out.push(c);
+        }
+        out.push(c);
+    }
+    out.push('\'');
+    out
 }
 
 /// A folder for robocopy: no `\` at the end (it would escape the closing quote),
@@ -487,5 +651,65 @@ mod tests {
         assert!(script.contains("Copy-Item -LiteralPath $x.FullName -Destination $into -Force"), "{script}");
         assert!(!script.contains("sftp"), "{script}");
         assert!(judge.is_some());
+    }
+
+    fn http(method: &str, body: Option<&str>, headers: &[(&str, &str)], expect: &[u16]) -> Chore {
+        Chore::Http {
+            url: "https://api.example.com/jobs/{date}".into(),
+            method: method.into(),
+            body: body.map(Into::into),
+            content_type: None,
+            headers: headers.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect(),
+            expect: expect.to_vec(),
+        }
+    }
+
+    #[test]
+    fn an_http_script_reads_its_headers_from_the_environment_and_judges_by_the_code() {
+        let h = http("POST", Some("{\"say\": \"it's\u{2019}\"}\n"), &[("X-Day", "1"), ("Authorization", "secret:api")], &[200, 202]);
+        assert_eq!(h.check(), Ok(()));
+        let (s, judge) = h.script();
+        assert!(judge.is_none());
+        assert!(s.contains("Uri = 'https://api.example.com/jobs/{date}'; Method = 'POST'"), "{s}");
+        // In the order of the names, as env() gives the values.
+        assert!(s.contains("$p.Headers['Authorization'] = $env:KOYOMI_HEADER_0\n$p.Headers['X-Day'] = $env:KOYOMI_HEADER_1"), "{s}");
+        assert!(!s.contains("secret:api"), "{s}");
+        assert_eq!(h.env(), vec![("KOYOMI_HEADER_0".to_owned(), "secret:api".to_owned()), ("KOYOMI_HEADER_1".to_owned(), "1".to_owned())]);
+        // The body as it is, its quotes doubled, its last line kept.
+        assert!(s.contains("UTF8.GetBytes('{\"say\": \"it''s\u{2019}\u{2019}\"}\n')"), "{s}");
+        assert!(s.contains("$p.ContentType = 'application/json; charset=utf-8'"), "{s}");
+        assert!(s.contains("if (@(200,202) -contains $code) { exit 0 }"), "{s}");
+        assert!(s.contains("exit 2"), "{s}");
+        let (s, _) = http("GET", None, &[], &[]).script();
+        assert!(s.contains("if ($code -ge 200 -and $code -le 299) { exit 0 }"), "{s}");
+        assert!(!s.contains("$p.Body"), "{s}");
+        assert!(http("GET", None, &[], &[]).env().is_empty());
+    }
+
+    #[test]
+    fn an_http_that_cannot_be_sent_as_written_is_refused() {
+        let url = |u: &str| {
+            let mut h = http("GET", None, &[], &[]);
+            if let Chore::Http { url, .. } = &mut h {
+                *url = u.into();
+            }
+            h.check()
+        };
+        assert!(url("").is_err());
+        assert!(url("ftp://x").unwrap_err().contains("http:// か https://"));
+        assert_eq!(url("HTTP://x"), Ok(()));
+        assert_eq!(url("{param:api}/jobs"), Ok(()));
+        assert!(http("get", None, &[], &[]).check().unwrap_err().contains("method は"));
+        assert!(http("HEAD", Some("a"), &[], &[]).check().unwrap_err().contains("body を書けない"));
+        assert!(http("POST", Some(&"a".repeat(BODY_MAX + 1)), &[], &[]).check().unwrap_err().contains("文字まで"));
+        assert_eq!(http("POST", Some(&"あ".repeat(BODY_MAX)), &[], &[]).check(), Ok(()));
+        assert!(http("GET", None, &[("content-type", "a")], &[]).check().unwrap_err().contains("content_type に書く"));
+        assert!(http("GET", None, &[("X Day", "a")], &[]).check().unwrap_err().contains("名前に使えない"));
+        assert!(http("GET", None, &[], &[600]).check().unwrap_err().contains("100〜599"));
+        let mut typed = http("GET", None, &[], &[]);
+        if let Chore::Http { content_type, .. } = &mut typed {
+            *content_type = Some("text/plain".into());
+        }
+        assert!(typed.check().unwrap_err().contains("body を書いたときだけ"));
     }
 }

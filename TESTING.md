@@ -1013,3 +1013,16 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 82.6 | `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy` | Each is refused with the line and why |
 | 82.7 | The editor: drag ファイルを送る and ファイルを受け取る from the parts | The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key` |
 | 82.8 | Approve a net with a send | The confirm box shows 元・先・SSH の鍵 instead of a command |
+
+## 83. HTTP で呼ぶ部品（`kind = "http"`）
+
+| # | Do | Expect |
+|---|---|---|
+| 83.1 | `kind = "http"`, `url = "https://example.com/"`; run it | ✓; the log starts with `HTTP 200` and then the start of the page (cut at 4000 characters with ` ...`) |
+| 83.2 | `url = "https://example.com/nope"`; run it; then add `expect = [404]` and run again | The first is ✕ with exit code 1 and `HTTP 404`; the second is ✓ |
+| 83.3 | `url = "https://no-such-host.invalid/"` with `retry = { count = 1, wait = "1m" }` | ✕ with exit code 2 and `no answer: …` (why) in the log; it is tried once more after a minute |
+| 83.4 | A test API you can see (e.g. a local echo server): `method = "POST"`, `body = '{"day": "{date}", "名前": "テスト"}'`, `headers = { Authorization = "secret:api", X-Run = "{date}" }` with the secret `api` set | The server gets the body as UTF-8 JSON with today's date filled in, `Content-Type: application/json; charset=utf-8`, the Authorization value of the secret, and `X-Run` as written (`{date}` is not filled in a header); the job's log shows neither the secret nor the script |
+| 83.5 | The same with `content_type = "text/plain"` | The server gets `Content-Type: text/plain` |
+| 83.6 | `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` | Each is refused with the line and why |
+| 83.7 | The editor: drag HTTP で呼ぶ from the parts | The pane shows URL・メソッド・送る中身・ヘッダー (one `名前: 値` a line)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a header line without `:` or a code that is not a number is refused |
+| 83.8 | Approve a net with an http | The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command |

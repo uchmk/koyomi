@@ -327,6 +327,32 @@ fn job(j: &Job, out: &mut String) {
                     push(out, "from", &q(from));
                     push(out, "into", &q(into));
                 }
+                Chore::Http { url, method, body, content_type, headers, expect } => {
+                    push(out, "url", &q(url));
+                    if method != "GET" {
+                        push(out, "method", &q(method));
+                    }
+                    if let Some(b) = body {
+                        push(out, "body", &q(b));
+                    }
+                    if let Some(c) = content_type {
+                        push(out, "content_type", &q(c));
+                    }
+                    if !headers.is_empty() {
+                        let key = |k: &str| {
+                            if k.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+                                k.to_owned()
+                            } else {
+                                q(k)
+                            }
+                        };
+                        let all = headers.iter().map(|(k, v)| format!("{} = {}", key(k), q(v))).collect::<Vec<_>>().join(", ");
+                        push(out, "headers", &format!("{{ {all} }}"));
+                    }
+                    if !expect.is_empty() {
+                        push(out, "expect", &format!("[{}]", expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")));
+                    }
+                }
             }
             if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } = c {
                 push(out, "key", &q(k));

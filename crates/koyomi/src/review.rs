@@ -187,6 +187,23 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             }
             v
         }
+        Chore::Http { url, method, body, content_type, headers, expect } => {
+            let mut v = vec![line("url", &format!("{method} {url}"))];
+            if let Some(b) = body {
+                v.push(line("body", &b.replace('\n', " ⏎ ")));
+            }
+            if let Some(c) = content_type {
+                v.push(line("content_type", c));
+            }
+            // Only the names: a value may be a secret's name, or a secret written plain.
+            if !headers.is_empty() {
+                v.push(line("headers", &headers.keys().cloned().collect::<Vec<_>>().join(", ")));
+            }
+            let codes =
+                if expect.is_empty() { "200-299".to_owned() } else { expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ") };
+            v.push(line("expect", &codes));
+            v
+        }
     }
 }
 

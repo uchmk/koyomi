@@ -617,6 +617,12 @@ struct RawJob {
     from: Field,
     into: Field,
     key: Field,
+    url: Field,
+    method: Field,
+    body: Field,
+    content_type: Field,
+    headers: Field,
+    expect: Field,
     shell: Field,
     script: Field,
     timeout: Field,
@@ -847,7 +853,7 @@ impl Checker<'_> {
                 "kind",
                 &[
                     "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
-                    "send", "fetch",
+                    "send", "fetch", "http",
                 ],
             )
             .unwrap_or("job");
@@ -866,6 +872,18 @@ impl Checker<'_> {
         }
         if kind != "send" && kind != "fetch" {
             self.only(&j.key, "key", "\"send\" か \"fetch\"");
+        }
+        if kind != "http" {
+            for (field, name) in [
+                (&j.url, "url"),
+                (&j.method, "method"),
+                (&j.body, "body"),
+                (&j.content_type, "content_type"),
+                (&j.headers, "headers"),
+                (&j.expect, "expect"),
+            ] {
+                self.only(field, name, "\"http\"");
+            }
         }
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
@@ -974,7 +992,7 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" => Part::Chore(self.chore(j, kind, start)),
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" => Part::Chore(self.chore(j, kind, start)),
             _ => Part::Job,
         }
     }
@@ -1030,6 +1048,7 @@ impl Checker<'_> {
                     Chore::Fetch { from, into, key }
                 }
             }
+            "http" => self.http(j, start),
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
         // A missing field is already told; what is left is a root or a zip's name.
@@ -1039,6 +1058,75 @@ impl Checker<'_> {
             }
         }
         chore
+    }
+
+    /// `kind = "http"`'s fields: `url` (a template) and the rest of the call.
+    fn http(&mut self, j: &RawJob, start: usize) -> Chore {
+        let template = |c: &mut Self, field: &Field, name: &str| -> Option<String> {
+            let s = c.string(field, name)?;
+            if let Err(e) = c.template(&s) {
+                c.add(field.as_ref().map_or(start, |f| f.span().start), format!("{name}: {e}"));
+            }
+            Some(s)
+        };
+        let url = match &j.url {
+            None => {
+                self.add(start, "kind = \"http\" には url が要る（例: url = \"https://api.example.com/jobs\"）");
+                String::new()
+            }
+            Some(f) => {
+                let s = template(self, &j.url, "url").unwrap_or_default();
+                if s.trim().is_empty() {
+                    self.add(f.span().start, "url が空");
+                }
+                s.trim().to_owned()
+            }
+        };
+        let method = self.choice(&j.method, "method", &crate::chore::METHODS).unwrap_or("GET").to_owned();
+        let body = template(self, &j.body, "body");
+        let content_type = self.string(&j.content_type, "content_type").map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+        let mut headers = BTreeMap::new();
+        if let Some(f) = &j.headers {
+            let at = f.span().start;
+            match f.get_ref().as_table() {
+                None => self.add(at, "headers は表で書く（例: headers = { Authorization = \"secret:api\" }）"),
+                Some(t) => {
+                    for (k, v) in t {
+                        if let Err(e) = crate::chore::header_name(k) {
+                            self.add(at, e);
+                        }
+                        match v.as_str() {
+                            None => self.add(at, format!("headers の値は文字列で書く: {k}")),
+                            Some(s) if s.strip_prefix("secret:") == Some("") => {
+                                self.add(at, format!("headers {k}: secret: の後に名前が要る"))
+                            }
+                            Some(s) => {
+                                headers.insert(k.clone(), s.to_owned());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        let mut expect = Vec::new();
+        if let Some(f) = &j.expect {
+            const SHAPE: &str = "expect は状態コード（100〜599）の配列で書く（例: expect = [200, 201]）";
+            match f.get_ref().as_array() {
+                Some(a) if !a.is_empty() => {
+                    for v in a {
+                        match v.as_integer() {
+                            Some(n) if (100..=599).contains(&n) => expect.push(n as u16),
+                            _ => {
+                                self.add(f.span().start, SHAPE);
+                                break;
+                            }
+                        }
+                    }
+                }
+                _ => self.add(f.span().start, SHAPE),
+            }
+        }
+        Chore::Http { url, method, body, content_type, headers, expect }
     }
 
     /// `retry = { count = 2, wait = "5m" }`: both are required.
@@ -2686,6 +2774,34 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("send", "from = 'a'\ninto = 'sftp://-oProxyCommand=calc/in'\n").contains("使えない文字"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nkey = 'c'\n").contains("key"));
         assert!(bad("send", "from = 'a'\n").contains("kind = \"send\" には into が要る"));
+        assert_eq!(
+            net(
+                "http",
+                "url = \"https://api.example.com/days/{date}\"\nmethod = \"POST\"\nbody = '{\"ok\": true}'\nheaders = { Authorization = \"secret:api\", X-Day = \"1\" }\nexpect = [200, 201]\nretry = { count = 1, wait = \"1m\" }\n"
+            ),
+            Ok((
+                Part::Chore(Chore::Http {
+                    url: "https://api.example.com/days/{date}".into(),
+                    method: "POST".into(),
+                    body: Some("{\"ok\": true}".into()),
+                    content_type: None,
+                    headers: [("Authorization".to_owned(), "secret:api".to_owned()), ("X-Day".to_owned(), "1".to_owned())].into(),
+                    expect: vec![200, 201],
+                }),
+                Some(Retry { count: 1, wait: 60 })
+            ))
+        );
+        assert!(bad("http", "").contains("kind = \"http\" には url が要る"));
+        assert!(bad("http", "url = 'ftp://x'\n").contains("http:// か https://"));
+        assert!(bad("http", "url = 'https://x'\nmethod = \"get\"\n").contains("method は"));
+        assert!(bad("http", "url = 'https://x'\nbody = 'a'\n").contains("body を書けない"));
+        assert!(bad("http", "url = 'https://x'\nexpect = [200, 99]\n").contains("expect は状態コード"));
+        assert!(bad("http", "url = 'https://x'\nexpect = []\n").contains("expect は状態コード"));
+        assert!(bad("http", "url = 'https://x'\nheaders = { Content-Type = \"a\" }\n").contains("content_type に書く"));
+        assert!(bad("http", "url = 'https://x'\nheaders = { A = \"secret:\" }\n").contains("secret: の後に名前"));
+        assert!(bad("http", "url = 'https://x'\ncontent_type = 'text/plain'\n").contains("body を書いたときだけ"));
+        assert!(bad("http", "url = 'https://x'\nenv = { A = \"b\" }\n").contains("env"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nurl = 'https://x'\n").contains("url は kind = \"http\" にだけ書く"));
     }
 
     #[test]
@@ -2779,7 +2895,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

@@ -120,6 +120,13 @@ pub struct Fields {
     pub from: String,
     pub into: String,
     pub key: String,
+    /// An `http`'s call; `headers` one `Name: value` a line, `expect` the codes with `,`.
+    pub url: String,
+    pub method: String,
+    pub body: String,
+    pub content_type: String,
+    pub headers: String,
+    pub expect: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -183,6 +190,17 @@ impl Fields {
                     f.from = from.clone();
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
+                }
+                Chore::Http { url, method, body, content_type, headers, expect } => {
+                    f.url = url.clone();
+                    f.method = method.clone();
+                    f.body = body.clone().unwrap_or_default();
+                    f.content_type = content_type.clone().unwrap_or_default();
+                    f.headers = headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(
+                        "
+",
+                    );
+                    f.expect = expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
                 }
             },
             _ => {}
@@ -300,6 +318,7 @@ impl Fields {
                     Chore::Fetch { .. } => {
                         Chore::Fetch { from: self.from.trim().into(), into: self.into.trim().into(), key: opt(&self.key) }
                     }
+                    Chore::Http { .. } => self.http()?,
                 };
                 chore.check()?;
                 for p in chore.paths() {
@@ -312,6 +331,34 @@ impl Fields {
             Part::Branch | Part::Notify | Part::Approval => {}
         }
         Ok(out)
+    }
+}
+
+impl Fields {
+    /// The `http` the fields say.
+    fn http(&self) -> Result<Chore, String> {
+        let mut headers = BTreeMap::new();
+        for l in self.headers.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            let (k, v) = l.split_once(':').ok_or_else(|| format!("ヘッダーは 1 行に 名前: 値 で書く: \"{l}\""))?;
+            headers.insert(k.trim().to_owned(), v.trim().to_owned());
+        }
+        let expect = self
+            .expect
+            .split(',')
+            .map(str::trim)
+            .filter(|c| !c.is_empty())
+            .map(|c| c.parse::<u16>().map_err(|_| format!("状態コードは 200 のような数: \"{c}\"")))
+            .collect::<Result<Vec<_>, _>>()?;
+        let method = self.method.trim().to_ascii_uppercase();
+        Ok(Chore::Http {
+            url: self.url.trim().into(),
+            method: if method.is_empty() { "GET".into() } else { method },
+            // The body as it is: its spaces and lines may matter.
+            body: Some(self.body.clone()).filter(|b| !b.trim().is_empty()),
+            content_type: opt(&self.content_type),
+            headers,
+            expect,
+        })
     }
 }
 
@@ -390,7 +437,7 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order.
-pub fn shelf() -> [Part; 15] {
+pub fn shelf() -> [Part; 16] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2) },
@@ -407,6 +454,7 @@ pub fn shelf() -> [Part; 15] {
         Part::Chore(Chore::blank("empty").unwrap()),
         Part::Chore(Chore::blank("send").unwrap()),
         Part::Chore(Chore::blank("fetch").unwrap()),
+        Part::Chore(Chore::blank("http").unwrap()),
     ]
 }
 
@@ -1275,6 +1323,19 @@ impl Editor {
                                 changed |= field(ui, if send { "field.send_into" } else { "field.fetch_into" }, &mut f.into);
                                 changed |= field(ui, "field.key", &mut f.key);
                             }
+                            Chore::Http { .. } => {
+                                changed |= field(ui, "field.url", &mut f.url);
+                                changed |= field(ui, "field.method", &mut f.method);
+                                for (key, s, rows) in [("field.body", &mut f.body, 3), ("field.headers", &mut f.headers, 2)] {
+                                    ui.label(t.tr(key));
+                                    let r =
+                                        ui.add(egui::TextEdit::multiline(s).desired_rows(rows).desired_width(f32::INFINITY).code_editor());
+                                    ito_a11y::say(&r, Role::Label, t.tr(key));
+                                    changed |= r.changed();
+                                }
+                                changed |= field(ui, "field.content_type", &mut f.content_type);
+                                changed |= field(ui, "field.expect", &mut f.expect);
+                            }
                         }
                         changed |= field(ui, "field.timeout", &mut f.timeout);
                         changed |= field(ui, "field.retry_count", &mut f.retry_count);
@@ -2027,6 +2088,60 @@ mod tests {
         fields.path = "D:\\logs".into();
         fields.keep_days = "0".into();
         assert!(e.apply_fields(&d, &fields).is_err());
+    }
+
+    #[test]
+    fn an_http_from_the_shelf_reads_its_headers_a_line_each() {
+        let mut e = Editor::over(
+            "a/b",
+            net("format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"),
+        );
+        let blank = shelf().into_iter().find(|p| p.key() == "http").unwrap();
+        let h = e.add(blank, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        assert_eq!(fields.method, "GET");
+        fields.url = "https://api.example.com/{date}".into();
+        fields.method = "post".into();
+        fields.body = "{\"a\": 1}
+"
+        .into();
+        fields.headers = "Authorization: secret:api
+
+X-Day: 1
+"
+        .into();
+        fields.expect = "200, 201".into();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let Part::Chore(Chore::Http { method, body, headers, expect, .. }) = &e.net.jobs[1].part else { panic!() };
+        assert_eq!(method, "POST");
+        assert_eq!(
+            body.as_deref(),
+            Some(
+                "{\"a\": 1}
+"
+            )
+        );
+        assert_eq!(headers.get("Authorization").map(String::as_str), Some("secret:api"));
+        assert_eq!(expect, &vec![200, 201]);
+        let again = Fields::of(&e.net.jobs[1]);
+        assert_eq!(
+            again.headers,
+            "Authorization: secret:api
+X-Day: 1"
+        );
+        assert_eq!(again.expect, "200, 201");
+        fields.headers = "Authorization".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
+        fields.headers.clear();
+        fields.expect = "ok".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
+        fields.expect.clear();
+        fields.method = "GET".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
     }
 
     #[test]
