@@ -278,8 +278,9 @@ pub struct Browser {
     notes: Vec<String>,
     /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
     autostart_off: bool,
-    /// How many notes the cautions band held last frame: it opens itself when there are more.
-    notes_seen: usize,
+    /// The lines the cautions band held last frame (`None` until the first snapshot): it opens
+    /// itself for a line that was not there, not for the ones already there at start.
+    band_seen: Option<BTreeSet<String>>,
     /// The calendar picked on the left; when it is set, the detail is its month.
     cal_sel: Option<String>,
     /// Groups folded in the tree (this session only).
@@ -409,7 +410,7 @@ impl Browser {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
-            notes_seen: 0,
+            band_seen: None,
             cal_sel: None,
             folded: BTreeSet::new(),
             tree_seen: None,
@@ -1377,8 +1378,17 @@ impl Browser {
         // near its end) share one band that stays folded: nothing stops for these.
         let cautions: Vec<String> = self.snap.as_ref().map(|s| s.cautions.clone()).unwrap_or_default();
         let notes = usize::from(self.autostart_off) + cautions.len();
-        let grew = notes > self.notes_seen;
-        self.notes_seen = notes;
+        let mut now: BTreeSet<String> = cautions.iter().cloned().collect();
+        if self.autostart_off {
+            now.insert(t.tr("band.autostart").to_owned());
+        }
+        let grew = match (&self.band_seen, self.snap.is_some()) {
+            (Some(seen), _) => now.iter().any(|l| !seen.contains(l)),
+            (None, _) => false,
+        };
+        if self.snap.is_some() {
+            self.band_seen = Some(now);
+        }
         if notes > 0 {
             egui::Panel::top("cautions").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
                 let head = format!("{} {} {notes}", ito_a11y::State::Warning.mark(), t.tr("band.caution"));
@@ -1386,7 +1396,7 @@ impl Browser {
                     .id_salt("cautions_fold")
                     .default_open(false);
                 // A new caution opens the band once; after that it is the person's to fold.
-                if grew && self.notes_seen > 0 {
+                if grew {
                     fold = fold.open(Some(true));
                 }
                 fold.show(ui, |ui| {
@@ -2713,7 +2723,7 @@ mod tests {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
-            notes_seen: 0,
+            band_seen: None,
             cal_sel: None,
             folded: BTreeSet::new(),
             tree_seen: None,
@@ -2817,25 +2827,36 @@ mod tests {
         }
     }
 
-    /// A new caution opens the folded band once; folding it again keeps it folded until another comes.
+    /// A line that was not in the band opens it once (not the ones there at start, and not only by
+    /// count); folding it again keeps it folded until another new line comes.
     /// (The screen keeps the nodes it has seen, so only a label that is new proves the body was drawn.)
     #[test]
     fn a_new_caution_opens_the_band_once() {
-        let mut b = quiet(Vec::new());
-        let mut s = Screen::new();
-        s.ctx.all_styles_mut(|st| st.animation_time = 0.0);
         let set = |b: &mut Browser, lines: &[&str]| b.snap.as_mut().unwrap().cautions = lines.iter().map(|l| (*l).to_owned()).collect();
         let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        let screen = || {
+            let s = Screen::new();
+            s.ctx.all_styles_mut(|st| st.animation_time = 0.0);
+            s
+        };
+        // Already there at start: folded.
+        let mut b = quiet(Vec::new());
+        set(&mut b, &["既にある注意"]);
+        let mut s = screen();
+        s.settle(&mut b);
+        assert!(!shown(&s, "既にある注意"), "folded at start");
+        // Not there before: opens.
+        let mut b = quiet(Vec::new());
+        let mut s = screen();
+        s.settle(&mut b);
         set(&mut b, &["注意その1"]);
         s.settle(&mut b);
-        assert!(shown(&s, "注意その1"), "the first caution opens the band");
+        assert!(shown(&s, "注意その1"));
         s.click("注意 1", &mut b);
-        set(&mut b, &["注意その1改"]);
+        // Folded by hand: a different line in its place (same count) opens it again.
+        set(&mut b, &["別の注意"]);
         s.settle(&mut b);
-        assert!(!shown(&s, "注意その1改"), "folded by hand, and it stays folded");
-        set(&mut b, &["注意その1改", "注意その2"]);
-        s.settle(&mut b);
-        assert!(shown(&s, "注意その2"), "a second caution opens it again");
+        assert!(shown(&s, "別の注意"), "a replaced line opens it again");
     }
 
     fn key(k: egui::Key) -> Vec<egui::Event> {

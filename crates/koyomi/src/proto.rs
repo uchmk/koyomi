@@ -221,6 +221,9 @@ pub struct Snapshot {
     /// holiday table's age. Nothing is stopped by these.
     #[serde(default)]
     pub cautions: Vec<String>,
+    /// The calendar lines of `cautions` by the calendar they are about (not the engine's own).
+    #[serde(default)]
+    pub calendar_cautions: BTreeMap<String, Vec<String>>,
     /// `calendars/<name>.toml` as the engine read them, by name: what the
     /// window's month table and the next times count by.
     #[serde(default)]

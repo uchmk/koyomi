@@ -460,6 +460,25 @@ impl Calendars {
         }
         out
     }
+
+    /// The same lines by the calendar they are about, for that calendar's own page: a file that
+    /// did not read under its name, the holiday table's age under each calendar that uses it.
+    pub fn cautions_by_calendar(&self, today: NaiveDate, warn_days: i64) -> std::collections::BTreeMap<String, Vec<String>> {
+        let mut out: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
+        for b in &self.bad {
+            if let Some(name) = b.strip_prefix("calendars/").and_then(|r| r.split_once(".toml: ")).map(|(n, _)| n) {
+                out.entry(name.to_owned()).or_default().push(b.clone());
+            }
+        }
+        if let Some(line) = caution(until(self.table.as_ref()), today, warn_days) {
+            for (name, cal) in &self.map {
+                if cal.holidays {
+                    out.entry(name.clone()).or_default().push(line.clone());
+                }
+            }
+        }
+        out
+    }
 }
 
 /// Japan's public holidays, by the rules in force, up to [`UNTIL`].
@@ -679,6 +698,9 @@ mod tests {
         assert_eq!(cals.problem("壊れ").unwrap(), "calendars/壊れ.toml が読めない（holidays は \"japan\" か \"none\"）");
         assert_eq!(cals.problem("本社").unwrap(), "カレンダーがない: calendars/本社.toml");
         assert_eq!(cals.cautions(d("2027-12-01"), 90).len(), 2);
+        let by = cals.cautions_by_calendar(d("2027-12-01"), 90);
+        assert_eq!(by.keys().collect::<Vec<_>>(), ["会社", "壊れ"]);
+        assert!(by["会社"].len() == 1 && by["壊れ"][0].starts_with("calendars/壊れ.toml: "));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -872,6 +872,7 @@ impl State {
             held: self.held.held.clone(),
             paused: self.held.paused,
             cautions: self.outage_line().into_iter().chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS)).collect(),
+            calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
             power: self.power(),
         }
@@ -2292,6 +2293,7 @@ run = [\"x.exe\"]
             held: vec!["共通/x".into()],
             paused: true,
             cautions: vec!["c".into()],
+            calendar_cautions: Default::default(),
             calendars: cals.map.clone(),
             power: proto::Power {
                 sleep_after: Some(1800),
