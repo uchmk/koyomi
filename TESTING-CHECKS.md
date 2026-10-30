@@ -1,6 +1,6 @@
 # Checklist
 
-319 checks in TESTING.md, 315 left for a person.
+324 checks in TESTING.md, 320 left for a person.
 
 ## 1. Start
 
@@ -422,3 +422,11 @@
 - [ ] **34.2** `koyomi engine stop`, wait 11 minutes, start it again → `エンジンが止まっていた` is told the same way 〔未訳〕
 - [ ] **34.3** `koyomi engine stop` and start it again within a minute → Nothing is told 〔未訳〕
 - [ ] **34.4** The band an hour after the start → It is gone 〔未訳〕
+
+## 35. 実行前の点検
+
+- [ ] **35.1** A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file → `<job> の実行ファイルが見つからない: …` and exit code 1 〔未訳〕
+- [ ] **35.2** A job with `dir = "C:/nope"` → `作業フォルダーがない` 〔未訳〕
+- [ ] **35.3** A `kind = "file"` part watching `C:/nope/*.csv` → `見張るフォルダーがない: C:/nope` 〔未訳〕
+- [ ] **35.4** `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` → No complaint about the dir (it has no name until the day) 〔未訳〕
+- [ ] **35.5** A net whose calendar uses the holiday table, within 60 days of its end → A line about the table; exit code stays 0 〔未訳〕

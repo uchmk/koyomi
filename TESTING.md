@@ -507,3 +507,13 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 34.2 | `koyomi engine stop`, wait 11 minutes, start it again | `エンジンが止まっていた` is told the same way |
 | 34.3 | `koyomi engine stop` and start it again within a minute | Nothing is told |
 | 34.4 | The band an hour after the start | It is gone |
+
+## 35. 実行前の点検
+
+| # | Do | Expect |
+|---|---|---|
+| 35.1 | A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file | `<job> の実行ファイルが見つからない: …` and exit code 1 |
+| 35.2 | A job with `dir = "C:/nope"` | `作業フォルダーがない` |
+| 35.3 | A `kind = "file"` part watching `C:/nope/*.csv` | `見張るフォルダーがない: C:/nope` |
+| 35.4 | `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` | No complaint about the dir (it has no name until the day) |
+| 35.5 | A net whose calendar uses the holiday table, within 60 days of its end | A line about the table; exit code stays 0 |

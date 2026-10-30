@@ -259,6 +259,21 @@ fn check(args: &[String]) -> i32 {
         out(&p.in_file(&name), true);
         bad = true;
     }
+    // What the net names, on this machine: only when the file itself reads.
+    if let Some(net) = def.net.as_ref().filter(|_| problems.is_empty()) {
+        let path_var = std::env::var("PATH").unwrap_or_default();
+        let exts: Vec<String> = if cfg!(windows) {
+            std::env::var("PATHEXT").unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".to_owned()).split(';').map(str::to_owned).collect()
+        } else {
+            Vec::new()
+        };
+        let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
+        let today = chrono::Local::now().date_naive();
+        for f in koyomi_core::preflight::check(net, &cals, today, engine::CAUTION_DAYS, &path_var, &exts) {
+            out(&format!("{name}: {}", f.text), true);
+            bad |= !f.warn;
+        }
+    }
     if !bad {
         out(&format!("{name}: 問題なし"), false);
     }
