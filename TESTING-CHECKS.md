@@ -1,6 +1,6 @@
 # Checklist
 
-576 checks in TESTING.md, 572 left for a person.
+584 checks in TESTING.md, 580 left for a person.
 
 ## 1. Start
 
@@ -820,3 +820,14 @@
 - [ ] **81.11** The editor: add a `[[when]]` of ログに行が出たら and one of イベントログに出たら → The fields are ログのファイル・含む文字, and イベントログ・イベント ID・ソース; except / start / end / on_closed are not shown; saving writes `log` / `contains` and `eventlog` / `ids` / `source` 〔未訳〕
 - [ ] **81.12** `koyomi next` for the net → The rows `ログに「ERROR」の行が書かれたとき: D:\app\app.log` and `イベントログ Security に記録されたとき（ID 4625）` come first 〔未訳〕
 - [ ] **81.13** `koyomi check` a `[[when]]` with `log = 'app.log'`, with `log = 'D:\*.log'`, with `log = …` and no `contains`, with `eventlog = "Application"` and neither `ids` nor `source`, with `ids = [70000]` → `log は絶対パスで書く（例: …）`; `log は 1 つのファイルのパス（* / ? は使えない）`; `contains が要る（例: contains = "ERROR"）`; `eventlog には ids か source が要る（例: ids = [4625]）`; `ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）` 〔未訳〕
+
+## 82. ファイルを送る・受け取る部品（`kind = "send"` / `"fetch"`）
+
+- [ ] **82.1** `kind = "send"`, `from = 'D:\out\*.csv'`, `into = '\\nas\share\in\{date}'`; run it → The csv files are in the share's folder for today (made when missing); the log says `sent: …` for each; ✓ 〔未訳〕
+- [ ] **82.2** `kind = "fetch"`, `from = '\\nas\share\out\*.csv'`, `into = 'D:\in'`; run it; then once more with no csv in the share → ✓ and the files are in `D:\in`; the second run is ⚠ 警告 with `no file to fetch: …` 〔未訳〕
+- [ ] **82.3** An SFTP server you can reach with a key; connect once with `ssh user@host` as the engine's account (accept the host key); `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` → ✓; the files are in `/in` on the server; the log has sftp's `put` lines and `sent: …` 〔未訳〕
+- [ ] **82.4** `kind = "fetch"`, `from = "sftp://user@host/~/out/*.csv"`, `into = 'D:\in'` → ✓; each csv under the home's `out` is in `D:\in`; a folder that matches is not fetched; no match is ⚠ 警告 〔未訳〕
+- [ ] **82.5** The same send to a host not in `known_hosts`, to a wrong port, or with a key the server does not take → ✕ with exit code 2 and sftp's reason in the log; nothing asks for a password or a yes/no; `retry` tries again 〔未訳〕
+- [ ] **82.6** `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy` → Each is refused with the line and why 〔未訳〕
+- [ ] **82.7** The editor: drag ファイルを送る and ファイルを受け取る from the parts → The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key` 〔未訳〕
+- [ ] **82.8** Approve a net with a send → The confirm box shows 元・先・SSH の鍵 instead of a command 〔未訳〕

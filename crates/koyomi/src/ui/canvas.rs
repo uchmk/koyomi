@@ -119,6 +119,7 @@ pub struct Fields {
     pub keep_days: String,
     pub from: String,
     pub into: String,
+    pub key: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -177,6 +178,11 @@ impl Fields {
                     f.from = from.clone();
                     f.into = into.clone();
                     f.pattern = pattern.clone().unwrap_or_default();
+                }
+                Chore::Send { from, into, key } | Chore::Fetch { from, into, key } => {
+                    f.from = from.clone();
+                    f.into = into.clone();
+                    f.key = key.clone().unwrap_or_default();
                 }
             },
             _ => {}
@@ -290,6 +296,10 @@ impl Fields {
                     Chore::Copy { .. } => {
                         Chore::Copy { from: self.from.trim().into(), into: self.into.trim().into(), pattern: opt(&self.pattern) }
                     }
+                    Chore::Send { .. } => Chore::Send { from: self.from.trim().into(), into: self.into.trim().into(), key: opt(&self.key) },
+                    Chore::Fetch { .. } => {
+                        Chore::Fetch { from: self.from.trim().into(), into: self.into.trim().into(), key: opt(&self.key) }
+                    }
                 };
                 chore.check()?;
                 for p in chore.paths() {
@@ -380,7 +390,7 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order.
-pub fn shelf() -> [Part; 13] {
+pub fn shelf() -> [Part; 15] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2) },
@@ -395,6 +405,8 @@ pub fn shelf() -> [Part; 13] {
         Part::Chore(Chore::blank("zip").unwrap()),
         Part::Chore(Chore::blank("copy").unwrap()),
         Part::Chore(Chore::blank("empty").unwrap()),
+        Part::Chore(Chore::blank("send").unwrap()),
+        Part::Chore(Chore::blank("fetch").unwrap()),
     ]
 }
 
@@ -1256,6 +1268,12 @@ impl Editor {
                                 changed |= field(ui, "field.from", &mut f.from);
                                 changed |= field(ui, "field.into", &mut f.into);
                                 changed |= field(ui, "field.match", &mut f.pattern);
+                            }
+                            Chore::Send { .. } | Chore::Fetch { .. } => {
+                                let send = matches!(c, Chore::Send { .. });
+                                changed |= field(ui, if send { "field.send_from" } else { "field.fetch_from" }, &mut f.from);
+                                changed |= field(ui, if send { "field.send_into" } else { "field.fetch_into" }, &mut f.into);
+                                changed |= field(ui, "field.key", &mut f.key);
                             }
                         }
                         changed |= field(ui, "field.timeout", &mut f.timeout);

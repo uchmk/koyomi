@@ -1955,6 +1955,60 @@ judge = {{ ok_file = '{ok_file}.none' }}
     }
 
     #[test]
+    fn send_and_fetch_copy_between_folders_and_a_dead_sftp_host_is_an_error() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = scratch("send");
+        let (out, share, back) = (dir.join("out"), dir.join("share"), dir.join("back"));
+        std::fs::create_dir_all(&out).unwrap();
+        for f in ["a.csv", "b.csv", "c.txt"] {
+            std::fs::write(out.join(f), "x").unwrap();
+        }
+        let has_sftp = std::path::Path::new(&std::env::var("SystemRoot").unwrap_or_default()).join("System32\\OpenSSH\\sftp.exe").exists();
+        let mut text = format!(
+            "format = 1\n[[job]]\nid = \"s\"\nkind = \"send\"\nfrom = '{}\\*.csv'\ninto = '{}'\n\
+             [[job]]\nid = \"f\"\nkind = \"fetch\"\nfrom = '{}\\*.csv'\ninto = '{}'\nafter = [\"s\"]\n\
+             [[job]]\nid = \"none\"\nkind = \"fetch\"\nfrom = '{}\\*.zip'\ninto = '{}'\nafter = [\"f\"]\n",
+            out.display(),
+            share.display(),
+            share.display(),
+            back.display(),
+            share.display(),
+            back.display()
+        );
+        if has_sftp {
+            // Nothing listens on port 1: sftp.exe fails at once, without asking anything.
+            text.push_str("[[job]]\nid = \"dead\"\nkind = \"send\"\nfrom = '");
+            text.push_str(&out.display().to_string());
+            text.push_str("'\ninto = \"sftp://nobody@127.0.0.1:1/in\"\ntimeout = \"1m\"\nafter = [\"none\"]\n");
+            text.push_str("[[job]]\nid = \"deadf\"\nkind = \"fetch\"\nfrom = \"sftp://nobody@127.0.0.1:1/out/*.csv\"\ninto = '");
+            text.push_str(&back.display().to_string());
+            text.push_str("'\ntimeout = \"1m\"\nafter = [\"none\"]\n");
+        }
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let log = |j: &str| r.log_tail(&id, j).unwrap_or_default();
+        for (j, state) in [("s", State::Ok), ("f", State::Ok), ("none", State::Warn)] {
+            assert_eq!(run.job(j).unwrap().state, state, "{j}\n{}", log(j));
+        }
+        assert!(share.join("a.csv").exists() && share.join("b.csv").exists() && !share.join("c.txt").exists());
+        assert!(back.join("a.csv").exists() && back.join("b.csv").exists());
+        assert!(log("s").contains("sent: "), "{}", log("s"));
+        assert!(log("none").contains("no file to fetch"), "{}", log("none"));
+        if has_sftp {
+            let dead = run.job("dead").unwrap();
+            assert_eq!(dead.state, State::Error, "{}", log("dead"));
+            assert_eq!(dead.exit, Some(2), "{}", log("dead"));
+            let deadf = run.job("deadf").unwrap();
+            assert_eq!((deadf.state, deadf.exit), (State::Error, Some(2)), "{}", log("deadf"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_kill_during_the_wait_ends_the_job_as_killed() {
         let dir = scratch("retry-kill");
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 1, wait = \"30s\" }}\n", fail_cmd());

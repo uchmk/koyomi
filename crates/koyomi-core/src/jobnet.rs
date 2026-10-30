@@ -616,6 +616,7 @@ struct RawJob {
     keep_days: Field,
     from: Field,
     into: Field,
+    key: Field,
     shell: Field,
     script: Field,
     timeout: Field,
@@ -844,7 +845,10 @@ impl Checker<'_> {
             .choice(
                 &j.kind,
                 "kind",
-                &["job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty"],
+                &[
+                    "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
+                    "send", "fetch",
+                ],
             )
             .unwrap_or("job");
         if kind != "delete" && kind != "empty" {
@@ -856,9 +860,12 @@ impl Checker<'_> {
         if kind != "delete" {
             self.only(&j.keep_days, "keep_days", "\"delete\"");
         }
-        if kind != "zip" && kind != "copy" {
-            self.only(&j.from, "from", "\"zip\" か \"copy\"");
-            self.only(&j.into, "into", "\"zip\" か \"copy\"");
+        if !["zip", "copy", "send", "fetch"].contains(&kind) {
+            self.only(&j.from, "from", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
+            self.only(&j.into, "into", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
+        }
+        if kind != "send" && kind != "fetch" {
+            self.only(&j.key, "key", "\"send\" か \"fetch\"");
         }
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
@@ -967,7 +974,7 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" => Part::Chore(self.chore(j, kind, start)),
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" => Part::Chore(self.chore(j, kind, start)),
             _ => Part::Job,
         }
     }
@@ -1008,6 +1015,21 @@ impl Checker<'_> {
             }
             "zip" => Chore::Zip { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into") },
             "copy" => Chore::Copy { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into"), pattern },
+            "send" | "fetch" => {
+                let from = path_of(self, &j.from, "from");
+                let into = path_of(self, &j.into, "into");
+                let key = self.string(&j.key, "key").filter(|k| !k.trim().is_empty());
+                if let (Some(k), Some(f)) = (&key, &j.key) {
+                    if let Err(e) = self.template(k) {
+                        self.add(f.span().start, format!("key: {e}"));
+                    }
+                }
+                if kind == "send" {
+                    Chore::Send { from, into, key }
+                } else {
+                    Chore::Fetch { from, into, key }
+                }
+            }
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
         // A missing field is already told; what is left is a root or a zip's name.
@@ -2646,6 +2668,24 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("copy", "from = 'a'\ninto = 'b'\npath = 'c'\n").contains("path"));
         assert!(bad("zip", "from = 'a'\ninto = 'b.zip'\nmatch = '*'\n").contains("match"));
         assert!(bad("empty", "path = 'a'\nencoding = \"utf8\"\n").contains("encoding"));
+        assert_eq!(
+            net("send", "from = 'D:\\out\\*.csv'\ninto = \"sftp://partner@ftp.example.com/in/{date}\"\nkey = 'C:\\keys\\partner'\n")
+                .map(|p| p.0),
+            Ok(Part::Chore(Chore::Send {
+                from: "D:\\out\\*.csv".into(),
+                into: "sftp://partner@ftp.example.com/in/{date}".into(),
+                key: Some("C:\\keys\\partner".into())
+            }))
+        );
+        assert_eq!(
+            net("fetch", "from = '\\\\nas\\share\\out\\*.csv'\ninto = 'D:\\in'\n").map(|p| p.0),
+            Ok(Part::Chore(Chore::Fetch { from: "\\\\nas\\share\\out\\*.csv".into(), into: "D:\\in".into(), key: None }))
+        );
+        assert!(bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n").contains("send の from はこのマシンのファイル"));
+        assert!(bad("fetch", "from = 'sftp://h/out/*.csv'\ninto = 'sftp://h/in'\n").contains("fetch の into はこのマシンのフォルダー"));
+        assert!(bad("send", "from = 'a'\ninto = 'sftp://-oProxyCommand=calc/in'\n").contains("使えない文字"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nkey = 'c'\n").contains("key"));
+        assert!(bad("send", "from = 'a'\n").contains("kind = \"send\" には into が要る"));
     }
 
     #[test]
@@ -2739,7 +2779,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

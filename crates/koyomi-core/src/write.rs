@@ -320,10 +320,16 @@ fn job(j: &Job, out: &mut String) {
         Part::Chore(c) => {
             match c {
                 Chore::Delete { path, .. } | Chore::Empty { path } => push(out, "path", &q(path)),
-                Chore::Zip { from, into } | Chore::Copy { from, into, .. } => {
+                Chore::Zip { from, into }
+                | Chore::Copy { from, into, .. }
+                | Chore::Send { from, into, .. }
+                | Chore::Fetch { from, into, .. } => {
                     push(out, "from", &q(from));
                     push(out, "into", &q(into));
                 }
+            }
+            if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } = c {
+                push(out, "key", &q(k));
             }
             if let Chore::Delete { pattern: Some(p), .. } | Chore::Copy { pattern: Some(p), .. } = c {
                 push(out, "match", &q(p));
