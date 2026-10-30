@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 16;
+pub const PROTO: u32 = 17;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -128,6 +128,25 @@ pub enum Request {
     Restore {
         id: String,
         version: String,
+    },
+    /// Give the net `id` the id `to` (another group moves it). Refused while it runs, and while
+    /// other nets name it unless `fix`: then their `use`, `wait_for` and `after_jobnet` are
+    /// pointed at `to` too. Each file written over goes under `versions/` first; the versions of
+    /// `id`, its approval and its hold go with it.
+    Rename {
+        id: String,
+        to: String,
+        fix: bool,
+    },
+    /// Write the net `id`'s file again as `to`, unconfirmed.
+    Copy {
+        id: String,
+        to: String,
+    },
+    /// Take the net `id`'s file away (kept under `versions/` first, so `Restore` brings it
+    /// back). Refused while it runs or other nets name it.
+    Delete {
+        id: String,
     },
     /// Bring a bundle (`koyomi export`'s file) in: answers a [`Plan`]. With
     /// `dry_run` nothing is written. `on_conflict` is `overwrite`, `rename` or

@@ -76,6 +76,13 @@ usage: koyomi [--version | --help | env]
        koyomi versions <group/name>  the versions kept before each save and restore, newest first
        koyomi restore <group/name> <version>
                                      put that version back as the file (unconfirmed until approved)
+       koyomi rename <group/name> <group/name> [--fix]
+                                     give the net a new name or group (its versions, approval and hold go with it);
+                                     refused while other nets use it, unless --fix points them at the new name too
+       koyomi copy <group/name> <group/name>
+                                     write the net again under the new name (unconfirmed)
+       koyomi delete <group/name>    take the net away on `y` (kept as a version: restore brings it back);
+                                     refused while other nets use it
        koyomi export -o <file> [-n <group/name>]... [--group <group>] [--calendars] [--settings] [--all]
                                      write those definitions (with their group file, calendar and child nets),
                                      the calendars, koyomi.toml (webhook addresses as ***) or everything as one file
@@ -103,7 +110,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 33] = [
+const COMMANDS: [&str; 36] = [
     "check",
     "list",
     "show",
@@ -131,6 +138,9 @@ const COMMANDS: [&str; 33] = [
     "new",
     "versions",
     "restore",
+    "rename",
+    "copy",
+    "delete",
     "export",
     "import",
     "engine",
@@ -185,6 +195,9 @@ pub fn run(args: &[String]) -> Option<i32> {
         "new" => new_cmd(rest),
         "versions" => versions(rest),
         "restore" => restore(rest),
+        "rename" => rename(rest),
+        "copy" => copy(rest),
+        "delete" => delete(rest),
         "export" => export(rest),
         "import" => import(rest),
         "engine" => engine_cmd(rest),
@@ -1195,6 +1208,40 @@ fn restore(args: &[String]) -> i32 {
         [id, version] => ask_and_say(&Request::Restore { id: id.replace('\\', "/"), version: version.clone() }),
         _ => usage("restore takes a group/name and a version"),
     }
+}
+
+fn rename(args: &[String]) -> i32 {
+    let fix = args.iter().any(|a| a == "--fix");
+    let rest: Vec<&String> = args.iter().filter(|a| *a != "--fix").collect();
+    match rest.as_slice() {
+        [id, to] => ask_and_say(&Request::Rename { id: id.replace('\\', "/"), to: to.replace('\\', "/"), fix }),
+        _ => usage("rename takes a group/name, the new group/name and --fix"),
+    }
+}
+
+fn copy(args: &[String]) -> i32 {
+    match args {
+        [id, to] => ask_and_say(&Request::Copy { id: id.replace('\\', "/"), to: to.replace('\\', "/") }),
+        _ => usage("copy takes a group/name and the new group/name"),
+    }
+}
+
+/// `koyomi delete <id>`: what uses it first (the engine refuses then anyway), then `y`.
+fn delete(args: &[String]) -> i32 {
+    let [id] = args else { return usage("delete takes one group/name") };
+    let id = id.replace('\\', "/");
+    if let Ok(used) = client::call(&Request::Uses { target: id.clone() }) {
+        if !used.is_empty() {
+            out(&used, true);
+        }
+    }
+    say(&format!("{id} を消すなら y を入力（前の形は版に残る）:"), false);
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        return fail(&format!("{id}: 消さなかった"));
+    }
+    ask_and_say(&Request::Delete { id })
 }
 
 /// `koyomi export -o <file> …`: reads the settings folder itself (the engine need not be up)

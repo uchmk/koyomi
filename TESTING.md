@@ -888,3 +888,18 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 73.4 | `koyomi plan --csv -` | The table on the console with no BOM, and no file name said |
 | 73.5 | A net whose name has a comma; `koyomi list --csv -` | The name is in double quotes; Excel shows it in one cell |
 | 73.6 | Set the language to English in Settings; `koyomi plan --csv -` | The heads are Day,Weekday,Time,Jobnet |
+
+## 74. ジョブネットの名前を変える・複製・消す
+
+| # | Do | Expect |
+|---|---|---|
+| 74.1 | Right-click a net in the tree → "Rename or move…"; pick another group, Enter | The net is under the new group, still confirmed and (if held) still held; Compare versions on it shows its old file |
+| 74.2 | A net another net uses as a child net; rename it without the checkbox | The result line lists the nets that use it and says to use `--fix`; nothing moved |
+| 74.3 | The same with "Point them at the new name too" ticked | Both moved along; the user's file has the new name in `use`, its comments kept, and a version of its old file |
+| 74.4 | `koyomi rename 経理/月次 総務/月次 --fix` | `名前を変えた: 経理/月次 → 総務/月次（参照も直した: …）` |
+| 74.5 | "Copy…" on a net, Enter | A `<name>-2` net appears, unconfirmed; the original is not touched |
+| 74.6 | "Delete…" on a net; Enter at once | Nothing is deleted (the box starts on Cancel) |
+| 74.7 | "Delete…", Tab, Enter | The net goes from the tree; `koyomi versions <id>` lists its file, and `koyomi restore <id> <version>` brings it back unconfirmed |
+| 74.8 | `koyomi delete <id>` on a net another net uses | The nets that use it are printed; after `y` the engine refuses and says to change them first |
+| 74.9 | Rename a net while it runs | `実行中のため変えられない` |
+| 74.10 | With a net open in the editor, right-click a net | The three items are greyed out ("Close the editor first") |

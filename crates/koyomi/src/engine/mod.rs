@@ -1286,6 +1286,162 @@ impl State {
         Ok(format!("{version} に戻した: {id}（未確認。確かめてから流す）"))
     }
 
+    /// The net `id` as a file there is, its path, and that it does not run now: what a rename,
+    /// a copy and a delete start from.
+    fn net_file(&self, id: &str, doing: &str) -> Result<(PathBuf, String), String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("{doing}: {}", self.warnings.join(" / ")));
+        }
+        let (group, name) = split_id(id)?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        let bytes = std::fs::read(&path).map_err(|_| format!("定義がない: {id}"))?;
+        Ok((path, String::from_utf8_lossy(&bytes).into_owned()))
+    }
+
+    /// Why `to` cannot be a new net's id (not one, or there is one), if it cannot.
+    fn free_id(&self, to: &str) -> Result<PathBuf, String> {
+        let (group, name) = split_id(to)?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        if path.exists() || self.defs.iter().any(|d| d.id == to) {
+            return Err(format!("もうある: {to}"));
+        }
+        Ok(path)
+    }
+
+    /// Refused while a run of `id` is not over.
+    fn not_running(&self, id: &str) -> Result<(), String> {
+        if self.runner.runs().iter().any(|r| r.jobnet == id && !r.is_over()) {
+            return Err(format!("実行中のため変えられない: {id}"));
+        }
+        Ok(())
+    }
+
+    /// The lines of `koyomi uses` for the nets that name `id`, and how to go on.
+    fn named_by(&self, id: &str, by: &[String], how: &str) -> String {
+        let mut lines = vec![format!("{} 個のジョブネットが {id} を使っている（{how}）:", by.len())];
+        lines.extend(
+            koyomi_core::uses::find(&self.defs, id)
+                .into_iter()
+                .filter(|l| !l.starts_with("calendar") && !l.starts_with("program"))
+                .map(|l| format!("  {l}")),
+        );
+        lines.join("\n")
+    }
+
+    /// See [`Request::Rename`].
+    fn rename(&mut self, id: &str, to: &str, fix: bool) -> Result<String, String> {
+        let (from_path, text) = self.net_file(id, "名前を変えられない")?;
+        let to_path = self.free_id(to)?;
+        self.not_running(id)?;
+        self.held_writable()?;
+        let by = koyomi_core::rename::referrers(&self.defs, id);
+        if !by.is_empty() && !fix {
+            return Err(self.named_by(id, &by, "--fix でいっしょに直す"));
+        }
+        // Every file is worked out before one is written.
+        let confirmed = |def_id: &str| self.defs.iter().any(|d| d.id == def_id && d.standing == Standing::Confirmed);
+        let own = koyomi_core::rename::retarget(&text, id, to).unwrap_or_else(|_| text.clone());
+        let mut others = Vec::new();
+        for r in &by {
+            let (path, old) = self.net_file(r, "名前を変えられない")?;
+            let new = koyomi_core::rename::retarget(&old, id, to).map_err(|e| format!("{r} の参照を直せない（{e}）。手で直してから"))?;
+            others.push((r.clone(), path, new, confirmed(r)));
+        }
+        let (from_group, from_name) = split_id(id)?;
+        let (to_group, to_name) = split_id(to)?;
+        let mut next = self.store.clone();
+        let was_confirmed = confirmed(id);
+        if let Some(dir) = to_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+        }
+        ito_common::write_atomic(&to_path, &own)?;
+        next.forget(id);
+        if was_confirmed {
+            next.approve(to, &approved::hash(own.as_bytes()), &own);
+        }
+        for (r, path, new, was) in &others {
+            let (g, n) = split_id(r)?;
+            self.keep_version(path, g, n)?;
+            ito_common::write_atomic(path, new)?;
+            if *was {
+                next.approve(r, &approved::hash(new.as_bytes()), new);
+            }
+        }
+        if let Some(dir) = self.paths.approved.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
+        self.store = next;
+        // The file as it was goes with its versions, under the new name.
+        self.keep_version(&from_path, from_group, from_name)?;
+        self.move_versions(&self.versions_dir(from_group, from_name), &self.versions_dir(to_group, to_name))?;
+        std::fs::remove_file(&from_path).map_err(|e| format!("{} を消せない: {e}", shown(&from_path)))?;
+        if self.held.carry(id, Some(to)) {
+            self.save_held()?;
+        }
+        self.rescan();
+        let mut said = format!("名前を変えた: {id} → {to}");
+        if !others.is_empty() {
+            said.push_str(&format!("（参照も直した: {}）", by.join(", ")));
+        }
+        Ok(said)
+    }
+
+    /// Moves every kept version in `from` to `to` (one kept there already stays: same names get `-2`).
+    fn move_versions(&self, from: &Path, to: &Path) -> Result<(), String> {
+        let Ok(entries) = std::fs::read_dir(from) else { return Ok(()) };
+        std::fs::create_dir_all(to).map_err(|e| format!("{} を作れない: {e}", shown(to)))?;
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().into_owned();
+            let stem = name.strip_suffix(".toml").unwrap_or(&name).to_owned();
+            let mut target = to.join(&name);
+            let mut n = 1;
+            while target.exists() {
+                n += 1;
+                target = to.join(format!("{stem}-{n}.toml"));
+            }
+            std::fs::rename(e.path(), &target).map_err(|err| format!("{} を移せない: {err}", shown(&e.path())))?;
+        }
+        let _ = std::fs::remove_dir(from);
+        Ok(())
+    }
+
+    /// See [`Request::Copy`].
+    fn copy(&mut self, id: &str, to: &str) -> Result<String, String> {
+        let (_, text) = self.net_file(id, "複製できない")?;
+        let to_path = self.free_id(to)?;
+        if let Some(dir) = to_path.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+        }
+        ito_common::write_atomic(&to_path, text)?;
+        self.rescan();
+        Ok(format!("複製した: {id} → {to}（未確認。確かめてから流す）"))
+    }
+
+    /// See [`Request::Delete`].
+    fn delete(&mut self, id: &str) -> Result<String, String> {
+        let (path, _) = self.net_file(id, "消せない")?;
+        self.not_running(id)?;
+        self.held_writable()?;
+        let by = koyomi_core::rename::referrers(&self.defs, id);
+        if !by.is_empty() {
+            return Err(self.named_by(id, &by, "先にそちらを直す"));
+        }
+        let (group, name) = split_id(id)?;
+        self.keep_version(&path, group, name)?;
+        std::fs::remove_file(&path).map_err(|e| format!("{} を消せない: {e}", shown(&path)))?;
+        let mut next = self.store.clone();
+        if next.forget(id) {
+            ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
+            self.store = next;
+        }
+        if self.held.carry(id, None) {
+            self.save_held()?;
+        }
+        self.rescan();
+        Ok(format!("消した: {id}（前の形は版に残した。koyomi versions {id} と koyomi restore で戻せる）"))
+    }
+
     fn answer(&mut self, request: &Request) -> Result<String, String> {
         let out = self.dispatch(request);
         if let Ok(text) = &out {
@@ -1327,6 +1483,9 @@ impl State {
             Request::Versions { id } => self.versions(id),
             Request::VersionText { id, version } => self.version_text(id, version),
             Request::Restore { id, version } => self.restore(id, version),
+            Request::Rename { id, to, fix } => self.rename(id, to, *fix),
+            Request::Copy { id, to } => self.copy(id, to),
+            Request::Delete { id } => self.delete(id),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
             Request::Uses { target } => Ok(koyomi_core::uses::find(&self.defs, target).join(
                 "
@@ -1359,6 +1518,9 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Resume => ("resume", String::new()),
         Request::Save { id, .. } => ("save", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
+        Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
+        Request::Copy { id, to } => ("copy", format!("{id} {to}")),
+        Request::Delete { id } => ("delete", id.clone()),
         Request::Import { dry_run: false, .. } => ("import", String::new()),
         _ => return None,
     })
@@ -1867,6 +2029,57 @@ run = [\"x\"]
         assert!(s.save("経理/集計", two, Some(&hash), true).is_ok());
         assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 3);
         assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_rename_carries_the_net_and_fixes_its_users_a_copy_is_unconfirmed_and_a_delete_is_kept() {
+        let paths = temp_paths("rename");
+        let mut s = State::new(paths.clone());
+        let parent = "format = 1\nname = \"親\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let child = "format = 1\nname = \"子\" # 親を呼ぶ\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/親\"\n";
+        assert!(s.save("経理/親", parent, None, false).is_ok());
+        assert!(s.save("経理/子", child, None, false).is_ok());
+        assert!(s.hold("経理/親").is_ok());
+        // Named by another net: refused, and nothing moved.
+        let err = s.rename("経理/親", "総務/親", false).unwrap_err();
+        assert!(err.contains("child net  経理/子") && err.contains("--fix"), "{err}");
+        assert!(paths.jobnets.join("経理/親.toml").exists());
+        assert_eq!(s.rename("経理/親", "経理/子", true), Err("もうある: 経理/子".to_owned()));
+        assert_eq!(s.rename("経理/無い", "経理/新", true), Err("定義がない: 経理/無い".to_owned()));
+        assert!(s.rename("経理/親", "総務", true).is_err());
+        // With fix: moved, the user pointed at it, both still confirmed, the hold carried.
+        let said = s.rename("経理/親", "総務/親", true).unwrap();
+        assert!(said.contains("参照も直した: 経理/子"), "{said}");
+        assert!(!paths.jobnets.join("経理/親.toml").exists());
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("総務/親.toml")).unwrap(), parent);
+        assert_eq!(
+            std::fs::read_to_string(paths.jobnets.join("経理/子.toml")).unwrap(),
+            child.replace("use = \"経理/親\"", "use = \"総務/親\"")
+        );
+        assert_eq!(standing_of(&s, "総務/親"), Some(Standing::Confirmed));
+        assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Confirmed));
+        assert_eq!(standing_of(&s, "経理/親"), None);
+        assert!(s.held.is_held("総務/親") && !s.held.is_held("経理/親"));
+        // The file as it was went with the net's versions; the user's old file is kept too.
+        assert_eq!(Versions::parse(&s.versions("総務/親").unwrap()).unwrap().versions.len(), 1);
+        assert_eq!(Versions::parse(&s.versions("経理/親").unwrap()).unwrap().versions.len(), 0);
+        assert_eq!(Versions::parse(&s.versions("経理/子").unwrap()).unwrap().versions.len(), 1);
+        // A copy is unconfirmed; the original is not touched.
+        assert!(s.copy("総務/親", "総務/親2").unwrap().contains("未確認"));
+        assert_eq!(standing_of(&s, "総務/親2"), Some(Standing::Unconfirmed));
+        assert_eq!(s.copy("総務/親", "経理/子"), Err("もうある: 経理/子".to_owned()));
+        // A delete is refused while another net names it, and kept as a version when not.
+        assert!(s.delete("総務/親").unwrap_err().contains("先にそちらを直す"));
+        assert!(s.delete("経理/子").unwrap().contains("消した"));
+        assert!(!paths.jobnets.join("経理/子.toml").exists());
+        assert_eq!(standing_of(&s, "経理/子"), None);
+        assert!(s.store.get("経理/子").is_none());
+        let versions = Versions::parse(&s.versions("経理/子").unwrap()).unwrap().versions;
+        assert_eq!(versions.len(), 2);
+        // Brought back by a restore, unconfirmed.
+        assert!(s.restore("経理/子", &versions[0]).is_ok());
+        assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Unconfirmed));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

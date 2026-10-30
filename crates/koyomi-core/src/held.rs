@@ -89,6 +89,22 @@ impl Held {
         self.held.retain(|h| h != id);
         self.held.len() != before
     }
+
+    /// Carries the hold and the moved times of `from` over to `to` (the net's new name), or drops
+    /// them when `to` is `None` (the net is gone); `false` when there was nothing of `from`.
+    pub fn carry(&mut self, from: &str, to: Option<&str>) -> bool {
+        let held = self.release(from);
+        if let (true, Some(to)) = (held, to) {
+            self.hold(to);
+        }
+        let before = self.shifts.len();
+        match to {
+            Some(to) => self.shifts.iter_mut().filter(|s| s.id == from).for_each(|s| s.id = to.to_owned()),
+            None => self.shifts.retain(|s| s.id != from),
+        }
+        let moved = self.shifts.iter().any(|s| to.is_some_and(|t| s.id == t));
+        held || moved || self.shifts.len() != before
+    }
 }
 
 #[cfg(test)]

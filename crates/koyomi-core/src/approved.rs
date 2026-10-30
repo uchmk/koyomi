@@ -69,6 +69,13 @@ impl Store {
             None => self.approved.push(entry),
         }
     }
+
+    /// Drops the approval of `id` (a net that is gone or has a new name); `false` when there was none.
+    pub fn forget(&mut self, id: &str) -> bool {
+        let before = self.approved.len();
+        self.approved.retain(|e| e.id != id);
+        self.approved.len() != before
+    }
 }
 
 #[cfg(test)]

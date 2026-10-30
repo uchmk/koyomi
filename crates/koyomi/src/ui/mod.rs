@@ -67,6 +67,17 @@ struct Make {
     error: Option<String>,
     /// The name field takes the keyboard on the first frame.
     fresh: bool,
+    /// The net the box renames or copies; `None` makes a new one.
+    from: Option<(String, Re)>,
+    /// 参照もいっしょに直す, for a rename of a net others name.
+    fix: bool,
+}
+
+/// What the 新しいジョブネット box does to the net it was opened on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Re {
+    Rename,
+    Copy,
 }
 
 /// The box 今すぐ実行 opens for a net with `[params]`: each value, its default filled in.
@@ -228,6 +239,8 @@ pub struct Browser {
     pub easy: Option<String>,
     /// The run a kill is being asked about.
     killing: Option<String>,
+    /// The net a delete is being asked about.
+    deleting: Option<String>,
     focus: usize,
     /// The close question was up last frame: a new one starts on its safe button.
     close_asked: bool,
@@ -345,6 +358,7 @@ impl Browser {
             flow,
             asking: None,
             killing: None,
+            deleting: None,
             focus: 0,
             close_asked: false,
             result: None,
@@ -461,6 +475,12 @@ impl Browser {
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
                         self.run_sel = Some(id.clone());
                         self.job_sel = None;
+                    }
+                    // The tree's pick follows a net that moved, and lets go of one that went.
+                    match (&req, &r) {
+                        (Request::Rename { id, to, .. }, Ok(_)) if self.selected.as_ref() == Some(id) => self.selected = Some(to.clone()),
+                        (Request::Delete { id }, Ok(_)) if self.selected.as_ref() == Some(id) => self.selected = None,
+                        _ => {}
                     }
                     self.result = Some(r);
                 }
@@ -631,7 +651,24 @@ impl Browser {
     /// 新しいジョブネット: opens the box, with `group` filled in when it came from a group in the tree.
     pub fn new_box(&mut self, group: Option<&str>) {
         if self.make.is_none() && self.port.is_none() && self.snap.is_some() {
-            self.make = Some(Make { group: group.unwrap_or_default().to_owned(), name: String::new(), error: None, fresh: true });
+            self.make = Some(Make {
+                group: group.unwrap_or_default().to_owned(),
+                name: String::new(),
+                error: None,
+                fresh: true,
+                from: None,
+                fix: false,
+            });
+            self.focus = 0;
+        }
+    }
+
+    /// 名前を変える・移す and 複製: the same box, with net `id`'s group and name filled in.
+    fn re_box(&mut self, id: &str, re: Re) {
+        let Some((group, name)) = id.split_once('/') else { return };
+        if self.make.is_none() && self.port.is_none() && self.editor.is_none() {
+            let name = if re == Re::Copy { format!("{name}-2") } else { name.to_owned() };
+            self.make = Some(Make { group: group.to_owned(), name, error: None, fresh: true, from: Some((id.to_owned(), re)), fix: false });
             self.focus = 0;
         }
     }
@@ -646,6 +683,18 @@ impl Browser {
             Err(Why::Empty) => Err(t.tr("make.empty").to_owned()),
             Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
             Err(Why::Exists(id)) => Err(t.trf("make.exists", &[id.as_str()])),
+            Ok(to) if m.from.is_some() => {
+                // A rename or a copy: the engine does it, and its answer is the result line.
+                let (id, re) = m.from.clone().expect("checked");
+                let req = match re {
+                    Re::Rename => Request::Rename { id, to, fix: m.fix },
+                    Re::Copy => Request::Copy { id, to },
+                };
+                self.make = None;
+                self.result = None;
+                let _ = self.tx.send(req);
+                return;
+            }
             Ok(_) if unsaved => Err(t.tr("make.unsaved").to_owned()),
             Ok(id) => koyomi_core::jobnet::parse(&koyomi_core::write::template(m.name.trim()))
                 .map(|net| (id, net))
@@ -672,17 +721,28 @@ impl Browser {
     fn confirm_make(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
         let mut groups: Vec<String> = self.snap.iter().flat_map(|s| s.defs.iter().map(|d| d.group.clone())).collect();
         groups.dedup();
+        let from = self.make.as_ref().and_then(|m| m.from.clone());
+        // The nets that name the one renamed: the rename moves them along only when asked.
+        let users = match (&from, &self.snap) {
+            (Some((id, Re::Rename)), Some(s)) => koyomi_core::rename::referrers(&s.defs, id),
+            _ => Vec::new(),
+        };
         let Some(m) = &mut self.make else { return };
         let c = ito_theme::colors();
         let mut pressed = None;
-        egui::Window::new(t.tr("make.title"))
+        let (title, lead, go) = match &from {
+            None => (t.tr("make.title").to_owned(), t.tr("make.lead").to_owned(), t.tr("make.go")),
+            Some((id, Re::Rename)) => (t.tr("rename.title").to_owned(), t.trf("rename.lead", &[id]), t.tr("rename.go")),
+            Some((id, Re::Copy)) => (t.tr("rename.copy_title").to_owned(), t.trf("rename.copy_lead", &[id]), t.tr("rename.copy_go")),
+        };
+        egui::Window::new(title)
             .id(egui::Id::new("make"))
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
             .show(ctx, |ui| {
                 ui.set_width(480.0);
-                ui.add(egui::Label::new(t.tr("make.lead")).wrap());
+                ui.add(egui::Label::new(lead).wrap());
                 egui::Grid::new("make-fields").num_columns(2).show(ui, |ui| {
                     ui.label(t.tr("make.group"));
                     ui.horizontal(|ui| {
@@ -708,11 +768,18 @@ impl Browser {
                     }
                     ui.end_row();
                 });
+                if !users.is_empty() {
+                    let text = t.trf("rename.users", &[&users.join(", ")]);
+                    ui.add(egui::Label::new(egui::RichText::new(&text).color(c.dim)).wrap());
+                    let label = t.tr("rename.fix");
+                    // egui names a checkbox for the screen reader itself.
+                    ui.checkbox(&mut m.fix, label);
+                }
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
                 ui.horizontal(|ui| {
-                    for (i, label) in [t.tr("make.go"), t.tr("make.cancel")].into_iter().enumerate() {
+                    for (i, label) in [go, t.tr("make.cancel")].into_iter().enumerate() {
                         let r = ui.button(label);
                         ito_a11y::say(&r, Role::Button, label);
                         if r.clicked() {
@@ -1084,7 +1151,8 @@ impl Browser {
             self.focus = 1;
         }
         self.close_asked = closing;
-        let modal = self.asking.is_some() || self.killing.is_some() || conflict || closing || port.is_some() || making;
+        let modal =
+            self.asking.is_some() || self.killing.is_some() || self.deleting.is_some() || conflict || closing || port.is_some() || making;
         let buttons = if self.vers.is_some() {
             4
         } else if conflict {
@@ -1182,6 +1250,7 @@ impl Browser {
         });
         self.confirm(&ctx, t, key);
         self.confirm_kill(&ctx, t, key);
+        self.confirm_delete(&ctx, t, key);
         self.confirm_editor(&ctx, t, key);
         self.confirm_versions(&ctx, t, key);
         self.confirm_port(&ctx, t, key);
@@ -1251,6 +1320,8 @@ impl Browser {
         }
         let mut pick = None;
         let mut make_in = None;
+        let mut re: Option<(String, Option<Re>)> = None;
+        let editing = self.editor.is_some();
         let mut group: Option<&str> = None;
         for d in &snap.defs {
             if group != Some(d.group.as_str()) {
@@ -1271,9 +1342,28 @@ impl Browser {
             if r.clicked() {
                 pick = Some(d.id.clone());
             }
+            r.context_menu(|ui| {
+                // A net open in the editor would be saved back under its old name: close it first.
+                for (key, what) in [("tree.rename", Some(Re::Rename)), ("tree.copy", Some(Re::Copy)), ("tree.delete", None)] {
+                    let r = ui.add_enabled(!editing, egui::Button::new(t.tr(key))).on_disabled_hover_text(t.tr("tree.editing"));
+                    if r.clicked() {
+                        re = Some((d.id.clone(), what));
+                        ui.close();
+                    }
+                }
+            });
         }
         if let Some(g) = make_in {
             self.new_box(Some(&g));
+        }
+        match re {
+            Some((id, Some(what))) => self.re_box(&id, what),
+            Some((id, None)) => {
+                self.deleting = Some(id);
+                // The safe button first: Enter on a fresh box does not delete.
+                self.focus = 1;
+            }
+            None => {}
         }
         if pick.is_some() {
             self.selected = pick;
@@ -1375,7 +1465,7 @@ impl Browser {
 
     /// The tray's 今日: ガント in the detail, unless a net is open in the editor or a box is (that work stays).
     pub fn show_today(&mut self) {
-        if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() {
+        if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() || self.deleting.is_some() {
             return;
         }
         self.open_gantt();
@@ -1914,6 +2004,39 @@ impl Browser {
             None => {}
         }
     }
+
+    /// The box that asks before a net is deleted: what names it (the engine refuses then), and
+    /// that its file stays as a version.
+    fn confirm_delete(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(id) = self.deleting.clone() else { return };
+        let users = self.snap.as_ref().map(|s| koyomi_core::rename::referrers(&s.defs, &id)).unwrap_or_default();
+        let rows = [(t.tr("versions.net").to_owned(), id.clone())];
+        let mut body = vec![t.trf("delete.ask", &[&id])];
+        if !users.is_empty() {
+            body.push(t.trf("delete.users", &[&users.join(", ")]));
+        }
+        let buttons = [t.tr("delete.yes").to_owned(), t.tr("make.cancel").to_owned()];
+        let q = ito_confirm::Question {
+            title: t.tr("delete.title"),
+            rows: &rows,
+            body: &body,
+            buttons: &buttons,
+            hint: t.tr("confirm.hint"),
+            focus: Some(self.focus),
+            primary: Some(1),
+            danger: true,
+            ..Default::default()
+        };
+        match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
+            Some(0) => {
+                self.deleting = None;
+                self.result = None;
+                let _ = self.tx.send(Request::Delete { id });
+            }
+            Some(_) => self.deleting = None,
+            None => {}
+        }
+    }
 }
 
 /// Everything in the settings folder, as one file under `exports/` in the
@@ -2031,6 +2154,7 @@ mod tests {
             flow: None,
             asking: None,
             killing: None,
+            deleting: None,
             focus: 0,
             close_asked: false,
             result: None,
@@ -2234,6 +2358,38 @@ mod tests {
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(b.killing.is_none(), "Enter answered the box");
         assert!(rx_req.try_recv().is_err(), "and sent no kill");
+    }
+
+    /// The delete box starts on the safe button; a copy and a rename go to the engine, a rename
+    /// onto a net there is does not.
+    #[test]
+    fn the_tree_deletes_on_ask_and_copies_and_renames_through_the_box() {
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        b.deleting = Some("試験/bom".into());
+        b.focus = 1;
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(b.deleting.is_none() && rx_req.try_recv().is_err(), "Enter on the fresh box deletes nothing");
+        b.deleting = Some("試験/bom".into());
+        b.focus = 0;
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Delete { id }) if id == "試験/bom"));
+        b.re_box("試験/bom", Re::Copy);
+        assert_eq!(b.make.as_ref().map(|m| m.name.as_str()), Some("bom-2"));
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(b.make.is_none());
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Copy { id, to }) if id == "試験/bom" && to == "試験/bom-2"));
+        b.re_box("試験/bom", Re::Rename);
+        b.make.as_mut().unwrap().name = "月次締め".into();
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(b.make.as_ref().is_some_and(|m| m.error.is_some()), "a name there is stays in the box");
+        b.make.as_mut().unwrap().name = "新".into();
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rename { id, to, fix: false }) if id == "試験/bom" && to == "試験/新"));
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.
