@@ -43,7 +43,7 @@ pub fn bars(runs: &[&Run], now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime,
 }
 
 /// Draws the lanes; the id of the run clicked, when one was.
-pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option<&str>) -> Option<String> {
+pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option<&str>, earlier: &str) -> Option<String> {
     let c = ito_theme::colors();
     let (lo, hi, list) = bars(runs, now);
     let width = (ui.available_width() - LABEL - 16.0).max(200.0);
@@ -78,7 +78,9 @@ pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option
         let (x0, x1) = (x_of(bar.from), x_of(bar.to).max(x_of(bar.from) + MIN_BAR));
         let rect = Rect::from_min_max(Pos2::new(x0, y + (LANE - BAR_H) / 2.0), Pos2::new(x1, y + (LANE + BAR_H) / 2.0));
         painter.rect_filled(rect, 3.0, graph::colour(&c, run.state));
-        ito_a11y::say(&r, ito_a11y::Role::Row, &text);
+        // The mark is a picture; the words say it.
+        let said = if bar.before { format!("{}  {earlier}, {}", run.title, run.started.format("%m-%d %H:%M:%S")) } else { text.clone() };
+        ito_a11y::say(&r, ito_a11y::Role::Row, &said);
         if r.clicked() {
             clicked = Some(run.id.clone());
         }

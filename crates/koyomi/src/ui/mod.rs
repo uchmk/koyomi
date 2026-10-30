@@ -1657,7 +1657,7 @@ impl Browser {
         let picked = self.run_sel.clone();
         let mut pick = None;
         egui::ScrollArea::both().id_salt("gantt").max_height(ui.available_height() * 0.5).show(ui, |ui| {
-            pick = gantt::draw(ui, &runs, now, picked.as_deref());
+            pick = gantt::draw(ui, &runs, now, picked.as_deref(), t.tr("run.gantt_earlier"));
         });
         if pick.is_some() {
             self.run_sel = pick;
