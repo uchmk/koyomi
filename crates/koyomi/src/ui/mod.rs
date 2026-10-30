@@ -41,7 +41,7 @@ enum Msg {
     /// The engine's answer to a request the window sent.
     Answer(Request, Result<String, String>),
     /// File work done off the UI thread: a line for under the detail, or why not.
-    Done(Result<String, String>),
+    Done(Result<Said, String>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
     PortText(String, Result<String, String>),
 }
@@ -218,10 +218,16 @@ impl History {
     }
 }
 
+/// What a thread off the UI thread tells: the key of the words and what goes into them, formatted
+/// where the language table is.
+type Said = (&'static str, Vec<String>);
+
 pub struct Browser {
     rx: Receiver<Msg>,
     /// Where threads started by [`Browser::background`] report, and the window to wake.
     io: (Sender<Msg>, egui::Context),
+    /// What [`Msg::Done`] brought, until [`Browser::show`] has the words for it.
+    done: Option<Result<Said, String>>,
     tx: Sender<Request>,
     watch: Watch,
     snap: Option<Snapshot>,
@@ -393,6 +399,7 @@ impl Browser {
             ended: Vec::new(),
             to_ack: Vec::new(),
             acked: BTreeSet::new(),
+            done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
@@ -466,7 +473,7 @@ impl Browser {
                     self.runs = r.runs;
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
-                Msg::Done(r) => self.result = Some(r),
+                Msg::Done(r) => self.done = Some(r),
                 Msg::PortText(path, r) => self.port_text(&path, r),
                 Msg::Down(e) => {
                     self.starting = false;
@@ -748,9 +755,8 @@ impl Browser {
     /// `exports/<YYYYMMDD-HHMMSS>.toml` in the state folder. The path is told
     /// under the detail.
     pub fn export(&mut self, t: &ito_i18n::Table) {
-        let said = t.tr("port.exported").to_owned();
         self.result = Some(Ok(t.tr("run.writing").to_owned()));
-        Self::background(&self.io, move || export_all().map(|(path, n)| said.replace("{0}", &path).replace("{1}", &n.to_string())));
+        Self::background(&self.io, move || export_all().map(|(path, n)| ("port.exported", vec![path, n.to_string()])));
     }
 
     /// The palette's 取り込む: opens the box with the path field.
@@ -998,7 +1004,7 @@ impl Browser {
     }
 
     /// Runs file work on its own thread; the line it returns shows under the detail.
-    fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<String, String> + Send + 'static) {
+    fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<Said, String> + Send + 'static) {
         let (tx, ctx) = io.clone();
         std::thread::spawn(move || {
             let _ = tx.send(Msg::Done(work()));
@@ -1281,6 +1287,9 @@ impl Browser {
 
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
+        if let Some(done) = self.done.take() {
+            self.result = Some(done.map(|(key, args)| t.trf(key, &args.iter().map(String::as_str).collect::<Vec<_>>())));
+        }
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
@@ -1954,9 +1963,8 @@ impl Browser {
             let mut shown = h.filtered();
             shown.reverse();
             let text = crate::csv::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
-            let said = t.tr("run.history_csv_done").to_owned();
             self.result = Some(Ok(t.tr("run.writing").to_owned()));
-            Self::background(&self.io, move || export_csv("history", &text).map(|path| said.replace("{0}", &path)));
+            Self::background(&self.io, move || export_csv("history", &text).map(|path| ("run.history_csv_done", vec![path])));
         }
         if search {
             let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
@@ -2581,6 +2589,7 @@ mod tests {
             ended: Vec::new(),
             to_ack: Vec::new(),
             acked: BTreeSet::new(),
+            done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
@@ -3004,6 +3013,16 @@ mod tests {
         s.click("確かめた", &mut b);
         assert!(b.asking.is_none());
         assert!(matches!(rx_req.try_recv(), Ok(Request::Approve { id, .. }) if id == def.id));
+    }
+
+    /// What a thread off the UI thread tells is put into words where the language table is.
+    #[test]
+    fn a_done_message_is_worded_when_shown() {
+        let mut b = quiet(defs());
+        b.io.0.send(Msg::Done(Ok(("run.history_csv_done", vec!["C:/x.csv".to_owned()])))).unwrap();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(matches!(&b.result, Some(Ok(m)) if m == "書いた: C:/x.csv"), "{:?}", b.result);
     }
 
     /// The 対応済みにする button hands over the run's id only for a run that ended in failure.
