@@ -54,11 +54,20 @@ pub enum Event {
         #[serde(default)]
         reason: String,
     },
+    /// Something a person did by hand (`koyomi hold`, a save, a run by hand …); belongs to no run.
+    Op {
+        at: NaiveDateTime,
+        op: String,
+        target: String,
+        #[serde(default)]
+        detail: String,
+    },
 }
 
 impl Event {
     pub fn run(&self) -> &str {
         match self {
+            Event::Op { .. } => "",
             Event::RunStart { run, .. } | Event::JobStart { run, .. } | Event::JobEnd { run, .. } | Event::RunEnd { run, .. } => run,
         }
     }
@@ -234,6 +243,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     r.reason = reason.clone();
                 }
             }
+            Event::Op { .. } => {}
         }
     }
     runs
@@ -257,6 +267,16 @@ mod tests {
             after: after.iter().map(|s| Line::ok(s)).collect(),
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn an_op_is_kept_in_the_day_and_builds_no_run() {
+        let day = Day {
+            events: vec![Event::Op { at: at("2026-10-30 09:00:00"), op: "hold".into(), target: "g/a".into(), detail: String::new() }],
+        };
+        let back = Day::parse(&day.to_toml()).unwrap();
+        assert_eq!(back, day);
+        assert!(back.runs().is_empty());
     }
 
     fn net() -> Jobnet {

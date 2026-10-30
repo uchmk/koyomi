@@ -579,3 +579,13 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 42.2 | The next day | The net runs at 09:00 as the definition says (the file was not changed) |
 | 42.3 | `koyomi shift g/a 09:00 09:30` then `koyomi shift g/a 09:00 --cancel` | The move is taken back; 09:00 runs as usual |
 | 42.4 | A time the net does not have, or a new time before the old one or already past | It is refused with the reason |
+
+## 43. 操作の記録
+
+| # | Do | Expect |
+|---|---|---|
+| 43.1 | `koyomi hold g/a`, `koyomi release g/a`, then `koyomi ops` | Two lines with the time, `hold` / `release` and `g/a`, oldest first |
+| 43.2 | Run a net by hand, save one in the editor, then `koyomi ops` | `run` and `save` lines appear |
+| 43.3 | A refused operation (hold a net that is already held) | No line is written |
+| 43.4 | `koyomi ops --from <yesterday>` after restarting the engine | The earlier lines are still there; `koyomi history` is unchanged |
+

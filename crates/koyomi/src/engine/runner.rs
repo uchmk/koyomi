@@ -762,6 +762,49 @@ impl Runner {
         w.save_toml(d);
     }
 
+    /// Writes down a thing a person did by hand, in the file of today.
+    pub fn record_op(&mut self, op: &str, target: &str, detail: &str) {
+        let at = Local::now().naive_local();
+        let day = at.date();
+        let (d, w) = self.days.entry(day).or_insert_with(|| {
+            let file = history::path(&self.history, day);
+            (Day::load(&file).unwrap_or_default(), kept::Writer::new(file, true))
+        });
+        d.events.push(history::Event::Op { at, op: op.to_owned(), target: target.to_owned(), detail: detail.to_owned() });
+        w.save_toml(d);
+    }
+
+    /// The things done by hand from `from` to `to` (both days), oldest first, one line each.
+    pub fn ops(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<String>, String> {
+        if to < from {
+            return Err(format!("範囲が逆: {from} → {to}"));
+        }
+        if (to - from).num_days() > 366 {
+            return Err("範囲は 1 年まで".to_owned());
+        }
+        let mut out = Vec::new();
+        let mut day = from;
+        while day <= to {
+            let loaded;
+            let events = match self.days.get(&day) {
+                Some((d, _)) => &d.events,
+                None => {
+                    loaded = Day::load(&history::path(&self.history, day)).unwrap_or_default();
+                    &loaded.events
+                }
+            };
+            for e in events {
+                if let history::Event::Op { at, op, target, detail } = e {
+                    let sep = if detail.is_empty() { "" } else { "  " };
+                    out.push(format!("{}  {op:<8} {target}{sep}{detail}", at.format("%Y-%m-%d %H:%M:%S")));
+                }
+            }
+            let Some(next) = day.succ_opt() else { break };
+            day = next;
+        }
+        Ok(out)
+    }
+
     /// Writes what is pending before the engine ends. The runs' processes keep going on their own.
     pub fn flush(&self) {
         for (d, w) in self.days.values() {

@@ -50,6 +50,8 @@ usage: koyomi [--version | --help | env]
        koyomi shift <group/name> <from> <to|--cancel>
                                      start its time <from> at <to> this once (HH:MM is today, or YYYY-MM-DD HH:MM);
                                      the definition does not change; --cancel takes the move back
+       koyomi ops [--from YYYY-MM-DD] [--to YYYY-MM-DD]
+                                     what people did by hand (run, kill, hold, save, approve ...), oldest first (today when none)
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
@@ -81,9 +83,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 26] = [
+const COMMANDS: [&str; 27] = [
     "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "shift",
-    "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
+    "ops", "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -120,6 +122,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "release" => one_id(rest, "release", |id| Request::Release { id }),
         "skip" => skip(rest),
         "shift" => shift(rest),
+        "ops" => ops(rest),
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
         "calendar" => calendar(rest),
@@ -1047,6 +1050,38 @@ fn shift(args: &[String]) -> i32 {
         [id, from, to] if to == "--cancel" => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: None }),
         [id, from, to] => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: Some(at(to)) }),
         _ => usage("shift takes a group/name, its time and the new time (or --cancel)"),
+    }
+}
+
+fn ops(args: &[String]) -> i32 {
+    let (mut from, mut to) = (None, None);
+    let day = |d: Option<&String>| d.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--from" => match day(it.next()) {
+                Some(d) => from = Some(d),
+                None => return usage("--from takes YYYY-MM-DD"),
+            },
+            "--to" => match day(it.next()) {
+                Some(d) => to = Some(d),
+                None => return usage("--to takes YYYY-MM-DD"),
+            },
+            _ => return usage("ops takes --from and --to"),
+        }
+    }
+    let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let from = from.unwrap_or(to);
+    match client::call(&Request::Ops { from: from.to_string(), to: to.to_string() }) {
+        Ok(text) if text.is_empty() => {
+            out("(none)", false);
+            0
+        }
+        Ok(text) => {
+            out(&text, false);
+            0
+        }
+        Err(e) => fail(&e),
     }
 }
 

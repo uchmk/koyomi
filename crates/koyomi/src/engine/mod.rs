@@ -995,6 +995,17 @@ impl State {
     }
 
     fn answer(&mut self, request: &Request) -> Result<String, String> {
+        let out = self.dispatch(request);
+        if let Ok(text) = &out {
+            if let Some((op, target)) = by_hand(request) {
+                let detail: String = text.lines().next().unwrap_or_default().chars().take(120).collect();
+                self.runner.record_op(op, &target, &detail);
+            }
+        }
+        out
+    }
+
+    fn dispatch(&mut self, request: &Request) -> Result<String, String> {
         match request {
             Request::Status => Ok(self.status()),
             Request::Stop => Ok("止める".to_owned()),
@@ -1023,8 +1034,35 @@ impl State {
             Request::Versions { id } => self.versions(id),
             Request::Restore { id, version } => self.restore(id, version),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
+            Request::Ops { from, to } => {
+                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {s}"));
+                Ok(self.runner.ops(day(from)?, day(to)?)?.join(
+                    "
+",
+                ))
+            }
         }
     }
+}
+
+/// The name and target a request is written down under when it succeeds: what a person did by hand.
+fn by_hand(request: &Request) -> Option<(&'static str, String)> {
+    Some(match request {
+        Request::Approve { id, .. } => ("approve", id.clone()),
+        Request::Run { id, dry: false, .. } => ("run", id.clone()),
+        Request::Rerun { run, .. } => ("rerun", run.clone()),
+        Request::Kill { run, job } => ("kill", job.as_ref().map_or(run.clone(), |j| format!("{run} {j}"))),
+        Request::Hold { id } => ("hold", id.clone()),
+        Request::Release { id } => ("release", id.clone()),
+        Request::Skip { run, job } => ("skip", format!("{run} {job}")),
+        Request::Shift { id, .. } => ("shift", id.clone()),
+        Request::Pause => ("pause", String::new()),
+        Request::Resume => ("resume", String::new()),
+        Request::Save { id, .. } => ("save", id.clone()),
+        Request::Restore { id, .. } => ("restore", id.clone()),
+        Request::Import { dry_run: false, .. } => ("import", String::new()),
+        _ => return None,
+    })
 }
 
 /// The difference between `old` and `new` as lines under a plan's item,
