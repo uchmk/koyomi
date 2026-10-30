@@ -4,7 +4,9 @@
 //! Layers by the longest path from a start (`run::layers`), then the rows of
 //! each layer ordered by the mean row of the parts before them, and again by
 //! the parts after them, a few times over: the lines cross as little as this
-//! simple sweep gets them to. A part with no line before or after it is not
+//! simple sweep gets them to. Each group of parts joined by lines is its own
+//! block of rows, one block below the other in the order of their first part
+//! in the file, so two flows never share rows. A part with no line before or after it is not
 //! stacked in layer 0: the loose parts stand in one row along the flow, below
 //! the connected ones, in the order they stood (then the file's). The
 //! positions are horizontal (along = x); the vertical flow swaps the axes when
@@ -44,12 +46,9 @@ pub fn places(jobs: &[Job]) -> Vec<(usize, usize)> {
     for layer in &mut layers {
         layer.retain(|i| !loose.contains(i));
     }
+    let group = groups(&preds, &succs);
     let mut row = vec![0.0f64; n];
-    for layer in &layers {
-        for (r, &i) in layer.iter().enumerate() {
-            row[i] = r as f64;
-        }
-    }
+    stack(&mut layers, &group, &mut row);
     for _ in 0..4 {
         for layer in layers.iter_mut().skip(1) {
             sweep(layer, &preds, &mut row);
@@ -58,13 +57,13 @@ pub fn places(jobs: &[Job]) -> Vec<(usize, usize)> {
             sweep(layer, &succs, &mut row);
         }
     }
+    let below = stack(&mut layers, &group, &mut row);
     let mut out = vec![(0, 0); n];
     for (l, layer) in layers.iter().enumerate() {
-        for (r, &i) in layer.iter().enumerate() {
-            out[i] = (l, r);
+        for &i in layer {
+            out[i] = (l, row[i] as usize);
         }
     }
-    let below = layers.iter().map(Vec::len).max().unwrap_or(0);
     let mut loose = loose;
     // Stable: the file's order among parts at the same place, and after the placed ones.
     loose.sort_by(|&a, &b| {
@@ -80,6 +79,60 @@ pub fn places(jobs: &[Job]) -> Vec<(usize, usize)> {
         out[i] = (l, below);
     }
     out
+}
+
+/// For each part, the first (in file order) of the parts joined to it by lines.
+fn groups(preds: &[Vec<usize>], succs: &[Vec<usize>]) -> Vec<usize> {
+    let n = preds.len();
+    let mut group = vec![usize::MAX; n];
+    for start in 0..n {
+        if group[start] != usize::MAX {
+            continue;
+        }
+        group[start] = start;
+        let mut todo = vec![start];
+        while let Some(i) = todo.pop() {
+            for &j in preds[i].iter().chain(&succs[i]) {
+                if group[j] == usize::MAX {
+                    group[j] = start;
+                    todo.push(j);
+                }
+            }
+        }
+    }
+    group
+}
+
+/// Gives each group its own block of rows (in the order of `group`), keeping
+/// the order of the parts within a layer; returns the rows used.
+fn stack(layers: &mut [Vec<usize>], group: &[usize], row: &mut [f64]) -> usize {
+    let mut height: BTreeMap<usize, usize> = BTreeMap::new();
+    for layer in layers.iter() {
+        let mut count: BTreeMap<usize, usize> = BTreeMap::new();
+        for &i in layer {
+            *count.entry(group[i]).or_default() += 1;
+        }
+        for (g, c) in count {
+            let h = height.entry(g).or_default();
+            *h = (*h).max(c);
+        }
+    }
+    let mut top: BTreeMap<usize, usize> = BTreeMap::new();
+    let mut used = 0;
+    for (g, h) in height {
+        top.insert(g, used);
+        used += h;
+    }
+    for layer in layers.iter_mut() {
+        layer.sort_by_key(|&i| top[&group[i]]);
+        let mut next = top.clone();
+        for &i in layer.iter() {
+            let r = next.get_mut(&group[i]).expect("every group has a top");
+            row[i] = *r as f64;
+            *r += 1;
+        }
+    }
+    used
 }
 
 /// Orders `layer` by the mean row of each part's `neighbours`, and writes the new rows back.
@@ -147,6 +200,13 @@ mod tests {
         assert_eq!((p[4], p[1]), ((0, 2), (1, 2)), "q stood left of p");
         align(&mut jobs);
         assert_eq!(jobs[1].pos, Some((STEP_ALONG, 2.0 * STEP_ACROSS)));
+    }
+
+    #[test]
+    fn each_group_of_joined_parts_gets_its_own_rows() {
+        // a → c, a → e and b → d: b and d go below the whole a group, not beside e.
+        let jobs = vec![job("a", &[]), job("b", &[]), job("c", &["a"]), job("d", &["b"]), job("e", &["a"]), job("z", &[])];
+        assert_eq!(places(&jobs), [(0, 0), (0, 2), (1, 0), (1, 2), (1, 1), (0, 3)]);
     }
 
     #[test]
