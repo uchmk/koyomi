@@ -1,6 +1,6 @@
 # Checklist
 
-554 checks in TESTING.md, 550 left for a person.
+555 checks in TESTING.md, 551 left for a person.
 
 ## 1. Start
 
@@ -273,6 +273,7 @@
 - [ ] **24.15** With `calendars/` empty: look under the tree, open the カレンダー tab; then 「＋ 新しいカレンダー」 (also from the heading's right-click and the palette's 「新しいカレンダー…」); Enter with no name, then the name 会社 when it exists, then `a/b`; then the name 工場, untick 日本の祝日, tick only 日 and 作る → The heading カレンダー and 「カレンダーはまだありません」 show, and the tab opens the box; `名前を入れてください`, `もうあります: 会社`, the bad-name line; `calendars/工場.toml` holds `format = 1`, `holidays = "none"`, `weekly_off = ["sun"]`, the month view of 工場 opens at once (「（読み込んでいます）」 until the engine reads it), and `koyomi calendar 工場` shows only Sundays off 〔未訳〕
 - [ ] **24.16** Open 工場 in the カレンダー view; untick 日 and tick 土; then 名前を変える… (also from the row's right-click) with the name 工場, then 倉庫; with a net `calendar = "倉庫"`, 消す…, press Enter once, then 消す… again and はい → `calendars/工場.toml` says `weekly_off = ["sat"]` and the month follows; `もうあります: 工場`, then the file is `倉庫.toml` with the same content; the delete box lists the net's file under 「calendar = "倉庫" と書いた所は直さない…」 and starts on いいえ, so Enter deletes nothing; はい removes the file, keeps it as `versions/_calendars/倉庫/<日時>.toml`, and the net turns invalid until fixed 〔未訳〕
 - [ ] **24.17** Open a net in the editor, its ジョブネット pane; open the カレンダー list and pick 「新しいカレンダー…」; name it 夜間 and 作る; then 保存 → The list shows （なし）, the calendars, and 「新しいカレンダー…」 at the end; the box opens over the editor, which stays; `calendars/夜間.toml` is written, the pane's カレンダー says 夜間 and the net is unsaved (Ctrl+Z takes it back); after 保存 the file says `calendar = "夜間"` 〔未訳〕
+- [ ] **24.18** Pick 会社 under カレンダー; right-click a weekday, then a Saturday, then a closed day, and choose 名前を付ける… on each; type a name and press Enter (or 決める); once with the field emptied. Then 祝日の表を取り込む…, paste the path of the Cabinet Office's `syukujitsu.csv` (with its quotes, as コピー as path gives it) and press Enter; once more with a CSV that has a bad date → The field under the month shows `<日> の名前` with the name the day has; a weekday and the Saturday go into `closed` under that name (still off), a closed day keeps its place with the new name, an emptied name leaves the day closed with none; the names list follows. The table is written to `calendars/syukujitsu.csv` byte for byte, `… に書きました（<first> 年から <last> 年）` shows, the one there before is in `versions/_calendars/syukujitsu/<日時>.csv`, and the holiday line follows; the bad CSV says `<path> を取り込めない: <n> 行目: 日付が読めない: …` and nothing is written. Esc or やめる closes the field 〔未訳〕
 
 ## 25. Parts of the flow (lines `on` / `code`, branch, join, time, file, notify, child jobnet)
 

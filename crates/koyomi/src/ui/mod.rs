@@ -294,6 +294,8 @@ pub struct Browser {
     cal_month: Option<(i32, u32)>,
     /// What the last click on a day did to the file, shown under the month.
     cal_result: Option<Result<String, String>>,
+    /// A day's name or a holiday table's path being typed under the month.
+    cal_inline: Option<calendar::Inline>,
     /// The runs of the last 30 days, for the average time of a net, and the day they were asked for.
     past: std::collections::HashMap<String, chrono::Duration>,
     past_asked: Option<chrono::NaiveDate>,
@@ -423,6 +425,7 @@ impl Browser {
             tree_seen: None,
             cal_month: None,
             cal_result: None,
+            cal_inline: None,
             hist: None,
             gantt: true,
             vers: None,
@@ -2829,6 +2832,7 @@ mod tests {
             tree_seen: None,
             cal_month: None,
             cal_result: None,
+            cal_inline: None,
             hist: None,
             gantt: false,
             vers: None,
@@ -2973,6 +2977,34 @@ run = [\"x.exe\"]
         assert!(shown(&s, "versions/_calendars/会社/"));
         s.show(key(egui::Key::Enter), &mut b);
         assert!(b.cal_deleting.is_none() && b.cal_result.is_none(), "Enter on the fresh box deletes nothing");
+    }
+
+    /// The field under the month: a day's name opens with the name it has, Esc closes it, and
+    /// 祝日の表を取り込む with no path writes nothing (the writing is in `calendar::tests`).
+    #[test]
+    fn a_day_is_named_and_a_holiday_table_brought_in_under_the_month() {
+        let mut b = quiet(defs());
+        let cal = koyomi_core::calendar::Calendar::parse("会社", "format = 1\nclosed = [{ date = 2026-11-20, name = \"創立記念日\" }]\n");
+        b.snap.as_mut().unwrap().calendars.insert("会社".into(), cal.unwrap());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.cal_sel = Some("会社".into());
+        b.cal_month = Some((2026, 11));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap();
+        b.cal_inline = Some(calendar::Inline::Name { cal: "会社".into(), day, text: "創立記念日".into(), fresh: true });
+        s.settle(&mut b);
+        let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(shown(&s, "2026-11-20 の名前"));
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.cal_inline.is_none() && b.cal_result.is_none(), "Esc writes nothing");
+        s.click("祝日の表を取り込む…", &mut b);
+        assert!(matches!(b.cal_inline, Some(calendar::Inline::Table { .. })));
+        s.click("決める", &mut b);
+        assert_eq!(b.cal_result, Some(Err("パスを入れてください".to_owned())));
+        assert!(b.cal_inline.is_none());
+        b.cal_inline = Some(calendar::Inline::Name { cal: "工場".into(), day, text: String::new(), fresh: true });
+        s.settle(&mut b);
+        assert!(b.cal_inline.is_none(), "another calendar's field goes");
     }
 
     /// With no calendar the heading stays, says so, and its button opens the box; the box turns

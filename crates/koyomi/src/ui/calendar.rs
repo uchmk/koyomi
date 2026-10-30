@@ -6,11 +6,13 @@
 //! the month set `holidays` and `weekly_off`. 新しいカレンダー writes a new
 //! `calendars/<name>.toml` from a box; the same box renames one, and 消す keeps
 //! the file under `versions/_calendars/` before it goes. Neither touches the
-//! files that name the calendar: the box lists them.
+//! files that name the calendar: the box lists them. A day's menu names it
+//! (創立記念日), and 祝日の表を取り込む copies a `syukujitsu.csv` into
+//! `calendars/` once it reads; both are typed under the month.
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use ito_a11y::Role;
-use koyomi_core::calendar::{Calendar, Day};
+use koyomi_core::calendar::{Calendar, Day, Table, TABLE_FILE};
 use koyomi_core::scan::{Def, Standing};
 
 use super::{bad_file_name, Browser, Why};
@@ -31,6 +33,20 @@ pub(super) struct NewCal {
     pub(super) error: Option<String>,
     /// The name field takes the keyboard on the first frame.
     fresh: bool,
+}
+
+/// What is typed under the month of `cal`: a day's name, or the path of a holiday table.
+pub(super) enum Inline {
+    Name { cal: String, day: NaiveDate, text: String, fresh: bool },
+    Table { cal: String, path: String, fresh: bool },
+}
+
+impl Inline {
+    fn cal(&self) -> &str {
+        match self {
+            Inline::Name { cal, .. } | Inline::Table { cal, .. } => cal,
+        }
+    }
 }
 
 impl Browser {
@@ -86,6 +102,7 @@ impl Browser {
             self.cal_sel = pick;
             self.cal_month = None;
             self.cal_result = None;
+            self.cal_inline = None;
             self.run_sel = None;
             self.job_sel = None;
             self.result = None;
@@ -151,7 +168,7 @@ impl Browser {
                 rules = Some((holidays, off));
             }
             ui.separator();
-            for (i, key) in ["calendar.rename", "calendar.delete"].into_iter().enumerate() {
+            for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table"].into_iter().enumerate() {
                 let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
                 ito_a11y::say(&r, Role::Button, t.tr(key));
                 if r.clicked() {
@@ -165,12 +182,14 @@ impl Browser {
         }
         match act {
             Some(0) => self.rename_cal_box(&name),
-            Some(_) => self.delete_cal_box(&name),
+            Some(1) => self.delete_cal_box(&name),
+            Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
             None => {}
         }
         ui.add_space(6.0);
         let days = show::month_days(&cal, y, m);
         let mut toggle: Option<(NaiveDate, Day)> = None;
+        let mut naming = None;
         egui::Grid::new("calendar").min_col_width(36.0).show(ui, |ui| {
             for w in WEEK {
                 let colour = if matches!(w, Weekday::Sat | Weekday::Sun) { c.dim } else { c.fg };
@@ -200,6 +219,16 @@ impl Browser {
                 if r.clicked() {
                     toggle = Some((*d, day.clone()));
                 }
+                r.context_menu(|ui| {
+                    if ui.button(t.tr("calendar.name_day")).clicked() {
+                        let text = match day {
+                            Day::Open(n) | Day::Closed(n) => n.clone(),
+                            _ => String::new(),
+                        };
+                        naming = Some(Inline::Name { cal: name.clone(), day: *d, text, fresh: true });
+                        ui.close();
+                    }
+                });
                 if d.weekday() == Weekday::Sun {
                     ui.end_row();
                 }
@@ -208,6 +237,10 @@ impl Browser {
         if let Some((d, day)) = toggle {
             self.cal_result = Some(toggle_day(t, &name, &cal, d, &day));
         }
+        if naming.is_some() {
+            self.cal_inline = naming;
+        }
+        self.inline_view(ui, t, &name, &cal);
         ui.add_space(6.0);
         for (d, day) in &days {
             if let Some(n) = show::day_name(t, day) {
@@ -261,6 +294,59 @@ impl Browser {
 
 impl Browser {
     /// 新しいカレンダー: opens the box, with Japan's holidays and Saturday and Sunday off.
+    /// The field under the month: a day's name or a holiday table's path, with its button.
+    /// Enter does it, Esc or やめる closes it; it goes when another calendar is shown.
+    fn inline_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, name: &str, cal: &Calendar) {
+        if self.cal_inline.as_ref().is_some_and(|i| i.cal() != name) {
+            self.cal_inline = None;
+        }
+        let Some(inline) = &mut self.cal_inline else { return };
+        let mut pressed = None;
+        ui.add_space(6.0);
+        ui.horizontal_wrapped(|ui| {
+            let (label, hint, text, fresh) = match inline {
+                Inline::Name { day, text, fresh, .. } => {
+                    (t.trf("calendar.name_of", &[&day.to_string()]), t.tr("calendar.name_hint"), text, fresh)
+                }
+                Inline::Table { path, fresh, .. } => (t.tr("calendar.table_path").to_owned(), t.tr("port.path_hint"), path, fresh),
+            };
+            ui.label(&label);
+            let r = ui.add(egui::TextEdit::singleline(text).hint_text(hint).desired_width(280.0));
+            ito_a11y::say(&r, Role::Label, &label);
+            if std::mem::take(fresh) {
+                r.request_focus();
+            }
+            if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                pressed = Some(0);
+            }
+            // The field gives up the keyboard on Esc itself, in the same frame.
+            if (r.has_focus() || r.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+                pressed = Some(1);
+            }
+            for (i, key) in ["calendar.inline_go", "make.cancel"].into_iter().enumerate() {
+                let r = ui.button(t.tr(key));
+                ito_a11y::say(&r, Role::Button, t.tr(key));
+                if r.clicked() {
+                    pressed = Some(i);
+                }
+            }
+        });
+        match pressed {
+            Some(0) => {
+                let Some(inline) = self.cal_inline.take() else { return };
+                self.cal_result = Some(match inline {
+                    Inline::Name { day, text, .. } => {
+                        let named = named(cal, day, &cal.day(day), text.trim());
+                        edit_file(t, name, |text| rewrite(text, &named))
+                    }
+                    Inline::Table { path, .. } => import_table(t, &path),
+                });
+            }
+            Some(_) => self.cal_inline = None,
+            None => {}
+        }
+    }
+
     pub fn new_cal_box(&mut self) {
         self.new_cal_box_to(false);
     }
@@ -563,6 +649,17 @@ pub fn rewrite(text: &str, cal: &Calendar) -> Result<String, String> {
     Ok(text)
 }
 
+/// `cal` with `d` named `name` (an empty one takes the name off): an `open` day stays open, and
+/// any other day becomes `closed` (a weekend or holiday stays off, now under this name).
+pub fn named(cal: &Calendar, d: NaiveDate, day: &Day, name: &str) -> Calendar {
+    let mut out = cal.clone();
+    match day {
+        Day::Open(_) => out.open.insert(d, name.to_owned()),
+        _ => out.closed.insert(d, name.to_owned()),
+    };
+    out
+}
+
 fn toggle_day(t: &ito_i18n::Table, name: &str, cal: &Calendar, d: NaiveDate, day: &Day) -> Result<String, String> {
     edit_file(t, name, |text| rewrite(text, &toggled(cal, d, day)))
 }
@@ -595,17 +692,53 @@ fn delete_file(t: &ito_i18n::Table, name: &str) -> Result<String, String> {
 /// `path` copied into `dir` as `<stamp>.toml` (or `<stamp>-2.toml` … when taken), then deleted;
 /// where the copy went. Nothing is deleted when the copy fails.
 fn keep_and_delete(path: &std::path::Path, dir: &std::path::Path, stamp: &str) -> Result<std::path::PathBuf, String> {
+    let kept = keep(path, dir, stamp, "toml")?;
+    std::fs::remove_file(path).map_err(|e| e.to_string())?;
+    Ok(kept)
+}
+
+/// `path` copied into `dir` as `<stamp>.<ext>` (or `<stamp>-2.<ext>` … when taken); where it went.
+fn keep(path: &std::path::Path, dir: &std::path::Path, stamp: &str, ext: &str) -> Result<std::path::PathBuf, String> {
     let text = std::fs::read(path).map_err(|e| e.to_string())?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut kept = dir.join(format!("{stamp}.toml"));
+    let mut kept = dir.join(format!("{stamp}.{ext}"));
     let mut n = 1;
     while kept.exists() {
         n += 1;
-        kept = dir.join(format!("{stamp}-{n}.toml"));
+        kept = dir.join(format!("{stamp}-{n}.{ext}"));
     }
     ito_common::write_atomic(&kept, text)?;
-    std::fs::remove_file(path).map_err(|e| e.to_string())?;
     Ok(kept)
+}
+
+/// 祝日の表を取り込む: the file at `path` (quotes from コピー as path are taken off) becomes
+/// `calendars/syukujitsu.csv` when it reads; the one there is kept under `versions/_calendars/`.
+fn import_table(t: &ito_i18n::Table, path: &str) -> Result<String, String> {
+    let path = path.trim().trim_matches('"');
+    let failed = |e: &str| t.trf("calendar.table_failed", &[path, e]);
+    if path.is_empty() {
+        return Err(t.tr("calendar.table_empty").to_owned());
+    }
+    let dest = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join("calendars").join(TABLE_FILE);
+    let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join("syukujitsu");
+    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let (from, to) = bring_table(std::path::Path::new(path), &dest, &dir, &stamp).map_err(|e| failed(&e))?;
+    Ok(t.trf("calendar.table_done", &[&format!("calendars/{TABLE_FILE}"), &from.to_string(), &to.to_string()]))
+}
+
+/// The holiday table at `src` read, and its bytes written to `dest` as they are (the file there
+/// kept in `dir` first); the years it covers. Nothing is written when it does not read.
+fn bring_table(src: &std::path::Path, dest: &std::path::Path, dir: &std::path::Path, stamp: &str) -> Result<(i32, i32), String> {
+    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
+    let table = Table::parse(&Table::decode(&bytes))?;
+    if dest.exists() {
+        keep(dest, dir, stamp, "csv")?;
+    }
+    if let Some(parent) = dest.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+    }
+    ito_common::write_atomic(dest, bytes)?;
+    Ok(table.years)
 }
 
 #[cfg(test)]
@@ -699,5 +832,52 @@ closed = [{ date = 2026-11-20, name = \"創立記念日\" }]
         let c6 = toggled(&c5, holiday, &c5.day(holiday));
         let c7 = toggled(&c6, thu, &c6.day(thu));
         assert_eq!(rewrite(&text, &c7).unwrap(), "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\n");
+    }
+
+    #[test]
+    fn a_day_takes_a_name_and_stays_on_its_side() {
+        let cal = Calendar::parse("会社", CAL).unwrap();
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let (thu, sat, holiday, founding) = (d("2026-11-19"), d("2026-11-21"), d("2026-11-23"), d("2026-11-20"));
+        let c1 = named(&cal, thu, &cal.day(thu), "棚卸し");
+        assert_eq!(c1.day(thu), Day::Closed("棚卸し".to_owned()));
+        let c2 = named(&c1, sat, &c1.day(sat), "社員旅行");
+        assert_eq!(c2.day(sat), Day::Closed("社員旅行".to_owned()), "a weekend stays off");
+        let c3 = named(&c2, holiday, &c2.day(holiday), "");
+        assert!(!c3.day(holiday).is_business(), "a holiday stays off");
+        let c4 = named(&c3, founding, &c3.day(founding), "");
+        assert_eq!(c4.day(founding), Day::Closed(String::new()), "an empty name takes it off, the day stays closed");
+        let open = toggled(&c4, sat, &c4.day(sat));
+        let open = toggled(&open, sat, &open.day(sat));
+        assert_eq!(open.day(sat), Day::Open(String::new()));
+        let c5 = named(&open, sat, &open.day(sat), "決算");
+        assert_eq!(c5.day(sat), Day::Open("決算".to_owned()), "an open day stays open");
+        let text = rewrite(CAL, &c5).unwrap();
+        let back = Calendar::parse("会社", &text).unwrap();
+        assert_eq!(back.closed, c5.closed);
+        assert_eq!(back.open, c5.open);
+    }
+
+    #[test]
+    fn a_holiday_table_is_written_only_when_it_reads_and_the_old_one_is_kept() {
+        let dir = std::env::temp_dir().join(format!("koyomi-caltable-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (dest, keep) = (dir.join("calendars").join(TABLE_FILE), dir.join("versions/_calendars/syukujitsu"));
+        let bad = dir.join("bad.csv");
+        std::fs::write(&bad, "国民の祝日・休日月日,国民の祝日・休日名称\n2027/1/1,元日\nあした,何か\n").unwrap();
+        let e = bring_table(&bad, &dest, &keep, "20261031-120000").unwrap_err();
+        assert!(e.contains("3 行目"), "{e}");
+        assert!(!dest.exists(), "nothing written when it does not read");
+        let sjis = dir.join("syukujitsu.csv");
+        std::fs::write(&sjis, b"2027/1/1,\x8c\xb3\x93\xfa\r\n2028/1/1,\x8c\xb3\x93\xfa\r\n").unwrap();
+        assert_eq!(bring_table(&sjis, &dest, &keep, "20261031-120000"), Ok((2027, 2028)));
+        assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&sjis).unwrap(), "the bytes as they are");
+        assert!(!keep.exists(), "nothing there before: nothing kept");
+        std::fs::write(&sjis, "2029/1/1,元日\n").unwrap();
+        assert_eq!(bring_table(&sjis, &dest, &keep, "20261031-120000"), Ok((2029, 2029)));
+        assert_eq!(std::fs::read(keep.join("20261031-120000.csv")).unwrap()[..8], b"2027/1/1"[..]);
+        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "2029/1/1,元日\n");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
