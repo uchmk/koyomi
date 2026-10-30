@@ -68,6 +68,7 @@ ito-a11y = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a0
 ito-fonts = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a00dcced4c663a306a1c", features = ["egui"] }
 # `koyomi mcp`: Claude Code reads the runs and (after the person agrees) starts and stops them.
 ito-mcp = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a00dcced4c663a306a1c" }
+ito-power = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a00dcced4c663a306a1c" }
 ito-proc = { git = "https://github.com/uchmk/ito", rev = "a3193d83cce32306be79a00dcced4c663a306a1c" }
 koyomi-core = { path = "../koyomi-core" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

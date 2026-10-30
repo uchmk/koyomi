@@ -308,6 +308,11 @@ impl Runner {
         &self.runs
     }
 
+    /// How many job processes are running now.
+    pub fn busy(&self) -> usize {
+        self.active.len()
+    }
+
     #[cfg(test)]
     pub fn run(&self, id: &str) -> Option<&Run> {
         self.runs.iter().find(|r| r.id == id)
@@ -1354,10 +1359,12 @@ mod tests {
         let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         let run = r.run(&id).unwrap();
         assert_eq!(run.running(), 2);
+        assert_eq!(r.busy(), 2);
         assert_eq!(run.job("c").unwrap().state, State::Waiting);
         assert_eq!(run.job("c").unwrap().reason, "同時に動かす数（2）の空きを待っています");
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
+        assert_eq!(r.busy(), 0);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

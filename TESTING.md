@@ -734,3 +734,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 60.1 | Open a jobnet in the editor | Every shelf button has a name, the first one 【ジョブ】 |
 | 60.2 | Drag the shelf's right border | The shelf gets wider or narrower (between about 90 and 320 px); the canvas follows |
 | 60.3 | Click a job on the canvas | The pane's heading reads 【ジョブ】 |
+
+## 61. 実行中は PC を眠らせない
+
+| # | Do | Expect |
+|---|---|---|
+| 61.1 | Run a net with a job that takes a few minutes, then `powercfg /requests` in an administrator prompt | Under SYSTEM: `koyomi: ジョブを実行中` |
+| 61.2 | After the run ends, `powercfg /requests` again | The koyomi line is gone |
+| 61.3 | Set sleep to 1 minute on a laptop, run a job of 5 minutes without touching the PC | The PC stays awake until the job ends, then sleeps after a minute |
+| 61.4 | A net that only waits (a time part, an approval) | No hold: the PC may sleep |

@@ -155,6 +155,8 @@ struct State {
     /// The daily backup of the settings folder.
     backup: Backup,
     alive: alive::Alive,
+    /// Keeps the PC from sleeping while a job's process runs.
+    awake: Option<ito_power::Awake>,
     /// The times held back by `wait_for`.
     waiting: Vec<Waiting>,
     /// The line about the time the engine was not running, and when it was first told.
@@ -205,6 +207,7 @@ impl State {
             retain,
             backup,
             alive,
+            awake: None,
             waiting: Vec::new(),
             outage: None,
             keep_days,
@@ -291,6 +294,16 @@ impl State {
         for runs in missed {
             let (event, title, body) = notify::missed_words(&self.words, &runs);
             notify::tell(&self.notify, event, &title, &body);
+        }
+    }
+
+    /// Holds the PC awake while a job's process runs, and lets go when none does.
+    fn tick_awake(&mut self) {
+        let busy = self.runner.busy();
+        if busy > 0 && self.awake.is_none() {
+            self.awake = Some(ito_power::Awake::hold("koyomi: ジョブを実行中"));
+        } else if busy == 0 {
+            self.awake = None;
         }
     }
 
@@ -1218,6 +1231,7 @@ pub fn run() -> i32 {
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
+        state.tick_awake();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);
