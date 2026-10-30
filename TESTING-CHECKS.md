@@ -1,6 +1,6 @@
 # Checklist
 
-384 checks in TESTING.md, 380 left for a person.
+388 checks in TESTING.md, 384 left for a person.
 
 ## 1. Start
 
@@ -541,3 +541,10 @@
 - [ ] **52.1** Add an "approval" part (shelf) between two jobs and start the net → The run waits at the approval part and a notification arrives 〔未訳〕
 - [ ] **52.2** Press "承認する" on the run's toolbar → The part ends 正常 and the next job runs 〔未訳〕
 - [ ] **52.3** Start again and press "却下する" (or `koyomi approve-step <run> <job> --no`) → The part ends 異常, the run fails and the next job does not run 〔未訳〕
+
+## 53. 期間をまとめて流す
+
+- [ ] **53.1** `koyomi run <net> --date 2026-05-01..2026-05-03 --dry` → The commands for each of the three days are printed 〔未訳〕
+- [ ] **53.2** Run it without `--dry` → The days run one after another, each started after the last ended 〔未訳〕
+- [ ] **53.3** Make one day fail, then run the range → It stops at that day with a non-zero exit 〔未訳〕
+- [ ] **53.4** `--date 2026-05-03..2026-05-01` → Refused: the range ends before it starts 〔未訳〕

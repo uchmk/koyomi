@@ -29,9 +29,9 @@ usage: koyomi [--version | --help | env]
        koyomi list [--group <group>] the definitions and where each stands (--group: that group's only)
        koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
-       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD] [--dry] [--wait]
+       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD]] [--dry] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
-                                     --date: for that business day; --dry: start nothing, print each job's
+                                     --date: for that business day, or each day of A..B in turn; --dry: start nothing, print each job's
                                      command with the dates written out; --wait: stay until it ends)
        koyomi rerun <run> [--from <job>] [--wait]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too)
@@ -690,7 +690,7 @@ fn run_cmd(args: &[String]) -> i32 {
             "--dry" => dry = true,
             "--date" => match rest.next() {
                 Some(d) => date = Some(d.clone()),
-                None => return usage("--date takes YYYY-MM-DD"),
+                None => return usage("--date takes YYYY-MM-DD or YYYY-MM-DD..YYYY-MM-DD"),
             },
             "--from" => match rest.next() {
                 Some(j) => from = Some(j.clone()),
@@ -699,6 +699,31 @@ fn run_cmd(args: &[String]) -> i32 {
             "--wait" => wait = true,
             _ => return usage("run takes --from, --date, --dry and --wait"),
         }
+    }
+    if let Some(range) = date.as_deref().filter(|d| d.contains("..")) {
+        let days = match day_range(range) {
+            Ok(d) => d,
+            Err(e) => return usage(&e),
+        };
+        // One run per day, each to its end before the next starts (a net runs once at a time); stop at the first failure.
+        for day in days {
+            let date = Some(day.to_string());
+            let code = if dry {
+                match client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry }) {
+                    Ok(t) => {
+                        out(t.trim_end(), false);
+                        0
+                    }
+                    Err(e) => fail(&e),
+                }
+            } else {
+                started(client::call(&Request::Run { id: id.clone(), date, from: from.clone(), dry }), true)
+            };
+            if code != 0 {
+                return code;
+            }
+        }
+        return 0;
     }
     if dry {
         return match client::call(&Request::Run { id, date, from, dry }) {
@@ -710,6 +735,21 @@ fn run_cmd(args: &[String]) -> i32 {
         };
     }
     started(client::call(&Request::Run { id, date, from, dry }), wait)
+}
+
+/// The days of `A..B` (both ends included, at most a year).
+fn day_range(text: &str) -> Result<Vec<NaiveDate>, String> {
+    let (a, b) = text.split_once("..").ok_or("--date range is A..B")?;
+    let day = |t: &str| NaiveDate::parse_from_str(t.trim(), "%Y-%m-%d").map_err(|_| format!("not a date: {t}"));
+    let (a, b) = (day(a)?, day(b)?);
+    if b < a {
+        return Err("--date range ends before it starts".to_owned());
+    }
+    let days: Vec<NaiveDate> = a.iter_days().take_while(|d| *d <= b).take(367).collect();
+    if days.len() > 366 {
+        return Err("--date range is longer than a year".to_owned());
+    }
+    Ok(days)
 }
 
 fn rerun_cmd(args: &[String]) -> i32 {
@@ -1261,5 +1301,25 @@ fn startup_cmd(args: &[String]) -> i32 {
             out(&format!("koyomi: {e}"), true);
             1
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::day_range;
+
+    #[test]
+    fn a_date_range_lists_both_ends() {
+        let d = day_range("2026-02-27..2026-03-02").unwrap();
+        let t: Vec<String> = d.iter().map(|x| x.to_string()).collect();
+        assert_eq!(t, ["2026-02-27", "2026-02-28", "2026-03-01", "2026-03-02"]);
+        assert_eq!(day_range("2026-05-01..2026-05-01").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_bad_date_range_is_refused() {
+        assert!(day_range("2026-05-02..2026-05-01").is_err());
+        assert!(day_range("x..2026-05-01").is_err());
+        assert!(day_range("2020-01-01..2026-01-01").is_err());
     }
 }
