@@ -606,3 +606,11 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 45.2 | Click a command | It is on the clipboard; the panel stays |
 | 45.3 | Press Esc, then Ctrl+Shift+P > "First steps" | Esc closes it; the palette opens it again |
 | 45.4 | Start the window with at least one job net | No panel; the palette entry opens nothing |
+
+## 46. 用語のやさしい言い方
+
+| # | Do | Expect |
+|---|---|---|
+| 46.1 | Set `easy = true` in common.toml | The tree's new button reads "+ New job flow (jobnet)" with a dotted underline; hovering explains it |
+| 46.2 | Select an unapproved net | The approve button reads "check and allow (approve)…" with the same hover |
+| 46.3 | Set `easy = false` | The usual words come back, no underline |

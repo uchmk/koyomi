@@ -162,6 +162,7 @@ jobnet = "Child jobnet"
 
 [tree]
 new = "+ New jobnet"
+new_easy = "+ New {0}"
 new_here = "New jobnet in this group"
 empty = "No definitions. Make one with \"+ New jobnet\" above, or put <group>/<name>.toml in the jobnets folder"
 starting = "Starting the engine…"

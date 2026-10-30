@@ -197,6 +197,8 @@ pub struct Browser {
     vertical: bool,
     flow: Option<kept::Writer>,
     asking: Option<Approval>,
+    /// The language when the plain wording is on (`easy = true` in common.toml).
+    pub easy: Option<String>,
     /// The run a kill is being asked about.
     killing: Option<String>,
     focus: usize,
@@ -326,6 +328,7 @@ impl Browser {
             editors: Vec::new(),
             port: None,
             make: None,
+            easy: None,
         }
     }
 
@@ -1079,8 +1082,15 @@ impl Browser {
     fn tree(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         if self.snap.is_some() {
-            let r = ui.button(t.tr("tree.new"));
-            ito_a11y::say(&r, Role::Button, t.tr("tree.new"));
+            let label = match &self.easy {
+                Some(lang) => t.trf("tree.new_easy", &[&crate::glossary::GLOSSARY.label("jobnet", lang, true, "")]),
+                None => t.tr("tree.new").to_owned(),
+            };
+            let r = ui.button(&label);
+            ito_a11y::say(&r, Role::Button, &label);
+            if let Some(lang) = &self.easy {
+                ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "jobnet", lang, "tree");
+            }
             if r.clicked() {
                 self.new_box(None);
             }
@@ -1462,8 +1472,15 @@ impl Browser {
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let can = def.standing == Standing::Unconfirmed && !self.blocked();
-            let r = ui.add_enabled(can, egui::Button::new(t.tr("confirm.approve")));
-            ito_a11y::say(&r, Role::Button, t.tr("confirm.approve"));
+            let label = match &self.easy {
+                Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
+                None => t.tr("confirm.approve").to_owned(),
+            };
+            let r = ui.add_enabled(can, egui::Button::new(&label));
+            ito_a11y::say(&r, Role::Button, &label);
+            if let Some(lang) = &self.easy {
+                ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
+            }
             if r.clicked() {
                 self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
                 self.focus = 0;
@@ -1733,6 +1750,7 @@ mod tests {
             editors: Vec::new(),
             port: None,
             make: None,
+            easy: None,
         }
     }
 

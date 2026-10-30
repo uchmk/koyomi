@@ -15,6 +15,7 @@ mod cli;
 mod client;
 mod engine;
 mod envreport;
+mod glossary;
 mod help;
 mod i18n;
 mod icon;
@@ -677,6 +678,7 @@ impl eframe::App for App {
             .frame(egui::Frame::NONE.fill(ito_theme::colors().bg))
             .show(ui, |ui| self.title_bar(ui));
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
+        self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
         self.notice_list(&ctx);
         if !taking {
