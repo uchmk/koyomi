@@ -40,6 +40,10 @@ enum Msg {
     Down(String),
     /// The engine's answer to a request the window sent.
     Answer(Request, Result<String, String>),
+    /// File work done off the UI thread: a line for under the detail, or why not.
+    Done(Result<String, String>),
+    /// The file the 取り込む box was told to read: its text, or why it could not be read.
+    PortText(Result<String, String>),
 }
 
 pub struct Approval {
@@ -216,6 +220,8 @@ impl History {
 
 pub struct Browser {
     rx: Receiver<Msg>,
+    /// Where threads started by [`Browser::background`] report, and the window to wake.
+    io: (Sender<Msg>, egui::Context),
     tx: Sender<Request>,
     watch: Watch,
     snap: Option<Snapshot>,
@@ -293,6 +299,7 @@ impl Browser {
         let (tx, rx_req) = mpsc::channel::<Request>();
         let watch: Watch = Arc::default();
         let seen = watch.clone();
+        let io = (tx_msg.clone(), ctx.clone());
         let ctx = ctx.clone();
         std::thread::spawn(move || loop {
             let send = |m: Msg| {
@@ -349,6 +356,7 @@ impl Browser {
         let flow = path.map(|p| kept::Writer::new(p, true));
         Browser {
             rx,
+            io,
             tx,
             watch,
             snap: None,
@@ -427,6 +435,8 @@ impl Browser {
                     self.runs = r.runs;
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
+                Msg::Done(r) => self.result = Some(r),
+                Msg::PortText(r) => self.port_text(r),
                 Msg::Down(e) => {
                     self.starting = false;
                     self.down = Some(e);
@@ -668,7 +678,8 @@ impl Browser {
     /// `exports/<YYYYMMDD-HHMMSS>.toml` in the state folder. The path is told
     /// under the detail.
     pub fn export(&mut self, t: &ito_i18n::Table) {
-        self.result = Some(export_all().map(|(path, n)| t.trf("port.exported", &[&path, &n.to_string()])));
+        let said = t.tr("port.exported").to_owned();
+        Self::background(&self.io, move || export_all().map(|(path, n)| said.replace("{0}", &path).replace("{1}", &n.to_string())));
     }
 
     /// The palette's 取り込む: opens the box with the path field.
@@ -915,17 +926,37 @@ impl Browser {
         }
     }
 
-    /// Reads the file in the path field and asks the engine what it would do.
+    /// Runs file work on its own thread; the line it returns shows under the detail.
+    fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<String, String> + Send + 'static) {
+        let (tx, ctx) = io.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::Done(work()));
+            ctx.request_repaint();
+        });
+    }
+
+    /// Reads the file in the path field (off the UI thread); [`Browser::port_text`] gets the text.
     fn port_read(&mut self) {
         let Some(p) = &mut self.port else { return };
         let path = p.path.trim().trim_matches('"').to_owned();
         if path.is_empty() {
             return;
         }
-        match std::fs::read(&path)
-            .map_err(|e| e.to_string())
-            .and_then(|b| crate::cli::port_text(&b).ok_or_else(|| "UTF-8 でも UTF-16 でもない".to_owned()))
-        {
+        let (tx, ctx) = self.io.clone();
+        std::thread::spawn(move || {
+            let read = std::fs::read(&path)
+                .map_err(|e| e.to_string())
+                .and_then(|b| crate::cli::port_text(&b).ok_or_else(|| "UTF-8 でも UTF-16 でもない".to_owned()))
+                .map_err(|e| format!("{path} を読めない: {e}"));
+            let _ = tx.send(Msg::PortText(read));
+            ctx.request_repaint();
+        });
+    }
+
+    /// The file the box read: ask the engine what importing it would do.
+    fn port_text(&mut self, read: Result<String, String>) {
+        let Some(p) = &mut self.port else { return };
+        match read {
             Ok(text) => {
                 p.error = None;
                 p.text = Some(text.clone());
@@ -933,7 +964,7 @@ impl Browser {
                 self.focus = 0;
                 let _ = self.tx.send(Request::Import { text, dry_run: true, on_conflict: None });
             }
-            Err(e) => p.error = Some(format!("{path} を読めない: {e}")),
+            Err(e) => p.error = Some(e),
         }
     }
 
@@ -1838,7 +1869,8 @@ impl Browser {
             let mut shown = h.filtered();
             shown.reverse();
             let text = crate::csv::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
-            self.result = Some(export_csv("history", &text).map(|path| t.trf("run.history_csv_done", &[&path])));
+            let said = t.tr("run.history_csv_done").to_owned();
+            Self::background(&self.io, move || export_csv("history", &text).map(|path| said.replace("{0}", &path)));
         }
         if search {
             let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
@@ -2393,11 +2425,12 @@ mod tests {
     }
 
     fn quiet(defs: Vec<Def>) -> Browser {
-        let (_, rx) = mpsc::channel();
+        let (tx_msg, rx) = mpsc::channel();
         let (tx, _) = mpsc::channel();
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
             rx,
+            io: (tx_msg, egui::Context::default()),
             tx,
             watch: Arc::default(),
             snap,
