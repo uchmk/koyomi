@@ -2873,6 +2873,43 @@ mod tests {
         assert!(!shown(&s, "あと 59 日"), "a day count alone keeps it folded");
     }
 
+    /// The history filters say what each box narrows by, on the row of the 検索 button.
+    #[test]
+    fn the_history_filters_are_labelled() {
+        let mut b = quiet(defs());
+        b.open_history();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let row = |s: &Screen, w: &str| s.nodes.values().filter(|(l, _)| l == w).map(|(_, r)| r.center().y).collect::<Vec<_>>();
+        let search = row(&s, "検索");
+        assert_eq!(search.len(), 1);
+        for w in ["ジョブネット", "状態"] {
+            assert!(row(&s, w).iter().any(|y| (y - search[0]).abs() < 8.0), "{w} beside the filters");
+        }
+    }
+
+    /// A net's page is split into 図, 実行のタイミング, 設定 and ジョブ, in that order.
+    #[test]
+    fn the_net_page_has_its_four_sections() {
+        let dir = std::env::temp_dir().join(format!("koyomi-view-sections-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("夜間.toml");
+        std::fs::write(&p, format!("wake = true\n{NET}")).unwrap();
+        let def = read_def(&p, "試験", "夜間", &Store::default());
+        let selected = Some(def.id.clone());
+        let mut b = quiet(vec![def]);
+        b.selected = selected;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let y = |w: &str| {
+            let ys: Vec<f32> = s.nodes.values().filter(|(l, _)| l == w).map(|(_, r)| r.center().y).collect();
+            assert!(!ys.is_empty(), "{w} is a heading: {:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+            ys.into_iter().fold(f32::MIN, f32::max)
+        };
+        let ys = ["図", "実行のタイミング", "設定", "ジョブ"].map(y);
+        assert!(ys.windows(2).all(|w| w[0] < w[1]), "in order: {ys:?}");
+    }
+
     fn key(k: egui::Key) -> Vec<egui::Event> {
         let e = |pressed| egui::Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
         vec![e(true), e(false)]
