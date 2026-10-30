@@ -308,6 +308,14 @@ pub enum Part {
     /// Runs `run` (or `shell` + `script`).
     #[default]
     Job,
+    /// 繰り返し: runs `run` (or `shell` + `script`) once per file matching `file`, or `count`
+    /// times, one after another; each pass gets `KOYOMI_FILE` and `KOYOMI_INDEX`.
+    Loop {
+        #[serde(default)]
+        file: Option<String>,
+        #[serde(default)]
+        count: Option<u32>,
+    },
     /// 分岐: ends at once with its one predecessor's exit code; `code` lines choose the way.
     Branch,
     /// 待ち合わせ: ends when its lines are met, all of them or any one.
@@ -340,10 +348,16 @@ impl Part {
         matches!(self, Part::Job)
     }
 
+    /// Runs a process: a job, or a loop of them. It takes a slot and has `run`.
+    pub fn runs_process(&self) -> bool {
+        matches!(self, Part::Job | Part::Loop { .. })
+    }
+
     /// `job`, `branch` …: the `kind` as written, and the key of its word.
     pub fn key(&self) -> &'static str {
         match self {
             Part::Job => "job",
+            Part::Loop { .. } => "loop",
             Part::Branch => "branch",
             Part::Join { .. } => "join",
             Part::Time { .. } => "time",
@@ -524,6 +538,7 @@ struct RawJob {
     days: Field,
     file: Field,
     settle: Field,
+    count: Field,
     to: Field,
     shell: Field,
     script: Field,
@@ -745,8 +760,9 @@ impl Checker<'_> {
 
     /// `kind` and the fields that go with it, as a [`Part`].
     fn part(&mut self, j: &RawJob, start: usize) -> Part {
-        let kind =
-            self.choice(&j.kind, "kind", &["job", "branch", "join", "time", "file", "notify", "approval", "jobnet"]).unwrap_or("job");
+        let kind = self
+            .choice(&j.kind, "kind", &["job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet"])
+            .unwrap_or("job");
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
         }
@@ -754,14 +770,43 @@ impl Checker<'_> {
             self.only(&j.at, "at", "\"time\"");
             self.only(&j.days, "days", "\"time\"");
         }
+        if kind != "file" && kind != "loop" {
+            self.only(&j.file, "file", "\"file\" か \"loop\"");
+        }
         if kind != "file" {
-            self.only(&j.file, "file", "\"file\"");
             self.only(&j.settle, "settle", "\"file\"");
+        }
+        if kind != "loop" {
+            self.only(&j.count, "count", "\"loop\"");
         }
         if kind != "jobnet" {
             self.only(&j.use_, "use", "\"jobnet\"");
         }
         match kind {
+            "loop" => {
+                let file = self.string(&j.file, "file").filter(|f| {
+                    let ok = !f.trim().is_empty();
+                    if !ok {
+                        self.add(j.file.as_ref().map_or(start, |f| f.span().start), "file が空");
+                    }
+                    ok
+                });
+                let count = j.count.as_ref().and_then(|f| match f.get_ref().as_integer() {
+                    Some(n) if (1..=10_000).contains(&n) => Some(n as u32),
+                    _ => {
+                        self.add(f.span().start, "count は 1 から 10000 までの整数で書く（何回くり返すか）");
+                        None
+                    }
+                });
+                match (&j.file, &j.count) {
+                    (Some(_), Some(f)) => self.add(f.span().start, "kind = \"loop\" には file か count のどちらか 1 つだけ書く"),
+                    (None, None) => {
+                        self.add(start, "kind = \"loop\" には file（例: file = 'C:\\in\\*.csv'）か count（例: count = 3）が要る")
+                    }
+                    _ => {}
+                }
+                Part::Loop { file, count }
+            }
             "branch" => Part::Branch,
             "join" => {
                 let wait = match self.choice(&j.wait, "wait", &["all", "any"]) {
@@ -1528,7 +1573,7 @@ impl Checker<'_> {
                     }
                 },
             };
-            let (run, shell, script, dir, retry, judge) = if part.is_job() {
+            let (run, shell, script, dir, retry, judge) = if part.runs_process() {
                 let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
                 let script = self.string(&j.script, "script");
                 // Either `run`, or a shell with its script: never both, never a shell line in `run`.
@@ -1549,7 +1594,11 @@ impl Checker<'_> {
                         self.run(&j.run, start)
                     }
                     // A refused `kind` is one problem, not two.
-                    (None, None) if j.run.is_none() && j.kind.as_ref().is_some_and(|f| f.get_ref().as_str() != Some("job")) => Vec::new(),
+                    (None, None)
+                        if j.run.is_none() && part.is_job() && j.kind.as_ref().is_some_and(|f| f.get_ref().as_str() != Some("job")) =>
+                    {
+                        Vec::new()
+                    }
                     (None, None) => self.run(&j.run, start),
                 };
                 let dir = self.string(&j.dir, "dir");
@@ -1560,7 +1609,7 @@ impl Checker<'_> {
                 for (field, name) in
                     [(&j.run, "run"), (&j.shell, "shell"), (&j.script, "script"), (&j.dir, "dir"), (&j.retry, "retry"), (&j.judge, "judge")]
                 {
-                    self.only(field, name, "\"job\"");
+                    self.only(field, name, "\"job\" か \"loop\"");
                 }
                 (Vec::new(), None, None, None, None, None)
             };
@@ -1571,18 +1620,18 @@ impl Checker<'_> {
                     self.add(start, format!("{name}: {e}"));
                 }
             }
-            let (env, encoding) = if part.is_job() {
+            let (env, encoding) = if part.runs_process() {
                 let encoding = self.choice(&j.encoding, "encoding", &["auto", "sjis", "utf8"]).and_then(Encoding::of).unwrap_or_default();
                 (self.env(&j.env), encoding)
             } else {
-                self.only(&j.env, "env", "\"job\"");
-                self.only(&j.encoding, "encoding", "\"job\"");
+                self.only(&j.env, "env", "\"job\" か \"loop\"");
+                self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
-            let timeout = if part.is_job() || matches!(part, Part::File { .. }) {
+            let timeout = if part.runs_process() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
             } else {
-                self.only(&j.timeout, "timeout", "\"job\" か \"file\"");
+                self.only(&j.timeout, "timeout", "\"job\"・\"loop\"・\"file\"");
                 None
             };
             let after = self.after(&j.after);
@@ -1615,7 +1664,7 @@ impl Checker<'_> {
                 Part::Branch | Part::Join { .. } => (true, true),
                 Part::Time { .. } | Part::File { .. } | Part::Approval => (false, true),
                 Part::Notify => (true, false),
-                Part::Job | Part::Jobnet { .. } => (false, false),
+                Part::Job | Part::Loop { .. } | Part::Jobnet { .. } => (false, false),
             };
             if needs_after && job.after.is_empty() {
                 self.add(entry.span().start, format!("孤立した部品: {}（after が無い）", job.id));
@@ -2124,7 +2173,8 @@ exit 1'''
         assert_eq!(enc("encoding = \"auto\""), Encoding::Auto);
         let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
         assert_eq!(p("run = [\"x\"]\nencoding = \"cp932\""), ["a.toml の 5 行目: encoding は \"auto\"・\"sjis\"・\"utf8\" のどれか"]);
-        assert!(p("kind = \"notify\"\nencoding = \"sjis\"").contains(&"a.toml の 5 行目: encoding は kind = \"job\" にだけ書く".to_owned()));
+        assert!(p("kind = \"notify\"\nencoding = \"sjis\"")
+            .contains(&"a.toml の 5 行目: encoding は kind = \"job\" か \"loop\" にだけ書く".to_owned()));
     }
 
     #[test]
@@ -2274,6 +2324,30 @@ after = [{ job = \"way\", code = \"else\" }]
             Err(vec!["a.toml の 9 行目: settle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）".to_owned()])
         );
         assert_eq!(net("notify", ""), Ok(Part::Notify));
+        assert_eq!(
+            net("loop", "file = 'C:\\in\\*.csv'\nrun = [\"x\"]\n"),
+            Ok(Part::Loop { file: Some("C:\\in\\*.csv".into()), count: None })
+        );
+        assert_eq!(
+            net("loop", "count = 3\nrun = [\"x\"]\nretry = { count = 1, wait = \"1s\" }\ntimeout = \"1m\"\n"),
+            Ok(Part::Loop { file: None, count: Some(3) })
+        );
+        assert_eq!(
+            net("loop", "run = [\"x\"]\n"),
+            Err(
+                vec!["a.toml の 5 行目: kind = \"loop\" には file（例: file = 'C:\\in\\*.csv'）か count（例: count = 3）が要る".to_owned()]
+            )
+        );
+        assert_eq!(
+            net("loop", "file = \"a\"\ncount = 2\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 9 行目: kind = \"loop\" には file か count のどちらか 1 つだけ書く".to_owned()])
+        );
+        assert_eq!(
+            net("loop", "count = 0\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 8 行目: count は 1 から 10000 までの整数で書く（何回くり返すか）".to_owned()])
+        );
+        assert_eq!(net("loop", "count = 2\n"), Err(vec!["a.toml の 5 行目: run が無い".to_owned()]));
+        assert_eq!(net("job", "count = 2\nrun = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: count は kind = \"loop\" にだけ書く".to_owned()]));
         assert_eq!(net("jobnet", "use = \"共通/バックアップ\"\n"), Ok(Part::Jobnet { use_: "共通/バックアップ".into() }));
         assert_eq!(
             net("jobnet", ""),
@@ -2286,10 +2360,13 @@ after = [{ job = \"way\", code = \"else\" }]
                 "{u}"
             );
         }
-        assert_eq!(net("branch", "run = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: run は kind = \"job\" にだけ書く".to_owned()]));
+        assert_eq!(
+            net("branch", "run = [\"x\"]\n"),
+            Err(vec!["a.toml の 8 行目: run は kind = \"job\" か \"loop\" にだけ書く".to_owned()])
+        );
         assert_eq!(
             net("branch", "timeout = \"1m\"\n"),
-            Err(vec!["a.toml の 8 行目: timeout は kind = \"job\" か \"file\" にだけ書く".to_owned()])
+            Err(vec!["a.toml の 8 行目: timeout は kind = \"job\"・\"loop\"・\"file\" にだけ書く".to_owned()])
         );
         assert_eq!(net("branch", "wait = \"any\"\n"), Err(vec!["a.toml の 8 行目: wait は kind = \"join\" にだけ書く".to_owned()]));
         assert_eq!(
@@ -2303,7 +2380,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

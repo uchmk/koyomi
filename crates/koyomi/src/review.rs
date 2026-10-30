@@ -99,6 +99,14 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         }
         match &j.part {
             Part::Job => {}
+            Part::Loop { file, count } => {
+                if let Some(f) = file {
+                    out.push(format!("  {}: {f}", t.tr("review.loop_files")));
+                }
+                if let Some(n) = count {
+                    out.push(format!("  {}: {}", t.tr("review.loop_count"), t.trf("review.loop_times", &[&n.to_string()])));
+                }
+            }
             Part::Branch | Part::Notify | Part::Approval => continue,
             Part::Join { wait } => {
                 let how = t.tr(if *wait == Wait::All { "review.wait_all" } else { "review.wait_any" });

@@ -22,7 +22,7 @@ pub fn jobs<'a>(a: &'a Run, b: &'a Run) -> Vec<(&'a str, Option<&'a JobRun>, Opt
 
 /// Whether the job has a log to read: it is one that runs, and it started.
 pub fn has_log(j: &JobRun) -> bool {
-    j.part.is_job() && j.started.is_some()
+    j.part.runs_process() && j.started.is_some()
 }
 
 /// `+0:02:10`, `-0:00:05` or `±0:00:00`.

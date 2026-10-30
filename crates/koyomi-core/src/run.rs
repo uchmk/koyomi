@@ -576,7 +576,7 @@ impl Run {
 
     /// How many jobs run a process right now (a part that waits is not counted).
     pub fn running(&self) -> usize {
-        self.jobs.iter().filter(|j| j.state == State::Running && j.part.is_job()).count()
+        self.jobs.iter().filter(|j| j.state == State::Running && j.part.runs_process()).count()
     }
 
     /// The jobs the engine may start now: pending, and their lines are met.

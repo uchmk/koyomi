@@ -1,6 +1,6 @@
 # Checklist
 
-514 checks in TESTING.md, 510 left for a person.
+523 checks in TESTING.md, 519 left for a person.
 
 ## 1. Start
 
@@ -737,3 +737,15 @@
 - [ ] **74.8** `koyomi delete <id>` on a net another net uses → The nets that use it are printed; after `y` the engine refuses and says to change them first 〔未訳〕
 - [ ] **74.9** Rename a net while it runs → `実行中のため変えられない` 〔未訳〕
 - [ ] **74.10** With a net open in the editor, right-click a net → The three items are greyed out ("Close the editor first") 〔未訳〕
+
+## 75. 繰り返しの部品（`kind = "loop"`）
+
+- [ ] **75.1** A job with `kind = "loop"`, `file = 'C:\in\*.csv'`, `run = ["cmd.exe", "/c", "echo %KOYOMI_INDEX% %KOYOMI_FILE%"]`; put `b.csv` and `a.csv` in `C:\in`; start the net → The job ends 正常; its log has `▶ 1/2: …a.csv`, `1 …a.csv`, `▶ 2/2: …b.csv`, `2 …b.csv` 〔未訳〕
+- [ ] **75.2** The same with no file in the folder → 正常 at once; the log says no file matched and nothing ran 〔未訳〕
+- [ ] **75.3** `count = 3` instead of `file` → Three passes, `KOYOMI_INDEX` 1, 2, 3 〔未訳〕
+- [ ] **75.4** `count = 3` with a command that exits 3 on the second pass → 異常, the reason `2/3 回目で異常: 終了コード 3`; the third pass does not run 〔未訳〕
+- [ ] **75.5** Add `retry = { count = 1, wait = "1s" }` to 75.4 → The second pass is tried again once before the job ends 異常; the reason ends with `やり直し 1 回` 〔未訳〕
+- [ ] **75.6** Stop the job (強制終了) during a pass of a long loop → The pass is killed and no later pass starts 〔未訳〕
+- [ ] **75.7** Write both `file` and `count`, or neither → The definition does not load; the problem names the line and says to write one of them 〔未訳〕
+- [ ] **75.8** In the editor, drag 繰り返し from the shelf onto the canvas → A circle (it runs a process) with the file and count fields over the command fields; Save writes `kind = "loop"` 〔未訳〕
+- [ ] **75.9** `koyomi review <net>` with a loop → The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command 〔未訳〕

@@ -81,7 +81,7 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
         let on = selected == Some(j.id.as_str());
         let fill = if j.state == State::NotRun || j.state == State::Waiting { c.panel } else { colour(&c, j.state) };
         let stroke = Stroke::new(if on { 3.0 } else { 2.0 }, if on { c.fg } else { colour(&c, j.state) });
-        if j.part.is_job() {
+        if j.part.runs_process() {
             painter.circle(p, RADIUS, fill, stroke);
         } else {
             // A part is a square: it runs no process.

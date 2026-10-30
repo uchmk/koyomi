@@ -281,7 +281,7 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
     if !j.reason.is_empty() {
         add("run.reason", j.reason.clone());
     }
-    if j.part.is_job() {
+    if j.part.runs_process() {
         let cmd = j.command();
         if !cmd.is_empty() {
             add("run.command", cmd.join(" "));

@@ -708,7 +708,7 @@ impl Runner {
         for r in &mut self.runs {
             for job in r.ready() {
                 // A part runs no process: it takes no slot.
-                let is_job = r.job(&job).is_none_or(|j| j.part.is_job());
+                let is_job = r.job(&job).is_none_or(|j| j.part.runs_process());
                 if !is_job {
                     starts.push((r.id.clone(), job));
                 } else if running < limit {
@@ -725,7 +725,7 @@ impl Runner {
             let Some(j) = self.runs.iter().find(|r| r.id == run_id).and_then(|r| r.job(&job_id)) else { continue };
             let (part, timeout) = (j.part.clone(), j.timeout);
             match part {
-                Part::Job => self.start_job(&run_id, &job_id, now),
+                Part::Job | Part::Loop { .. } => self.start_job(&run_id, &job_id, now),
                 Part::Notify => {
                     self.notices.push((run_id.clone(), job_id.clone()));
                     over.extend(self.end_part(&run_id, &job_id, State::Ok, "通知した", None, now));
@@ -787,6 +787,12 @@ impl Runner {
             env: j.env.clone(),
             encoding: j.encoding,
             file: r.file_for(job_id),
+            each: match &j.part {
+                Part::Loop { file: Some(f), .. } => Some(Each::Files(f.clone())),
+                Part::Loop { count: Some(n), .. } => Some(Each::Count(*n)),
+                _ => None,
+            },
+            index: None,
             log,
             cap: self.config.log_max_bytes(),
         };
@@ -900,6 +906,7 @@ impl Runner {
     }
 }
 
+#[derive(Clone)]
 struct JobSpec {
     run: String,
     jobnet: String,
@@ -918,8 +925,21 @@ struct JobSpec {
     encoding: jobnet::Encoding,
     /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
     file: Option<String>,
+    /// A loop part's passes; `None` for a job, which runs once.
+    each: Option<Each>,
+    /// The pass of a loop, from 1: `KOYOMI_INDEX`.
+    index: Option<u32>,
     log: PathBuf,
     cap: u64,
+}
+
+/// What a loop part runs over.
+#[derive(Clone, Debug)]
+enum Each {
+    /// Once per file matching the pattern, by name.
+    Files(String),
+    /// This many times.
+    Count(u32),
 }
 
 /// The `encoding` of a job as ito-proc reads it.
@@ -978,14 +998,72 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
             return done(Outcome::Failed, e, 0);
         }
     };
+    let Some(each) = &job.each else {
+        let (outcome, reason, retried) = tries(job, (exe, args), &env, stop, why, &mut file, &mut size);
+        return done(outcome, reason, retried);
+    };
+    // A loop: the passes one after another, each with its own tries. An abnormal
+    // pass ends the loop; a 警告 pass is remembered and the loop goes on.
+    let passes: Vec<(u32, Option<String>)> = match each {
+        Each::Files(pattern) => {
+            super::files::find_files(pattern).into_iter().zip(1..).map(|((p, ..), i)| (i, Some(p.display().to_string()))).collect()
+        }
+        Each::Count(n) => (1..=*n).map(|i| (i, None)).collect(),
+    };
+    let total = passes.len();
+    if total == 0 {
+        let _ = writeln!(file, "! 合うファイルが無いので、1 回も動かさない");
+        return done(Outcome::Exited(0), String::new(), 0);
+    }
+    let mut retried = 0;
+    let mut warned = None;
+    for (i, f) in passes {
+        if stop.load(Ordering::SeqCst) {
+            let _ = writeln!(file, "! 強制終了");
+            return done(Outcome::Killed, String::new(), retried);
+        }
+        let mut pass = job.clone();
+        pass.index = Some(i);
+        if f.is_some() {
+            pass.file = f.clone();
+        }
+        let what = f.as_deref().map(|f| format!(": {f}")).unwrap_or_default();
+        let _ = writeln!(file, "▶ {i}/{total}{what}");
+        let (outcome, reason, r) = tries(&pass, (exe, args), &env, stop, why, &mut file, &mut size);
+        retried += r;
+        let of = format!("{i}/{total} 回目{}", f.as_deref().map(|f| format!("（{f}）")).unwrap_or_default());
+        match outcome {
+            Outcome::Exited(code) => match verdict(job.judge.as_ref(), code) {
+                State::Error => return done(Outcome::Failed, format!("{of}で異常: 終了コード {code}"), retried),
+                State::Ok => {}
+                _ => warned = warned.or(Some(code)),
+            },
+            Outcome::Failed => return done(Outcome::Failed, format!("{of}で異常: {reason}"), retried),
+            Outcome::Killed | Outcome::Timeout => return done(outcome, String::new(), retried),
+        }
+    }
+    done(Outcome::Exited(warned.unwrap_or(0)), String::new(), retried)
+}
+
+/// Runs the job's process: once, or again after each abnormal end while its
+/// `retry` allows. The last outcome, its reason and how many times it ran again.
+fn tries(
+    job: &JobSpec,
+    command: (&str, &[String]),
+    env: &Resolved,
+    stop: &Arc<AtomicBool>,
+    why: &Arc<AtomicU8>,
+    file: &mut std::fs::File,
+    size: &mut LogSize,
+) -> (Outcome, String, u32) {
     let (count, wait) = job.retry.map_or((0, 0), |r| (r.count, r.wait));
     let mut retried = 0;
     loop {
-        let (outcome, reason) = attempt(job, (exe, args), &env, stop, why, &mut file, &mut size);
+        let (outcome, reason) = attempt(job, command, env, stop, why, file, size);
         let abnormal =
             matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) == State::Error) || outcome == Outcome::Failed;
         if !abnormal || retried >= count {
-            return done(outcome, reason, retried);
+            return (outcome, reason, retried);
         }
         let _ = writeln!(file, "! やり直し ({}/{count}): {} 待つ", retried + 1, koyomi_core::duration::text(wait));
         // The wait, unless a person stops the job during it.
@@ -993,7 +1071,7 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
         loop {
             if stop.load(Ordering::SeqCst) {
                 let _ = writeln!(file, "! 強制終了");
-                return done(Outcome::Killed, String::new(), retried);
+                return (Outcome::Killed, String::new(), retried);
             }
             let now = Instant::now();
             if now >= until {
@@ -1091,6 +1169,9 @@ fn attempt(
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
+    }
+    if let Some(i) = job.index {
+        cmd.env("KOYOMI_INDEX", i.to_string());
     }
     cmd.envs(env.vars.iter().map(|(k, v)| (k, v)));
     let hidden: Vec<&str> = env.secrets.iter().map(String::as_str).collect();
@@ -1843,6 +1924,86 @@ id = \"a\"
         let got = f.file.clone().unwrap();
         assert!(got.ends_with("Sales.csv"), "{got}");
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), got);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_loop_runs_once_per_file_or_count_and_stops_at_an_abnormal_pass() {
+        let dir = scratch("loop");
+        let inbox = dir.join("in");
+        std::fs::create_dir_all(&inbox).unwrap();
+        std::fs::write(inbox.join("b.csv"), "2").unwrap();
+        std::fs::write(inbox.join("a.csv"), "1").unwrap();
+        std::fs::write(inbox.join("note.txt"), "x").unwrap();
+        let pattern = inbox.join("*.csv").display().to_string().replace('\\', "/");
+        let show = |var: &str| {
+            if cfg!(windows) {
+                echo(&format!("%KOYOMI_INDEX% %{var}%"))
+            } else {
+                format!("run = [\"sh\", \"-c\", \"echo $KOYOMI_INDEX ${var}\"]")
+            }
+        };
+        let stop_at_2 = if cfg!(windows) {
+            "run = [\"cmd.exe\", \"/c\", \"if %KOYOMI_INDEX%==2 (exit 3) else (echo %KOYOMI_INDEX%)\"]".to_owned()
+        } else {
+            "run = [\"sh\", \"-c\", \"[ $KOYOMI_INDEX = 2 ] && exit 3; echo $KOYOMI_INDEX\"]".to_owned()
+        };
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"files\"
+kind = \"loop\"
+file = \"{pattern}\"
+{}
+[[job]]
+id = \"times\"
+kind = \"loop\"
+count = 3
+{}
+after = [\"files\"]
+[[job]]
+id = \"none\"
+kind = \"loop\"
+file = \"{}\"
+{}
+after = [\"times\"]
+[[job]]
+id = \"bad\"
+kind = \"loop\"
+count = 3
+{stop_at_2}
+after = [\"none\"]
+",
+            show("KOYOMI_FILE"),
+            show("KOYOMI_INDEX"),
+            inbox.join("*.none").display().to_string().replace('\\', "/"),
+            echo("never"),
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        // Once per matching file, by name, each with its index and path.
+        let files = r.log_tail(&id, "files").unwrap();
+        let lines: Vec<&str> = files.lines().filter(|l| !l.starts_with('▶')).map(str::trim).collect();
+        assert_eq!(lines.len(), 2, "{files}");
+        assert!(lines[0].starts_with("1 ") && lines[0].ends_with("a.csv"), "{files}");
+        assert!(lines[1].starts_with("2 ") && lines[1].ends_with("b.csv"), "{files}");
+        assert!(files.contains("▶ 1/2: ") && files.contains("▶ 2/2: "), "{files}");
+        // Count times.
+        let times = r.log_tail(&id, "times").unwrap();
+        let lines: Vec<&str> = times.lines().filter(|l| !l.starts_with('▶')).map(str::trim).collect();
+        assert_eq!(lines, ["1 1", "2 2", "3 3"], "{times}");
+        assert_eq!(run.job("times").unwrap().state, State::Ok);
+        // No file: nothing runs, and that is fine.
+        assert_eq!(run.job("none").unwrap().state, State::Ok);
+        assert!(!r.log_tail(&id, "none").unwrap().contains("never"));
+        // An abnormal pass ends the loop as 異常 and says which pass.
+        let bad = run.job("bad").unwrap();
+        assert_eq!(bad.state, State::Error);
+        assert!(bad.reason.contains("2/3 回目で異常: 終了コード 3"), "{:?}", bad.reason);
+        assert!(!r.log_tail(&id, "bad").unwrap().contains("▶ 3/3"));
+        assert_eq!(run.state, State::Error);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

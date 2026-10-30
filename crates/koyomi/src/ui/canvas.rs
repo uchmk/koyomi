@@ -107,6 +107,8 @@ pub struct Fields {
     pub days: String,
     pub file: String,
     pub settle: String,
+    /// A loop's `count`; its `file` is [`Fields::file`].
+    pub count: String,
     pub use_: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
@@ -146,6 +148,10 @@ impl Fields {
                 f.file = file.clone();
                 f.settle = settle.map(duration::text).unwrap_or_default();
             }
+            Part::Loop { file, count } => {
+                f.file = file.clone().unwrap_or_default();
+                f.count = count.map(|n| n.to_string()).unwrap_or_default();
+            }
             Part::Jobnet { use_ } => f.use_ = use_.clone(),
             _ => {}
         }
@@ -171,7 +177,23 @@ impl Fields {
             }
         };
         match &job.part {
-            Part::Job => {
+            Part::Job | Part::Loop { .. } => {
+                if matches!(job.part, Part::Loop { .. }) {
+                    let file = opt(&self.file);
+                    let count = match self.count.trim() {
+                        "" => None,
+                        n => Some(
+                            n.parse::<u32>()
+                                .ok()
+                                .filter(|c| (1..=10_000).contains(c))
+                                .ok_or_else(|| format!("count は 1 から 10000 までの数で書く: \"{n}\""))?,
+                        ),
+                    };
+                    if file.is_some() == count.is_some() {
+                        return Err("繰り返しには file か count のどちらか 1 つを書く".into());
+                    }
+                    out.part = Part::Loop { file, count };
+                }
                 out.run = self.run.lines().map(str::trim).filter(|l| !l.is_empty()).map(String::from).collect();
                 out.dir = opt(&self.dir);
                 out.timeout = opt_secs(&self.timeout)?;
@@ -309,9 +331,10 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order.
-pub fn shelf() -> [Part; 8] {
+pub fn shelf() -> [Part; 9] {
     [
         Part::Job,
+        Part::Loop { file: None, count: Some(2) },
         Part::Jobnet { use_: String::new() },
         Part::Branch,
         Part::Join { wait: Wait::All },
@@ -325,6 +348,7 @@ pub fn shelf() -> [Part; 8] {
 fn prefix(p: &Part) -> &'static str {
     match p {
         Part::Job => "job",
+        Part::Loop { .. } => "loop",
         Part::Branch => "branch",
         Part::Join { .. } => "join",
         Part::Time { .. } => "time",
@@ -1083,7 +1107,11 @@ impl Editor {
                 ito_a11y::say(&r, Role::Label, t.tr("field.note"));
                 changed |= r.changed();
                 match part {
-                    Part::Job => {
+                    Part::Job | Part::Loop { .. } => {
+                        if matches!(part, Part::Loop { .. }) {
+                            changed |= field(ui, "field.loop_file", &mut f.file);
+                            changed |= field(ui, "field.count", &mut f.count);
+                        }
                         ui.label(t.tr("field.run"));
                         let r = ui.add(egui::TextEdit::multiline(&mut f.run).desired_rows(3).desired_width(f32::INFINITY));
                         ito_a11y::say(&r, Role::Label, t.tr("field.run"));
