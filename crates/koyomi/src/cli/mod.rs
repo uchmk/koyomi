@@ -1030,8 +1030,8 @@ fn status(args: &[String]) -> i32 {
         if let Some(avg) = koyomi_core::run::average_duration(&past, &r.jobnet, 10) {
             let end = r.expected_end(avg, now).map(show::hms);
             let line = match end {
-                Some(e) => t.trf("run.average_end", &[&show::duration(avg), &e]),
-                None => t.trf("run.average", &[&show::duration(avg)]),
+                Some(e) => t.trf("run.average_end", &[&show::duration(&t, avg), &e]),
+                None => t.trf("run.average", &[&show::duration(&t, avg)]),
             };
             out(&format!("  {line}"), false);
         }

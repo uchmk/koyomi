@@ -11,9 +11,9 @@ pub fn rate(r: &Row) -> String {
     r.rate.map_or_else(|| "-".to_owned(), |p| format!("{p}%"))
 }
 
-/// `0:01:30`, or `-` when no run ended 正常.
-pub fn average(r: &Row) -> String {
-    r.average.map_or_else(|| "-".to_owned(), |s| show::duration(chrono::Duration::seconds(s)))
+/// `1分30秒`, or `-` when no run ended 正常.
+pub fn average(t: &Table, r: &Row) -> String {
+    r.average.map_or_else(|| "-".to_owned(), |s| show::duration(t, chrono::Duration::seconds(s)))
 }
 
 /// `a×3 b×1`: the jobs that failed most; empty when none failed.
@@ -21,9 +21,9 @@ pub fn worst(r: &Row) -> String {
     r.worst.iter().map(|f| format!("{}×{}", f.id, f.times)).collect::<Vec<_>>().join(" ")
 }
 
-/// One line a net: `group/name  runs 12  rate 92%  usual 0:01:30  failing: a×3`.
+/// One line a net: `group/name  runs 12  rate 92%  usual 1 min 30 s  failing: a×3`.
 pub fn line(t: &Table, r: &Row) -> String {
-    let mut s = t.trf("report.line", &[&r.jobnet, &r.runs.to_string(), &rate(r), &average(r)]);
+    let mut s = t.trf("report.line", &[&r.jobnet, &r.runs.to_string(), &rate(r), &average(t, r)]);
     if !r.worst.is_empty() {
         s.push_str(&format!("  {}", t.trf("report.worst", &[&worst(r)])));
     }
@@ -57,7 +57,7 @@ mod tests {
             average: Some(90),
             worst: vec![Failing { id: "a".into(), times: 3 }],
         };
-        assert_eq!(line(&t, &r), "g/n  12 回  成功 92%  いつもは 0:01:30  異常が多いジョブ: a×3");
+        assert_eq!(line(&t, &r), "g/n  12 回  成功 92%  いつもは 1分30秒  異常が多いジョブ: a×3");
         r.rate = None;
         r.average = None;
         r.worst.clear();

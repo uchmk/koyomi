@@ -200,7 +200,7 @@ pub fn delay_words(
         }
         Delay::Slow => {
             let so_far = late::begun(r).map_or(Duration::zero(), |b| now - b);
-            t.trf("notify.late_slow", &[&r.title, &show::duration(usual.unwrap_or_default()), &show::duration(so_far)])
+            t.trf("notify.late_slow", &[&r.title, &show::duration(t, usual.unwrap_or_default()), &show::duration(t, so_far)])
         }
     };
     (
@@ -460,7 +460,7 @@ mod tests {
         let (event, title, body) = words(&t, &r);
         assert_eq!(event, "failed");
         assert_eq!(title, "✕ 異常終了  月次締め");
-        assert!(body.starts_with("✕ 異常終了  転記  09:00:02–09:00:05  0:00:03"), "{body}");
+        assert!(body.starts_with("✕ 異常終了  転記  09:00:02–09:00:05  3秒"), "{body}");
         assert!(body.ends_with("\n20261030-090000-00  2026-10-30"), "{body}");
         assert!(!body.contains("正常終了"), "{body}");
 
@@ -508,7 +508,7 @@ r  2026-10-30"
         let (_, _, body) = delay_words(&t, &net, &r, Delay::End, None, now);
         assert!(body.starts_with("夜間: 10/31 6:00 を過ぎても"), "another day says the day: {body}");
         let (_, _, body) = delay_words(&t, &net, &r, Delay::Slow, Some(chrono::Duration::minutes(20)), at("2026-10-30 22:55:00"));
-        assert!(body.starts_with("夜間: いつもは 0:20:00、もう 0:40:00 動いている"), "{body}");
+        assert!(body.starts_with("夜間: いつもは 20分、もう 40分 動いている"), "{body}");
         let (event, title, body) = pending_words(&t, "g/n", "夜間", at("2026-10-30 22:00:00"), at("2026-10-30 22:10:00"), now);
         assert_eq!((event, title.as_str()), ("failed", "⏰ 遅れ  夜間"));
         assert_eq!(

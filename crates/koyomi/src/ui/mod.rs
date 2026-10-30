@@ -1755,7 +1755,7 @@ impl Browser {
                     ui.label(planned);
                     ui.label("");
                     ui.label("");
-                    ui.label(average(id).map(|a| t.trf("today.average", &[&show::duration(a)])).unwrap_or_default());
+                    ui.label(average(id).map(|a| t.trf("today.average", &[&show::duration(t, a)])).unwrap_or_default());
                     ui.label(next_of(id, *at));
                     ui.end_row();
                 }
@@ -1766,11 +1766,11 @@ impl Browser {
                     let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
                     let planned = run.planned.map(show::hms).unwrap_or_default();
                     let ended = run.ended.map(show::hms).unwrap_or_default();
-                    let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(a)]));
+                    let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(t, a)]));
                     let took = match (run.duration(), &usual) {
-                        (Some(d), _) => show::duration(d),
-                        (None, Some(u)) => format!("{}… {u}", show::duration(now - run.started)),
-                        (None, None) => format!("{}…", show::duration(now - run.started)),
+                        (Some(d), _) => show::duration(t, d),
+                        (None, Some(u)) => format!("{}… {u}", show::duration(t, now - run.started)),
+                        (None, None) => format!("{}…", show::duration(t, now - run.started)),
                     };
                     let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
                     let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
@@ -2101,7 +2101,7 @@ impl Browser {
             for run in rows {
                 let colour = graph::colour(&c, run.state);
                 let ended = run.ended.map(show::hms).unwrap_or_default();
-                let took = run.duration().map(show::duration).unwrap_or_default();
+                let took = run.duration().map(|d| show::duration(t, d)).unwrap_or_default();
                 let on = self.run_sel.as_deref() == Some(run.id.as_str());
                 ui.label(run.started.date().to_string());
                 ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
@@ -2331,7 +2331,7 @@ impl Browser {
                     (n, Some(r)) => format!("{n}/{}", r.count),
                     (n, None) => n.to_string(),
                 });
-                ui.label(j.duration().map(show::duration).unwrap_or_default());
+                ui.label(j.duration().map(|d| show::duration(t, d)).unwrap_or_default());
                 ui.label(koyomi_core::run::tidy_reason(&j.reason));
                 ui.end_row();
             }

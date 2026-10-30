@@ -24,10 +24,9 @@ pub fn hms(at: NaiveDateTime) -> String {
     at.format("%H:%M:%S").to_string()
 }
 
-/// `h:mm:ss`.
-pub fn duration(d: chrono::Duration) -> String {
-    let s = d.num_seconds().max(0);
-    format!("{}:{:02}:{:02}", s / 3600, (s / 60) % 60, s % 60)
+/// `41分`, `1時間5分`, `12秒` (`41 min` … in English): the two largest units.
+pub fn duration(t: &Table, d: chrono::Duration) -> String {
+    ito_common::text::duration_words(d.to_std().unwrap_or_default(), t.tr("app.lang"))
 }
 
 /// `09:30:00–09:31:02` or `09:30:00–` while it goes on.
@@ -45,7 +44,7 @@ pub fn run_line(t: &Table, r: &Run) -> String {
 }
 
 /// The run's heading in two parts: the state and the name to set big (`✓ 正常終了  月次締め`),
-/// and the rest for one small line under it (`#12  2026-10-30  09:30:00–09:31:02  1:02`).
+/// and the rest for one small line under it (`#12  2026-10-30  09:30:00–09:31:02  1分2秒`).
 pub fn run_head(t: &Table, r: &Run) -> (String, String) {
     (format!("{}  {}", tag(t, r.state), r.title), format!("{}  {}{}", r.id, r.date, run_tail(t, r)))
 }
@@ -60,7 +59,7 @@ fn run_tail(t: &Table, r: &Run) -> String {
     } else {
         out.push_str(&format!("  {}", span(Some(r.started), r.ended)));
         if let Some(d) = r.duration() {
-            out.push_str(&format!("  {}", duration(d)));
+            out.push_str(&format!("  {}", duration(t, d)));
         }
     }
     for d in &r.delays {
@@ -255,7 +254,7 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
         line.push_str(&format!("  {times}"));
     }
     if let Some(d) = j.duration() {
-        line.push_str(&format!("  {}", duration(d)));
+        line.push_str(&format!("  {}", duration(t, d)));
     }
     if !j.reason.is_empty() {
         line.push_str(&format!("  {}", koyomi_core::run::tidy_reason(&j.reason)));
@@ -294,7 +293,7 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
         add("run.end", e.format("%Y-%m-%d %H:%M:%S").to_string());
     }
     if let Some(d) = j.duration() {
-        add("run.took", duration(d));
+        add("run.took", duration(t, d));
     }
     if let Some(x) = j.exit {
         add("run.exit", x.to_string());
@@ -528,8 +527,13 @@ run = [\"x\"]
     }
 
     #[test]
-    fn a_duration_reads_as_h_mm_ss() {
-        assert_eq!(duration(chrono::Duration::seconds(3723)), "1:02:03");
-        assert_eq!(duration(chrono::Duration::seconds(5)), "0:00:05");
+    fn a_duration_reads_in_words() {
+        let (ja, _) = crate::i18n::table("ja");
+        let (en, _) = crate::i18n::table("en");
+        assert_eq!(duration(&ja, chrono::Duration::seconds(3723)), "1時間2分");
+        assert_eq!(duration(&ja, chrono::Duration::seconds(2460)), "41分");
+        assert_eq!(duration(&ja, chrono::Duration::seconds(12)), "12秒");
+        assert_eq!(duration(&ja, chrono::Duration::seconds(-3)), "0秒");
+        assert_eq!(duration(&en, chrono::Duration::seconds(3900)), "1 h 5 min");
     }
 }

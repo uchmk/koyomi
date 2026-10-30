@@ -25,15 +25,15 @@ pub fn has_log(j: &JobRun) -> bool {
     j.part.runs_process() && j.started.is_some()
 }
 
-/// `+0:02:10`, `-0:00:05` or `±0:00:00`.
-pub fn delta(a: Duration, b: Duration) -> String {
+/// `+2分10秒`, `-5秒` or `±0秒`.
+pub fn delta(t: &Table, a: Duration, b: Duration) -> String {
     let d = b - a;
     let sign = match d.num_seconds() {
         0 => '±',
         s if s > 0 => '+',
         _ => '-',
     };
-    format!("{sign}{}", show::duration(d.abs()))
+    format!("{sign}{}", show::duration(t, d.abs()))
 }
 
 /// Whether the job ended differently in the two: another state or another exit code.
@@ -44,12 +44,12 @@ pub fn differs(a: Option<&JobRun>, b: Option<&JobRun>) -> bool {
     }
 }
 
-/// One side of a job: `✓ 正常終了  0:01:00  exit 0`, or `（なし）` when the run has no such job.
+/// One side of a job: `✓ 正常終了  1分  exit 0`, or `（なし）` when the run has no such job.
 fn side(t: &Table, j: Option<&JobRun>) -> String {
     let Some(j) = j else { return t.tr("compare.none").to_owned() };
     let mut s = show::tag(t, j.state);
     if let Some(d) = j.duration() {
-        s.push_str(&format!("  {}", show::duration(d)));
+        s.push_str(&format!("  {}", show::duration(t, d)));
     }
     if let Some(e) = j.exit {
         s.push_str(&format!("  {}", t.trf("compare.exit", &[&e.to_string()])));
@@ -78,7 +78,7 @@ pub fn lines(t: &Table, a: &Run, b: &Run, logs: &[(String, Option<String>, Optio
         out.push(t.trf("compare.other_net", &[&a.jobnet, &b.jobnet]));
     }
     if let (Some(x), Some(y)) = (a.duration(), b.duration()) {
-        out.push(t.trf("compare.took", &[&show::duration(x), &show::duration(y), &delta(x, y)]));
+        out.push(t.trf("compare.took", &[&show::duration(t, x), &show::duration(t, y), &delta(t, x, y)]));
     }
     out.push(String::new());
     out.push(t.tr("compare.jobs").to_owned());
@@ -87,7 +87,7 @@ pub fn lines(t: &Table, a: &Run, b: &Run, logs: &[(String, Option<String>, Optio
         let mark = if differs(x, y) { "≠" } else { "=" };
         let mut line = format!("{mark} {label}  {}  →  {}", side(t, x), side(t, y));
         if let (Some(d), Some(e)) = (x.and_then(JobRun::duration), y.and_then(JobRun::duration)) {
-            line.push_str(&format!("  ({})", delta(d, e)));
+            line.push_str(&format!("  ({})", delta(t, d, e)));
         }
         out.push(format!("  {line}"));
     }
@@ -204,9 +204,10 @@ mod tests {
 
     #[test]
     fn a_delta_is_signed() {
-        assert_eq!(delta(Duration::seconds(60), Duration::seconds(190)), "+0:02:10");
-        assert_eq!(delta(Duration::seconds(60), Duration::seconds(55)), "-0:00:05");
-        assert_eq!(delta(Duration::seconds(60), Duration::seconds(60)), "±0:00:00");
+        let (t, _) = crate::i18n::table("ja");
+        assert_eq!(delta(&t, Duration::seconds(60), Duration::seconds(190)), "+2分10秒");
+        assert_eq!(delta(&t, Duration::seconds(60), Duration::seconds(55)), "-5秒");
+        assert_eq!(delta(&t, Duration::seconds(60), Duration::seconds(60)), "±0秒");
     }
 
     #[test]
@@ -224,7 +225,7 @@ mod tests {
         let out = lines(&t, &a, &b, &logs);
         let x = out.iter().find(|l| l.contains(" x ")).unwrap();
         assert!(x.trim_start().starts_with("= x"), "{x}");
-        assert!(x.ends_with("(+0:00:10)"), "{x}");
+        assert!(x.ends_with("(+10 s)"), "{x}");
         let y = out.iter().find(|l| l.trim_start().starts_with("≠ y")).unwrap();
         assert!(y.contains("exit 0") && y.contains("exit 2"), "{y}");
         assert!(out.iter().any(|l| l == "  -loaded 10"), "{out:?}");

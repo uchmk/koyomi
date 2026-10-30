@@ -1,6 +1,6 @@
 # Checklist
 
-612 checks in TESTING.md, 608 left for a person.
+616 checks in TESTING.md, 612 left for a person.
 
 ## 1. Start
 
@@ -675,7 +675,7 @@
 - [ ] **67.1** A net with `late_end = "20s"` and a job `run = ["ping", "-n", "40", "127.0.0.1"]`; approve it and `koyomi run <net>`; wait 25 s → One notification `⏰ 遅れ  <name>` / `<name>: <time> を過ぎても終わっていない`; `koyomi status --today` shows `⏰終了の遅れ` on the run, and only one notification comes however long it runs 〔未訳〕
 - [ ] **67.2** `koyomi show <net>` for that net → A line `終わらなければ知らせる: 20s` 〔未訳〕
 - [ ] **67.3** A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes → When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again 〔未訳〕
-- [ ] **67.4** A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it → After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 0:01:00、もう 0:02:00 動いている`, and the mark `⏰いつもより長い` 〔未訳〕
+- [ ] **67.4** A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it → After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 1分、もう 2分 動いている`, and the mark `⏰いつもより長い` 〔未訳〕
 - [ ] **67.5** The same net with `late_slow = false` → No notification for taking long 〔未訳〕
 - [ ] **67.5b** `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs → When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` 〔未訳〕
 - [ ] **67.6** `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` → `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved 〔未訳〕
@@ -868,3 +868,10 @@
 - [ ] **85.7** `koyomi check` with `max = 0`, `max = 17`, `max = "2"`, `max` on a `"job"` → Each is refused with the line and why 〔未訳〕
 - [ ] **85.8** The editor: a loop's pane, fill max with 3; save; then empty it → The file has `max = 3`, then no `max`; `0` or `x` is refused 〔未訳〕
 - [ ] **85.9** Approve a net with `max = 3` → The confirm box shows `並べて動かす数: 3` under the loop 〔未訳〕
+
+## 86. 長さの書き方（D4）
+
+- [ ] **86.1** Run a net whose job takes about 1 minute 5 seconds; `koyomi show <run>` → The run and the job lines read `1分5秒`, not `0:01:05` 〔未訳〕
+- [ ] **86.2** A job of a few seconds; open the run in the window and pick the job → 所要 reads `3秒`; a 41-minute one reads `41分`; a 65-minute one `1時間5分` 〔未訳〕
+- [ ] **86.3** Set `lang = "en"` in common.toml; repeat 86.1 → `1 min 5 s` 〔未訳〕
+- [ ] **86.4** `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` → `1分  →  1分10秒  (+10秒)`; いつもは in words 〔未訳〕
