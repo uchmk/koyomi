@@ -144,6 +144,23 @@ pub fn settings(t: &Table, d: &Def) -> Vec<String> {
     out
 }
 
+/// [`jobs`] without what the jobs table already shows: only the jobs with more to say, each under its own
+/// header line, and no `after` lines.
+pub fn job_details(t: &Table, d: &Def) -> Vec<String> {
+    let after = format!("  {}: ", t.tr("review.after"));
+    let mut out: Vec<String> = Vec::new();
+    let mut header: Option<String> = None;
+    for l in jobs(t, d) {
+        if !l.starts_with(' ') {
+            header = Some(l);
+        } else if !l.starts_with(&after) {
+            out.extend(header.take());
+            out.push(l);
+        }
+    }
+    out
+}
+
 /// What each job would run (see [`body`]).
 pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
     let mut out = Vec::new();
@@ -333,6 +350,28 @@ mod tests {
 
     const NET: &str =
         "format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"C:/bin/x.exe\", \"--month\", \"2026-10\"]\ndir = \"C:/work\"\ntimeout = \"30m\"\n";
+
+    /// The jobs table shows id, kind, name and `after`; the lines under it must not repeat them.
+    #[test]
+    fn job_details_leave_out_what_the_table_shows() {
+        let store = Store::default();
+        let two = format!(
+            "{NET}[[job]]
+id = \"b\"
+run = [\"C:/bin/y.exe\"]
+after = [\"a\"]
+"
+        );
+        let d = def(&two, &store);
+        let t = table();
+        let all = jobs(&t, &d);
+        let det = job_details(&t, &d);
+        let after = format!("{}: ", t.tr("review.after"));
+        assert!(all.iter().any(|l| l.contains(&after)));
+        assert!(!det.iter().any(|l| l.contains(&after)));
+        assert!(det.len() < all.len());
+        assert!(det.iter().any(|l| l.contains("C:/bin/x.exe")));
+    }
 
     /// the row has a symbol and a word.
     #[test]

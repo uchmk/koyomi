@@ -2378,7 +2378,7 @@ impl Browser {
                 });
                 ui.add_space(4.0);
             }
-            for l in lines {
+            for l in review::job_details(t, &def) {
                 ui.label(l);
             }
         }
