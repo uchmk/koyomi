@@ -397,6 +397,11 @@ impl Browser {
         }
     }
 
+    /// The ids of the loaded runs that ended abnormally (the status bar's count).
+    pub fn failed_ids(&self) -> impl Iterator<Item = &str> {
+        self.runs.iter().filter(|r| r.state.is_error()).map(|r| r.id.as_str())
+    }
+
     /// The runs that ended since the last call, each once (the bell).
     pub fn take_ended(&mut self) -> Vec<Run> {
         self.drain();

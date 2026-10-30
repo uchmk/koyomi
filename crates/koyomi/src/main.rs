@@ -10,6 +10,7 @@
 
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
+mod acked;
 mod cli;
 mod client;
 mod engine;
@@ -69,6 +70,8 @@ struct App {
     /// What the bell lists, oldest first: a run that ended 異常 (a click opens
     /// it, by its id) and the engine's notes about `[notify]`.
     notices: Vec<ito_notices::Notice<String>>,
+    /// Failed runs the person has dealt with (opened from the bell, or "all read").
+    acked: acked::Acked,
     next_notice: u64,
     /// The list under the bell is open, and where the bell was last drawn.
     bell_open: bool,
@@ -148,6 +151,7 @@ impl App {
             lang,
             scale_note: None,
             notices: Vec::new(),
+            acked: acked::Acked::load(if script.is_some() { None } else { ito_common::state_dir("koyomi") }),
             next_notice: 0,
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
@@ -388,7 +392,19 @@ impl App {
         let clock = self.prefs.common.clock_or(None);
         let spec = ito_statusbar::Spec { clock: &clock, lang: &self.lang, opacity: 1.0 };
         let version = env!("CARGO_PKG_VERSION");
-        ito_statusbar::show(ui, &spec, |ui| ito_statusbar::item(ui, version, ito_theme::colors().dim), |_| {});
+        let waiting = self.acked.waiting(self.browser.failed_ids());
+        let line = (waiting > 0).then(|| self.table.trf("status.unacked", &[&waiting.to_string()]));
+        ito_statusbar::show(
+            ui,
+            &spec,
+            |ui| {
+                if let Some(l) = &line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().err);
+                }
+                ito_statusbar::item(ui, version, ito_theme::colors().dim)
+            },
+            |_| {},
+        );
     }
 
     /// The window's own bar: the name, the palette box, the bell and the
@@ -525,10 +541,15 @@ impl App {
                 self.notices.iter_mut().filter(|n| n.id == id).for_each(|n| n.read = true);
                 self.bell_open = false;
                 if let Some(run) = go {
+                    self.acked.ack([run.as_str()]);
                     self.browser.open_run(&run);
                 }
             }
-            Some(ito_notices::Action::ReadAll) => self.notices.iter_mut().for_each(|n| n.read = true),
+            Some(ito_notices::Action::ReadAll) => {
+                self.notices.iter_mut().for_each(|n| n.read = true);
+                let ids: Vec<String> = self.browser.failed_ids().map(str::to_owned).collect();
+                self.acked.ack(ids.iter().map(String::as_str));
+            }
             Some(ito_notices::Action::Close) => self.bell_open = false,
             None => {}
         }

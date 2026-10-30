@@ -1,6 +1,6 @@
 # Checklist
 
-324 checks in TESTING.md, 320 left for a person.
+328 checks in TESTING.md, 324 left for a person.
 
 ## 1. Start
 
@@ -430,3 +430,10 @@
 - [ ] **35.3** A `kind = "file"` part watching `C:/nope/*.csv` → `見張るフォルダーがない: C:/nope` 〔未訳〕
 - [ ] **35.4** `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` → No complaint about the dir (it has no name until the day) 〔未訳〕
 - [ ] **35.5** A net whose calendar uses the holiday table, within 60 days of its end → A line about the table; exit code stays 0 〔未訳〕
+
+## 36. 失敗の対応済み
+
+- [ ] **36.1** Let two jobs fail; look at the status bar → Red `未対応の失敗 2` appears left of the version 〔未訳〕
+- [ ] **36.2** Open one failure from the bell → The count drops to 1 〔未訳〕
+- [ ] **36.3** Press "すべて既読にする" in the bell → The count disappears 〔未訳〕
+- [ ] **36.4** Restart the app → The acknowledged failures stay out of the count (`acked.toml` in the state folder) 〔未訳〕

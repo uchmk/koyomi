@@ -21,6 +21,9 @@ fixed = "{} は koyomi が先に読むので、ここに割り当てても動き
 "Create a new jobnet" = "新しいジョブネットを作る"
 "Quit" = "終了"
 
+[status]
+unacked = "未対応の失敗 {0}"
+
 [notices]
 title = "通知（未読 {0}）"
 mark_read = "すべて既読にする"

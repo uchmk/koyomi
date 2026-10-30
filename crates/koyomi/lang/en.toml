@@ -22,6 +22,9 @@ fixed = "koyomi reads {} itself: bound here, it never runs."
 "Create a new jobnet" = "Create a new jobnet"
 "Quit" = "Quit"
 
+[status]
+unacked = "{0} failures waiting"
+
 [notices]
 title = "Notices ({0} unread)"
 mark_read = "Mark all read"
