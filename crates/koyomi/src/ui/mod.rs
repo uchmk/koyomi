@@ -2044,15 +2044,33 @@ impl Browser {
         egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
             pick = graph::draw(ui, &run, self.vertical, watched.as_deref());
         });
-        for j in &run.jobs {
-            let text = graph::words(t, j);
-            let on = watched.as_deref() == Some(j.id.as_str());
-            let r = ui.selectable_label(on, egui::RichText::new(&text).color(graph::colour(&c, j.state)));
-            ito_a11y::say(&r, Role::Row, &text);
-            if r.clicked() {
-                pick = Some(j.id.clone());
+        egui::Grid::new("jobs_grid").num_columns(8).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
+            for key in ["run.col_job", "run.state", "run.start", "run.end", "run.exit", "run.retried", "run.took", "run.reason"] {
+                ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
             }
-        }
+            ui.end_row();
+            for j in &run.jobs {
+                let colour = graph::colour(&c, j.state);
+                let on = watched.as_deref() == Some(j.id.as_str());
+                let name = format!("{}{}", show::kind(t, &j.part), j.label());
+                let r = ui.selectable_label(on, egui::RichText::new(&name).color(colour));
+                ito_a11y::say(&r, Role::Row, &graph::words(t, j));
+                if r.clicked() {
+                    pick = Some(j.id.clone());
+                }
+                ui.label(egui::RichText::new(show::tag(t, j.state)).color(colour));
+                ui.label(j.started.map(show::hms).unwrap_or_default());
+                ui.label(j.ended.map(show::hms).unwrap_or_default());
+                ui.label(j.exit.map(|x| x.to_string()).unwrap_or_default());
+                ui.label(match (j.retried, j.retry) {
+                    (0, None) => String::new(),
+                    (n, r) => format!("{n}/{}", r.map_or(0, |r| r.count)),
+                });
+                ui.label(j.duration().map(show::duration).unwrap_or_default());
+                ui.label(koyomi_core::run::tidy_reason(&j.reason));
+                ui.end_row();
+            }
+        });
         if pick.is_some() {
             self.job_sel = pick;
         }
