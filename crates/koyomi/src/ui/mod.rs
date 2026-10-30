@@ -1378,14 +1378,11 @@ impl Browser {
         // near its end) share one band that stays folded: nothing stops for these.
         let cautions: Vec<String> = self.snap.as_ref().map(|s| s.cautions.clone()).unwrap_or_default();
         let notes = usize::from(self.autostart_off) + cautions.len();
-        let mut now: BTreeSet<String> = cautions.iter().cloned().collect();
+        let mut now: BTreeSet<String> = cautions.iter().map(|l| caution_key(l)).collect();
         if self.autostart_off {
             now.insert(t.tr("band.autostart").to_owned());
         }
-        let grew = match (&self.band_seen, self.snap.is_some()) {
-            (Some(seen), _) => now.iter().any(|l| !seen.contains(l)),
-            (None, _) => false,
-        };
+        let grew = self.band_seen.as_ref().is_some_and(|seen| now.iter().any(|l| !seen.contains(l)));
         if self.snap.is_some() {
             self.band_seen = Some(now);
         }
@@ -2574,6 +2571,15 @@ impl Browser {
 
 /// Everything in the settings folder, as one file under `exports/` in the
 /// state folder: its path and how many things it carries.
+/// A caution without the part that moves each day, so the band opens for a new caution and not
+/// for the same one a day older.
+fn caution_key(line: &str) -> String {
+    match (line.find("（あと"), line.find('）')) {
+        (Some(a), Some(b)) if a < b => format!("{}{}", &line[..a], &line[b + '）'.len_utf8()..]),
+        _ => line.to_owned(),
+    }
+}
+
 fn export_all() -> Result<(String, usize), Said> {
     let paths = engine::Paths::find().map_err(plain)?;
     let src = koyomi_core::bundle::Source::read(&paths.app);
@@ -2857,6 +2863,14 @@ mod tests {
         set(&mut b, &["別の注意"]);
         s.settle(&mut b);
         assert!(shown(&s, "別の注意"), "a replaced line opens it again");
+        // The same caution with only its day count moved (each midnight) does not.
+        s.click("注意 1", &mut b);
+        set(&mut b, &["祝日の表は 2027-12-31 までの分です（あと 60 日）。置けば延びる"]);
+        s.settle(&mut b);
+        s.click("注意 1", &mut b);
+        set(&mut b, &["祝日の表は 2027-12-31 までの分です（あと 59 日）。置けば延びる"]);
+        s.settle(&mut b);
+        assert!(!shown(&s, "あと 59 日"), "a day count alone keeps it folded");
     }
 
     fn key(k: egui::Key) -> Vec<egui::Event> {
