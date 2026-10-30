@@ -1396,12 +1396,12 @@ impl Browser {
         }
         match re {
             Some((id, Some(what))) => self.re_box(&id, what),
-            Some((id, None)) => {
+            Some((id, None)) if !self.box_open() => {
                 self.deleting = Some(id);
                 // The safe button first: Enter on a fresh box does not delete.
                 self.focus = 1;
             }
-            None => {}
+            _ => {}
         }
         if pick.is_some() {
             self.selected = pick;
@@ -1822,7 +1822,7 @@ impl Browser {
         ui.horizontal(|ui| {
             let r = ui.add_enabled(!run.is_over(), egui::Button::new(t.tr("run.kill")));
             ito_a11y::say(&r, Role::Button, t.tr("run.kill"));
-            if r.clicked() {
+            if r.clicked() && !self.box_open() {
                 self.killing = Some(run.id.clone());
                 // The safe button first: Enter on a fresh box does not kill.
                 self.focus = 1;
@@ -1988,7 +1988,7 @@ impl Browser {
             if let Some(lang) = &self.easy {
                 ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
             }
-            if r.clicked() {
+            if r.clicked() && !self.box_open() {
                 self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
                 self.focus = 0;
             }
@@ -2551,6 +2551,19 @@ mod tests {
         b.make.as_mut().unwrap().name = "新".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rename { id, to, fix: false }) if id == "試験/bom" && to == "試験/新"));
+    }
+
+    /// Kill, approve and delete are asked only when no other box is up, whatever is behind it.
+    #[test]
+    fn no_question_opens_over_the_versions_box() {
+        let mut b = quiet(defs());
+        b.vers =
+            Some(Vers { id: "試験/bom".into(), list: Vec::new(), idx: 0, texts: BTreeMap::new(), asked: BTreeSet::new(), error: None });
+        assert!(b.box_open());
+        b.give = None;
+        let ctx = egui::Context::default();
+        frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        assert!(b.killing.is_none() && b.asking.is_none() && b.deleting.is_none());
     }
 
     /// A box is not opened over another: an Enter meant for the new one would press the old one.
