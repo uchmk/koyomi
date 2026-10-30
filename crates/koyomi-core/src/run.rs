@@ -12,7 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
-use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, Wait};
+use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, RunAs, Wait};
 use crate::late::Delay;
 
 /// A job's or a run's state, as the screen's table has them.
@@ -215,6 +215,9 @@ pub struct JobRun {
     /// The notification places (by name) a `kind = "notify"` part tells.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
+    /// The account its process runs as, when not the engine's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<RunAs>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -246,6 +249,7 @@ impl JobRun {
             env: job.env.clone(),
             encoding: job.encoding,
             to: job.to.clone(),
+            run_as: job.run_as.clone(),
             retried: 0,
             state: State::NotRun,
             started: None,

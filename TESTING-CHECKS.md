@@ -1,6 +1,6 @@
 # Checklist
 
-592 checks in TESTING.md, 588 left for a person.
+603 checks in TESTING.md, 599 left for a person.
 
 ## 1. Start
 
@@ -842,3 +842,17 @@
 - [ ] **83.6** `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` → Each is refused with the line and why 〔未訳〕
 - [ ] **83.7** The editor: drag HTTP で呼ぶ from the parts → The pane shows URL・メソッド・送る中身・ヘッダー (one `名前: 値` a line)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a header line without `:` or a code that is not a number is refused 〔未訳〕
 - [ ] **83.8** Approve a net with an http → The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command 〔未訳〕
+
+## 84. 別のアカウントで動かす（`run_as`）
+
+- [ ] **84.1** A job `run = ["C:/Windows/System32/whoami.exe"]` with `run_as = { user = "koyomi-test", password = "secret:koyomi-test" }`; approve and run it → ✓; the log has `▶ koyomi-test として動かす` and then `<computer>\koyomi-test` 〔未訳〕
+- [ ] **84.2** The same with `run = ["C:/Windows/System32/cmd.exe", "/c", "echo %KOYOMI_JOB% %USERPROFILE%"]` → The job's id and the test account's profile folder 〔未訳〕
+- [ ] **84.3** `koyomi secret delete koyomi-test` (or a wrong secret name), then run → ✕ with `koyomi-test のパスワードの秘密がない: … （koyomi secret set …）`; nothing is started 〔未訳〕
+- [ ] **84.4** Set the secret to a wrong password; run → ✕ with Windows' reason (the user name or password is incorrect) in the log; the password is not in the log 〔未訳〕
+- [ ] **84.5** A job that prints the password (`cmd /c echo <password>`) as the account → The log shows `***` 〔未訳〕
+- [ ] **84.6** A long job (`ping -n 600 127.0.0.1`) as the account; stop it from the window; and one with `timeout = "5s"` → 強制終了 / 打ち切り; no `ping.exe` is left running (Task Manager, user koyomi-test) 〔未訳〕
+- [ ] **84.7** An administrator account as `run_as`, running `net session` → It fails with access denied: there is no elevation 〔未訳〕
+- [ ] **84.8** A `kind = "copy"` to a share only koyomi-test can write, with `run_as` → ✓; the files are in the share 〔未訳〕
+- [ ] **84.9** `koyomi check` with `password = "hunter2"`, `password = "secret:"`, no `user`, `user = "a b"`, an unknown key, `run_as` on a `"time"` part → Each is refused with the line and why; the plain password one says to use `koyomi secret set` 〔未訳〕
+- [ ] **84.10** The editor: a job's pane, fill 実行のアカウント and the secret name; save → The file has `run_as = { user = …, password = "secret:…" }`; only one of the two filled is refused 〔未訳〕
+- [ ] **84.11** Approve a net with `run_as` → The confirm box shows `実行のアカウント: CORP\batch（パスワードは秘密 batch）`, and no password 〔未訳〕

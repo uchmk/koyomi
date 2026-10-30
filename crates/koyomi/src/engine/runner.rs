@@ -33,7 +33,7 @@ use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
-use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry};
+use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
 use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
@@ -874,6 +874,7 @@ impl Runner {
             judge: j.judge.clone(),
             env: j.env.clone(),
             encoding: j.encoding,
+            run_as: j.run_as.clone(),
             file: r.file_for(job_id),
             each: match &j.part {
                 Part::Loop { file: Some(f), .. } => Some(Each::Files(f.clone())),
@@ -1011,6 +1012,8 @@ struct JobSpec {
     env: BTreeMap<String, String>,
     /// How the process's output is read.
     encoding: jobnet::Encoding,
+    /// The account it runs as; its password is read when it starts.
+    run_as: Option<RunAs>,
     /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
     file: Option<String>,
     /// A loop part's passes; `None` for a job, which runs once.
@@ -1079,13 +1082,17 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
         Err(e) => return done(Outcome::Failed, format!("ログを作れない: {}: {e}", job.log.display()), 0),
     };
     let mut size = LogSize { written: 0, capped: false };
-    let env = match resolve_env(&job.env, &|name| ito_secret::get("koyomi", name)) {
+    let get = |name: &str| ito_secret::get("koyomi", name);
+    let env = match resolve_env(&job.env, &get).and_then(|env| resolve_logon(env, job.run_as.as_ref(), &get)) {
         Ok(r) => r,
         Err(e) => {
             let _ = writeln!(file, "! {e}");
             return done(Outcome::Failed, e, 0);
         }
     };
+    if let Some(r) = &job.run_as {
+        let _ = writeln!(file, "▶ {} として動かす", r.user);
+    }
     let Some(each) = &job.each else {
         let (outcome, reason, retried) = tries(job, (exe, args), &env, stop, why, &mut file, &mut size);
         return done(outcome, reason, retried);
@@ -1191,11 +1198,66 @@ fn resolve_env(env: &BTreeMap<String, String>, get: &dyn Fn(&str) -> std::io::Re
     Ok(out)
 }
 
+/// Adds the password of the job's `run_as` account, read with `get`, to `env`
+/// (and to what the log hides). A missing secret is an error.
+fn resolve_logon(
+    mut env: Resolved,
+    run_as: Option<&RunAs>,
+    get: &dyn Fn(&str) -> std::io::Result<Option<String>>,
+) -> Result<Resolved, String> {
+    let Some(r) = run_as else { return Ok(env) };
+    let name = &r.secret;
+    match get(name) {
+        Ok(Some(password)) => {
+            env.secrets.push(password.clone());
+            env.logon = Some((r.clone(), password));
+            Ok(env)
+        }
+        Ok(None) => Err(format!("{} のパスワードの秘密がない: {name}（koyomi secret set {name}）", r.user)),
+        Err(e) => Err(format!("秘密を読めない: {name}: {e}")),
+    }
+}
+
+/// Runs `cmd` as `account` (`run_as`), its lines to `on_line` as `run_lines_with` does.
+fn run_as(
+    cmd: std::process::Command,
+    account: &RunAs,
+    password: &str,
+    stop: &AtomicBool,
+    enc: ito_proc::Encoding,
+    on_line: &mut dyn FnMut(ito_proc::Stream, &str) -> bool,
+) -> std::io::Result<ito_proc::Lines> {
+    let (domain, user) = account.split();
+    let logon = ito_proc::Logon { user, domain, password };
+    ito_proc::run_lines_as(cmd, &logon, stop, enc, on_line)
+}
+
+/// `exe` as a full path: a bare name is looked up on this process's `PATH`
+/// (with `PATHEXT`), since another account's process does not look it up.
+fn full_program(exe: &str) -> String {
+    let p = std::path::Path::new(exe);
+    if p.components().count() > 1 || p.is_absolute() {
+        return exe.to_owned();
+    }
+    let exts: Vec<String> = if p.extension().is_some() {
+        vec![String::new()]
+    } else {
+        std::env::var("PATHEXT").unwrap_or_else(|_| ".EXE;.CMD;.BAT".into()).split(';').map(str::to_owned).collect()
+    };
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path)
+        .flat_map(|dir| exts.iter().map(move |e| dir.join(format!("{exe}{e}"))))
+        .find(|c| c.is_file())
+        .map_or_else(|| exe.to_owned(), |c| c.display().to_string())
+}
+
 /// A job's `env` read: what to pass, and which of it to hide in the log.
 #[derive(Default)]
 struct Resolved {
     vars: Vec<(String, String)>,
     secrets: Vec<String>,
+    /// The `run_as` account and its password.
+    logon: Option<(RunAs, String)>,
 }
 
 /// Whether the `ok_file` of a job's `judge` exists (a relative one is read from the job's `dir`).
@@ -1242,7 +1304,8 @@ fn attempt(
     file: &mut std::fs::File,
     size: &mut LogSize,
 ) -> (Outcome, String) {
-    let mut cmd = std::process::Command::new(exe);
+    let program = if env.logon.is_some() { full_program(exe) } else { exe.to_owned() };
+    let mut cmd = std::process::Command::new(&program);
     cmd.args(args);
     if let Some(dir) = &job.dir {
         cmd.current_dir(dir);
@@ -1285,7 +1348,10 @@ fn attempt(
     };
     let over = Arc::new(AtomicBool::new(false));
     let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone(), over.clone()));
-    let result = ito_proc::run_lines_with(cmd, stop, decoding(job.encoding), &mut on_line);
+    let result = match &env.logon {
+        None => ito_proc::run_lines_with(cmd, stop, decoding(job.encoding), &mut on_line),
+        Some((account, password)) => run_as(cmd, account, password, stop, decoding(job.encoding), &mut on_line),
+    };
     // The process is over either way: let the timer go, and say in the log who stopped the job.
     over.store(true, Ordering::SeqCst);
     if let Some(t) = timer {
@@ -2477,6 +2543,30 @@ after = [\"a\"]
         assert_eq!(ito_secret::mask("pw=hunter2!", &hidden), "pw=***!");
         env.insert("C".into(), "secret:no".into());
         assert!(resolve_env(&env, &store).err().unwrap().contains("秘密がない: no"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_bare_program_is_found_on_the_path_for_another_account() {
+        assert!(full_program("cmd").to_ascii_lowercase().ends_with("\\system32\\cmd.exe"), "{}", full_program("cmd"));
+        assert_eq!(full_program("C:/bin/x.exe"), "C:/bin/x.exe");
+        assert_eq!(full_program("no-such-program-koyomi"), "no-such-program-koyomi");
+    }
+
+    #[test]
+    fn the_run_as_password_is_read_from_the_store_and_hidden() {
+        let store = |n: &str| Ok((n == "batch").then(|| "s3cret".to_owned()));
+        let account = RunAs { user: r"CORP\batch".into(), secret: "batch".into() };
+        let got = resolve_logon(Resolved::default(), Some(&account), &store).unwrap();
+        let (who, password) = got.logon.as_ref().unwrap();
+        assert_eq!((who, password.as_str()), (&account, "s3cret"));
+        let hidden: Vec<&str> = got.secrets.iter().map(String::as_str).collect();
+        assert_eq!(ito_secret::mask("pass s3cret", &hidden), "pass ***");
+        assert!(got.vars.is_empty(), "the password is not handed to the job");
+        let missing = RunAs { user: "batch".into(), secret: "none".into() };
+        let e = resolve_logon(Resolved::default(), Some(&missing), &store).err().unwrap();
+        assert!(e.contains("koyomi secret set none"), "{e}");
+        assert!(resolve_logon(Resolved::default(), None, &store).unwrap().logon.is_none());
     }
 
     #[test]

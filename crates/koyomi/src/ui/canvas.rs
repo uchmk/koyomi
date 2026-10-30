@@ -14,7 +14,7 @@ use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::chore::Chore;
-use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, Wait};
+use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::Def;
 #[cfg(test)]
 use koyomi_core::scan::Standing;
@@ -127,6 +127,9 @@ pub struct Fields {
     pub content_type: String,
     pub headers: String,
     pub expect: String,
+    /// The `run_as` account, and the name of the secret with its password.
+    pub run_as_user: String,
+    pub run_as_secret: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -149,6 +152,10 @@ impl Fields {
         f.shell = job.shell.clone().unwrap_or_default();
         f.script = job.script.clone().unwrap_or_default();
         f.encoding = job.encoding;
+        if let Some(r) = &job.run_as {
+            f.run_as_user = r.user.clone();
+            f.run_as_secret = r.secret.clone();
+        }
         if let Some(j) = &job.judge {
             f.warn = Judge::list(&j.warn);
             f.error = Judge::list(&j.error);
@@ -259,6 +266,7 @@ impl Fields {
                 out.shell = opt(&self.shell);
                 out.script = if self.script.trim().is_empty() { None } else { Some(self.script.clone()) };
                 out.encoding = self.encoding;
+                out.run_as = self.run_as()?;
                 let ranges = |s: &str| -> Result<Vec<_>, String> {
                     if s.trim().is_empty() {
                         Ok(Vec::new())
@@ -325,6 +333,7 @@ impl Fields {
                     koyomi_core::template::check(p)?;
                 }
                 out.part = Part::Chore(chore);
+                out.run_as = self.run_as()?;
                 out.timeout = opt_secs(&self.timeout)?;
                 out.retry = retry()?;
             }
@@ -335,6 +344,21 @@ impl Fields {
 }
 
 impl Fields {
+    /// The `run_as` the fields say: none when both are empty.
+    fn run_as(&self) -> Result<Option<RunAs>, String> {
+        let (user, secret) = (self.run_as_user.trim(), self.run_as_secret.trim());
+        let secret = secret.strip_prefix("secret:").unwrap_or(secret).trim();
+        match (user.is_empty(), secret.is_empty()) {
+            (true, true) => Ok(None),
+            (false, true) => Err("実行のアカウントには、パスワードの秘密の名前が要る（koyomi secret set <名前> で置く）".into()),
+            (true, false) => Err("実行のアカウントが空".into()),
+            _ if !jobnet::valid_account(user) => {
+                Err(format!("実行のアカウントは CORP\\batch・batch@corp.local・batch のように書く: \"{user}\""))
+            }
+            _ => Ok(Some(RunAs { user: user.into(), secret: secret.into() })),
+        }
+    }
+
     /// The `http` the fields say.
     fn http(&self) -> Result<Chore, String> {
         let mut headers = BTreeMap::new();
@@ -1262,6 +1286,8 @@ impl Editor {
                         changed |= field(ui, "field.error", &mut f.error);
                         changed |= field(ui, "field.error_output", &mut f.error_output);
                         changed |= field(ui, "field.ok_file", &mut f.ok_file);
+                        changed |= field(ui, "field.run_as_user", &mut f.run_as_user);
+                        changed |= field(ui, "field.run_as_secret", &mut f.run_as_secret);
                         ui.horizontal(|ui| {
                             ui.label(t.tr("field.encoding"));
                             for e in [Encoding::Auto, Encoding::Sjis, Encoding::Utf8] {
@@ -1340,6 +1366,8 @@ impl Editor {
                         changed |= field(ui, "field.timeout", &mut f.timeout);
                         changed |= field(ui, "field.retry_count", &mut f.retry_count);
                         changed |= field(ui, "field.retry_wait", &mut f.retry_wait);
+                        changed |= field(ui, "field.run_as_user", &mut f.run_as_user);
+                        changed |= field(ui, "field.run_as_secret", &mut f.run_as_secret);
                     }
                     Part::Branch | Part::Notify | Part::Approval => {}
                 }
@@ -2088,6 +2116,25 @@ mod tests {
         fields.path = "D:\\logs".into();
         fields.keep_days = "0".into();
         assert!(e.apply_fields(&d, &fields).is_err());
+    }
+
+    #[test]
+    fn run_as_takes_an_account_and_a_secret_name_both_or_neither() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let mut fields = Fields::of(&e.net.jobs[0]);
+        fields.run_as_user = "CORP\\batch".into();
+        assert!(e.apply_fields("a", &fields).unwrap_err().contains("秘密の名前"));
+        fields.run_as_secret = "secret:batch".into();
+        assert_eq!(e.apply_fields("a", &fields), Ok(()));
+        assert_eq!(e.net.jobs[0].run_as, Some(RunAs { user: "CORP\\batch".into(), secret: "batch".into() }));
+        assert!(e.text().contains("run_as = { user = \"CORP\\\\batch\", password = \"secret:batch\" }"), "{}", e.text());
+        assert_eq!(Fields::of(&e.net.jobs[0]).run_as_secret, "batch");
+        fields.run_as_user = "bad user".into();
+        assert!(e.apply_fields("a", &fields).is_err());
+        fields.run_as_user.clear();
+        fields.run_as_secret.clear();
+        assert_eq!(e.apply_fields("a", &fields), Ok(()));
+        assert_eq!(e.net.jobs[0].run_as, None);
     }
 
     #[test]

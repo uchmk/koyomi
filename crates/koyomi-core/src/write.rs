@@ -411,6 +411,9 @@ fn job(j: &Job, out: &mut String) {
     if !j.encoding.is_auto() {
         push(out, "encoding", &q(j.encoding.text()));
     }
+    if let Some(r) = &j.run_as {
+        push(out, "run_as", &format!("{{ user = {}, password = {} }}", q(&r.user), q(&format!("secret:{}", r.secret))));
+    }
     if let Some((x, y)) = j.pos {
         push(out, "pos", &format!("[{x:?}, {y:?}]"));
     }
@@ -507,6 +510,7 @@ timeout = "30m"
 retry = { count = 2, wait = "5m" }
 judge = { warn = "1", error = "2.." }
 encoding = "sjis"
+run_as = { user = "CORP\\batch", password = "secret:batch" }
 pos = [0.0, 0.0]
 
 [[job]]

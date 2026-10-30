@@ -222,6 +222,9 @@ pub struct Job {
     /// tells, instead of the net's `notify_to`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub to: Vec<String>,
+    /// The account the process runs as, from `run_as = { user = …, password = "secret:…" }`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run_as: Option<RunAs>,
 }
 
 /// `encoding`: how a job's output is read into the log.
@@ -527,6 +530,38 @@ pub struct Retry {
     pub wait: u64,
 }
 
+/// `run_as = { user = 'CORP\batch', password = "secret:batch" }`: the account a
+/// job runs as instead of the engine's. The password is never in the file:
+/// `password` names the OS credential store's secret that holds it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunAs {
+    /// `DOMAIN\user`, `user@domain`, or a local `user`.
+    pub user: String,
+    /// The secret's name (what follows `secret:`).
+    pub secret: String,
+}
+
+impl RunAs {
+    /// The domain and the user as Windows' logon takes them: `None` for a local
+    /// account (`batch`, `.\batch`) or a `user@domain` one.
+    pub fn split(&self) -> (Option<&str>, &str) {
+        match self.user.split_once('\\') {
+            Some((d, u)) if d != "." => (Some(d), u),
+            Some((_, u)) => (None, u),
+            None => (None, self.user.as_str()),
+        }
+    }
+}
+
+/// A Windows account as `run_as` takes it: `DOMAIN\user`, `user@domain` or
+/// `user`, with nothing a logon would read otherwise (no space, quote or
+/// control character).
+pub fn valid_account(s: &str) -> bool {
+    let (domain, user) = s.split_once('\\').unwrap_or((".", s));
+    let bad = |t: &str| t.chars().any(|c| c.is_whitespace() || c.is_control() || "\"/[]:;|=,+*?<>".contains(c));
+    !user.is_empty() && !domain.is_empty() && !user.contains('\\') && !bad(user) && !bad(domain)
+}
+
 type Field = Option<Spanned<toml::Value>>;
 
 #[derive(Deserialize)]
@@ -630,6 +665,7 @@ struct RawJob {
     judge: Field,
     env: Field,
     encoding: Field,
+    run_as: Field,
 }
 
 /// The 1-based line of byte `offset` in `text`.
@@ -813,6 +849,64 @@ impl Checker<'_> {
             out.insert(k.clone(), s.to_owned());
         }
         out
+    }
+
+    /// `run_as = { user = 'CORP\batch', password = "secret:batch" }`: both are
+    /// required, and the password only as a secret's name.
+    fn run_as(&mut self, field: &Field) -> Option<RunAs> {
+        const SHAPE: &str = "run_as は { user = 'CORP\\batch', password = \"secret:batch\" } の形で書く";
+        let f = field.as_ref()?;
+        let at = f.span().start;
+        let toml::Value::Table(t) = f.get_ref() else {
+            self.add(at, SHAPE);
+            return None;
+        };
+        let mut ok = true;
+        for k in t.keys() {
+            if k != "user" && k != "password" {
+                self.add(at, format!("run_as に知らない欄 {k}"));
+                ok = false;
+            }
+        }
+        let user = match t.get("user").map(|v| v.as_str()) {
+            None => {
+                self.add(at, format!("run_as に user が無い（{SHAPE}）"));
+                None
+            }
+            Some(Some(u)) if valid_account(u) => Some(u.to_owned()),
+            Some(_) => {
+                self.add(at, "run_as の user は CORP\\batch・batch@corp.local・batch のように書く（空白や \" は使えない）");
+                None
+            }
+        };
+        let secret = match t.get("password").map(|v| v.as_str()) {
+            None => {
+                self.add(at, format!("run_as に password が無い（{SHAPE}）"));
+                None
+            }
+            Some(Some(p)) => match p.strip_prefix("secret:") {
+                Some(name) if !name.trim().is_empty() => Some(name.to_owned()),
+                Some(_) => {
+                    self.add(at, "run_as の password: secret: の後に名前が要る");
+                    None
+                }
+                None => {
+                    self.add(
+                        at,
+                        "run_as の password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）",
+                    );
+                    None
+                }
+            },
+            Some(None) => {
+                self.add(at, "run_as の password は文字列で書く");
+                None
+            }
+        };
+        match (ok, user, secret) {
+            (true, Some(user), Some(secret)) => Some(RunAs { user, secret }),
+            _ => None,
+        }
     }
 
     fn timeout(&mut self, field: &Field) -> Option<u64> {
@@ -2009,6 +2103,12 @@ impl Checker<'_> {
                 self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
+            let run_as = if part.runs_process() {
+                self.run_as(&j.run_as)
+            } else {
+                self.only(&j.run_as, "run_as", "\"job\"・\"loop\"・作業の部品");
+                None
+            };
             let timeout = if part.runs_process() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
             } else {
@@ -2028,7 +2128,7 @@ impl Checker<'_> {
                 self.only(&j.to, "to", "\"notify\"");
                 Vec::new()
             };
-            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding, to });
+            jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding, to, run_as });
         }
         let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
@@ -2406,6 +2506,36 @@ after = ["extract"]
             let p = problems(&format!("{head}{bad}\n"));
             assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
         }
+    }
+
+    #[test]
+    fn run_as_takes_an_account_and_a_secret_never_a_password() {
+        let head = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let net = parse(&format!("{head}run_as = {{ user = 'CORP\\batch', password = \"secret:batch\" }}\n")).unwrap();
+        let r = net.jobs[0].run_as.clone().unwrap();
+        assert_eq!(r, RunAs { user: "CORP\\batch".into(), secret: "batch".into() });
+        assert_eq!(r.split(), (Some("CORP"), "batch"));
+        for (user, split) in [(".\\batch", (None, "batch")), ("batch@corp.local", (None, "batch@corp.local")), ("batch", (None, "batch"))] {
+            assert_eq!(RunAs { user: user.into(), secret: "s".into() }.split(), split);
+        }
+        let chore = "format = 1\n[[job]]\nid = \"a\"\nkind = \"copy\"\nfrom = 'D:\\a'\ninto = '\\\\nas\\b'\n";
+        assert!(parse(&format!("{chore}run_as = {{ user = \"batch\", password = \"secret:b\" }}\n")).unwrap().jobs[0].run_as.is_some());
+        for (bad, want) in [
+            ("run_as = { user = \"batch\", password = \"hunter2\" }", "\"secret:<名前>\" で書く"),
+            ("run_as = { user = \"batch\", password = \"secret:\" }", "secret: の後に名前"),
+            ("run_as = { user = \"batch\" }", "password が無い"),
+            ("run_as = { password = \"secret:b\" }", "user が無い"),
+            ("run_as = { user = \"a b\", password = \"secret:b\" }", "空白や"),
+            ("run_as = { user = '\\batch', password = \"secret:b\" }", "空白や"),
+            ("run_as = { user = 'A\\B\\c', password = \"secret:b\" }", "空白や"),
+            ("run_as = { user = \"b\", password = \"secret:b\", shell = \"x\" }", "知らない欄 shell"),
+            ("run_as = \"batch\"", "の形で書く"),
+        ] {
+            let p = problems(&format!("{head}{bad}\n"));
+            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+        }
+        let p = problems("format = 1\n[[job]]\nid = \"a\"\nkind = \"notify\"\nrun_as = { user = \"b\", password = \"secret:b\" }\n");
+        assert!(p.iter().any(|m| m.contains("run_as は kind = ")), "{p:?}");
     }
 
     #[test]

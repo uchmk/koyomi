@@ -162,6 +162,12 @@ pub fn job_details(t: &Table, d: &Def) -> Vec<String> {
     out
 }
 
+/// The account a job runs as, when it is not koyomi's own.
+fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
+    let r = j.run_as.as_ref()?;
+    Some(format!("  {}: {}", t.tr("review.run_as"), t.trf("review.run_as_text", &[&r.user, &r.secret])))
+}
+
 /// What a chore works on, one line each.
 fn chore(t: &Table, c: &Chore) -> Vec<String> {
     let line = |key: &str, v: &str| format!("  {}: {v}", t.tr(&format!("review.{key}")));
@@ -254,6 +260,7 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
             }
             Part::Chore(c) => {
                 out.extend(chore(t, c));
+                out.extend(run_as(t, j));
                 if let Some(secs) = j.timeout {
                     out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
                 }
@@ -280,6 +287,7 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
         for (k, v) in &j.env {
             out.push(format!("  {} {k}: {v}", t.tr("review.env")));
         }
+        out.extend(run_as(t, j));
         if !j.encoding.is_auto() {
             let key = format!("field.encoding_{}", j.encoding.text());
             out.push(format!("  {}: {}", t.tr("field.encoding"), t.tr(&key)));
@@ -428,6 +436,25 @@ after = [\"a\"]
         assert!(!det.iter().any(|l| l.contains(&after)));
         assert!(det.len() < all.len());
         assert!(det.iter().any(|l| l.contains("C:/bin/x.exe")));
+    }
+
+    /// The account a job runs as and the secret of its password are in the box; no password is.
+    #[test]
+    fn the_run_as_account_is_shown_for_a_job_and_a_chore() {
+        let text = format!(
+            "{NET}run_as = {{ user = 'CORP\\batch', password = \"secret:batch\" }}
+[[job]]
+id = \"b\"
+kind = \"delete\"
+path = \"C:/logs\"
+keep_days = 30
+run_as = {{ user = \"batch\", password = \"secret:batch\" }}
+"
+        );
+        let d = def(&text, &Store::default());
+        let all = jobs(&table(), &d);
+        assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードは秘密 batch）"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードは秘密 batch）"), "{all:#?}");
     }
 
     /// the row has a symbol and a word.
