@@ -1237,6 +1237,7 @@ impl Browser {
             }
             canvas::Action::Flow => self.set_flow(!self.vertical),
             canvas::Action::Close => self.editor = self.editors.pop(),
+            canvas::Action::NewCalendar => self.new_cal_box_for_net(),
             canvas::Action::Enter(id) => {
                 let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
                 let opened = def.as_ref().ok_or_else(|| format!("ジョブネットがない: {id}")).and_then(canvas::Editor::open);
@@ -3449,6 +3450,28 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         assert!(!s.nodes.values().any(|n| n.0 == "対応済みにする"));
         assert!(b.take_acks().is_empty());
+    }
+
+    /// The net pane's calendar list ends in 新しいカレンダー…, which opens the box for the net
+    /// with the editor kept; Escape leaves both as they were.
+    #[test]
+    fn the_net_pane_makes_a_calendar_for_the_net() {
+        let mut b = quiet(defs());
+        let id = defs()[0].id.clone();
+        b.open_editor(&id);
+        b.editor.as_mut().unwrap().open_net();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("（なし）", &mut b);
+        s.click("新しいカレンダー…", &mut b);
+        assert_eq!(b.new_cal.as_ref().map(|m| m.for_net), Some(true));
+        assert!(b.editing());
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.new_cal.is_none() && b.editing());
+        assert!(!b.editor.as_ref().unwrap().dirty);
+        // From the tree, the same box is not for a net.
+        b.new_cal_box();
+        assert_eq!(b.new_cal.as_ref().map(|m| m.for_net), Some(false));
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.

@@ -52,6 +52,8 @@ pub enum Action {
     Close,
     /// Open the child net `use` in its own editor, this one kept underneath.
     Enter(String),
+    /// Open the 新しいカレンダー box; the calendar made becomes this net's.
+    NewCalendar,
 }
 
 /// What the mouse is doing between a press and a release.
@@ -756,6 +758,18 @@ impl Editor {
         Ok(())
     }
 
+    /// Makes `name` the net's calendar, as picking it in the net's pane does (one undo step).
+    pub fn set_calendar(&mut self, name: &str) {
+        let mut f = NetFields::of(&self.net);
+        f.calendar = name.to_owned();
+        self.apply_net(&mut f);
+        match &mut self.pane {
+            // The pane keeps what is being typed in its other fields.
+            Some(Pane::Net(p)) => p.calendar = name.to_owned(),
+            other => *other = Some(Pane::Net(Box::new(f))),
+        }
+    }
+
     /// Puts the net's fields in; a `[[when]]` that does not read keeps its last good value and says why.
     pub fn apply_net(&mut self, f: &mut NetFields) {
         let mut net = self.net.clone();
@@ -1215,6 +1229,10 @@ impl Editor {
                                 f.calendar = name.clone();
                                 changed = true;
                             }
+                        }
+                        ui.separator();
+                        if ui.selectable_label(false, t.tr("palette.new_calendar")).clicked() {
+                            *action = Some(Action::NewCalendar);
                         }
                     });
                 });
@@ -1854,6 +1872,12 @@ mod tests {
         f.calendar = "東京".into();
         e.apply_net(&mut f);
         assert!(e.text().contains("calendar = \"東京\""), "{}", e.text());
+        e.set_calendar("工場");
+        assert!(e.text().contains("calendar = \"工場\""), "{}", e.text());
+        assert!(matches!(&e.pane, Some(Pane::Net(f)) if f.calendar == "工場"), "the pane shows it");
+        assert_eq!(e.net.name.as_deref(), Some("集計"), "the rest stays");
+        e.undo();
+        assert_ne!(e.net.calendar.as_deref(), Some("工場"), "undone with the net's other edits");
     }
 
     #[test]

@@ -22,6 +22,8 @@ const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::T
 pub(super) struct NewCal {
     /// The calendar the box renames; `None` makes a new one.
     from: Option<String>,
+    /// Opened from the editor: the calendar made becomes the open net's.
+    pub(super) for_net: bool,
     pub(super) name: String,
     holidays: bool,
     /// Monday first, as [`WEEK`].
@@ -260,9 +262,20 @@ impl Browser {
 impl Browser {
     /// 新しいカレンダー: opens the box, with Japan's holidays and Saturday and Sunday off.
     pub fn new_cal_box(&mut self) {
+        self.new_cal_box_to(false);
+    }
+
+    /// The same box from the editor's calendar list: the calendar made becomes the open net's,
+    /// and the editor stays.
+    pub fn new_cal_box_for_net(&mut self) {
+        self.new_cal_box_to(true);
+    }
+
+    fn new_cal_box_to(&mut self, for_net: bool) {
         if !self.box_open() && self.snap.is_some() {
             self.new_cal = Some(NewCal {
                 from: None,
+                for_net,
                 name: String::new(),
                 holidays: true,
                 off: [false, false, false, false, false, true, true],
@@ -278,6 +291,7 @@ impl Browser {
         if !self.box_open() && self.snap.is_some() {
             self.new_cal = Some(NewCal {
                 from: Some(name.to_owned()),
+                for_net: false,
                 name: name.to_owned(),
                 holidays: false,
                 off: [false; 7],
@@ -433,6 +447,13 @@ impl Browser {
         };
         match made {
             Err(e) => m.error = Some(e),
+            Ok((name, said)) if m.for_net && self.editor.is_some() => {
+                self.new_cal = None;
+                if let Some(e) = &mut self.editor {
+                    e.set_calendar(&name);
+                    e.result = Some(Ok(said));
+                }
+            }
             Ok((name, said)) => {
                 self.new_cal = None;
                 self.cal_sel = Some(name);
