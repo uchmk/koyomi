@@ -1757,6 +1757,13 @@ impl Checker<'_> {
 
 /// `グループ/名前`: one `/`, both sides there, nothing that leaves the folder.
 /// What `use`, `after_jobnet` and the editor's new net are checked with.
+/// A name Windows keeps for a device (`NUL`, `COM1`), also with an extension.
+fn reserved(s: &str) -> bool {
+    let stem = s.split('.').next().unwrap_or(s).trim_end().to_ascii_uppercase();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
+        || (stem.len() == 4 && (stem.starts_with("COM") || stem.starts_with("LPT")) && stem.ends_with(|c: char| ('1'..='9').contains(&c)))
+}
+
 pub fn is_id(u: &str) -> bool {
     let mut parts = u.split('/');
     let (Some(g), Some(n), None) = (parts.next(), parts.next(), parts.next()) else { return false };
@@ -1767,6 +1774,7 @@ pub fn is_id(u: &str) -> bool {
             && s != "."
             && s != ".."
             && !s.ends_with(['.', ' '])
+            && !reserved(s)
             && !s.chars().any(|c| matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
     };
     plain(g) && plain(n)
@@ -1779,7 +1787,22 @@ mod id_tests {
     #[test]
     fn an_id_cannot_leave_the_folder() {
         assert!(is_id("経理/月次"));
-        for bad in ["C:/x", "g/a:b", "g/a*", "g/..", "../x", "g/a.", "g/a ", "g\\x/y", "g/a|b", "g/\u{7}"] {
+        for bad in [
+            "C:/x",
+            "g/a:b",
+            "g/a*",
+            "g/..",
+            "../x",
+            "g/a.",
+            "g/a ",
+            "g\\x/y",
+            "g/a|b",
+            "g/\u{7}",
+            "g/NUL",
+            "con/x",
+            "g/Com1.txt",
+            "g/lpt9",
+        ] {
             assert!(!is_id(bad), "{bad}");
         }
     }

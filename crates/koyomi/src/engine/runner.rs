@@ -524,7 +524,7 @@ impl Runner {
         }
         self.tick();
         if self.busy() > 0 {
-            eprintln!("koyomi: {} job(s) did not stop within {grace:?}", self.busy());
+            crate::say(&format!("koyomi: {} job(s) did not stop within {grace:?}", self.busy()), true);
         }
     }
 
