@@ -1420,7 +1420,8 @@ impl Browser {
             if self.folded.contains(&d.group) {
                 continue;
             }
-            let text = review::row(t, d, snap.held.contains(&d.id));
+            let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started).map(|r| r.state);
+            let text = review::row_with(t, d, snap.held.contains(&d.id), last);
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
             let r = ui.selectable_label(on, format!("  {text}"));
             ito_a11y::say(&r, Role::Row, &text);

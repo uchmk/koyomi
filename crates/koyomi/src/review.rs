@@ -36,12 +36,21 @@ pub fn word(t: &Table, s: Standing) -> String {
 /// `⏸ 月次締め  確認済み・保留` when `held`: a confirmed net on hold shows the hold's mark; the
 /// standing's mark stays when it says more (未確認, 誤り), and the word gains 保留 either way.
 pub fn row(t: &Table, d: &Def, held: bool) -> String {
+    row_with(t, d, held, None)
+}
+
+/// [`row`] with the state of the net's latest run today at the end (`✔ 月次締め  確認済み  ✓`), so
+/// the tree says how it went without opening it.
+pub fn row_with(t: &Table, d: &Def, held: bool, last: Option<RunState>) -> String {
     let mark = if held && d.standing == Standing::Confirmed { RunState::Held.mark() } else { state(d.standing).mark() };
     let mut word = word(t, d.standing);
     if held {
         word = format!("{word}・{}", t.tr("state.held"));
     }
-    format!("{mark} {}  {word}", d.label())
+    match last {
+        Some(l) => format!("{mark} {}  {word}  {}", d.label(), l.mark()),
+        None => format!("{mark} {}  {word}", d.label()),
+    }
 }
 
 /// The tree as text: a line per group, then its definitions indented. `koyomi list` prints this.
@@ -283,6 +292,7 @@ mod tests {
         let d = def(NET, &Store::default());
         assert_eq!(row(&table(), &d, false), "▲ 月次締め  未確認");
         assert_eq!(row(&table(), &d, true), "▲ 月次締め  未確認・保留");
+        assert_eq!(row_with(&table(), &d, false, Some(RunState::Ok)), format!("▲ 月次締め  未確認  {}", RunState::Ok.mark()));
         assert_eq!(tree(&table(), std::slice::from_ref(&d), &[]), ["経理", "  ▲ 月次締め  未確認"]);
         let mut store = Store::default();
         store.approve("経理/月次締め", &koyomi_core::approved::hash(NET.as_bytes()), NET);
