@@ -198,6 +198,8 @@ pub struct Browser {
     /// The run a kill is being asked about.
     killing: Option<String>,
     focus: usize,
+    /// The close question was up last frame: a new one starts on its safe button.
+    close_asked: bool,
     /// The last answer to an approval or a start, shown under the detail.
     result: Option<Result<String, String>>,
     /// The runs that were over at the last poll; `None` before the first, so
@@ -306,6 +308,7 @@ impl Browser {
             asking: None,
             killing: None,
             focus: 0,
+            close_asked: false,
             result: None,
             over: None,
             ended: Vec::new(),
@@ -900,12 +903,13 @@ impl Browser {
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some());
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some();
-        let modal = self.asking.is_some()
-            || self.killing.is_some()
-            || conflict
-            || self.editor.as_ref().is_some_and(|e| e.closing)
-            || port.is_some()
-            || making;
+        let closing = self.editor.as_ref().is_some_and(|e| e.closing);
+        if closing && !self.close_asked {
+            // The safe button first: Enter on a fresh box does not throw the changes away.
+            self.focus = 1;
+        }
+        self.close_asked = closing;
+        let modal = self.asking.is_some() || self.killing.is_some() || conflict || closing || port.is_some() || making;
         let buttons = if conflict { 3 } else { port.map_or(2, |(n, _)| n) };
         let key = if modal { self.box_keys(&ctx, buttons, making) } else { None };
         let c = ito_theme::colors();
@@ -1646,6 +1650,7 @@ mod tests {
             asking: None,
             killing: None,
             focus: 0,
+            close_asked: false,
             result: None,
             over: None,
             ended: Vec::new(),
@@ -1826,10 +1831,12 @@ mod tests {
         b.open_editor(&id);
         b.editor.as_mut().unwrap().add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
         assert!(b.report().contains("dirty=true"), "{}", b.report());
+        b.focus = 0;
         b.edit(canvas::Cmd::Close);
         assert!(b.editing());
         assert!(b.editor.as_ref().unwrap().closing);
         frame(&ctx, size, Vec::new(), &mut b);
+        assert_eq!(b.focus, 1, "the close question starts on やめる");
         frame(&ctx, size, key(egui::Key::Escape), &mut b);
         assert!(b.editing());
         assert!(!b.editor.as_ref().unwrap().closing);
