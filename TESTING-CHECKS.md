@@ -1,6 +1,6 @@
 # Checklist
 
-275 checks in TESTING.md, 274 left for a person.
+289 checks in TESTING.md, 285 left for a person.
 
 ## 1. Start
 
@@ -364,3 +364,19 @@
 - [ ] **29.22** `koyomi versions 経理/新規`; `koyomi restore 経理/新規 <time>` → The versions newest first; restore writes that version back (today's text becomes a version too) and the net is unconfirmed until `approve` 〔未訳〕
 - [ ] **29.23** Narrator / NVDA over the editor → The toolbar buttons, the shelf's parts, the pane's fields and the box buttons are read 〔未訳〕
 - [ ] **29.24** `koyomi --keys` report with the editor open → An `editor: 経理/新規 dirty=false parts=1 selected=[] cursor=- pane=- problems=0 connect=false` line 〔未訳〕
+
+## 30. Import, export and the daily backup (`koyomi export` / `import`, `backups/`)
+
+自動テスト済みなので下には出していない: 30.4, 30.5, 30.6
+
+- [ ] **30.1** `koyomi export -o out.toml --all` with nets, a group file, a calendar and `koyomi.toml` that has `webhook = "secret:x"` → One TOML with `[[calendar]]`, `[[group]]`, `[[jobnet]]` (each file's text as it is, comments kept) and `[settings]` whose webhook addresses are `***`; the count is printed 〔未訳〕
+- [ ] **30.2** `koyomi export -o out.toml` again; `-n 経理/月次締め` alone; `--group 経理`; `--calendars`; `--settings` → The second write is refused (`もうある`); a net comes with its group file, calendar and child nets; a group brings its nets; the other flags pick only those 〔未訳〕
+- [ ] **30.3** `koyomi import out.toml --dry-run` on a PC where one net differs → The plan: `追加`/`上書き`/`同じ` per thing with a `+`/`-` diff under what differs; exit 1 and nothing written 〔未訳〕
+- [ ] **30.7** `koyomi import out.toml --toml` → The plan as TOML (`lines`, `conflicts`, `problems`, `undecided`, `writes`, `applied`) 〔未訳〕
+- [ ] **30.8** Palette → 書き出す → Under the detail: `書いた: <state>/exports/<YYYYMMDD-HHMMSS>.toml（N 件…）` and the file is there 〔未訳〕
+- [ ] **30.9** Palette → 取り込む…, type a wrong path, Enter → The box keeps the field with `…を読めない` in red; Esc closes it 〔未訳〕
+- [ ] **30.10** Type the path of a bundle whose nets differ, Enter → The plan box (the lines of 30.3, cut after 30 with `あと N 行`) with 上書きする / やめる / 名前を変えて足す / 違うものは飛ばす; Enter on the first frame = やめる, Tab moves, Esc = やめる 〔未訳〕
+- [ ] **30.11** Pick 上書きする → `取り込んだ（ジョブネットは未確認…）` under the detail; the tree shows the nets `未確認`; old files are under `versions/` 〔未訳〕
+- [ ] **30.12** Type a bundle with nothing different, Enter → 取り込む / やめる; a bundle that is all the same says `書くものはありません` with one 閉じる button 〔未訳〕
+- [ ] **30.13** Start the engine, wait, `koyomi engine status` → A `バックアップ: <time>、backups/<YYYY-MM-DD>.toml に N 件（7 日分を残す）` line; the file is a bundle `import` reads; an empty settings folder says `定義がないので書かなかった` and leaves the old day files 〔未訳〕
+- [ ] **30.14** Narrator / NVDA over the 取り込む box → The field is read as ファイル, the buttons by their labels, the plan's lines as text 〔未訳〕

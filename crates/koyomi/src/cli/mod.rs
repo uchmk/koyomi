@@ -53,6 +53,13 @@ usage: koyomi [--version | --help | env]
        koyomi versions <group/name>  the versions kept before each save and restore, newest first
        koyomi restore <group/name> <version>
                                      put that version back as the file (unconfirmed until approved)
+       koyomi export -o <file> [-n <group/name>]... [--group <group>] [--calendars] [--settings] [--all]
+                                     write those definitions (with their group file, calendar and child nets),
+                                     the calendars, koyomi.toml (webhook addresses as ***) or everything as one file
+       koyomi import <file> [--dry-run] [--on-conflict overwrite|rename|skip]
+                                     bring such a file in: say what would change, and do it when nothing is
+                                     different there or --on-conflict says what to do (what is written over is
+                                     kept under versions/; the nets come in unconfirmed; --dry-run: only say)
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
 ";
@@ -69,9 +76,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 22] = [
+const COMMANDS: [&str; 24] = [
     "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "pause",
-    "resume", "calendar", "new", "versions", "restore", "engine", "startup",
+    "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -113,6 +120,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "new" => new_cmd(rest),
         "versions" => versions(rest),
         "restore" => restore(rest),
+        "export" => export(rest),
+        "import" => import(rest),
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         _ => return None,
@@ -840,6 +849,125 @@ fn restore(args: &[String]) -> i32 {
         [id, version] => ask_and_say(&Request::Restore { id: id.replace('\\', "/"), version: version.clone() }),
         _ => usage("restore takes a group/name and a version"),
     }
+}
+
+/// `koyomi export -o <file> …`: reads the settings folder itself (the engine need not be up)
+/// and writes the bundle. An existing file is not written over.
+fn export(args: &[String]) -> i32 {
+    let mut pick = koyomi_core::bundle::Pick::default();
+    let mut to: Option<String> = None;
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "-o" | "--out" => match rest.next() {
+                Some(f) => to = Some(f.clone()),
+                None => return usage("-o takes a file"),
+            },
+            "-n" | "--net" => match rest.next() {
+                Some(id) => pick.ids.push(id.replace('\\', "/")),
+                None => return usage("-n takes a group/name"),
+            },
+            "--group" => match rest.next() {
+                Some(g) => pick.groups.push(g.clone()),
+                None => return usage("--group takes a group"),
+            },
+            "--calendars" => pick.calendars = true,
+            "--settings" => pick.settings = true,
+            "--all" => pick.all = true,
+            other => return usage(&format!("export does not take {other}")),
+        }
+    }
+    let Some(to) = to else { return usage("export takes -o <file>") };
+    let path = std::path::Path::new(&to);
+    if path.exists() {
+        return fail(&format!("もうある: {}", path.display()));
+    }
+    let paths = match engine::Paths::find() {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    let src = koyomi_core::bundle::Source::read(&paths.app);
+    let bundle = match koyomi_core::bundle::export(&src, &pick) {
+        Ok(b) => b,
+        Err(e) => return fail(&e),
+    };
+    if bundle.is_empty() {
+        return fail("書き出すものがない");
+    }
+    if let Err(e) = ito_common::write_atomic(path, bundle.to_toml()) {
+        return fail(&e);
+    }
+    out(
+        &format!(
+            "書いた: {}（ジョブネット {}、グループ {}、カレンダー {}{}）",
+            path.display(),
+            bundle.jobnets.len(),
+            bundle.groups.len(),
+            bundle.calendars.len(),
+            if bundle.settings.is_some() { "、設定（webhook の宛先は *** にした）" } else { "" }
+        ),
+        false,
+    );
+    0
+}
+
+/// `koyomi import <file> [--dry-run] [--on-conflict …]`: the engine plans and does it.
+/// Exit 1 when it was not done: a choice is needed, something is wrong, or `--dry-run`
+/// found something to do.
+fn import(args: &[String]) -> i32 {
+    let mut file: Option<String> = None;
+    let (mut dry_run, mut on_conflict) = (false, None);
+    let mut rest = args.iter();
+    while let Some(a) = rest.next() {
+        match a.as_str() {
+            "--dry-run" => dry_run = true,
+            "--on-conflict" => match rest.next() {
+                Some(c) => {
+                    if let Err(e) = koyomi_core::bundle::Conflict::parse(c) {
+                        return usage(&e);
+                    }
+                    on_conflict = Some(c.clone());
+                }
+                None => return usage("--on-conflict takes overwrite, rename or skip"),
+            },
+            other if file.is_none() && !other.starts_with('-') => file = Some(other.to_owned()),
+            other => return usage(&format!("import does not take {other}")),
+        }
+    }
+    let Some(file) = file else { return usage("import takes one file") };
+    let text = match std::fs::read_to_string(&file) {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("{file} を読めない: {e}")),
+    };
+    let answer = match client::call(&Request::Import { text, dry_run, on_conflict }) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
+    };
+    if toml() {
+        emit(&answer);
+        return 0;
+    }
+    let plan = match proto::Plan::parse(&answer) {
+        Ok(p) => p,
+        Err(e) => return fail(&e),
+    };
+    out(&plan.lines.join("\n"), false);
+    if plan.applied {
+        out("取り込んだ（ジョブネットは未確認。窓か koyomi approve で確かめてから流す）", false);
+        return 0;
+    }
+    if plan.problems > 0 {
+        return fail(&format!("問題が {} 件あるので取り込まない", plan.problems));
+    }
+    if plan.undecided {
+        return fail(&format!("今あるものと違うものが {} 件ある: --on-conflict overwrite（上書き。前の中身は versions/ に残る）、rename（名前を変えて足す）か skip（飛ばす）で決める", plan.conflicts));
+    }
+    if !plan.writes {
+        out("書くものはない（全部同じか、飛ばす）", false);
+        return 0;
+    }
+    out("まだ取り込んでいない（--dry-run）", false);
+    1
 }
 
 /// Sends `request` and prints the answer: the commands with nothing to read back.

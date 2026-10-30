@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 9;
+pub const PROTO: u32 = 10;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -104,6 +104,14 @@ pub enum Request {
         id: String,
         version: String,
     },
+    /// Bring a bundle (`koyomi export`'s file) in: answers a [`Plan`]. With
+    /// `dry_run` nothing is written. `on_conflict` is `overwrite`, `rename` or
+    /// `skip`; without it a bundle that meets something different is only planned.
+    Import {
+        text: String,
+        dry_run: bool,
+        on_conflict: Option<String>,
+    },
 }
 
 pub fn door() -> Door<Request> {
@@ -159,6 +167,36 @@ impl Versions {
     }
 
     pub fn parse(text: &str) -> Result<Versions, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// What `Import` answers: what the import would do (or did), line by line.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Plan {
+    #[serde(default)]
+    pub lines: Vec<String>,
+    /// Things there and different, whose fate the choice decides.
+    #[serde(default)]
+    pub conflicts: usize,
+    #[serde(default)]
+    pub problems: usize,
+    /// A choice is needed (`conflicts > 0` and no `on_conflict`): nothing was or can be written.
+    #[serde(default)]
+    pub undecided: bool,
+    /// Something would be written (or was, when `applied`).
+    #[serde(default)]
+    pub writes: bool,
+    #[serde(default)]
+    pub applied: bool,
+}
+
+impl Plan {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<Plan, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 }

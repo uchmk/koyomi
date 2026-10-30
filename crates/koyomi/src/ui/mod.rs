@@ -19,8 +19,8 @@ use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
 use serde::{Deserialize, Serialize};
 
-use crate::proto::{Request, Runs, Snapshot};
-use crate::{client, review, show};
+use crate::proto::{self, Request, Runs, Snapshot};
+use crate::{client, engine, review, show};
 
 pub mod calendar;
 pub mod canvas;
@@ -44,6 +44,56 @@ enum Msg {
 pub struct Approval {
     id: String,
     sha256: String,
+}
+
+/// The 取り込む box: a path to type, then the engine's plan for that file to confirm.
+struct Port {
+    path: String,
+    /// The file's text once it was read: the plan is about it.
+    text: Option<String>,
+    plan: Option<proto::Plan>,
+    error: Option<String>,
+    /// A plan or the import itself is on the way to the engine.
+    waiting: bool,
+    /// The path field takes the keyboard on the first frame.
+    fresh: bool,
+}
+
+/// What the box shows at this point, and so which buttons it has.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Stage {
+    /// The path field: 読む / やめる.
+    Path,
+    /// Nothing to choose: one button closes it.
+    Close,
+    /// The plan can be done as it is: 取り込む / やめる.
+    Go,
+    /// Something differs: 上書き / やめる / 名前を変える / 飛ばす.
+    Pick,
+}
+
+impl Port {
+    fn stage(&self) -> Stage {
+        if self.text.is_none() {
+            return Stage::Path;
+        }
+        if self.waiting || self.error.is_some() {
+            return Stage::Close;
+        }
+        match &self.plan {
+            Some(p) if p.problems == 0 && p.writes && p.undecided => Stage::Pick,
+            Some(p) if p.problems == 0 && p.writes => Stage::Go,
+            _ => Stage::Close,
+        }
+    }
+
+    fn buttons(&self) -> usize {
+        match self.stage() {
+            Stage::Path | Stage::Go => 2,
+            Stage::Close => 1,
+            Stage::Pick => 4,
+        }
+    }
 }
 
 /// What `state.toml` keeps for the window.
@@ -133,6 +183,8 @@ pub struct Browser {
     hist: Option<History>,
     /// The editor, when a net is open in it: the detail is its canvas.
     editor: Option<canvas::Editor>,
+    /// The 取り込む box, while it is open.
+    port: Option<Port>,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
 }
@@ -227,6 +279,7 @@ impl Browser {
             hist: None,
             editor: None,
             editors: Vec::new(),
+            port: None,
         }
     }
 
@@ -284,6 +337,7 @@ impl Browser {
                         }
                     }
                 }
+                Msg::Answer(Request::Import { dry_run, .. }, r) => self.imported(dry_run, r),
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -399,6 +453,169 @@ impl Browser {
                 self.result = None;
             }
             Err(m) => self.result = Some(Err(m)),
+        }
+    }
+
+    /// The palette's 書き出す: everything in the settings folder, to
+    /// `exports/<YYYYMMDD-HHMMSS>.toml` in the state folder. The path is told
+    /// under the detail.
+    pub fn export(&mut self, t: &ito_i18n::Table) {
+        self.result = Some(export_all().map(|(path, n)| t.trf("port.exported", &[&path, &n.to_string()])));
+    }
+
+    /// The palette's 取り込む: opens the box with the path field.
+    pub fn import_box(&mut self) {
+        if self.port.is_none() {
+            self.port = Some(Port { path: String::new(), text: None, plan: None, error: None, waiting: false, fresh: true });
+            self.focus = 0;
+        }
+    }
+
+    /// The engine's answer to an import: a plan to show, or what it did.
+    fn imported(&mut self, dry_run: bool, r: Result<String, String>) {
+        let Some(p) = &mut self.port else {
+            if !dry_run {
+                self.result = Some(r.map(|_| "取り込んだ（ジョブネットは未確認）".to_owned()));
+            }
+            return;
+        };
+        p.waiting = false;
+        match r.and_then(|text| proto::Plan::parse(&text)) {
+            Ok(plan) if plan.applied => {
+                self.port = None;
+                self.result = Some(Ok("取り込んだ（ジョブネットは未確認。確かめてから流す）".to_owned()));
+            }
+            Ok(plan) => {
+                // Not done: the plan to confirm (or, after a choice, what changed meanwhile).
+                self.focus = if plan.undecided { 1 } else { 0 };
+                p.plan = Some(plan);
+            }
+            Err(e) => p.error = Some(e),
+        }
+    }
+
+    /// Reads the file in the path field and asks the engine what it would do.
+    fn port_read(&mut self) {
+        let Some(p) = &mut self.port else { return };
+        let path = p.path.trim().trim_matches('"').to_owned();
+        if path.is_empty() {
+            return;
+        }
+        match std::fs::read_to_string(&path) {
+            Ok(text) => {
+                p.error = None;
+                p.text = Some(text.clone());
+                p.waiting = true;
+                self.focus = 0;
+                let _ = self.tx.send(Request::Import { text, dry_run: true, on_conflict: None });
+            }
+            Err(e) => p.error = Some(format!("{path} を読めない: {e}")),
+        }
+    }
+
+    /// Sends the import itself, with the choice for what differs.
+    fn port_go(&mut self, on_conflict: Option<&str>) {
+        let Some(p) = &mut self.port else { return };
+        let Some(text) = p.text.clone() else { return };
+        p.plan = None;
+        p.waiting = true;
+        self.focus = 0;
+        let _ = self.tx.send(Request::Import { text, dry_run: false, on_conflict: on_conflict.map(str::to_owned) });
+    }
+
+    /// The 取り込む box: the path field, then the plan with its buttons.
+    fn confirm_port(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(p) = &mut self.port else { return };
+        let c = ito_theme::colors();
+        let stage = p.stage();
+        if stage == Stage::Path {
+            let mut pressed = None;
+            egui::Window::new(t.tr("port.title"))
+                .id(egui::Id::new("port-path"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.set_width(480.0);
+                    ui.add(egui::Label::new(t.tr("port.lead")).wrap());
+                    let r = ui.add(egui::TextEdit::singleline(&mut p.path).hint_text(t.tr("port.path_hint")).desired_width(f32::INFINITY));
+                    ito_a11y::say(&r, Role::Label, t.tr("port.file"));
+                    if p.fresh {
+                        r.request_focus();
+                        p.fresh = false;
+                    }
+                    if let Some(e) = &p.error {
+                        ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
+                    }
+                    ui.horizontal(|ui| {
+                        for (i, label) in [t.tr("port.read"), t.tr("port.cancel")].into_iter().enumerate() {
+                            let r = ui.button(label);
+                            ito_a11y::say(&r, Role::Button, label);
+                            if r.clicked() {
+                                pressed = Some(i);
+                            }
+                        }
+                    });
+                    ui.label(egui::RichText::new(t.tr("port.hint_path")).color(c.dim).small());
+                });
+            match pressed.or(key) {
+                Some(0) => self.port_read(),
+                Some(_) => self.port = None,
+                None => {}
+            }
+            return;
+        }
+        const MOST: usize = 30;
+        let rows = [(t.tr("port.file").to_owned(), p.path.trim().to_owned())];
+        let mut body: Vec<String> = Vec::new();
+        let mut notes: Vec<String> = Vec::new();
+        if p.waiting {
+            body.push(t.tr(if p.plan.is_none() && p.text.is_some() { "port.doing" } else { "port.reading" }).to_owned());
+        }
+        if let Some(e) = &p.error {
+            notes.push(e.clone());
+        }
+        if let Some(plan) = &p.plan {
+            body.extend(plan.lines.iter().take(MOST).cloned());
+            if plan.lines.len() > MOST {
+                body.push(t.trf("port.more", &[&(plan.lines.len() - MOST).to_string()]));
+            }
+            if plan.problems > 0 {
+                notes.push(t.trf("port.problems", &[&plan.problems.to_string()]));
+            } else if !plan.writes {
+                body.push(t.tr("port.nothing").to_owned());
+            } else if plan.undecided {
+                notes.push(t.trf("port.pick", &[&plan.conflicts.to_string()]));
+            }
+        }
+        let buttons: Vec<String> = match stage {
+            Stage::Close => vec![t.tr("port.close").to_owned()],
+            Stage::Go => vec![t.tr("port.go").to_owned(), t.tr("port.cancel").to_owned()],
+            _ => vec![
+                t.tr("port.overwrite").to_owned(),
+                t.tr("port.cancel").to_owned(),
+                t.tr("port.rename").to_owned(),
+                t.tr("port.skip").to_owned(),
+            ],
+        };
+        let q = ito_confirm::Question {
+            title: t.tr("port.title"),
+            rows: &rows,
+            body: &body,
+            notes: &notes,
+            buttons: &buttons,
+            hint: t.tr(if stage == Stage::Pick { "port.hint_pick" } else { "confirm.hint" }),
+            focus: Some(self.focus),
+            primary: if stage == Stage::Go { Some(0) } else { None },
+            ..Default::default()
+        };
+        let Some(i) = ito_confirm::show(ctx, &q, &Self::style()).or(key) else { return };
+        match (stage, i) {
+            (Stage::Go, 0) => self.port_go(None),
+            (Stage::Pick, 0) => self.port_go(Some("overwrite")),
+            (Stage::Pick, 2) => self.port_go(Some("rename")),
+            (Stage::Pick, 3) => self.port_go(Some("skip")),
+            _ => self.port = None,
         }
     }
 
@@ -534,8 +751,14 @@ impl Browser {
         self.drain();
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some());
-        let modal = self.asking.is_some() || self.killing.is_some() || conflict || self.editor.as_ref().is_some_and(|e| e.closing);
-        let key = if modal { self.box_keys(&ctx, if conflict { 3 } else { 2 }) } else { None };
+        let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
+        let modal = self.asking.is_some()
+            || self.killing.is_some()
+            || conflict
+            || self.editor.as_ref().is_some_and(|e| e.closing)
+            || port.is_some();
+        let buttons = if conflict { 3 } else { port.map_or(2, |(n, _)| n) };
+        let key = if modal { self.box_keys(&ctx, buttons) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
             let lines: Vec<String> = snap.warnings.clone();
@@ -623,7 +846,8 @@ impl Browser {
         self.confirm(&ctx, t, key);
         self.confirm_kill(&ctx, t, key);
         self.confirm_editor(&ctx, t, key);
-        if modal {
+        self.confirm_port(&ctx, t, key);
+        if modal && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
             ctx.memory_mut(|m| {
@@ -1136,6 +1360,22 @@ impl Browser {
     }
 }
 
+/// Everything in the settings folder, as one file under `exports/` in the
+/// state folder: its path and how many things it carries.
+fn export_all() -> Result<(String, usize), String> {
+    let paths = engine::Paths::find()?;
+    let src = koyomi_core::bundle::Source::read(&paths.app);
+    let b = koyomi_core::bundle::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() })?;
+    if b.is_empty() {
+        return Err("書き出すものがない".to_owned());
+    }
+    let dir = paths.state.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", dir.display()))?;
+    let path = dir.join(format!("{}.toml", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    ito_common::write_atomic(&path, b.to_toml())?;
+    Ok((path.display().to_string(), b.len()))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1224,6 +1464,7 @@ mod tests {
             hist: None,
             editor: None,
             editors: Vec::new(),
+            port: None,
         }
     }
 

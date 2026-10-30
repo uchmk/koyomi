@@ -6,6 +6,9 @@
 
 ### 追加
 
+- インポート・エクスポート: `koyomi export -o <file> [-n <group/name>] [--group] [--calendars] [--settings] [--all]` が、ジョブネット・グループのファイル・カレンダー・`koyomi.toml`（webhook の宛先は `***`）を
+  1 つの TOML に書く。`koyomi import <file> [--dry-run] [--on-conflict overwrite|rename|skip]` が、何が変わるか（差分つき）を見せてから取り込む（上書きの前の中身は `versions/` に残り、取り込んだジョブネットは未確認）。
+  パレットに「書き出す」（状態フォルダーの `exports/` へ）と「取り込む…」（パスを打つ欄と、計画を見せる箱）。エンジンが毎日 `backups/<日>.toml` を書き、7 日分を残す（`koyomi engine status` に出る）。
 - エディター: ジョブネットの詳細の「編集」で、絵の上にエディターが開く（左の棚から部品をドラッグ、ポートからドラッグで線、線の右クリックで 成功したら/失敗したら/どちらでも/線を消す、
   ダブルクリックで右に欄、Shift+ドラッグで範囲選択、Ctrl+Z/Y/C/V/A、矢印・`a`・`c`・Enter・Delete、パレットに 保存/整列/横と縦/元に戻す/やり直す/閉じる）。
   「ジョブネット」の欄で名前・カレンダー・逃した回・重なったら・`[[when]]` を直し、「次の 10 回」が出る。「整列」は `layout::align`、横と縦は `state.toml` に残す。

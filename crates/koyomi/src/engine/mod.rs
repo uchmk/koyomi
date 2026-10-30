@@ -17,6 +17,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::{self, Store};
+use koyomi_core::bundle::{self, Change};
 use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
 use koyomi_core::group;
@@ -29,11 +30,13 @@ use koyomi_core::when::{self, Kind, OnClosed};
 use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot, Versions};
 
+mod backup;
 mod events;
 mod files;
 mod retain;
 mod runner;
 mod schedule;
+use backup::Backup;
 use retain::Retain;
 use runner::Runner;
 use schedule::Schedule;
@@ -139,6 +142,8 @@ struct State {
     events: events::Events,
     /// The sweep of logs and history older than `keep_days`.
     retain: Retain,
+    /// The daily backup of the settings folder.
+    backup: Backup,
     keep_days: u32,
     /// `[notify]` as runs are told with: the `secret:` addresses read back
     /// (on a thread; until it answers they are not sent to).
@@ -166,6 +171,7 @@ impl State {
         let runner = Runner::new(&paths.state, config);
         let schedule = Schedule::new(&paths.state);
         let retain = Retain::new(&paths.state);
+        let backup = Backup::new(&paths.app, &paths.state);
         let (reveal_tx, reveal_rx) = mpsc::channel();
         let mut s = State {
             paths,
@@ -181,6 +187,7 @@ impl State {
             schedule,
             events: events::Events::new(),
             retain,
+            backup,
             keep_days,
             notify: NotifyCfg::default(),
             notify_raw: None,
@@ -522,12 +529,13 @@ impl State {
         let confirmed = self.defs.iter().filter(|d| d.standing == Standing::Confirmed).count();
         let running = self.runner.runs().iter().filter(|r| !r.is_over()).count();
         let mut out = format!(
-            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}\n{}",
+            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}\n{}\n{}",
             std::process::id(),
             self.defs.len(),
             confirmed,
             running,
-            self.retain.line()
+            self.retain.line(),
+            self.backup.line()
         );
         if self.held.paused {
             out.push_str("\nスケジュールを止めている（koyomi resume で戻す）");
@@ -554,6 +562,13 @@ impl State {
             return;
         }
         if let Some(line) = self.retain.tick(self.keep_days) {
+            crate::say(&format!("koyomi: {line}"), false);
+        }
+    }
+
+    /// The daily backup: its end told on the console.
+    fn tick_backup(&mut self) {
+        if let Some(line) = self.backup.tick() {
             crate::say(&format!("koyomi: {line}"), false);
         }
     }
@@ -710,9 +725,13 @@ impl State {
     /// Copies the file at `path`, when there is one, to
     /// `versions/<group>/<name>/<YYYYMMDD-HHMMSS>.toml` before it is written over.
     fn keep_version(&self, path: &Path, group: &str, name: &str) -> Result<(), String> {
+        self.keep_version_in(path, &self.versions_dir(group, name))
+    }
+
+    /// Copies the file at `path`, when there is one, to `dir/<YYYYMMDD-HHMMSS>.toml`.
+    fn keep_version_in(&self, path: &Path, dir: &Path) -> Result<(), String> {
         let Ok(old) = std::fs::read(path) else { return Ok(()) };
-        let dir = self.versions_dir(group, name);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{} を作れない: {e}", shown(&dir)))?;
+        std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
         let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
         let mut version = stamp.clone();
         let mut n = 1;
@@ -721,6 +740,78 @@ impl State {
             version = format!("{stamp}-{n}");
         }
         ito_common::write_atomic(&dir.join(format!("{version}.toml")), old)
+    }
+
+    /// Brings a bundle in. The plan is answered whatever happens; it is carried
+    /// out only when nothing is undecided or wrong and `dry_run` is off. What is
+    /// written over is kept under `versions/` first; a net that comes in is
+    /// unconfirmed, like a file written by hand.
+    fn import(&mut self, text: &str, dry_run: bool, on_conflict: Option<&str>) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("取り込めない: {}", self.warnings.join(" / ")));
+        }
+        let on_conflict = on_conflict.map(bundle::Conflict::parse).transpose()?;
+        let b = bundle::parse(text).map_err(|e| format!("取り込めない: {e}"))?;
+        if b.is_empty() {
+            return Err("取り込めない: ファイルに何も入っていない".to_owned());
+        }
+        let current = bundle::Source::read(&self.paths.app);
+        let p = bundle::plan(&b, &current, on_conflict);
+        let mut lines = Vec::new();
+        for item in &p.items {
+            lines.push(item.line());
+            if item.change == Change::Replace {
+                if let Some(old) = &item.old {
+                    lines.extend(diff_lines(old, &item.new));
+                }
+            }
+            lines.extend(item.problems.iter().map(|p| format!("  問題: {p}")));
+        }
+        lines.extend(p.notes.iter().cloned());
+        let mut reply = proto::Plan {
+            lines,
+            conflicts: p.conflicts(),
+            problems: p.problems(),
+            undecided: p.undecided,
+            writes: p.writes(),
+            applied: false,
+        };
+        if dry_run || p.undecided || p.problems() > 0 || !p.writes() {
+            return Ok(reply.to_toml());
+        }
+        let mut written = 0;
+        for item in &p.items {
+            let at = match &item.change {
+                Change::Add | Change::Replace => item.name.clone(),
+                Change::Rename(to) => to.clone(),
+                Change::Same | Change::Skip => continue,
+            };
+            let versions = self.paths.state.join("versions");
+            let (path, dir) = match item.kind {
+                bundle::Kind::Settings => (self.paths.config.clone(), versions.join("_settings")),
+                bundle::Kind::Calendar => (self.paths.calendars.join(format!("{at}.toml")), versions.join("_calendars").join(&at)),
+                bundle::Kind::Group => (self.paths.jobnets.join(&at).join("_group.toml"), versions.join("_groups").join(&at)),
+                bundle::Kind::Jobnet => {
+                    let (group, name) = split_id(&at)?;
+                    (self.paths.jobnets.join(group).join(format!("{name}.toml")), self.versions_dir(group, name))
+                }
+            };
+            let done = (|| {
+                self.keep_version_in(&path, &dir)?;
+                if let Some(parent) = path.parent() {
+                    std::fs::create_dir_all(parent).map_err(|e| format!("{} を作れない: {e}", shown(parent)))?;
+                }
+                ito_common::write_atomic(&path, item.new.clone())
+            })();
+            if let Err(e) = done {
+                self.rescan();
+                return Err(format!("取り込みの途中で止まった（{written} 件は書いた。前の中身は versions/ にある）: {e}"));
+            }
+            written += 1;
+        }
+        self.rescan();
+        reply.applied = true;
+        Ok(reply.to_toml())
     }
 
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
@@ -788,8 +879,33 @@ impl State {
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
             Request::Restore { id, version } => self.restore(id, version),
+            Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
         }
     }
+}
+
+/// The difference between `old` and `new` as lines under a plan's item,
+/// `  +` added, `  -` removed, the rest for context; long ones are cut.
+fn diff_lines(old: &str, new: &str) -> Vec<String> {
+    const MOST: usize = 40;
+    let items = ito_diff::diff(old, new, 2);
+    let mut out: Vec<String> = items
+        .iter()
+        .map(|i| match i {
+            ito_diff::Item::Line(l) => match l.kind {
+                ito_diff::Kind::Added => format!("  + {}", l.text),
+                ito_diff::Kind::Removed => format!("  - {}", l.text),
+                ito_diff::Kind::Same => format!("    {}", l.text),
+            },
+            ito_diff::Item::Folded(n) => format!("  … {n} 行"),
+        })
+        .collect();
+    if out.len() > MOST {
+        let rest = out.len() - MOST;
+        out.truncate(MOST);
+        out.push(format!("  … あと {rest} 行"));
+    }
+    out
 }
 
 /// `グループ/名前` as its two parts, or why it is not one.
@@ -868,6 +984,7 @@ pub fn run() -> i32 {
                     state.runner.flush();
                     state.schedule.flush();
                     state.retain.flush();
+                    state.backup.flush();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -880,6 +997,7 @@ pub fn run() -> i32 {
         state.tick_schedule();
         state.tick_events();
         state.tick_retain();
+        state.tick_backup();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);
@@ -980,6 +1098,77 @@ mod tests {
 
     fn standing_of(s: &State, id: &str) -> Option<Standing> {
         s.defs.iter().find(|d| d.id == id).map(|d| d.standing)
+    }
+
+    /// 30.4: a difference without a choice is refused and nothing is written.
+    /// 30.5: overwrite keeps the old file as a version; the net comes in unconfirmed.
+    /// 30.6: rename adds beside, skip leaves; a broken bundle is refused whatever the choice.
+    #[test]
+    fn an_import_is_planned_decided_kept_and_comes_in_unconfirmed() {
+        let paths = temp_paths("import");
+        let mut s = State::new(paths.clone());
+        let one = "format = 1\nname = \"一\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let two = "format = 1\nname = \"二\"\n\n[[job]]\nid = \"a\"\nrun = [\"y.exe\"]\n";
+        assert!(s.save("経理/集計", one, None, false).is_ok());
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        let mut b = bundle::Bundle::new();
+        b.jobnets.push(bundle::Net { id: "経理/集計".to_owned(), text: two.to_owned() });
+        b.jobnets.push(bundle::Net { id: "経理/新規".to_owned(), text: one.to_owned() });
+        b.calendars.push(bundle::Named { name: "会社".to_owned(), text: "format = 1\nholidays = \"japan\"\n".to_owned() });
+        let text = b.to_toml();
+        let plan = |s: &mut State, dry: bool, on: Option<&str>| proto::Plan::parse(&s.import(&text, dry, on).unwrap()).unwrap();
+        // A dry run only says. The net that differs makes the plan undecided.
+        let p = plan(&mut s, true, None);
+        assert!(!p.applied && p.undecided && p.writes && p.conflicts == 1 && p.problems == 0, "{p:?}");
+        assert!(p.lines.iter().any(|l| l.contains("経理/集計")) && p.lines.iter().any(|l| l.contains("- name = \"一\"")), "{:?}", p.lines);
+        // Without a choice nothing is done, dry run or not.
+        let p = plan(&mut s, false, None);
+        assert!(!p.applied && p.undecided, "{p:?}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), one);
+        assert!(!paths.jobnets.join("経理/新規.toml").exists());
+        // Something wrong in the file: refused whatever the choice.
+        assert!(s.import("format = 1\n", false, Some("overwrite")).unwrap_err().contains("何も入っていない"));
+        assert!(s.import("nope", false, None).unwrap_err().starts_with("取り込めない"));
+        let mut broken = bundle::Bundle::new();
+        broken.jobnets.push(bundle::Net {
+            id: "経理/親".to_owned(),
+            text: "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"無い/子\"\n".to_owned(),
+        });
+        let p = proto::Plan::parse(&s.import(&broken.to_toml(), false, Some("overwrite")).unwrap()).unwrap();
+        assert!(!p.applied && p.problems == 1, "{p:?}");
+        assert!(!paths.jobnets.join("経理/親.toml").exists());
+        assert!(s.import(&text, false, Some("sideways")).is_err());
+        // Skip: the one that differs stays, the rest comes in.
+        let p = plan(&mut s, false, Some("skip"));
+        assert!(p.applied, "{p:?}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), one);
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/新規.toml")).unwrap(), one);
+        assert!(paths.calendars.join("会社.toml").exists());
+        assert_eq!(standing_of(&s, "経理/新規"), Some(Standing::Unconfirmed));
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        // Overwrite: the old file is kept as a version and the net is unconfirmed again.
+        let p = plan(&mut s, false, Some("overwrite"));
+        assert!(p.applied, "{p:?}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), two);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Unconfirmed));
+        let versions = Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions;
+        assert_eq!(versions.len(), 1, "{versions:?}");
+        assert_eq!(std::fs::read_to_string(paths.state.join("versions/経理/集計").join(format!("{}.toml", versions[0]))).unwrap(), one);
+        // The same again: nothing to write.
+        let p = plan(&mut s, false, Some("overwrite"));
+        assert!(!p.applied && !p.writes && p.conflicts == 0, "{p:?}");
+        // Rename: a different one comes in beside what is there.
+        b.jobnets[0].text = one.to_owned();
+        let p = proto::Plan::parse(&s.import(&b.to_toml(), false, Some("rename")).unwrap()).unwrap();
+        assert!(p.applied, "{p:?}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), two);
+        let names: Vec<String> = std::fs::read_dir(paths.jobnets.join("経理"))
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names.len(), 3, "{names:?}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
     #[test]
