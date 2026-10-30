@@ -259,6 +259,8 @@ pub struct Browser {
     over: Option<BTreeSet<String>>,
     /// The runs that ended since [`Browser::take_ended`], oldest first.
     ended: Vec<Run>,
+    /// The runs 対応済みにする was pressed for, until [`Browser::take_acks`].
+    to_ack: Vec<String>,
     /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
     seen_notes: BTreeSet<String>,
     notes: Vec<String>,
@@ -387,6 +389,7 @@ impl Browser {
             result: None,
             over: None,
             ended: Vec::new(),
+            to_ack: Vec::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
@@ -485,9 +488,13 @@ impl Browser {
                             }
                         }
                         // Asked again with a later snapshot, not at once.
-                        Err(_) => {
+                        Err(e) => {
                             self.past_asked = None;
                             self.past_failed = Some(std::time::Instant::now());
+                            if let Some(h) = self.hist.as_mut().filter(|h| h.from == from && h.to == to) {
+                                h.rows.clear();
+                                h.error = Some(e);
+                            }
                         }
                     }
                 }
@@ -597,6 +604,11 @@ impl Browser {
     pub fn take_ended(&mut self) -> Vec<Run> {
         self.drain();
         std::mem::take(&mut self.ended)
+    }
+
+    /// The runs the person marked 対応済み since the last call (the app keeps them in `acked.toml`).
+    pub fn take_acks(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.to_ack)
     }
 
     /// The engine's notes about `[notify]` not taken before, each once (the bell).
@@ -2037,6 +2049,13 @@ impl Browser {
             if r.clicked() {
                 let _ = self.tx.send(Request::Rerun { run: run.id.clone(), from: None });
             }
+            // A failure dealt with: it leaves the count in the status bar.
+            let r = ui.add_enabled(run.is_over() && run.state.is_error(), egui::Button::new(t.tr("run.ack")));
+            ito_a11y::say(&r, Role::Button, t.tr("run.ack"));
+            if r.clicked() {
+                self.to_ack.push(run.id.clone());
+                self.result = Some(Ok(t.tr("run.acked").to_owned()));
+            }
             let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
             let label = match &picked {
                 Some(j) => t.trf("run.rerun_from", &[j]),
@@ -2547,6 +2566,7 @@ mod tests {
             result: None,
             over: None,
             ended: Vec::new(),
+            to_ack: Vec::new(),
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,

@@ -716,6 +716,8 @@ impl eframe::App for App {
             .exact_size(ito_titlebar::HEIGHT)
             .frame(egui::Frame::NONE.fill(ito_theme::colors().bg))
             .show(ui, |ui| self.title_bar(ui));
+        let acks = self.browser.take_acks();
+        self.acked.ack(acks.iter().map(String::as_str));
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
