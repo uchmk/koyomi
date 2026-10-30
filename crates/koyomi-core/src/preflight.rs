@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 
 use chrono::NaiveDate;
 
-use crate::calendar::{japan, Calendars};
+use crate::calendar::{self, Calendars};
 use crate::jobnet::{Jobnet, Part};
 
 /// One thing found.
@@ -51,9 +51,9 @@ pub fn check(net: &Jobnet, cals: &Calendars, today: NaiveDate, warn_days: i64, p
             }
         }
     }
-    if net.calendar.as_ref().and_then(|n| cals.map.get(n)).is_some_and(|c| c.holidays) {
-        if let Some(line) = japan::caution(today, warn_days) {
-            out.push(Finding { warn: today <= japan::UNTIL, text: line });
+    if let Some(until) = net.calendar.as_ref().and_then(|n| cals.map.get(n)).and_then(|c| c.until()) {
+        if let Some(line) = calendar::caution(until, today, warn_days) {
+            out.push(Finding { warn: today <= until, text: line });
         }
     }
     out

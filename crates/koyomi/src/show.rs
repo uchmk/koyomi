@@ -164,7 +164,7 @@ pub fn month_head(t: &Table, cal: &Calendar, year: i32, month: u32) -> String {
 pub fn day_name(t: &Table, day: &Day) -> Option<String> {
     match day {
         Day::Business | Day::WeeklyOff => None,
-        Day::Holiday(n) => Some((*n).to_owned()),
+        Day::Holiday(n) => Some(n.clone()),
         Day::Open(n) => Some(if n.is_empty() { t.tr("calendar.open").to_owned() } else { n.clone() }),
         Day::Closed(n) => Some(if n.is_empty() { t.tr("calendar.closed").to_owned() } else { n.clone() }),
     }

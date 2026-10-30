@@ -8,6 +8,11 @@
 //! holiday table is a set of rules that hold until [`japan::UNTIL`]: past
 //! it nothing is computed as if there were no holidays -- the day is "the
 //! table is old" and the engine does not run it.
+//!
+//! The Cabinet Office's own table, `syukujitsu.csv`, put in `calendars/`
+//! as it is downloaded, takes the place of the rules for the years it
+//! covers ([`Table`]): a newer one carries the table on without a new
+//! version of koyomi.
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -24,6 +29,95 @@ pub const FORMAT: i64 = 1;
 /// day before giving up: past any run of closed days a person would write.
 const WALK: usize = 60;
 
+/// The file name of the Cabinet Office's table in `calendars/`.
+pub const TABLE_FILE: &str = "syukujitsu.csv";
+
+/// The Cabinet Office's table of holidays (`syukujitsu.csv`: a header, then
+/// `2027/1/1,元日` a line, in Shift_JIS or UTF-8). For the years it covers,
+/// a day is a holiday only when the table has it; the rules do the rest.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Table {
+    /// The first and the last year it has a day in.
+    pub years: (i32, i32),
+    pub days: BTreeMap<NaiveDate, String>,
+}
+
+impl Table {
+    /// Reads the table's text. The message names the line that is wrong.
+    pub fn parse(text: &str) -> Result<Table, String> {
+        let mut days = BTreeMap::new();
+        for (i, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let (date, name) = line.split_once(',').unwrap_or((line, ""));
+            let date = date.trim().trim_matches('"');
+            let read = NaiveDate::parse_from_str(date, "%Y/%m/%d").or_else(|_| NaiveDate::parse_from_str(date, "%Y-%m-%d"));
+            let Ok(d) = read else {
+                // The first line is the header.
+                if i == 0 {
+                    continue;
+                }
+                return Err(format!("{} 行目: 日付が読めない: {date}", i + 1));
+            };
+            let name = name.trim().trim_matches('"');
+            days.insert(d, if name.is_empty() { "祝日".to_owned() } else { name.to_owned() });
+        }
+        let (Some(first), Some(last)) = (days.keys().next(), days.keys().next_back()) else {
+            return Err("祝日が 1 つもない".to_owned());
+        };
+        Ok(Table { years: (first.year(), last.year()), days })
+    }
+
+    /// The file's bytes as text: UTF-8 when they are, else Shift_JIS (as the Cabinet Office writes it).
+    pub fn decode(bytes: &[u8]) -> String {
+        match std::str::from_utf8(bytes) {
+            Ok(t) => t.to_owned(),
+            Err(_) => ito_proc::Encoding::ShiftJis.decode(bytes),
+        }
+    }
+
+    /// Reads the file at `path`; `None` when there is none.
+    pub fn load(path: &Path) -> Result<Option<Table>, String> {
+        match std::fs::read(path) {
+            Ok(b) => Table::parse(&Table::decode(&b)).map(Some),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(format!("読めない: {e}")),
+        }
+    }
+
+    /// Whether `date` is in a year the table covers.
+    pub fn covers(&self, date: NaiveDate) -> bool {
+        (self.years.0..=self.years.1).contains(&date.year())
+    }
+
+    /// The last day it covers: the end of its last year.
+    pub fn until(&self) -> NaiveDate {
+        NaiveDate::from_ymd_opt(self.years.1, 12, 31).unwrap_or(japan::UNTIL)
+    }
+}
+
+/// The last day the holidays are known: the rules', or the Cabinet Office's table's when it goes further.
+pub fn until(table: Option<&Table>) -> NaiveDate {
+    table.map_or(japan::UNTIL, |t| t.until().max(japan::UNTIL))
+}
+
+/// Where a newer holiday table comes from, said with the caution.
+pub const TABLE_HINT: &str = "内閣府の「国民の祝日」の syukujitsu.csv を calendars/ に置けば延びる";
+
+/// The caution about the age of a holiday table that lasts `until`, when there is one.
+pub fn caution(until: NaiveDate, today: NaiveDate, warn_days: i64) -> Option<String> {
+    let left = (until - today).num_days();
+    if left < 0 {
+        Some(format!("祝日の表が古い（{until} まで）。それより後の日は流さない。{TABLE_HINT}"))
+    } else if left < warn_days {
+        Some(format!("祝日の表は {until} までの分です（あと {left} 日）。{TABLE_HINT}"))
+    } else {
+        None
+    }
+}
+
 /// One calendar file, read.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Calendar {
@@ -37,6 +131,9 @@ pub struct Calendar {
     pub closed: BTreeMap<NaiveDate, String>,
     /// `open = [...]`: days that are business days whatever the rest says.
     pub open: BTreeMap<NaiveDate, String>,
+    /// `calendars/syukujitsu.csv`, when there is one and it read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub table: Option<Table>,
 }
 
 /// What one day is, with why.
@@ -49,7 +146,7 @@ pub enum Day {
     /// A closed day by `closed`, with its name.
     Closed(String),
     /// A public holiday, with its name.
-    Holiday(&'static str),
+    Holiday(String),
     /// A `weekly_off` day.
     WeeklyOff,
 }
@@ -64,7 +161,7 @@ impl Day {
         match self {
             Day::Business | Day::WeeklyOff => None,
             Day::Open(n) | Day::Closed(n) => Some(n.as_str()).filter(|n| !n.is_empty()),
-            Day::Holiday(n) => Some(n),
+            Day::Holiday(n) => Some(n.as_str()),
         }
     }
 }
@@ -108,7 +205,14 @@ impl Calendar {
             Some(_) => return Err("holidays は \"japan\" か \"none\"".to_owned()),
         };
         let weekly_off = raw.weekly_off.unwrap_or_default().iter().map(|s| crate::when::weekday(s)).collect::<Result<Vec<_>, _>>()?;
-        Ok(Calendar { name: name.to_owned(), holidays, weekly_off, closed: days(raw.closed, "closed")?, open: days(raw.open, "open")? })
+        Ok(Calendar {
+            name: name.to_owned(),
+            holidays,
+            weekly_off,
+            closed: days(raw.closed, "closed")?,
+            open: days(raw.open, "open")?,
+            table: None,
+        })
     }
 
     /// Reads the file at `path`, named by its stem.
@@ -127,7 +231,11 @@ impl Calendar {
             return Day::Closed(n.clone());
         }
         if self.holidays {
-            if let Some(n) = japan::holiday(date) {
+            let name = match &self.table {
+                Some(t) if t.covers(date) => t.days.get(&date).cloned(),
+                _ => japan::holiday(date).map(str::to_owned),
+            };
+            if let Some(n) = name {
                 return Day::Holiday(n);
             }
         }
@@ -143,12 +251,12 @@ impl Calendar {
 
     /// Whether `date` is past what the holiday table knows.
     pub fn stale(&self, date: NaiveDate) -> bool {
-        self.holidays && date > japan::UNTIL
+        self.until().is_some_and(|u| date > u)
     }
 
     /// The last day the holiday table knows, when it is used.
     pub fn until(&self) -> Option<NaiveDate> {
-        self.holidays.then_some(japan::UNTIL)
+        self.holidays.then(|| until(self.table.as_ref()))
     }
 
     /// The `n`th business day of the month (`n` < 0: from the end, -1 the
@@ -288,6 +396,8 @@ pub struct Calendars {
     pub map: BTreeMap<String, Calendar>,
     /// `calendars/<name>.toml: <why>`, in name order.
     pub bad: Vec<String>,
+    /// `calendars/syukujitsu.csv`, when there is one and it read.
+    pub table: Option<Table>,
 }
 
 impl Calendars {
@@ -307,7 +417,19 @@ impl Calendars {
                 Err(e) => out.bad.push(format!("calendars/{name}.toml: {e}")),
             }
         }
+        match Table::load(&dir.join(TABLE_FILE)) {
+            Ok(table) => out.set_table(table),
+            Err(e) => out.bad.push(format!("calendars/{TABLE_FILE}: {e}")),
+        }
         out
+    }
+
+    /// Use `table` for every calendar's holidays.
+    pub fn set_table(&mut self, table: Option<Table>) {
+        for c in self.map.values_mut() {
+            c.table = table.clone();
+        }
+        self.table = table;
     }
 
     pub fn get(&self, name: &str) -> Option<&Calendar> {
@@ -332,7 +454,7 @@ impl Calendars {
     pub fn cautions(&self, today: NaiveDate, warn_days: i64) -> Vec<String> {
         let mut out = self.bad.clone();
         if self.map.values().any(|c| c.holidays) {
-            out.extend(japan::caution(today, warn_days));
+            out.extend(caution(until(self.table.as_ref()), today, warn_days));
         }
         out
     }
@@ -403,18 +525,6 @@ pub mod japan {
         let y = f64::from(year - 1980);
         (base + 0.242194 * y - (y / 4.0).floor()).floor() as u32
     }
-
-    /// The caution about the table's age, when there is one.
-    pub fn caution(today: NaiveDate, warn_days: i64) -> Option<String> {
-        let left = (UNTIL - today).num_days();
-        if left < 0 {
-            Some(format!("祝日の表が古い（{UNTIL} まで）。それより後の日は流さない"))
-        } else if left < warn_days {
-            Some(format!("祝日の表は {UNTIL} までの分です（あと {left} 日）"))
-        } else {
-            None
-        }
-    }
 }
 
 #[cfg(test)]
@@ -465,7 +575,7 @@ mod tests {
         assert_eq!(c.day(d("2026-11-20")), Day::Closed(String::new()));
         assert_eq!(c.day(d("2026-11-21")), Day::Open("休日出勤".into()));
         assert_eq!(c.day(d("2026-11-22")), Day::WeeklyOff);
-        assert_eq!(c.day(d("2026-11-23")), Day::Holiday("勤労感謝の日"));
+        assert_eq!(c.day(d("2026-11-23")), Day::Holiday("勤労感謝の日".into()));
         assert_eq!(c.day(d("2026-12-29")), Day::Closed("年末".into()));
         assert_eq!(c.day(d("2026-12-29")).name(), Some("年末"));
         assert_eq!(c.day(d("2026-11-20")).name(), None);
@@ -517,9 +627,13 @@ mod tests {
         assert!(c.stale(d("2028-01-01")));
         assert_eq!(c.until(), Some(japan::UNTIL));
         assert_eq!(Calendar::parse("x", "format = 1\n").unwrap().until(), None);
-        assert_eq!(japan::caution(d("2027-01-01"), 90), None);
-        assert_eq!(japan::caution(d("2027-11-01"), 90), Some("祝日の表は 2027-12-31 までの分です（あと 60 日）".into()));
-        assert_eq!(japan::caution(d("2028-01-02"), 90), Some("祝日の表が古い（2027-12-31 まで）。それより後の日は流さない".into()));
+        let u = japan::UNTIL;
+        assert_eq!(caution(u, d("2027-01-01"), 90), None);
+        assert_eq!(caution(u, d("2027-11-01"), 90), Some(format!("祝日の表は 2027-12-31 までの分です（あと 60 日）。{TABLE_HINT}")));
+        assert_eq!(
+            caution(u, d("2028-01-02"), 90),
+            Some(format!("祝日の表が古い（2027-12-31 まで）。それより後の日は流さない。{TABLE_HINT}"))
+        );
     }
 
     #[test]
@@ -562,6 +676,49 @@ mod tests {
         assert_eq!(cals.problem("壊れ").unwrap(), "calendars/壊れ.toml が読めない（holidays は \"japan\" か \"none\"）");
         assert_eq!(cals.problem("本社").unwrap(), "カレンダーがない: calendars/本社.toml");
         assert_eq!(cals.cautions(d("2027-12-01"), 90).len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_cabinet_offices_table_takes_over_its_years_and_carries_the_table_on() {
+        let csv = "国民の祝日・休日月日,国民の祝日・休日名称\r\n2028/1/1,元日\r\n2028/1/10,成人の日\r\n2028/5/8,臨時の休日\r\n";
+        let t = Table::parse(csv).unwrap();
+        assert_eq!(t.years, (2028, 2028));
+        assert_eq!(t.until(), d("2028-12-31"));
+        // As the Cabinet Office writes it: Shift_JIS.
+        let sjis = b"2028/1/1,\x8c\xb3\x93\xfa\r\n";
+        assert_eq!(Table::parse(&Table::decode(sjis)).unwrap().days[&d("2028-01-01")], "元日");
+        assert!(Table::parse("日付,名前\n2028/1/1,元日\n2028/13/1,x\n").unwrap_err().starts_with("3 行目"));
+        assert_eq!(Table::parse("日付,名前\n").unwrap_err(), "祝日が 1 つもない");
+        assert_eq!(Table::parse("\u{feff}2028-01-01,\n").unwrap().days[&d("2028-01-01")], "祝日");
+
+        let mut c = Calendar::parse("会社", "format = 1\nholidays = \"japan\"\n").unwrap();
+        assert!(c.stale(d("2028-01-04")));
+        c.table = Some(t);
+        assert!(!c.stale(d("2028-12-31")) && c.stale(d("2029-01-01")));
+        assert_eq!(c.until(), Some(d("2028-12-31")));
+        // In its years only the table counts; the rules still give the years before.
+        assert_eq!(c.day(d("2028-05-08")), Day::Holiday("臨時の休日".into()));
+        assert_eq!(c.day(d("2028-02-11")), Day::Business);
+        assert_eq!(c.day(d("2026-11-23")), Day::Holiday("勤労感謝の日".into()));
+        assert_eq!(caution(c.until().unwrap(), d("2027-12-01"), 90), None);
+    }
+
+    #[test]
+    fn a_table_in_the_folder_goes_to_every_calendar_and_a_bad_one_is_named() {
+        let dir = std::env::temp_dir().join(format!("koyomi-core-table-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("会社.toml"), "format = 1\nholidays = \"japan\"\n").unwrap();
+        std::fs::write(dir.join(TABLE_FILE), "日付,名前\n2028/1/1,元日\n").unwrap();
+        let cals = Calendars::load(&dir);
+        assert!(cals.bad.is_empty());
+        assert_eq!(cals.map["会社"].until(), Some(d("2028-12-31")));
+        assert!(cals.cautions(d("2027-12-01"), 90).is_empty());
+        std::fs::write(dir.join(TABLE_FILE), "日付,名前\nx,y\n").unwrap();
+        let cals = Calendars::load(&dir);
+        assert_eq!(cals.bad, [format!("calendars/{TABLE_FILE}: 2 行目: 日付が読めない: x")]);
+        assert_eq!(cals.map["会社"].until(), Some(japan::UNTIL));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

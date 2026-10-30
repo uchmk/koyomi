@@ -1,6 +1,6 @@
 # Checklist
 
-488 checks in TESTING.md, 484 left for a person.
+494 checks in TESTING.md, 490 left for a person.
 
 ## 1. Start
 
@@ -702,3 +702,12 @@
 - [ ] **71.4** `name = "ops"` on the mail; a net with `notify_to = ["ops"]`, another with no `notify_to` → Only the first net's notice is mailed; `koyomi check` on a net naming `ops` gives no warning 〔未訳〕
 - [ ] **71.5** `password = "hunter2"` (plain text) → The engine's log and the settings page say `[[notify.mails]] 1: …password…` (write `secret:`) 〔未訳〕
 - [ ] **71.6** A wrong `host` or password → The failure is in the engine's log (stderr), after one retry 30 s later; the run's state is not changed 〔未訳〕
+
+## 72. 祝日の表を足す
+
+- [ ] **72.1** Download `syukujitsu.csv` from the Cabinet Office's "国民の祝日について" page and put it, as it is (Shift_JIS), in `calendars/`; `koyomi check calendars/syukujitsu.csv` → `問題なし（…〜… 年の祝日 N 日。祝日は <last year>-12-31 まで分かる）` 〔未訳〕
+- [ ] **72.2** A calendar with `holidays = "japan"`; the window's calendar page for a year in the file → The holidays and their names are the file's 〔未訳〕
+- [ ] **72.3** Edit the file so its last line is `2028/1/1,元日` (save as UTF-8); wait a few seconds → The band's "祝日の表は … まで" goes away or moves to 2028-12-31; `koyomi check calendars/<name>.toml` says no caution 〔未訳〕
+- [ ] **72.4** Write a line `x,y` in the middle of the file → The band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x`; nets run on the built-in rules 〔未訳〕
+- [ ] **72.5** Remove the file (with today near the end of 2027) → The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on 〔未訳〕
+- [ ] **72.6** `koyomi export -o out.zip --calendars` with the file in `calendars/` → The bundle has the calendars' `.toml` but not `syukujitsu.csv` 〔未訳〕

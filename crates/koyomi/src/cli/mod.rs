@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
 use ito_ipc::door::ask;
-use koyomi_core::calendar::{Calendar, Calendars, Day};
+use koyomi_core::calendar::{Calendar, Calendars, Day, Table, TABLE_FILE};
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
@@ -267,6 +267,9 @@ fn check(args: &[String]) -> i32 {
     let [file] = args else { return usage("check takes one file") };
     let path = std::path::Path::new(file);
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| file.clone());
+    if name == TABLE_FILE {
+        return check_table(&name, path);
+    }
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
@@ -280,7 +283,7 @@ fn check(args: &[String]) -> i32 {
     let paths = engine::Paths::find().ok();
     let parent = path.parent().and_then(|p| p.file_name()).map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     if parent == "calendars" {
-        return check_calendar(&name, &text);
+        return check_calendar(&name, &text, path);
     }
     if name == "_group.toml" {
         return match koyomi_core::group::parse(&text) {
@@ -351,19 +354,26 @@ fn check(args: &[String]) -> i32 {
 }
 
 /// `koyomi check calendars/<name>.toml`: the file reads, and how long its holiday table lasts.
-fn check_calendar(name: &str, text: &str) -> i32 {
+fn check_calendar(name: &str, text: &str, path: &std::path::Path) -> i32 {
     let stem = name.strip_suffix(".toml").unwrap_or(name);
-    let cal = match Calendar::parse(stem, text) {
+    let mut cal = match Calendar::parse(stem, text) {
         Ok(c) => c,
         Err(e) => {
             out(&format!("{name}: {e}"), true);
             return 1;
         }
     };
+    // The Cabinet Office's table beside it is what the engine would use too.
+    if cal.holidays {
+        match Table::load(&path.with_file_name(TABLE_FILE)) {
+            Ok(t) => cal.table = t,
+            Err(e) => out(&format!("{TABLE_FILE}: {e}"), true),
+        }
+    }
     let today = chrono::Local::now().date_naive();
     let mut bad = false;
-    if cal.holidays {
-        if let Some(line) = koyomi_core::calendar::japan::caution(today, engine::CAUTION_DAYS) {
+    if let Some(until) = cal.until() {
+        if let Some(line) = koyomi_core::calendar::caution(until, today, engine::CAUTION_DAYS) {
             out(&format!("{name}: {line}"), true);
             // Past the table: the days after it will not run. Before: a word in time, not a fault.
             bad = cal.stale(today);
@@ -375,6 +385,26 @@ fn check_calendar(name: &str, text: &str) -> i32 {
     }
     out(&format!("{name}: 問題なし"), false);
     i32::from(bad)
+}
+
+/// `koyomi check calendars/syukujitsu.csv`: the Cabinet Office's table reads, and how far it goes.
+fn check_table(name: &str, path: &std::path::Path) -> i32 {
+    match Table::load(path) {
+        Ok(Some(t)) => {
+            let (a, b) = t.years;
+            let until = koyomi_core::calendar::until(Some(&t));
+            out(&format!("{name}: 問題なし（{a}〜{b} 年の祝日 {} 日。祝日は {until} まで分かる）", t.days.len()), false);
+            0
+        }
+        Ok(None) => {
+            out(&format!("{name}: 読めない: ファイルがない"), true);
+            1
+        }
+        Err(e) => {
+            out(&format!("{name}: {e}"), true);
+            1
+        }
+    }
 }
 
 /// `koyomi check koyomi.toml`: the settings read, and what `[notify]` would do.
@@ -647,7 +677,7 @@ fn day_row(date: NaiveDate, day: Day) -> DayRow {
     };
     let name = match day {
         Day::Open(n) | Day::Closed(n) if !n.is_empty() => Some(n),
-        Day::Holiday(n) => Some(n.to_owned()),
+        Day::Holiday(n) => Some(n.clone()),
         _ => None,
     };
     DayRow { date: date.to_string(), kind, name }
