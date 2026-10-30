@@ -1482,6 +1482,20 @@ impl Browser {
             }
         }
         coming.sort();
+        // The next start of each net after `from`, keyed by the net's title.
+        let next_of = |title: &str, from: chrono::NaiveDateTime| -> String {
+            snap.defs
+                .iter()
+                .filter(|d| d.standing == Standing::Confirmed && d.label() == title)
+                .filter_map(|d| {
+                    let net = d.net.as_ref()?;
+                    let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                    koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, cal).into_iter().next()
+                })
+                .min()
+                .map(|at| if at.date() == now.date() { show::hms(at) } else { at.format("%m-%d %H:%M").to_string() })
+                .unwrap_or_default()
+        };
         let unconfirmed = snap.defs.iter().filter(|d| d.standing == Standing::Unconfirmed).count();
         if self.runs.is_empty() && coming.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
@@ -1513,8 +1527,8 @@ impl Browser {
         let mut runs: Vec<&Run> = self.runs.iter().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
         egui::ScrollArea::vertical().id_salt("today_table").max_height(ui.available_height() * 0.4).show(ui, |ui| {
-            egui::Grid::new("today_grid").num_columns(6).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
-                for key in ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time"] {
+            egui::Grid::new("today_grid").num_columns(7).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
+                for key in ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"] {
                     ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
                 }
                 ui.end_row();
@@ -1531,6 +1545,7 @@ impl Browser {
                     for _ in 0..3 {
                         ui.label("");
                     }
+                    ui.label(next_of(title, *at));
                     ui.end_row();
                 }
                 for run in runs {
@@ -1546,6 +1561,7 @@ impl Browser {
                     ui.label(show::hms(run.started));
                     ui.label(ended);
                     ui.label(took);
+                    ui.label(next_of(&run.title, now));
                     ui.end_row();
                     if r.clicked() {
                         pick = Some(run.id.clone());

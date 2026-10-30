@@ -271,6 +271,7 @@ col_planned = "予定"
 col_start = "開始"
 col_end = "終了"
 col_time = "時間"
+col_next = "次の回"
 
 [tabs]
 today = "今日"

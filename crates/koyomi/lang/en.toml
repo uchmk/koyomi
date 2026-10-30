@@ -272,6 +272,7 @@ col_planned = "Planned"
 col_start = "Start"
 col_end = "End"
 col_time = "Time"
+col_next = "Next"
 
 [tabs]
 today = "Today"
