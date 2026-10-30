@@ -81,6 +81,13 @@ pub fn tree(t: &Table, defs: &[Def], held: &[String]) -> Vec<String> {
 
 /// What the definition would run: per job its id, the executable, each argument on its own line, and the directory.
 pub fn body(t: &Table, d: &Def) -> Vec<String> {
+    let mut out = settings(t, d);
+    out.extend(jobs(t, d));
+    out
+}
+
+/// The net's own settings, one line each; nothing for the default ones.
+pub fn settings(t: &Table, d: &Def) -> Vec<String> {
     let mut out = Vec::new();
     let Some(net) = &d.net else { return out };
     if net.missed == koyomi_core::jobnet::Missed::Once {
@@ -117,6 +124,13 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
         };
         out.push(t.trf(key, &[&spans]));
     }
+    out
+}
+
+/// What each job would run (see [`body`]).
+pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
+    let mut out = Vec::new();
+    let Some(net) = &d.net else { return out };
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr(&format!("part.{}", j.part.key())), j.id));

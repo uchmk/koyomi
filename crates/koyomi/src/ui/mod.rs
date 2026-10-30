@@ -2302,11 +2302,21 @@ impl Browser {
             let line = p.in_file(&def.file);
             ui.label(egui::RichText::new(format!("{} {line}", ito_a11y::State::Error.mark())).color(c.err));
         }
-        for l in review::body(t, &def) {
-            ui.label(l);
+        let section = |ui: &mut egui::Ui, key: &str| {
+            ui.add_space(10.0);
+            let r = ui.label(egui::RichText::new(t.tr(key)).strong().size(15.0));
+            ito_a11y::say(&r, Role::Heading, t.tr(key));
+        };
+        if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
+            section(ui, "net.sec_graph");
+            let now = chrono::Local::now().naive_local();
+            let preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
+            egui::ScrollArea::horizontal().id_salt("net_graph").auto_shrink([false, true]).show(ui, |ui| {
+                graph::draw(ui, &preview, self.vertical, None);
+            });
         }
         if let Some(net) = &def.net {
-            ui.add_space(6.0);
+            section(ui, "net.sec_timing");
             if net.when.is_empty() {
                 ui.label(egui::RichText::new(t.tr("run.next_none")).color(c.dim));
             } else {
@@ -2326,6 +2336,20 @@ impl Browser {
                 for row in rows {
                     ui.label(format!("  {row}"));
                 }
+            }
+        }
+        let lines = review::settings(t, &def);
+        if !lines.is_empty() {
+            section(ui, "net.sec_settings");
+            for l in lines {
+                ui.label(l);
+            }
+        }
+        let lines = review::jobs(t, &def);
+        if !lines.is_empty() {
+            section(ui, "net.sec_jobs");
+            for l in lines {
+                ui.label(l);
             }
         }
     }

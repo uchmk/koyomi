@@ -646,3 +646,9 @@ wd3 = "木"
 wd4 = "金"
 wd5 = "土"
 wd6 = "日"
+
+[net]
+sec_graph = "図"
+sec_timing = "実行のタイミング"
+sec_settings = "設定"
+sec_jobs = "ジョブ"

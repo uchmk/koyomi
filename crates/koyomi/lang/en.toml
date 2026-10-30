@@ -647,3 +647,9 @@ wd3 = "Thu"
 wd4 = "Fri"
 wd5 = "Sat"
 wd6 = "Sun"
+
+[net]
+sec_graph = "Flow"
+sec_timing = "When it runs"
+sec_settings = "Settings"
+sec_jobs = "Jobs"
