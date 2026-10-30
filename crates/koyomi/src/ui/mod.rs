@@ -1392,7 +1392,7 @@ impl Browser {
             if self.editor.is_some() {
                 self.editor_view(ui, t);
             } else if self.gantt {
-                self.gantt_view(ui, t);
+                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| self.gantt_view(ui, t));
             } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
@@ -1654,7 +1654,7 @@ impl Browser {
         let mut pick = None;
         let mut runs: Vec<&Run> = self.runs.iter().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
-        egui::ScrollArea::vertical().id_salt("today_table").max_height(ui.available_height() * 0.4).show(ui, |ui| {
+        {
             egui::Grid::new("today_grid").num_columns(7).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
                 for key in ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"] {
                     ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
@@ -1703,7 +1703,7 @@ impl Browser {
                     }
                 }
             });
-        });
+        }
         if pick.is_some() {
             self.run_sel = pick;
             self.cal_sel = None;
@@ -1833,7 +1833,7 @@ impl Browser {
         let runs: Vec<&Run> = self.runs.iter().collect();
         let picked = self.run_sel.clone();
         let mut pick = None;
-        egui::ScrollArea::both().id_salt("gantt").max_height(ui.available_height() * 0.5).show(ui, |ui| {
+        egui::ScrollArea::horizontal().id_salt("gantt").show(ui, |ui| {
             pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
         });
         if pick.is_some() {

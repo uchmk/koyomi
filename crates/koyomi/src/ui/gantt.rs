@@ -11,10 +11,10 @@ use koyomi_core::run::{Run, State};
 
 use super::graph;
 
-const LANE: f32 = 26.0;
+const LANE: f32 = 20.0;
 const LABEL: f32 = 200.0;
-const BAR_H: f32 = 14.0;
-const MIN_BAR: f32 = 3.0;
+const BAR_H: f32 = 12.0;
+const MIN_BAR: f32 = 4.0;
 /// The width of a planned start's outline.
 const PLAN_W: f32 = 8.0;
 
