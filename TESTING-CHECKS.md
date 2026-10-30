@@ -394,5 +394,5 @@
 - [ ] **31.9** Open the box while the editor has unsaved changes, fill it, Enter → `編集中の変更を保存するか閉じてから作ってください`; nothing is lost 〔未訳〕
 - [ ] **31.10** Make `テスト/新規2`, then before saving write `jobnets/テスト/新規2.toml` by hand, then Ctrl+S → `もうある（ほかで作られた）: テスト/新規2。閉じて、別の名前で作り直す`; the hand-written file is unchanged; no overwrite button 〔未訳〕
 - [ ] **31.11** Make a net and press 閉じる without saving → The discard question comes first; 捨てる leaves no file 〔未訳〕
-- [ ] **31.12** `koyomi --keys "<Wait:2500><C-n><Wait:400>shime<Enter><Wait:300><State:b><S-Tab>keiri<Enter><Wait:500><State:c><Quit>"` → `b.txt` has `make: /shime (グループと名前を入れてください)`; `c.txt` has `editor: keiri/shime dirty=true parts=1 … new=true` 〔未訳〕
+- [ ] **31.12** `koyomi --keys "<Wait:2500><C-n><Wait:400>shime<Enter><Wait:300><State:b><S-Tab>keiri<Enter><Wait:500><State:c><Quit>"` → `b.txt` has `make: /shime (グループと名前を入れてください)`; `c.txt` has `editor: keiri/shime dirty=true parts=1 … new=true` (with no nets yet; once a group exists, its list sits between the two fields, so press `<S-Tab>` twice) 〔未訳〕
 - [ ] **31.13** Narrator / NVDA over the box → The fields are read as グループ and 名前, the buttons by their labels; the error is read as text 〔未訳〕
