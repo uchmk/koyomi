@@ -126,13 +126,12 @@ impl Require {
     }
 
     fn parse_idle(s: &str) -> Option<u64> {
-        let (n, unit) = s.split_at(s.len().checked_sub(1)?);
-        let n: u64 = n.parse().ok().filter(|n| *n > 0)?;
-        match unit {
-            "m" => Some(n * 60),
-            "s" => Some(n),
-            _ => None,
-        }
+        let (n, mul) = match (s.strip_suffix('m'), s.strip_suffix('s')) {
+            (Some(n), _) => (n, 60),
+            (_, Some(n)) => (n, 1),
+            _ => return None,
+        };
+        n.parse::<u64>().ok().filter(|n| *n > 0).map(|n| n * mul)
     }
 }
 
@@ -2890,7 +2889,7 @@ run = [\"x\"]
         .unwrap()
         .require
         .is_empty());
-        for bad in ["\"ac\"", "[\"wifi\"]", "[\"idle:0m\"]", "[\"idle:x\"]"] {
+        for bad in ["\"ac\"", "[\"wifi\"]", "[\"idle:0m\"]", "[\"idle:x\"]", "[\"idle:10分\"]"] {
             let e = parse(&format!(
                 "format = 1
 require = {bad}
