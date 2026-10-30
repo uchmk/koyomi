@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
 use crate::late::Deadline;
+use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The `format` this version reads.
@@ -71,6 +72,12 @@ pub struct Jobnet {
     /// `late_slow = false`: not told when a run takes twice its usual time (told when not written).
     #[serde(default)]
     pub late_slow: Option<bool>,
+    /// `quiet = ["12:00-13:00"]`: hours a time of `[[when]]` does not start in.
+    #[serde(default)]
+    pub quiet: Vec<Span>,
+    /// `on_quiet = "skip"`: such a time is skipped, not started when the hours are over.
+    #[serde(default)]
+    pub on_quiet: OnQuiet,
 }
 
 impl Jobnet {
@@ -456,6 +463,8 @@ struct RawNet {
     late_start: Field,
     late_end: Field,
     late_slow: Field,
+    quiet: Field,
+    on_quiet: Field,
 }
 
 #[derive(Deserialize)]
@@ -542,6 +551,11 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let late_start = c.deadline(&raw.late_start, "late_start");
     let late_end = c.deadline(&raw.late_end, "late_end");
     let late_slow = c.late_slow(&raw.late_slow);
+    let quiet = c.quiet(&raw.quiet);
+    let on_quiet = match c.choice(&raw.on_quiet, "on_quiet", &["wait", "skip"]) {
+        Some("skip") => OnQuiet::Skip,
+        _ => OnQuiet::Wait,
+    };
     c.params = c.params(&raw.params);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
@@ -560,6 +574,8 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             late_start,
             late_end,
             late_slow,
+            quiet,
+            on_quiet,
         })
     } else {
         c.problems.sort_by_key(|p| p.line);
@@ -938,6 +954,24 @@ impl Checker<'_> {
             self.add(f.span().start, "late_slow は true か false（false: いつもの 2 倍かかっても知らせない）");
         }
         b
+    }
+
+    /// `quiet = ["12:00-13:00", "22:00-02:00"]`: the spans that read.
+    fn quiet(&mut self, field: &Field) -> Vec<Span> {
+        let Some(f) = field.as_ref() else { return Vec::new() };
+        let at = f.span().start;
+        let Some(list) = f.get_ref().as_array() else {
+            self.add(at, "quiet は文字列の配列で書く（例: quiet = [\"12:00-13:00\"]）");
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for v in list {
+            match v.as_str().ok_or_else(|| "\"12:00-13:00\" のような文字列で書く".to_owned()).and_then(Span::parse) {
+                Ok(s) => out.push(s),
+                Err(e) => self.add(at, format!("quiet: {e}")),
+            }
+        }
+        out
     }
 
     /// The `[[when]]` entries that read; a mistake in one drops that entry.

@@ -10,6 +10,7 @@ use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Wait};
+use crate::quiet::OnQuiet;
 use crate::when::{AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The net as its file.
@@ -47,6 +48,13 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     }
     if let Some(b) = net.late_slow {
         push(&mut out, "late_slow", &b.to_string());
+    }
+    if !net.quiet.is_empty() {
+        let list = net.quiet.iter().map(|s| q(&s.text())).collect::<Vec<_>>().join(", ");
+        push(&mut out, "quiet", &format!("[{list}]"));
+    }
+    if net.on_quiet != OnQuiet::Wait {
+        push(&mut out, "on_quiet", "\"skip\"");
     }
     if !net.params.is_empty() {
         out.push_str("\n[params]\n");

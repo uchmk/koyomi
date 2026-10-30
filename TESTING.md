@@ -828,3 +828,15 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 68.2 | The same with `--toml` | `a`, `b`, `a_seconds`, `b_seconds` and a `[[job]]` each with `differs`, `[job.a]` / `[job.b]` (`state`, `seconds`, `exit`) and `log_diff` only on b |
 | 68.3 | Compare two runs of different nets, one with a job the other lacks | `別のジョブネットです: … と …`; the job only one run has shows `（なし）` on the other side and `≠` |
 | 68.4 | `koyomi compare <run> 20261030-999999-00` | `koyomi: 実行がない: 20261030-999999-00`, exit 1 |
+
+## 69. 流さない時間帯
+
+| # | Do | Expect |
+|---|---|---|
+| 69.1 | A net with `[[when]] every = "minutes"` `n = 2` and `quiet = ["<now>-<now + 5 min>"]` (a span that starts now); approve it | `koyomi show <net>` has a line `流さない時間帯: …（来た回は終わってから流す）`; no run starts in the span; at its end one run starts (`koyomi status --today`), its planned time the first one in the span; the later times in the span are recorded `⊘ スキップ` with `流さない時間帯。H:MM の回が終わりを待っている` |
+| 69.2 | The same with `on_quiet = "skip"` | Each time in the span is recorded `⊘ スキップ` with `流さない時間帯（HH:MM-HH:MM）`; the times after the span start as usual |
+| 69.3 | 69.1 with `koyomi hold <net>` while the time waits, then let the span end | The time is recorded `⏸` (保留中), not started |
+| 69.4 | `koyomi run <net>` in the span | The run starts at once (by hand is not held back) |
+| 69.5 | `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` | `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved |
+| 69.6 | `quiet = ["23:00-01:00"]` on a net at 00:30 | The 00:30 time starts at 01:00 |
+| 69.7 | 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times | At the end the waited time starts first; the time due at the end is recorded `⊘ スキップ` `前の回がまだ動いていました` (`overlap = "queue"`: it runs after) |

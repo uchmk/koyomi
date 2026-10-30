@@ -16,6 +16,7 @@ pub mod jobnet;
 pub mod late;
 pub mod layout;
 pub mod preflight;
+pub mod quiet;
 pub mod retain;
 pub mod run;
 pub mod scan;

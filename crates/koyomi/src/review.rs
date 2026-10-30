@@ -80,6 +80,14 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     if !net.watches_slow() {
         out.push(t.tr("review.late_slow_off").to_owned());
     }
+    if !net.quiet.is_empty() {
+        let spans = net.quiet.iter().map(|s| s.text()).collect::<Vec<_>>().join(", ");
+        let key = match net.on_quiet {
+            koyomi_core::quiet::OnQuiet::Wait => "review.quiet_wait",
+            koyomi_core::quiet::OnQuiet::Skip => "review.quiet_skip",
+        };
+        out.push(t.trf(key, &[&spans]));
+    }
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr(&format!("part.{}", j.part.key())), j.id));

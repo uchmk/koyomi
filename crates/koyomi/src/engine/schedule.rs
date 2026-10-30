@@ -20,6 +20,7 @@ use std::time::Instant;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use ito_common::kept;
 use koyomi_core::jobnet::{Missed, Overlap};
+use koyomi_core::quiet::{self, OnQuiet};
 use koyomi_core::run::State;
 use koyomi_core::scan::{Def, Standing};
 use serde::{Deserialize, Serialize};
@@ -146,6 +147,27 @@ pub fn judge(
     Verdict::Start { late: passed }
 }
 
+/// What a time of `def` that would start does when it falls in the net's `quiet` hours.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Quiet {
+    /// Recorded as スキップ, for this reason (`on_quiet = "skip"`).
+    Skip(String),
+    /// Starts at this time, when the hours are over.
+    Wait(NaiveDateTime),
+}
+
+/// Whether the time `planned` of `def` is held back by its `quiet` hours at
+/// `now`; `None` when it is in none, or they were over by now (it passed
+/// while the engine was off, and `missed` has had its say).
+pub fn quiet(def: &Def, planned: NaiveDateTime, now: NaiveDateTime) -> Option<Quiet> {
+    let net = def.net.as_ref()?;
+    let until = quiet::until(&net.quiet, planned).filter(|u| *u > now)?;
+    Some(match net.on_quiet {
+        OnQuiet::Wait => Quiet::Wait(until),
+        OnQuiet::Skip => Quiet::Skip(format!("流さない時間帯（{}）", quiet::named(&net.quiet, planned).unwrap_or_default())),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -179,6 +201,18 @@ mod tests {
 
     fn at(s: &str) -> NaiveDateTime {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    #[test]
+    fn a_time_in_the_quiet_hours_waits_or_is_skipped() {
+        let wait = def_with(Standing::Confirmed, "quiet = [\"01:30-03:00\"]\n");
+        let p = at("2026-10-30 02:00:00");
+        assert_eq!(quiet(&wait, p, p), Some(Quiet::Wait(at("2026-10-30 03:00:00"))));
+        assert_eq!(quiet(&wait, p, at("2026-10-30 03:00:00")), None, "over by now: it starts");
+        assert_eq!(quiet(&wait, at("2026-10-30 03:00:00"), at("2026-10-30 03:00:00")), None);
+        let skip = def_with(Standing::Confirmed, "quiet = [\"01:30-03:00\"]\non_quiet = \"skip\"\n");
+        assert_eq!(quiet(&skip, p, p), Some(Quiet::Skip("流さない時間帯（01:30-03:00）".into())));
+        assert_eq!(quiet(&def(Standing::Confirmed), p, p), None);
     }
 
     fn scratch(name: &str) -> PathBuf {

@@ -132,6 +132,15 @@ struct Waiting {
     until: Option<NaiveDateTime>,
 }
 
+/// A time of a net that came in its `quiet` hours and starts when they are
+/// over (`until`); `late` when it was already late (`missed = "once"`).
+struct Quieted {
+    def: Def,
+    planned: NaiveDateTime,
+    until: NaiveDateTime,
+    late: bool,
+}
+
 struct State {
     paths: Paths,
     store: Store,
@@ -167,6 +176,8 @@ struct State {
     sleep_after: Option<Duration>,
     /// The times held back by `wait_for`.
     waiting: Vec<Waiting>,
+    /// Times that wait for their net's `quiet` hours to be over (in memory, like `waiting`).
+    quieted: Vec<Quieted>,
     /// The line about the time the engine was not running, and when it was first told.
     outage: Option<(String, Instant)>,
     keep_days: u32,
@@ -233,6 +244,7 @@ impl State {
             power_look: None,
             sleep_after: None,
             waiting: Vec::new(),
+            quieted: Vec::new(),
             outage: None,
             keep_days,
             notify: NotifyCfg::default(),
@@ -362,7 +374,13 @@ impl State {
             let (event, title, body) = notify::delay_words(&self.words, net, r, delay, usual, now);
             notify::tell(&self.notify, event, &title, &body);
         }
-        let pending = self.runner.queued().iter().map(|q| (&q.def, q.planned)).chain(self.waiting.iter().map(|w| (&w.def, w.planned)));
+        let pending = self
+            .runner
+            .queued()
+            .iter()
+            .map(|q| (&q.def, q.planned))
+            .chain(self.waiting.iter().map(|w| (&w.def, w.planned)))
+            .chain(self.quieted.iter().map(|q| (&q.def, q.planned)));
         let mut tell = Vec::new();
         for (def, planned) in pending {
             let Some(by) = def.net.as_ref().and_then(|n| n.late_start).map(|d| d.from(planned)) else { continue };
@@ -474,28 +492,86 @@ impl State {
             let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
             let last = !due[k + 1..].iter().any(|(j, _, _)| j == i);
             let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last);
-            match verdict {
-                schedule::Verdict::Start { late } => {
-                    if let Some(w) = self.wait_of(&def, *planned) {
-                        self.waiting.push(w);
+            if let schedule::Verdict::Start { late } | schedule::Verdict::Queue { late } = verdict {
+                match schedule::quiet(&def, *planned, now.with_timezone(&Local).naive_local()) {
+                    Some(schedule::Quiet::Skip(why)) => {
+                        self.runner.not_run(&def, *planned, RunState::Skipped, &why);
                         continue;
                     }
-                    let out = if late {
-                        self.runner.start_late(&def, *planned)
-                    } else {
-                        self.runner.start(&def, planned.date(), How::Schedule, Some(*planned))
-                    };
-                    if let Err(e) = out {
-                        self.runner.not_run(&def, *planned, RunState::Locked, &e);
+                    // One time of a net waits; the next ones in the same hours are not piled up behind it.
+                    Some(schedule::Quiet::Wait(until)) => {
+                        if let Some(first) = self.quieted.iter().find(|q| q.def.id == def.id) {
+                            let why = format!("流さない時間帯。{} の回が終わりを待っている", first.planned.format("%-H:%M"));
+                            self.runner.not_run(&def, *planned, RunState::Skipped, &why);
+                        } else {
+                            self.quieted.push(Quieted { def, planned: *planned, until, late });
+                        }
+                        continue;
                     }
-                }
-                schedule::Verdict::Queue { late } => self.runner.queue(&def, *planned, late),
-                schedule::Verdict::NotRun(state, reason) => {
-                    self.runner.not_run(&def, *planned, state, &reason);
+                    None => {}
                 }
             }
+            self.begin(&def, *planned, verdict);
         }
         self.schedule.looked(now, !due.is_empty());
+    }
+
+    /// Does what `verdict` says with the time `planned` of `def`.
+    fn begin(&mut self, def: &Def, planned: NaiveDateTime, verdict: schedule::Verdict) {
+        match verdict {
+            schedule::Verdict::Start { late } => {
+                if let Some(w) = self.wait_of(def, planned) {
+                    self.waiting.push(w);
+                    return;
+                }
+                let out = if late {
+                    self.runner.start_late(def, planned)
+                } else {
+                    self.runner.start(def, planned.date(), How::Schedule, Some(planned))
+                };
+                if let Err(e) = out {
+                    self.runner.not_run(def, planned, RunState::Locked, &e);
+                }
+            }
+            schedule::Verdict::Queue { late } => self.runner.queue(def, planned, late),
+            schedule::Verdict::NotRun(state, reason) => {
+                self.runner.not_run(def, planned, state, &reason);
+            }
+        }
+    }
+
+    /// Starts the times that waited for their net's `quiet` hours when the
+    /// hours are over, judged again then (the net may be held or running now).
+    fn tick_quiet(&mut self) {
+        if self.quieted.is_empty() {
+            return;
+        }
+        let now = Local::now().naive_local();
+        for q in std::mem::take(&mut self.quieted) {
+            if now < q.until {
+                self.quieted.push(q);
+                continue;
+            }
+            if let Some((state, why)) = self.stopped(&q.def, q.planned.date()) {
+                self.runner.not_run(&q.def, q.planned, state, &why);
+                continue;
+            }
+            let running = self.runner.runs().iter().any(|r| r.jobnet == q.def.id && !r.is_over());
+            let verdict = match schedule::judge(
+                &q.def,
+                q.planned,
+                chrono::Duration::zero(),
+                &self.warnings,
+                self.bad_config.as_deref(),
+                running,
+                true,
+            ) {
+                schedule::Verdict::Start { .. } => schedule::Verdict::Start { late: q.late },
+                schedule::Verdict::Queue { .. } => schedule::Verdict::Queue { late: q.late },
+                v => v,
+            };
+            self.begin(&q.def, q.planned, verdict);
+        }
     }
 
     /// The wait a due time of `def` goes into: the net `wait_for` names is
@@ -1436,6 +1512,8 @@ pub fn run() -> i32 {
             Err(mpsc::RecvTimeoutError::Disconnected) => return 1,
         }
         state.runner.tick();
+        // Before the schedule: a time that waited out the quiet hours goes ahead of one due at their end.
+        state.tick_quiet();
         state.tick_schedule();
         state.tick_events();
         state.tick_wait();
