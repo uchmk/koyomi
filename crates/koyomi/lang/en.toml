@@ -278,6 +278,8 @@ history_to = "To"
 history_all = "All"
 history_search = "Search"
 history_count = "{0} runs"
+average = "Usually {0}"
+average_end = "Usually {0}, expected to end about {1}"
 history_none = "No runs match"
 history_bad_date = "Dates are written YYYY-MM-DD"
 

@@ -813,7 +813,27 @@ fn status(args: &[String]) -> i32 {
     if rs.is_empty() {
         out(if today { t.tr("run.none") } else { "動いている実行はありません" }, false);
     }
-    say_runs(&t, &rs);
+    // The last 30 days tell how long each running net usually takes.
+    let past = {
+        let to = chrono::Local::now().date_naive();
+        let reply = client::call(&Request::History { from: (to - chrono::Duration::days(30)).to_string(), to: to.to_string() });
+        reply.and_then(|s| Runs::parse(&s)).map(|r| r.runs).unwrap_or_default()
+    };
+    let now = chrono::Local::now().naive_local();
+    for r in &rs {
+        out(&show::run_line(&t, r), false);
+        if let Some(avg) = koyomi_core::run::average_duration(&past, &r.jobnet, 10) {
+            let end = r.expected_end(avg, now).map(show::hms);
+            let line = match end {
+                Some(e) => t.trf("run.average_end", &[&show::duration(avg), &e]),
+                None => t.trf("run.average", &[&show::duration(avg)]),
+            };
+            out(&format!("  {line}"), false);
+        }
+        for j in &r.jobs {
+            out(&format!("  {}", show::job_line(&t, j)), false);
+        }
+    }
     0
 }
 

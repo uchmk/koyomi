@@ -277,6 +277,8 @@ history_to = "終了日"
 history_all = "すべて"
 history_search = "検索"
 history_count = "{0} 件"
+average = "いつもは {0}"
+average_end = "いつもは {0}、{1} ごろに終わる見込み"
 history_none = "該当する実行はありません"
 history_bad_date = "日付は YYYY-MM-DD で書く"
 

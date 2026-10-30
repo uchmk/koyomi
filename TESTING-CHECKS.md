@@ -1,6 +1,6 @@
 # Checklist
 
-388 checks in TESTING.md, 384 left for a person.
+391 checks in TESTING.md, 387 left for a person.
 
 ## 1. Start
 
@@ -548,3 +548,9 @@
 - [ ] **53.2** Run it without `--dry` → The days run one after another, each started after the last ended 〔未訳〕
 - [ ] **53.3** Make one day fail, then run the range → It stops at that day with a non-zero exit 〔未訳〕
 - [ ] **53.4** `--date 2026-05-03..2026-05-01` → Refused: the range ends before it starts 〔未訳〕
+
+## 54. 平均の所要時間と終了の予想
+
+- [ ] **54.1** Run a net that takes a minute a few times, then start it once more and run `koyomi status` → Under the run: "いつもは …、HH:MM:SS ごろに終わる見込み" 〔未訳〕
+- [ ] **54.2** Run `koyomi status` after the run has gone past the average → Only "いつもは …" shows, with no expected time 〔未訳〕
+- [ ] **54.3** Run `koyomi status` for a net that never passed → No average line 〔未訳〕

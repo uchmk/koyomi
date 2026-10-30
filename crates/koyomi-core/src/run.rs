@@ -545,6 +545,16 @@ impl Run {
         Some(self.ended? - self.started)
     }
 
+    /// When this run is expected to end: it started at `started` and runs `average` long.
+    /// None once it is over, or when it has already gone past that (no guess is better than a past time).
+    pub fn expected_end(&self, average: chrono::Duration, now: NaiveDateTime) -> Option<NaiveDateTime> {
+        if self.is_over() {
+            return None;
+        }
+        let end = self.started + average;
+        (end > now).then_some(end)
+    }
+
     /// How many jobs run a process right now (a part that waits is not counted).
     pub fn running(&self) -> usize {
         self.jobs.iter().filter(|j| j.state == State::Running && j.part.is_job()).count()
@@ -955,6 +965,15 @@ pub fn layers(jobs: &[(&str, &[Line])]) -> Vec<Vec<usize>> {
     out
 }
 
+/// The average time the last `last` runs of `jobnet` that ended 正常 took (none when no such run).
+pub fn average_duration(runs: &[Run], jobnet: &str, last: usize) -> Option<chrono::Duration> {
+    let mut done: Vec<&Run> = runs.iter().filter(|r| r.jobnet == jobnet && r.state == State::Ok && r.ended.is_some()).collect();
+    done.sort_by_key(|r| r.started);
+    let done = &done[done.len().saturating_sub(last)..];
+    let total: i64 = done.iter().filter_map(|r| r.duration()).map(|d| d.num_seconds()).sum();
+    (!done.is_empty()).then(|| chrono::Duration::seconds(total / done.len() as i64))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -979,6 +998,28 @@ mod tests {
     fn net_of(jobs: Vec<Job>) -> Run {
         let net = Jobnet { jobs, ..Default::default() };
         Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
+    }
+
+    #[test]
+    fn the_average_and_expected_end_come_from_runs_that_passed() {
+        let mut runs = Vec::new();
+        for (i, secs) in [60, 120, 600].into_iter().enumerate() {
+            let mut r = net_of(vec![job("a", &[])]);
+            r.started = at("2026-10-30 09:00:00") + chrono::Duration::days(i as i64);
+            r.ended = Some(r.started + chrono::Duration::seconds(secs));
+            r.state = if secs == 600 { State::Error } else { State::Ok };
+            runs.push(r);
+        }
+        // the failed one is left out
+        assert_eq!(average_duration(&runs, "g/n", 10), Some(chrono::Duration::seconds(90)));
+        // only the last one that passed
+        assert_eq!(average_duration(&runs, "g/n", 1), Some(chrono::Duration::seconds(120)));
+        assert_eq!(average_duration(&runs, "g/other", 10), None);
+        let running = net_of(vec![job("a", &[])]);
+        let avg = chrono::Duration::seconds(300);
+        assert_eq!(running.expected_end(avg, at("2026-10-30 09:01:00")), Some(at("2026-10-30 09:05:00")));
+        // already past the average: no guess
+        assert_eq!(running.expected_end(avg, at("2026-10-30 09:10:00")), None);
     }
 
     /// an error line goes on when its job failed and dies when it passed; a plain line the other way round.
