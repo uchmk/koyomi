@@ -133,6 +133,12 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
             if !g.error.is_empty() {
                 parts.push(t.trf("review.judge_error", &[&jobnet::Judge::list(&g.error)]));
             }
+            if let Some(p) = &g.error_output {
+                parts.push(t.trf("review.judge_output", &[p]));
+            }
+            if let Some(p) = &g.ok_file {
+                parts.push(t.trf("review.judge_file", &[p]));
+            }
             parts.push(t.tr("review.judge_rest").to_owned());
             out.push(format!("  {}: {}", t.tr("review.judge"), parts.join("、")));
         }

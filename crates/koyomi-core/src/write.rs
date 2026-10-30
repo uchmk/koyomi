@@ -281,6 +281,12 @@ fn job(j: &Job, out: &mut String) {
         if !jd.error.is_empty() {
             parts.push(format!("error = {}", q(&Judge::list(&jd.error))));
         }
+        if let Some(p) = &jd.error_output {
+            parts.push(format!("error_output = {}", q(p)));
+        }
+        if let Some(p) = &jd.ok_file {
+            parts.push(format!("ok_file = {}", q(p)));
+        }
         if !parts.is_empty() {
             push(out, "judge", &format!("{{ {} }}", parts.join(", ")));
         }

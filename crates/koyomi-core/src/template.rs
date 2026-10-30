@@ -85,6 +85,9 @@ pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>) -> Resu
         if let Some(d) = &mut j.dir {
             *d = expand(d, date, cal).map_err(|e| at("dir", e))?;
         }
+        if let Some(f) = j.judge.as_mut().and_then(|g| g.ok_file.as_mut()) {
+            *f = expand(f, date, cal).map_err(|e| at("judge ok_file", e))?;
+        }
     }
     Ok(out)
 }

@@ -561,3 +561,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 40.2 | Start a run | `実行中 N` appears in green while it runs and goes when it ends |
 | 40.3 | `koyomi pause` | `スケジュール停止中` shows in red; `koyomi resume` clears it |
 | 40.4 | Stop the engine while the window is open | The bar says the engine is not reachable / starting |
+
+## 41. 出力とファイルでの判定
+
+| # | Do | Expect |
+|---|---|---|
+| 41.1 | A job that prints `ERROR x` and exits 0, with `judge = { error_output = "^error" }` | The job ends 異常, reason `出力に異常の行があった: ERROR x`; it is retried if `retry` is set |
+| 41.2 | A job that exits 3 and leaves `C:/out/{date}.csv`, with `judge = { ok_file = "C:/out/{date}.csv" }` | The job ends 正常; the log says the file made it normal |
+| 41.3 | Same job with the file missing | The job ends 異常 (exit 3) |
+| 41.4 | In the editor open the job | Fields 出力にあれば失敗 / あれば成功にするファイル show and save; a bad regex is refused on save |

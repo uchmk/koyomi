@@ -96,6 +96,8 @@ pub struct Fields {
     pub script: String,
     pub warn: String,
     pub error: String,
+    pub error_output: String,
+    pub ok_file: String,
     pub wait: Wait,
     pub at: String,
     pub days: String,
@@ -125,6 +127,8 @@ impl Fields {
         if let Some(j) = &job.judge {
             f.warn = Judge::list(&j.warn);
             f.error = Judge::list(&j.error);
+            f.error_output = j.error_output.clone().unwrap_or_default();
+            f.ok_file = j.ok_file.clone().unwrap_or_default();
         }
         match &job.part {
             Part::Join { wait } => f.wait = *wait,
@@ -181,7 +185,19 @@ impl Fields {
                     }
                 };
                 let (warn, error) = (ranges(&self.warn)?, ranges(&self.error)?);
-                out.judge = if warn.is_empty() && error.is_empty() { None } else { Some(Judge { warn, error }) };
+                let error_output = opt(&self.error_output);
+                if let Some(p) = &error_output {
+                    ito_match::Matcher::new(p).map_err(|e| format!("error_output が正規表現として読めない: {e}"))?;
+                }
+                let ok_file = opt(&self.ok_file);
+                if let Some(Err(e)) = ok_file.as_deref().map(koyomi_core::template::check) {
+                    return Err(format!("ok_file: {e}"));
+                }
+                out.judge = if warn.is_empty() && error.is_empty() && error_output.is_none() && ok_file.is_none() {
+                    None
+                } else {
+                    Some(Judge { warn, error, error_output, ok_file })
+                };
             }
             Part::Join { .. } => out.part = Part::Join { wait: self.wait },
             Part::Time { .. } => {
@@ -1001,6 +1017,8 @@ impl Editor {
                         changed |= r.changed();
                         changed |= field(ui, "field.warn", &mut f.warn);
                         changed |= field(ui, "field.error", &mut f.error);
+                        changed |= field(ui, "field.error_output", &mut f.error_output);
+                        changed |= field(ui, "field.ok_file", &mut f.ok_file);
                     }
                     Part::Join { .. } => {
                         ui.horizontal(|ui| {

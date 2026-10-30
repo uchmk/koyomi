@@ -891,6 +891,15 @@ struct Resolved {
     secrets: Vec<String>,
 }
 
+/// Whether the `ok_file` of a job's `judge` exists (a relative one is read from the job's `dir`).
+fn ok_file_exists(file: &str, dir: Option<&str>) -> bool {
+    let p = std::path::Path::new(file);
+    match dir {
+        Some(d) if p.is_relative() => std::path::Path::new(d).join(p).exists(),
+        _ => p.exists(),
+    }
+}
+
 /// Runs the job's process once, to its end.
 fn attempt(
     job: &JobSpec,
@@ -912,7 +921,12 @@ fn attempt(
     }
     cmd.envs(env.vars.iter().map(|(k, v)| (k, v)));
     let hidden: Vec<&str> = env.secrets.iter().map(String::as_str).collect();
+    let bad_output = job.judge.as_ref().and_then(|g| g.error_output.as_deref()).and_then(|p| ito_match::Matcher::new(p).ok());
+    let mut bad_line: Option<String> = None;
     let mut on_line = |stream: ito_proc::Stream, line: &str| {
+        if bad_line.is_none() && bad_output.as_ref().is_some_and(|m| m.is_match(line)) {
+            bad_line = Some(ito_secret::mask(line, &hidden));
+        }
         if size.capped {
             return false;
         }
@@ -948,6 +962,15 @@ fn attempt(
         }
         Ok(lines) => {
             let code = lines.status.and_then(|s| s.code()).unwrap_or(-1);
+            if let Some(line) = bad_line {
+                let _ = writeln!(file, "! 出力が error_output に合った");
+                return (Outcome::Failed, format!("出力に異常の行があった: {}", line.trim()));
+            }
+            let found = job.judge.as_ref().and_then(|g| g.ok_file.as_deref()).filter(|f| ok_file_exists(f, job.dir.as_deref()));
+            if let (Some(f), true) = (found, verdict(job.judge.as_ref(), code) != State::Ok) {
+                let _ = writeln!(file, "! {f} があるので正常（終了コード {code}）");
+                return (Outcome::Exited(0), String::new());
+            }
             (Outcome::Exited(code), String::new())
         }
         Err(e) => {
@@ -1310,6 +1333,64 @@ mod tests {
         assert_eq!((a.state, a.exit, a.retried, a.reason.as_str()), (State::Warn, Some(3), 0, "終了コード 3（警告）"));
         assert_eq!(run.job("b").unwrap().state, State::Ok);
         assert!(!r.log_tail(&id, "a").unwrap().contains("やり直し"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_line_of_output_can_make_the_end_abnormal_and_a_file_can_make_it_normal() {
+        let dir = scratch("judge-extra");
+        let run_of = |r: &mut Runner, text: &str| {
+            let d = def("net", text);
+            let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+            wait_over(r, &id)
+        };
+        let mut r = Runner::new(&dir, Config::default());
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"a\"
+{}
+judge = {{ error_output = \"^error\" }}
+",
+            echo("ERROR boom")
+        );
+        let a = run_of(&mut r, &text).job("a").unwrap().clone();
+        assert_eq!((a.state, a.exit), (State::Error, None), "{a:?}");
+        assert!(a.reason.contains("ERROR boom"), "{}", a.reason);
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"a\"
+{}
+judge = {{ error_output = \"^error\" }}
+",
+            echo("all fine")
+        );
+        assert_eq!(run_of(&mut r, &text).state, State::Ok);
+        let made = dir.join("made.txt");
+        std::fs::write(&made, "x").unwrap();
+        let ok_file = made.display().to_string().replace(char::from(92), "/");
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"a\"
+{}
+judge = {{ ok_file = '{ok_file}' }}
+",
+            fail_cmd()
+        );
+        let run = run_of(&mut r, &text);
+        assert_eq!((run.state, run.job("a").unwrap().exit), (State::Ok, Some(0)));
+        let text = format!(
+            "format = 1
+[[job]]
+id = \"a\"
+{}
+judge = {{ ok_file = '{ok_file}.none' }}
+",
+            fail_cmd()
+        );
+        assert_eq!(run_of(&mut r, &text).state, State::Error);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

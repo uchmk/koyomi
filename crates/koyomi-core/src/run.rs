@@ -1420,16 +1420,16 @@ mod tests {
     #[test]
     fn the_judge_says_what_an_exit_code_means() {
         assert_eq!((verdict(None, 0), verdict(None, 1), verdict(None, -1)), (State::Ok, State::Error, State::Error));
-        let g = Judge { warn: ranges("1,3..5").unwrap(), error: ranges("2").unwrap() };
+        let g = Judge { warn: ranges("1,3..5").unwrap(), error: ranges("2").unwrap(), ..Judge::default() };
         let v = |code| verdict(Some(&g), code);
         assert_eq!((v(0), v(1), v(2), v(3), v(5)), (State::Ok, State::Warn, State::Error, State::Warn, State::Warn));
         assert_eq!((v(6), v(-1)), (State::Error, State::Error));
         // 異常 wins where both lists have the code; 0 can be made 警告.
-        let g = Judge { warn: ranges("0..9").unwrap(), error: ranges("4").unwrap() };
+        let g = Judge { warn: ranges("0..9").unwrap(), error: ranges("4").unwrap(), ..Judge::default() };
         assert_eq!((verdict(Some(&g), 0), verdict(Some(&g), 4), verdict(Some(&g), 9)), (State::Warn, State::Error, State::Warn));
         // A 警告 end lets what follows run, and the run ends 警告.
         let mut a = job("a", &[]);
-        a.judge = Some(Judge { warn: ranges("1").unwrap(), error: Vec::new() });
+        a.judge = Some(Judge { warn: ranges("1").unwrap(), ..Judge::default() });
         let net = Jobnet { jobs: vec![a, job("b", &["a"])], ..Default::default() };
         let mut r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
         r.start("a", at("2026-10-30 09:00:01"));

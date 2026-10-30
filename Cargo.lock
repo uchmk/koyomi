@@ -2094,6 +2094,7 @@ name = "koyomi-core"
 version = "0.1.0"
 dependencies = [
  "chrono",
+ "ito-match",
  "serde",
  "sha2",
  "toml",

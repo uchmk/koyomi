@@ -292,6 +292,12 @@ pub struct Judge {
     pub warn: Vec<Range>,
     #[serde(default)]
     pub error: Vec<Range>,
+    /// A regex (smart-case): a line of the job's output that matches it makes the end 異常.
+    #[serde(default)]
+    pub error_output: Option<String>,
+    /// A file (`{date}` allowed): when it exists after the job ended, the end is 正常 whatever the code.
+    #[serde(default)]
+    pub ok_file: Option<String>,
 }
 
 impl Judge {
@@ -1197,6 +1203,27 @@ impl Checker<'_> {
             let into = match k.as_str() {
                 "warn" => &mut judge.warn,
                 "error" => &mut judge.error,
+                "error_output" | "ok_file" => {
+                    let toml::Value::String(s) = v else {
+                        self.add(at, format!("judge の {k} は文字列で書く"));
+                        ok = false;
+                        continue;
+                    };
+                    if k == "error_output" {
+                        if let Err(e) = ito_match::Matcher::new(s) {
+                            self.add(at, format!("judge の error_output が正規表現として読めない: {e}"));
+                            ok = false;
+                        }
+                        judge.error_output = Some(s.clone());
+                    } else {
+                        if let Err(e) = crate::template::check(s) {
+                            self.add(at, format!("judge の ok_file: {e}"));
+                            ok = false;
+                        }
+                        judge.ok_file = Some(s.clone());
+                    }
+                    continue;
+                }
                 _ => {
                     self.add(at, format!("judge に知らない欄 {k}"));
                     ok = false;
@@ -1220,7 +1247,7 @@ impl Checker<'_> {
                 }
             }
         }
-        if ok && judge.warn.is_empty() && judge.error.is_empty() {
+        if ok && judge.warn.is_empty() && judge.error.is_empty() && judge.error_output.is_none() && judge.ok_file.is_none() {
             self.add(at, format!("judge が空（{SHAPE}）"));
             ok = false;
         }
@@ -1754,17 +1781,37 @@ timeout = \"30\"
     }
 
     #[test]
+    fn a_judge_may_look_at_the_output_and_a_file() {
+        let job = |judge: &str| {
+            format!(
+                "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+{judge}
+"
+            )
+        };
+        let g =
+            parse(&job("judge = { error_output = \"ERROR\", ok_file = \"C:/out/{date}.csv\" }")).unwrap().jobs[0].judge.clone().unwrap();
+        assert_eq!((g.error_output.as_deref(), g.ok_file.as_deref()), (Some("ERROR"), Some("C:/out/{date}.csv")));
+        assert!(problems(&job("judge = { error_output = \"(\" }"))[0].contains("正規表現"));
+        assert!(problems(&job("judge = { ok_file = \"{date-}\" }"))[0].contains("ok_file"));
+        assert!(problems(&job("judge = { ok_file = 1 }"))[0].contains("文字列"));
+    }
+
+    #[test]
     fn a_judge_reads_ranges_of_exit_codes() {
         let job = |judge: &str| format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{judge}\n");
         let r = |from, to| Range { from, to };
         let net = parse(&job("judge = { warn = \"1\", error = \"2..\" }")).unwrap();
-        assert_eq!(net.jobs[0].judge, Some(Judge { warn: vec![r(1, 1)], error: vec![r(2, i32::MAX)] }));
+        assert_eq!(net.jobs[0].judge, Some(Judge { warn: vec![r(1, 1)], error: vec![r(2, i32::MAX)], ..Judge::default() }));
         let net = parse(&job("judge = { warn = \"1,3..5, ..-1\" }")).unwrap();
         let warn = vec![r(1, 1), r(3, 5), r(i32::MIN, -1)];
-        assert_eq!(net.jobs[0].judge, Some(Judge { warn: warn.clone(), error: Vec::new() }));
+        assert_eq!(net.jobs[0].judge, Some(Judge { warn: warn.clone(), ..Judge::default() }));
         assert_eq!(Judge::list(&warn), "1,3..5,..-1");
         assert_eq!(Judge::list(&[r(i32::MIN, i32::MAX), r(2, i32::MAX)]), "..,2..");
-        assert_eq!(parse(&job("judge = { error = 1 }")).unwrap().jobs[0].judge, Some(Judge { warn: Vec::new(), error: vec![r(1, 1)] }));
+        assert_eq!(parse(&job("judge = { error = 1 }")).unwrap().jobs[0].judge, Some(Judge { error: vec![r(1, 1)], ..Judge::default() }));
         assert_eq!(parse(&job("")).unwrap().jobs[0].judge, None);
         let at = "a.toml の 5 行目: ";
         let shape = "judge は { warn = \"1\", error = \"2..\" } の形で書く";
