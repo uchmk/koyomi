@@ -1,7 +1,7 @@
 //! What the window and the CLI say to the engine through its door, and what the engine says back.
 //!
 //! One request and one reply per connection (`ito_ipc::door`). The reply is
-//! text: TOML for `List`, `Show`, `Runs`, `History` and `Versions`, the log's tail for `Log`, a line for the rest.
+//! text: TOML for `List`, `Show`, `Runs`, `History`, `Versions` and `Tray`, the log's tail for `Log`, a line for the rest.
 
 use std::collections::BTreeMap;
 
@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 25;
+pub const PROTO: u32 = 26;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -184,6 +184,11 @@ pub enum Request {
         from: String,
         to: String,
     },
+    /// What `koyomi tray` shows, as a [`TrayView`], with the notices kept after
+    /// `since` (`None`: none, only the number of the last one).
+    Tray {
+        since: Option<u64>,
+    },
 }
 
 pub fn door() -> Door<Request> {
@@ -316,6 +321,49 @@ impl Plan {
     }
 }
 
+/// A notice the engine keeps for `koyomi tray` to show, numbered from 1.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Note {
+    pub seq: u64,
+    pub event: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// What `Tray` answers: the tray's badge, tip and menu as the engine works them out.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct TrayView {
+    /// `error`, `warning`, `running`, `paused` or `done`.
+    #[serde(default)]
+    pub badge: String,
+    #[serde(default)]
+    pub tip: String,
+    #[serde(default)]
+    pub paused: bool,
+    /// Job processes running.
+    #[serde(default)]
+    pub busy: usize,
+    /// The engine has its own tray (it was not started with `--no-tray`):
+    /// `koyomi tray` would only be a second icon.
+    #[serde(default)]
+    pub own: bool,
+    #[serde(default, rename = "note")]
+    pub notes: Vec<Note>,
+    /// The number of the last notice kept (0: none yet).
+    #[serde(default)]
+    pub last: u64,
+}
+
+impl TrayView {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<TrayView, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
 /// What `Runs` answers: oldest first.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Runs {
@@ -353,5 +401,21 @@ mod tests {
             let Request::Run { id, date, from, dry, params: got } = round(&sent) else { panic!("not a run") };
             assert_eq!((id.as_str(), date, from.as_deref(), dry, got), ("g/a", None, Some("b"), true, params));
         }
+    }
+
+    #[test]
+    fn a_tray_view_reads_back() {
+        let Request::Tray { since } = round(&Request::Tray { since: Some(7) }) else { panic!("not a tray") };
+        assert_eq!(since, Some(7));
+        let view = TrayView {
+            badge: "error".into(),
+            tip: "koyomi · 異常 1".into(),
+            busy: 2,
+            notes: vec![Note { seq: 8, event: "failed".into(), title: "t".into(), body: "b\nc".into() }],
+            last: 8,
+            ..TrayView::default()
+        };
+        assert_eq!(TrayView::parse(&view.to_toml()).unwrap(), view);
+        assert_eq!(TrayView::parse("").unwrap(), TrayView::default());
     }
 }

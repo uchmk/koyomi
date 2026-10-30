@@ -1,6 +1,6 @@
 # Checklist
 
-625 checks in TESTING.md, 621 left for a person.
+632 checks in TESTING.md, 628 left for a person.
 
 ## 1. Start
 
@@ -887,3 +887,13 @@
 - [ ] **87.7** `koyomi secret delete koyomi-http` and restart the engine; or take 8790 with another program first → A note says it cannot listen and why; it is tried again every 60 s; once fixed it listens without a restart 〔未訳〕
 - [ ] **87.8** Remove `[http]` while the engine runs → It stops listening within a few seconds; `koyomi status` has no HTTP line 〔未訳〕
 - [ ] **87.9** `ipv6 = true`; `curl -g "http://[::1]:8790/runs/<id>"` with the token → Answers the same as on 127.0.0.1 〔未訳〕
+
+## 88. The tray apart from the engine (`koyomi engine --no-tray`, `koyomi tray`, TODO 86)
+
+- [ ] **88.1** `koyomi engine --no-tray` → No koyomi icon in the task tray; `koyomi engine status` answers 〔未訳〕
+- [ ] **88.2** Then `koyomi tray` → The icon appears with the engine's color and tooltip; a second `koyomi tray` says `トレイはもう動いている` and exits 1 〔未訳〕
+- [ ] **88.3** Run a net that ends ✕ with `[notify] system` on for failures → The tray shows the OS notification within about a second; the engine shows none itself 〔未訳〕
+- [ ] **88.4** Right-click the icon → The last item reads `トレイを閉じる（エンジンは動き続ける）` and is enabled even while a job runs; 一時停止 pauses the engine (`koyomi engine status` says so) 〔未訳〕
+- [ ] **88.5** `koyomi engine stop` while the tray is up → The icon turns grey with `koyomi · エンジンは動いていない`; start the engine again with `--no-tray` and it comes back without old notifications 〔未訳〕
+- [ ] **88.6** Pick トレイを閉じる → The tray exits; `koyomi engine status` still answers 〔未訳〕
+- [ ] **88.7** `koyomi engine` (with its own tray), then `koyomi tray` → `koyomi tray` says the engine has its own tray and exits 1 〔未訳〕

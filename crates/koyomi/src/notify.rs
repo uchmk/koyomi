@@ -9,7 +9,12 @@
 //! to until `hide_webhooks = false` says that is meant. A mail's password is
 //! only ever `secret:<name>`.
 
+use std::collections::VecDeque;
+use std::sync::Mutex;
+
 use chrono::{Duration, NaiveDateTime};
+
+use crate::proto::Note;
 use ito_i18n::Table;
 use ito_notify::toast::App;
 use ito_prefs::{Event, NotifyCfg, DONE_FAILED};
@@ -329,9 +334,86 @@ pub fn unknown(n: &NotifyCfg, net: &Jobnet) -> Vec<String> {
     out
 }
 
-/// Tells of `event` in every way `n` turns on for it.
+/// Tells of `event` in every way `n` turns on for it. While the engine has no
+/// tray of its own ([`hand_to_tray`]), the system's notification and the sound
+/// are kept for `koyomi tray` instead.
 pub fn tell(n: &NotifyCfg, event: &str, title: &str, body: &str) {
-    n.tell(&EVENTS, APP, icon, event, title, body);
+    let Some(rest) = keep_for_tray(n, event, title, body) else {
+        return n.tell(&EVENTS, APP, icon, event, title, body);
+    };
+    rest.tell(&EVENTS, APP, icon, event, title, body);
+}
+
+/// Shows on this desktop what `koyomi tray` took from the engine: the
+/// system's notification and the sound as `n` turns them on, nothing else.
+pub fn tell_here(n: &NotifyCfg, note: &Note) {
+    let mut here = n.clone();
+    here.places.clear();
+    here.mail_places.clear();
+    here.tell(&EVENTS, APP, icon, &note.event, &note.title, &note.body);
+}
+
+/// How many notices are kept for a tray that does not come for them.
+const KEPT: usize = 50;
+
+#[derive(Default)]
+struct Kept {
+    last: u64,
+    notes: VecDeque<Note>,
+}
+
+impl Kept {
+    /// Keeps the notice when `n` shows or sounds `event`; then `n` without those two, for the rest.
+    fn keep(&mut self, n: &NotifyCfg, event: &str, title: &str, body: &str) -> NotifyCfg {
+        let on = |l: &Option<Vec<String>>| l.as_ref().is_some_and(|l| l.iter().any(|e| e == event));
+        if on(&n.system) || on(&n.sound) {
+            self.last += 1;
+            self.notes.push_back(Note { seq: self.last, event: event.to_owned(), title: title.to_owned(), body: body.to_owned() });
+            if self.notes.len() > KEPT {
+                self.notes.pop_front();
+            }
+        }
+        let mut rest = n.clone();
+        rest.system = Some(Vec::new());
+        rest.sound = Some(Vec::new());
+        rest
+    }
+
+    /// The notices after `since`; a `since` past the last (the engine started
+    /// again since the tray last asked) gets every one kept.
+    fn after(&self, since: u64) -> Vec<Note> {
+        let since = if since > self.last { 0 } else { since };
+        self.notes.iter().filter(|n| n.seq > since).cloned().collect()
+    }
+}
+
+/// The notices kept for `koyomi tray`; `None` while the engine shows them itself.
+static FOR_TRAY: Mutex<Option<Kept>> = Mutex::new(None);
+
+/// From now on the system's notification and the sound are kept for `koyomi tray`
+/// (the engine runs where it cannot show them, or without a tray of its own).
+pub fn hand_to_tray() {
+    let mut k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
+    k.get_or_insert_with(Kept::default);
+}
+
+/// Whether the notices are kept for `koyomi tray`.
+pub fn handed_to_tray() -> bool {
+    FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner()).is_some()
+}
+
+/// The notices kept after `since` (`None`: none), and the number of the last one.
+pub fn for_tray(since: Option<u64>) -> (Vec<Note>, u64) {
+    let k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(k) = k.as_ref() else { return (Vec::new(), 0) };
+    (since.map(|s| k.after(s)).unwrap_or_default(), k.last)
+}
+
+/// When the notices are handed to the tray: keeps this one for it, and gives
+/// `n` without the system's notification and the sound. `None`: the engine shows it itself.
+fn keep_for_tray(n: &NotifyCfg, event: &str, title: &str, body: &str) -> Option<NotifyCfg> {
+    let mut k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
+    Some(k.as_mut()?.keep(n, event, title, body))
 }
 
 /// Like [`tell`], with the end of the failed jobs' logs: the system's
@@ -343,7 +425,7 @@ pub fn tell_tail(n: &NotifyCfg, event: &str, title: &str, body: &str, tail: &Tai
     let mut here = n.clone();
     here.places.clear();
     here.mail_places.clear();
-    here.tell(&EVENTS, APP, icon, event, title, &format!("{body}\n{}", tail.line));
+    tell(&here, event, title, &format!("{body}\n{}", tail.line));
     let mut hooks = n.clone();
     hooks.system = Some(Vec::new());
     hooks.sound = Some(Vec::new());
@@ -601,5 +683,29 @@ run = [\"x\"]
         let two = vec![miss("x", "g/n", "2026-10-29 02:00:00"), miss("y", "g/n", "2026-10-30 02:00:00")];
         let (_, _, body) = missed_words(&t, &two);
         assert!(body.starts_with("g/n: 10/29 2:00、10/30 2:00 の回は"), "{body}");
+    }
+
+    /// with the notices handed to `koyomi tray`, only what shows or sounds is kept,
+    /// the webhooks still go, and a tray that comes back after a restart gets all kept.
+    #[test]
+    fn the_tray_gets_what_would_show_or_sound() {
+        let mut n = NotifyCfg::default();
+        n.system = Some(vec!["failed".into()]);
+        n.sound = Some(vec!["warn".into()]);
+        n.places = vec![Default::default()];
+        let mut k = Kept::default();
+        let rest = k.keep(&n, "failed", "t1", "b1");
+        assert_eq!((rest.system.as_deref(), rest.sound.as_deref(), rest.places.len()), (Some(&[][..]), Some(&[][..]), 1));
+        k.keep(&n, "ok", "t2", "b2");
+        k.keep(&n, "warn", "t3", "b3");
+        assert_eq!(k.after(0).iter().map(|n| (n.seq, n.title.as_str())).collect::<Vec<_>>(), [(1, "t1"), (2, "t3")]);
+        assert_eq!(k.after(1).len(), 1);
+        assert_eq!(k.after(2).len(), 0);
+        assert_eq!(k.after(9).len(), 2);
+        for i in 0..KEPT + 5 {
+            k.keep(&n, "failed", &i.to_string(), "");
+        }
+        assert_eq!(k.notes.len(), KEPT);
+        assert_eq!(k.after(0).first().map(|n| n.seq), Some(k.last - KEPT as u64 + 1));
     }
 }

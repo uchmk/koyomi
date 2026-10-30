@@ -102,6 +102,10 @@ usage: koyomi [--version | --help | env]
                                      kept under versions/; the nets come in unconfirmed; --dry-run: only say)
                                      a Task Scheduler task's XML (schtasks /query /xml) comes in as one net
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
+       koyomi engine --no-tray       the engine without its tray icon: the system's notifications and the
+                                     sounds wait for koyomi tray to show them
+       koyomi tray                   the tray icon and the notifications for an engine started with --no-tray
+                                     (its menu closes only the tray)
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
        koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send or fetch job takes (host_key = SHA256:…)
@@ -121,7 +125,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 39] = [
+const COMMANDS: [&str; 40] = [
     "check",
     "list",
     "show",
@@ -157,6 +161,7 @@ const COMMANDS: [&str; 39] = [
     "export",
     "import",
     "engine",
+    "tray",
     "startup",
     "secret",
     "sftp",
@@ -217,6 +222,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "export" => export(rest),
         "import" => import(rest),
         "engine" => engine_cmd(rest),
+        "tray" if rest.is_empty() => engine::apart(),
+        "tray" => usage("tray takes nothing"),
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
         "sftp" => crate::sftp::cmd(rest),
@@ -1578,7 +1585,8 @@ fn kill(args: &[String]) -> i32 {
 
 fn engine_cmd(args: &[String]) -> i32 {
     match args {
-        [] => engine::run(),
+        [] => engine::run(true),
+        [a] if a == "--no-tray" => engine::run(false),
         [a] if a == "status" => match ask(&proto::door(), &Request::Status) {
             Ok(text) => {
                 out(&format!("{text}\n{}", startup_line()), false);
@@ -1599,7 +1607,7 @@ fn engine_cmd(args: &[String]) -> i32 {
                 1
             }
         },
-        _ => usage("engine takes status or stop"),
+        _ => usage("engine takes status, stop or --no-tray"),
     }
 }
 

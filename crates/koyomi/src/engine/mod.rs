@@ -42,10 +42,12 @@ mod retain;
 mod runner;
 mod schedule;
 mod tray;
+
 use backup::Backup;
 use retain::Retain;
 use runner::Runner;
 use schedule::Schedule;
+pub use tray::apart;
 
 /// Where everything of the engine's lives.
 #[derive(Clone, Debug)]
@@ -451,6 +453,21 @@ impl State {
         let now = Local::now().naive_local();
         let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, now, false) };
         tray::look(&self.words, &self.runner.today(), self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
+    }
+
+    /// What `koyomi tray` asks for: the look, and the notices kept for it after `since`.
+    fn tray_view(&self, since: Option<u64>) -> proto::TrayView {
+        let look = self.tray_look();
+        let (notes, last) = notify::for_tray(since);
+        proto::TrayView {
+            badge: tray::badge(look.state).to_owned(),
+            tip: look.tip,
+            paused: look.paused,
+            busy: look.busy,
+            own: !notify::handed_to_tray(),
+            notes,
+            last,
+        }
     }
 
     fn tick_awake(&mut self) {
@@ -1677,6 +1694,7 @@ impl State {
 ",
                 ))
             }
+            Request::Tray { since } => Ok(self.tray_view(*since).to_toml()),
         }
     }
 }
@@ -1801,7 +1819,9 @@ fn why_key(why: ito_power::WhyNot) -> Option<&'static str> {
 }
 
 /// Runs until `koyomi engine stop`. The exit code: 0 after a stop, 1 when another engine is already up.
-pub fn run() -> i32 {
+/// Without `own_tray` (`koyomi engine --no-tray`) there is no icon here, and the
+/// system's notifications and the sounds are kept for `koyomi tray` to show.
+pub fn run(own_tray: bool) -> i32 {
     let paths = match Paths::find() {
         Ok(p) => p,
         Err(e) => {
@@ -1852,7 +1872,10 @@ pub fn run() -> i32 {
     watcher.watch(vec![paths.jobnets.clone(), paths.calendars.clone()]);
 
     let mut state = State::new(paths);
-    let mut tray = tray::Tray::start(&state.words);
+    let mut tray = if own_tray { tray::Tray::start(&state.words) } else { None };
+    if !own_tray {
+        notify::hand_to_tray();
+    }
     let mut last_scan = Instant::now();
     let mut changed_at: Option<Instant> = None;
     loop {
