@@ -291,10 +291,19 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
         add("run.reason", koyomi_core::run::tidy_reason(&j.reason));
     }
     if j.part.runs_process() {
-        let cmd = j.command();
-        if !cmd.is_empty() {
-            add("run.command", cmd.join(" "));
+        // The script as written (not the encoded form it is run with).
+        let cmd = match (&j.shell, &j.script) {
+            (Some(shell), Some(script)) => format!("{shell}: {script}"),
+            _ => j.run.join(" "),
+        };
+        if !cmd.trim().is_empty() {
+            add("run.command", cmd);
         }
+    }
+    if !j.env.is_empty() {
+        // A `secret:<name>` value is a reference to the credential store; it is never shown.
+        let env: Vec<String> = j.env.iter().map(|(k, v)| format!("{k}={}", if v.starts_with("secret:") { "***" } else { v })).collect();
+        add("run.env", env.join("  "));
     }
     rows
 }
@@ -354,6 +363,23 @@ error low",
         assert_eq!(get("run.retried").as_deref(), Some("2 / 3"));
         assert_eq!(get("run.command").as_deref(), Some("x.exe -v"));
         assert_eq!(get("run.start"), None);
+    }
+
+    #[test]
+    fn job_facts_show_the_script_and_hide_secret_env() {
+        let (t, _) = crate::i18n::table("en");
+        let job = koyomi_core::jobnet::Job {
+            id: "a".into(),
+            shell: Some("powershell".into()),
+            script: Some("Get-Date".into()),
+            env: [("DB_PASS".to_owned(), "secret:db".to_owned()), ("MODE".to_owned(), "full".to_owned())].into(),
+            ..Default::default()
+        };
+        let rows = job_facts(&t, &JobRun::from_job(&job));
+        let get = |k: &str| rows.iter().find(|r| r.0 == t.tr(k)).map(|r| r.1.clone());
+        assert_eq!(get("run.command").as_deref(), Some("powershell: Get-Date"));
+        let env = get("run.env").unwrap();
+        assert!(env.contains("DB_PASS=***") && env.contains("MODE=full") && !env.contains("secret:db"), "{env}");
     }
 
     #[test]
