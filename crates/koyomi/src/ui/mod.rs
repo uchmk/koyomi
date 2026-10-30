@@ -260,6 +260,8 @@ pub struct Browser {
     autostart_off: bool,
     /// The calendar picked on the left; when it is set, the detail is its month.
     cal_sel: Option<String>,
+    /// Groups folded in the tree (this session only).
+    folded: BTreeSet<String>,
     /// The month shown, when it is not this one.
     cal_month: Option<(i32, u32)>,
     /// What the last click on a day did to the file, shown under the month.
@@ -371,6 +373,7 @@ impl Browser {
             notes: Vec::new(),
             autostart_off: false,
             cal_sel: None,
+            folded: BTreeSet::new(),
             cal_month: None,
             cal_result: None,
             hist: None,
@@ -1364,14 +1367,29 @@ impl Browser {
         for d in &snap.defs {
             if group != Some(d.group.as_str()) {
                 group = Some(&d.group);
-                let r = ui.add(egui::Label::new(egui::RichText::new(&d.group).strong().color(c.dim)).sense(egui::Sense::click()));
+                let mark = if self.folded.contains(&d.group) { "▶" } else { "▼" };
+                let todo = snap.defs.iter().filter(|x| x.group == d.group && x.standing != Standing::Confirmed).count();
+                let mut head = egui::text::LayoutJob::default();
+                let font = egui::TextStyle::Body.resolve(ui.style());
+                let fmt = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
+                head.append(&format!("{mark} {}", d.group), 0.0, fmt(c.dim));
+                if todo > 0 {
+                    head.append(&format!("  ✕{todo}"), 0.0, fmt(c.err));
+                }
+                let r = ui.add(egui::Label::new(head).sense(egui::Sense::click()));
                 ito_a11y::say(&r, Role::Heading, &d.group);
+                if r.clicked() && !self.folded.remove(&d.group) {
+                    self.folded.insert(d.group.clone());
+                }
                 r.context_menu(|ui| {
                     if ui.button(t.tr("tree.new_here")).clicked() {
                         make_in = Some(d.group.clone());
                         ui.close();
                     }
                 });
+            }
+            if self.folded.contains(&d.group) {
+                continue;
             }
             let text = review::row(t, d, snap.held.contains(&d.id));
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
@@ -2325,6 +2343,7 @@ mod tests {
             notes: Vec::new(),
             autostart_off: false,
             cal_sel: None,
+            folded: BTreeSet::new(),
             cal_month: None,
             cal_result: None,
             hist: None,
