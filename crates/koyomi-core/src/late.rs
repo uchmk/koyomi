@@ -69,10 +69,12 @@ pub enum Delay {
     End,
     /// Has run at least twice its usual time.
     Slow,
+    /// Is expected (begun + usual time) to end after `late_end`; told before it passes.
+    Miss,
 }
 
 impl Delay {
-    pub const ALL: [Delay; 3] = [Delay::Start, Delay::End, Delay::Slow];
+    pub const ALL: [Delay; 4] = [Delay::Start, Delay::End, Delay::Slow, Delay::Miss];
 
     /// The key of its word in the language table (`late.start` …).
     pub fn key(self) -> &'static str {
@@ -80,6 +82,7 @@ impl Delay {
             Delay::Start => "late.start",
             Delay::End => "late.end",
             Delay::Slow => "late.slow",
+            Delay::Miss => "late.miss",
         }
     }
 }
@@ -118,6 +121,12 @@ pub fn overdue(net: &Jobnet, r: &Run, usual: Option<Duration>, now: NaiveDateTim
     if let Some(d) = net.late_end {
         if running && now >= d.from(r.planned.unwrap_or(r.started)) {
             out.push(Delay::End);
+        }
+    }
+    if let (Some(d), true, Some(u), Some(b)) = (net.late_end, running, usual, begun(r)) {
+        let by = d.from(r.planned.unwrap_or(r.started));
+        if now < by && b + u > by {
+            out.push(Delay::Miss);
         }
     }
     if let (true, true, Some(u)) = (net.watches_slow(), running, usual) {
@@ -184,6 +193,20 @@ mod tests {
         assert_eq!(overdue(&n, &r, None, at("2026-10-31 06:00")), vec![Delay::End]);
         r.delays.push(Delay::End);
         assert!(overdue(&n, &r, None, at("2026-10-31 07:00")).is_empty(), "told once");
+    }
+
+    #[test]
+    fn a_run_expected_to_end_after_late_end_is_told_before_it_passes() {
+        let n = net(None, Some("06:00"));
+        let mut r = run(&n, "2026-10-30 22:00");
+        r.start("a", at("2026-10-31 04:00"));
+        let usual = Some(Duration::hours(3));
+        assert_eq!(overdue(&n, &r, usual, at("2026-10-31 04:01")), vec![Delay::Miss]);
+        assert!(overdue(&n, &r, Some(Duration::hours(1)), at("2026-10-31 04:01")).is_empty(), "expected in time");
+        assert!(overdue(&n, &r, None, at("2026-10-31 04:01")).is_empty(), "no usual time yet");
+        r.delays.push(Delay::Miss);
+        assert!(overdue(&n, &r, usual, at("2026-10-31 04:02")).is_empty(), "told once");
+        assert_eq!(overdue(&n, &r, usual, at("2026-10-31 06:00")), vec![Delay::End], "still told when it passes");
     }
 
     #[test]

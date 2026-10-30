@@ -218,11 +218,13 @@ late_start = "{0}: not started by {1}"
 late_start_began = "{0}: started after {1} ({2})"
 late_end = "{0}: not over by {1}"
 late_slow = "{0}: usually {1}, running for {2} now"
+late_miss = "{0}: at the usual pace it ends {2}, after {1}"
 
 [late]
 start = "late start"
 end = "late end"
 slow = "longer than usual"
+miss = "expected to end late"
 
 [compare]
 none = "(none)"

@@ -193,6 +193,11 @@ pub fn delay_words(
             let by = net.late_end.map_or_else(String::new, |d| moment(d.from(r.planned.unwrap_or(r.started)), now));
             t.trf("notify.late_end", &[&r.title, &by])
         }
+        Delay::Miss => {
+            let by = net.late_end.map_or_else(String::new, |d| moment(d.from(r.planned.unwrap_or(r.started)), now));
+            let at = late::begun(r).zip(usual).map_or_else(String::new, |(b, u)| moment(b + u, now));
+            t.trf("notify.late_miss", &[&r.title, &by, &at])
+        }
         Delay::Slow => {
             let so_far = late::begun(r).map_or(Duration::zero(), |b| now - b);
             t.trf("notify.late_slow", &[&r.title, &show::duration(usual.unwrap_or_default()), &show::duration(so_far)])
