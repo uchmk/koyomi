@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 12;
+pub const PROTO: u32 = 13;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -121,6 +121,10 @@ pub enum Request {
         text: String,
         dry_run: bool,
         on_conflict: Option<String>,
+    },
+    /// Where a calendar, a net (`グループ/名前`) or a program is used, one line each.
+    Uses {
+        target: String,
     },
     /// What people did by hand from `from` to `to` (`YYYY-MM-DD`), one line each, oldest first.
     Ops {

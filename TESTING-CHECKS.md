@@ -1,6 +1,6 @@
 # Checklist
 
-355 checks in TESTING.md, 351 left for a person.
+359 checks in TESTING.md, 355 left for a person.
 
 ## 1. Start
 
@@ -485,3 +485,10 @@
 - [ ] **43.2** Run a net by hand, save one in the editor, then `koyomi ops` → `run` and `save` lines appear 〔未訳〕
 - [ ] **43.3** A refused operation (hold a net that is already held) → No line is written 〔未訳〕
 - [ ] **43.4** `koyomi ops --from <yesterday>` after restarting the engine → The earlier lines are still there; `koyomi history` is unchanged 〔未訳〕
+
+## 44. 使っている所を探す
+
+- [ ] **44.1** `koyomi uses <calendar name>` → Lines `calendar   g/x` for each net that counts by it 〔未訳〕
+- [ ] **44.2** `koyomi uses g/a` where g/b has a child-net job `use = "g/a"` and `after_jobnet = "g/a"` → `child net  g/b (job …)` and `follows    g/b (on Ok)` 〔未訳〕
+- [ ] **44.3** `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) → `program    g/x (job …)`; the folder and `.exe` do not matter 〔未訳〕
+- [ ] **44.4** `koyomi uses nothing-here` → `(not used)` 〔未訳〕

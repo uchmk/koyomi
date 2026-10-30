@@ -52,6 +52,8 @@ usage: koyomi [--version | --help | env]
                                      the definition does not change; --cancel takes the move back
        koyomi ops [--from YYYY-MM-DD] [--to YYYY-MM-DD]
                                      what people did by hand (run, kill, hold, save, approve ...), oldest first (today when none)
+       koyomi uses <calendar|group/name|program>
+                                     where it is used: nets by calendar, child nets, nets that wait for or follow it, jobs that run it
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
@@ -83,9 +85,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 27] = [
+const COMMANDS: [&str; 28] = [
     "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "shift",
-    "ops", "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
+    "ops", "uses", "pause", "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -123,6 +125,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "skip" => skip(rest),
         "shift" => shift(rest),
         "ops" => ops(rest),
+        "uses" => uses(rest),
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
         "calendar" => calendar(rest),
@@ -1050,6 +1053,21 @@ fn shift(args: &[String]) -> i32 {
         [id, from, to] if to == "--cancel" => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: None }),
         [id, from, to] => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: Some(at(to)) }),
         _ => usage("shift takes a group/name, its time and the new time (or --cancel)"),
+    }
+}
+
+fn uses(args: &[String]) -> i32 {
+    let [target] = args else { return usage("uses takes one calendar, group/name or program") };
+    match client::call(&Request::Uses { target: target.replace(char::from(92), "/") }) {
+        Ok(text) if text.is_empty() => {
+            out("(not used)", false);
+            0
+        }
+        Ok(text) => {
+            out(&text, false);
+            0
+        }
+        Err(e) => fail(&e),
     }
 }
 

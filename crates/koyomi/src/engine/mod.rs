@@ -1034,6 +1034,10 @@ impl State {
             Request::Versions { id } => self.versions(id),
             Request::Restore { id, version } => self.restore(id, version),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
+            Request::Uses { target } => Ok(koyomi_core::uses::find(&self.defs, target).join(
+                "
+",
+            )),
             Request::Ops { from, to } => {
                 let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {s}"));
                 Ok(self.runner.ops(day(from)?, day(to)?)?.join(

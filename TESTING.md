@@ -589,3 +589,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 43.3 | A refused operation (hold a net that is already held) | No line is written |
 | 43.4 | `koyomi ops --from <yesterday>` after restarting the engine | The earlier lines are still there; `koyomi history` is unchanged |
 
+## 44. 使っている所を探す
+
+| # | Do | Expect |
+|---|---|---|
+| 44.1 | `koyomi uses <calendar name>` | Lines `calendar   g/x` for each net that counts by it |
+| 44.2 | `koyomi uses g/a` where g/b has a child-net job `use = "g/a"` and `after_jobnet = "g/a"` | `child net  g/b (job …)` and `follows    g/b (on Ok)` |
+| 44.3 | `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) | `program    g/x (job …)`; the folder and `.exe` do not matter |
+| 44.4 | `koyomi uses nothing-here` | `(not used)` |
+
