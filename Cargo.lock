@@ -2636,6 +2636,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-service"
+version = "0.152.1"
+source = "git+https://github.com/uchmk/ito?rev=9d49ce6ac45c670f229b327b62dd170cd946f797#9d49ce6ac45c670f229b327b62dd170cd946f797"
+dependencies = [
+ "windows",
+]
+
+[[package]]
 name = "ito-sftp"
 version = "0.152.1"
 source = "git+https://github.com/uchmk/ito?rev=9d49ce6ac45c670f229b327b62dd170cd946f797#9d49ce6ac45c670f229b327b62dd170cd946f797"
@@ -2874,6 +2882,7 @@ dependencies = [
  "ito-prefs",
  "ito-proc",
  "ito-secret",
+ "ito-service",
  "ito-sftp",
  "ito-statusbar",
  "ito-tail",

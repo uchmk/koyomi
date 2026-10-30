@@ -1093,3 +1093,18 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 88.5 | `koyomi engine stop` while the tray is up | The icon turns grey with `koyomi · エンジンは動いていない`; start the engine again with `--no-tray` and it comes back without old notifications |
 | 88.6 | Pick トレイを閉じる | The tray exits; `koyomi engine status` still answers |
 | 88.7 | `koyomi engine` (with its own tray), then `koyomi tray` | `koyomi tray` says the engine has its own tray and exits 1 |
+
+## 89. The engine as a Windows service (`koyomi service`, TODO 86)
+
+| # | Do | Expect |
+|---|---|---|
+| 89.1 | `koyomi service status`; `koyomi service start`; `koyomi service run` (not elevated, nothing installed) | `サービスは入っていない`; `入っていない` and exit 1; `サービスとして起こされたときだけ動く` and exit 2 |
+| 89.2 | `koyomi service install` in a terminal that is not elevated | It asks for the password, then says `管理者の権限が要る。「管理者として実行」…`; nothing is installed |
+| 89.3 | `koyomi engine stop`; `koyomi startup on`; then `koyomi service install` in an elevated terminal, giving your Windows password | It says it installed `koyomi-<user>` and started it; `services.msc` shows `koyomi (<user>)`, 自動（遅延開始）, logged on as you; `koyomi startup` says `トレイだけ` |
+| 89.4 | In a terminal that is not elevated: `koyomi service stop`, `koyomi service status`, `koyomi service start` | Each works without an administrator; status shows 止まっている then 動いている（pid …） |
+| 89.5 | With the service running: `koyomi engine status`; open the window; `koyomi run g/a` | The window and the CLI talk to the service's engine; no second engine starts; the run goes |
+| 89.6 | `koyomi service stop` while a long job runs | The job's process tree ends (as with `koyomi engine stop`); the run ends 強制終了; `engine.log` in the settings folder has the engine's lines with times |
+| 89.7 | With the service stopped, open the window or `koyomi status` | `サービスのエンジンが止まっている。koyomi service start で始める`; no engine is started by hand |
+| 89.8 | Sign out; wait past a net's scheduled time; sign in | The net ran while you were signed out; the tray (started at sign-in) shows the result |
+| 89.9 | Give a wrong password at install, then `koyomi service start` | Start says the service could not sign in, and that the password is wrong |
+| 89.10 | `koyomi service uninstall` (elevated) | The service is gone; `koyomi startup` points at the engine again; opening the window starts an engine as before |

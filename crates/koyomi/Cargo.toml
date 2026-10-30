@@ -37,6 +37,8 @@ ito-keyscript = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f2
 # `?` / F1: the key help.
 ito-help = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
 ito-secret = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
+# `koyomi service`: the engine as a Windows service under the person's own account (TODO 86).
+ito-service = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
 # `[http]`: the loopback listener that starts nets and reads runs (POST /runs, GET /runs/<id>).
 ito-http = { git = "https://github.com/uchmk/ito", rev = "9d49ce6ac45c670f229b327b62dd170cd946f797" }
 # `send` and `fetch` over SFTP (`koyomi sftp run`), and `koyomi sftp hostkey`.

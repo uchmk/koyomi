@@ -20,7 +20,14 @@ pub fn start() -> Result<(), String> {
     if running() {
         return Ok(());
     }
-    spawn()?;
+    // A service engine is started by Windows; another one beside it would fight it for the door.
+    match crate::service::state() {
+        None => spawn()?,
+        Some(ito_service::State::Stopped | ito_service::State::Stopping) => {
+            return Err("サービスのエンジンが止まっている。`koyomi service start` で始める".to_owned())
+        }
+        Some(_) => {}
+    }
     let until = Instant::now() + START_WAIT;
     while Instant::now() < until {
         if running() {

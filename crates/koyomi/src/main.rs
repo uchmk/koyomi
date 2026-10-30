@@ -30,6 +30,7 @@ mod prefs;
 mod proto;
 mod report;
 mod review;
+mod service;
 mod settings;
 mod sftp;
 mod show;
@@ -857,10 +858,34 @@ fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<Option<Vec<u8>>
 /// `ito_console` writes to the console it was started from, or to the pipe
 /// `koyomi.com` hands on, and lets go of a write that fails.
 fn say(text: &str, err: bool) {
+    if let Some(log) = LOG.get() {
+        use std::io::Write;
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let mut f = log.lock().unwrap_or_else(|e| e.into_inner());
+        let _ = writeln!(f, "{stamp} {text}");
+        return;
+    }
     let line = format!("{text}\n");
     match err {
         true => ito_console::err(&line),
         false => ito_console::out(&line),
+    }
+}
+
+/// Where [`say`] writes instead, once set: the service's `engine.log`, as it has no console.
+static LOG: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> = std::sync::OnceLock::new();
+
+/// Sends [`say`] to the end of `path` from now on. A file bigger than `keep` is set aside as
+/// `<name>.old.log` first, so it does not grow without end. Stays on the console if it cannot open.
+fn log_to(path: &std::path::Path, keep: u64) {
+    if std::fs::metadata(path).is_ok_and(|m| m.len() > keep) {
+        let _ = std::fs::rename(path, path.with_extension("old.log"));
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Ok(f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = LOG.set(std::sync::Mutex::new(f));
     }
 }
 

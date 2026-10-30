@@ -106,6 +106,7 @@ usage: koyomi [--version | --help | env]
                                      sounds wait for koyomi tray to show them
        koyomi tray                   the tray icon and the notifications for an engine started with --no-tray
                                      (its menu closes only the tray)
+       koyomi service [install|uninstall|start|stop|status]  run the engine as a Windows service under your own account, so nets run without anyone signed in (install and uninstall need an administrator; what the engine says goes to engine.log)
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
        koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send or fetch job takes (host_key = SHA256:…)
@@ -116,8 +117,14 @@ usage: koyomi [--version | --help | env]
 pub const NOTE: &str = "every command takes --help (its lines) and --toml (the answer as TOML, for other programs)\n\
 a --csv file is UTF-8 with a BOM, for Excel\n";
 
-/// What the sign-in entry runs: the engine, not the window.
-pub const STARTUP_ARGS: [&str; 1] = ["engine"];
+/// What the sign-in entry runs: the engine, not the window; only the tray when the service runs the engine.
+pub fn startup_args() -> [&'static str; 1] {
+    if crate::service::state().is_some() {
+        ["tray"]
+    } else {
+        ["engine"]
+    }
+}
 
 /// Words for the person at the console: common.toml's language.
 pub fn table() -> ito_i18n::Table {
@@ -125,7 +132,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 40] = [
+const COMMANDS: [&str; 41] = [
     "check",
     "list",
     "show",
@@ -162,6 +169,7 @@ const COMMANDS: [&str; 40] = [
     "import",
     "engine",
     "tray",
+    "service",
     "startup",
     "secret",
     "sftp",
@@ -224,6 +232,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "engine" => engine_cmd(rest),
         "tray" if rest.is_empty() => engine::apart(),
         "tray" => usage("tray takes nothing"),
+        "service" => crate::service::cmd(rest),
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
         "sftp" => crate::sftp::cmd(rest),
@@ -1614,6 +1623,7 @@ fn engine_cmd(args: &[String]) -> i32 {
 /// Whether the engine starts at sign-in, in a line.
 fn startup_line() -> String {
     match ito_common::startup::enabled("koyomi") {
+        true if crate::service::state().is_some() => "サインイン時の起動: あり（トレイだけ。エンジンはサービス）".to_owned(),
         true => "サインイン時の起動: あり".to_owned(),
         false => "サインイン時の起動: なし".to_owned(),
     }
@@ -1672,10 +1682,12 @@ fn startup_cmd(args: &[String]) -> i32 {
             return 1;
         }
     };
-    match ito_common::startup::set("koyomi", &exe, &STARTUP_ARGS, on) {
+    match ito_common::startup::set("koyomi", &exe, &startup_args(), on) {
         Ok(()) => {
             out(
-                if on {
+                if on && crate::service::state().is_some() {
+                    "koyomi: サインイン時にトレイを起動する（エンジンはサービス）"
+                } else if on {
                     "koyomi: サインイン時にエンジンを起動する"
                 } else {
                     "koyomi: サインイン時には起動しない"

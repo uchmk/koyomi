@@ -394,7 +394,7 @@ fn startup_task(ctx: &egui::Context, set: Option<bool>) -> std::sync::mpsc::Rece
     let ctx = ctx.clone();
     std::thread::spawn(move || {
         if let (Some(on), Ok(exe)) = (set, std::env::current_exe()) {
-            let _ = ito_common::startup::set("koyomi", &exe, &crate::cli::STARTUP_ARGS, on);
+            let _ = ito_common::startup::set("koyomi", &exe, &crate::cli::startup_args(), on);
         }
         let _ = tx.send(ito_common::startup::enabled("koyomi"));
         ctx.request_repaint();
