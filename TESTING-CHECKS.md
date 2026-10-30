@@ -1,6 +1,6 @@
 # Checklist
 
-378 checks in TESTING.md, 374 left for a person.
+381 checks in TESTING.md, 377 left for a person.
 
 ## 1. Start
 
@@ -529,3 +529,9 @@
 
 - [ ] **50.1** Job `a` writes `rows = 5` to the file named by `KOYOMI_OUT`; job `b` (after `a`) prints the file named by `KOYOMI_IN` → b's log shows `[a]` and `rows = 5` 〔未訳〕
 - [ ] **50.2** Make `a` write text that is not TOML → b's `KOYOMI_IN` has no `[a]` table; the run still goes on 〔未訳〕
+
+## 51. 排他（lock）
+
+- [ ] **51.1** Give two nets `lock = "db"`; start the first (a slow job), then start the second by hand → The second is refused with a message naming the lock and the net that holds it 〔未訳〕
+- [ ] **51.2** Start a net without `lock` meanwhile → It starts normally 〔未訳〕
+- [ ] **51.3** Wait for the first to end, start the second again → It starts 〔未訳〕

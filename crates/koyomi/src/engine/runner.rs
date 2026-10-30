@@ -343,7 +343,7 @@ impl Runner {
     /// A new run of `def`, not launched yet: the net expanded, no other run of it going.
     fn prepare(&mut self, def: &Def, date: NaiveDate, how: How, planned: Option<NaiveDateTime>, from: Option<&str>) -> Result<Run, String> {
         let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date)?;
-        self.not_running(&def.id, def.label())?;
+        self.not_running(&def.id, def.label(), net.lock.as_deref())?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let date = date.format("%Y-%m-%d").to_string();
@@ -352,6 +352,7 @@ impl Runner {
             None => Run::new(&id, &def.id, def.label(), &date, how, &net, now),
         };
         run.planned = planned;
+        run.lock = net.lock.clone();
         Ok(run)
     }
 
@@ -362,7 +363,11 @@ impl Runner {
         if !prev.is_over() {
             return Err(format!("{}: まだ終わっていない", prev.id));
         }
-        self.not_running(&prev.jobnet, &prev.title)?;
+        let lock = std::fs::read_to_string(self.run_dir(previous).join("definition.toml"))
+            .ok()
+            .and_then(|t| jobnet::parse(&t).ok())
+            .and_then(|n| n.lock);
+        self.not_running(&prev.jobnet, &prev.title, lock.as_deref())?;
         let path = self.run_dir(previous).join("definition.toml");
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let net =
@@ -370,7 +375,8 @@ impl Runner {
         let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
-        let run = Run::rerun(&id, &prev, &net, from, now)?;
+        let mut run = Run::rerun(&id, &prev, &net, from, now)?;
+        run.lock = net.lock.clone();
         self.launch(run, &text)
     }
 
@@ -384,9 +390,14 @@ impl Runner {
         loaded.runs().into_iter().find(|r| r.id == id).ok_or_else(|| format!("実行がない: {id}"))
     }
 
-    fn not_running(&self, jobnet: &str, label: &str) -> Result<(), String> {
+    fn not_running(&self, jobnet: &str, label: &str, lock: Option<&str>) -> Result<(), String> {
         if self.runs.iter().any(|r| r.jobnet == jobnet && !r.is_over()) {
             return Err(format!("{label}: 動いている間はもう一度は流せない"));
+        }
+        if let Some(l) = lock {
+            if let Some(h) = self.runs.iter().find(|r| !r.is_over() && r.lock.as_deref() == Some(l)) {
+                return Err(format!("{label}: 排他「{l}」を {} が使っている", h.title));
+            }
         }
         Ok(())
     }
@@ -1753,6 +1764,47 @@ id = \"a\"
         let run = wait_over(&mut r, &id3);
         assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
         assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nets_with_the_same_lock_do_not_run_together() {
+        let dir = scratch("lock");
+        let net = |body: &str| {
+            format!(
+                "format = 1
+lock = \"db\"
+[[job]]
+id = \"a\"
+{body}
+"
+            )
+        };
+        let a = def("a", &net(&sleep(2)));
+        let b = def("b", &net(&echo("x")));
+        let c = def(
+            "c",
+            &format!(
+                "format = 1
+[[job]]
+id = \"a\"
+{}
+",
+                echo("x")
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let day = Local::now().date_naive();
+        let ida = r.start(&a, day, How::Manual, None).unwrap();
+        let err = r.start(&b, day, How::Manual, None).unwrap_err();
+        assert!(err.contains("排他") && err.contains("db"), "{err}");
+        // A net without the lock is not held back.
+        let idc = r.start(&c, day, How::Manual, None).unwrap();
+        wait_over(&mut r, &idc);
+        wait_over(&mut r, &ida);
+        // Once the holder is over the lock is free.
+        let idb = r.start(&b, day, How::Manual, None).unwrap();
+        assert_eq!(wait_over(&mut r, &idb).state, State::Ok);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

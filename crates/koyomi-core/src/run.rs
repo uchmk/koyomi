@@ -335,6 +335,9 @@ pub struct Run {
     /// a job no `kind = "file"` part comes before.
     #[serde(default)]
     pub file: Option<String>,
+    /// The net's `lock` name while it runs: no other run with it goes at the same time.
+    #[serde(default)]
+    pub lock: Option<String>,
 }
 
 /// How a run that started after its time (`missed = "once"`) begins its reason.
@@ -382,6 +385,7 @@ impl Run {
             jobs,
             reason: String::new(),
             file: None,
+            lock: None,
         };
         run.settle(now);
         run
@@ -415,6 +419,7 @@ impl Run {
             jobs,
             reason: reason.to_owned(),
             file: None,
+            lock: None,
         }
     }
 

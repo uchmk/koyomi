@@ -33,6 +33,9 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if let Some(c) = &net.calendar {
         push(&mut out, "calendar", &q(c));
     }
+    if let Some(l) = &net.lock {
+        push(&mut out, "lock", &q(l));
+    }
     for w in &net.when {
         when(w, &mut out);
     }
@@ -463,6 +466,29 @@ after = ["n"]
     fn the_smallest_net_is_a_few_lines() {
         let net = jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n").unwrap();
         assert_eq!(text(&net), "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n");
+    }
+
+    #[test]
+    fn a_lock_name_survives_a_round_trip() {
+        let src = "format = 1
+lock = \"db\"
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let net = jobnet::parse(src).unwrap();
+        assert_eq!(net.lock.as_deref(), Some("db"));
+        assert_eq!(text(&net), src);
+        assert!(jobnet::parse(
+            "format = 1
+lock = \"a/b\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+        )
+        .is_err());
     }
 
     #[test]

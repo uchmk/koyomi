@@ -51,6 +51,9 @@ pub struct Jobnet {
     /// `calendar = "会社"`: `calendars/会社.toml`. None: the group's, or no calendar.
     #[serde(default)]
     pub calendar: Option<String>,
+    /// `lock = "販売DB"`: nets with the same lock name never run at the same time.
+    #[serde(default)]
+    pub lock: Option<String>,
 }
 
 impl Jobnet {
@@ -386,6 +389,7 @@ struct RawNet {
     missed: Field,
     overlap: Field,
     calendar: Field,
+    lock: Field,
 }
 
 #[derive(Deserialize)]
@@ -466,10 +470,11 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let mut c = Checker { text, problems: Vec::new() };
     let (missed, overlap) = c.top(&raw);
     let calendar = c.calendar(&raw.calendar);
+    let lock = c.lock(&raw.lock);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar })
+        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -756,6 +761,18 @@ impl Checker<'_> {
             Some(s) if crate::calendar::valid_name(s) => Some(s.to_owned()),
             _ => {
                 self.add(f.span().start, "calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）");
+                None
+            }
+        }
+    }
+
+    /// `lock = "販売DB"`: a name the same rules as a calendar's (a file name, no path).
+    fn lock(&mut self, field: &Field) -> Option<String> {
+        let f = field.as_ref()?;
+        match f.get_ref().as_str() {
+            Some(s) if crate::calendar::valid_name(s) => Some(s.to_owned()),
+            _ => {
+                self.add(f.span().start, "lock は名前（例: lock = \"販売DB\"）。同じ名前のジョブネットは同時に動かさない");
                 None
             }
         }
