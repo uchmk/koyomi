@@ -523,6 +523,9 @@ impl Runner {
             std::thread::sleep(std::time::Duration::from_millis(50));
         }
         self.tick();
+        if self.busy() > 0 {
+            eprintln!("koyomi: {} job(s) did not stop within {grace:?}", self.busy());
+        }
     }
 
     /// Records each waiting time as スキップ: the engine stops, and nothing

@@ -1696,7 +1696,11 @@ pub fn run() -> i32 {
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
-            Err(mpsc::RecvTimeoutError::Disconnected) => return 1,
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                // The listener is gone: end the way Stop does, so no job's process outlives us.
+                state.shut_down();
+                return 1;
+            }
         }
         state.runner.tick();
         // Before the schedule: a time that waited out the quiet hours goes ahead of one due at their end.
