@@ -25,7 +25,7 @@
 自動テスト済みなので下には出していない: 4.5
 
 - [ ] **4.1** Select a net, press 確かめる… → A box lists the program, each argument on its own line, and the folder; Enter = 確かめた, Esc = やめる 〔未訳〕
-- [x] **4.2** `koyomi approve 経理/月次締め`, answer `y`, restart the engine → The same content is printed; the net shows `✔ 確認済み` and still does after the restart 〔未訳〕
+- [x] **4.2** `koyomi approve 経理/月次締め`, answer `y`, restart the engine → The same content is printed; the net shows no mark or word of its own (just its name) and still does after the restart 〔未訳〕
 - [x] **4.3** `koyomi approve 経理/月次締め` and answer anything but `y` → It stays `▲ 未確認` and the exit code is 1 〔未訳〕
 - [ ] **4.4** In the box press やめる → The net stays `▲ 未確認` 〔未訳〕
 - [ ] **4.6** Open the box on a net with a long diff, close it, open it on a one-job net; then make the window small → The title, the rows, the program and the buttons are inside the window every time, and the box does not grow while it is up 〔未訳〕
@@ -236,7 +236,7 @@
 
 ## 23. Hold, skip, pause (`hold`, `release`, `skip`, `pause`, `resume`)
 
-- [ ] **23.1** `koyomi hold <group/name>` on a confirmed net with a time a minute away, then `koyomi list`, the window's tree, and wait for the time → `保留した: <name>（koyomi release <group/name> で戻す）`; the list and the tree show `⏸ <name>  確認済み・保留`; when the time comes, 今日 and `koyomi status --today` have a ⏸ 保留 run with the reason `保留中（koyomi release <group/name>）`, no job ran, no log folder appeared, and no notification was sent; `koyomi engine status` has the line `保留中: <group/name>（koyomi release … で戻す）` 〔未訳〕
+- [ ] **23.1** `koyomi hold <group/name>` on a confirmed net with a time a minute away, then `koyomi list`, the window's tree, and wait for the time → `保留した: <name>（koyomi release <group/name> で戻す）`; the list and the tree show `⏸ <name>  保留`; when the time comes, 今日 and `koyomi status --today` have a ⏸ 保留 run with the reason `保留中（koyomi release <group/name>）`, no job ran, no log folder appeared, and no notification was sent; `koyomi engine status` has the line `保留中: <group/name>（koyomi release … で戻す）` 〔未訳〕
 - [ ] **23.2** While held, `koyomi run <group/name>` and the window's 今すぐ流す; then `koyomi hold` again → `保留中のため流さない: <group/name>（koyomi release <group/name>）`, the button is grey and the detail shows the ⏸ 保留中 line; the second hold is refused with `もう保留している: <group/name>` 〔未訳〕
 - [x] **23.3** `koyomi release <group/name>` (and once more), then wait for the next time → `保留を解いた: <group/name>`, then `保留していない: <group/name>`; the mark goes back to ✔ and the next time runs as usual 〔未訳〕
 - [ ] **23.4** Run a net a → b → c where a sleeps 10 seconds; while a runs, `koyomi skip <run> b` (also the window: pick b in the flow and press 「b をスキップ」) → `<run> の b を飛ばした`; b is ⊘ スキップ with the reason `人がスキップした` and no log; c runs after a ends; the run ends ✔ and `koyomi history` shows b's skip 〔未訳〕

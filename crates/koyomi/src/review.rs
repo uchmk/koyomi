@@ -32,25 +32,37 @@ pub fn word(t: &Table, s: Standing) -> String {
     .to_owned()
 }
 
-/// `▲ 月次締め  未確認`: one row of the tree.
-/// `⏸ 月次締め  確認済み・保留` when `held`: a confirmed net on hold shows the hold's mark; the
-/// standing's mark stays when it says more (未確認, 誤り), and the word gains 保留 either way.
+/// `▲ 月次締め  未確認`: one row of the tree. A confirmed net shows only its name (`月次締め`);
+/// `⏸ 月次締め  保留` when `held`; an unconfirmed or invalid one keeps its mark, and gains 保留
+/// when held.
 pub fn row(t: &Table, d: &Def, held: bool) -> String {
     row_with(t, d, held, None)
 }
 
-/// [`row`] with the state of the net's latest run today at the end (`✔ 月次締め  確認済み  ✓`), so
+/// [`row`] with the state of the net's latest run today at the end (`月次締め  ✓`), so
 /// the tree says how it went without opening it.
 pub fn row_with(t: &Table, d: &Def, held: bool, last: Option<RunState>) -> String {
-    let mark = if held && d.standing == Standing::Confirmed { RunState::Held.mark() } else { state(d.standing).mark() };
-    let mut word = word(t, d.standing);
-    if held {
-        word = format!("{word}・{}", t.tr("state.held"));
+    let confirmed = d.standing == Standing::Confirmed;
+    // A confirmed net is the usual case, so it carries no mark and no word of its own: the last
+    // run's mark at the end is then the only check on the row.
+    let (mark, word) = match (confirmed, held) {
+        (true, false) => (None, None),
+        (true, true) => (Some(RunState::Held.mark()), Some(t.tr("state.held").to_owned())),
+        (false, false) => (Some(state(d.standing).mark()), Some(word(t, d.standing))),
+        (false, true) => (Some(state(d.standing).mark()), Some(format!("{}・{}", word(t, d.standing), t.tr("state.held")))),
+    };
+    let mut out = String::new();
+    if let Some(m) = mark {
+        out.push_str(&format!("{m} "));
     }
-    match last {
-        Some(l) => format!("{mark} {}  {word}  {}", d.label(), l.mark()),
-        None => format!("{mark} {}  {word}", d.label()),
+    out.push_str(d.label());
+    if let Some(w) = word {
+        out.push_str(&format!("  {w}"));
     }
+    if let Some(l) = last {
+        out.push_str(&format!("  {}", l.mark()));
+    }
+    out
 }
 
 /// The tree as text: a line per group, then its definitions indented. `koyomi list` prints this.
@@ -302,9 +314,10 @@ mod tests {
         let mut store = Store::default();
         store.approve("経理/月次締め", &koyomi_core::approved::hash(NET.as_bytes()), NET);
         let d = def(NET, &store);
-        assert_eq!(row(&table(), &d, false), "✔ 月次締め  確認済み");
-        assert_eq!(row(&table(), &d, true), "⏸ 月次締め  確認済み・保留");
-        assert_eq!(tree(&table(), &[d], &["経理/月次締め".to_owned()]), ["経理", "  ⏸ 月次締め  確認済み・保留"]);
+        assert_eq!(row(&table(), &d, false), "月次締め");
+        assert_eq!(row(&table(), &d, true), "⏸ 月次締め  保留");
+        assert_eq!(row_with(&table(), &d, false, Some(RunState::Ok)), format!("月次締め  {}", RunState::Ok.mark()));
+        assert_eq!(tree(&table(), &[d], &["経理/月次締め".to_owned()]), ["経理", "  ⏸ 月次締め  保留"]);
     }
 
     /// the exe, each argument on its own line, the directory and the timeout.
