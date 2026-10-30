@@ -103,6 +103,7 @@ enum Command {
     Edit(ui::canvas::Cmd),
     NewJobnet,
     Guide,
+    Versions,
     Export,
     Import,
     ReportBug,
@@ -497,6 +498,7 @@ impl App {
         out.extend([
             ito_palette::Entry::new(t.tr("palette.new_jobnet"), self.keys.label("new_jobnet"), Command::NewJobnet),
             ito_palette::Entry::new(t.tr("palette.guide"), "", Command::Guide),
+            ito_palette::Entry::new(t.tr("palette.versions"), "", Command::Versions),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
             ito_palette::Entry::new(t.tr("palette.import"), "", Command::Import),
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
@@ -534,6 +536,7 @@ impl App {
                 self.guide_problems();
                 self.guide.reopen();
             }
+            Some(ito_palette::Answer::Pick(Command::Versions)) => self.browser.open_versions(),
             Some(ito_palette::Answer::Pick(Command::Export)) => self.browser.export(&self.table),
             Some(ito_palette::Answer::Pick(Command::Import)) => self.browser.import_box(),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),

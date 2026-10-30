@@ -972,6 +972,21 @@ impl State {
         Ok(Versions { versions }.to_toml())
     }
 
+    /// The text of a kept version (`current`: the file as it is).
+    fn version_text(&self, id: &str, version: &str) -> Result<String, String> {
+        let (group, name) = split_id(id)?;
+        let path = if version == "current" {
+            self.paths.jobnets.join(group).join(format!("{name}.toml"))
+        } else {
+            if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-') {
+                return Err(format!("版の名前は 20261030-101500 のような形: {version}"));
+            }
+            self.versions_dir(group, name).join(format!("{version}.toml"))
+        };
+        let bytes = std::fs::read(&path).map_err(|_| format!("版がない: {id} の {version}"))?;
+        Ok(String::from_utf8_lossy(&bytes).into_owned())
+    }
+
     /// Puts a kept version back as the file (the file as it is is kept first). Not approved:
     /// what comes back is looked at like a file written by hand.
     fn restore(&mut self, id: &str, version: &str) -> Result<String, String> {
@@ -1032,6 +1047,7 @@ impl State {
             Request::Resume => self.pause(false),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
+            Request::VersionText { id, version } => self.version_text(id, version),
             Request::Restore { id, version } => self.restore(id, version),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
             Request::Uses { target } => Ok(koyomi_core::uses::find(&self.defs, target).join(
@@ -1425,6 +1441,10 @@ run = [\"x\"]
         let looped = "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/子\"\n";
         let err = s.save("経理/集計", looped, None, true).unwrap_err();
         assert!(err.contains("輪") || err.contains("子ジョブネット"), "{err}");
+        // The text of a version, and of the file as it is, for the version box.
+        assert_eq!(s.version_text("経理/集計", &versions[0]).unwrap(), one);
+        assert_eq!(s.version_text("経理/集計", "current").unwrap(), two);
+        assert!(s.version_text("経理/集計", "../x").is_err() && s.version_text("経理/集計", "20000101-000000").is_err());
         // Not a group/name: refused before anything is touched.
         assert!(s.save("集計", two, None, true).is_err());
         assert!(s.save("../x/y", two, None, true).is_err());

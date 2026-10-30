@@ -614,3 +614,13 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 46.1 | Set `easy = true` in common.toml | The tree's new button reads "+ New job flow (jobnet)" with a dotted underline; hovering explains it |
 | 46.2 | Select an unapproved net | The approve button reads "check and allow (approve)…" with the same hover |
 | 46.3 | Set `easy = false` | The usual words come back, no underline |
+
+## 47. 版を比べる
+
+| # | Do | Expect |
+|---|---|---|
+| 47.1 | Save a net twice, open it in the editor, pick "Compare versions of a job flow" in the palette | A box shows the newest kept version against the file as it is, as a diff |
+| 47.2 | Press "Older" (no older one: nothing happens), then "Newer" | The pair moves by one version; the title line shows `from → to (n/m)` |
+| 47.3 | Press "Restore this version" | The box closes; the file is that version, the net is unapproved, and the file it replaced is kept under `versions/` |
+| 47.4 | Press Esc | The box closes without changing the file |
+| 47.5 | Open it on a net that was never saved twice | The box says "no versions kept" |

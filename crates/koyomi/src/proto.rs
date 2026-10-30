@@ -12,7 +12,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 13;
+pub const PROTO: u32 = 14;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -107,6 +107,11 @@ pub enum Request {
     /// The versions kept of the net `id`, newest first, as [`Versions`].
     Versions {
         id: String,
+    },
+    /// The text of the version `version` of the net `id` (`current`: the file as it is now).
+    VersionText {
+        id: String,
+        version: String,
     },
     /// Put the version `version` of the net `id` back as its file (the file as it is
     /// goes under `versions/` first). The net is unconfirmed until approved.

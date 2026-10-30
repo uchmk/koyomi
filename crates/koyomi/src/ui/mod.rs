@@ -144,6 +144,16 @@ struct Kept {
 /// The job whose log the thread fetches: `(run, job)`.
 type Watch = Arc<Mutex<Option<(String, String)>>>;
 
+/// The 版を比べる box: the versions kept of a net, the one picked (0 is the newest) and the texts fetched so far.
+struct Vers {
+    id: String,
+    list: Vec<String>,
+    idx: usize,
+    texts: BTreeMap<String, String>,
+    asked: BTreeSet<String>,
+    error: Option<String>,
+}
+
 /// 履歴: the days asked for, what narrows the rows, and the rows the engine sent for those days.
 struct History {
     from: String,
@@ -224,6 +234,8 @@ pub struct Browser {
     cal_result: Option<Result<String, String>>,
     /// 履歴, when it is open: the detail is its rows.
     hist: Option<History>,
+    /// The 版を比べる box, while it is open.
+    vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
     editor: Option<canvas::Editor>,
     /// The 取り込む box, while it is open.
@@ -324,6 +336,7 @@ impl Browser {
             cal_month: None,
             cal_result: None,
             hist: None,
+            vers: None,
             editor: None,
             editors: Vec::new(),
             port: None,
@@ -401,6 +414,25 @@ impl Browser {
                     }
                 }
                 Msg::Answer(Request::Import { dry_run, .. }, r) => self.imported(dry_run, r),
+                Msg::Answer(Request::Versions { id }, r) => {
+                    if let Some(v) = self.vers.as_mut().filter(|v| v.id == id) {
+                        match r.and_then(|text| proto::Versions::parse(&text)) {
+                            Ok(l) if l.versions.is_empty() => v.error = Some("no versions kept".to_owned()),
+                            Ok(l) => v.list = l.versions,
+                            Err(e) => v.error = Some(e),
+                        }
+                    }
+                }
+                Msg::Answer(Request::VersionText { id, version }, r) => {
+                    if let Some(v) = self.vers.as_mut().filter(|v| v.id == id) {
+                        match r {
+                            Ok(text) => {
+                                v.texts.insert(version, text);
+                            }
+                            Err(e) => v.error = Some(e),
+                        }
+                    }
+                }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -947,7 +979,7 @@ impl Browser {
     pub fn show(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         self.drain();
         let ctx = ui.ctx().clone();
-        let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some());
+        let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some();
         let closing = self.editor.as_ref().is_some_and(|e| e.closing);
@@ -957,7 +989,13 @@ impl Browser {
         }
         self.close_asked = closing;
         let modal = self.asking.is_some() || self.killing.is_some() || conflict || closing || port.is_some() || making;
-        let buttons = if conflict { 3 } else { port.map_or(2, |(n, _)| n) };
+        let buttons = if self.vers.is_some() {
+            4
+        } else if conflict {
+            3
+        } else {
+            port.map_or(2, |(n, _)| n)
+        };
         let key = if modal { self.box_keys(&ctx, buttons, making) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
@@ -1046,6 +1084,7 @@ impl Browser {
         self.confirm(&ctx, t, key);
         self.confirm_kill(&ctx, t, key);
         self.confirm_editor(&ctx, t, key);
+        self.confirm_versions(&ctx, t, key);
         self.confirm_port(&ctx, t, key);
         self.confirm_make(&ctx, t, key);
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
@@ -1212,6 +1251,71 @@ impl Browser {
         ito_a11y::say(&r, Role::Row, t.tr("run.history"));
         if r.clicked() {
             self.open_history();
+        }
+    }
+
+    /// Opens the 版を比べる box on the net open in the editor, or else the one picked.
+    pub fn open_versions(&mut self) {
+        let id = self.editor.as_ref().map(|e| e.id.clone()).or_else(|| self.selected.clone());
+        let Some(id) = id else { return };
+        let _ = self.tx.send(Request::Versions { id: id.clone() });
+        self.focus = 1;
+        self.vers = Some(Vers { id, list: Vec::new(), idx: 0, texts: BTreeMap::new(), asked: BTreeSet::new(), error: None });
+    }
+
+    /// Asks for the texts the box compares, and shows it: the version picked against the next newer one
+    /// (the file as it is, for the newest).
+    fn confirm_versions(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(v) = &mut self.vers else { return };
+        let newer = |v: &Vers| if v.idx == 0 { "current".to_owned() } else { v.list[v.idx - 1].clone() };
+        let old = v.list.get(v.idx).cloned();
+        let new = old.as_ref().map(|_| newer(v));
+        for w in old.iter().chain(new.iter()) {
+            if v.asked.insert(w.clone()) {
+                let _ = self.tx.send(Request::VersionText { id: v.id.clone(), version: w.clone() });
+            }
+        }
+        let texts = old.as_ref().zip(new.as_ref()).and_then(|(o, n)| Some((v.texts.get(o)?, v.texts.get(n)?)));
+        let rows = [(t.tr("versions.net").to_owned(), v.id.clone())];
+        let body = match (&v.error, &old, &new) {
+            (Some(e), _, _) => vec![t.trf("versions.failed", &[e])],
+            (None, Some(o), Some(n)) => {
+                vec![t.trf("versions.compare", &[o, n, &(v.idx + 1).to_string(), &v.list.len().to_string()])]
+            }
+            _ => vec![t.tr("versions.loading").to_owned()],
+        };
+        let diff = texts.map(|(o, n)| ito_diff::diff(o, n, 3)).unwrap_or_default();
+        let buttons = [
+            t.tr("versions.restore").to_owned(),
+            t.tr("canvas.cancel").to_owned(),
+            t.tr("versions.older").to_owned(),
+            t.tr("versions.newer").to_owned(),
+        ];
+        let q = ito_confirm::Question {
+            title: t.tr("versions.title"),
+            rows: &rows,
+            body: &body,
+            diff: &diff,
+            buttons: &buttons,
+            hint: t.tr("confirm.hint"),
+            focus: Some(self.focus),
+            primary: Some(1),
+            danger: true,
+            ..Default::default()
+        };
+        let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+        let Some(v) = &mut self.vers else { return };
+        match answer {
+            Some(0) if v.list.get(v.idx).is_some() => {
+                let req = Request::Restore { id: v.id.clone(), version: v.list[v.idx].clone() };
+                self.vers = None;
+                self.result = None;
+                let _ = self.tx.send(req);
+            }
+            Some(2) if v.idx + 1 < v.list.len() => v.idx += 1,
+            Some(3) if v.idx > 0 => v.idx -= 1,
+            Some(1) => self.vers = None,
+            _ => {}
         }
     }
 
@@ -1746,6 +1850,7 @@ mod tests {
             cal_month: None,
             cal_result: None,
             hist: None,
+            vers: None,
             editor: None,
             editors: Vec::new(),
             port: None,
