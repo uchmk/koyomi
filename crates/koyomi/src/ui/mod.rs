@@ -3008,8 +3008,10 @@ mod tests {
         b.runs = vec![run];
         b.run_sel = Some("r1".into());
         let mut s = Screen::new();
-        s.size = egui::vec2(1280.0, 800.0);
         s.settle(&mut b);
+        // The run view's button row is inside the window, not pushed below it by the tab row.
+        let inside = s.nodes.values().find(|n| n.0 == "対応済みにする").is_some_and(|n| n.1.max.y <= s.size.y);
+        assert!(inside, "the button is on the screen");
         s.click("対応済みにする", &mut b);
         assert_eq!(b.take_acks(), vec!["r1".to_owned()]);
         assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにした"));
