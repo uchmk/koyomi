@@ -93,7 +93,7 @@ usage: koyomi [--version | --help | env]
                                      a Task Scheduler task's XML (schtasks /query /xml) comes in as one net
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
-       koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env (secret:<name>)
+       koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
        koyomi mcp                    an MCP server on stdin/stdout for Claude Code: claude mcp add koyomi -- koyomi mcp
 ";
 

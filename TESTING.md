@@ -917,3 +917,16 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 75.7 | Write both `file` and `count`, or neither | The definition does not load; the problem names the line and says to write one of them |
 | 75.8 | In the editor, drag 繰り返し from the shelf onto the canvas | A circle (it runs a process) with the file and count fields over the command fields; Save writes `kind = "loop"` |
 | 75.9 | `koyomi review <net>` with a loop | The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command |
+
+## 76. 外への生存の合図（`[ping]`）
+
+| # | Do | Expect |
+|---|---|---|
+| 76.1 | Make a check on healthchecks.io (or Uptime Kuma's push monitor); `echo <its URL> \| koyomi secret set ping`; write `[ping]` with `url = "secret:ping"` and `every = "1m"` in koyomi.toml; start the engine | Within a minute the watcher shows a ping; then one each minute |
+| 76.2 | Stop the engine (`koyomi engine stop`), or pull the PC's network | The pings stop; the watcher tells of it after its grace time |
+| 76.3 | `url = "https://…"` in plain text, `hide_webhooks` not written | No ping goes; the window's notes say the address is in plain text and how to move it to the credential store |
+| 76.4 | Add `hide_webhooks = false` to `[notify]` | The plain address is pinged |
+| 76.5 | `url = "secret:nope"` (not in the store) | No ping goes; the notes say `nope` is not in the credential store |
+| 76.6 | `every = "30s"`, or `url = "hc-ping.com/x"` | koyomi.toml does not read; the engine says why and runs nothing until it is fixed |
+| 76.7 | Remove `[ping]` while the engine runs | The pings stop within a minute, with no note |
+

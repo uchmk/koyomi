@@ -32,9 +32,12 @@ pub enum Reload {
     Keymap(Result<Option<String>, String>),
     /// koyomi.toml: its limits, its `[notify]` with the `secret:` addresses
     /// read back, and what to warn of; or why the file could not be read.
-    Config(Result<(Config, NotifyCfg, Vec<String>), String>),
+    Config(Box<ConfigRead>),
     Failed(String),
 }
+
+/// koyomi.toml as the settings read it: its limits, its `[notify]`, what to warn of.
+type ConfigRead = Result<(Config, NotifyCfg, Vec<String>), String>;
 
 /// koyomi.toml in `base`'s `koyomi` folder.
 pub fn config_path(base: &Path) -> PathBuf {
@@ -44,7 +47,7 @@ pub fn config_path(base: &Path) -> PathBuf {
 /// The koyomi.toml at `path` (none: the defaults), and its `[notify]` as
 /// the page shows it, the `secret:` addresses read back from the credential
 /// store. Blocks on the store: call it off the UI thread.
-fn read_config(path: &Path) -> Result<(Config, NotifyCfg, Vec<String>), String> {
+fn read_config(path: &Path) -> ConfigRead {
     let config = Config::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
     let (mut n, mut notes) = crate::notify::parse(&config);
     notes.extend(n.reveal("koyomi"));
@@ -231,7 +234,7 @@ impl Prefs {
         if let Some(b) = &base {
             let (tx, path) = (p.tx.clone(), config_path(b));
             std::thread::spawn(move || {
-                let _ = tx.send(Reload::Config(read_config(&path)));
+                let _ = tx.send(Reload::Config(Box::new(read_config(&path))));
             });
             match Common::read(b) {
                 Ok((c, w)) => (p.common, p.common_warn) = (c, w),
@@ -278,7 +281,7 @@ impl Prefs {
                 sent &= tx.send(Reload::Keymap(read_keymap(&keymap))).is_ok();
             }
             if changed.contains(&config) {
-                sent &= tx.send(Reload::Config(read_config(&config))).is_ok();
+                sent &= tx.send(Reload::Config(Box::new(read_config(&config)))).is_ok();
             }
             ctx.request_repaint();
             sent
@@ -307,14 +310,16 @@ impl Prefs {
                     self.keymap = t;
                     self.keymap_new = Some(None);
                 }
-                Reload::Config(Ok((c, n, w))) => {
-                    self.config = c;
-                    self.config_warn = None;
-                    (self.notify, self.notify_warn) = (n, w);
-                }
-                // Unreadable (being written, or a line the engine refuses
-                // too): the page keeps what it had, and says so.
-                Reload::Config(Err(e)) => self.notify_warn = vec![e],
+                Reload::Config(r) => match *r {
+                    Ok((c, n, w)) => {
+                        self.config = c;
+                        self.config_warn = None;
+                        (self.notify, self.notify_warn) = (n, w);
+                    }
+                    // Unreadable (being written, or a line the engine refuses
+                    // too): the page keeps what it had, and says so.
+                    Err(e) => self.notify_warn = vec![e],
+                },
                 Reload::Failed(e) => {
                     self.scale_wanted = None;
                     self.failed = Some(e);
@@ -421,7 +426,7 @@ impl Prefs {
             let edits = now.edits(&EVENTS, &page);
             let r = match now.webhooks_to_write("koyomi", &EVENTS, &page) {
                 Ok(webhooks) => match write_config(&path, Some("notify"), &edits, webhooks.as_deref(), None) {
-                    Ok(()) => Reload::Config(read_config(&path)),
+                    Ok(()) => Reload::Config(Box::new(read_config(&path))),
                     Err(e) => Reload::Failed(e),
                 },
                 Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
@@ -445,7 +450,7 @@ impl Prefs {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let path = config_path(&base);
             let r = match write_config(&path, Some("notify"), &[], None, Some(&mails)) {
-                Ok(()) => Reload::Config(read_config(&path)),
+                Ok(()) => Reload::Config(Box::new(read_config(&path))),
                 Err(e) => Reload::Failed(e),
             };
             Self::send_back(&tx, &wake, r);
@@ -490,7 +495,7 @@ impl Prefs {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let path = config_path(&base);
             let r = match write_config(&path, None, &edits, None, None) {
-                Ok(()) => Reload::Config(read_config(&path)),
+                Ok(()) => Reload::Config(Box::new(read_config(&path))),
                 Err(e) => Reload::Failed(e),
             };
             Self::send_back(&tx, &wake, r);

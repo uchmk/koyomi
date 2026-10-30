@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-10-30
+
+### 追加
+
+- 外への生存の合図（koyomi.toml の `[ping]`）を足した。エンジンが動いている間、`every`（既定 5 分、1 分から 24 時間）ごとに `url` を叩く。healthchecks.io や Uptime Kuma のプッシュの見張りに向けておけば、PC ごと落ちたりエンジンが止まったりして koyomi 自身が知らせられないときに、外の見張りが気づいて知らせる。アドレスは OS の資格情報ストアに置く（`koyomi secret set ping` で入れて `url = "secret:ping"`）。平文のアドレスは webhook と同じく `[notify] hide_webhooks = false` を書くまで叩かない。叩けないとき（秘密が無い・平文）は窓の注意に出す。
+
 ## [0.13.0] - 2026-10-30
 
 ### 追加

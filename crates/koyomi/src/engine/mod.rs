@@ -35,6 +35,7 @@ mod alive;
 mod backup;
 mod events;
 mod files;
+mod ping;
 mod retain;
 mod runner;
 mod schedule;
@@ -166,6 +167,11 @@ struct State {
     /// The daily backup of the settings folder.
     backup: Backup,
     alive: alive::Alive,
+    /// `[ping]`: the outside watcher's address, called while the engine runs.
+    ping: ping::Ping,
+    ping_cfg: Option<koyomi_core::config::Ping>,
+    /// `[notify] hide_webhooks` is off: a plain-text `[ping]` address may be called.
+    ping_plain_ok: bool,
     /// Keeps the PC from sleeping while a job's process runs.
     awake: Option<ito_power::Awake>,
     /// The wake timer for the soonest time of a `wake = true` net; `None`: no net asks.
@@ -239,6 +245,9 @@ impl State {
             retain,
             backup,
             alive,
+            ping: ping::Ping::default(),
+            ping_cfg: None,
+            ping_plain_ok: false,
             awake: None,
             wake: None,
             power_look: None,
@@ -276,6 +285,7 @@ impl State {
         match self.paths.config() {
             Ok(c) => {
                 let (n, notes) = notify::read(&c);
+                self.ping_plain_ok = !n.hide_webhooks();
                 if self.notify_raw.as_ref() != Some(&n) {
                     self.notify_raw = Some(n.clone());
                     self.notify_notes = notes;
@@ -290,6 +300,7 @@ impl State {
                     });
                 }
                 self.keep_days = c.keep_days;
+                self.ping_cfg = c.ping.clone();
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -846,7 +857,8 @@ impl State {
     fn snapshot(&self) -> Snapshot {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
-        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().collect();
+        let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
+        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().chain(ping).collect();
         Snapshot {
             defs: self.defs.clone(),
             warnings,
@@ -1692,6 +1704,7 @@ pub fn run() -> i32 {
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
+        state.ping.tick(state.ping_cfg.as_ref(), state.ping_plain_ok);
         state.tick_wake();
         state.tick_awake();
         state.tick_late();
