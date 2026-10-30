@@ -48,6 +48,21 @@ const REPO: &str = "https://github.com/uchmk/koyomi";
 
 const ABOUT: &str = "koyomi — Small job scheduler and monitor (a light JP1)";
 
+/// The sizes of the screen mock: body 13, buttons and status 12, small 11, the big heading 18;
+/// a button's padding is 10 by 3.
+fn type_scale(style: &mut egui::Style) {
+    use egui::{
+        FontFamily::{Monospace, Proportional},
+        FontId, TextStyle,
+    };
+    style.text_styles.insert(TextStyle::Body, FontId::new(13.0, Proportional));
+    style.text_styles.insert(TextStyle::Button, FontId::new(12.0, Proportional));
+    style.text_styles.insert(TextStyle::Small, FontId::new(11.0, Proportional));
+    style.text_styles.insert(TextStyle::Heading, FontId::new(18.0, Proportional));
+    style.text_styles.insert(TextStyle::Monospace, FontId::new(12.0, Monospace));
+    style.spacing.button_padding = egui::vec2(10.0, 3.0);
+}
+
 fn usage_text() -> String {
     format!(
         "{ABOUT}\n\n{}\n  env   print what a bug report needs (version, files, last run); no window\n\n  --keys SCRIPT  press these keys once the window is up, as kura's --keys;\n                 KOYOMI_KEYS_DONE names the file that says how it ended\n\n  {}\n",
@@ -150,6 +165,7 @@ impl App {
         prefs.watch(&cc.egui_ctx);
         prefs.apply_theme(&cc.egui_ctx);
         cc.egui_ctx.set_visuals(ito_theme::colors().visuals());
+        cc.egui_ctx.all_styles_mut(type_scale);
         // The scale is common.toml's, so egui's own Ctrl+= / Ctrl+- stay out of it.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(prefs.common.scale_or_one());
