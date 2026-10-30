@@ -138,10 +138,14 @@ pub enum Request {
         to: String,
         fix: bool,
     },
-    /// Write the net `id`'s file again as `to`, unconfirmed.
+    /// Write the net `id`'s file again as `to`, unconfirmed. `title` is the copy's `name` (empty:
+    /// none, so the tree shows the file name); without it a name that was the old file name's
+    /// (or empty) follows the new one.
     Copy {
         id: String,
         to: String,
+        #[serde(default)]
+        title: Option<String>,
     },
     /// Every line of every net that holds `from`, as it is and as it would read with `to`. With
     /// `apply` the files are written that way, each one under `versions/` first, and the nets

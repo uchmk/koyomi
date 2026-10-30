@@ -75,6 +75,10 @@ struct Make {
     from: Option<(String, Re)>,
     /// 参照もいっしょに直す, for a rename of a net others name.
     fix: bool,
+    /// A copy's 表示名 (`name =`); empty writes none.
+    title: String,
+    /// The 表示名 follows the file name as it is typed: the source's was its file name, or empty.
+    follows: bool,
 }
 
 /// What the 新しいジョブネット box does to the net it was opened on.
@@ -777,6 +781,8 @@ impl Browser {
                 fresh: true,
                 from: None,
                 fix: false,
+                title: String::new(),
+                follows: false,
             });
             self.focus = 0;
         }
@@ -787,7 +793,20 @@ impl Browser {
         let Some((group, name)) = id.split_once('/') else { return };
         if !self.box_open() && self.editor.is_none() {
             let name = if re == Re::Copy { format!("{name}-2") } else { name.to_owned() };
-            self.make = Some(Make { group: group.to_owned(), name, error: None, fresh: true, from: Some((id.to_owned(), re)), fix: false });
+            // The source's own title: a copy keeps a custom one, and follows the file name otherwise.
+            let own = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).and_then(|d| d.title.clone());
+            let follows = own.as_deref().is_none_or(|t| t.is_empty() || t == id.split_once('/').map_or("", |x| x.1));
+            let title = if follows { name.clone() } else { own.unwrap_or_default() };
+            self.make = Some(Make {
+                group: group.to_owned(),
+                name,
+                error: None,
+                fresh: true,
+                from: Some((id.to_owned(), re)),
+                fix: false,
+                title,
+                follows,
+            });
             self.focus = 0;
         }
     }
@@ -807,7 +826,7 @@ impl Browser {
                 let (id, re) = m.from.clone().expect("checked");
                 let req = match re {
                     Re::Rename => Request::Rename { id, to, fix: m.fix },
-                    Re::Copy => Request::Copy { id, to },
+                    Re::Copy => Request::Copy { id, to, title: Some(m.title.clone()) },
                 };
                 self.make = None;
                 self.result = None;
@@ -886,6 +905,18 @@ impl Browser {
                         m.fresh = false;
                     }
                     ui.end_row();
+                    if matches!(from, Some((_, Re::Copy))) {
+                        if m.follows {
+                            m.title = m.name.trim().to_owned();
+                        }
+                        ui.label(t.tr("make.shown"));
+                        let r = ui.add(egui::TextEdit::singleline(&mut m.title).hint_text(t.tr("make.shown_hint")).desired_width(240.0));
+                        ito_a11y::say(&r, Role::Label, t.tr("make.shown"));
+                        if r.changed() {
+                            m.follows = false;
+                        }
+                        ui.end_row();
+                    }
                 });
                 if !users.is_empty() {
                     let text = t.trf("rename.users", &[&users.join(", ")]);
@@ -2358,8 +2389,7 @@ impl Browser {
                 ui.label(l);
             }
         }
-        let lines = review::jobs(t, &def);
-        if !lines.is_empty() {
+        if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_jobs");
             if let Some(net) = &def.net {
                 egui::Grid::new("net_jobs").striped(true).num_columns(4).show(ui, |ui| {
@@ -2953,9 +2983,20 @@ mod tests {
         assert!(matches!(rx_req.try_recv(), Ok(Request::Delete { id }) if id == "試験/bom"));
         b.re_box("試験/bom", Re::Copy);
         assert_eq!(b.make.as_ref().map(|m| m.name.as_str()), Some("bom-2"));
+        {
+            // The 表示名 follows the file name as it is typed, until it is edited by hand.
+            let m = b.make.as_mut().unwrap();
+            m.follows = true;
+            m.name = "bom-9".into();
+        }
+        frame(&ctx, size, Vec::new(), &mut b);
+        assert_eq!(b.make.as_ref().map(|m| m.title.as_str()), Some("bom-9"));
+        b.make.as_mut().unwrap().name = "bom-2".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(b.make.is_none());
-        assert!(matches!(rx_req.try_recv(), Ok(Request::Copy { id, to }) if id == "試験/bom" && to == "試験/bom-2"));
+        assert!(
+            matches!(rx_req.try_recv(), Ok(Request::Copy { id, to, title: Some(t) }) if id == "試験/bom" && to == "試験/bom-2" && t == "bom-2")
+        );
         b.re_box("試験/bom", Re::Rename);
         b.make.as_mut().unwrap().name = "月次締め".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);

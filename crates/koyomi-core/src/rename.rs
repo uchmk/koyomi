@@ -58,6 +58,45 @@ pub fn retitle(text: &str, from: &str, to: &str) -> String {
     out
 }
 
+/// `text` with the net's own `name` set to `title` (trimmed): replaced where the file has one, added
+/// after `format` where it has none, and dropped when `title` is empty, so the tree shows the file
+/// name. Only the top-level lines change.
+pub fn set_title(text: &str, title: &str) -> String {
+    let title = title.trim();
+    let is_name = |l: &str| l.trim_start().strip_prefix("name").is_some_and(|r| r.trim_start_matches([' ', '\t']).starts_with('='));
+    let mut out = String::with_capacity(text.len() + title.len() + 12);
+    let (mut top, mut done) = (true, false);
+    for line in text.split_inclusive('\n') {
+        if line.trim_start().starts_with('[') {
+            top = false;
+        }
+        if top && is_name(line) {
+            if !title.is_empty() && !done {
+                out.push_str(&format!(
+                    "name = {}
+",
+                    crate::write::q(title)
+                ));
+            }
+            done = true;
+            continue;
+        }
+        out.push_str(line);
+        if top && !done && !title.is_empty() && line.trim_start().starts_with("format") {
+            if !line.ends_with('\n') {
+                out.push('\n');
+            }
+            out.push_str(&format!(
+                "name = {}
+",
+                crate::write::q(title)
+            ));
+            done = true;
+        }
+    }
+    out
+}
+
 /// `name = "from"` (or `''`, or `""`) on this line written as `name = "to"`.
 fn retitle_line(line: &str, from: &str, to: &str) -> Option<String> {
     let value = line.trim_start().strip_prefix("name")?.trim_start_matches([' ', '\t']).strip_prefix('=')?;
@@ -133,6 +172,46 @@ mod tests {
                        [[job]]\nid = \"d\"\nrun = [\"echo\", \"g/a\"]\n\
                        [[when]]\nafter_jobnet = 'g/a' # the end of a\non = \"ok\"\n\
                        [[when]]\nevery = \"day\"\nat = [\"02:00\"]\nwait_for = \"g/a\"\n";
+
+    #[test]
+    fn set_title_replaces_adds_or_drops_the_net_name() {
+        let t = "format = 1
+name = \"ab\"
+[[job]]
+id = \"j\"
+name = \"x\"
+";
+        assert_eq!(
+            set_title(t, " 月次 "),
+            "format = 1
+name = \"月次\"
+[[job]]
+id = \"j\"
+name = \"x\"
+"
+        );
+        assert_eq!(
+            set_title(t, ""),
+            "format = 1
+[[job]]
+id = \"j\"
+name = \"x\"
+"
+        );
+        let bare = "format = 1
+[[job]]
+id = \"j\"
+";
+        assert_eq!(
+            set_title(bare, "n"),
+            "format = 1
+name = \"n\"
+[[job]]
+id = \"j\"
+"
+        );
+        assert_eq!(set_title(bare, ""), bare);
+    }
 
     #[test]
     fn a_title_that_was_the_old_file_name_follows_the_new_one_and_a_custom_title_stays() {

@@ -1278,7 +1278,7 @@ fn rename(args: &[String]) -> i32 {
 
 fn copy(args: &[String]) -> i32 {
     match args {
-        [id, to] => ask_and_say(&Request::Copy { id: id.replace('\\', "/"), to: to.replace('\\', "/") }),
+        [id, to] => ask_and_say(&Request::Copy { id: id.replace('\\', "/"), to: to.replace('\\', "/"), title: None }),
         _ => usage("copy takes a group/name and the new group/name"),
     }
 }

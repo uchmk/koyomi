@@ -1426,10 +1426,13 @@ impl State {
     }
 
     /// See [`Request::Copy`].
-    fn copy(&mut self, id: &str, to: &str) -> Result<String, String> {
+    fn copy(&mut self, id: &str, to: &str, title: Option<&str>) -> Result<String, String> {
         let (_, text) = self.net_file(id, "複製できない")?;
         let to_path = self.free_id(to)?;
-        let text = koyomi_core::rename::retitle(&text, split_id(id)?.1, split_id(to)?.1);
+        let text = match title {
+            Some(title) => koyomi_core::rename::set_title(&text, title),
+            None => koyomi_core::rename::retitle(&text, split_id(id)?.1, split_id(to)?.1),
+        };
         if let Some(dir) = to_path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
         }
@@ -1568,7 +1571,7 @@ impl State {
             Request::VersionText { id, version } => self.version_text(id, version),
             Request::Restore { id, version } => self.restore(id, version),
             Request::Rename { id, to, fix } => self.rename(id, to, *fix),
-            Request::Copy { id, to } => self.copy(id, to),
+            Request::Copy { id, to, title } => self.copy(id, to, title.as_deref()),
             Request::Replace { from, to, apply } => self.replace(from, to, *apply),
             Request::Delete { id } => self.delete(id),
             Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
@@ -1604,7 +1607,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Save { id, .. } => ("save", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
-        Request::Copy { id, to } => ("copy", format!("{id} {to}")),
+        Request::Copy { id, to, .. } => ("copy", format!("{id} {to}")),
         Request::Replace { from, to, apply: true } => ("replace", format!("{from:?} → {to:?}")),
         Request::Delete { id } => ("delete", id.clone()),
         Request::Import { dry_run: false, .. } => ("import", String::new()),
@@ -2168,9 +2171,9 @@ run = [\"x\"]
         assert_eq!(Versions::parse(&s.versions("経理/親").unwrap()).unwrap().versions.len(), 0);
         assert_eq!(Versions::parse(&s.versions("経理/子").unwrap()).unwrap().versions.len(), 1);
         // A copy is unconfirmed; the original is not touched.
-        assert!(s.copy("総務/親", "総務/親2").unwrap().contains("未確認"));
+        assert!(s.copy("総務/親", "総務/親2", None).unwrap().contains("未確認"));
         assert_eq!(standing_of(&s, "総務/親2"), Some(Standing::Unconfirmed));
-        assert_eq!(s.copy("総務/親", "経理/子"), Err("もうある: 経理/子".to_owned()));
+        assert_eq!(s.copy("総務/親", "経理/子", None), Err("もうある: 経理/子".to_owned()));
         // A delete is refused while another net names it, and kept as a version when not.
         assert!(s.delete("総務/親").unwrap_err().contains("先にそちらを直す"));
         assert!(s.delete("経理/子").unwrap().contains("消した"));
@@ -2200,18 +2203,24 @@ run = [\"x.exe\"]
         assert!(s.save("g/ab", plain, None, false).is_ok());
         assert!(s.save("g/me", &custom, None, false).is_ok());
         let label = |s: &State, id: &str| s.defs.iter().find(|d| d.id == id).map(|d| d.label().to_owned());
-        assert!(s.copy("g/ab", "g/ab-2").is_ok());
+        assert!(s.copy("g/ab", "g/ab-2", None).is_ok());
         assert_eq!(label(&s, "g/ab-2").as_deref(), Some("ab-2"));
         assert!(std::fs::read_to_string(paths.jobnets.join("g/ab-2.toml")).unwrap().starts_with(
             "# note
 "
         ));
-        assert!(s.copy("g/me", "g/me-2").is_ok());
+        assert!(s.copy("g/me", "g/me-2", None).is_ok());
         assert_eq!(label(&s, "g/me-2").as_deref(), Some("Month end"));
         assert!(s.rename("g/ab-2", "g/cd", false).is_ok());
         assert_eq!(label(&s, "g/cd").as_deref(), Some("cd"));
         assert!(s.rename("g/me-2", "g/other", false).is_ok());
         assert_eq!(label(&s, "g/other").as_deref(), Some("Month end"));
+        // An edited 表示名 is written as typed; a cleared one leaves no `name =`, so the tree shows the file.
+        assert!(s.copy("g/ab", "g/ab-3", Some("Edited")).is_ok());
+        assert_eq!(label(&s, "g/ab-3").as_deref(), Some("Edited"));
+        assert!(s.copy("g/me", "g/me-3", Some("")).is_ok());
+        assert!(!std::fs::read_to_string(paths.jobnets.join("g/me-3.toml")).unwrap().contains("name = \"Month"));
+        assert_eq!(label(&s, "g/me-3").as_deref(), Some("me-3"));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
