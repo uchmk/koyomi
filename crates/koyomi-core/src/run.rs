@@ -203,6 +203,9 @@ pub struct JobRun {
     /// What each exit code means; without it only 0 is 正常.
     #[serde(default)]
     pub judge: Option<Judge>,
+    /// Environment variables for the process (`secret:<name>` values are read when it starts).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -231,6 +234,7 @@ impl JobRun {
             shell: job.shell.clone(),
             script: job.script.clone(),
             judge: job.judge.clone(),
+            env: job.env.clone(),
             retried: 0,
             state: State::NotRun,
             started: None,

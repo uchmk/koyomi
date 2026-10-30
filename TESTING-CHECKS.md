@@ -1,6 +1,6 @@
 # Checklist
 
-309 checks in TESTING.md, 305 left for a person.
+315 checks in TESTING.md, 311 left for a person.
 
 ## 1. Start
 
@@ -406,3 +406,12 @@
 - [ ] **32.5** A PowerShell `script` with `@{ a = 1 }` and `{ … }` → Runs as written; the braces are not touched 〔未訳〕
 - [ ] **32.6** `koyomi rerun` a run of an earlier day → The tokens are written for that run's business day, not today 〔未訳〕
 - [ ] **32.7** `koyomi run <net> --date 2026-11-02 --dry` → Each job prints as `id: command @ dir` with the dates written out; no run starts (`koyomi status` shows nothing new) 〔未訳〕
+
+## 33. 環境変数と秘密
+
+- [ ] **33.1** `echo hunter2 \| koyomi secret set db`, then `koyomi secret check db` → `秘密 db はある`; the value is not shown anywhere 〔未訳〕
+- [ ] **33.2** A job `run = ["cmd.exe", "/c", "echo", "%DB_PASS%"]` with `env = { DB_PASS = "secret:db" }`; run it, then `koyomi log` → The log has `***`, not `hunter2` 〔未訳〕
+- [ ] **33.3** The same job after `koyomi secret delete db` → The job fails with `秘密がない: db（koyomi secret set db）` 〔未訳〕
+- [ ] **33.4** `env = { OUT = "{month-1}" }` and a job that echoes `%OUT%` → The log has last month as `YYYYMM` 〔未訳〕
+- [ ] **33.5** `env = { KOYOMI_X = "1" }` or `env = { 1A = "x" }`; `koyomi check` → A problem with the line number 〔未訳〕
+- [ ] **33.6** Open the review of a job with `env` → `環境変数 DB_PASS: secret:db` is listed; no secret value 〔未訳〕

@@ -36,6 +36,7 @@ ito-keymap = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a
 ito-keyscript = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # `?` / F1: the key help.
 ito-help = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
+ito-secret = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # System notification, sound, webhook.
 ito-notify = { git = "https://github.com/uchmk/ito", rev = "15fa4c31caa882ef6b8a0599ebb77bf4cf1f9c18" }
 # F12: an issue form filled with the version, OS and what the app knows.

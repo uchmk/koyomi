@@ -1,5 +1,5 @@
 //! The commands that print and exit: `check`, `list`, `show`, `approve`, `run`, `rerun`, `next`, `status`,
-//! `history`, `log`, `kill`, `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`.
+//! `history`, `log`, `kill`, `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`, `secret`.
 //!
 //! Every command takes `--help` (its lines of the usage) and `--toml` (the answer as TOML, for
 //! another program: the commands that answer with data print it as such, the rest print `ok`
@@ -63,6 +63,7 @@ usage: koyomi [--version | --help | env]
                                      kept under versions/; the nets come in unconfirmed; --dry-run: only say)
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
+       koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env (secret:<name>)
 ";
 
 /// What every command takes, under the usage.
@@ -77,9 +78,9 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 24] = [
+const COMMANDS: [&str; 25] = [
     "check", "list", "show", "approve", "run", "rerun", "next", "status", "history", "log", "kill", "hold", "release", "skip", "pause",
-    "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup",
+    "resume", "calendar", "new", "versions", "restore", "export", "import", "engine", "startup", "secret",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -125,6 +126,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "import" => import(rest),
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
+        "secret" => secret_cmd(rest),
         _ => return None,
     };
     Some(finish(code))
@@ -1061,6 +1063,42 @@ fn startup_line() -> String {
     match ito_common::startup::enabled("koyomi") {
         true => "サインイン時の起動: あり".to_owned(),
         false => "サインイン時の起動: なし".to_owned(),
+    }
+}
+
+/// `koyomi secret set|delete|check <name>`: the values a job's `env` reads as `secret:<name>`.
+/// `set` reads the value from stdin (a line), so it stays out of the shell history.
+fn secret_cmd(args: &[String]) -> i32 {
+    let [op, name] = args else { return usage("secret takes set, delete or check, and a name") };
+    let res = match op.as_str() {
+        "set" => {
+            let mut value = String::new();
+            if let Err(e) = std::io::stdin().read_line(&mut value) {
+                out(&format!("koyomi: {e}"), true);
+                return 1;
+            }
+            let value = value.trim_end_matches(['\r', '\n']);
+            if value.is_empty() {
+                return usage("secret set reads the value from stdin; it was empty");
+            }
+            ito_secret::set("koyomi", name, value).map(|()| format!("koyomi: 秘密 {name} を保存した"))
+        }
+        "delete" => ito_secret::delete("koyomi", name).map(|()| format!("koyomi: 秘密 {name} を消した")),
+        "check" => ito_secret::get("koyomi", name).map(|v| match v {
+            Some(_) => format!("koyomi: 秘密 {name} はある"),
+            None => format!("koyomi: 秘密 {name} はない"),
+        }),
+        _ => return usage("secret takes set, delete or check, and a name"),
+    };
+    match res {
+        Ok(text) => {
+            out(&text, false);
+            0
+        }
+        Err(e) => {
+            out(&format!("koyomi: {e}"), true);
+            1
+        }
     }
 }
 

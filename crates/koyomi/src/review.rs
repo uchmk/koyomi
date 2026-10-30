@@ -115,6 +115,9 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
             }
         }
         out.push(format!("  {}: {}", t.tr("review.dir"), j.dir.as_deref().unwrap_or(t.tr("review.nodir"))));
+        for (k, v) in &j.env {
+            out.push(format!("  {} {k}: {v}", t.tr("review.env")));
+        }
         if let Some(secs) = j.timeout {
             out.push(format!("  {}: {}", t.tr("review.timeout"), koyomi_core::duration::text(secs)));
         }

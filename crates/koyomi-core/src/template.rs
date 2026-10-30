@@ -1,4 +1,4 @@
-//! `{date}` and friends in a job's `run`, `script` and `dir`: the business
+//! `{date}` and friends in a job's `run`, `script`, `dir` and `env` values: the business
 //! day of the run, moved and written the way the job wants it, so a monthly
 //! job gets its month from koyomi and not from its own arithmetic.
 //!
@@ -76,6 +76,11 @@ pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>) -> Resu
         }
         if let Some(s) = &mut j.script {
             *s = expand(s, date, cal).map_err(|e| at("script", e))?;
+        }
+        for (k, v) in &mut j.env {
+            if !v.starts_with("secret:") {
+                *v = expand(v, date, cal).map_err(|e| at(&format!("env {k}"), e))?;
+            }
         }
         if let Some(d) = &mut j.dir {
             *d = expand(d, date, cal).map_err(|e| at("dir", e))?;

@@ -2032,6 +2032,7 @@ dependencies = [
  "ito-palette",
  "ito-prefs",
  "ito-proc",
+ "ito-secret",
  "ito-statusbar",
  "ito-testcheck",
  "ito-theme",

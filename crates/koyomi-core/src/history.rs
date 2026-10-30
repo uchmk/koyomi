@@ -183,6 +183,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         shell: None,
                         script: None,
                         judge: None,
+                        env: Default::default(),
                         retried: 0,
                         state: State::NotRun,
                         started: None,

@@ -709,6 +709,7 @@ impl Runner {
             timeout: j.timeout,
             retry: j.retry,
             judge: j.judge.clone(),
+            env: j.env.clone(),
             file: r.file_for(job_id),
             log,
             cap: self.config.log_max_bytes(),
@@ -781,6 +782,8 @@ struct JobSpec {
     retry: Option<Retry>,
     /// What the exit codes mean: a 警告 end is not run again.
     judge: Option<Judge>,
+    /// The job's `env`; `secret:<name>` values are read when it starts.
+    env: BTreeMap<String, String>,
     /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
     file: Option<String>,
     log: PathBuf,
@@ -827,10 +830,17 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
         Err(e) => return done(Outcome::Failed, format!("ログを作れない: {}: {e}", job.log.display()), 0),
     };
     let mut size = LogSize { written: 0, capped: false };
+    let env = match resolve_env(&job.env, &|name| ito_secret::get("koyomi", name)) {
+        Ok(r) => r,
+        Err(e) => {
+            let _ = writeln!(file, "! {e}");
+            return done(Outcome::Failed, e, 0);
+        }
+    };
     let (count, wait) = job.retry.map_or((0, 0), |r| (r.count, r.wait));
     let mut retried = 0;
     loop {
-        let (outcome, reason) = attempt(job, exe, args, stop, why, &mut file, &mut size);
+        let (outcome, reason) = attempt(job, (exe, args), &env, stop, why, &mut file, &mut size);
         let abnormal =
             matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) == State::Error) || outcome == Outcome::Failed;
         if !abnormal || retried >= count {
@@ -854,11 +864,38 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
     }
 }
 
+/// The job's `env` ready for the process: plain values as they are, `secret:<name>` read
+/// with `get`. Also the secret values, to hide them in the log. A missing secret is an error.
+fn resolve_env(env: &BTreeMap<String, String>, get: &dyn Fn(&str) -> std::io::Result<Option<String>>) -> Result<Resolved, String> {
+    let mut out = Resolved::default();
+    for (k, v) in env {
+        match v.strip_prefix("secret:") {
+            None => out.vars.push((k.clone(), v.clone())),
+            Some(name) => match get(name) {
+                Ok(Some(s)) => {
+                    out.vars.push((k.clone(), s.clone()));
+                    out.secrets.push(s);
+                }
+                Ok(None) => return Err(format!("秘密がない: {name}（koyomi secret set {name}）")),
+                Err(e) => return Err(format!("秘密を読めない: {name}: {e}")),
+            },
+        }
+    }
+    Ok(out)
+}
+
+/// A job's `env` read: what to pass, and which of it to hide in the log.
+#[derive(Default)]
+struct Resolved {
+    vars: Vec<(String, String)>,
+    secrets: Vec<String>,
+}
+
 /// Runs the job's process once, to its end.
 fn attempt(
     job: &JobSpec,
-    exe: &str,
-    args: &[String],
+    (exe, args): (&str, &[String]),
+    env: &Resolved,
     stop: &Arc<AtomicBool>,
     why: &Arc<AtomicU8>,
     file: &mut std::fs::File,
@@ -873,12 +910,14 @@ fn attempt(
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
     }
+    cmd.envs(env.vars.iter().map(|(k, v)| (k, v)));
+    let hidden: Vec<&str> = env.secrets.iter().map(String::as_str).collect();
     let mut on_line = |stream: ito_proc::Stream, line: &str| {
         if size.capped {
             return false;
         }
         let prefix = if stream == ito_proc::Stream::Err { "! " } else { "" };
-        let text = format!("{prefix}{line}\n");
+        let text = format!("{prefix}{}\n", ito_secret::mask(line, &hidden));
         size.written += text.len() as u64;
         if size.written > job.cap {
             size.capped = true;
@@ -1559,6 +1598,20 @@ id = \"a\"
         assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
         assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_secrets_are_read_and_hidden() {
+        let mut env: BTreeMap<String, String> = BTreeMap::new();
+        env.insert("A".into(), "plain".into());
+        env.insert("B".into(), "secret:db".into());
+        let store = |n: &str| Ok((n == "db").then(|| "hunter2".to_owned()));
+        let got = resolve_env(&env, &store).unwrap();
+        assert_eq!(got.vars, [("A".to_owned(), "plain".to_owned()), ("B".to_owned(), "hunter2".to_owned())]);
+        let hidden: Vec<&str> = got.secrets.iter().map(String::as_str).collect();
+        assert_eq!(ito_secret::mask("pw=hunter2!", &hidden), "pw=***!");
+        env.insert("C".into(), "secret:no".into());
+        assert!(resolve_env(&env, &store).err().unwrap().contains("秘密がない: no"));
     }
 
     #[test]

@@ -113,6 +113,10 @@ pub struct Job {
     /// Without it, 0 is 正常 and every other code 異常.
     #[serde(default)]
     pub judge: Option<Judge>,
+    /// Environment variables for the process, from `env = { A = "x", DB_PASS = "secret:db" }`.
+    /// A value `secret:<name>` is read from the OS credential store when the job starts.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub env: BTreeMap<String, String>,
 }
 
 /// A line from the job `job` to the one that has it in `after`: which
@@ -428,6 +432,7 @@ struct RawJob {
     timeout: Field,
     retry: Field,
     judge: Field,
+    env: Field,
 }
 
 /// The 1-based line of byte `offset` in `text`.
@@ -510,6 +515,41 @@ impl Checker<'_> {
                 None
             }
         }
+    }
+
+    /// `env = { NAME = "value" }`: names a process can have, values plain text or `secret:<name>`.
+    fn env(&mut self, field: &Field) -> BTreeMap<String, String> {
+        let mut out = BTreeMap::new();
+        let Some(f) = field else { return out };
+        let at = f.span().start;
+        let toml::Value::Table(t) = f.get_ref() else {
+            self.add(at, "env は表で書く（例: env = { DB_PASS = \"secret:db\" }）");
+            return out;
+        };
+        for (k, v) in t {
+            let name_ok =
+                !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            if !name_ok {
+                self.add(at, format!("env の名前に使えない: {k}（英数字と _ だけ）"));
+            } else if k.to_ascii_uppercase().starts_with("KOYOMI_") {
+                self.add(at, format!("env の名前に使えない: {k}（KOYOMI_ は koyomi が渡す）"));
+            }
+            let Some(s) = v.as_str() else {
+                self.add(at, format!("env の値は文字列で書く: {k}"));
+                continue;
+            };
+            match s.strip_prefix("secret:") {
+                Some("") => self.add(at, format!("env {k}: secret: の後に名前が要る")),
+                Some(_) => {}
+                None => {
+                    if let Err(e) = crate::template::check(s) {
+                        self.add(at, format!("env {k}: {e}"));
+                    }
+                }
+            }
+            out.insert(k.clone(), s.to_owned());
+        }
+        out
     }
 
     fn timeout(&mut self, field: &Field) -> Option<u64> {
@@ -1228,6 +1268,12 @@ impl Checker<'_> {
                     self.add(start, format!("{name}: {e}"));
                 }
             }
+            let env = if part.is_job() {
+                self.env(&j.env)
+            } else {
+                self.only(&j.env, "env", "\"job\"");
+                BTreeMap::new()
+            };
             let timeout = if part.is_job() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
             } else {
@@ -1240,7 +1286,7 @@ impl Checker<'_> {
             }
             let name = self.string(&j.name, "name");
             let pos = self.pos(&j.pos);
-            jobs.push(Job { id, name, run, dir, after, pos, part, timeout, retry, shell, script, judge });
+            jobs.push(Job { id, name, run, dir, after, pos, part, timeout, retry, shell, script, judge, env });
         }
         let followed: BTreeSet<&str> = jobs.iter().flat_map(|j| j.after.iter().map(|l| l.job.as_str())).collect();
         for (job, entry) in jobs.iter().zip(raw) {
@@ -1500,6 +1546,23 @@ after = ["extract"]
         let p = problems("format = 1\nname = \n");
         assert_eq!(p.len(), 1);
         assert!(p[0].starts_with("a.toml の 2 行目: TOML の書き方が違う"), "{p:?}");
+    }
+
+    #[test]
+    fn env_is_checked_and_kept() {
+        let head = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let net = parse(&format!("{head}env = {{ DB_PASS = \"secret:db\", OUT = \"{{month-1}}\" }}\n")).unwrap();
+        assert_eq!(net.jobs[0].env["DB_PASS"], "secret:db");
+        for (bad, want) in [
+            ("env = { 1A = \"x\" }", "env の名前に使えない"),
+            ("env = { KOYOMI_X = \"x\" }", "KOYOMI_"),
+            ("env = { A = 1 }", "文字列"),
+            ("env = { A = \"secret:\" }", "secret: の後に名前"),
+            ("env = { A = \"{date-1x}\" }", "単位が読めない"),
+        ] {
+            let p = problems(&format!("{head}{bad}\n"));
+            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+        }
     }
 
     #[test]

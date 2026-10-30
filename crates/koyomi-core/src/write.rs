@@ -255,6 +255,9 @@ fn job(j: &Job, out: &mut String) {
     if let Some(d) = &j.dir {
         push(out, "dir", &q(d));
     }
+    if !j.env.is_empty() {
+        push(out, "env", &format!("{{ {} }}", j.env.iter().map(|(k, v)| format!("{k} = {}", q(v))).collect::<Vec<_>>().join(", ")));
+    }
     if !j.after.is_empty() {
         push(out, "after", &format!("[{}]", j.after.iter().map(line).collect::<Vec<_>>().join(", ")));
     }
