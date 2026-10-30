@@ -1693,7 +1693,6 @@ mod tests {
 
     /// The box's title, rows and buttons are on the screen, however many frames it is up.
     #[test]
-    #[ignore = "ito-confirm grows every frame: uchmk/ito#71"]
     fn the_confirm_box_stays_inside_the_window() {
         for size in [egui::vec2(1280.0, 800.0), egui::vec2(640.0, 360.0)] {
             let ctx = egui::Context::default();
@@ -1708,7 +1707,6 @@ mod tests {
 
     /// A box after a taller one is as tall as what it holds.
     #[test]
-    #[ignore = "ito-confirm grows every frame: uchmk/ito#71"]
     fn a_short_box_after_a_tall_one_is_short() {
         let ctx = egui::Context::default();
         let size = egui::vec2(1280.0, 800.0);
