@@ -275,8 +275,10 @@ pub struct Browser {
     /// What the last click on a day did to the file, shown under the month.
     cal_result: Option<Result<String, String>>,
     /// The runs of the last 30 days, for the average time of a net, and the day they were asked for.
-    past: Vec<Run>,
+    past: std::collections::HashMap<String, chrono::Duration>,
     past_asked: Option<chrono::NaiveDate>,
+    /// When the last ask failed: it is not repeated at every snapshot.
+    past_failed: Option<std::time::Instant>,
     /// 履歴, when it is open: the detail is its rows.
     hist: Option<History>,
     /// ガント, when it is open: the detail is today's runs on a time axis.
@@ -364,8 +366,9 @@ impl Browser {
             watch,
             snap: None,
             runs: Vec::new(),
-            past: Vec::new(),
+            past: std::collections::HashMap::new(),
             past_asked: None,
+            past_failed: None,
             down: None,
             starting: true,
             selected: None,
@@ -423,7 +426,7 @@ impl Browser {
     /// Asks the engine for the last 30 days once a day.
     fn ask_past(&mut self) {
         let today = chrono::Local::now().date_naive();
-        if self.past_asked != Some(today) {
+        if self.past_asked != Some(today) && self.past_failed.is_none_or(|at| at.elapsed() > Duration::from_secs(60)) {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
             let _ = self.tx.send(Request::History { from, to });
@@ -467,9 +470,25 @@ impl Browser {
                     if self.past_asked.is_some_and(|d| Self::past_range(d) == (from.clone(), to.clone())) =>
                 {
                     match r.and_then(|text| Runs::parse(&text)) {
-                        Ok(rs) => self.past = rs.runs,
-                        // Asked again with the next snapshot.
-                        Err(_) => self.past_asked = None,
+                        Ok(rs) => {
+                            self.past_failed = None;
+                            // Averaged once here, not at every frame.
+                            let nets: BTreeSet<&str> = rs.runs.iter().map(|r| r.jobnet.as_str()).collect();
+                            self.past = nets
+                                .into_iter()
+                                .filter_map(|n| koyomi_core::run::average_duration(&rs.runs, n, 10).map(|a| (n.to_owned(), a)))
+                                .collect();
+                            // The 履歴 box may have been typed to this very range: it gets the rows too.
+                            if let Some(h) = self.hist.as_mut().filter(|h| h.from == from && h.to == to) {
+                                h.rows = rs.runs;
+                                h.error = None;
+                            }
+                        }
+                        // Asked again with a later snapshot, not at once.
+                        Err(_) => {
+                            self.past_asked = None;
+                            self.past_failed = Some(std::time::Instant::now());
+                        }
                     }
                 }
                 Msg::Answer(Request::History { .. }, r) => {
@@ -1555,7 +1574,7 @@ impl Browser {
             .filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id))
             .map(|d| (d.id.as_str(), d))
             .collect();
-        let average = |id: &str| koyomi_core::run::average_duration(&self.past, id, 10);
+        let average = |id: &str| self.past.get(id).copied();
         let next_of = |id: &str, from: chrono::NaiveDateTime| -> String {
             by_id
                 .get(id)
@@ -2507,8 +2526,9 @@ mod tests {
             watch: Arc::default(),
             snap,
             runs: Vec::new(),
-            past: Vec::new(),
+            past: std::collections::HashMap::new(),
             past_asked: None,
+            past_failed: None,
             down: None,
             starting: false,
             selected: None,
