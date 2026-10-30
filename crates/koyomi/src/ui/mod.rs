@@ -609,11 +609,12 @@ impl Browser {
         std::mem::take(&mut self.ended)
     }
 
-    /// The runs the person marked 対応済み since the last call (the app keeps them in `acked.toml`).
+    /// The runs already dealt with, as the app keeps them (from `Acked::take_changed`).
     pub fn set_acked(&mut self, ids: BTreeSet<String>) {
         self.acked = ids;
     }
 
+    /// The runs the person marked 対応済み since the last call (the app keeps them in `acked.toml`).
     pub fn take_acks(&mut self) -> Vec<String> {
         std::mem::take(&mut self.to_ack)
     }
