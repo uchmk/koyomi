@@ -43,7 +43,7 @@ enum Msg {
     /// File work done off the UI thread: a line for under the detail, or why not.
     Done(Result<String, String>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
-    PortText(Result<String, String>),
+    PortText(String, Result<String, String>),
 }
 
 pub struct Approval {
@@ -436,7 +436,7 @@ impl Browser {
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Done(r) => self.result = Some(r),
-                Msg::PortText(r) => self.port_text(r),
+                Msg::PortText(path, r) => self.port_text(&path, r),
                 Msg::Down(e) => {
                     self.starting = false;
                     self.down = Some(e);
@@ -679,6 +679,7 @@ impl Browser {
     /// under the detail.
     pub fn export(&mut self, t: &ito_i18n::Table) {
         let said = t.tr("port.exported").to_owned();
+        self.result = Some(Ok(t.tr("run.writing").to_owned()));
         Self::background(&self.io, move || export_all().map(|(path, n)| said.replace("{0}", &path).replace("{1}", &n.to_string())));
     }
 
@@ -948,14 +949,18 @@ impl Browser {
                 .map_err(|e| e.to_string())
                 .and_then(|b| crate::cli::port_text(&b).ok_or_else(|| "UTF-8 でも UTF-16 でもない".to_owned()))
                 .map_err(|e| format!("{path} を読めない: {e}"));
-            let _ = tx.send(Msg::PortText(read));
+            let _ = tx.send(Msg::PortText(path, read));
             ctx.request_repaint();
         });
     }
 
     /// The file the box read: ask the engine what importing it would do.
-    fn port_text(&mut self, read: Result<String, String>) {
+    /// A read of a path the field no longer holds (or of a box since closed) is dropped.
+    fn port_text(&mut self, path: &str, read: Result<String, String>) {
         let Some(p) = &mut self.port else { return };
+        if p.path.trim().trim_matches('"') != path {
+            return;
+        }
         match read {
             Ok(text) => {
                 p.error = None;
@@ -1870,6 +1875,7 @@ impl Browser {
             shown.reverse();
             let text = crate::csv::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
             let said = t.tr("run.history_csv_done").to_owned();
+            self.result = Some(Ok(t.tr("run.writing").to_owned()));
             Self::background(&self.io, move || export_csv("history", &text).map(|path| said.replace("{0}", &path)));
         }
         if search {
@@ -1916,7 +1922,15 @@ impl Browser {
                 ui.label(run.started.date().to_string());
                 ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
                 let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
-                let said = format!("{} {} {} {}", run.started.date(), show::tag(t, run.state), run.title, show::hms(run.started));
+                let said = format!(
+                    "{} {} {} {} {} {}",
+                    run.started.date(),
+                    show::tag(t, run.state),
+                    run.title,
+                    show::hms(run.started),
+                    ended,
+                    took
+                );
                 ito_a11y::say(&r, Role::Row, &said);
                 ui.label(show::hms(run.started));
                 ui.label(ended);
@@ -2064,7 +2078,8 @@ impl Browser {
                 ui.label(j.exit.map(|x| x.to_string()).unwrap_or_default());
                 ui.label(match (j.retried, j.retry) {
                     (0, None) => String::new(),
-                    (n, r) => format!("{n}/{}", r.map_or(0, |r| r.count)),
+                    (n, Some(r)) => format!("{n}/{}", r.count),
+                    (n, None) => n.to_string(),
                 });
                 ui.label(j.duration().map(show::duration).unwrap_or_default());
                 ui.label(koyomi_core::run::tidy_reason(&j.reason));
