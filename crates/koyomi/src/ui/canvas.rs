@@ -1039,7 +1039,14 @@ impl Editor {
             let r = ui.label(t.tr("canvas.shelf"));
             ito_a11y::say(&r, Role::Heading, t.tr("canvas.shelf"));
             for part in shelf() {
-                let label = show::part_name(t, &part);
+                let name = show::part_name(t, &part);
+                let mark = match part.key() {
+                    "job" => "▭ ",
+                    "jobnet" => "▣ ",
+                    "branch" => "◇ ",
+                    _ => "",
+                };
+                let label = format!("{mark}{name}");
                 let r = ui.add(egui::Button::new(&label).sense(Sense::click_and_drag()));
                 ito_a11y::say(&r, Role::Button, &label);
                 if r.drag_started() {
