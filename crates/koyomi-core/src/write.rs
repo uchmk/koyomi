@@ -205,6 +205,12 @@ fn when(w: &When, out: &mut String) {
         };
         push(out, "on_closed", &q(word));
     }
+    if let Some(u) = &w.wait_for {
+        push(out, "wait_for", &q(u));
+    }
+    if let Some(t) = w.wait_until {
+        push(out, "wait_until", &q(&t.format("%H:%M").to_string()));
+    }
 }
 
 fn line(l: &Line) -> String {

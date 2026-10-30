@@ -34,6 +34,13 @@ pub struct When {
     /// `on_closed`; none written: `skip` when the net has a calendar.
     #[serde(default)]
     pub on_closed: Option<OnClosed>,
+    /// `wait_for`: a time of this net waits for the end of that net's run on
+    /// the same business day (when it is scheduled that day).
+    #[serde(default)]
+    pub wait_for: Option<String>,
+    /// `wait_until`: the time of day after which the wait gives up (abnormal).
+    #[serde(default)]
+    pub wait_until: Option<NaiveTime>,
 }
 
 /// `on_closed`: what a time written on a closed day of the net's calendar does.
@@ -468,7 +475,7 @@ mod tests {
         NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap()
     }
     fn when(kind: Kind) -> When {
-        When { kind, except: Vec::new(), start: None, end: None, on_closed: None }
+        When { kind, except: Vec::new(), start: None, end: None, on_closed: None, wait_for: None, wait_until: None }
     }
     fn company() -> Calendar {
         Calendar::parse("会社", "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\nclosed = [2026-11-20]\n").unwrap()
@@ -659,6 +666,8 @@ mod tests {
             start: Some(d("2026-11-01")),
             end: None,
             on_closed: Some(OnClosed::Prev),
+            wait_for: Some("経理/売上取込".to_owned()),
+            wait_until: Some(at(&["09:30"])[0]),
         };
         let text = toml::to_string(&vec![w.clone()].into_iter().map(|w| ("w", w)).collect::<BTreeMap<_, _>>()).unwrap();
         let back: BTreeMap<String, When> = toml::from_str(&text).unwrap();
@@ -673,6 +682,8 @@ mod tests {
             start: None,
             end: None,
             on_closed: Some(OnClosed::Run),
+            wait_for: None,
+            wait_until: None,
         };
         let start = When { kind: Kind::OnStart, ..file.clone() };
         for w in [&file, &start] {

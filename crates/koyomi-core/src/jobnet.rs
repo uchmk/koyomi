@@ -406,6 +406,8 @@ struct RawWhen {
     on_start: Field,
     after_jobnet: Field,
     on: Field,
+    wait_for: Field,
+    wait_until: Field,
 }
 
 #[derive(Deserialize)]
@@ -779,16 +781,16 @@ impl Checker<'_> {
                 continue;
             };
             let allowed: &[&str] = match kind {
-                "once" => &["once"],
                 "file" => &["file", "settle"],
                 "on_start" => &["on_start"],
                 "after_jobnet" => &["after_jobnet", "on"],
-                "day" => &["every", "at"],
-                "minutes" | "hours" => &["every", "n", "from", "to", "days"],
-                "week" => &["every", "days", "at"],
-                "month" => &["every", "day", "nth", "weekday", "business_day", "shift", "at"],
-                "year" => &["every", "date", "at"],
-                _ => &["dates", "at"],
+                "day" => &["every", "at", "wait_for", "wait_until"],
+                "minutes" | "hours" => &["every", "n", "from", "to", "days", "wait_for", "wait_until"],
+                "week" => &["every", "days", "at", "wait_for", "wait_until"],
+                "month" => &["every", "day", "nth", "weekday", "business_day", "shift", "at", "wait_for", "wait_until"],
+                "year" => &["every", "date", "at", "wait_for", "wait_until"],
+                "once" => &["once", "wait_for", "wait_until"],
+                _ => &["dates", "at", "wait_for", "wait_until"],
             };
             for (field, name) in [
                 (&w.once, "once"),
@@ -810,6 +812,8 @@ impl Checker<'_> {
                 (&w.on_start, "on_start"),
                 (&w.after_jobnet, "after_jobnet"),
                 (&w.on, "on"),
+                (&w.wait_for, "wait_for"),
+                (&w.wait_until, "wait_until"),
             ] {
                 if let Some(f) = field {
                     if !allowed.contains(&name) {
@@ -925,6 +929,30 @@ impl Checker<'_> {
             let except = self.dates(&w.except, "except");
             let start = self.date_of(&w.start);
             let end = self.date_of(&w.end);
+            let wait_for = match self.string(&w.wait_for, "wait_for") {
+                Some(u) if is_id(&u) => Some(u),
+                Some(_) => {
+                    let pos = w.wait_for.as_ref().map_or(head, |f| f.span().start);
+                    self.add(pos, "wait_for は \"グループ/名前\" で書く（例: wait_for = \"経理/売上取込\"）");
+                    None
+                }
+                None => None,
+            };
+            let wait_until = match self.string(&w.wait_until, "wait_until") {
+                Some(t) => match when::time(&t) {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        let pos = w.wait_until.as_ref().map_or(head, |f| f.span().start);
+                        self.add(pos, e);
+                        None
+                    }
+                },
+                None => None,
+            };
+            if wait_until.is_some() && wait_for.is_none() && w.wait_for.is_none() {
+                let pos = w.wait_until.as_ref().map_or(head, |f| f.span().start);
+                self.add(pos, "wait_until は wait_for と一緒に書く");
+            }
             if let (Some(s), Some(e)) = (start, end) {
                 if s > e {
                     self.add(w.start.as_ref().map_or(head, |f| f.span().start), "start は end より前");
@@ -932,7 +960,7 @@ impl Checker<'_> {
             }
             if let Some(kind) = kind {
                 if self.problems.len() == before {
-                    out.push(When { kind, except, start, end, on_closed });
+                    out.push(When { kind, except, start, end, on_closed, wait_for, wait_until });
                 }
             }
         }
@@ -1501,6 +1529,53 @@ fn expand_in(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>, stac
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_time_may_wait_for_another_net_until_a_time_of_day() {
+        let job = "[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let ok = format!(
+            "format = 1
+[[when]]
+every = \"day\"
+at = [\"09:00\"]
+wait_for = \"経理/売上取込\"
+wait_until = \"11:30\"
+{job}"
+        );
+        let net = parse(&ok).unwrap();
+        assert_eq!(net.when[0].wait_for.as_deref(), Some("経理/売上取込"));
+        assert_eq!(net.when[0].wait_until, Some(chrono::NaiveTime::from_hms_opt(11, 30, 0).unwrap()));
+        assert_eq!(parse(&crate::write::text(&net)).unwrap().when, net.when);
+        for bad in [
+            "wait_until = \"11:30\"
+",
+            "wait_for = \"x\"
+",
+            "wait_for = \"a/b\"
+wait_until = \"25:00\"
+",
+        ] {
+            let text = format!(
+                "format = 1
+[[when]]
+every = \"day\"
+at = [\"09:00\"]
+{bad}{job}"
+            );
+            assert!(parse(&text).is_err(), "{bad}");
+        }
+        let ev = format!(
+            "format = 1
+[[when]]
+on_start = true
+wait_for = \"a/b\"
+{job}"
+        );
+        assert!(parse(&ev).is_err());
+    }
 
     const GOOD: &str = r#"format = 1
 name = "月次締め"

@@ -43,6 +43,9 @@ pub struct WhenEdit {
     pub start: String,
     pub end: String,
     pub on_closed: Option<OnClosed>,
+    /// `wait_for` and `wait_until`.
+    pub wait_for: String,
+    pub wait_until: String,
     /// Why the fields do not read, when they do not.
     pub error: Option<String>,
 }
@@ -72,6 +75,8 @@ impl Default for WhenEdit {
             start: String::new(),
             end: String::new(),
             on_closed: None,
+            wait_for: String::new(),
+            wait_until: String::new(),
             error: None,
         }
     }
@@ -201,6 +206,8 @@ impl WhenEdit {
         e.start = w.start.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
         e.end = w.end.map(|d| d.format("%Y-%m-%d").to_string()).unwrap_or_default();
         e.on_closed = w.on_closed;
+        e.wait_for = w.wait_for.clone().unwrap_or_default();
+        e.wait_until = w.wait_until.map(|t| time_text(&t)).unwrap_or_default();
         e
     }
 
@@ -293,7 +300,24 @@ impl WhenEdit {
                 date(s).map(Some)
             }
         };
-        Ok(When { kind, except: dates(&self.except)?, start: opt(&self.start)?, end: opt(&self.end)?, on_closed: self.on_closed })
+        let wait_for = match self.wait_for.trim() {
+            "" => None,
+            u if koyomi_core::jobnet::is_id(u) => Some(u.to_owned()),
+            u => return Err(format!("wait_for は \"グループ/名前\": \"{u}\"")),
+        };
+        let wait_until = if self.wait_until.trim().is_empty() { None } else { Some(when::time(&self.wait_until)?) };
+        if wait_until.is_some() && wait_for.is_none() {
+            return Err("wait_until は wait_for と一緒に書く".into());
+        }
+        Ok(When {
+            kind,
+            except: dates(&self.except)?,
+            start: opt(&self.start)?,
+            end: opt(&self.end)?,
+            on_closed: self.on_closed,
+            wait_for,
+            wait_until,
+        })
     }
 
     /// The fields; `true` when one changed.
@@ -394,6 +418,8 @@ impl WhenEdit {
             changed |= field(ui, t.tr("when.except"), &mut self.except, 200.0);
             changed |= field(ui, t.tr("when.start"), &mut self.start, 90.0);
             changed |= field(ui, t.tr("when.end"), &mut self.end, 90.0);
+            changed |= field(ui, t.tr("when.wait_for"), &mut self.wait_for, 200.0);
+            changed |= field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0);
             ui.horizontal(|ui| {
                 ui.label(t.tr("when.on_closed"));
                 let choices = [

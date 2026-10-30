@@ -712,6 +712,8 @@ impl Editor {
             start: None,
             end: None,
             on_closed: None,
+            wait_for: None,
+            wait_until: None,
         });
         for (i, w) in f.whens.iter_mut().enumerate() {
             match w.to_when() {

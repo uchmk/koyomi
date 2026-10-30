@@ -121,6 +121,15 @@ fn shown(p: &Path) -> String {
     s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
 }
 
+/// A time of a net that is due but waits for the end of another net's run on
+/// the same business day (`wait_for`), until `until` (`wait_until`).
+struct Waiting {
+    def: Def,
+    planned: NaiveDateTime,
+    for_net: String,
+    until: Option<NaiveDateTime>,
+}
+
 struct State {
     paths: Paths,
     store: Store,
@@ -146,6 +155,8 @@ struct State {
     /// The daily backup of the settings folder.
     backup: Backup,
     alive: alive::Alive,
+    /// The times held back by `wait_for`.
+    waiting: Vec<Waiting>,
     /// The line about the time the engine was not running, and when it was first told.
     outage: Option<(String, Instant)>,
     keep_days: u32,
@@ -194,6 +205,7 @@ impl State {
             retain,
             backup,
             alive,
+            waiting: Vec::new(),
             outage: None,
             keep_days,
             notify: NotifyCfg::default(),
@@ -294,6 +306,10 @@ impl State {
             let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last);
             match verdict {
                 schedule::Verdict::Start { late } => {
+                    if let Some(w) = self.wait_of(&def, *planned) {
+                        self.waiting.push(w);
+                        continue;
+                    }
                     let out = if late {
                         self.runner.start_late(&def, *planned)
                     } else {
@@ -310,6 +326,51 @@ impl State {
             }
         }
         self.schedule.looked(now, !due.is_empty());
+    }
+
+    /// The wait a due time of `def` goes into: the net `wait_for` names is
+    /// scheduled on the day and has not ended its run of it yet. `None`: start
+    /// now (no `wait_for`, the net is not scheduled that day, or it has ended).
+    fn wait_of(&self, def: &Def, planned: NaiveDateTime) -> Option<Waiting> {
+        let w = def.net.as_ref()?.when.iter().find(|w| !w.is_event() && w.wait_for.is_some())?;
+        let target = w.wait_for.clone()?;
+        let day = planned.date();
+        let other = self.defs.iter().find(|d| d.id == target && d.id != def.id)?;
+        let cal = other.calendar.as_deref().and_then(|c| self.calendars.get(c));
+        if !other.net.as_ref()?.when.iter().any(|x| !x.is_event() && !x.times_on_in(day, cal).is_empty()) {
+            return None;
+        }
+        if wait_over(self.runner.runs(), &target, day) {
+            return None;
+        }
+        Some(Waiting { def: def.clone(), planned, for_net: target, until: w.wait_until.map(|t| day.and_time(t)) })
+    }
+
+    /// Starts the times that waited when the net they wait for has ended its
+    /// run of the day; one that passes `wait_until` first is recorded as an
+    /// error (and told of, as an error is).
+    fn tick_wait(&mut self) {
+        if self.waiting.is_empty() {
+            return;
+        }
+        let now = Local::now().naive_local();
+        for w in std::mem::take(&mut self.waiting) {
+            let day = w.planned.date();
+            if wait_over(self.runner.runs(), &w.for_net, day) {
+                if let Err(e) = self.runner.start(&w.def, day, How::Schedule, Some(w.planned)) {
+                    self.runner.not_run(&w.def, w.planned, RunState::Locked, &e);
+                }
+            } else if w.until.is_some_and(|u| now >= u) {
+                let why = format!(
+                    "{} の終わりを {} まで待ったが、終わらなかった（wait_until）",
+                    w.for_net,
+                    w.until.map_or(String::new(), |u| u.format("%H:%M").to_string())
+                );
+                self.runner.not_run(&w.def, w.planned, RunState::Error, &why);
+            } else {
+                self.waiting.push(w);
+            }
+        }
     }
 
     /// Why `def` is not to start on `day` whatever its `[[when]]` says: the
@@ -1024,6 +1085,7 @@ pub fn run() -> i32 {
         state.runner.tick();
         state.tick_schedule();
         state.tick_events();
+        state.tick_wait();
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
@@ -1059,6 +1121,13 @@ fn followers(defs: &[Def], prev: &Run) -> Vec<(Def, when::When)> {
         }
     }
     out
+}
+
+/// Whether the net `id` has ended its run of the business day `day` and none is going.
+fn wait_over(runs: &[Run], id: &str, day: NaiveDate) -> bool {
+    let day = day.format("%Y-%m-%d").to_string();
+    let mine = || runs.iter().filter(|r| r.jobnet == id && r.date == day);
+    mine().any(|r| r.is_over()) && mine().all(|r| r.is_over())
 }
 
 /// The run of `id` that already started after another net on the business day `date`, if any.
@@ -1104,6 +1173,29 @@ mod tests {
         assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-30").is_none());
         done.how = How::Manual;
         assert!(followed(std::slice::from_ref(&done), "経理/集計", "2026-10-29").is_none());
+    }
+
+    #[test]
+    fn a_wait_ends_only_when_every_run_of_the_net_that_day_is_over() {
+        let net = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let now = Local::now().naive_local();
+        let day: NaiveDate = "2026-10-29".parse().unwrap();
+        let mut r = Run::new("p1", "経理/売上取込", "売上取込", "2026-10-29", How::Schedule, &net, now);
+        r.state = RunState::Running;
+        assert!(!wait_over(std::slice::from_ref(&r), "経理/売上取込", day));
+        assert!(!wait_over(&[], "経理/売上取込", day));
+        r.state = RunState::Error;
+        r.ended = Some(now);
+        assert!(wait_over(std::slice::from_ref(&r), "経理/売上取込", day));
+        assert!(!wait_over(std::slice::from_ref(&r), "経理/売上取込", day.succ_opt().unwrap()));
+        assert!(!wait_over(std::slice::from_ref(&r), "経理/他", day));
     }
 
     fn temp_paths(tag: &str) -> Paths {

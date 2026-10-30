@@ -1,6 +1,6 @@
 # Checklist
 
-335 checks in TESTING.md, 331 left for a person.
+339 checks in TESTING.md, 335 left for a person.
 
 ## 1. Start
 
@@ -450,3 +450,10 @@
 - [ ] **38.2** Type `ERROR` → Only upper-case ERROR lines stay (smart case) 〔未訳〕
 - [ ] **38.3** Type `(` → A red regex error; the whole log stays 〔未訳〕
 - [ ] **38.4** Clear the box → The whole log is back 〔未訳〕
+
+## 39. 先行を待つ時刻
+
+- [ ] **39.1** Net B: `[[when]] every="day" at=["HH:MM"] wait_for="g/A"`; A runs daily and is still running at HH:MM → B does not start at HH:MM; it starts right after A ends, with the same business day 〔未訳〕
+- [ ] **39.2** Add `wait_until` a few minutes after HH:MM; keep A running past it → B is recorded as 異常 with the reason (wait_until), and a notification comes 〔未訳〕
+- [ ] **39.3** A is not scheduled that day (e.g. `days` excludes today) → B starts at HH:MM without waiting 〔未訳〕
+- [ ] **39.4** In the editor open B's `[[when]]` → Fields 先行の終わりを待つ / 待つのは何時まで show and save to the file 〔未訳〕
