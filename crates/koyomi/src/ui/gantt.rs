@@ -21,6 +21,13 @@ pub struct Bar {
     pub run: usize,
     pub from: f32,
     pub to: f32,
+    /// It started before the axis begins (an earlier day): the bar's left end is cut.
+    pub before: bool,
+}
+
+/// Where `t` sits on the axis from `lo` to `hi` (0..=1).
+pub fn position(lo: NaiveDateTime, hi: NaiveDateTime, t: NaiveDateTime) -> f32 {
+    ((t - lo).num_seconds() as f32 / (hi - lo).num_seconds() as f32).clamp(0.0, 1.0)
 }
 
 /// The axis (the whole day of `now`, 00:00 to 24:00) and a bar per run, earliest start first.
@@ -28,9 +35,9 @@ pub fn bars(runs: &[&Run], now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime,
     let end_of = |r: &Run| r.ended.unwrap_or(now).max(r.started);
     let lo = now.date().and_hms_opt(0, 0, 0).unwrap_or(now);
     let hi = lo + chrono::Duration::hours(24);
-    let span = (hi - lo).num_seconds() as f32;
-    let at = |t: NaiveDateTime| ((t - lo).num_seconds() as f32 / span).clamp(0.0, 1.0);
-    let mut out: Vec<Bar> = runs.iter().enumerate().map(|(run, r)| Bar { run, from: at(r.started), to: at(end_of(r)) }).collect();
+    let at = |t: NaiveDateTime| position(lo, hi, t);
+    let mut out: Vec<Bar> =
+        runs.iter().enumerate().map(|(run, r)| Bar { run, from: at(r.started), to: at(end_of(r)), before: r.started < lo }).collect();
     out.sort_by(|a, b| a.from.total_cmp(&b.from).then(a.run.cmp(&b.run)));
     (lo, hi, out)
 }
@@ -65,7 +72,8 @@ pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option
         if picked == Some(run.id.as_str()) || r.hovered() {
             painter.rect_filled(lane, 2.0, c.border.gamma_multiply(0.35));
         }
-        let text = format!("{}  {}", run.title, super::show::hms(run.started));
+        let when = if bar.before { format!("◀ {}", run.started.format("%m-%d %H:%M:%S")) } else { super::show::hms(run.started) };
+        let text = format!("{}  {when}", run.title);
         painter.text(Pos2::new(origin.x + 4.0, y + LANE / 2.0), egui::Align2::LEFT_CENTER, &text, font.clone(), c.fg);
         let (x0, x1) = (x_of(bar.from), x_of(bar.to).max(x_of(bar.from) + MIN_BAR));
         let rect = Rect::from_min_max(Pos2::new(x0, y + (LANE - BAR_H) / 2.0), Pos2::new(x1, y + (LANE + BAR_H) / 2.0));
@@ -76,8 +84,7 @@ pub fn draw(ui: &mut egui::Ui, runs: &[&Run], now: NaiveDateTime, picked: Option
         }
     }
     // Now, over the bars.
-    let nowf = ((now - lo).num_seconds() as f32 / (hi - lo).num_seconds() as f32).clamp(0.0, 1.0);
-    let x = x_of(nowf);
+    let x = x_of(position(lo, hi, now));
     painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.5, c.run));
     clicked
 }
@@ -110,6 +117,16 @@ mod tests {
         assert!((list[0].from - 9.5 / 24.0).abs() < 1e-5 && (list[0].to - 10.5 / 24.0).abs() < 1e-5);
         // Still running: the bar reaches now.
         assert!((list[1].to - 11.25 / 24.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn a_run_from_an_earlier_day_is_cut_at_the_left_and_marked() {
+        let early = run(at(0, 0) - chrono::Duration::hours(1), None);
+        let today = run(at(9, 0), Some(at(10, 0)));
+        let (lo, hi, list) = bars(&[&early, &today], at(11, 0));
+        assert!(list[0].before && list[0].from == 0.0, "{list:?}");
+        assert!(!list[1].before);
+        assert!((position(lo, hi, at(11, 0)) - 11.0 / 24.0).abs() < 1e-5, "the now line");
     }
 
     #[test]
