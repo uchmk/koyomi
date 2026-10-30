@@ -1,6 +1,6 @@
 # Checklist
 
-376 checks in TESTING.md, 372 left for a person.
+378 checks in TESTING.md, 374 left for a person.
 
 ## 1. Start
 
@@ -524,3 +524,8 @@
 
 - [ ] **49.1** Run a net whose job exits 3, then change it to exit 0 and run it again → The second end shows "Back to normal" naming the abnormal run, after the usual ok end 〔未訳〕
 - [ ] **49.2** Run it ok once more → No recovery notice (the run before it was ok) 〔未訳〕
+
+## 50. ジョブの間で値を渡す
+
+- [ ] **50.1** Job `a` writes `rows = 5` to the file named by `KOYOMI_OUT`; job `b` (after `a`) prints the file named by `KOYOMI_IN` → b's log shows `[a]` and `rows = 5` 〔未訳〕
+- [ ] **50.2** Make `a` write text that is not TOML → b's `KOYOMI_IN` has no `[a]` table; the run still goes on 〔未訳〕

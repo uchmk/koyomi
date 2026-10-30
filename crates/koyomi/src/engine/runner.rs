@@ -943,6 +943,31 @@ fn ok_file_exists(file: &str, dir: Option<&str>) -> bool {
     }
 }
 
+/// Where a job writes the values it hands on (`KOYOMI_OUT`): beside its log.
+fn out_path(log: &std::path::Path, job: &str) -> PathBuf {
+    log.with_file_name(format!("{job}.out.toml"))
+}
+
+/// What the other jobs of a run wrote to their `KOYOMI_OUT`, as one TOML text
+/// with a table per job (`[extract]` then `rows = 3`). A file that is not TOML
+/// is left out. `log` is the job's own log path, which names the run's folder.
+fn gather_outputs(log: &std::path::Path, own: &str) -> String {
+    let Some(dir) = log.parent() else { return String::new() };
+    let mut all = toml::Table::new();
+    let mut files: Vec<_> = std::fs::read_dir(dir).into_iter().flatten().flatten().map(|e| e.path()).collect();
+    files.sort();
+    for path in files {
+        let Some(job) = path.file_name().and_then(|n| n.to_str()).and_then(|n| n.strip_suffix(".out.toml")) else { continue };
+        if job == own {
+            continue;
+        }
+        if let Some(t) = std::fs::read_to_string(&path).ok().and_then(|s| s.parse::<toml::Table>().ok()) {
+            all.insert(job.to_owned(), toml::Value::Table(t));
+        }
+    }
+    toml::to_string(&all).unwrap_or_default()
+}
+
 /// Runs the job's process once, to its end.
 fn attempt(
     job: &JobSpec,
@@ -958,6 +983,13 @@ fn attempt(
     if let Some(dir) = &job.dir {
         cmd.current_dir(dir);
     }
+    // Values between jobs: the job writes TOML to KOYOMI_OUT; KOYOMI_IN is
+    // what the other jobs of the run wrote, a table per job.
+    let out = out_path(&job.log, &job.id);
+    let _ = std::fs::remove_file(&out);
+    let input = job.log.with_file_name(format!("{}.in.toml", job.id));
+    let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
+    cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
@@ -1721,6 +1753,40 @@ id = \"a\"
         let run = wait_over(&mut r, &id3);
         assert_eq!((run.how, run.date.as_str(), run.state), (How::After, "2026-10-28", State::Ok));
         assert_eq!(r.log_tail(&id3, "b").unwrap().trim(), "2026-10-28");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_job_hands_values_to_the_jobs_after_it_through_koyomi_out() {
+        let dir = scratch("handoff");
+        let (put, show) = if cfg!(windows) {
+            (
+                "run = [\"cmd.exe\", \"/c\", \"echo rows=5 >%KOYOMI_OUT%\"]".to_owned(),
+                "run = [\"cmd.exe\", \"/c\", \"type %KOYOMI_IN%\"]".to_owned(),
+            )
+        } else {
+            ("run = [\"sh\", \"-c\", \"echo rows=5 > $KOYOMI_OUT\"]".to_owned(), "run = [\"sh\", \"-c\", \"cat $KOYOMI_IN\"]".to_owned())
+        };
+        let d = def(
+            "net",
+            &format!(
+                "format = 1
+[[job]]
+id = \"a\"
+{put}
+[[job]]
+id = \"b\"
+after = [\"a\"]
+{show}
+"
+            ),
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Ok);
+        let seen = r.log_tail(&id, "b").unwrap();
+        assert!(seen.contains("[a]") && seen.contains("rows = 5"), "{seen}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

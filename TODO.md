@@ -97,7 +97,7 @@
 - [x] 42. B4 回復の通知（S）: 異常のあと正常に戻ったら知らせる。
 - [ ] 43. 眠っている PC を前もって見せる（M）: 次の 10 回に印、「PC を起こして流す」。**uchmk/ito#72 待ち**（`DECISIONS.md` の「koyomi だけの強み」）。
 - [ ] 44. C1 タスクトレイの常駐アイコン（M）: **uchmk/ito#73 待ち**。
-- [ ] 45. A9 ジョブの間で値を渡す（M）: `KOYOMI_OUT` の TOML。
+- [x] 45. A9 ジョブの間で値を渡す（M）: `KOYOMI_OUT` の TOML。
 - [ ] 46. A10 排他（M）: `lock = "名前"`。
 - [ ] 47. A11 人の確認待ちの部品（M）: 画面か `koyomi approve-step`。`ito-confirm`・`ito-notify`。
 - [ ] 48. A12 期間を指定してまとめて流す（M）: `run --date A..B`。
