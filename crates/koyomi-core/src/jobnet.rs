@@ -1760,8 +1760,29 @@ impl Checker<'_> {
 pub fn is_id(u: &str) -> bool {
     let mut parts = u.split('/');
     let (Some(g), Some(n), None) = (parts.next(), parts.next(), parts.next()) else { return false };
-    let plain = |s: &str| !s.trim().is_empty() && s != "." && s != ".." && !s.contains('\\');
+    // Nothing a path can use to leave the folder: a drive (`C:`), a stream (`a:b`), a wildcard,
+    // or a name Windows trims (a trailing dot or space).
+    let plain = |s: &str| {
+        !s.trim().is_empty()
+            && s != "."
+            && s != ".."
+            && !s.ends_with(['.', ' '])
+            && !s.chars().any(|c| matches!(c, '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
+    };
     plain(g) && plain(n)
+}
+
+#[cfg(test)]
+mod id_tests {
+    use super::is_id;
+
+    #[test]
+    fn an_id_cannot_leave_the_folder() {
+        assert!(is_id("経理/月次"));
+        for bad in ["C:/x", "g/a:b", "g/a*", "g/..", "../x", "g/a.", "g/a ", "g\\x/y", "g/a|b", "g/\u{7}"] {
+            assert!(!is_id(bad), "{bad}");
+        }
+    }
 }
 
 /// The ids of a loop in `after` (`a → b → a`), if any.

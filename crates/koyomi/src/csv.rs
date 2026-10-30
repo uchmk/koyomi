@@ -15,6 +15,11 @@ const TIME: &str = "%Y-%m-%d %H:%M:%S";
 
 /// `s` as one field.
 fn field(s: &str) -> Cow<'_, str> {
+    // A spreadsheet runs a cell that starts with = + - @ (or a tab) as a formula: a quote in front
+    // keeps it text. A plain number, `-1`, stays one.
+    if s.starts_with(['=', '@', '\t', '\r']) || (s.starts_with(['+', '-']) && s.parse::<f64>().is_err()) {
+        return Cow::Owned(field(&format!("'{s}")).into_owned());
+    }
     if s.contains([',', '"', '\r', '\n']) {
         Cow::Owned(format!("\"{}\"", s.replace('"', "\"\"")))
     } else {
@@ -159,6 +164,15 @@ pub fn write(to: &str, text: &str) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_cell_that_looks_like_a_formula_stays_text() {
+        assert_eq!(super::field("=1+1"), "'=1+1");
+        assert_eq!(super::field("@x"), "'@x");
+        assert_eq!(super::field("-cmd"), "'-cmd");
+        assert_eq!(super::field("-1"), "-1");
+        assert_eq!(super::field("a,b"), "\"a,b\"");
+    }
+
     use super::*;
     use chrono::NaiveDate;
 
