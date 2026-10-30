@@ -119,10 +119,8 @@ fn new_id<'a>(group: &str, name: &str, mut ids: impl Iterator<Item = &'a str>) -
     if g.is_empty() || n.is_empty() {
         return Err(Why::Empty);
     }
-    // What a file name on Windows cannot hold, and a trailing dot it would cut off.
-    let bad = |s: &str| s.ends_with('.') || s.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c));
     let id = format!("{g}/{n}");
-    if bad(g) || bad(n) || !koyomi_core::jobnet::is_id(&id) {
+    if bad_file_name(g) || bad_file_name(n) || !koyomi_core::jobnet::is_id(&id) {
         return Err(Why::Bad);
     }
     let low = id.to_lowercase();
@@ -130,6 +128,11 @@ fn new_id<'a>(group: &str, name: &str, mut ids: impl Iterator<Item = &'a str>) -
         return Err(Why::Exists(id));
     }
     Ok(id)
+}
+
+/// What a file name on Windows cannot hold, and a trailing dot it would cut off.
+fn bad_file_name(s: &str) -> bool {
+    s.ends_with('.') || s.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c))
 }
 
 /// What the box shows at this point, and so which buttons it has.
@@ -308,6 +311,8 @@ pub struct Browser {
     port: Option<Port>,
     /// The 新しいジョブネット box, while it is open.
     make: Option<Make>,
+    /// The 新しいカレンダー box.
+    new_cal: Option<calendar::NewCal>,
     /// The values box of 今すぐ実行, while it is open.
     give: Option<Give>,
     /// The editors a child net was entered from, outermost first.
@@ -423,6 +428,7 @@ impl Browser {
             editors: Vec::new(),
             port: None,
             make: None,
+            new_cal: None,
             give: None,
             easy: None,
         }
@@ -658,6 +664,7 @@ impl Browser {
             || self.vers.is_some()
             || self.port.is_some()
             || self.make.is_some()
+            || self.new_cal.is_some()
             || self.give.is_some()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing)
     }
@@ -1330,7 +1337,7 @@ impl Browser {
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
-        let making = self.make.is_some() || self.give.is_some();
+        let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some();
         let closing = self.editor.as_ref().is_some_and(|e| e.closing);
         if closing && !self.close_asked {
             // The safe button first: Enter on a fresh box does not throw the changes away.
@@ -1462,6 +1469,7 @@ impl Browser {
             self.port.is_some(),
             self.make.is_some(),
             self.give.is_some(),
+            self.new_cal.is_some(),
         ];
         let first = open.iter().position(|o| *o);
         let key_for = |i: usize| if first == Some(i) { key } else { None };
@@ -1473,6 +1481,7 @@ impl Browser {
         self.confirm_port(&ctx, t, key_for(5));
         self.confirm_make(&ctx, t, key_for(6));
         self.confirm_give(&ctx, t, key_for(7));
+        self.confirm_new_cal(&ctx, t, key_for(8));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -1783,7 +1792,7 @@ impl Browser {
             if tab(ui, history, "tabs.history", true) {
                 go = Some(3);
             }
-            if tab(ui, calendar, "tabs.calendar", first_cal.is_some()) {
+            if tab(ui, calendar, "tabs.calendar", true) {
                 go = Some(2);
             }
             if tab(ui, net, "tabs.net", true) {
@@ -1803,8 +1812,10 @@ impl Browser {
                 self.job_sel = None;
                 self.result = None;
             }
-            Some(2) => {
-                if let Some(name) = self.cal_sel.clone().or(first_cal) {
+            Some(2) => match self.cal_sel.clone().or(first_cal) {
+                // No calendar yet: the tab is where the first one is made.
+                None => self.new_cal_box(),
+                Some(name) => {
                     self.hist = None;
                     self.gantt = false;
                     self.run_sel = None;
@@ -1814,7 +1825,7 @@ impl Browser {
                     self.cal_result = None;
                     self.cal_sel = Some(name);
                 }
-            }
+            },
             Some(3) => self.open_history(),
             _ => {}
         }
@@ -2749,6 +2760,7 @@ mod tests {
             editors: Vec::new(),
             port: None,
             make: None,
+            new_cal: None,
             give: None,
             easy: None,
         }
@@ -2838,6 +2850,33 @@ mod tests {
             self.show(vec![button(false)], b);
             self.settle(b);
         }
+    }
+
+    /// With no calendar the heading stays, says so, and its button opens the box; the box turns
+    /// down an empty name and one a calendar has (a file is written only by the engine-free path,
+    /// which `calendar::tests` checks).
+    #[test]
+    fn the_calendar_heading_stays_with_none_and_its_button_opens_the_box() {
+        let mut b = quiet(Vec::new());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(shown(&s, "カレンダーはまだありません"));
+        s.click("＋ 新しいカレンダー", &mut b);
+        assert!(b.new_cal.is_some(), "the button opens the box");
+        assert!(shown(&s, "日本の祝日を休みにする"));
+        s.show(key(egui::Key::Enter), &mut b);
+        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("名前を入れてください"));
+        b.snap
+            .as_mut()
+            .unwrap()
+            .calendars
+            .insert("会社".into(), koyomi_core::calendar::Calendar { name: "会社".into(), ..Default::default() });
+        b.new_cal.as_mut().unwrap().name = "会社".into();
+        s.show(key(egui::Key::Enter), &mut b);
+        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("もうあります: 会社"));
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.new_cal.is_none(), "Esc closes it");
     }
 
     /// A line that was not in the band opens it once (not the ones there at start, and not only by

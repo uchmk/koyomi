@@ -125,6 +125,7 @@ struct App {
 enum Command {
     Edit(ui::canvas::Cmd),
     NewJobnet,
+    NewCalendar,
     Guide,
     Versions,
     Export,
@@ -549,6 +550,7 @@ impl App {
         }
         out.extend([
             ito_palette::Entry::new(t.tr("palette.new_jobnet"), self.keys.label("new_jobnet"), Command::NewJobnet),
+            ito_palette::Entry::new(t.tr("palette.new_calendar"), "", Command::NewCalendar),
             ito_palette::Entry::new(t.tr("palette.guide"), "", Command::Guide),
             ito_palette::Entry::new(t.tr("palette.versions"), "", Command::Versions),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
@@ -584,6 +586,7 @@ impl App {
         match ito_palette::show(ctx, &mut view, &self.commands(), &style, &words) {
             None => self.palette = Some(view),
             Some(ito_palette::Answer::Pick(Command::NewJobnet)) => self.browser.new_box(None),
+            Some(ito_palette::Answer::Pick(Command::NewCalendar)) => self.browser.new_cal_box(),
             Some(ito_palette::Answer::Pick(Command::Guide)) => {
                 self.guide_problems();
                 self.guide.reopen();
