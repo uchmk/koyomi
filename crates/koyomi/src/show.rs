@@ -242,7 +242,7 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
         line.push_str(&format!("  {}", duration(d)));
     }
     if !j.reason.is_empty() {
-        line.push_str(&format!("  {}", j.reason));
+        line.push_str(&format!("  {}", koyomi_core::run::tidy_reason(&j.reason)));
     }
     line
 }
@@ -288,7 +288,7 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
         add("run.retried", format!("{} / {max}", j.retried));
     }
     if !j.reason.is_empty() {
-        add("run.reason", j.reason.clone());
+        add("run.reason", koyomi_core::run::tidy_reason(&j.reason));
     }
     if j.part.runs_process() {
         let cmd = j.command();

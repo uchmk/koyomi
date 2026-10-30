@@ -1871,37 +1871,6 @@ impl Browser {
         ui.heading(&head);
         ui.label(egui::RichText::new(&def.file).color(c.dim));
         ui.add_space(6.0);
-        for p in &def.problems {
-            let line = p.in_file(&def.file);
-            ui.label(egui::RichText::new(format!("{} {line}", ito_a11y::State::Error.mark())).color(c.err));
-        }
-        for l in review::body(t, &def) {
-            ui.label(l);
-        }
-        if let Some(net) = &def.net {
-            ui.add_space(6.0);
-            if net.when.is_empty() {
-                ui.label(egui::RichText::new(t.tr("run.next_none")).color(c.dim));
-            } else {
-                let head = t.trf("run.next", &["10"]);
-                let r = ui.label(egui::RichText::new(&head).strong().color(c.dim));
-                ito_a11y::say(&r, Role::Heading, &head);
-                if def.standing != Standing::Confirmed {
-                    ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
-                }
-                let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
-                let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
-                let rows =
-                    show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, chrono::Local::now().naive_local(), 10, power.as_ref());
-                if rows.is_empty() {
-                    ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
-                }
-                for row in rows {
-                    ui.label(format!("  {row}"));
-                }
-            }
-        }
-        ui.add_space(8.0);
         ui.horizontal(|ui| {
             let can = def.standing == Standing::Unconfirmed && !self.blocked();
             let label = match &self.easy {
@@ -1944,6 +1913,37 @@ impl Browser {
             ito_a11y::say(&r, Role::Label, &text);
         }
         self.show_result(ui);
+        ui.add_space(6.0);
+        for p in &def.problems {
+            let line = p.in_file(&def.file);
+            ui.label(egui::RichText::new(format!("{} {line}", ito_a11y::State::Error.mark())).color(c.err));
+        }
+        for l in review::body(t, &def) {
+            ui.label(l);
+        }
+        if let Some(net) = &def.net {
+            ui.add_space(6.0);
+            if net.when.is_empty() {
+                ui.label(egui::RichText::new(t.tr("run.next_none")).color(c.dim));
+            } else {
+                let head = t.trf("run.next", &["10"]);
+                let r = ui.label(egui::RichText::new(&head).strong().color(c.dim));
+                ito_a11y::say(&r, Role::Heading, &head);
+                if def.standing != Standing::Confirmed {
+                    ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
+                }
+                let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
+                let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
+                let rows =
+                    show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, chrono::Local::now().naive_local(), 10, power.as_ref());
+                if rows.is_empty() {
+                    ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
+                }
+                for row in rows {
+                    ui.label(format!("  {row}"));
+                }
+            }
+        }
     }
 
     /// The engine's answer to the last request (approve, run, rerun), under the buttons.

@@ -360,6 +360,16 @@ pub const LATE: &str = "遅れて実行";
 
 /// How a job carried over from the previous run begins its reason (a rerun).
 pub const CARRIED: &str = "前の回の結果";
+/// `reason` with a stacked [`CARRIED`] prefix (runs saved before reruns stopped stacking it) shown once.
+pub fn tidy_reason(reason: &str) -> String {
+    let stacked = format!("{CARRIED}: {CARRIED}");
+    let mut r = reason.to_owned();
+    while r.starts_with(&stacked) {
+        r = r[CARRIED.len() + ": ".len()..].to_owned();
+    }
+    r
+}
+
 /// The reason of a job a person skipped (`koyomi skip`): the ones after it go on as if it passed.
 pub const SKIPPED: &str = "人がスキップした";
 
@@ -1298,6 +1308,13 @@ mod tests {
         ended(&mut r2, "d", 0, "2026-10-30 10:00:05");
         let r3 = Run::rerun("r3", &r2, &net, Some("d"), now).unwrap();
         assert_eq!(r3.job("a").unwrap().reason, CARRIED);
+    }
+
+    #[test]
+    fn stacked_marks_from_old_runs_show_once() {
+        assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 前の回の結果"), CARRIED);
+        assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 終了コード 1"), "前の回の結果: 終了コード 1");
+        assert_eq!(tidy_reason("遅れて実行"), "遅れて実行");
     }
 
     #[test]
