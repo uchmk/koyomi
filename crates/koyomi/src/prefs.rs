@@ -580,25 +580,8 @@ impl Prefs {
     }
 }
 
-#[cfg(windows)]
-fn opener() -> std::process::Command {
-    std::process::Command::new("explorer")
-}
-
-#[cfg(target_os = "macos")]
-fn opener() -> std::process::Command {
-    std::process::Command::new("open")
-}
-
-#[cfg(not(any(windows, target_os = "macos")))]
-fn opener() -> std::process::Command {
-    std::process::Command::new("xdg-open")
-}
-
 fn open_path(path: &Path) -> Result<(), String> {
-    // explorer answers 1 even when it opened the file, so only a failure to
-    // start it is said.
-    opener().arg(path).status().map(drop).map_err(|e| format!("{}: {e}", path.display()))
+    ito_openin::open_default(path)
 }
 
 #[cfg(test)]

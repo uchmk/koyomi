@@ -2444,6 +2444,67 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// A screen with a pointer: what the screen reader is told (label and place of each widget
+    /// that says something), so a test can press a widget by its words instead of a coordinate.
+    struct Screen {
+        ctx: egui::Context,
+        size: egui::Vec2,
+        nodes: BTreeMap<u64, (String, egui::Rect)>,
+    }
+
+    impl Screen {
+        fn new() -> Self {
+            let ctx = egui::Context::default();
+            ctx.enable_accesskit();
+            Screen { ctx, size: egui::vec2(1280.0, 800.0), nodes: BTreeMap::new() }
+        }
+
+        fn show(&mut self, events: Vec<egui::Event>, b: &mut Browser) {
+            let t = crate::i18n::table("ja").0;
+            let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, self.size);
+            let input = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
+            let mut out = self.ctx.run_ui(input, |ui| b.show(ui, &t));
+            out.textures_delta.clear();
+            if let Some(update) = out.platform_output.accesskit_update {
+                for (id, node) in update.nodes {
+                    let place = node
+                        .bounds()
+                        .map(|r| egui::Rect::from_min_max(egui::pos2(r.x0 as f32, r.y0 as f32), egui::pos2(r.x1 as f32, r.y1 as f32)));
+                    match (node.label().or_else(|| node.value()), place) {
+                        (Some(label), Some(place)) => drop(self.nodes.insert(id.0, (label.to_owned(), place))),
+                        _ => drop(self.nodes.remove(&id.0)),
+                    }
+                }
+            }
+        }
+
+        /// Frames until the layout has settled.
+        fn settle(&mut self, b: &mut Browser) {
+            for _ in 0..3 {
+                self.show(Vec::new(), b);
+            }
+        }
+
+        /// Presses the one widget whose words contain `words`, with the primary button.
+        fn click(&mut self, words: &str, b: &mut Browser) {
+            let exact: Vec<_> = self.nodes.values().filter(|(label, _)| label == words).collect();
+            let found: Vec<_> =
+                if exact.is_empty() { self.nodes.values().filter(|(label, _)| label.contains(words)).collect() } else { exact };
+            assert_eq!(found.len(), 1, "one widget says {words:?}: {:?}", self.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+            let pos = found[0].1.center();
+            let button = |pressed| egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.show(vec![egui::Event::PointerMoved(pos)], b);
+            self.show(vec![button(true)], b);
+            self.show(vec![button(false)], b);
+            self.settle(b);
+        }
+    }
+
     fn key(k: egui::Key) -> Vec<egui::Event> {
         let e = |pressed| egui::Event::Key { key: k, physical_key: None, pressed, repeat: false, modifiers: egui::Modifiers::NONE };
         vec![e(true), e(false)]
@@ -2697,6 +2758,70 @@ mod tests {
         b.selected = Some(b.snap.as_ref().unwrap().defs[0].id.clone());
         frame(&ctx, size, Vec::new(), &mut b);
         assert!(!b.folded.contains(&b.snap.as_ref().unwrap().defs[0].group));
+    }
+
+    /// A press on a group's heading folds its nets away, and another opens them again.
+    #[test]
+    fn a_press_on_the_group_heading_folds_and_opens_it() {
+        let mut b = quiet(defs());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(b.folded.is_empty());
+        s.click("試験、開いています", &mut b);
+        assert!(b.folded.contains("試験"), "folded");
+        s.click("試験、折りたたみ中", &mut b);
+        assert!(b.folded.is_empty(), "open again");
+    }
+
+    /// The three questions are answered with the mouse: the safe button sends nothing, the other
+    /// sends its request.
+    #[test]
+    fn a_press_on_a_question_button_answers_it() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::How;
+        let net = Jobnet {
+            name: None,
+            jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }],
+            when: Vec::new(),
+            ..Default::default()
+        };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        b.runs = vec![run];
+        let mut s = Screen::new();
+
+        b.deleting = Some("試験/bom".into());
+        s.settle(&mut b);
+        s.click("やめる", &mut b);
+        assert!(b.deleting.is_none() && rx_req.try_recv().is_err(), "the safe button deletes nothing");
+        b.deleting = Some("試験/bom".into());
+        s.settle(&mut b);
+        s.click("消す", &mut b);
+        assert!(b.deleting.is_none());
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Delete { id }) if id == "試験/bom"));
+
+        b.run_sel = Some("r1".into());
+        b.killing = Some("r1".into());
+        s.settle(&mut b);
+        s.click("やめる", &mut b);
+        assert!(b.killing.is_none() && rx_req.try_recv().is_err(), "the safe button kills nothing");
+        b.killing = Some("r1".into());
+        s.settle(&mut b);
+        s.click("強制終了する", &mut b);
+        assert!(b.killing.is_none());
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Kill { .. })));
+
+        let def = b.snap.as_ref().unwrap().defs[0].clone();
+        b.selected = Some(def.id.clone());
+        b.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
+        s.settle(&mut b);
+        s.click("確かめた", &mut b);
+        assert!(b.asking.is_none());
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Approve { id, .. }) if id == def.id));
     }
 
     /// The editor opens from a definition, reports itself, and asks before changes are dropped.

@@ -1647,6 +1647,14 @@ pub fn run() -> i32 {
         crate::say("koyomi: もう動いている", true);
         return 1;
     }
+    // The lock the OS drops with the process, so two engines started together cannot both pass.
+    let _single = match ito_common::single::acquire("koyomi", "engine") {
+        Ok(g) => g,
+        Err(held) => {
+            crate::say(&format!("koyomi: もう動いている ({held})"), true);
+            return 1;
+        }
+    };
     let _ = std::fs::create_dir_all(&paths.jobnets);
     let _ = std::fs::create_dir_all(&paths.calendars);
     let rx = proto::door().listen(|| {});
