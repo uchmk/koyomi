@@ -190,6 +190,39 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
     line
 }
 
+/// The picked job's facts, one `label: value` per line: start, end, took, exit code, retries, command.
+pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
+    let mut rows = Vec::new();
+    let mut add = |k: &str, v: String| rows.push((t.tr(k).to_owned(), v));
+    add("run.state", tag(t, j.state));
+    if let Some(s) = j.started {
+        add("run.start", s.format("%Y-%m-%d %H:%M:%S").to_string());
+    }
+    if let Some(e) = j.ended {
+        add("run.end", e.format("%Y-%m-%d %H:%M:%S").to_string());
+    }
+    if let Some(d) = j.duration() {
+        add("run.took", duration(d));
+    }
+    if let Some(x) = j.exit {
+        add("run.exit", x.to_string());
+    }
+    if j.retried > 0 || j.retry.is_some() {
+        let max = j.retry.map_or(0, |r| r.count);
+        add("run.retried", format!("{} / {max}", j.retried));
+    }
+    if !j.reason.is_empty() {
+        add("run.reason", j.reason.clone());
+    }
+    if j.part.is_job() {
+        let cmd = j.command();
+        if !cmd.is_empty() {
+            add("run.command", cmd.join(" "));
+        }
+    }
+    rows
+}
+
 /// `【分岐】` and the like before a part's name; nothing before a job's.
 pub fn kind(t: &Table, p: &Part) -> String {
     if p.is_job() {
@@ -202,6 +235,23 @@ pub fn kind(t: &Table, p: &Part) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn job_facts_list_exit_code_and_retries() {
+        let (t, _) = crate::i18n::table("en");
+        let mut j =
+            JobRun::from_job(&koyomi_core::jobnet::Job { id: "a".into(), run: vec!["x.exe".into(), "-v".into()], ..Default::default() });
+        j.state = State::Error;
+        j.exit = Some(3);
+        j.retried = 2;
+        j.retry = Some(koyomi_core::jobnet::Retry { count: 3, wait: 5 });
+        let rows = job_facts(&t, &j);
+        let get = |k: &str| rows.iter().find(|r| r.0 == t.tr(k)).map(|r| r.1.clone());
+        assert_eq!(get("run.exit").as_deref(), Some("3"));
+        assert_eq!(get("run.retried").as_deref(), Some("2 / 3"));
+        assert_eq!(get("run.command").as_deref(), Some("x.exe -v"));
+        assert_eq!(get("run.start"), None);
+    }
 
     #[test]
     fn every_state_has_a_word_in_both_languages() {

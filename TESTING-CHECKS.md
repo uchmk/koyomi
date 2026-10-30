@@ -1,6 +1,6 @@
 # Checklist
 
-328 checks in TESTING.md, 324 left for a person.
+331 checks in TESTING.md, 327 left for a person.
 
 ## 1. Start
 
@@ -437,3 +437,9 @@
 - [ ] **36.2** Open one failure from the bell → The count drops to 1 〔未訳〕
 - [ ] **36.3** Press "すべて既読にする" in the bell → The count disappears 〔未訳〕
 - [ ] **36.4** Restart the app → The acknowledged failures stay out of the count (`acked.toml` in the state folder) 〔未訳〕
+
+## 37. ジョブの詳細
+
+- [ ] **37.1** Open a finished run; click a job that failed → A table above the log shows state, start, end, took, 終了コード, リトライ, コマンド 〔未訳〕
+- [ ] **37.2** Click a job that retried → リトライ shows `回数 / 上限` 〔未訳〕
+- [ ] **37.3** Click a branch or join part → No コマンド row 〔未訳〕

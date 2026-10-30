@@ -1340,6 +1340,17 @@ impl Browser {
         if pick.is_some() {
             self.job_sel = pick;
         }
+        if let Some(job) = watched.as_deref().and_then(|w| run.job(w)) {
+            ui.add_space(6.0);
+            egui::Grid::new("job_facts").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+                for (k, v) in show::job_facts(t, job) {
+                    ui.label(egui::RichText::new(&k).color(c.dim));
+                    let r = ui.add(egui::Label::new(&v).wrap());
+                    ito_a11y::say(&r, Role::Label, &format!("{k}: {v}"));
+                    ui.end_row();
+                }
+            });
+        }
         ui.add_space(8.0);
         let title = match &watched {
             Some(j) => format!("{}: {j}", t.tr("run.log")),
