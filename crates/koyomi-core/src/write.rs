@@ -36,6 +36,9 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     if let Some(l) = &net.lock {
         push(&mut out, "lock", &q(l));
     }
+    if net.wake {
+        push(&mut out, "wake", "true");
+    }
     for w in &net.when {
         when(w, &mut out);
     }
@@ -487,6 +490,30 @@ after = [\"ok\"]
 ";
         let net = jobnet::parse(src).unwrap();
         assert_eq!(jobnet::parse(&text(&net)).unwrap().jobs.len(), 2);
+    }
+
+    #[test]
+    fn wake_survives_a_round_trip() {
+        let src = "format = 1
+wake = true
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let net = jobnet::parse(src).unwrap();
+        assert!(net.wake);
+        assert_eq!(text(&net), src);
+        assert!(
+            !jobnet::parse(&src.replace(
+                "wake = true
+",
+                ""
+            ))
+            .unwrap()
+            .wake
+        );
+        assert!(jobnet::parse(&src.replace("true", "\"yes\"")).is_err());
     }
 
     #[test]

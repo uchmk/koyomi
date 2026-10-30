@@ -250,6 +250,7 @@ pub struct NetFields {
     pub calendar: String,
     pub missed: Missed,
     pub overlap: Overlap,
+    pub wake: bool,
     pub whens: Vec<WhenEdit>,
 }
 
@@ -260,6 +261,7 @@ impl NetFields {
             calendar: net.calendar.clone().unwrap_or_default(),
             missed: net.missed,
             overlap: net.overlap,
+            wake: net.wake,
             whens: net.when.iter().map(WhenEdit::from_when).collect(),
         }
     }
@@ -737,6 +739,7 @@ impl Editor {
         net.calendar = opt(&f.calendar);
         net.missed = f.missed;
         net.overlap = f.overlap;
+        net.wake = f.wake;
         net.when.resize_with(f.whens.len(), || when::When {
             kind: when::Kind::OnStart,
             except: Vec::new(),
@@ -910,6 +913,7 @@ impl Editor {
         t: &Table,
         vertical: bool,
         calendars: &BTreeMap<String, Calendar>,
+        power: &crate::proto::Power,
         depth: usize,
     ) -> Option<Action> {
         let mut action = None;
@@ -1026,7 +1030,7 @@ impl Editor {
         });
         if self.pane.is_some() {
             egui::Panel::right("fields").default_size(320.0).show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.fields(ui, t, calendars, &mut action));
+                egui::ScrollArea::vertical().show(ui, |ui| self.fields(ui, t, calendars, power, &mut action));
             });
         }
         egui::CentralPanel::default().show(ui, |ui| {
@@ -1037,7 +1041,14 @@ impl Editor {
         action
     }
 
-    fn fields(&mut self, ui: &mut egui::Ui, t: &Table, calendars: &BTreeMap<String, Calendar>, action: &mut Option<Action>) {
+    fn fields(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &Table,
+        calendars: &BTreeMap<String, Calendar>,
+        power: &crate::proto::Power,
+        action: &mut Option<Action>,
+    ) {
         let c = ito_theme::colors();
         let field = |ui: &mut egui::Ui, key: &str, s: &mut String| -> bool {
             let label = t.tr(key);
@@ -1190,6 +1201,7 @@ impl Editor {
                         }
                     }
                 });
+                changed |= ui.checkbox(&mut f.wake, t.tr("field.wake")).changed();
                 ui.separator();
                 let r = ui.heading(t.tr("when.title"));
                 ito_a11y::say(&r, Role::Heading, t.tr("when.title"));
@@ -1224,7 +1236,8 @@ impl Editor {
                 let head = t.trf("run.next", &["10"]);
                 let r = ui.label(&head);
                 ito_a11y::say(&r, Role::Heading, &head);
-                for row in show::next_rows(t, &self.net.when, cal, chrono::Local::now().naive_local(), 10) {
+                let sleep = show::Sleep::of(power, self.net.wake);
+                for row in show::next_rows(t, &self.net.when, cal, chrono::Local::now().naive_local(), 10, Some(&sleep)) {
                     ui.label(row);
                 }
                 if !closed {

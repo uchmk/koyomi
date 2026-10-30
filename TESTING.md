@@ -743,3 +743,17 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 61.2 | After the run ends, `powercfg /requests` again | The koyomi line is gone |
 | 61.3 | Set sleep to 1 minute on a laptop, run a job of 5 minutes without touching the PC | The PC stays awake until the job ends, then sleeps after a minute |
 | 61.4 | A net that only waits (a time part, an approval) | No hold: the PC may sleep |
+
+## 62. 眠っている PC を前もって見せる・PC を起こして流す
+
+| # | Do | Expect |
+|---|---|---|
+| 62.1 | Set sleep to 30 minutes, open a net whose next times are tonight | Times more than 30 minutes away read `この PC は 30 分で眠る設定。起こさなければ動かない`; nearer ones have no mark |
+| 62.2 | Same, under 今日 on the left | The coming times today carry the same mark |
+| 62.3 | Set sleep to never | No mark anywhere |
+| 62.4 | In the editor's net pane, check 「PC が眠っていても起こして流す」 and save | The file has `wake = true`; the next times read `PC を起こして流す` |
+| 62.5 | `koyomi status` | `PC を起こす: <時刻の 2 分前>（<ネット>）` |
+| 62.6 | `powercfg /waketimers` in an administrator prompt | A timer by koyomi's engine for that time |
+| 62.7 | Put the PC to sleep before the time | It wakes 2 minutes before, the net runs, and the PC sleeps again afterwards |
+| 62.8 | Turn wake timers off in the power plan (Advanced settings → Sleep → Allow wake timers: Disable), wait a minute | The marks read `PC を起こして流す設定だが、起こせない: 電源プランで復帰タイマーが無効`; `koyomi status` says the same |
+| 62.9 | On a laptop on battery with wake timers allowed only when plugged in | The reason reads バッテリー… |

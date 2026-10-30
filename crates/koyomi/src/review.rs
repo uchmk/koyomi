@@ -68,6 +68,9 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
     if net.overlap == koyomi_core::jobnet::Overlap::Queue {
         out.push(t.tr("review.overlap_queue").to_owned());
     }
+    if net.wake {
+        out.push(t.tr("review.wake").to_owned());
+    }
     for j in &net.jobs {
         let name = j.name.as_deref().filter(|n| !n.is_empty()).map(|n| format!(" ({n})")).unwrap_or_default();
         out.push(format!("{} {}{name}", t.tr(&format!("part.{}", j.part.key())), j.id));

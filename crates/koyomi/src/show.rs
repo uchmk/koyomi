@@ -81,17 +81,62 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
 /// one row each: what the window and `koyomi next` both show, from the same
 /// calculation the engine starts by. With a calendar, a day past its holiday
 /// table is marked: the engine will not run it.
-pub fn next_rows(t: &Table, whens: &[When], cal: Option<&Calendar>, now: NaiveDateTime, n: usize) -> Vec<String> {
+///
+/// With `sleep`, a time that comes after this PC would have gone to sleep is
+/// marked too: asleep, woken for it (`wake = true`), or why it cannot be woken.
+pub fn next_rows(t: &Table, whens: &[When], cal: Option<&Calendar>, now: NaiveDateTime, n: usize, sleep: Option<&Sleep>) -> Vec<String> {
     let mut rows: Vec<String> = whens.iter().filter_map(|w| event_row(t, w)).collect();
     rows.extend(when::next_times_in(whens, now, n, cal).into_iter().map(|at| {
-        let row = when_row(t, at);
+        let mut row = when_row(t, at);
         if cal.is_some_and(|c| c.stale(at.date())) {
-            format!("{row}  {}", t.tr("calendar.stale"))
-        } else {
-            row
+            row = format!("{row}  {}", t.tr("calendar.stale"));
         }
+        if let Some(mark) = sleep.and_then(|s| sleep_mark(t, s, at, now)) {
+            row = format!("{row}  {mark}");
+        }
+        row
     }));
     rows
+}
+
+/// What the power settings mean for a net's times: how long this PC idles
+/// before it sleeps, whether the net wakes it, and why it cannot (a
+/// `power.why_*` key's tail), all from the engine's [`crate::proto::Power`].
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Sleep {
+    /// Seconds; `None`: the PC never sleeps (nothing is marked).
+    pub after: Option<u64>,
+    pub wake: bool,
+    pub cannot: Option<String>,
+}
+
+impl Sleep {
+    pub fn of(power: &crate::proto::Power, wake: bool) -> Sleep {
+        Sleep { after: power.sleep_after, wake, cannot: power.cannot_wake.clone() }
+    }
+}
+
+/// `30 分` / `2 時間`.
+pub fn idle(t: &Table, secs: u64) -> String {
+    let m = secs.div_ceil(60).max(1);
+    if m.is_multiple_of(60) {
+        t.trf("power.hours", &[&(m / 60).to_string()])
+    } else {
+        t.trf("power.minutes", &[&m.to_string()])
+    }
+}
+
+/// The mark for a time `at` that comes later than the PC would stay awake from `now`.
+pub fn sleep_mark(t: &Table, s: &Sleep, at: NaiveDateTime, now: NaiveDateTime) -> Option<String> {
+    let after = s.after?;
+    if at <= now + chrono::Duration::seconds(i64::try_from(after).unwrap_or(i64::MAX / 2)) {
+        return None;
+    }
+    Some(match (&s.cannot, s.wake) {
+        (_, false) => t.trf("power.asleep", &[&idle(t, after)]),
+        (Some(why), true) => t.trf("power.cannot", &[t.tr(&format!("power.why_{why}"))]),
+        (None, true) => t.tr("power.wakes").to_owned(),
+    })
 }
 
 /// The days of a month, in order, with what each is under `cal`.
@@ -327,11 +372,11 @@ run = [\"x\"]
         .when;
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let (ja, _) = crate::i18n::table("ja");
-        let rows = next_rows(&ja, &whens, None, now, 3);
+        let rows = next_rows(&ja, &whens, None, now, 3, None);
         assert_eq!(rows, vec!["2026-10-31（土）02:00", "2026-11-01（日）02:00", "2026-11-02（月）02:00"]);
         let (en, _) = crate::i18n::table("en");
-        assert_eq!(next_rows(&en, &whens, None, now, 1), vec!["2026-10-31 (Sat) 02:00"]);
-        assert!(next_rows(&en, &[], None, now, 10).is_empty());
+        assert_eq!(next_rows(&en, &whens, None, now, 1, None), vec!["2026-10-31 (Sat) 02:00"]);
+        assert!(next_rows(&en, &[], None, now, 10, None).is_empty());
     }
 
     /// with a calendar the closed days are skipped (`on_closed = "skip"`), and a day past the holiday table is marked.
@@ -353,11 +398,48 @@ run = [\"x\"]
         let cal = Calendar::parse("会社", "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\n").unwrap();
         let (ja, _) = crate::i18n::table("ja");
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-        let rows = next_rows(&ja, &whens, Some(&cal), now, 2);
+        let rows = next_rows(&ja, &whens, Some(&cal), now, 2, None);
         assert_eq!(rows, vec!["2026-11-02（月）02:00", "2026-11-04（水）02:00"], "the weekend and 文化の日 are skipped");
         let late = NaiveDateTime::parse_from_str("2027-12-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-        let rows = next_rows(&ja, &whens, Some(&cal), late, 2);
+        let rows = next_rows(&ja, &whens, Some(&cal), late, 2, None);
         assert_eq!(rows, vec!["2027-12-31（金）02:00", "2028-01-03（月）02:00  祝日の表が古い"]);
+    }
+
+    /// a time later than the PC stays awake is marked: asleep, woken, or why it cannot be.
+    #[test]
+    fn times_after_the_pc_sleeps_are_marked() {
+        let whens = koyomi_core::jobnet::parse(
+            "format = 1
+[[when]]
+every = \"day\"
+at = [\"09:10\", \"10:00\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap()
+        .when;
+        let (ja, _) = crate::i18n::table("ja");
+        let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let mut s = Sleep { after: Some(1800), wake: false, cannot: None };
+        let rows = next_rows(&ja, &whens, None, now, 2, Some(&s));
+        assert_eq!(rows[0], "2026-10-30（金）09:10", "within 30 minutes: awake still");
+        assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30 分で眠る設定。起こさなければ動かない");
+        s.wake = true;
+        assert!(next_rows(&ja, &whens, None, now, 2, Some(&s))[1].ends_with("PC を起こして流す"));
+        s.cannot = Some("battery".into());
+        let row = &next_rows(&ja, &whens, None, now, 2, Some(&s))[1];
+        assert!(row.contains("起こせない") && row.contains("バッテリー"), "{row}");
+        s.after = None;
+        assert_eq!(next_rows(&ja, &whens, None, now, 2, Some(&s))[1], "2026-10-30（金）10:00", "never sleeps: no mark");
+        assert_eq!(idle(&ja, 7200), "2 時間");
+        let (en, _) = crate::i18n::table("en");
+        for why in ["timers_off", "battery", "unsupported", "failed"] {
+            let key = format!("power.why_{why}");
+            assert_ne!(ja.tr(&key), key);
+            assert_ne!(en.tr(&key), key);
+        }
     }
 
     #[test]

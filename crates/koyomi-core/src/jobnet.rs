@@ -54,6 +54,9 @@ pub struct Jobnet {
     /// `lock = "販売DB"`: nets with the same lock name never run at the same time.
     #[serde(default)]
     pub lock: Option<String>,
+    /// `wake = true`: the engine wakes a sleeping PC a little before the net's next time.
+    #[serde(default)]
+    pub wake: bool,
 }
 
 impl Jobnet {
@@ -429,6 +432,7 @@ struct RawNet {
     overlap: Field,
     calendar: Field,
     lock: Field,
+    wake: Field,
 }
 
 #[derive(Deserialize)]
@@ -511,10 +515,11 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let (missed, overlap) = c.top(&raw);
     let calendar = c.calendar(&raw.calendar);
     let lock = c.lock(&raw.lock);
+    let wake = c.wake(&raw.wake);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
     if c.problems.is_empty() {
-        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock })
+        Ok(Jobnet { name: c.string(&raw.name, "name"), jobs, when, missed, overlap, calendar, lock, wake })
     } else {
         c.problems.sort_by_key(|p| p.line);
         Err(c.problems)
@@ -816,6 +821,18 @@ impl Checker<'_> {
             _ => {
                 self.add(f.span().start, "lock は名前（例: lock = \"販売DB\"）。同じ名前のジョブネットは同時に動かさない");
                 None
+            }
+        }
+    }
+
+    /// `wake = true`: wake the PC for the net's times.
+    fn wake(&mut self, field: &Field) -> bool {
+        let Some(f) = field.as_ref() else { return false };
+        match f.get_ref().as_bool() {
+            Some(b) => b,
+            None => {
+                self.add(f.span().start, "wake は true か false（true: PC が眠っていても起こして流す）");
+                false
             }
         }
     }

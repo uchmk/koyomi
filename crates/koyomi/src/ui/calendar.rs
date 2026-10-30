@@ -153,7 +153,9 @@ impl Browser {
                 if d.standing != Standing::Confirmed {
                     ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
                 }
-                for row in show::next_rows(t, &net.when, Some(&cal), chrono::Local::now().naive_local(), 10) {
+                let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
+                let now = chrono::Local::now().naive_local();
+                for row in show::next_rows(t, &net.when, Some(&cal), now, 10, power.as_ref()) {
                     ui.label(format!("  {row}"));
                 }
             }

@@ -907,9 +907,11 @@ impl Browser {
     fn editor_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let empty = BTreeMap::new();
         let calendars = self.snap.as_ref().map(|s| &s.calendars).unwrap_or(&empty);
+        let no_power = crate::proto::Power::default();
+        let power = self.snap.as_ref().map(|s| &s.power).unwrap_or(&no_power);
         let depth = self.editors.len();
         let Some(e) = &mut self.editor else { return };
-        let action = e.show(ui, t, self.vertical, calendars, depth);
+        let action = e.show(ui, t, self.vertical, calendars, power, depth);
         if let Some(a) = action {
             self.act(a);
         }
@@ -1205,11 +1207,16 @@ impl Browser {
         // What is still to come today, soonest first: a time, not a run, so not a row to open.
         let now = chrono::Local::now().naive_local();
         let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
-        let mut coming: Vec<(chrono::NaiveDateTime, String)> = Vec::new();
+        let mut coming: Vec<(chrono::NaiveDateTime, String, Option<String>)> = Vec::new();
         for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed) {
             if let Some(net) = &d.net {
                 let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                coming.extend(when::between_in(&net.when, now, end, cal).into_iter().map(|at| (at, d.label().to_owned())));
+                let sleep = show::Sleep::of(&snap.power, net.wake);
+                coming.extend(
+                    when::between_in(&net.when, now, end, cal)
+                        .into_iter()
+                        .map(|at| (at, d.label().to_owned(), show::sleep_mark(t, &sleep, at, now))),
+                );
             }
         }
         coming.sort();
@@ -1217,8 +1224,11 @@ impl Browser {
             ui.add(egui::Label::new(t.tr("run.none")).wrap());
             return;
         }
-        for (at, title) in &coming {
-            let text = format!("{}  {title}  {}", show::tag(t, State::Waiting), show::hms(*at));
+        for (at, title, mark) in &coming {
+            let mut text = format!("{}  {title}  {}", show::tag(t, State::Waiting), show::hms(*at));
+            if let Some(m) = mark {
+                text.push_str(&format!("  {m}"));
+            }
             let r = ui.label(egui::RichText::new(format!("  {text}")).color(graph::colour(&c, State::Waiting)));
             ito_a11y::say(&r, Role::Row, &text);
         }
@@ -1645,7 +1655,8 @@ impl Browser {
                     ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
                 }
                 let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
-                let rows = show::next_rows(t, &net.when, cal, chrono::Local::now().naive_local(), 10);
+                let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
+                let rows = show::next_rows(t, &net.when, cal, chrono::Local::now().naive_local(), 10, power.as_ref());
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
                 }

@@ -172,6 +172,26 @@ pub struct Snapshot {
     /// window's month table and the next times count by.
     #[serde(default)]
     pub calendars: BTreeMap<String, Calendar>,
+    /// This PC's power settings as the engine sees them: what marks the next times.
+    #[serde(default)]
+    pub power: Power,
+}
+
+/// How this PC sleeps and whether the engine can wake it (`wake = true` nets).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Power {
+    /// Seconds the PC idles before it sleeps on the power source it runs on; `None`: never, or not known.
+    #[serde(default)]
+    pub sleep_after: Option<u64>,
+    /// Why the engine cannot wake the PC: `timers_off`, `battery`, `unsupported` or `failed`
+    /// (a `power.why_*` key). `None`: it can, or no net asks it to.
+    #[serde(default)]
+    pub cannot_wake: Option<String>,
+    /// `YYYY-MM-DD HH:MM`: when the engine has set the PC to wake, and for which net.
+    #[serde(default)]
+    pub wake_at: Option<String>,
+    #[serde(default)]
+    pub wake_for: Option<String>,
 }
 
 impl Snapshot {

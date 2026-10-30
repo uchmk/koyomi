@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, Utc};
+use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::{self, Store};
@@ -157,6 +157,12 @@ struct State {
     alive: alive::Alive,
     /// Keeps the PC from sleeping while a job's process runs.
     awake: Option<ito_power::Awake>,
+    /// The wake timer for the soonest time of a `wake = true` net; `None`: no net asks.
+    wake: Option<Wake>,
+    /// When the power settings were last read (once a minute).
+    power_look: Option<Instant>,
+    /// How long the PC idles before it sleeps, as last read.
+    sleep_after: Option<Duration>,
     /// The times held back by `wait_for`.
     waiting: Vec<Waiting>,
     /// The line about the time the engine was not running, and when it was first told.
@@ -208,6 +214,9 @@ impl State {
             backup,
             alive,
             awake: None,
+            wake: None,
+            power_look: None,
+            sleep_after: None,
             waiting: Vec::new(),
             outage: None,
             keep_days,
@@ -297,13 +306,57 @@ impl State {
         }
     }
 
-    /// Holds the PC awake while a job's process runs, and lets go when none does.
+    /// Holds the PC awake while a job's process runs, or from a wake timer
+    /// to the time it woke the PC for, and lets go when neither.
     fn tick_awake(&mut self) {
         let busy = self.runner.busy();
-        if busy > 0 && self.awake.is_none() {
-            self.awake = Some(ito_power::Awake::hold("koyomi: ジョブを実行中"));
-        } else if busy == 0 {
+        let now = Local::now().naive_local();
+        let waking = self.wake.as_ref().is_some_and(|w| w.set.is_ok() && w.waking(now));
+        if (busy > 0 || waking) && self.awake.is_none() {
+            let why = if busy > 0 { "koyomi: ジョブを実行中" } else { "koyomi: ジョブネットの時刻を待っている" };
+            self.awake = Some(ito_power::Awake::hold(why));
+        } else if busy == 0 && !waking {
             self.awake = None;
+        }
+    }
+
+    /// Reads the power settings and sets the PC to wake a little before the
+    /// soonest time of a `wake = true` net (once a minute; a timer already set
+    /// for the same time is kept, one that failed is tried again).
+    fn tick_wake(&mut self) {
+        if self.power_look.is_some_and(|t| t.elapsed() < POWER_LOOK) {
+            return;
+        }
+        self.power_look = Some(Instant::now());
+        self.sleep_after = ito_power::sleep_after();
+        let now = Local::now().naive_local();
+        let next = if self.held.paused { None } else { next_wake(&self.defs, &self.calendars, &self.held, now) };
+        let Some((start, id)) = next else {
+            self.wake = None;
+            return;
+        };
+        if self.wake.as_ref().is_some_and(|w| w.start == start && w.set.is_ok()) {
+            if let Some(w) = &mut self.wake {
+                w.id = id;
+            }
+            return;
+        }
+        let at = start - WAKE_LEAD;
+        let set = match Local.from_local_datetime(&at).earliest() {
+            Some(t) => ito_power::wake_at(t.into()),
+            None => Err(ito_power::WhyNot::InThePast),
+        };
+        self.wake = Some(Wake { start, id, set });
+    }
+
+    /// The power settings for the window: they mark the next times.
+    fn power(&self) -> proto::Power {
+        let ok = self.wake.as_ref().filter(|w| w.set.is_ok());
+        proto::Power {
+            sleep_after: self.sleep_after.map(|d| d.as_secs()),
+            cannot_wake: self.wake.as_ref().and_then(|w| w.set.as_ref().err()).and_then(|e| why_key(*e)).map(str::to_owned),
+            wake_at: ok.map(|w| (w.start - WAKE_LEAD).format("%Y-%m-%d %H:%M").to_string()),
+            wake_for: ok.map(|w| w.id.clone()),
         }
     }
 
@@ -628,6 +681,7 @@ impl State {
             paused: self.held.paused,
             cautions: self.outage_line().into_iter().chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS)).collect(),
             calendars: self.calendars.map.clone(),
+            power: self.power(),
         }
     }
 
@@ -648,6 +702,21 @@ impl State {
         }
         for id in &self.held.held {
             out.push_str(&format!("\n保留中: {id}（koyomi release {id} で戻す）"));
+        }
+        let p = self.power();
+        if let (Some(at), Some(id)) = (&p.wake_at, &p.wake_for) {
+            out.push_str(&format!(
+                "
+{}",
+                self.words.trf("power.waking", &[at, id])
+            ));
+        }
+        if let Some(why) = &p.cannot_wake {
+            out.push_str(&format!(
+                "
+{}",
+                self.words.trf("power.not_waking", &[self.words.tr(&format!("power.why_{why}"))])
+            ));
         }
         for q in self.runner.queued() {
             out.push_str(&format!(
@@ -1153,6 +1222,49 @@ const SWEEP: Duration = Duration::from_secs(5);
 /// How long the window's band tells of the time the engine was not running.
 const OUTAGE_SHOWN: Duration = Duration::from_secs(3600);
 const DEBOUNCE: Duration = Duration::from_millis(200);
+/// How often the power settings are read and the wake timer looked at.
+const POWER_LOOK: Duration = Duration::from_secs(60);
+/// How long before a `wake = true` net's time the PC is woken.
+const WAKE_LEAD: chrono::Duration = chrono::Duration::minutes(2);
+
+/// A wake timer set (or not) for a net's time.
+struct Wake {
+    /// The net's time it wakes the PC for (the timer is `WAKE_LEAD` before).
+    start: NaiveDateTime,
+    id: String,
+    set: Result<ito_power::WakeHandle, ito_power::WhyNot>,
+}
+
+impl Wake {
+    /// From the timer to a minute after the time: the PC is kept awake for the net.
+    fn waking(&self, now: NaiveDateTime) -> bool {
+        now >= self.start - WAKE_LEAD && now <= self.start + chrono::Duration::minutes(1)
+    }
+}
+
+/// The soonest time after `now` of a confirmed `wake = true` net not on hold, and the net.
+fn next_wake(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime) -> Option<(NaiveDateTime, String)> {
+    defs.iter()
+        .filter(|d| d.standing == Standing::Confirmed && !held.is_held(&d.id))
+        .filter_map(|d| {
+            let net = d.net.as_ref().filter(|n| n.wake)?;
+            let cal = d.calendar.as_deref().and_then(|c| calendars.get(c));
+            when::next_times_in(&net.when, now, 1, cal).into_iter().next().map(|at| (at, d.id.clone()))
+        })
+        .min()
+}
+
+/// The `power.why_*` key's tail for why the PC cannot be woken; `None`: nothing to tell (the time is passing now).
+fn why_key(why: ito_power::WhyNot) -> Option<&'static str> {
+    use ito_power::WhyNot;
+    match why {
+        WhyNot::TimersDisabled => Some("timers_off"),
+        WhyNot::OnBattery => Some("battery"),
+        WhyNot::Unsupported => Some("unsupported"),
+        WhyNot::Failed(_) => Some("failed"),
+        WhyNot::InThePast => None,
+    }
+}
 
 /// Runs until `koyomi engine stop`. The exit code: 0 after a stop, 1 when another engine is already up.
 pub fn run() -> i32 {
@@ -1231,6 +1343,7 @@ pub fn run() -> i32 {
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
+        state.tick_wake();
         state.tick_awake();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
@@ -1281,6 +1394,63 @@ fn followed<'a>(runs: &'a [Run], id: &str, date: &str) -> Option<&'a Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn def_with(id: &str, text: &str, standing: Standing) -> Def {
+        let (group, name) = id.split_once('/').unwrap();
+        Def {
+            id: id.to_owned(),
+            group: group.to_owned(),
+            name: name.to_owned(),
+            title: None,
+            file: format!("{id}.toml"),
+            standing,
+            problems: Vec::new(),
+            net: Some(koyomi_core::jobnet::parse(text).unwrap()),
+            sha256: String::new(),
+            text: text.to_owned(),
+            previous: None,
+            calendar: None,
+        }
+    }
+
+    /// the PC is woken for the soonest time of a confirmed `wake = true` net that is not held, and kept awake to it.
+    #[test]
+    fn the_wake_timer_is_for_the_soonest_net_that_asks() {
+        let net = |at: &str, wake: bool| {
+            format!(
+                "format = 1
+wake = {wake}
+[[when]]
+every = \"day\"
+at = [\"{at}\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+            )
+        };
+        let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
+        let mut defs = vec![
+            def_with("夜/早い", &net("01:00", false), Standing::Confirmed),
+            def_with("夜/未確認", &net("01:30", true), Standing::Unconfirmed),
+            def_with("夜/遅い", &net("03:00", true), Standing::Confirmed),
+            def_with("夜/中", &net("02:00", true), Standing::Confirmed),
+        ];
+        let cals = Calendars::default();
+        let mut held = Held::default();
+        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        assert_eq!(next_wake(&defs, &cals, &held, now), Some((at("2026-10-31 02:00"), "夜/中".to_owned())));
+        held.held.push("夜/中".to_owned());
+        assert_eq!(next_wake(&defs, &cals, &held, now), Some((at("2026-10-31 03:00"), "夜/遅い".to_owned())));
+        defs.truncate(2);
+        assert_eq!(next_wake(&defs, &cals, &held, now), None);
+        let w = Wake { start: at("2026-10-31 02:00"), id: String::new(), set: Err(ito_power::WhyNot::OnBattery) };
+        assert!(!w.waking(at("2026-10-31 01:57")));
+        assert!(w.waking(at("2026-10-31 01:58")) && w.waking(at("2026-10-31 02:01")));
+        assert!(!w.waking(at("2026-10-31 02:02")));
+        assert_eq!(why_key(ito_power::WhyNot::OnBattery), Some("battery"));
+        assert_eq!(why_key(ito_power::WhyNot::InThePast), None);
+    }
 
     #[test]
     fn a_net_after_another_follows_the_ends_its_on_names_once_a_business_day() {
@@ -1520,6 +1690,12 @@ run = [\"x\"]
             paused: true,
             cautions: vec!["c".into()],
             calendars: cals.map.clone(),
+            power: proto::Power {
+                sleep_after: Some(1800),
+                cannot_wake: None,
+                wake_at: Some("2026-10-31 01:58".into()),
+                wake_for: Some("夜/中".into()),
+            },
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);

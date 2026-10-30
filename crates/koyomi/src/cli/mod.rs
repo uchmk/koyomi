@@ -577,7 +577,7 @@ fn next(args: &[String]) -> i32 {
     if unconfirmed {
         out(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
     }
-    let rows = show::next_rows(&t, &net.when, cal, now, count);
+    let rows = show::next_rows(&t, &net.when, cal, now, count, Some(&show::Sleep::of(&snap.power, net.wake)));
     if rows.is_empty() {
         out(t.tr("run.next_over"), false);
     }
