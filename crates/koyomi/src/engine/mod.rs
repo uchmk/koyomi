@@ -969,10 +969,10 @@ impl State {
 
     /// Starts `run` again ([`Runner::rerun`]): with the definition that run
     /// had, but only while the net is still confirmed as it stands now.
-    fn rerun(&mut self, run: &str, from: Option<&str>) -> Result<String, String> {
+    fn rerun(&mut self, run: &str, from: Option<&str>, next: Option<RunState>) -> Result<String, String> {
         let prev = self.runner.previous(run)?;
         self.startable(&prev.jobnet)?;
-        self.runner.rerun(run, from)
+        self.runner.rerun(run, from, next)
     }
 
     /// The definition `id` as it may be started: nothing warned, koyomi.toml reads, and it is confirmed.
@@ -1552,7 +1552,7 @@ impl State {
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
             Request::Run { id, date, from, dry, params } => self.start(id, date.as_deref(), from.as_deref(), *dry, params),
-            Request::Rerun { run, from } => self.rerun(run, from.as_deref()),
+            Request::Rerun { run, from, next } => self.rerun(run, from.as_deref(), *next),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::History { from, to } => {

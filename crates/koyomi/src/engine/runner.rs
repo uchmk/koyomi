@@ -436,8 +436,9 @@ impl Runner {
     }
 
     /// Starts run `previous` again with the definition it ran, the copy beside
-    /// its logs ([`Run::rerun`]). `previous` may be of another day.
-    pub fn rerun(&mut self, previous: &str, from: Option<&str>) -> Result<String, String> {
+    /// its logs ([`Run::rerun`]). `previous` may be of another day. With `next`, `from` does not
+    /// run but ends as that mark and the jobs after it go ([`Run::rerun_after`]).
+    pub fn rerun(&mut self, previous: &str, from: Option<&str>, next: Option<State>) -> Result<String, String> {
         let prev = self.previous(previous)?;
         if !prev.is_over() {
             return Err(format!("{}: まだ終わっていない", prev.id));
@@ -456,7 +457,11 @@ impl Runner {
         let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?, &set)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
-        let mut run = Run::rerun(&id, &prev, &net, from, now)?;
+        let mut run = match (from, next) {
+            (Some(job), Some(mark)) => Run::rerun_after(&id, &prev, &net, job, mark, now)?,
+            (None, Some(_)) => return Err("次から流すにはジョブが要る".to_owned()),
+            _ => Run::rerun(&id, &prev, &net, from, now)?,
+        };
         run.lock = net.lock.clone();
         run.priority = net.slot_priority();
         run.require = net.require;
@@ -1413,9 +1418,9 @@ mod tests {
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let first = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
-        assert!(r.rerun(&first, None).unwrap_err().contains("まだ終わっていない"));
+        assert!(r.rerun(&first, None, None).unwrap_err().contains("まだ終わっていない"));
         assert_eq!(wait_over(&mut r, &first).state, State::Error);
-        let second = r.rerun(&first, None).unwrap();
+        let second = r.rerun(&first, None, None).unwrap();
         assert_ne!(second, first);
         let run = wait_over(&mut r, &second);
         assert_eq!((run.how, run.state), (How::Rerun, State::Error));
@@ -1432,12 +1437,20 @@ mod tests {
         assert_eq!(back.job("a").unwrap().state, State::Ok);
         assert_eq!(back.job("a").unwrap().reason, koyomi_core::run::CARRIED);
         // From a job: that one runs again too.
-        let third = r.rerun(&first, Some("a")).unwrap();
+        let third = r.rerun(&first, Some("a"), None).unwrap();
         let run = wait_over(&mut r, &third);
         assert_eq!(run.job("a").unwrap().exit, Some(0));
         assert!(r.log_path(&third, "a").exists());
-        assert!(r.rerun(&first, Some("x")).unwrap_err().contains("ジョブがない: x"));
-        assert!(r.rerun("20200101-000000-00", None).unwrap_err().contains("実行がない"));
+        // From the jobs after a: a does not run and ends as ⊘ スキップ, b runs.
+        let fourth = r.rerun(&first, Some("a"), Some(State::Skipped)).unwrap();
+        let run = wait_over(&mut r, &fourth);
+        assert_eq!(run.job("a").unwrap().state, State::Skipped);
+        assert!(!r.log_path(&fourth, "a").exists(), "a must not run");
+        assert!(r.log_path(&fourth, "b").exists());
+        assert!(r.rerun(&first, Some("b"), Some(State::Warn)).unwrap_err().contains("後ろに流すジョブがない"));
+        assert!(r.rerun(&first, None, Some(State::Skipped)).unwrap_err().contains("ジョブが要る"));
+        assert!(r.rerun(&first, Some("x"), None).unwrap_err().contains("ジョブがない: x"));
+        assert!(r.rerun("20200101-000000-00", None, None).unwrap_err().contains("実行がない"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2362,7 +2375,7 @@ id = \"b\"
         let run = wait_over(&mut r, &id);
         assert_eq!(run.params, set);
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "acct_202610");
-        let again = r.rerun(&id, Some("b")).unwrap();
+        let again = r.rerun(&id, Some("b"), None).unwrap();
         wait_over(&mut r, &again);
         assert_eq!(r.log_tail(&again, "b").unwrap().trim(), "acct_202610");
         let _ = std::fs::remove_dir_all(&dir);

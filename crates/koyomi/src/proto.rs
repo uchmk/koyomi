@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use ito_ipc::door::Door;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::run::Run;
+use koyomi_core::run::{Run, State};
 use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
@@ -50,10 +50,12 @@ pub enum Request {
         params: BTreeMap<String, String>,
     },
     /// Start `run` again with the definition it had: what passed is carried
-    /// over, the rest runs (from the job `from`, when there is one). The reply is the new run's id.
+    /// over, the rest runs (from the job `from`, when there is one). With `next` (⊘ スキップ or
+    /// 警告), `from` does not run but ends as that, and the jobs after it go. The reply is the new run's id.
     Rerun {
         run: String,
         from: Option<String>,
+        next: Option<State>,
     },
     /// Stop one job of a run, or the whole run.
     Kill {

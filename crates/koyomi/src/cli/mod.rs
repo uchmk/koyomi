@@ -36,8 +36,9 @@ usage: koyomi [--version | --help | env]
                                      --date: for that business day, or each day of A..B in turn; --dry: start nothing, print each job's
                                      command with the dates written out; --set: a value for the net's [params];
                                      --wait: stay until it ends)
-       koyomi rerun <run> [--from <job>] [--wait]
-                                     run it again: what passed is carried over, the rest runs (--from: that job and after it too)
+       koyomi rerun <run> [--from <job> | --next <job> [--warn]] [--wait]
+                                     run it again: what passed is carried over, the rest runs (--from: that job and after it too;
+                                     --next: the jobs after it, the job itself ends as skipped, or as warn with --warn)
        koyomi next <group/name> [--count N]
                                      the next 10 times its [[when]] comes (N: that many)
        koyomi status [--today]       the runs still going (--today: every run of today)
@@ -949,18 +950,24 @@ fn day_range(text: &str) -> Result<Vec<NaiveDate>, String> {
 fn rerun_cmd(args: &[String]) -> i32 {
     let mut rest = args.iter();
     let Some(run) = rest.next() else { return usage("rerun takes one run") };
-    let (mut from, mut wait) = (None, false);
+    let (mut from, mut next, mut warn, mut wait) = (None, false, false, false);
     while let Some(a) = rest.next() {
         match a.as_str() {
-            "--from" => match rest.next() {
-                Some(j) => from = Some(j.clone()),
-                None => return usage("--from takes a job"),
+            "--from" | "--next" if from.is_some() => return usage("rerun takes one of --from and --next"),
+            "--from" | "--next" => match rest.next() {
+                Some(j) => (from, next) = (Some(j.clone()), a == "--next"),
+                None => return usage(&format!("{a} takes a job")),
             },
+            "--warn" => warn = true,
             "--wait" => wait = true,
-            _ => return usage("rerun takes --from and --wait"),
+            _ => return usage("rerun takes --from, --next, --warn and --wait"),
         }
     }
-    started(client::call(&Request::Rerun { run: run.clone(), from }), wait)
+    if warn && !next {
+        return usage("--warn goes with --next");
+    }
+    let next = next.then_some(if warn { State::Warn } else { State::Skipped });
+    started(client::call(&Request::Rerun { run: run.clone(), from, next }), wait)
 }
 
 /// Says the run started; with `wait`, stays until it ends and says how (exit 1 unless it passed).

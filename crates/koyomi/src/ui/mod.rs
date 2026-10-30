@@ -2158,7 +2158,7 @@ impl Browser {
                         let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
                         ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
                         if r.clicked() {
-                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None });
+                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
                         }
                         let label = match &picked {
                             Some(j) => t.trf("run.rerun_from", &[j]),
@@ -2167,7 +2167,17 @@ impl Browser {
                         let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
                         ito_a11y::say(&r, Role::Button, &label);
                         if r.clicked() {
-                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone() });
+                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
+                        }
+                        // From the jobs after the picked one, which ends as スキップ or 警告 without running.
+                        for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
+                            let Some(j) = &picked else { break };
+                            let label = t.trf(key, &[j]);
+                            let r = ui.button(&label);
+                            ito_a11y::say(&r, Role::Button, &label);
+                            if r.clicked() {
+                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
+                            }
                         }
                     })
                     .response
@@ -3111,7 +3121,8 @@ run = [\"x.exe\"]
         assert!(b.killing.is_none());
     }
 
-    /// An over run has one 再実行 ▾ menu: from where it stopped, or from the picked job.
+    /// An over run has one 再実行 ▾ menu: from where it stopped, from the picked job, or from the
+    /// jobs after it.
     #[test]
     fn rerun_is_one_menu() {
         use koyomi_core::jobnet::{Job, Jobnet, Line};
@@ -3141,12 +3152,15 @@ run = [\"x.exe\"]
         assert!(!menu_says(&s, "から再実行"), "one button until opened");
         s.click("再実行 ▾", &mut b);
         s.click("止まったところから", &mut b);
-        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, .. })));
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, next: None, .. })));
         b.job_sel = Some("a".into());
         s.settle(&mut b);
         s.click("再実行 ▾", &mut b);
         s.click("a から再実行", &mut b);
-        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), .. }) if f == "a"));
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), next: None, .. }) if f == "a"));
+        s.click("再実行 ▾", &mut b);
+        s.click("a の次から（a は警告終了）", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), next: Some(State::Warn), .. }) if f == "a"));
     }
 
     /// The kill box starts on the safe button: a plain Enter does not kill.

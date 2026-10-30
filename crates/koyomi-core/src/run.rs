@@ -544,6 +544,28 @@ impl Run {
         Ok(run)
     }
 
+    /// [`Run::rerun`] from the jobs after `job`: `job` itself does not run and ends as `mark`
+    /// (⊘ スキップ or 警告), so the ones after it go on (JP1's 「次のジョブから再実行」).
+    pub fn rerun_after(id: &str, previous: &Run, net: &Jobnet, job: &str, mark: State, now: NaiveDateTime) -> Result<Run, String> {
+        let word = match mark {
+            State::Skipped => "スキップ",
+            State::Warn => "警告終了",
+            _ => return Err(format!("次から流すときの {job} はスキップか警告終了: {}", mark.key())),
+        };
+        let mut run = Run::rerun(id, previous, net, Some(job), now)?;
+        if let Some(j) = run.jobs.iter_mut().find(|j| j.id == job) {
+            j.state = mark;
+            j.started = None;
+            j.ended = Some(now);
+            j.reason = format!("次から再実行したので{word}にした");
+        }
+        if run.jobs.iter().all(|j| j.ended.is_some()) {
+            return Err(format!("{}: {job} の後ろに流すジョブがない", previous.id));
+        }
+        run.reason = format!("再実行（{} を {job} の次から）", previous.id);
+        Ok(run)
+    }
+
     /// Marks a run of the schedule that started after its time (`missed =
     /// "once"`): the reason reads 遅れて実行（2:00 の予定を 8:12 に流しました）.
     pub fn mark_late(&mut self) {
@@ -1316,6 +1338,32 @@ mod tests {
         let r = Run::rerun("r7", &done, &net, Some("d"), now).unwrap();
         assert_eq!(r.ready(), vec!["d"]);
         assert_eq!(r.job("b").unwrap().reason, CARRIED);
+    }
+
+    /// From the jobs after a failed one: it ends as スキップ or 警告 without running, and the next go.
+    #[test]
+    fn a_rerun_after_a_job_marks_it_and_runs_the_next() {
+        let now = at("2026-10-30 10:00:00");
+        let net = diamond_net();
+        let mut prev = diamond();
+        ended(&mut prev, "a", 0, "2026-10-30 09:00:01");
+        ended(&mut prev, "b", 0, "2026-10-30 09:00:02");
+        ended(&mut prev, "c", 2, "2026-10-30 09:00:03");
+        for (mark, word) in [(State::Skipped, "スキップ"), (State::Warn, "警告終了")] {
+            let r = Run::rerun_after("r2", &prev, &net, "c", mark, now).unwrap();
+            assert_eq!(r.reason, "再実行（r1 を c の次から）");
+            let c = r.job("c").unwrap();
+            assert_eq!((c.state, c.ended, c.reason.clone()), (mark, Some(now), format!("次から再実行したので{word}にした")));
+            assert_eq!(r.ready(), vec!["d"]);
+        }
+        assert!(Run::rerun_after("r3", &prev, &net, "c", State::Ok, now).unwrap_err().contains("スキップか警告終了"));
+        assert!(Run::rerun_after("r4", &prev, &net, "x", State::Skipped, now).unwrap_err().contains("ジョブがない: x"));
+        // After the last job, with nothing else to run again: nothing would run.
+        let mut done = diamond();
+        for id in ["a", "b", "c", "d"] {
+            ended(&mut done, id, 0, "2026-10-30 09:00:05");
+        }
+        assert!(Run::rerun_after("r5", &done, &net, "d", State::Skipped, now).unwrap_err().contains("後ろに流すジョブがない"));
     }
 
     #[test]

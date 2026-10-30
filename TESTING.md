@@ -278,8 +278,9 @@ exit 4'''` with `judge = { warn = "4" }`, approve and run | The approve text sho
 | 22.4 | Change the net's file (add a job) and `koyomi approve` it, then `koyomi rerun` the old run | The rerun uses the old copy (`logs/<day>/<run>/definition.toml`): the added job is not in it, and `definition.toml` under the new run is the old text |
 | 22.5 | Change the net's file without approving, then `koyomi rerun` | Refused with `未確認のため流さない: <file>（koyomi approve <group/name>）` |
 | 22.6 | `koyomi run <group/name> --from <second job>` | The jobs before it are ⊘ スキップ with the reason `<second job> から流したので飛ばした`, the run line reads `<second job> から`, and only the later logs exist |
-| 22.7 | In the window, open a run that is over and press 再実行; then pick a job in the flow and look at the second button | The new run opens (selected in 今日); the second button reads 「<job> から再実行」 and starts at that job; both buttons are grey while the run is going or while the top warning is shown |
+| 22.7 | In the window, open a run that is over and open 「再実行 ▾」; press 「止まったところから」; then pick a job in the flow and open the menu again | One 「再実行 ▾」 button; 「止まったところから」 starts a new run that opens (selected in 今日); with a job picked the menu also has 「<job> から再実行」, 「<job> の次から（<job> はスキップ）」 and 「（<job> は警告終了）」, and without one 「選んだジョブから再実行」 is grey; the button is grey while the top warning is shown |
 | 22.8 | `koyomi rerun` with yesterday's run id (from `koyomi history`), and with an id that never was | The rerun starts for yesterday's business day (`--date` is the old run's date); the unknown id is refused with `実行がない: <id>` |
+| 22.9 | `koyomi rerun <run> --next <first job>`, then `--next <first job> --warn`, then `--next <last job>` and `--warn` alone | The first job does not run (no log) and is ⊘ スキップ (then ⚠ 警告) with the reason `次から再実行したのでスキップにした` (`…警告終了にした`); the run line reads `再実行（<run> を <first job> の次から）` and the jobs after it run; `--next <last job>` with nothing else to run is refused with `<job> の後ろに流すジョブがない`; `--warn` alone is refused with `--warn goes with --next` |
 
 ## 23. Hold, skip, pause (`hold`, `release`, `skip`, `pause`, `resume`)
 
