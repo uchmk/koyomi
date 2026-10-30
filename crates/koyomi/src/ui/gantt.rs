@@ -31,6 +31,8 @@ pub struct Bar {
 /// One net's lane: the runs it has had today and the starts still planned for the rest of the day.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Lane {
+    /// The net's id (`<group>/<name>`): two nets of one name in different groups are two lanes.
+    pub id: String,
     pub title: String,
     /// Earliest start first.
     pub bars: Vec<Bar>,
@@ -51,25 +53,25 @@ pub fn position(lo: NaiveDateTime, hi: NaiveDateTime, t: NaiveDateTime) -> f32 {
 }
 
 /// The axis (the whole day of `now`, 00:00 to 24:00) and a lane per net, the one that starts
-/// earliest first. `planned` is every (net title, start) still to come today.
-pub fn lanes(runs: &[&Run], planned: &[(String, NaiveDateTime)], now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Vec<Lane>) {
+/// earliest first. `planned` is every (net id, net title, start) still to come today.
+pub fn lanes(runs: &[&Run], planned: &[(String, String, NaiveDateTime)], now: NaiveDateTime) -> (NaiveDateTime, NaiveDateTime, Vec<Lane>) {
     let end_of = |r: &Run| r.ended.unwrap_or(now).max(r.started);
     let lo = now.date().and_hms_opt(0, 0, 0).unwrap_or(now);
     let hi = lo + chrono::Duration::hours(24);
     let at = |t: NaiveDateTime| position(lo, hi, t);
     let mut out: Vec<Lane> = Vec::new();
-    let mut lane_of = |title: &str| -> usize {
-        out.iter().position(|l| l.title == title).unwrap_or_else(|| {
-            out.push(Lane { title: title.to_owned(), bars: Vec::new(), planned: Vec::new() });
+    let mut lane_of = |id: &str, title: &str| -> usize {
+        out.iter().position(|l| l.id == id).unwrap_or_else(|| {
+            out.push(Lane { id: id.to_owned(), title: title.to_owned(), bars: Vec::new(), planned: Vec::new() });
             out.len() - 1
         })
     };
     let bars: Vec<(usize, Bar)> = runs
         .iter()
         .enumerate()
-        .map(|(run, r)| (lane_of(&r.title), Bar { run, from: at(r.started), to: at(end_of(r)), before: r.started < lo }))
+        .map(|(run, r)| (lane_of(&r.jobnet, &r.title), Bar { run, from: at(r.started), to: at(end_of(r)), before: r.started < lo }))
         .collect();
-    let mut plan: Vec<(usize, NaiveDateTime)> = planned.iter().map(|(title, t)| (lane_of(title), *t)).collect();
+    let mut plan: Vec<(usize, NaiveDateTime)> = planned.iter().map(|(id, title, t)| (lane_of(id, title), *t)).collect();
     plan.sort();
     for (i, bar) in bars {
         out[i].bars.push(bar);
@@ -100,7 +102,7 @@ fn words(lane: &Lane, runs: &[&Run], to_come: &str) -> String {
 pub fn draw(
     ui: &mut egui::Ui,
     runs: &[&Run],
-    planned: &[(String, NaiveDateTime)],
+    planned: &[(String, String, NaiveDateTime)],
     now: NaiveDateTime,
     picked: Option<&str>,
     earlier: &str,
@@ -128,7 +130,7 @@ pub fn draw(
     for (row, lane) in list.iter().enumerate() {
         let y = origin.y + 22.0 + row as f32 * LANE;
         let area = Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(LABEL + width, LANE));
-        let id = ui.id().with(("gantt", &lane.title));
+        let id = ui.id().with(("gantt", &lane.id));
         let r = ui.interact(area, id, Sense::click());
         let latest = lane.latest().map(|b| runs[b.run]);
         if latest.is_some_and(|run| picked == Some(run.id.as_str())) || r.hovered() {
@@ -152,9 +154,12 @@ pub fn draw(
             Some(bar) if bar.before => format!("{}  {earlier}, {}", lane.title, runs[bar.run].started.format("%m-%d %H:%M:%S")),
             _ => text.clone(),
         };
-        if lane.latest().is_some() && !lane.planned.is_empty() {
+        if !lane.planned.is_empty() {
             let next: Vec<String> = lane.planned.iter().map(|(t, _)| super::show::hms(*t)).collect();
-            said = format!("{said}, {to_come} {}", next.join(" "));
+            said = match lane.latest() {
+                Some(_) => format!("{said}, {to_come} {}", next.join(" ")),
+                None => format!("{}  {to_come} {}", lane.title, next.join(" ")),
+            };
         }
         ito_a11y::say(&r, ito_a11y::Role::Row, &said);
         if r.clicked() {
@@ -214,10 +219,10 @@ mod tests {
     fn a_net_with_only_planned_starts_gets_a_lane_and_lanes_go_by_the_first_start() {
         let a = run(at(9, 0), Some(at(9, 5)));
         let planned = vec![
-            ("later".to_owned(), at(20, 0)),
-            ("later".to_owned(), at(18, 0)),
-            ("n".to_owned(), at(12, 0)),
-            ("early".to_owned(), at(7, 0)),
+            ("g/later".to_owned(), "later".to_owned(), at(20, 0)),
+            ("g/later".to_owned(), "later".to_owned(), at(18, 0)),
+            ("g/n".to_owned(), "n".to_owned(), at(12, 0)),
+            ("g/early".to_owned(), "early".to_owned(), at(7, 0)),
         ];
         let (_, _, list) = lanes(&[&a], &planned, at(8, 0));
         let titles: Vec<&str> = list.iter().map(|l| l.title.as_str()).collect();
@@ -231,12 +236,23 @@ mod tests {
     #[test]
     fn the_words_name_the_last_run_or_the_next_plan() {
         let a = run(at(9, 0), Some(at(9, 5)));
-        let planned = vec![("n".to_owned(), at(12, 0)), ("only".to_owned(), at(15, 30))];
+        let planned = vec![("g/n".to_owned(), "n".to_owned(), at(12, 0)), ("g/only".to_owned(), "only".to_owned(), at(15, 30))];
         let runs = [&a];
         let (_, _, list) = lanes(&runs, &planned, at(10, 0));
         let by = |t: &str| list.iter().find(|l| l.title == t).unwrap();
         assert_eq!(words(by("n"), &runs, "next"), "n  09:00:00");
         assert_eq!(words(by("only"), &runs, "next"), "only  next 15:30:00");
+    }
+
+    #[test]
+    fn two_nets_of_one_name_in_different_groups_get_two_lanes() {
+        let a = run(at(9, 0), Some(at(9, 5)));
+        let planned = vec![("other/n".to_owned(), "n".to_owned(), at(12, 0))];
+        let (_, _, list) = lanes(&[&a], &planned, at(10, 0));
+        assert_eq!(list.len(), 2, "{list:?}");
+        let ids: Vec<&str> = list.iter().map(|l| l.id.as_str()).collect();
+        assert_eq!(ids, ["g/n", "other/n"]);
+        assert!(list[0].planned.is_empty() && list[1].bars.is_empty());
     }
 
     #[test]

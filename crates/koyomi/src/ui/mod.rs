@@ -1469,31 +1469,28 @@ impl Browser {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
         let now = chrono::Local::now().naive_local();
-        let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
-        let mut coming: Vec<(chrono::NaiveDateTime, String, Option<String>)> = Vec::new();
-        for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed) {
-            if let Some(net) = &d.net {
-                let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                let sleep = show::Sleep::of(&snap.power, net.wake);
-                coming.extend(
-                    when::between_in(&net.when, now, end, cal)
-                        .into_iter()
-                        .map(|at| (at, d.label().to_owned(), show::sleep_mark(t, &sleep, at, now))),
-                );
-            }
+        let mut coming: Vec<(chrono::NaiveDateTime, String, String, Option<String>)> = Vec::new();
+        for (d, at) in Self::starts_today(snap, now) {
+            let wake = d.net.as_ref().is_some_and(|n| n.wake);
+            let sleep = show::Sleep::of(&snap.power, wake);
+            coming.push((at, d.id.clone(), d.label().to_owned(), show::sleep_mark(t, &sleep, at, now)));
         }
         coming.sort();
-        // The next start of each net after `from`, keyed by the net's title.
-        let next_of = |title: &str, from: chrono::NaiveDateTime| -> String {
-            snap.defs
-                .iter()
-                .filter(|d| d.standing == Standing::Confirmed && d.label() == title)
-                .filter_map(|d| {
+        // The next start of a net (by id) after `from`: quiet spans are seen, a held net has none.
+        let by_id: std::collections::HashMap<&str, &Def> = snap
+            .defs
+            .iter()
+            .filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id))
+            .map(|d| (d.id.as_str(), d))
+            .collect();
+        let next_of = |id: &str, from: chrono::NaiveDateTime| -> String {
+            by_id
+                .get(id)
+                .and_then(|d| {
                     let net = d.net.as_ref()?;
                     let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
                     koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, cal).into_iter().next()
                 })
-                .min()
                 .map(|at| if at.date() == now.date() { show::hms(at) } else { at.format("%m-%d %H:%M").to_string() })
                 .unwrap_or_default()
         };
@@ -1533,7 +1530,7 @@ impl Browser {
                     ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
                 }
                 ui.end_row();
-                for (at, title, mark) in &coming {
+                for (at, id, title, mark) in &coming {
                     let colour = graph::colour(&c, State::Waiting);
                     ui.label(egui::RichText::new(show::tag(t, State::Waiting)).color(colour));
                     let name = ui.label(title);
@@ -1546,7 +1543,7 @@ impl Browser {
                     for _ in 0..3 {
                         ui.label("");
                     }
-                    ui.label(next_of(title, *at));
+                    ui.label(next_of(id, *at));
                     ui.end_row();
                 }
                 for run in runs {
@@ -1562,7 +1559,7 @@ impl Browser {
                     ui.label(show::hms(run.started));
                     ui.label(ended);
                     ui.label(took);
-                    ui.label(next_of(&run.title, now));
+                    ui.label(next_of(&run.jobnet, now));
                     ui.end_row();
                     if r.clicked() {
                         pick = Some(run.id.clone());
@@ -1653,18 +1650,27 @@ impl Browser {
         self.open_gantt();
     }
 
-    /// Every start of an approved net still to come today, as (title, start).
-    fn planned_today(&self, now: chrono::NaiveDateTime) -> Vec<(String, chrono::NaiveDateTime)> {
-        let Some(snap) = &self.snap else { return Vec::new() };
+    /// Every start of an approved, not held net still to come today: the planned times as the quiet
+    /// spans leave them (a skipped one is gone, a waiting one moves to the span's end).
+    fn starts_today(snap: &Snapshot, now: chrono::NaiveDateTime) -> Vec<(&Def, chrono::NaiveDateTime)> {
         let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
         let mut out = Vec::new();
         for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id)) {
             if let Some(net) = &d.net {
                 let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                out.extend(when::between_in(&net.when, now, end, cal).into_iter().map(|at| (d.label().to_owned(), at)));
+                let times = when::between_in(&net.when, now, end, cal);
+                out.extend(
+                    koyomi_core::quiet::starts(&net.quiet, net.on_quiet, times).into_iter().filter(|at| *at <= end).map(|at| (d, at)),
+                );
             }
         }
         out
+    }
+
+    /// Every start still to come today, as (net id, title, start).
+    fn planned_today(&self, now: chrono::NaiveDateTime) -> Vec<(String, String, chrono::NaiveDateTime)> {
+        let Some(snap) = &self.snap else { return Vec::new() };
+        Self::starts_today(snap, now).into_iter().map(|(d, at)| (d.id.clone(), d.label().to_owned(), at)).collect()
     }
 
     /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
