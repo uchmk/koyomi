@@ -679,3 +679,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 54.1 | Run a net that takes a minute a few times, then start it once more and run `koyomi status` | Under the run: "いつもは …、HH:MM:SS ごろに終わる見込み" |
 | 54.2 | Run `koyomi status` after the run has gone past the average | Only "いつもは …" shows, with no expected time |
 | 54.3 | Run `koyomi status` for a net that never passed | No average line |
+
+## 55. MCP（Claude Code から）
+
+| # | Do | Expect |
+|---|---|---|
+| 55.1 | `claude mcp add koyomi -- koyomi mcp`, start the engine, then ask Claude Code for today's runs | `koyomi_status` answers without asking |
+| 55.2 | Ask it to run a net | Claude Code asks first; the first call only lists the commands, and nothing starts until it is called again with `confirm = true` |
+| 55.3 | Ask it to stop a running run | Same: nothing stops without `confirm = true` |
+| 55.4 | Stop the engine and ask for the runs | The tool answers with an error saying the engine is not running |

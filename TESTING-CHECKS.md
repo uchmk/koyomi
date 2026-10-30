@@ -1,6 +1,6 @@
 # Checklist
 
-391 checks in TESTING.md, 387 left for a person.
+395 checks in TESTING.md, 391 left for a person.
 
 ## 1. Start
 
@@ -554,3 +554,10 @@
 - [ ] **54.1** Run a net that takes a minute a few times, then start it once more and run `koyomi status` → Under the run: "いつもは …、HH:MM:SS ごろに終わる見込み" 〔未訳〕
 - [ ] **54.2** Run `koyomi status` after the run has gone past the average → Only "いつもは …" shows, with no expected time 〔未訳〕
 - [ ] **54.3** Run `koyomi status` for a net that never passed → No average line 〔未訳〕
+
+## 55. MCP（Claude Code から）
+
+- [ ] **55.1** `claude mcp add koyomi -- koyomi mcp`, start the engine, then ask Claude Code for today's runs → `koyomi_status` answers without asking 〔未訳〕
+- [ ] **55.2** Ask it to run a net → Claude Code asks first; the first call only lists the commands, and nothing starts until it is called again with `confirm = true` 〔未訳〕
+- [ ] **55.3** Ask it to stop a running run → Same: nothing stops without `confirm = true` 〔未訳〕
+- [ ] **55.4** Stop the engine and ask for the runs → The tool answers with an error saying the engine is not running 〔未訳〕

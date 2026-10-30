@@ -73,6 +73,7 @@ usage: koyomi [--version | --help | env]
        koyomi engine [status|stop]   run the engine in the foreground / ask it / stop it
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env (secret:<name>)
+       koyomi mcp                    an MCP server on stdin/stdout for Claude Code: claude mcp add koyomi -- koyomi mcp
 ";
 
 /// What every command takes, under the usage.
@@ -87,7 +88,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 29] = [
+const COMMANDS: [&str; 30] = [
     "check",
     "list",
     "show",
@@ -117,6 +118,7 @@ const COMMANDS: [&str; 29] = [
     "engine",
     "startup",
     "secret",
+    "mcp",
 ];
 
 /// Runs `args` (after the program name) when they are one of these commands; `None` when they are not.
@@ -167,6 +169,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "engine" => engine_cmd(rest),
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
+        "mcp" => crate::mcp::run(),
         _ => return None,
     };
     Some(finish(code))

@@ -20,6 +20,7 @@ mod help;
 mod i18n;
 mod icon;
 mod keymap;
+mod mcp;
 mod notify;
 mod prefs;
 mod proto;
