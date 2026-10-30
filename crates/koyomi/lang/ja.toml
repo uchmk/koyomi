@@ -23,6 +23,11 @@ fixed = "{} は koyomi が先に読むので、ここに割り当てても動き
 
 [status]
 unacked = "未対応の失敗 {0}"
+engine_down = "エンジンに繋がらない"
+engine_starting = "エンジンを起動中"
+paused = "スケジュール停止中"
+running = "実行中 {0}"
+next = "次の回 {0}"
 
 [notices]
 title = "通知（未読 {0}）"

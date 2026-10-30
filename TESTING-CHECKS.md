@@ -1,6 +1,6 @@
 # Checklist
 
-339 checks in TESTING.md, 335 left for a person.
+343 checks in TESTING.md, 339 left for a person.
 
 ## 1. Start
 
@@ -457,3 +457,10 @@
 - [ ] **39.2** Add `wait_until` a few minutes after HH:MM; keep A running past it → B is recorded as 異常 with the reason (wait_until), and a notification comes 〔未訳〕
 - [ ] **39.3** A is not scheduled that day (e.g. `days` excludes today) → B starts at HH:MM without waiting 〔未訳〕
 - [ ] **39.4** In the editor open B's `[[when]]` → Fields 先行の終わりを待つ / 待つのは何時まで show and save to the file 〔未訳〕
+
+## 40. ステータスバー
+
+- [ ] **40.1** Open the window with the engine running → The bar shows `次の回 MM-DD HH:MM` (the soonest time of any net not on hold) 〔未訳〕
+- [ ] **40.2** Start a run → `実行中 N` appears in green while it runs and goes when it ends 〔未訳〕
+- [ ] **40.3** `koyomi pause` → `スケジュール停止中` shows in red; `koyomi resume` clears it 〔未訳〕
+- [ ] **40.4** Stop the engine while the window is open → The bar says the engine is not reachable / starting 〔未訳〕

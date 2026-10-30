@@ -405,6 +405,32 @@ impl Browser {
         self.runs.iter().filter(|r| r.state.is_error()).map(|r| r.id.as_str())
     }
 
+    /// The status bar's engine facts: `(engine word, running count, next time)`.
+    /// The word is `None` while all is well and the engine answers.
+    pub fn engine_facts(&self, t: &ito_i18n::Table) -> (Option<String>, usize, Option<chrono::NaiveDateTime>) {
+        let running = self.runs.iter().filter(|r| !r.is_over()).count();
+        let Some(snap) = &self.snap else {
+            let word = match (&self.down, self.starting) {
+                (Some(_), _) => t.tr("status.engine_down"),
+                (None, _) => t.tr("status.engine_starting"),
+            };
+            return (Some(word.to_owned()), running, None);
+        };
+        let word = snap.paused.then(|| t.tr("status.paused").to_owned());
+        let now = chrono::Local::now().naive_local();
+        let next = snap
+            .defs
+            .iter()
+            .filter(|d| !snap.held.contains(&d.id))
+            .filter_map(|d| {
+                let net = d.net.as_ref()?;
+                let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                koyomi_core::when::next_times_in(&net.when, now, 1, cal).into_iter().next()
+            })
+            .min();
+        (word, running, next)
+    }
+
     /// The runs that ended since the last call, each once (the bell).
     pub fn take_ended(&mut self) -> Vec<Run> {
         self.drain();

@@ -23,6 +23,11 @@ fixed = "koyomi reads {} itself: bound here, it never runs."
 "Quit" = "Quit"
 
 [status]
+engine_down = "Engine not reachable"
+engine_starting = "Starting the engine"
+paused = "Schedule paused"
+running = "{0} running"
+next = "Next {0}"
 unacked = "{0} failures waiting"
 
 [notices]
