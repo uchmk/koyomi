@@ -30,6 +30,7 @@ use koyomi_core::when::{self, Kind, OnClosed};
 use crate::notify;
 use crate::proto::{self, Request, Runs, Snapshot, Versions};
 
+mod alive;
 mod backup;
 mod events;
 mod files;
@@ -144,6 +145,9 @@ struct State {
     retain: Retain,
     /// The daily backup of the settings folder.
     backup: Backup,
+    alive: alive::Alive,
+    /// The line about the time the engine was not running, and when it was first told.
+    outage: Option<(String, Instant)>,
     keep_days: u32,
     /// `[notify]` as runs are told with: the `secret:` addresses read back
     /// (on a thread; until it answers they are not sent to).
@@ -172,6 +176,7 @@ impl State {
         let schedule = Schedule::new(&paths.state);
         let retain = Retain::new(&paths.state);
         let backup = Backup::new(&paths.app, &paths.state);
+        let alive = alive::Alive::new(&paths.state);
         let (reveal_tx, reveal_rx) = mpsc::channel();
         let mut s = State {
             paths,
@@ -188,6 +193,8 @@ impl State {
             events: events::Events::new(),
             retain,
             backup,
+            alive,
+            outage: None,
             keep_days,
             notify: NotifyCfg::default(),
             notify_raw: None,
@@ -200,6 +207,12 @@ impl State {
         };
         s.reload();
         s.rescan();
+        if let Some((line, crashed)) = s.alive.outage.take() {
+            let title = if crashed { "koyomi: エンジンが落ちていた" } else { "koyomi: エンジンが止まっていた" };
+            crate::notify::tell(&s.notify, "failed", title, &line);
+            crate::say(&format!("koyomi: {line}"), false);
+            s.outage = Some((line, Instant::now()));
+        }
         s
     }
 
@@ -524,7 +537,7 @@ impl State {
             notes,
             held: self.held.held.clone(),
             paused: self.held.paused,
-            cautions: self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS),
+            cautions: self.outage_line().into_iter().chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS)).collect(),
             calendars: self.calendars.map.clone(),
         }
     }
@@ -571,6 +584,11 @@ impl State {
     }
 
     /// The daily backup: its end told on the console.
+    /// The outage the engine woke up to, for the window's band: for an hour after the start.
+    fn outage_line(&self) -> Option<String> {
+        self.outage.as_ref().filter(|(_, at)| at.elapsed() < OUTAGE_SHOWN).map(|(l, _)| l.clone())
+    }
+
     fn tick_backup(&mut self) {
         if let Some(line) = self.backup.tick() {
             crate::say(&format!("koyomi: {line}"), false);
@@ -930,6 +948,8 @@ pub const CAUTION_DAYS: i64 = 90;
 /// (an access list changes without a file event).
 const SWEEP: Duration = Duration::from_secs(5);
 /// How long after the last file event the engine waits before it reads (an editor writes in bursts).
+/// How long the window's band tells of the time the engine was not running.
+const OUTAGE_SHOWN: Duration = Duration::from_secs(3600);
 const DEBOUNCE: Duration = Duration::from_millis(200);
 
 /// Runs until `koyomi engine stop`. The exit code: 0 after a stop, 1 when another engine is already up.
@@ -992,6 +1012,7 @@ pub fn run() -> i32 {
                     state.schedule.flush();
                     state.retain.flush();
                     state.backup.flush();
+                    state.alive.stopped();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -1005,6 +1026,7 @@ pub fn run() -> i32 {
         state.tick_events();
         state.tick_retain();
         state.tick_backup();
+        state.alive.tick();
         state.pump();
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);

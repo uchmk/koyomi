@@ -1,6 +1,6 @@
 # Checklist
 
-315 checks in TESTING.md, 311 left for a person.
+319 checks in TESTING.md, 315 left for a person.
 
 ## 1. Start
 
@@ -415,3 +415,10 @@
 - [ ] **33.4** `env = { OUT = "{month-1}" }` and a job that echoes `%OUT%` → The log has last month as `YYYYMM` 〔未訳〕
 - [ ] **33.5** `env = { KOYOMI_X = "1" }` or `env = { 1A = "x" }`; `koyomi check` → A problem with the line number 〔未訳〕
 - [ ] **33.6** Open the review of a job with `env` → `環境変数 DB_PASS: secret:db` is listed; no secret value 〔未訳〕
+
+## 34. エンジンが落ちていたことの通知
+
+- [ ] **34.1** Start the engine, kill its process (`taskkill /f`), wait 2 minutes, start it again → A notification `エンジンが落ちていた`, and a band at the top of the window with the span 〔未訳〕
+- [ ] **34.2** `koyomi engine stop`, wait 11 minutes, start it again → `エンジンが止まっていた` is told the same way 〔未訳〕
+- [ ] **34.3** `koyomi engine stop` and start it again within a minute → Nothing is told 〔未訳〕
+- [ ] **34.4** The band an hour after the start → It is gone 〔未訳〕
