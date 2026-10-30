@@ -206,6 +206,15 @@ start = "late start"
 end = "late end"
 slow = "longer than usual"
 
+[compare]
+none = "(none)"
+exit = "exit {0}"
+other_net = "Different job nets: {0} and {1}"
+took = "Took {0} → {1} ({2})"
+jobs = "Jobs (A → B; ≠ marks another state or exit code)"
+log = "Log differences: {0}"
+missing = "No such run: {0}"
+
 [weekday]
 mon = "Mon"
 tue = "Tue"

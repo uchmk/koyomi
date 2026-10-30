@@ -45,6 +45,8 @@ usage: koyomi [--version | --help | env]
                                      --status: ok, warn, error, timeout, killed, running, running_error,
                                      waiting, held, skipped, missed, locked or not_run)
        koyomi log <run> <job>        the tail of one job's log
+       koyomi compare <run-a> <run-b>
+                                     two runs side by side: how long each job took, its state and exit code, and how the logs differ
        koyomi kill <run> [<job>]     stop one job, or the whole run
        koyomi hold <group/name>      hold the net: its times are written down as 保留 and nothing runs
        koyomi release <group/name>   take the net off hold
@@ -97,7 +99,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 32] = [
+const COMMANDS: [&str; 33] = [
     "check",
     "list",
     "show",
@@ -108,6 +110,7 @@ const COMMANDS: [&str; 32] = [
     "status",
     "history",
     "log",
+    "compare",
     "kill",
     "hold",
     "release",
@@ -163,6 +166,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "plan" => plan(rest),
         "map" => map_cmd(rest),
         "log" => log(rest),
+        "compare" => compare(rest),
         "kill" => kill(rest),
         "hold" => one_id(rest, "hold", |id| Request::Hold { id }),
         "release" => one_id(rest, "release", |id| Request::Release { id }),
@@ -1004,6 +1008,45 @@ fn log(args: &[String]) -> i32 {
         }
         Err(e) => fail(&e),
     }
+}
+
+/// `koyomi compare <run-a> <run-b>`: the two runs, their jobs side by side and the logs' difference.
+fn compare(args: &[String]) -> i32 {
+    let [a, b] = args else { return usage("compare takes two runs") };
+    let t = table();
+    let (ra, rb) = match (find_run(&t, a), find_run(&t, b)) {
+        (Ok(x), Ok(y)) => (x, y),
+        (Err(e), _) | (_, Err(e)) => return fail(&e),
+    };
+    let logs: Vec<(String, Option<String>, Option<String>)> = crate::compare::jobs(&ra, &rb)
+        .into_iter()
+        .filter(|(_, x, y)| x.is_some_and(crate::compare::has_log) && y.is_some_and(crate::compare::has_log))
+        .map(|(id, _, _)| {
+            let read = |run: &str| client::call(&Request::Log { run: run.to_owned(), job: id.to_owned() }).ok();
+            (id.to_owned(), read(&ra.id), read(&rb.id))
+        })
+        .collect();
+    if toml() {
+        emit(&toml::to_string(&crate::compare::Compare::new(&ra, &rb, &logs)).unwrap_or_default());
+        return 0;
+    }
+    for l in crate::compare::lines(&t, &ra, &rb, &logs) {
+        out(&l, false);
+    }
+    0
+}
+
+/// The run `id`, from the history of the day its id names (`YYYYMMDD-…`), else from the runs going now.
+fn find_run(t: &ito_i18n::Table, id: &str) -> Result<Run, String> {
+    let day = id.get(..8).and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok());
+    let mut found = Vec::new();
+    if let Some(d) = day {
+        found = client::call(&Request::History { from: d.to_string(), to: d.to_string() }).and_then(|s| Runs::parse(&s)).map(|r| r.runs)?;
+    }
+    if !found.iter().any(|r| r.id == id) {
+        found.extend(runs()?);
+    }
+    found.into_iter().find(|r| r.id == id).ok_or_else(|| t.trf("compare.missing", &[id]))
 }
 
 /// `koyomi log --toml`: the run, the job and the tail.

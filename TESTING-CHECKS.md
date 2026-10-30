@@ -1,6 +1,6 @@
 # Checklist
 
-465 checks in TESTING.md, 461 left for a person.
+469 checks in TESTING.md, 465 left for a person.
 
 ## 1. Start
 
@@ -667,3 +667,10 @@
 - [ ] **67.5** The same net with `late_slow = false` → No notification for taking long 〔未訳〕
 - [ ] **67.6** `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` → `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved 〔未訳〕
 - [ ] **67.7** Stop and start the engine after 67.1 → The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again 〔未訳〕
+
+## 68. 2 つの実行を比べる
+
+- [ ] **68.1** A net a → b where b prints `start` / `loaded 10` / `end` when a file is there, and `start` / `no such file` and exits 3 when not; run it once with the file and once without; `koyomi compare <run-ok> <run-error>` → `A` and `B` lines as `history` prints the runs, `所要 … → …（±…）`; under ジョブ, `= a …` and `≠ b ✓ 正常終了 … 終了コード 0  →  ✕ 異常終了 … 終了コード 3`; then `ログの違い: b` with ` start`, `-loaded 10`, `-end`, `+no such file` (a's log is the same and is not shown) 〔未訳〕
+- [ ] **68.2** The same with `--toml` → `a`, `b`, `a_seconds`, `b_seconds` and a `[[job]]` each with `differs`, `[job.a]` / `[job.b]` (`state`, `seconds`, `exit`) and `log_diff` only on b 〔未訳〕
+- [ ] **68.3** Compare two runs of different nets, one with a job the other lacks → `別のジョブネットです: … と …`; the job only one run has shows `（なし）` on the other side and `≠` 〔未訳〕
+- [ ] **68.4** `koyomi compare <run> 20261030-999999-00` → `koyomi: 実行がない: 20261030-999999-00`, exit 1 〔未訳〕
