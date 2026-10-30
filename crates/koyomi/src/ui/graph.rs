@@ -207,7 +207,7 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
         } else {
             (p + Vec2::new(0.0, RADIUS + 6.0), egui::Align2::CENTER_TOP)
         };
-        let name = painter.text(anchor, align, format!("{} {}", j.state.mark(), j.label()), body.clone(), c.fg);
+        let name = painter.text(anchor, align, j.label(), body.clone(), c.fg);
         if let Some(sub) = subtext(j) {
             let (below, a) = if vertical {
                 (Pos2::new(name.left(), name.bottom()), egui::Align2::LEFT_TOP)
@@ -223,6 +223,27 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
     let hit = resp.interact_pointer_pos().filter(|_| resp.clicked())?;
     let near = (0..run.jobs.len()).find(|&i| Rect::from_center_size(at[i], Vec2::splat(RADIUS * 2.0 + 12.0)).contains(hit))?;
     Some(run.jobs[near].id.clone())
+}
+
+/// The states the picture shows, once each and in the order they first appear.
+pub fn legend_states(run: &Run) -> Vec<State> {
+    let mut out: Vec<State> = Vec::new();
+    for j in &run.jobs {
+        if !out.contains(&j.state) {
+            out.push(j.state);
+        }
+    }
+    out
+}
+
+/// A line under the picture saying what each mark in it means (`✓ 正常終了  ▶ 実行中`).
+pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table, c: &ito_theme::Colors, run: &Run) {
+    ui.horizontal_wrapped(|ui| {
+        for s in legend_states(run) {
+            let text = format!("{} {}", s.mark(), crate::show::word(t, s));
+            ui.label(egui::RichText::new(text).small().color(colour(c, s)));
+        }
+    });
 }
 
 /// What the picture says in words, one job per line.
@@ -291,6 +312,17 @@ mod tests {
         assert_eq!(path(a, Pos2::new(0.0, 150.0), true).len(), 2);
         let all = piece(&curve, 0.0, length(&curve));
         assert!((all.last().unwrap().x - b.x).abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_legend_lists_each_shown_state_once() {
+        let mut r = run();
+        for j in &mut r.jobs {
+            j.state = State::Ok;
+        }
+        assert_eq!(legend_states(&r), [State::Ok]);
+        r.jobs[1].state = State::Error;
+        assert_eq!(legend_states(&r), [State::Ok, State::Error]);
     }
 
     #[test]

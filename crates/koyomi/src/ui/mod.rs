@@ -2157,6 +2157,7 @@ impl Browser {
         egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
             pick = graph::draw(ui, &run, self.vertical, watched.as_deref());
         });
+        graph::legend(ui, t, &c, &run);
         egui::Grid::new("jobs_grid").num_columns(8).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
             for key in ["run.col_job", "run.state", "run.start", "run.end", "run.exit", "run.retried", "run.took", "run.reason"] {
                 ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
