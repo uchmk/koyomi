@@ -1652,7 +1652,21 @@ impl Browser {
         self.open_gantt();
     }
 
-    /// ガント: today's runs, a lane each; a click on a lane opens the run under the chart.
+    /// Every start of an approved net still to come today, as (title, start).
+    fn planned_today(&self, now: chrono::NaiveDateTime) -> Vec<(String, chrono::NaiveDateTime)> {
+        let Some(snap) = &self.snap else { return Vec::new() };
+        let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
+        let mut out = Vec::new();
+        for d in snap.defs.iter().filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id)) {
+            if let Some(net) = &d.net {
+                let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                out.extend(when::between_in(&net.when, now, end, cal).into_iter().map(|at| (d.label().to_owned(), at)));
+            }
+        }
+        out
+    }
+
+    /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         ui.heading(t.tr("run.today"));
@@ -1661,11 +1675,12 @@ impl Browser {
         ui.add_space(8.0);
         let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.dim));
         ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
-        if self.runs.is_empty() {
+        let now = chrono::Local::now().naive_local();
+        let planned = self.planned_today(now);
+        if self.runs.is_empty() && planned.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
             return;
         }
-        let now = chrono::Local::now().naive_local();
         if self.runs.iter().any(|r| !r.is_over()) {
             ui.ctx().request_repaint_after(Duration::from_secs(1));
         }
@@ -1673,7 +1688,7 @@ impl Browser {
         let picked = self.run_sel.clone();
         let mut pick = None;
         egui::ScrollArea::both().id_salt("gantt").max_height(ui.available_height() * 0.5).show(ui, |ui| {
-            pick = gantt::draw(ui, &runs, now, picked.as_deref(), t.tr("run.gantt_earlier"));
+            pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
         });
         if pick.is_some() {
             self.run_sel = pick;
