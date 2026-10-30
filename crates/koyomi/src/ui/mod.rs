@@ -1271,13 +1271,25 @@ impl Browser {
         let r = ui.selectable_label(self.gantt, format!("  {}", t.tr("run.gantt")));
         ito_a11y::say(&r, Role::Row, t.tr("run.gantt"));
         if r.clicked() {
-            self.hist = None;
-            self.run_sel = None;
-            self.cal_sel = None;
-            self.job_sel = None;
-            self.result = None;
-            self.gantt = true;
+            self.open_gantt();
         }
+    }
+
+    fn open_gantt(&mut self) {
+        self.hist = None;
+        self.run_sel = None;
+        self.cal_sel = None;
+        self.job_sel = None;
+        self.result = None;
+        self.gantt = true;
+    }
+
+    /// The tray's 今日: ガント in the detail, unless a net is open in the editor or a box is (that work stays).
+    pub fn show_today(&mut self) {
+        if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() {
+            return;
+        }
+        self.open_gantt();
     }
 
     /// ガント: today's runs, a lane each; a click on a lane opens the run under the chart.

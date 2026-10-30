@@ -96,6 +96,8 @@ struct App {
     keys: keymap::Keys,
     key_pending: Vec<Key>,
     key_notes: Vec<String>,
+    /// The window's door: the engine's tray asks it to come forward (none while a script plays).
+    shows: Option<std::sync::mpsc::Receiver<ito_ipc::door::Ask<proto::Show>>>,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -147,6 +149,10 @@ impl App {
         // The scale is common.toml's, so egui's own Ctrl+= / Ctrl+- stay out of it.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(prefs.common.scale_or_one());
+        let shows = script.is_none().then(|| {
+            let ctx = cc.egui_ctx.clone();
+            proto::window_door().listen(move || ctx.request_repaint())
+        });
         Self {
             table,
             prefs,
@@ -174,6 +180,22 @@ impl App {
             keys,
             key_pending: Vec::new(),
             key_notes,
+            shows,
+        }
+    }
+
+    /// What the tray asked: come forward, on 今日 when it says so.
+    fn take_shows(&mut self, ctx: &egui::Context) {
+        let Some(rx) = &self.shows else { return };
+        while let Ok(ask) = rx.try_recv() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+            ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            if ask.request == proto::Show::Today {
+                self.settings_open = false;
+                self.browser.show_today();
+            }
+            ask.answer(Ok(String::new()));
         }
     }
 
@@ -668,6 +690,7 @@ impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.sync_common(&ctx);
+        self.take_shows(&ctx);
         // The Keys page is taking a key: every key is that key, F12 too.
         let taking = self.settings_open && self.prefs.keys_edit.busy();
         if !taking && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F12)) {

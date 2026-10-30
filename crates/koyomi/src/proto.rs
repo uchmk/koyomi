@@ -148,6 +148,23 @@ pub fn door() -> Door<Request> {
     Door::new("koyomi", ENV, PROTO)
 }
 
+/// The variable that names another address for the window's door.
+pub const WINDOW_ENV: &str = "KOYOMI_WINDOW_ADDRESS";
+
+/// What the tray asks the window (DECISIONS C1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Show {
+    /// Come forward.
+    Front,
+    /// Come forward on today's runs (ガント).
+    Today,
+}
+
+/// The window's own door: the engine's tray brings it forward through it.
+pub fn window_door() -> Door<Show> {
+    Door::new("koyomi-window", WINDOW_ENV, PROTO)
+}
+
 /// What `List` answers: the tree, and why nothing can be approved (when it cannot).
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct Snapshot {

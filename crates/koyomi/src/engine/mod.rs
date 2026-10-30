@@ -37,6 +37,7 @@ mod files;
 mod retain;
 mod runner;
 mod schedule;
+mod tray;
 use backup::Backup;
 use retain::Retain;
 use runner::Runner;
@@ -308,6 +309,23 @@ impl State {
 
     /// Holds the PC awake while a job's process runs, or from a wake timer
     /// to the time it woke the PC for, and lets go when neither.
+    /// What is left to do before the engine ends: the queue told why it will not run, the books written.
+    fn shut_down(&mut self) {
+        self.runner.drop_queue();
+        self.runner.flush();
+        self.schedule.flush();
+        self.retain.flush();
+        self.backup.flush();
+        self.alive.stopped();
+    }
+
+    /// What the tray shows now.
+    fn tray_look(&self) -> tray::Look {
+        let now = Local::now().naive_local();
+        let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, now, false) };
+        tray::look(&self.words, &self.runner.today(), self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
+    }
+
     fn tick_awake(&mut self) {
         let busy = self.runner.busy();
         let now = Local::now().naive_local();
@@ -1244,10 +1262,15 @@ impl Wake {
 
 /// The soonest time after `now` of a confirmed `wake = true` net not on hold, and the net.
 fn next_wake(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime) -> Option<(NaiveDateTime, String)> {
+    next_due(defs, calendars, held, now, true)
+}
+
+/// The soonest time of a confirmed net that is not held (of a `wake = true` one when `wake`), with its id.
+fn next_due(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime, wake: bool) -> Option<(NaiveDateTime, String)> {
     defs.iter()
         .filter(|d| d.standing == Standing::Confirmed && !held.is_held(&d.id))
         .filter_map(|d| {
-            let net = d.net.as_ref().filter(|n| n.wake)?;
+            let net = d.net.as_ref().filter(|n| n.wake || !wake)?;
             let cal = d.calendar.as_deref().and_then(|c| calendars.get(c));
             when::next_times_in(&net.when, now, 1, cal).into_iter().next().map(|at| (at, d.id.clone()))
         })
@@ -1310,6 +1333,7 @@ pub fn run() -> i32 {
     watcher.watch(vec![paths.jobnets.clone(), paths.calendars.clone()]);
 
     let mut state = State::new(paths);
+    let mut tray = tray::Tray::start(&state.words);
     let mut last_scan = Instant::now();
     let mut changed_at: Option<Instant> = None;
     loop {
@@ -1321,12 +1345,7 @@ pub fn run() -> i32 {
                     let _ = reply.send(out);
                 }
                 if stop {
-                    state.runner.drop_queue();
-                    state.runner.flush();
-                    state.schedule.flush();
-                    state.retain.flush();
-                    state.backup.flush();
-                    state.alive.stopped();
+                    state.shut_down();
                     // The reply travels on the connection's thread.
                     std::thread::sleep(Duration::from_millis(150));
                     return 0;
@@ -1346,6 +1365,25 @@ pub fn run() -> i32 {
         state.tick_wake();
         state.tick_awake();
         state.pump();
+        if let Some(tr) = tray.as_mut() {
+            for want in tr.take() {
+                match want {
+                    tray::Want::Pause(on) => {
+                        let _ = state.answer(if on { &Request::Pause } else { &Request::Resume });
+                    }
+                    // The menu greys 終了 while a job's process runs; a choice made just before one started waits.
+                    tray::Want::Quit if state.runner.busy() == 0 => {
+                        state.shut_down();
+                        return 0;
+                    }
+                    tray::Want::Quit => {}
+                }
+            }
+            if tr.due() {
+                let look = state.tray_look();
+                tr.show(&state.words, look);
+            }
+        }
         if let Ok(false) = mine_rx.try_recv() {
             crate::say("koyomi: もう動いている", true);
             return 1;

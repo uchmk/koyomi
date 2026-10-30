@@ -757,3 +757,17 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 62.7 | Put the PC to sleep before the time | It wakes 2 minutes before, the net runs, and the PC sleeps again afterwards |
 | 62.8 | Turn wake timers off in the power plan (Advanced settings → Sleep → Allow wake timers: Disable), wait a minute | The marks read `PC を起こして流す設定だが、起こせない: 電源プランで復帰タイマーが無効`; `koyomi status` says the same |
 | 62.9 | On a laptop on battery with wake timers allowed only when plugged in | The reason reads バッテリー… |
+
+## 63. タスクトレイの常駐アイコン
+
+| # | Do | Expect |
+|---|---|---|
+| 63.1 | Start koyomi, close the window | The koyomi calendar icon stays in the task tray with a green ✔ badge; hovering reads `✔ koyomi · 次 HH:MM` (or `異常なし`) |
+| 63.2 | Run a net whose job takes a minute | The badge turns blue … and the tip reads `実行中 1` |
+| 63.3 | Run a net that fails | The badge turns red ✖ and the tip reads `異常 1`; after the same net runs and ends 正常, it is green again |
+| 63.4 | Left-click the icon while the window is closed | The window opens |
+| 63.5 | Minimise the window, then left-click the icon | The window comes back to the front |
+| 63.6 | Right-click → 今日 | The window comes forward with ガント in the detail (unless a net is open in the editor) |
+| 63.7 | Right-click → スケジュールを止める | The badge turns grey –, the tip reads `スケジュールを止めている`, the window's band says the schedule is paused; the menu now reads スケジュールを戻す |
+| 63.8 | Right-click while a job runs | 終了（ジョブ 1 件が実行中） is greyed |
+| 63.9 | Right-click → 終了（エンジンを止める） with nothing running | The icon goes away; `koyomi engine status` says the engine is not running |
