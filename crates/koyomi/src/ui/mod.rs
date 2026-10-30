@@ -1871,21 +1871,30 @@ impl Browser {
             });
         }
         let mut pick = None;
-        for run in rows {
-            let mut text = format!("{}  {}  {}  {}", run.started.date(), show::tag(t, run.state), run.title, show::hms(run.started));
-            if let Some(e) = run.ended {
-                text.push_str(&format!("  {}", show::hms(e)));
+        egui::Grid::new("history_grid").num_columns(6).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
+            for key in ["col_date", "col_state", "col_net", "col_start", "col_end", "col_time"] {
+                ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
             }
-            if let Some(d) = run.duration() {
-                text.push_str(&format!("  {}", show::duration(d)));
+            ui.end_row();
+            for run in rows {
+                let colour = graph::colour(&c, run.state);
+                let ended = run.ended.map(show::hms).unwrap_or_default();
+                let took = run.duration().map(show::duration).unwrap_or_default();
+                let on = self.run_sel.as_deref() == Some(run.id.as_str());
+                ui.label(run.started.date().to_string());
+                ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
+                let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
+                let said = format!("{} {} {} {}", run.started.date(), show::tag(t, run.state), run.title, show::hms(run.started));
+                ito_a11y::say(&r, Role::Row, &said);
+                ui.label(show::hms(run.started));
+                ui.label(ended);
+                ui.label(took);
+                ui.end_row();
+                if r.clicked() {
+                    pick = Some(run.id.clone());
+                }
             }
-            let on = self.run_sel.as_deref() == Some(run.id.as_str());
-            let r = ui.selectable_label(on, egui::RichText::new(format!("  {text}")).color(graph::colour(&c, run.state)));
-            ito_a11y::say(&r, Role::Row, &text);
-            if r.clicked() {
-                pick = Some(run.id.clone());
-            }
-        }
+        });
         self.show_result(ui);
         if pick.is_some() {
             self.run_sel = pick;

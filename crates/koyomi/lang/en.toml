@@ -273,6 +273,7 @@ col_start = "Start"
 col_end = "End"
 col_time = "Time"
 col_next = "Next"
+col_date = "Date"
 
 [tabs]
 today = "Today"

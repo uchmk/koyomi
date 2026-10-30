@@ -272,6 +272,7 @@ col_start = "開始"
 col_end = "終了"
 col_time = "時間"
 col_next = "次の回"
+col_date = "日付"
 
 [tabs]
 today = "今日"
