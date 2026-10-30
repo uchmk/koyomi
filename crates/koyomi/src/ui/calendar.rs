@@ -54,6 +54,12 @@ impl Browser {
             ui.label(egui::RichText::new(t.trf("calendar.missing", &[&name])).color(c.err));
             return;
         };
+        // The same cautions as the band: this is where the person looks to fix them.
+        for l in self.snap.iter().flat_map(|s| s.cautions.iter()) {
+            let r = ui
+                .add(egui::Label::new(egui::RichText::new(format!("{} {l}", ito_a11y::State::Warning.mark())).color(c.wait_text())).wrap());
+            ito_a11y::say(&r, Role::Label, l);
+        }
         let today = chrono::Local::now().date_naive();
         let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
         let head = show::month_head(t, &cal, y, m);

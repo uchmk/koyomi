@@ -278,6 +278,8 @@ pub struct Browser {
     notes: Vec<String>,
     /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
     autostart_off: bool,
+    /// How many notes the cautions band held last frame: it opens itself when there are more.
+    notes_seen: usize,
     /// The calendar picked on the left; when it is set, the detail is its month.
     cal_sel: Option<String>,
     /// Groups folded in the tree (this session only).
@@ -407,6 +409,7 @@ impl Browser {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
+            notes_seen: 0,
             cal_sel: None,
             folded: BTreeSet::new(),
             tree_seen: None,
@@ -826,7 +829,8 @@ impl Browser {
                 let (id, re) = m.from.clone().expect("checked");
                 let req = match re {
                     Re::Rename => Request::Rename { id, to, fix: m.fix },
-                    Re::Copy => Request::Copy { id, to, title: Some(m.title.clone()) },
+                    // Still following the file name: leave it to the engine, so a file without a `name =` gains none.
+                    Re::Copy => Request::Copy { id, to, title: (!m.follows).then(|| m.title.clone()) },
                 };
                 self.make = None;
                 self.result = None;
@@ -1373,23 +1377,29 @@ impl Browser {
         // near its end) share one band that stays folded: nothing stops for these.
         let cautions: Vec<String> = self.snap.as_ref().map(|s| s.cautions.clone()).unwrap_or_default();
         let notes = usize::from(self.autostart_off) + cautions.len();
+        let grew = notes > self.notes_seen;
+        self.notes_seen = notes;
         if notes > 0 {
             egui::Panel::top("cautions").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
                 let head = format!("{} {} {notes}", ito_a11y::State::Warning.mark(), t.tr("band.caution"));
-                egui::CollapsingHeader::new(egui::RichText::new(head).strong().color(c.wait_text()))
+                let mut fold = egui::CollapsingHeader::new(egui::RichText::new(head).strong().color(c.wait_text()))
                     .id_salt("cautions_fold")
-                    .default_open(false)
-                    .show(ui, |ui| {
-                        let mut lines = Vec::new();
-                        if self.autostart_off {
-                            lines.push(t.tr("band.autostart").to_owned());
-                        }
-                        lines.extend(cautions.iter().cloned());
-                        for l in &lines {
-                            let r = ui.add(egui::Label::new(egui::RichText::new(l).color(c.wait_text())).wrap());
-                            ito_a11y::say(&r, Role::Label, l);
-                        }
-                    });
+                    .default_open(false);
+                // A new caution opens the band once; after that it is the person's to fold.
+                if grew && self.notes_seen > 0 {
+                    fold = fold.open(Some(true));
+                }
+                fold.show(ui, |ui| {
+                    let mut lines = Vec::new();
+                    if self.autostart_off {
+                        lines.push(t.tr("band.autostart").to_owned());
+                    }
+                    lines.extend(cautions.iter().cloned());
+                    for l in &lines {
+                        let r = ui.add(egui::Label::new(egui::RichText::new(l).color(c.wait_text())).wrap());
+                        ito_a11y::say(&r, Role::Label, l);
+                    }
+                });
             });
         }
         egui::Panel::left("tree").default_size(200.0).show(ui, |ui| {
@@ -2703,6 +2713,7 @@ mod tests {
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             autostart_off: false,
+            notes_seen: 0,
             cal_sel: None,
             folded: BTreeSet::new(),
             tree_seen: None,
@@ -2804,6 +2815,27 @@ mod tests {
             self.show(vec![button(false)], b);
             self.settle(b);
         }
+    }
+
+    /// A new caution opens the folded band once; folding it again keeps it folded until another comes.
+    /// (The screen keeps the nodes it has seen, so only a label that is new proves the body was drawn.)
+    #[test]
+    fn a_new_caution_opens_the_band_once() {
+        let mut b = quiet(Vec::new());
+        let mut s = Screen::new();
+        s.ctx.all_styles_mut(|st| st.animation_time = 0.0);
+        let set = |b: &mut Browser, lines: &[&str]| b.snap.as_mut().unwrap().cautions = lines.iter().map(|l| (*l).to_owned()).collect();
+        let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        set(&mut b, &["注意その1"]);
+        s.settle(&mut b);
+        assert!(shown(&s, "注意その1"), "the first caution opens the band");
+        s.click("注意 1", &mut b);
+        set(&mut b, &["注意その1改"]);
+        s.settle(&mut b);
+        assert!(!shown(&s, "注意その1改"), "folded by hand, and it stays folded");
+        set(&mut b, &["注意その1改", "注意その2"]);
+        s.settle(&mut b);
+        assert!(shown(&s, "注意その2"), "a second caution opens it again");
     }
 
     fn key(k: egui::Key) -> Vec<egui::Event> {
@@ -2994,9 +3026,16 @@ mod tests {
         b.make.as_mut().unwrap().name = "bom-2".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         assert!(b.make.is_none());
-        assert!(
-            matches!(rx_req.try_recv(), Ok(Request::Copy { id, to, title: Some(t) }) if id == "試験/bom" && to == "試験/bom-2" && t == "bom-2")
-        );
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Copy { id, to, title: None }) if id == "試験/bom" && to == "試験/bom-2"));
+        // A title typed by hand is sent as it is.
+        b.re_box("試験/bom", Re::Copy);
+        {
+            let m = b.make.as_mut().unwrap();
+            m.follows = false;
+            m.title = "手で書いた".into();
+        }
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Copy { title: Some(t), .. }) if t == "手で書いた"));
         b.re_box("試験/bom", Re::Rename);
         b.make.as_mut().unwrap().name = "月次締め".into();
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
