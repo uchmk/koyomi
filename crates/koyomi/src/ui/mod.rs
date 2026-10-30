@@ -1367,9 +1367,14 @@ impl Browser {
         let mut re: Option<(String, Option<Re>)> = None;
         let editing = self.editor.is_some();
         if self.selected != self.tree_seen {
-            self.tree_seen.clone_from(&self.selected);
-            if let Some(d) = snap.defs.iter().find(|d| Some(&d.id) == self.selected.as_ref()) {
-                self.folded.remove(&d.group);
+            // A net just made is not in the snapshot until the next scan: try again then.
+            match snap.defs.iter().find(|d| Some(&d.id) == self.selected.as_ref()) {
+                Some(d) => {
+                    self.folded.remove(&d.group);
+                    self.tree_seen.clone_from(&self.selected);
+                }
+                None if self.selected.is_none() => self.tree_seen = None,
+                None => {}
             }
         }
         let mut todo: BTreeMap<&str, usize> = BTreeMap::new();
@@ -1391,10 +1396,11 @@ impl Browser {
                 }
                 let r = ui.add(egui::Label::new(head).sense(egui::Sense::click()));
                 let state = t.tr(if self.folded.contains(&d.group) { "tree.folded" } else { "tree.open" });
-                let mut said = t.trf("tree.group", &[&d.group, state]);
-                if todo > 0 {
-                    said = format!("{said}, {}", t.trf("tree.todo", &[&todo.to_string()]));
-                }
+                let said = if todo > 0 {
+                    t.trf("tree.group_todo", &[&d.group, state, &t.trf("tree.todo", &[&todo.to_string()])])
+                } else {
+                    t.trf("tree.group", &[&d.group, state])
+                };
                 ito_a11y::say(&r, Role::Heading, &said);
                 if r.clicked() && !self.folded.remove(&d.group) {
                     self.folded.insert(d.group.clone());
