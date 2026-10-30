@@ -94,6 +94,7 @@ struct App {
 #[derive(Clone, Copy)]
 enum Command {
     Edit(ui::canvas::Cmd),
+    NewJobnet,
     Export,
     Import,
     ReportBug,
@@ -211,6 +212,8 @@ impl App {
             keymap::Cmd::Run("quit") => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             keymap::Cmd::Run("settings") => self.open_settings(),
             keymap::Cmd::Run("help") => self.help.toggle(),
+            // The editor has keys of its own; a new net starts from outside it.
+            keymap::Cmd::Run("new_jobnet") if !self.browser.editing() => self.browser.new_box(None),
             keymap::Cmd::Run(_) | keymap::Cmd::None => {}
         }
     }
@@ -457,6 +460,7 @@ impl App {
             }
         }
         out.extend([
+            ito_palette::Entry::new(t.tr("palette.new_jobnet"), self.keys.label("new_jobnet"), Command::NewJobnet),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
             ito_palette::Entry::new(t.tr("palette.import"), "", Command::Import),
             ito_palette::Entry::new(t.tr("palette.report_bug"), "F12", Command::ReportBug),
@@ -489,6 +493,7 @@ impl App {
         let words = ito_palette::Words { hint: self.table.tr("palette.hint"), none: self.table.tr("palette.none"), header: "", footer: "" };
         match ito_palette::show(ctx, &mut view, &self.commands(), &style, &words) {
             None => self.palette = Some(view),
+            Some(ito_palette::Answer::Pick(Command::NewJobnet)) => self.browser.new_box(None),
             Some(ito_palette::Answer::Pick(Command::Export)) => self.browser.export(&self.table),
             Some(ito_palette::Answer::Pick(Command::Import)) => self.browser.import_box(),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),

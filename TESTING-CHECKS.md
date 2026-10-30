@@ -1,6 +1,6 @@
 # Checklist
 
-289 checks in TESTING.md, 285 left for a person.
+302 checks in TESTING.md, 298 left for a person.
 
 ## 1. Start
 
@@ -380,3 +380,19 @@
 - [ ] **30.12** Type a bundle with nothing different, Enter → 取り込む / やめる; a bundle that is all the same says `書くものはありません` with one 閉じる button 〔未訳〕
 - [ ] **30.13** Start the engine, wait, `koyomi engine status` → A `バックアップ: <time>、backups/<YYYY-MM-DD>.toml に N 件（7 日分を残す）` line; the file is a bundle `import` reads; an empty settings folder says `定義がないので書かなかった` and leaves the old day files 〔未訳〕
 - [ ] **30.14** Narrator / NVDA over the 取り込む box → The field is read as ファイル, the buttons by their labels, the plan's lines as text 〔未訳〕
+
+## 31. A new jobnet from the window
+
+- [ ] **31.1** Start `koyomi` with no definitions → The tree shows `＋ 新しいジョブネット` above `定義がありません…`; the message names the button 〔未訳〕
+- [ ] **31.2** Press `＋ 新しいジョブネット` → The 新しいジョブネット box opens in the middle with グループ and 名前; the keyboard is in 名前; the window behind takes no clicks 〔未訳〕
+- [ ] **31.3** Press 作る with a field empty; then type `a/b`, `..`, `a:b` or `締め.` as the name → `グループと名前を入れてください` and `/ \ : * ? " < > \| と、末尾の . は使えません` in red; the box stays open 〔未訳〕
+- [ ] **31.4** Type a group and a name a net already has (try other upper/lower case) → `もうあります: <group/name>`; the box stays open 〔未訳〕
+- [ ] **31.5** Type `テスト` and `新規1`, Enter → The box closes; the editor opens titled `編集 テスト/新規1（新規・未保存） *` with one job `初のジョブ`; no file is written yet 〔未訳〕
+- [ ] **31.6** Edit the job, Ctrl+S → `jobnets/テスト/新規1.toml` is written; the title loses `（新規・未保存）` and `*`; the tree shows the net under テスト as confirmed, not `未確認` 〔未訳〕
+- [ ] **31.7** Right-click a group heading in the tree → このグループに新しいジョブネット → The box opens with グループ filled in; the グループ list (今あるグループ) picks another one 〔未訳〕
+- [ ] **31.8** Ctrl+N, and palette → 新しいジョブネット… (the hint says Ctrl+N) → Both open the box; Ctrl+N does nothing while the editor is open; Tab moves between the fields, Esc closes the box 〔未訳〕
+- [ ] **31.9** Open the box while the editor has unsaved changes, fill it, Enter → `編集中の変更を保存するか閉じてから作ってください`; nothing is lost 〔未訳〕
+- [ ] **31.10** Make `テスト/新規2`, then before saving write `jobnets/テスト/新規2.toml` by hand, then Ctrl+S → `もうある（ほかで作られた）: テスト/新規2。閉じて、別の名前で作り直す`; the hand-written file is unchanged; no overwrite button 〔未訳〕
+- [ ] **31.11** Make a net and press 閉じる without saving → The discard question comes first; 捨てる leaves no file 〔未訳〕
+- [ ] **31.12** `koyomi --keys "<Wait:2500><C-n><Wait:400>shime<Enter><Wait:300><State:b><S-Tab>keiri<Enter><Wait:500><State:c><Quit>"` → `b.txt` has `make: /shime (グループと名前を入れてください)`; `c.txt` has `editor: keiri/shime dirty=true parts=1 … new=true` 〔未訳〕
+- [ ] **31.13** Narrator / NVDA over the box → The fields are read as グループ and 名前, the buttons by their labels; the error is read as text 〔未訳〕

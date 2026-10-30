@@ -340,6 +340,13 @@ impl Editor {
     }
 
     /// An editor over a net that is not a file yet.
+    /// A net made here, not read: unsaved until the first save writes its file.
+    pub fn new_net(id: &str, net: Jobnet) -> Editor {
+        let mut e = Editor::over(id, net);
+        e.dirty = true;
+        e
+    }
+
     pub fn over(id: &str, net: Jobnet) -> Editor {
         let problems = write::check(&net);
         Editor {
@@ -402,7 +409,7 @@ impl Editor {
             None => "-",
         };
         format!(
-            "editor: {} dirty={} parts={} selected=[{}] cursor={} pane={} problems={} connect={}",
+            "editor: {} dirty={} parts={} selected=[{}] cursor={} pane={} problems={} connect={} new={}",
             self.id,
             self.dirty,
             self.net.jobs.len(),
@@ -411,6 +418,7 @@ impl Editor {
             pane,
             self.problems.len(),
             self.connect.is_some(),
+            self.base.is_none(),
         )
     }
 
@@ -837,7 +845,13 @@ impl Editor {
         let mut action = None;
         egui::Panel::top("editor-bar").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
-                let title = format!("{} {}{}", t.tr("canvas.title"), self.id, if self.dirty { " *" } else { "" });
+                let title = format!(
+                    "{} {}{}{}",
+                    t.tr("canvas.title"),
+                    self.id,
+                    if self.base.is_none() { t.tr("canvas.new") } else { "" },
+                    if self.dirty { " *" } else { "" }
+                );
                 let r = ui.heading(&title);
                 ito_a11y::say(&r, Role::Heading, &title);
                 if depth > 0 {

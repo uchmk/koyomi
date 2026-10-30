@@ -59,6 +59,43 @@ struct Port {
     fresh: bool,
 }
 
+/// The 新しいジョブネット box: the group and the name of the net to make.
+struct Make {
+    group: String,
+    name: String,
+    error: Option<String>,
+    /// The name field takes the keyboard on the first frame.
+    fresh: bool,
+}
+
+/// Why the 新しいジョブネット box cannot make its id yet.
+#[derive(Debug, PartialEq, Eq)]
+enum Why {
+    Empty,
+    Bad,
+    Exists(String),
+}
+
+/// The id the 新しいジョブネット box makes from `group` and `name`, when no net in `ids` has it.
+/// Windows does not tell `A` from `a` in a file name, so neither does this.
+fn new_id<'a>(group: &str, name: &str, mut ids: impl Iterator<Item = &'a str>) -> Result<String, Why> {
+    let (g, n) = (group.trim(), name.trim());
+    if g.is_empty() || n.is_empty() {
+        return Err(Why::Empty);
+    }
+    // What a file name on Windows cannot hold, and a trailing dot it would cut off.
+    let bad = |s: &str| s.ends_with('.') || s.chars().any(|c| c.is_control() || "/\\:*?\"<>|".contains(c));
+    let id = format!("{g}/{n}");
+    if bad(g) || bad(n) || !koyomi_core::jobnet::is_id(&id) {
+        return Err(Why::Bad);
+    }
+    let low = id.to_lowercase();
+    if ids.any(|i| i.to_lowercase() == low) {
+        return Err(Why::Exists(id));
+    }
+    Ok(id)
+}
+
 /// What the box shows at this point, and so which buttons it has.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -185,6 +222,8 @@ pub struct Browser {
     editor: Option<canvas::Editor>,
     /// The 取り込む box, while it is open.
     port: Option<Port>,
+    /// The 新しいジョブネット box, while it is open.
+    make: Option<Make>,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
 }
@@ -280,6 +319,7 @@ impl Browser {
             editor: None,
             editors: Vec::new(),
             port: None,
+            make: None,
         }
     }
 
@@ -332,6 +372,10 @@ impl Browser {
                     if let Some(e) = &mut self.editor {
                         match r {
                             Ok(said) => e.saved(&text, said),
+                            // A net made here met a file made elsewhere: not this one's to overwrite.
+                            Err(m) if m.starts_with("ほかで変わっています") && e.base.is_none() => {
+                                e.result = Some(Err(format!("もうある（ほかで作られた）: {}。閉じて、別の名前で作り直す", e.id)))
+                            }
                             Err(m) if m.starts_with("ほかで変わっています") => e.conflict = Some(text),
                             Err(m) => e.result = Some(Err(m)),
                         }
@@ -436,6 +480,9 @@ impl Browser {
             (None, None) => "-".to_owned(),
         };
         out.push_str(&format!("asking: {asking}\nflow: {}\n", if self.vertical { "vertical" } else { "horizontal" }));
+        if let Some(m) = &self.make {
+            out.push_str(&format!("make: {}/{}{}\n", m.group, m.name, m.error.as_deref().map(|e| format!(" ({e})")).unwrap_or_default()));
+        }
         if let Some(e) = &self.editor {
             out.push_str(&e.report());
             out.push('\n');
@@ -468,6 +515,106 @@ impl Browser {
         if self.port.is_none() {
             self.port = Some(Port { path: String::new(), text: None, plan: None, error: None, waiting: false, fresh: true });
             self.focus = 0;
+        }
+    }
+
+    /// 新しいジョブネット: opens the box, with `group` filled in when it came from a group in the tree.
+    pub fn new_box(&mut self, group: Option<&str>) {
+        if self.make.is_none() && self.port.is_none() && self.snap.is_some() {
+            self.make = Some(Make { group: group.unwrap_or_default().to_owned(), name: String::new(), error: None, fresh: true });
+            self.focus = 0;
+        }
+    }
+
+    /// The box's 作る: the template (the one `koyomi new` writes) in a new editor. Nothing is
+    /// written until it is saved.
+    fn make_go(&mut self, t: &ito_i18n::Table) {
+        let Some(m) = &mut self.make else { return };
+        let unsaved = self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty);
+        let ids = self.snap.iter().flat_map(|s| s.defs.iter().map(|d| d.id.as_str()));
+        let made = match new_id(&m.group, &m.name, ids) {
+            Err(Why::Empty) => Err(t.tr("make.empty").to_owned()),
+            Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
+            Err(Why::Exists(id)) => Err(t.trf("make.exists", &[id.as_str()])),
+            Ok(_) if unsaved => Err(t.tr("make.unsaved").to_owned()),
+            Ok(id) => koyomi_core::jobnet::parse(&koyomi_core::write::template(m.name.trim()))
+                .map(|net| (id, net))
+                .map_err(|p| p.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join("\n")),
+        };
+        match made {
+            Err(e) => m.error = Some(e),
+            Ok((id, net)) => {
+                self.make = None;
+                self.editor = Some(canvas::Editor::new_net(&id, net));
+                self.editors.clear();
+                self.selected = None;
+                self.run_sel = None;
+                self.cal_sel = None;
+                self.job_sel = None;
+                self.result = None;
+                self.hist = None;
+            }
+        }
+    }
+
+    /// The 新しいジョブネット box: a group (typed, or one there is) and a name.
+    fn confirm_make(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let mut groups: Vec<String> = self.snap.iter().flat_map(|s| s.defs.iter().map(|d| d.group.clone())).collect();
+        groups.dedup();
+        let Some(m) = &mut self.make else { return };
+        let c = ito_theme::colors();
+        let mut pressed = None;
+        egui::Window::new(t.tr("make.title"))
+            .id(egui::Id::new("make"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(480.0);
+                ui.add(egui::Label::new(t.tr("make.lead")).wrap());
+                egui::Grid::new("make-fields").num_columns(2).show(ui, |ui| {
+                    ui.label(t.tr("make.group"));
+                    ui.horizontal(|ui| {
+                        let r = ui.add(egui::TextEdit::singleline(&mut m.group).hint_text(t.tr("make.group_hint")).desired_width(240.0));
+                        ito_a11y::say(&r, Role::Label, t.tr("make.group"));
+                        if !groups.is_empty() {
+                            egui::ComboBox::from_id_salt("make-group").selected_text(t.tr("make.pick")).show_ui(ui, |ui| {
+                                for g in &groups {
+                                    if ui.selectable_label(m.group.trim() == g, g).clicked() {
+                                        m.group = g.clone();
+                                    }
+                                }
+                            });
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(t.tr("make.name"));
+                    let r = ui.add(egui::TextEdit::singleline(&mut m.name).hint_text(t.tr("make.name_hint")).desired_width(240.0));
+                    ito_a11y::say(&r, Role::Label, t.tr("make.name"));
+                    if m.fresh {
+                        r.request_focus();
+                        m.fresh = false;
+                    }
+                    ui.end_row();
+                });
+                if let Some(e) = &m.error {
+                    ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
+                }
+                ui.horizontal(|ui| {
+                    for (i, label) in [t.tr("make.go"), t.tr("make.cancel")].into_iter().enumerate() {
+                        let r = ui.button(label);
+                        ito_a11y::say(&r, Role::Button, label);
+                        if r.clicked() {
+                            pressed = Some(i);
+                        }
+                    }
+                });
+                ui.label(egui::RichText::new(t.tr("make.hint")).color(c.dim).small());
+            });
+        match pressed.or(key) {
+            Some(0) => self.make_go(t),
+            Some(_) => self.make = None,
+            None => {}
         }
     }
 
@@ -752,13 +899,15 @@ impl Browser {
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some());
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
+        let making = self.make.is_some();
         let modal = self.asking.is_some()
             || self.killing.is_some()
             || conflict
             || self.editor.as_ref().is_some_and(|e| e.closing)
-            || port.is_some();
+            || port.is_some()
+            || making;
         let buttons = if conflict { 3 } else { port.map_or(2, |(n, _)| n) };
-        let key = if modal { self.box_keys(&ctx, buttons) } else { None };
+        let key = if modal { self.box_keys(&ctx, buttons, making) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
             let lines: Vec<String> = snap.warnings.clone();
@@ -847,7 +996,8 @@ impl Browser {
         self.confirm_kill(&ctx, t, key);
         self.confirm_editor(&ctx, t, key);
         self.confirm_port(&ctx, t, key);
-        if modal && !port.is_some_and(|(_, typing)| typing) {
+        self.confirm_make(&ctx, t, key);
+        if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
             ctx.memory_mut(|m| {
@@ -858,14 +1008,18 @@ impl Browser {
         }
     }
 
-    /// Esc (cancel) and Enter (the button the keyboard is on) answer the box; Tab and Shift+Tab move between its two buttons.
-    fn box_keys(&mut self, ctx: &egui::Context, buttons: usize) -> Option<usize> {
+    /// Esc (cancel) and Enter (the button the keyboard is on) answer the box; Tab and Shift+Tab move between its two buttons,
+    /// or, in a box of `fields`, between the fields.
+    fn box_keys(&mut self, ctx: &egui::Context, buttons: usize, fields: bool) -> Option<usize> {
         ctx.input_mut(|i| {
             if i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) {
                 Some(1)
             } else if i.consume_key(egui::Modifiers::NONE, egui::Key::Enter) {
                 Some(self.focus)
             } else {
+                if fields {
+                    return None;
+                }
                 if i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab) {
                     self.focus = (self.focus + 1) % buttons;
                 }
@@ -876,6 +1030,13 @@ impl Browser {
 
     fn tree(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
+        if self.snap.is_some() {
+            let r = ui.button(t.tr("tree.new"));
+            ito_a11y::say(&r, Role::Button, t.tr("tree.new"));
+            if r.clicked() {
+                self.new_box(None);
+            }
+        }
         let Some(snap) = &self.snap else {
             let text = match (&self.down, self.starting) {
                 (Some(e), _) => t.trf("tree.failed", &[e]),
@@ -892,12 +1053,19 @@ impl Browser {
             ui.label(egui::RichText::new(t.trf("tree.failed", &[e])).color(c.err));
         }
         let mut pick = None;
+        let mut make_in = None;
         let mut group: Option<&str> = None;
         for d in &snap.defs {
             if group != Some(d.group.as_str()) {
                 group = Some(&d.group);
-                let r = ui.label(egui::RichText::new(&d.group).strong().color(c.dim));
+                let r = ui.add(egui::Label::new(egui::RichText::new(&d.group).strong().color(c.dim)).sense(egui::Sense::click()));
                 ito_a11y::say(&r, Role::Heading, &d.group);
+                r.context_menu(|ui| {
+                    if ui.button(t.tr("tree.new_here")).clicked() {
+                        make_in = Some(d.group.clone());
+                        ui.close();
+                    }
+                });
             }
             let text = review::row(t, d, snap.held.contains(&d.id));
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
@@ -906,6 +1074,9 @@ impl Browser {
             if r.clicked() {
                 pick = Some(d.id.clone());
             }
+        }
+        if let Some(g) = make_in {
+            self.new_box(Some(&g));
         }
         if pick.is_some() {
             self.selected = pick;
@@ -1401,6 +1572,29 @@ mod tests {
             .collect()
     }
 
+    #[test]
+    fn a_new_id_needs_a_free_name_a_file_can_hold() {
+        let ids = ["試験/bom", "試験/月次締め"];
+        let id = |g: &str, n: &str| new_id(g, n, ids.iter().copied());
+        assert_eq!(id(" 経理 ", " 締め "), Ok("経理/締め".into()));
+        assert_eq!(id("", "x"), Err(Why::Empty));
+        assert_eq!(id("経理", "  "), Err(Why::Empty));
+        assert_eq!(id("経理", "a/b"), Err(Why::Bad));
+        assert_eq!(id("経理", ".."), Err(Why::Bad));
+        assert_eq!(id("経理", "a:b"), Err(Why::Bad));
+        assert_eq!(id("経理", "締め."), Err(Why::Bad));
+        assert_eq!(id("試験", "BOM"), Err(Why::Exists("試験/BOM".into())));
+        assert_eq!(id("試験", "月次締め"), Err(Why::Exists("試験/月次締め".into())));
+    }
+
+    #[test]
+    fn a_new_net_is_unsaved_and_can_be_saved() {
+        let net = koyomi_core::jobnet::parse(&koyomi_core::write::template("締め")).unwrap();
+        let e = canvas::Editor::new_net("経理/締め", net);
+        assert!(e.dirty && e.can_save() && e.base.is_none());
+        assert!(e.report().ends_with("new=true"), "{}", e.report());
+    }
+
     /// A browser on a fixed list with no engine behind it.
     #[test]
     fn the_history_narrows_by_net_and_state_newest_first() {
@@ -1465,6 +1659,7 @@ mod tests {
             editor: None,
             editors: Vec::new(),
             port: None,
+            make: None,
         }
     }
 

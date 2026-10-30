@@ -23,3 +23,10 @@ desc = "Show the key help"
 on = "<C-q>"
 run = "quit"
 desc = "Quit"
+
+# --- koyomi ---
+
+[[app.keymap]]
+on = "<C-n>"
+run = "new_jobnet"
+desc = "Create a new jobnet"

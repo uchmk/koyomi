@@ -18,6 +18,7 @@ fixed = "{} は koyomi が先に読むので、ここに割り当てても動き
 [keydesc]
 "Open the settings" = "設定を開く"
 "Show the key help" = "キーのヘルプを見る"
+"Create a new jobnet" = "新しいジョブネットを作る"
 "Quit" = "終了"
 
 [notices]
@@ -44,6 +45,7 @@ edit_flow = "編集: 流れの向きを変える"
 edit_undo = "編集: 元に戻す"
 edit_redo = "編集: やり直す"
 edit_close = "編集: 閉じる"
+new_jobnet = "新しいジョブネット…"
 quit = "終了"
 settings = "設定"
 help = "キー"
@@ -137,7 +139,9 @@ notify = "通知"
 jobnet = "子ジョブネット"
 
 [tree]
-empty = "定義がありません。jobnets フォルダーに <グループ>/<名前>.toml を置いてください"
+new = "＋ 新しいジョブネット"
+new_here = "このグループに新しいジョブネット"
+empty = "定義がありません。上の「＋ 新しいジョブネット」で作るか、jobnets フォルダーに <グループ>/<名前>.toml を置いてください"
 starting = "エンジンを起動しています…"
 failed = "エンジンに繋がりません: {0}"
 problems = "誤り"
@@ -256,6 +260,7 @@ written = "{0} に書きました"
 write_failed = "{0} に書けない: {1}"
 
 [canvas]
+new = "（新規・未保存）"
 title = "編集"
 edit = "編集"
 back = "親へ戻る"
@@ -378,3 +383,19 @@ pick = "今あるものと違うものが {0} 件あります。どうするか�
 hint_path = "Enter: 読む　Esc: やめる"
 hint_pick = "Tab で選び Enter　Esc: やめる"
 exported = "書いた: {0}（{1} 件。webhook の宛先は *** にした）"
+
+[make]
+title = "新しいジョブネット"
+lead = "グループと名前を決めると、雛形（ジョブ 1 つ）がエディターで開きます。保存するまでファイルは書きません。保存したジョブネットは確認済みになります。"
+group = "グループ"
+group_hint = "例: 経理"
+pick = "今あるグループ"
+name = "名前"
+name_hint = "例: 月次締め"
+go = "作る"
+cancel = "やめる"
+hint = "Enter: 作る　Esc: やめる　Tab: 欄を移る"
+empty = "グループと名前を入れてください"
+bad = "/ \\ : * ? \" < > | と、末尾の . は使えません"
+exists = "もうあります: {0}"
+unsaved = "編集中の変更を保存するか閉じてから作ってください"

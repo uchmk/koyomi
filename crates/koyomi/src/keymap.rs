@@ -25,7 +25,7 @@ pub const SPEC: Spec = Spec { layers: &LAYERS, ignored: &[], defaults: DEFAULTS 
 const FIXED: [&str; 6] = ["<F12>", "<C-S-p>", "<C-=>", "<C-+>", "<C-->", "<C-0>"];
 
 /// What a key can run.
-pub const ACTIONS: [&str; 3] = ["settings", "help", "quit"];
+pub const ACTIONS: [&str; 4] = ["settings", "help", "quit", "new_jobnet"];
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Cmd {
@@ -130,6 +130,7 @@ mod tests {
         assert_eq!(run(&k, "<C-q>"), Some(vec![Cmd::Run("quit")]));
         assert_eq!(run(&k, "<F1>"), Some(vec![Cmd::Run("help")]));
         assert_eq!(run(&k, "<C-,>"), Some(vec![Cmd::Run("settings")]));
+        assert_eq!(run(&k, "<C-n>"), Some(vec![Cmd::Run("new_jobnet")]));
         assert_eq!(run(&k, "q"), None);
         for a in ACTIONS {
             assert!(k.app().iter().any(|b| b.run == [Cmd::Run(a)]), "{a}");
