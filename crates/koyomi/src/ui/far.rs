@@ -16,6 +16,7 @@ use koyomi_core::run::{Run, State};
 use serde::Deserialize;
 
 use super::graph;
+use crate::remote::query;
 use crate::show;
 
 /// How often the shown PC is asked again for its nets and runs.
@@ -477,13 +478,6 @@ fn run_body(net: &str, values: &[(String, String, String)]) -> serde_json::Value
     } else {
         serde_json::json!({ "net": net, "params": params })
     }
-}
-
-/// `s` for a path segment or a query value: anything but a letter, a digit and `-._~` as `%XX`.
-fn query(s: &str) -> String {
-    s.bytes()
-        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
-        .collect()
 }
 
 #[cfg(test)]

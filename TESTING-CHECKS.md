@@ -1,6 +1,6 @@
 # Checklist
 
-752 checks in TESTING.md, 748 left for a person.
+760 checks in TESTING.md, 756 left for a person.
 
 ## 1. Start
 
@@ -1047,3 +1047,14 @@
 - [ ] **98.8** Send a new net `g/new` without `base` → 200; `jobnets/g/new.toml` is there, 未確認 in the window 〔未訳〕
 - [ ] **98.9** `koyomi ops` → `propose g/a （HTTP: kato）` and `propose g/new （HTTP: kato）` 〔未訳〕
 - [ ] **98.10** `koyomi versions g/a` → The text before 98.3 is kept as a version 〔未訳〕
+
+## 99. A standby copies the definitions (TODO 87)
+
+- [ ] **99.1** Start B's engine; wait a few seconds → B says `koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: g/a` for each confirmed net of A; B's window shows them 未確認 〔未訳〕
+- [ ] **99.2** Confirm them in B's window → They show 確認済み; nothing more is copied (the hashes match) 〔未訳〕
+- [ ] **99.3** Change and confirm `g/a` on A; wait up to 5 minutes → B copies `g/a` again, 未確認, the confirm box shows the change; `koyomi versions g/a` on B keeps the one before 〔未訳〕
+- [ ] **99.4** On A, change `g/a` but do not confirm it → B does not copy it 〔未訳〕
+- [ ] **99.5** On A make `b`'s role `view`; restart B → B's cautions show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
+- [ ] **99.6** A net on A that calls a child net (`kind = "net"`), both new to B → Both land on B in one copy (the child first) 〔未訳〕
+- [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more 〔未訳〕
+- [ ] **99.8** A net only on B → Still there after copies 〔未訳〕

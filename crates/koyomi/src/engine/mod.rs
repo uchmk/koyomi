@@ -599,6 +599,7 @@ impl State {
 
     /// Polls the PC `[standby]` watches, and tells of a takeover or of both running.
     fn tick_standby(&mut self) {
+        self.write_copies();
         let (title, line) = match self.standby.tick() {
             Some(standby::Told::TookOver(line)) => ("koyomi: 待機から引き継いだ", line),
             Some(standby::Told::Both(line)) => ("koyomi: 両方で流している", line),
@@ -606,6 +607,35 @@ impl State {
         };
         crate::notify::tell(&self.notify, "failed", title, &line);
         crate::say(&format!("koyomi: {line}"), false);
+    }
+
+    /// Writes what the standby copied from the engine it watches, unconfirmed (TODO 87). A
+    /// net that calls another goes in after it: the ones refused are tried again while some
+    /// go in.
+    fn write_copies(&mut self) {
+        let mut left = self.standby.copies(|| self.defs.iter().map(|d| (d.id.clone(), d.sha256.clone())).collect());
+        let mut refused = Vec::new();
+        while !left.is_empty() {
+            let before = left.len();
+            refused.clear();
+            let mut next = Vec::new();
+            for c in left {
+                match self.write_def(&c.id, &c.text, c.base.as_deref(), false, false) {
+                    Ok(()) => {
+                        crate::say(&format!("koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: {}", c.id), false)
+                    }
+                    Err(e) => {
+                        refused.push(format!("{}: {e}", c.id));
+                        next.push(c);
+                    }
+                }
+            }
+            if next.len() == before {
+                break;
+            }
+            left = next;
+        }
+        self.standby.refused(refused);
     }
 
     /// Does what `verdict` says with the time `planned` of `def`.

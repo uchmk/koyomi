@@ -60,6 +60,13 @@ fn finish(res: Result<String, String>) -> i32 {
     }
 }
 
+/// `s` for a path segment or a query value: anything but a letter, a digit and `-._~` as `%XX`.
+pub fn query(s: &str) -> String {
+    s.bytes()
+        .map(|b| if b.is_ascii_alphanumeric() || b"-._~".contains(&b) { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect()
+}
+
 fn remotes() -> Result<Vec<Remote>, String> {
     Ok(Paths::find()?.config()?.remote)
 }

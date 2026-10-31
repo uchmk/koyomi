@@ -11,7 +11,14 @@
 //! Only "nobody is there" counts as a miss: no connection, or TLS that does not finish. A
 //! certificate that differs from the fingerprint, a token that is missing here, or an address
 //! that does not read cannot tell whether the primary is up; they are said, and not counted.
+//!
+//! While it stands by, it also copies the definitions from there every [`COPY_EVERY`]: the
+//! confirmed ones whose file differs from the one here (`GET /nets` gives the hashes, `GET
+//! /nets/text` the text, which needs the `edit` role there). They land unconfirmed, as a
+//! proposal does (TODO 83): a person confirms them in this PC's window, and one not confirmed
+//! does not run after a takeover. A net that is only here is left as it is.
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -22,6 +29,21 @@ use ito_http::client::{self, Client};
 use koyomi_core::config;
 use koyomi_core::standby::{State, Step, Watch};
 use serde::{Deserialize, Serialize};
+
+/// How often a standby copies the definitions from the engine it watches.
+pub const COPY_EVERY: Duration = Duration::from_secs(300);
+
+/// A definition copied from the watched engine, to write here unconfirmed.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Copied {
+    pub id: String,
+    pub text: String,
+    /// The hash of the file here when it was fetched (`None`: there was none).
+    pub base: Option<String>,
+}
+
+/// What one copy found, or why it could not.
+type Fetched = Result<Vec<Copied>, String>;
 
 /// `standby.toml`.
 #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,6 +86,12 @@ pub struct Standby {
     note: Option<String>,
     /// Why the last miss was a miss.
     missed_why: Option<String>,
+    copy_tx: mpsc::Sender<Fetched>,
+    copy_rx: mpsc::Receiver<Fetched>,
+    copied_at: Option<Instant>,
+    copying: bool,
+    /// Why the last copy did not go, or which ones were not written here.
+    copy_note: Option<String>,
 }
 
 impl Standby {
@@ -72,6 +100,7 @@ impl Standby {
         let path = state_dir.join("standby.toml");
         let prev: Kept = kept::read(&path).unwrap_or_default();
         let (tx, rx) = mpsc::channel();
+        let (copy_tx, copy_rx) = mpsc::channel();
         Standby {
             cfg: None,
             remote: None,
@@ -84,6 +113,11 @@ impl Standby {
             in_flight: false,
             note: None,
             missed_why: None,
+            copy_tx,
+            copy_rx,
+            copied_at: None,
+            copying: false,
+            copy_note: None,
         }
     }
 
@@ -97,6 +131,8 @@ impl Standby {
         if remote != self.remote {
             self.last = None;
             self.note = None;
+            self.copied_at = None;
+            self.copy_note = None;
         }
         self.cfg = cfg.cloned();
         self.remote = remote;
@@ -128,6 +164,47 @@ impl Standby {
             self.in_flight = false;
         }
         told
+    }
+
+    /// While it stands by: what the copy thread fetched, and the next copy started when due.
+    /// `here` gives each definition's id and file hash on this PC. Nothing once it has taken
+    /// over: a copy that comes back late must not leave the nets it runs unconfirmed.
+    pub fn copies(&mut self, here: impl FnOnce() -> BTreeMap<String, String>) -> Vec<Copied> {
+        let mut got = Vec::new();
+        while let Ok(f) = self.copy_rx.try_recv() {
+            self.copying = false;
+            match f {
+                Ok(c) => {
+                    self.copy_note = None;
+                    got.extend(c);
+                }
+                Err(e) => self.copy_note = Some(e),
+            }
+        }
+        if !self.waiting() {
+            return Vec::new();
+        }
+        let Some(remote) = self.remote.clone() else { return got };
+        if self.copying || self.copied_at.is_some_and(|t| t.elapsed() < COPY_EVERY) {
+            return got;
+        }
+        self.copied_at = Some(Instant::now());
+        self.copying = true;
+        let (tx, here) = (self.copy_tx.clone(), here());
+        let spawned = std::thread::Builder::new().name("standby-copy".into()).spawn(move || {
+            let _ = tx.send(fetch(&remote, &here));
+        });
+        if spawned.is_err() {
+            self.copying = false;
+        }
+        got
+    }
+
+    /// The copies that could not be written here, to show until a copy goes through.
+    pub fn refused(&mut self, why: Vec<String>) {
+        if !why.is_empty() {
+            self.copy_note = Some(format!("写した定義を置けない: {}", why.join(" / ")));
+        }
     }
 
     fn take(&mut self, name: &str, p: Poll) -> Option<Told> {
@@ -201,8 +278,58 @@ impl Standby {
     /// What a person should see: the poll's trouble.
     pub fn notes(&self) -> Vec<String> {
         let name = self.cfg.as_ref().map(|c| c.watch.trim()).unwrap_or_default();
-        self.note.iter().map(|n| format!("[standby] {name}: {n}")).collect()
+        self.note.iter().chain(&self.copy_note).map(|n| format!("[standby] {name}: {n}")).collect()
     }
+}
+
+/// One copy from `r`: the confirmed definitions there whose file differs from `here`.
+fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
+    let name = r.secret();
+    let token = match ito_secret::get("koyomi", name) {
+        Ok(Some(t)) => t,
+        Ok(None) => return Err(format!("定義を写せない: token の秘密 {name} がない")),
+        Err(e) => return Err(format!("定義を写せない: token の秘密 {name} が読めない（{e}）")),
+    };
+    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| format!("定義を写せない: {e}"))?;
+    let list = c.get("/nets").map_err(|e| format!("定義を写せない: {e}"))?;
+    if list.status != 200 {
+        return Err(format!("定義を写せない: /nets が {} を返した", list.status));
+    }
+    let mut out = Vec::new();
+    for id in wanted(&list.json, here)? {
+        let reply = c.get(&format!("/nets/text?net={}", crate::remote::query(&id))).map_err(|e| format!("定義を写せない: {e}"))?;
+        match reply.status {
+            200 => {
+                if let Some(text) = reply.json["text"].as_str() {
+                    out.push(Copied { base: here.get(&id).cloned(), id, text: text.to_owned() });
+                }
+            }
+            // Gone there since the list.
+            404 => {}
+            403 => {
+                return Err("定義を写せない: 向こうでこの token に edit のロールが要る（向こうの [http] の利用者とロールを見る）".to_owned())
+            }
+            s => return Err(format!("定義を写せない: /nets/text が {s} を返した（{id}）")),
+        }
+    }
+    Ok(out)
+}
+
+/// The ids to fetch from a `GET /nets` answer: confirmed there, and with a file hash that is
+/// not the one in `here`.
+fn wanted(list: &serde_json::Value, here: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+    let nets = list["nets"].as_array().ok_or("定義を写せない: /nets の答えが読めない")?;
+    let mut out = Vec::new();
+    for n in nets {
+        let Some(id) = n["id"].as_str() else { continue };
+        let Some(sha) = n["sha256"].as_str() else {
+            return Err("定義を写せない: 向こうの koyomi が古い（/nets にハッシュがない）。写すには向こうを新しくする".to_owned());
+        };
+        if n["standing"] == "confirmed" && here.get(id).map(String::as_str) != Some(sha) {
+            out.push(id.to_owned());
+        }
+    }
+    Ok(out)
 }
 
 /// One poll of `r`'s `/health`.
@@ -287,6 +414,51 @@ mod tests {
         assert!(again.give_back().is_err());
         again.set(None, &[remote()]);
         assert!(!again.waiting() && again.line().is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// only the confirmed nets there whose file is not the one here are fetched; a peer
+    /// without the hashes is said to be too old.
+    #[test]
+    fn only_what_changed_there_is_fetched() {
+        let list = serde_json::json!({ "nets": [
+            { "id": "a/same", "standing": "confirmed", "sha256": "1" },
+            { "id": "a/changed", "standing": "confirmed", "sha256": "2" },
+            { "id": "a/new", "standing": "confirmed", "sha256": "3" },
+            { "id": "a/unconfirmed", "standing": "unconfirmed", "sha256": "4" },
+            { "id": "a/invalid", "standing": "invalid", "sha256": "5" },
+        ]});
+        let here = BTreeMap::from([("a/same".to_owned(), "1".to_owned()), ("a/changed".to_owned(), "old".to_owned())]);
+        assert_eq!(wanted(&list, &here).unwrap(), ["a/changed", "a/new"]);
+        let old = serde_json::json!({ "nets": [{ "id": "a/x", "standing": "confirmed" }] });
+        assert!(wanted(&old, &here).unwrap_err().contains("古い"));
+        assert!(wanted(&serde_json::json!({}), &here).is_err());
+    }
+
+    /// what the copy thread brings is handed over while standing by, and dropped once it
+    /// has taken over; a failure is shown until a copy goes through.
+    #[test]
+    fn copies_are_dropped_after_a_takeover() {
+        let d = dir("copy");
+        let mut s = Standby::new(&d);
+        let one = Copied { id: "a/b".into(), text: "x".into(), base: None };
+        // Not standing by: nothing is started or handed over.
+        s.copy_tx.send(Ok(vec![one.clone()])).unwrap();
+        assert!(s.copies(BTreeMap::new).is_empty());
+        assert!(s.copied_at.is_none());
+        s.set(Some(&cfg(1)), &[remote()]);
+        s.copied_at = Some(Instant::now());
+        s.copy_tx.send(Err("定義を写せない: x".into())).unwrap();
+        assert!(s.copies(BTreeMap::new).is_empty());
+        assert_eq!(s.notes().len(), 1);
+        s.copy_tx.send(Ok(vec![one.clone()])).unwrap();
+        assert_eq!(s.copies(BTreeMap::new), std::slice::from_ref(&one));
+        assert!(s.notes().is_empty());
+        s.refused(vec!["a/b: 保存できない".into()]);
+        assert!(s.notes()[0].contains("置けない"));
+        assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(_))));
+        s.copy_tx.send(Ok(vec![one])).unwrap();
+        assert!(s.copies(BTreeMap::new).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

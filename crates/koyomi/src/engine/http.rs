@@ -9,7 +9,7 @@
 //! - `GET /runs/<id>` is the run as `koyomi status` / `history` know it, with `"over"`.
 //! - Read only, for another PC's window, the Web UI and an HA standby (TODO 80, 81, 87):
 //!   `GET /health` (the engine's status line), `GET /nets` (each definition's id, name,
-//!   standing and hold), `GET /runs` (today's and the running ones; `?from=&to=` for days)
+//!   standing, hold and the hash of its file), `GET /runs` (today's and the running ones; `?from=&to=` for days)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //! - `POST /runs/<id>/stop` stops the run's jobs (`koyomi kill`).
 //! - Definitions, for the `edit` role (TODO 83): `GET /nets/text?net=<group>/<name>` is the
@@ -350,8 +350,9 @@ fn health(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     }
 }
 
-/// `GET /nets`: each definition's id, name, standing, hold and `[params]` (name and default, so a
-/// caller can ask for the values before `POST /runs`). Not the text (it stays on this PC).
+/// `GET /nets`: each definition's id, name, standing, hold, `[params]` (name and default, so a
+/// caller can ask for the values before `POST /runs`) and the hash of its file, so a standby
+/// fetches only what changed (TODO 87). Not the text: that is `GET /nets/text`, for `edit`.
 fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let snap = match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
         Ok(s) => s,
@@ -366,6 +367,7 @@ fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
                 "group": d.group,
                 "name": d.label(),
                 "standing": d.standing,
+                "sha256": d.sha256,
                 "held": snap.held.contains(&d.id),
                 "params": d.net.as_ref().map(|n| n.params.clone()).unwrap_or_default(),
             })
