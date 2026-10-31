@@ -23,6 +23,27 @@ const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::T
 const GRID: [Weekday; 7] = [Weekday::Sun, Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat];
 /// A day's cell: the date over its name, wide enough for four characters of the name.
 const CELL: egui::Vec2 = egui::vec2(72.0, 44.0);
+/// A day's cell in a month with a named day: the date and two lines of the name.
+const NAMED_CELL: egui::Vec2 = egui::vec2(72.0, 58.0);
+
+/// The date and, under it, the day's name in up to two lines as wide as the cell (… past that).
+fn day_text(ui: &egui::Ui, rect: egui::Rect, date: u32, name: Option<&str>, colour: egui::Color32) {
+    let painter = ui.painter_at(rect);
+    let top = rect.center_top() + egui::vec2(0.0, 6.0);
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let galley = painter.layout_no_wrap(date.to_string(), font, colour);
+    let at = egui::pos2(top.x - galley.size().x / 2.0, top.y);
+    let below = at.y + galley.size().y + 1.0;
+    painter.galley(at, galley, colour);
+    let Some(name) = name else { return };
+    let mut job = egui::text::LayoutJob::simple(name.to_owned(), egui::TextStyle::Small.resolve(ui.style()), colour, rect.width() - 6.0);
+    job.wrap.max_rows = 2;
+    job.wrap.break_anywhere = true;
+    job.wrap.overflow_character = Some('…');
+    job.halign = egui::Align::Center;
+    let galley = painter.layout_job(job);
+    painter.galley(egui::pos2(top.x, below), galley, colour);
+}
 
 /// The 新しいカレンダー box: the name (the file's stem), Japan's holidays, and the days off each week.
 pub(super) struct NewCal {
@@ -247,26 +268,16 @@ impl Browser {
                 }
                 ui.end_row();
                 let Some((first, _)) = days.first() else { return };
+                // A month with a named day gets taller cells, room for the name in two lines.
+                let cell = if days.iter().any(|(_, day)| show::day_name(t, day).is_some()) { NAMED_CELL } else { CELL };
                 for _ in 0..first.weekday().num_days_from_sunday() {
-                    ui.allocate_space(CELL);
+                    ui.allocate_space(cell);
                 }
                 for (d, day) in &days {
                     let colour = day_colour(&c, day);
-                    // A named day carries its name under the date, cut to fit; the whole name is on hover.
+                    // A named day carries its name under the date, in up to two lines as wide as the
+                    // cell, cut with … only past that; the whole name is on hover.
                     let named = show::day_name(t, day);
-                    let short = named.as_deref().map(|n| {
-                        if n.chars().count() > 4 {
-                            format!("{}…", n.chars().take(3).collect::<String>())
-                        } else {
-                            n.to_owned()
-                        }
-                    });
-                    let text = format!(
-                        "{}
-{}",
-                        d.day(),
-                        short.unwrap_or_default()
-                    );
                     let fill = if day.is_business() { c.panel } else { c.side };
                     let here = picked == Some(*d);
                     let stroke = match (*d == today, here) {
@@ -275,7 +286,8 @@ impl Browser {
                         (false, true) => egui::Stroke::new(2.0, c.fg),
                         (false, false) => egui::Stroke::new(1.0, c.border),
                     };
-                    let r = ui.add_sized(CELL, egui::Button::new(egui::RichText::new(text).color(colour)).fill(fill).stroke(stroke));
+                    let r = ui.add_sized(cell, egui::Button::new("").fill(fill).stroke(stroke));
+                    day_text(ui, r.rect, d.day(), named.as_deref(), colour);
                     let r = match &named {
                         Some(n) => r.on_hover_text(n),
                         None => r,
