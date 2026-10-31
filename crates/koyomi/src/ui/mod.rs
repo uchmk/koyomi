@@ -24,6 +24,7 @@ use crate::{client, engine, review, show};
 
 pub mod calendar;
 pub mod canvas;
+pub mod far;
 pub mod gantt;
 pub mod graph;
 pub mod whens;
@@ -333,6 +334,8 @@ pub struct Browser {
     skip_pick: bool,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
+    /// Another PC's engine, when the PC list at the top picks one (TODO 80).
+    far: far::Far,
 }
 
 impl Browser {
@@ -397,7 +400,9 @@ impl Browser {
         let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
         let vertical = kept.flow.as_deref() == Some("vertical");
         let flow = path.map(|p| kept::Writer::new(p, true));
+        let far = far::Far::start(&io.1);
         Browser {
+            far,
             rx,
             io,
             tx,
@@ -1444,6 +1449,23 @@ impl Browser {
                     }
                 });
             });
+        }
+        if self.far.any() {
+            egui::Panel::top("pc").show(ui, |ui| {
+                // A box of this PC's open: it is answered before the window moves away from it.
+                if modal || self.editor.is_some() {
+                    ui.disable();
+                }
+                self.far.picker(ui, t);
+            });
+        }
+        if modal {
+            // A box of this PC's (opened from the tray or a key) brings its page back.
+            self.far.home();
+        }
+        if self.far.shown() {
+            egui::CentralPanel::default().show(ui, |ui| self.far.show(ui, t));
+            return;
         }
         egui::Panel::left("tree").default_size(200.0).show(ui, |ui| {
             if modal {
@@ -2942,6 +2964,7 @@ mod tests {
         let (tx, _) = mpsc::channel();
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
+            far: far::Far::idle(&egui::Context::default()),
             rx,
             io: (tx_msg, egui::Context::default()),
             tx,

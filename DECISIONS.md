@@ -783,6 +783,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - HTTP から来た要求は、エンジンへ `Request::Over { by, request }` で渡す。通すのは HTTP の道が使うもの（状態・一覧・回・履歴・ログ・流す）だけで、確認・保存・消すなどはエンジンの側でも断る（「初回の確認」を HTTP から越えさせない）。
   - 手でした操作の記録（`koyomi ops`）に `（HTTP: <name>）` を付ける。`[http] token` で来たものは `default`。
   - `edit` のロールで定義を出す道はまだない（窓の確認を通す形と合わせて作る）。
+- **入れた形（80 の 2 つ目）:** 窓の上に「PC」の一覧（この PC と `[[remote]]` の名前。`[[remote]]` がなければ出さない）。別の PC を選ぶと、窓の中はその PC のページだけになる（左の木・タブ・この PC の箱は出さない）。
+  - 出すのは `GET /nets`・`GET /runs`・`GET /runs/<id>/log` の中身。定義の本文は向こうに置いたままで、編集・確認・カレンダーはその PC の窓でする。
+  - 今すぐ流す（`POST /runs`）と強制終了（`POST /runs/<id>/stop`）は、ページの中の「はい・やめる」で確かめてから送る。値を渡す流し方はまだ。
+  - 呼ぶのは `crate::remote` と同じ（指紋を固定した HTTPS、token は OS の資格情報）。どれも別のスレッドで、答えは切り替えた先の PC のものだけを使う。5 秒ごとに読み直す。
+  - この PC の箱（トレイから開く「次の 1 回だけスキップ」など）が開いたら、この PC に戻す。
 - **入れた形（81 の 1 つ目、ito 0.158.0）:** `crates/koyomi/web/` の `index.html`・`app.js`・`app.css` を `include_str!` で実行ファイルに入れ、`GET /`・`/app.js`・`/app.css` で返す（トークンなしで読める道は、この 3 つだけ）。
   - サインインは ito-http の `POST /session`（Bearer のトークン → HttpOnly・SameSite=Strict のクッキー。TLS なら Secure）。トークンは `sessionStorage` などにも残さない。クッキーだけで来た変更には `X-Ito-Csrf: 1` が要る（ito-http が見る）。
   - ページは `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; …; frame-ancestors 'none'`。インラインのスクリプト・外の CDN・`innerHTML` を使わず、値は `textContent` で入れる（定義やログの中身で HTML を作らせない）。

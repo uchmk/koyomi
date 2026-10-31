@@ -6,6 +6,7 @@
 //! - `koyomi remote peek <url>`: the fingerprint a PC shows, to compare with what it says there
 //!   before trusting it (the only time a certificate is looked at unpinned).
 //! - `koyomi remote [list]`, `status <name>`, `nets <name>`, `runs <name>`, `run <name> <net>`.
+//! - The window switches to one of them with [`names`] and [`ask`] (`ui::far`).
 
 use std::time::Duration;
 
@@ -63,7 +64,17 @@ fn remotes() -> Result<Vec<Remote>, String> {
     Ok(Paths::find()?.config()?.remote)
 }
 
-fn with(name: &str, f: impl FnOnce(&Remote) -> Result<String, String>) -> Result<String, String> {
+/// The `[[remote]]` names, for the window's PC list. It reads koyomi.toml: not on the UI thread.
+pub fn names() -> Result<Vec<String>, String> {
+    Ok(remotes()?.iter().map(|r| r.name.trim().to_owned()).collect())
+}
+
+/// One call to the `[[remote]]` named `name`. It blocks: not on the UI thread.
+pub fn ask(name: &str, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) -> Result<serde_json::Value, String> {
+    with(name, |r| call(r, f))
+}
+
+fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) -> Result<T, String> {
     let all = remotes()?;
     let r = all.iter().find(|r| r.name.trim() == name).ok_or_else(|| {
         let names: Vec<_> = all.iter().map(|r| r.name.trim()).collect();

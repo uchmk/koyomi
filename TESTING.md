@@ -1212,3 +1212,22 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 95.10 | With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) | Refused; nothing starts |
 | 95.11 | Put a job's title or log line `<img src=x onerror=alert(1)>` and view it | Shown as text; no dialog |
 | 95.12 | With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) | The same page; the cookie is `Secure` |
+
+## 96. Another PC in the window (the PC list; TODO 80)
+
+Two PCs: `B` with `[http] lan = true` and a `[[http.user]]` `I` of role `run` (and `S` of role `view`); this PC with `[[remote]]` `name = "b"` for B (`koyomi secret set` holds `I`'s token).
+
+| # | Do | Expect |
+|---|---|---|
+| 96.1 | Open the window with no `[[remote]]` | No PC list at the top |
+| 96.2 | With `[[remote]]` `b`, open the window | `PC [この PC ▾]` at the top; this PC's page as before |
+| 96.3 | Pick `b` | `b のエンジン`; B's jobnets (承認済み・未確認・保留) and today's runs; the tree and tabs are gone |
+| 96.4 | Pick a run, then one of its jobs | Its jobs with marks; the end of the job's log, secrets as `***` |
+| 96.5 | 今すぐ流す on a net, then やめる | Nothing starts |
+| 96.6 | 今すぐ流す, then 今すぐ流す in the question | `g/n: <run id>`; within 5 s the run is in the list; on B, `koyomi ops` shows `（HTTP: ito）` |
+| 96.7 | 強制終了 on a running run, then 強制終了する | B's jobs stop; the run shows 強制終了 |
+| 96.8 | Put `S`'s token in the secret instead and press 今すぐ流す | The refusal (403) in red; nothing starts |
+| 96.9 | Stop B's engine | つながらない … in red under ジョブネット; the window stays usable; start it again and 読み直す |
+| 96.10 | Change B's certificate fingerprint in `[[remote]]` | 証明書が koyomi.toml の fingerprint と違う …; nothing is sent |
+| 96.11 | With `b` shown, open 次の 1 回だけスキップ from the tray | The window comes back to この PC with the box |
+| 96.12 | Pick この PC | This PC's page, as it was |
