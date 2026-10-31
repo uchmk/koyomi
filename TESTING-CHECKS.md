@@ -1,6 +1,6 @@
 # Checklist
 
-731 checks in TESTING.md, 727 left for a person.
+736 checks in TESTING.md, 732 left for a person.
 
 ## 1. Start
 
@@ -379,6 +379,11 @@
 - [ ] **29.22** `koyomi versions 経理/新規`; `koyomi restore 経理/新規 <time>` → The versions newest first; restore writes that version back (today's text becomes a version too) and the net is unconfirmed until `approve` 〔未訳〕
 - [ ] **29.23** Narrator / NVDA over the editor → The toolbar buttons, the shelf's parts, the pane's fields and the box buttons are read 〔未訳〕
 - [ ] **29.24** `koyomi --keys` report with the editor open → An `editor: 経理/新規 dirty=false parts=1 selected=[] cursor=- pane=- problems=0 connect=false` line 〔未訳〕
+- [ ] **29.25** Open a net that is not confirmed (edited by hand, or after `koyomi restore`) → A 未確認 badge beside the title, its hover saying the net does not run when its time comes and that 保存 confirms it; no badge on a confirmed or a new net, and none after 保存 〔未訳〕
+- [ ] **29.26** 検査 with nothing wrong; then name a calendar that is not there (`calendar = "ない"`) or a child jobnet that is not there, 検査 again → `検査: 問題なし` in green under the toolbar; then `検査: 直すところがあります` in red with the same lines a save would refuse with (`<group>/<name>.toml: カレンダーがない …`); nothing is written and the net stays as it was 〔未訳〕
+- [ ] **29.27** Look under the canvas → A legend: 成功したら ✓ (solid green), 失敗したら (dashed red), どちらでも *, 終了コード, それ以外 else, then each part's mark (↻ ▣ ◇ ⊕ 🕑 📄 ✉ 👤 and the chores); the same marks are inside the stations on the canvas (not 【) 〔未訳〕
+- [ ] **29.28** Under the legend, with `[[when]]` every day at 09:00; then add a `quiet` span over one of them; then remove all `[[when]]` → この先 7 日の開始 with `7 回` and a strip of 7 days (dates at the dividers, a tick at each 09:00; hover a tick for its date and time); the quiet one moves or goes as `on_quiet` says; with no `[[when]]` it says the net runs only by hand 〔未訳〕
+- [ ] **29.29** A net with many parts, zoomed in; look at the bottom-right corner of the canvas; click and drag there → A small picture of every part as a dot (red for a part with a problem, blue for the selected) and a blue frame for what is in view; a click or a drag brings that place to the middle; on a small canvas or with one part it is not drawn 〔未訳〕
 
 ## 30. Import, export and the daily backup (`koyomi export` / `import`, `backups/`)
 

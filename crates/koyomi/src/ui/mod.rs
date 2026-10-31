@@ -1281,9 +1281,10 @@ impl Browser {
         let calendars = self.snap.as_ref().map(|s| &s.calendars).unwrap_or(&empty);
         let no_power = crate::proto::Power::default();
         let power = self.snap.as_ref().map(|s| &s.power).unwrap_or(&no_power);
-        let depth = self.editors.len();
+        let defs = self.snap.as_ref().map(|s| s.defs.as_slice()).unwrap_or(&[]);
+        let around = canvas::Around { calendars, power, depth: self.editors.len(), defs };
         let Some(e) = &mut self.editor else { return };
-        let action = e.show(ui, t, self.vertical, calendars, power, depth);
+        let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
             self.act(a);
         }

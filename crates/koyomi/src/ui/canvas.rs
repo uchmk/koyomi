@@ -15,9 +15,7 @@ use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::chore::Chore;
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
-use koyomi_core::scan::Def;
-#[cfg(test)]
-use koyomi_core::scan::Standing;
+use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
 
 use super::whens::WhenEdit;
@@ -30,6 +28,42 @@ const MARGIN: f32 = 64.0;
 const PORT: f32 = RADIUS + 7.0;
 /// How close to a line a click has to be.
 const NEAR: f32 = 6.0;
+
+/// The mark of a part on the shelf, on the canvas and in the legend (`""`: none).
+fn part_mark(key: &str) -> &'static str {
+    match key {
+        "job" => "▭",
+        "loop" => "↻",
+        "jobnet" => "▣",
+        "branch" => "◇",
+        "join" => "⊕",
+        "time" => "🕑",
+        "file" => "📄",
+        "notify" => "✉",
+        "approval" => "👤",
+        "delete" => "🗑",
+        "zip" => "🗜",
+        "copy" => "⇉",
+        "empty" => "∅",
+        "send" => "⇪",
+        "fetch" => "⇩",
+        "http" => "🌐",
+        _ => "",
+    }
+}
+
+/// How far ahead the strip under the canvas shows the net's starts.
+const STRIP_DAYS: u64 = 7;
+
+/// What the editor reads from the engine's last snapshot besides its own net.
+pub struct Around<'a> {
+    pub calendars: &'a BTreeMap<String, Calendar>,
+    pub power: &'a crate::proto::Power,
+    /// How many editors lie under this one (0: none, so no 親へ戻る).
+    pub depth: usize,
+    /// Every definition: 検査 links the net with them, and the 未確認 badge reads this one's.
+    pub defs: &'a [Def],
+}
 
 /// What the palette (and the toolbar) can ask of the editor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1024,6 +1058,35 @@ impl Editor {
         self.pan = (self.view - (min + max) * zoom) / 2.0 - Vec2::splat(MARGIN) * (1.0 - zoom) * 0.0;
     }
 
+    /// 検査: what the engine's save would refuse in the text, without saving it (empty: nothing).
+    pub fn check(&self, defs: &[Def], calendars: &BTreeMap<String, Calendar>) -> Vec<String> {
+        let Some((group, name)) = self.id.split_once('/').filter(|_| jobnet::is_id(&self.id)) else {
+            return vec![format!("グループ/名前 の形で書く: {}", self.id)];
+        };
+        // The window does not read the engine's `_group.toml` (the engine may be on another PC):
+        // a net of the group that names no calendar of its own counts by the group's.
+        let calendar = defs
+            .iter()
+            .filter(|d| d.group == group)
+            .find(|d| d.net.as_ref().is_some_and(|n| n.calendar.is_none()))
+            .and_then(|d| d.calendar.clone());
+        let shared = koyomi_core::group::Group { calendar };
+        let cals = koyomi_core::calendar::Calendars { map: calendars.clone(), ..Default::default() };
+        let def = def_of_text(&self.text(), group, name, &approved::Store::default(), Ok(&shared), &cals);
+        let mut all: Vec<Def> = defs.iter().filter(|d| d.id != self.id).cloned().collect();
+        all.push(def);
+        link(&mut all);
+        let def = all.pop().expect("pushed");
+        def.problems.iter().map(|p| p.in_file(&def.file)).collect()
+    }
+
+    /// When the net as edited starts in the `days` days from `from` (the strip under the canvas).
+    pub fn starts(&self, from: chrono::NaiveDateTime, days: u64, cal: Option<&Calendar>) -> Vec<chrono::NaiveDateTime> {
+        let until = from + chrono::Days::new(days);
+        let times = when::between_in(&self.net.when, from, until, cal);
+        koyomi_core::quiet::starts(&self.net.quiet, self.net.on_quiet, times).into_iter().filter(|s| *s >= from && *s < until).collect()
+    }
+
     /// Selects the part `id`, opens its fields and brings it to the middle of the canvas.
     pub fn jump(&mut self, id: &str) {
         let Some(i) = self.index(id) else { return };
@@ -1107,15 +1170,9 @@ impl Editor {
     }
 
     /// The editor: toolbar, shelf, fields and the canvas.
-    pub fn show(
-        &mut self,
-        ui: &mut egui::Ui,
-        t: &Table,
-        vertical: bool,
-        calendars: &BTreeMap<String, Calendar>,
-        power: &crate::proto::Power,
-        depth: usize,
-    ) -> Option<Action> {
+    pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, vertical: bool, around: &Around) -> Option<Action> {
+        let (calendars, power, depth) = (around.calendars, around.power, around.depth);
+        let mine = around.defs.iter().find(|d| d.id == self.id);
         let mut action = None;
         egui::Panel::top("editor-bar").show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
@@ -1128,6 +1185,13 @@ impl Editor {
                 );
                 let r = ui.heading(&title);
                 ito_a11y::say(&r, Role::Heading, &title);
+                if self.base.is_some() && mine.is_some_and(|d| d.standing == Standing::Unconfirmed) {
+                    let c = ito_theme::colors();
+                    let badge = t.tr("canvas.unconfirmed");
+                    let r = ui.label(egui::RichText::new(badge).color(c.wait_text()).background_color(c.wait_bg()));
+                    ito_a11y::say(&r, Role::Label, badge);
+                    r.on_hover_text(t.tr("canvas.unconfirmed_hint"));
+                }
                 if depth > 0 {
                     let r = ui.button(t.tr("canvas.back"));
                     ito_a11y::say(&r, Role::Button, t.tr("canvas.back"));
@@ -1139,6 +1203,24 @@ impl Editor {
                 }
                 if super::primary(ui, self.can_save(), t.tr("canvas.save")).clicked() {
                     action = self.edit(Cmd::Save);
+                }
+                let r = ui.button(t.tr("canvas.check"));
+                ito_a11y::say(&r, Role::Button, t.tr("canvas.check"));
+                if r.on_hover_text(t.tr("canvas.check_hint")).clicked() {
+                    let found = self.check(around.defs, calendars);
+                    self.result = Some(if found.is_empty() {
+                        Ok(t.tr("canvas.check_ok").to_owned())
+                    } else {
+                        Err(format!(
+                            "{}
+{}",
+                            t.tr("canvas.check_bad"),
+                            found.join(
+                                "
+"
+                            )
+                        ))
+                    });
                 }
                 for (cmd, key) in
                     [(Cmd::Align, "canvas.align"), (Cmd::Fit, "canvas.fit"), (Cmd::Undo, "canvas.undo"), (Cmd::Redo, "canvas.redo")]
@@ -1215,19 +1297,10 @@ impl Editor {
             for part in shelf() {
                 let key = format!("part.{}", part.key());
                 let name = t.tr(&key);
-                let mark = match part.key() {
-                    "job" => "▭ ",
-                    "loop" => "↻ ",
-                    "jobnet" => "▣ ",
-                    "branch" => "◇ ",
-                    "join" => "⊕ ",
-                    "time" => "🕑 ",
-                    "file" => "📄 ",
-                    "notify" => "✉ ",
-                    "approval" => "👤 ",
-                    _ => "",
+                let label = match part_mark(part.key()) {
+                    "" => name.to_owned(),
+                    mark => format!("{mark} {name}"),
                 };
-                let label = format!("{mark}{name}");
                 let r = ui.add(egui::Button::new(&label).sense(Sense::click_and_drag()));
                 ito_a11y::say(&r, Role::Button, &label);
                 if r.drag_started() {
@@ -1245,6 +1318,10 @@ impl Editor {
                 egui::ScrollArea::vertical().show(ui, |ui| self.fields(ui, t, calendars, power, &mut action));
             });
         }
+        egui::Panel::bottom("editor-foot").show(ui, |ui| {
+            let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
+            self.foot(ui, t, cal);
+        });
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(a) = self.canvas(ui, t, vertical) {
                 action = Some(a);
@@ -1757,12 +1834,9 @@ impl Editor {
             };
             let ring = if is_cursor { Stroke::new(3.0, accent) } else { Stroke::new(1.5, c.fg) };
             painter.circle(p, r, fill, ring);
-            let glyph = match &j.part {
-                Part::Job => None,
-                part => show::kind(t, part).chars().next(),
-            };
-            if let Some(g) = glyph {
-                painter.text(p, egui::Align2::CENTER_CENTER, g, small.clone(), if selected { c.bg } else { c.fg });
+            let glyph = if j.part.is_job() { "" } else { part_mark(j.part.key()) };
+            if !glyph.is_empty() {
+                painter.text(p, egui::Align2::CENTER_CENTER, glyph, small.clone(), if selected { c.bg } else { c.fg });
             }
             if bad.contains(j.id.as_str()) {
                 painter.text(p + Vec2::new(r + 2.0, -r - 2.0), egui::Align2::LEFT_BOTTOM, Mark::Error.mark(), small.clone(), c.err);
@@ -1801,8 +1875,133 @@ impl Editor {
         if self.connect.is_some() {
             painter.text(rect.left_bottom() + Vec2::new(8.0, -8.0), egui::Align2::LEFT_BOTTOM, t.tr("canvas.connecting"), small, accent);
         }
+        self.minimap(ui, t, &painter, rect);
         self.show_menu(ui, t);
         action
+    }
+
+    /// Pans so the model point `m` (flat, at zoom 1, without the margin) is in the middle of the canvas.
+    fn center_on(&mut self, m: Vec2) {
+        self.pan = self.view / 2.0 - Vec2::splat(MARGIN) - m * self.zoom;
+    }
+
+    /// The whole net, small, in the canvas's corner: a dot for each part and a frame for what is in
+    /// view. A click or a drag there brings that place to the middle.
+    fn minimap(&mut self, ui: &mut egui::Ui, t: &Table, painter: &egui::Painter, rect: Rect) {
+        let pts: Vec<Pos2> = self.positions().into_iter().map(|p| (self.flat(p) - Vec2::splat(MARGIN)).to_pos2()).collect();
+        let size = Vec2::new(160.0, 100.0);
+        if pts.len() < 2 || rect.width() < size.x * 2.5 || rect.height() < size.y * 2.5 {
+            return;
+        }
+        let c = ito_theme::colors();
+        let world = Rect::from_points(&pts).expand(RADIUS * 3.0);
+        let frame = Rect::from_min_size(rect.right_bottom() - size - Vec2::splat(8.0), size);
+        let scale = ((size.x - 8.0) / world.width()).min((size.y - 8.0) / world.height());
+        let to_mini = |m: Pos2| frame.center() + (m - world.center()) * scale;
+        let resp = ui.interact(frame, ui.id().with("minimap"), Sense::click_and_drag());
+        ito_a11y::say(&resp, Role::Button, t.tr("canvas.minimap"));
+        if resp.clicked() || resp.dragged() {
+            if let Some(q) = resp.interact_pointer_pos() {
+                self.center_on((world.center() + (q - frame.center()) / scale).to_vec2());
+            }
+        }
+        painter.rect(frame, 3.0, c.side, Stroke::new(1.0, c.border), StrokeKind::Inside);
+        let inside = painter.with_clip_rect(frame);
+        let bad: BTreeSet<&str> = self.problems.iter().filter_map(|p| p.job.as_deref()).collect();
+        for (j, p) in self.net.jobs.iter().zip(&pts) {
+            let col = if bad.contains(j.id.as_str()) {
+                c.err
+            } else if self.selected.contains(&j.id) {
+                c.blue
+            } else {
+                c.fg
+            };
+            inside.circle_filled(to_mini(*p), 2.5, col);
+        }
+        let seen = Rect::from_min_max(
+            ((-Vec2::splat(MARGIN) - self.pan) / self.zoom).to_pos2(),
+            ((self.view - Vec2::splat(MARGIN) - self.pan) / self.zoom).to_pos2(),
+        );
+        inside.rect_stroke(Rect::from_two_pos(to_mini(seen.min), to_mini(seen.max)), 0.0, Stroke::new(1.5, c.blue), StrokeKind::Inside);
+        resp.on_hover_text(t.tr("canvas.minimap_hint"));
+    }
+
+    /// Under the canvas: what the lines and the marks mean, and when the net starts in the next days.
+    fn foot(&self, ui: &mut egui::Ui, t: &Table, cal: Option<&Calendar>) {
+        let c = ito_theme::colors();
+        ui.horizontal_wrapped(|ui| {
+            let head = t.tr("canvas.legend");
+            let r = ui.label(egui::RichText::new(head).small());
+            ito_a11y::say(&r, Role::Heading, head);
+            for (col, dash, mark, key) in [
+                (c.done, false, Mark::Done.mark(), "canvas.line_ok"),
+                (c.err, true, Mark::Error.mark(), "canvas.line_error"),
+                (c.dim, false, "*", "canvas.line_any"),
+                (c.wait, false, "1,2", "canvas.line_code"),
+                (c.dim, true, "else", "canvas.line_else"),
+            ] {
+                let (r, painter) = ui.allocate_painter(Vec2::new(24.0, 10.0), Sense::hover());
+                let y = r.rect.center().y;
+                let (a, b) = (Pos2::new(r.rect.left(), y), Pos2::new(r.rect.right(), y));
+                let stroke = Stroke::new(2.0, col);
+                if dash {
+                    dashed(&painter, a, b, stroke);
+                } else {
+                    painter.line_segment([a, b], stroke);
+                }
+                let text = format!("{mark} {}", t.tr(key));
+                let r = ui.label(egui::RichText::new(&text).small().color(col));
+                ito_a11y::say(&r, Role::Label, &text);
+            }
+            ui.separator();
+            let mut seen = BTreeSet::new();
+            for part in shelf() {
+                let mark = part_mark(part.key());
+                if part.is_job() || mark.is_empty() || !seen.insert(part.key()) {
+                    continue;
+                }
+                let text = format!("{mark} {}", t.tr(&format!("part.{}", part.key())));
+                let r = ui.label(egui::RichText::new(&text).small());
+                ito_a11y::say(&r, Role::Label, &text);
+            }
+        });
+        let now = chrono::Local::now().naive_local();
+        let starts = self.starts(now, STRIP_DAYS, cal);
+        ui.horizontal(|ui| {
+            let head = t.trf("canvas.strip", &[&STRIP_DAYS.to_string()]);
+            let r = ui.label(egui::RichText::new(&head).small());
+            ito_a11y::say(&r, Role::Heading, &head);
+            if self.net.when.is_empty() {
+                let r = ui.label(egui::RichText::new(t.tr("canvas.strip_hand")).small().color(c.dim));
+                ito_a11y::say(&r, Role::Label, t.tr("canvas.strip_hand"));
+                return;
+            }
+            let count = t.trf("canvas.strip_count", &[&starts.len().to_string()]);
+            let r = ui.label(egui::RichText::new(&count).small());
+            ito_a11y::say(&r, Role::Label, &count);
+            let (resp, painter) = ui.allocate_painter(Vec2::new(ui.available_width().max(120.0), 22.0), Sense::hover());
+            let r = resp.rect;
+            painter.rect_filled(r, 2.0, c.panel);
+            let span = (STRIP_DAYS * 86_400) as f32;
+            let x_of = |at: chrono::NaiveDateTime| r.left() + (at - now).num_seconds() as f32 / span * r.width();
+            let small = egui::TextStyle::Small.resolve(ui.style());
+            for k in 0..STRIP_DAYS {
+                let Some(day) = now.date().checked_add_days(chrono::Days::new(k + 1)) else { continue };
+                let x = x_of(day.and_time(chrono::NaiveTime::MIN));
+                painter.line_segment([Pos2::new(x, r.top()), Pos2::new(x, r.bottom())], Stroke::new(1.0, c.border));
+                painter.text(Pos2::new(x + 2.0, r.top()), egui::Align2::LEFT_TOP, day.format("%-m/%-d").to_string(), small.clone(), c.dim);
+            }
+            for s in &starts {
+                let x = x_of(*s);
+                painter.line_segment([Pos2::new(x, r.top() + 10.0), Pos2::new(x, r.bottom() - 1.0)], Stroke::new(2.0, c.run));
+            }
+            let near = resp
+                .hover_pos()
+                .and_then(|p| starts.iter().min_by_key(|s| (x_of(**s) - p.x).abs() as i64).filter(|s| (x_of(**s) - p.x).abs() <= 6.0));
+            if let Some(s) = near {
+                resp.on_hover_text(s.format("%Y-%m-%d %H:%M").to_string());
+            }
+        });
     }
 
     fn keys(&mut self, ui: &mut egui::Ui, at: &[Pos2], action: &mut Option<Action>) {
@@ -1936,6 +2135,60 @@ mod tests {
             "経理/集計",
             net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nrun = [\"y\"]\nafter = [\"a\"]\n"),
         )
+    }
+
+    #[test]
+    fn every_part_but_a_job_has_its_own_mark_on_the_canvas() {
+        for part in shelf() {
+            let mark = part_mark(part.key());
+            assert!(part.is_job() || !mark.is_empty(), "{}", part.key());
+            assert!(!mark.starts_with('【'));
+        }
+    }
+
+    #[test]
+    fn the_check_says_what_a_save_would_refuse_and_nothing_when_it_would_not() {
+        let e = two();
+        assert!(e.check(&[], &BTreeMap::new()).is_empty());
+        let mut e = two();
+        e.net.calendar = Some("会社".into());
+        let found = e.check(&[], &BTreeMap::new());
+        assert_eq!(found.len(), 1, "{found:?}");
+        assert!(found[0].starts_with("経理/集計.toml") && found[0].contains("会社"), "{found:?}");
+        let cals = BTreeMap::from([("会社".to_owned(), Calendar::default())]);
+        assert!(e.check(&[], &cals).is_empty());
+        let mut e = two();
+        e.net.jobs[1].part = Part::Jobnet { use_: "経理/ない".into() };
+        assert!(!e.check(&[], &BTreeMap::new()).is_empty(), "a child net that is not there");
+    }
+
+    #[test]
+    fn the_strip_shows_the_starts_of_the_next_days_and_none_by_hand() {
+        let text = "format = 1
+[[when]]
+every = \"day\"
+at = [\"09:00\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let e = Editor::over("g/n", net(text));
+        let from = chrono::NaiveDate::from_ymd_opt(2026, 11, 2).unwrap().and_hms_opt(10, 0, 0).unwrap();
+        let starts = e.starts(from, STRIP_DAYS, None);
+        assert_eq!(starts.len(), 7);
+        assert!(starts.iter().all(|s| *s > from && s.format("%H:%M").to_string() == "09:00"));
+        assert!(two().starts(from, STRIP_DAYS, None).is_empty());
+    }
+
+    #[test]
+    fn the_minimap_brings_the_place_clicked_to_the_middle() {
+        let mut e = two();
+        e.view = Vec2::new(800.0, 600.0);
+        e.zoom = 1.5;
+        let p = e.positions()[1];
+        e.center_on(e.flat(p) - Vec2::splat(MARGIN));
+        let at = e.to_screen(Pos2::ZERO, p, e.vertical);
+        assert!((at - Pos2::new(400.0, 300.0)).length() < 0.01, "{at:?}");
     }
 
     #[test]
