@@ -2738,24 +2738,47 @@ impl Browser {
         if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_jobs");
             if let Some(net) = &def.net {
-                egui::Grid::new("net_jobs").striped(true).num_columns(4).show(ui, |ui| {
-                    for h in ["net.col_id", "net.col_kind", "net.col_name", "net.col_after"] {
-                        ui.label(egui::RichText::new(t.tr(h)).strong());
-                    }
-                    ui.end_row();
-                    for j in &net.jobs {
-                        ui.label(&j.id);
-                        ui.label(t.tr(&format!("part.{}", j.part.key())));
-                        ui.label(j.name.as_deref().unwrap_or(""));
-                        let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
-                        ui.label(after.join(", "));
+                // One row a job: what it is, what it waits for, what it runs and where, and the rest of its settings.
+                let rows = review::job_rows(t, &def);
+                let none = || egui::RichText::new("—").color(c.dim);
+                egui::ScrollArea::horizontal().id_salt("net_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                    egui::Grid::new("net_jobs").striped(true).num_columns(7).spacing([16.0, 6.0]).show(ui, |ui| {
+                        for h in
+                            ["net.col_id", "net.col_kind", "net.col_name", "net.col_after", "net.col_run", "net.col_dir", "net.col_more"]
+                        {
+                            let r = ui.label(egui::RichText::new(t.tr(h)).strong().color(c.dim));
+                            ito_a11y::say(&r, Role::Heading, t.tr(h));
+                        }
                         ui.end_row();
-                    }
+                        for (j, row) in net.jobs.iter().zip(rows.iter().map(Some).chain(std::iter::repeat(None))) {
+                            ui.label(egui::RichText::new(&j.id).monospace());
+                            ui.label(t.tr(&format!("part.{}", j.part.key())));
+                            match j.name.as_deref().filter(|n| !n.is_empty()) {
+                                Some(n) => ui.label(n),
+                                None => ui.label(none()),
+                            };
+                            let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
+                            if after.is_empty() {
+                                ui.label(none());
+                            } else {
+                                ui.label(egui::RichText::new(after.join(", ")).monospace());
+                            }
+                            match row.and_then(|r| r.command.as_deref()) {
+                                Some(cmd) => ui.label(egui::RichText::new(cmd).monospace()),
+                                None => ui.label(none()),
+                            };
+                            match row.and_then(|r| r.dir.as_deref()) {
+                                Some(d) => ui.label(egui::RichText::new(d).monospace()),
+                                None => ui.label(none()),
+                            };
+                            match row.filter(|r| !r.rest.is_empty()) {
+                                Some(r) => ui.label(r.rest.join("\n")),
+                                None => ui.label(none()),
+                            };
+                            ui.end_row();
+                        }
+                    });
                 });
-                ui.add_space(4.0);
-            }
-            for l in review::job_details(t, &def) {
-                ui.label(l);
             }
         }
     }

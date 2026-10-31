@@ -145,21 +145,59 @@ pub fn settings(t: &Table, d: &Def) -> Vec<String> {
     out
 }
 
-/// [`jobs`] without what the jobs table already shows: only the jobs with more to say, each under its own
-/// header line, and no `after` lines.
-pub fn job_details(t: &Table, d: &Def) -> Vec<String> {
-    let after = format!("  {}: ", t.tr("review.after"));
-    let mut out: Vec<String> = Vec::new();
-    let mut header: Option<String> = None;
+/// One job's row in the jobs table: the command line, the working folder, and the rest of [`jobs`]'s lines
+/// for it (without `after`, which the table shows by itself).
+#[derive(Debug, Default, PartialEq)]
+pub struct JobRow {
+    /// The program and its arguments on one line, an argument with a space in quotes.
+    pub command: Option<String>,
+    /// The working folder, when one is set.
+    pub dir: Option<String>,
+    /// Everything else, `label: value` each (a script's later lines joined with a line break).
+    pub rest: Vec<String>,
+}
+
+/// [`jobs`] as one [`JobRow`] per job, in the net's order.
+pub fn job_rows(t: &Table, d: &Def) -> Vec<JobRow> {
+    let (exe, arg, dir, after) = (t.tr("review.exe"), format!("{} ", t.tr("review.arg")), t.tr("review.dir"), t.tr("review.after"));
+    let mut out: Vec<JobRow> = Vec::new();
     for l in jobs(t, d) {
-        if !l.starts_with(' ') {
-            header = Some(l);
-        } else if !l.starts_with(&after) {
-            out.extend(header.take());
-            out.push(l);
+        let Some(body) = l.strip_prefix("  ") else {
+            out.push(JobRow::default());
+            continue;
+        };
+        let Some(row) = out.last_mut() else { continue };
+        if body.starts_with(' ') {
+            if let Some(last) = row.rest.last_mut() {
+                last.push('\n');
+                last.push_str(body.trim_start());
+            }
+            continue;
+        }
+        let (label, value) = body.split_once(": ").unwrap_or((body, ""));
+        if label == after {
+        } else if label == exe {
+            row.command = Some(quoted(value));
+        } else if label.strip_prefix(&arg).is_some_and(|n| n.chars().all(|c| c.is_ascii_digit())) {
+            let cmd = row.command.get_or_insert_with(String::new);
+            cmd.push(' ');
+            cmd.push_str(&quoted(value));
+        } else if label == dir {
+            row.dir = Some(value.to_owned()).filter(|v| v != t.tr("review.nodir"));
+        } else {
+            row.rest.push(body.to_owned());
         }
     }
     out
+}
+
+/// A word of a command line as it would be typed: in quotes when it has a space or is empty.
+fn quoted(w: &str) -> String {
+    if w.is_empty() || w.contains(char::is_whitespace) {
+        format!("\"{w}\"")
+    } else {
+        w.to_owned()
+    }
 }
 
 /// The account a job runs as, when it is not koyomi's own.
@@ -421,26 +459,28 @@ mod tests {
     const NET: &str =
         "format = 1\nname = \"月次締め\"\n[[job]]\nid = \"a\"\nrun = [\"C:/bin/x.exe\", \"--month\", \"2026-10\"]\ndir = \"C:/work\"\ntimeout = \"30m\"\n";
 
-    /// The jobs table shows id, kind, name and `after`; the lines under it must not repeat them.
+    /// Each job is one row: the command on one line, the folder apart, and no `after` in the rest.
     #[test]
-    fn job_details_leave_out_what_the_table_shows() {
+    fn job_rows_put_each_job_on_one_line() {
         let store = Store::default();
         let two = format!(
             "{NET}[[job]]
 id = \"b\"
-run = [\"C:/bin/y.exe\"]
+run = [\"C:/bin/y.exe\", \"two words\"]
 after = [\"a\"]
 "
         );
         let d = def(&two, &store);
         let t = table();
-        let all = jobs(&t, &d);
-        let det = job_details(&t, &d);
-        let after = format!("{}: ", t.tr("review.after"));
-        assert!(all.iter().any(|l| l.contains(&after)));
-        assert!(!det.iter().any(|l| l.contains(&after)));
-        assert!(det.len() < all.len());
-        assert!(det.iter().any(|l| l.contains("C:/bin/x.exe")));
+        let rows = job_rows(&t, &d);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].command.as_deref(), Some("C:/bin/x.exe --month 2026-10"));
+        assert_eq!(rows[0].dir.as_deref(), Some("C:/work"));
+        assert!(rows[0].rest.iter().any(|l| l.starts_with(t.tr("review.timeout"))));
+        assert_eq!(rows[1].command.as_deref(), Some("C:/bin/y.exe \"two words\""));
+        assert_eq!(rows[1].dir, None);
+        let after = t.tr("review.after");
+        assert!(!rows.iter().flat_map(|r| &r.rest).any(|l| l.starts_with(after)));
     }
 
     /// The account a job runs as and the secret of its password are in the box; no password is.

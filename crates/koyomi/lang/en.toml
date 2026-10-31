@@ -822,6 +822,9 @@ col_id = "ID"
 col_kind = "Kind"
 col_name = "Name"
 col_after = "After"
+col_run = "Command"
+col_dir = "Folder"
+col_more = "Other"
 
 [far]
 pc = "PC"

@@ -821,6 +821,9 @@ col_id = "ID"
 col_kind = "種類"
 col_name = "名前"
 col_after = "前のジョブ"
+col_run = "コマンド"
+col_dir = "作業フォルダー"
+col_more = "その他"
 
 [far]
 pc = "PC"
