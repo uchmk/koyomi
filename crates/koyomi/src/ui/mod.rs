@@ -1363,7 +1363,7 @@ impl Browser {
                 buttons: &buttons,
                 hint: t.tr("confirm.hint"),
                 focus: Some(self.focus),
-                primary: Some(1),
+                primary: Some(0),
                 danger: true,
                 ..Default::default()
             };
@@ -2381,7 +2381,7 @@ impl Browser {
             buttons: &buttons,
             hint: t.tr("confirm.hint"),
             focus: Some(self.focus),
-            primary: Some(1),
+            primary: Some(0),
             danger: true,
             ..Default::default()
         };
@@ -3216,7 +3216,7 @@ impl Browser {
             buttons: &buttons,
             hint: t.tr("confirm.hint"),
             focus: Some(self.focus),
-            primary: Some(1),
+            primary: Some(0),
             danger: true,
             ..Default::default()
         };
