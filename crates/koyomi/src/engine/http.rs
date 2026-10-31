@@ -296,6 +296,7 @@ mod tests {
 
     fn req(method: &str, path: &str, body: &str) -> ito_http::Request {
         ito_http::Request {
+            who: Some("default".into()),
             method: method.into(),
             path: path.into(),
             query: Vec::new(),
