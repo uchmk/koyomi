@@ -30,7 +30,7 @@ use std::time::{Duration, Instant};
 use ito_http::{Response, Server};
 use koyomi_core::config;
 use koyomi_core::role::{self, Role};
-use koyomi_core::run::Run;
+use koyomi_core::run::{Run, State};
 use serde::Deserialize;
 
 use crate::proto::{self, Request, Runs, Snapshot};
@@ -253,15 +253,55 @@ struct Start {
     params: BTreeMap<String, String>,
 }
 
+/// What `POST /runs/<id>/rerun` takes: nothing (from the first job not passed), `from`, or `next`
+/// (that job ends as ⊘, or as △ with `warn`, and the ones after it go), as `koyomi rerun` does.
+#[derive(Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Again {
+    #[serde(default)]
+    from: Option<String>,
+    #[serde(default)]
+    next: Option<String>,
+    #[serde(default)]
+    warn: bool,
+}
+
+/// What `POST /runs/<id>/skip` takes.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Pass {
+    job: String,
+}
+
+/// What `POST /nets/hold` and `POST /nets/release` take: the net, and a job of it to hold alone.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Hold {
+    net: String,
+    #[serde(default)]
+    job: Option<String>,
+}
+
+/// The run id of `/runs/<id>/<what>`.
+fn run_part<'a>(path: &'a str, what: &str) -> Option<&'a str> {
+    path.strip_prefix("/runs/")?.strip_suffix(what)?.strip_suffix('/').filter(|id| !id.is_empty() && !id.contains('/'))
+}
+
 /// One request (the token already checked), asking the engine through `ask`.
 fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let path = req.path.trim_end_matches('/');
     let one = path.strip_prefix("/runs/").filter(|id| !id.is_empty() && !id.contains('/'));
-    let log = path.strip_prefix("/runs/").and_then(|p| p.strip_suffix("/log")).filter(|id| !id.is_empty() && !id.contains('/'));
-    let stop = path.strip_prefix("/runs/").and_then(|p| p.strip_suffix("/stop")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let log = run_part(path, "log");
+    let act = ["stop", "rerun", "skip"].into_iter().find_map(|w| run_part(path, w).map(|id| (w, id)));
     match (req.method.as_str(), path, one, log) {
         ("POST", "/runs", ..) => start_run(req, ask),
-        ("POST", ..) if stop.is_some() => stop_run(stop.unwrap_or_default(), ask),
+        ("POST", "/nets/hold", ..) => hold(req, true, ask),
+        ("POST", "/nets/release", ..) => hold(req, false, ask),
+        ("POST", ..) if act.is_some() => match act.unwrap_or_default() {
+            ("stop", id) => stop_run(id, ask),
+            ("rerun", id) => rerun(req, id, ask),
+            (_, id) => skip(req, id, ask),
+        },
         ("GET", "/runs", ..) => list_runs(req, ask),
         ("GET", "/health", ..) => health(ask),
         ("GET", "/nets", ..) => nets(ask),
@@ -269,10 +309,11 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("GET", _, _, Some(id)) => job_log(req, id, ask),
         (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
         (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
-        _ if stop.is_some() => Response::error(405, "POST で止める"),
+        (_, "/nets/hold" | "/nets/release", ..) => Response::error(405, "POST で保留にする・外す"),
+        _ if act.is_some() => Response::error(405, "POST で止める・流し直す・飛ばす"),
         _ => Response::error(
             404,
-            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop・GET /nets・GET /health だけ",
+            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・POST /nets/hold|release・GET /health だけ",
         ),
     }
 }
@@ -368,6 +409,54 @@ fn stop_run(run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Resp
     }
 }
 
+/// `POST /runs/<id>/rerun`: starts the run again, as `koyomi rerun` does. 202 with the new run's id.
+fn rerun(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let a = match req.json::<Again>() {
+        Ok(a) => a.unwrap_or_default(),
+        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+    };
+    let named = |j: Option<String>| j.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty());
+    let r = match (named(a.from), named(a.next)) {
+        (Some(_), Some(_)) => return Response::error(400, "from と next はどちらか 1 つ"),
+        (_, None) if a.warn => return Response::error(400, "warn は next と書く"),
+        (from, None) => Request::Rerun { run: run.to_owned(), from, next: None },
+        (None, next) => Request::Rerun { run: run.to_owned(), from: next, next: Some(if a.warn { State::Warn } else { State::Skipped }) },
+    };
+    match ask(&r) {
+        Ok(id) => Response::new(202, serde_json::json!({ "run": id.trim() })),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
+/// `POST /runs/<id>/skip`: skips a job before it starts (⊘), as `koyomi skip` does.
+fn skip(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let job = match req.json::<Pass>() {
+        Ok(Some(p)) if !p.job.trim().is_empty() => p.job.trim().to_owned(),
+        Ok(_) => return Response::error(400, "job が要る: {\"job\": \"<ジョブ>\"}"),
+        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+    };
+    match ask(&Request::Skip { run: run.to_owned(), job: job.clone() }) {
+        Ok(text) => Response::ok(serde_json::json!({ "run": run, "job": job, "said": text.trim() })),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
+/// `POST /nets/hold` and `/nets/release`: puts the net (or one job of it) on hold or takes it
+/// off, as `koyomi hold` and `koyomi release` do.
+fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let h = match req.json::<Hold>() {
+        Ok(Some(h)) if !h.net.trim().is_empty() => h,
+        Ok(_) => return Response::error(400, "net が要る: {\"net\": \"<グループ>/<名前>\"}"),
+        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+    };
+    let (id, job) = (h.net.trim().to_owned(), h.job.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty()));
+    let r = if on { Request::Hold { id: id.clone(), job: job.clone() } } else { Request::Release { id: id.clone(), job: job.clone() } };
+    match ask(&r) {
+        Ok(text) => Response::ok(serde_json::json!({ "net": id, "job": job, "held": on, "said": text.trim() })),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
 /// A run of today or still going, then one of the day its id says it started.
 fn look(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(day) = started_on(id) else {
@@ -418,6 +507,43 @@ mod tests {
             })
             .collect();
         Runs::parse(&text).expect("runs").to_toml()
+    }
+
+    /// rerun, skip, hold and release ask as `koyomi rerun`, `skip`, `hold` and `release` do.
+    #[test]
+    fn a_run_is_rerun_and_skipped_and_a_net_held() {
+        let asked = RefCell::new(Vec::new());
+        let ask = |r: &Request| {
+            asked.borrow_mut().push(format!("{r:?}"));
+            match r {
+                Request::Rerun { .. } => Ok("20261031-100000-01\n".to_owned()),
+                Request::Skip { job, .. } | Request::Hold { job: Some(job), .. } if job == "x" => Err("そのジョブはない".to_owned()),
+                _ => Ok("ok\n".to_owned()),
+            }
+        };
+        let id = "20261031-090000-01";
+        let r = handle(&req("POST", &format!("/runs/{id}/rerun"), ""), ask);
+        assert_eq!((r.status, r.json["run"].as_str()), (202, Some("20261031-100000-01")));
+        assert!(handle(&req("POST", &format!("/runs/{id}/rerun/"), r#"{"next": "b", "warn": true}"#), ask).status == 202);
+        assert!(asked.borrow()[0].contains("from: None, next: None"), "{:?}", asked.borrow());
+        assert!(asked.borrow()[1].contains(r#"from: Some("b"), next: Some(Warn)"#), "{:?}", asked.borrow());
+        assert_eq!(handle(&req("POST", &format!("/runs/{id}/rerun"), r#"{"from": "a", "next": "b"}"#), ask).status, 400);
+        assert_eq!(handle(&req("POST", &format!("/runs/{id}/rerun"), r#"{"from": "a", "warn": true}"#), ask).status, 400);
+
+        let r = handle(&req("POST", &format!("/runs/{id}/skip"), r#"{"job": "b"}"#), ask);
+        assert_eq!((r.status, r.json["job"].as_str()), (200, Some("b")));
+        assert_eq!(handle(&req("POST", &format!("/runs/{id}/skip"), ""), ask).status, 400);
+        assert_eq!(handle(&req("POST", &format!("/runs/{id}/skip"), r#"{"job": "x"}"#), ask).status, 422);
+        assert_eq!(handle(&req("GET", &format!("/runs/{id}/skip"), ""), ask).status, 405);
+
+        let r = handle(&req("POST", "/nets/hold", r#"{"net": "g/a"}"#), ask);
+        assert_eq!((r.status, r.json["held"].as_bool()), (200, Some(true)));
+        let r = handle(&req("POST", "/nets/release", r#"{"net": "g/a", "job": "b"}"#), ask);
+        assert_eq!((r.status, r.json["held"].as_bool(), r.json["job"].as_str()), (200, Some(false), Some("b")));
+        assert!(asked.borrow().last().is_some_and(|a| a.contains(r#"Release { id: "g/a", job: Some("b") }"#)));
+        assert_eq!(handle(&req("POST", "/nets/hold", r#"{"net": "g/a", "job": "x"}"#), ask).status, 422);
+        assert_eq!(handle(&req("POST", "/nets/hold", "{}"), ask).status, 400);
+        assert_eq!(handle(&req("GET", "/nets/hold", ""), ask).status, 405);
     }
 
     #[test]

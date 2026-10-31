@@ -1807,6 +1807,10 @@ fn over_http(request: &Request) -> bool {
             | Request::Log { .. }
             | Request::Run { .. }
             | Request::Kill { .. }
+            | Request::Rerun { .. }
+            | Request::Skip { .. }
+            | Request::Hold { .. }
+            | Request::Release { .. }
     )
 }
 
@@ -2104,6 +2108,9 @@ mod tests {
         assert!(over_http(&Request::Status) && over_http(&Request::Runs));
         assert!(over_http(&Request::Run { id: "g/a".into(), date: None, from: None, dry: false, params: Default::default() }));
         assert!(over_http(&Request::Kill { run: "20261031-090000-01".into(), job: None }));
+        assert!(over_http(&Request::Rerun { run: "20261031-090000-01".into(), from: None, next: None }));
+        assert!(over_http(&Request::Hold { id: "g/a".into(), job: None }));
+        assert!(!over_http(&Request::SkipNext { id: "g/a".into(), cancel: false }));
         assert!(!over_http(&Request::Approve { id: "g/a".into(), sha256: String::new() }));
         assert!(!over_http(&Request::Stop) && !over_http(&Request::Pause));
         assert!(!over_http(&Request::Delete { id: "g/a".into() }));

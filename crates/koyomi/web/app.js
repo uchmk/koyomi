@@ -1,5 +1,5 @@
-// koyomi's Web UI (TODO 81): reads the engine's HTTP API with the session cookie, starts and
-// stops runs and shows a job's log. Data goes into the page only as text, never as HTML.
+// koyomi's Web UI (TODO 81): reads the engine's HTTP API with the session cookie, starts, stops,
+// reruns and skips runs, holds nets and shows a job's log. Data goes into the page only as text, never as HTML.
 "use strict";
 
 const STATES = {
@@ -126,6 +126,7 @@ function drawNets(nets) {
     cell(tr, n.held ? "⏸" : "");
     const td = cell(tr, "");
     if (can("run") && n.standing === "confirmed") button(td, "流す", () => runNet(n.id));
+    if (can("run")) button(td, n.held ? "保留を解く" : "保留", () => holdNet(n.id, !n.held));
     body.appendChild(tr);
   }
 }
@@ -142,6 +143,7 @@ function drawRuns(runs) {
     const td = cell(tr, "");
     button(td, "ジョブ", () => showRun(r.id, true));
     if (can("run") && !r.over) button(td, "止める", () => stopRun(r.id));
+    if (can("run") && r.over) button(td, "再実行", () => rerun(r.id, null));
     body.appendChild(tr);
   }
 }
@@ -168,6 +170,44 @@ async function stopRun(id) {
   }
 }
 
+async function holdNet(id, on) {
+  const what = on ? `${id} を保留にする（時刻が来ても流さない）` : `${id} の保留を解く`;
+  if (!window.confirm(what)) return;
+  try {
+    await call("POST", on ? "/nets/hold" : "/nets/release", { net: id });
+    say(on ? `${id} を保留にした` : `${id} の保留を解いた`);
+    await refresh();
+  } catch (e) {
+    say(e.message, true);
+  }
+}
+
+async function rerun(id, from) {
+  const what = from ? `${id} を ${from} から再実行する` : `${id} を止まったところから再実行する（済んだジョブは引き継ぐ）`;
+  if (!window.confirm(what)) return;
+  try {
+    const r = await call("POST", `/runs/${encodeURIComponent(id)}/rerun`, from ? { from } : {});
+    say(`再実行した（${r.run}）`);
+    shown = r.run;
+    await refresh();
+  } catch (e) {
+    say(e.message, true);
+  }
+}
+
+async function skipJob(run, job) {
+  if (!window.confirm(`${job} をスキップする（⊘。後ろのジョブは進む）`)) return;
+  try {
+    await call("POST", `/runs/${encodeURIComponent(run)}/skip`, { job });
+    say(`${job} をスキップした`);
+    await refresh();
+  } catch (e) {
+    say(e.message, true);
+  }
+}
+
+const NOT_STARTED = ["waiting", "held", "not_run"];
+
 async function showRun(id, fresh) {
   try {
     const r = await call("GET", `/runs/${encodeURIComponent(id)}`);
@@ -185,6 +225,8 @@ async function showRun(id, fresh) {
       cell(tr, j.exit);
       const td = cell(tr, "");
       if (j.started) button(td, "ログ", () => showLog(r.id, j.id));
+      if (can("run") && !r.over && NOT_STARTED.includes(j.state)) button(td, "スキップ", () => skipJob(r.id, j.id));
+      if (can("run") && r.over) button(td, "ここから再実行", () => rerun(r.id, j.id));
       body.appendChild(tr);
     }
     if (fresh) {

@@ -1,6 +1,6 @@
 # Checklist
 
-718 checks in TESTING.md, 714 left for a person.
+731 checks in TESTING.md, 727 left for a person.
 
 ## 1. Start
 
@@ -1007,3 +1007,19 @@
 - [ ] **96.10** Change B's certificate fingerprint in `[[remote]]` → 証明書が koyomi.toml の fingerprint と違う …; nothing is sent 〔未訳〕
 - [ ] **96.11** With `b` shown, open 次の 1 回だけスキップ from the tray → The window comes back to この PC with the box 〔未訳〕
 - [ ] **96.12** Pick この PC → This PC's page, as it was 〔未訳〕
+- [ ] **96.13** Let a run on B fail, pick it, 再実行, then やめる → Nothing starts 〔未訳〕
+- [ ] **96.14** 再実行, then 再実行 in the question → `<run> → <new run>`; the new run starts from the failed job, the passed ones carried over; on B, `koyomi ops` shows `rerun … （HTTP: ito）` 〔未訳〕
+- [ ] **96.15** With `S`'s token, 再実行 → The refusal (403) in red; nothing starts 〔未訳〕
+
+## 97. Rerun, skip and hold from the Web UI (TODO 81)
+
+- [ ] **97.1** 保留 on a net and confirm → The net shows ⏸ and the button turns to 保留を解く; its next scheduled time does not start; `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
+- [ ] **97.2** 保留を解く and confirm → The ⏸ mark goes; `koyomi ops` shows `release … （HTTP: ito）` 〔未訳〕
+- [ ] **97.3** Let a run fail, then 再実行 on it and confirm → A new run that starts from the failed job (passed jobs carried over) is shown 〔未訳〕
+- [ ] **97.4** ジョブ on an ended run, ここから再実行 on a middle job, confirm → A new run that starts from that job 〔未訳〕
+- [ ] **97.5** While a run waits on a long job, スキップ on a later job that has not started, confirm → The job ends as ⊘ and the next ones go when their turn comes 〔未訳〕
+- [ ] **97.6** Any of these, then キャンセル in the question → Nothing is sent 〔未訳〕
+- [ ] **97.7** Sign in with `S` (view) → No 保留, 再実行, スキップ or ここから再実行 buttons 〔未訳〕
+- [ ] **97.8** `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` → 403; nothing starts 〔未訳〕
+- [ ] **97.9** `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` → 400 (`from と next はどちらか 1 つ`) 〔未訳〕
+- [ ] **97.10** `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` → 422 with the engine's reason 〔未訳〕

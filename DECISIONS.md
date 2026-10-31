@@ -779,20 +779,25 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - `koyomi standby` で今の立場、`koyomi standby giveback` で戻す（手でした操作の記録に `giveback`）。
   - 定義を相手から写すのはまだ（定義の本文を出す道が API にない）。今は両方に同じ定義を置き、どちらでも確認しておく。
 - **入れた形（83 の 1 つ目、ito 0.158.0）:** `[[http.user]]` の `name`（空白なし・`default` は使わない・重ねない）・`role`・`token = "secret:<名前>"`。`[[http.user]]` があれば `[http] token` は書かなくてよい。
-  - 要るロールは `koyomi_core::role::needs` の表（読むのは `view`、`POST /runs` と回の止める・流し直す・飛ばすは `run`、表にないものは `edit`）。届かなければ 403。
+  - 要るロールは `koyomi_core::role::needs` の表（読むのは `view`、`POST /runs`・回の止める・流し直す・飛ばす・ネットの保留と解くは `run`、表にないものは `edit`）。届かなければ 403。
   - HTTP から来た要求は、エンジンへ `Request::Over { by, request }` で渡す。通すのは HTTP の道が使うもの（状態・一覧・回・履歴・ログ・流す）だけで、確認・保存・消すなどはエンジンの側でも断る（「初回の確認」を HTTP から越えさせない）。
   - 手でした操作の記録（`koyomi ops`）に `（HTTP: <name>）` を付ける。`[http] token` で来たものは `default`。
   - `edit` のロールで定義を出す道はまだない（窓の確認を通す形と合わせて作る）。
 - **入れた形（80 の 2 つ目）:** 窓の上に「PC」の一覧（この PC と `[[remote]]` の名前。`[[remote]]` がなければ出さない）。別の PC を選ぶと、窓の中はその PC のページだけになる（左の木・タブ・この PC の箱は出さない）。
   - 出すのは `GET /nets`・`GET /runs`・`GET /runs/<id>/log` の中身。定義の本文は向こうに置いたままで、編集・確認・カレンダーはその PC の窓でする。
-  - 今すぐ流す（`POST /runs`）と強制終了（`POST /runs/<id>/stop`）は、ページの中の「はい・やめる」で確かめてから送る。値を渡す流し方はまだ。
+  - 今すぐ流す（`POST /runs`）・強制終了（`POST /runs/<id>/stop`）・終わった回の再実行（`POST /runs/<id>/rerun`、止まったところから）は、ページの中の「はい・やめる」で確かめてから送る。値を渡す流し方はまだ。
   - 呼ぶのは `crate::remote` と同じ（指紋を固定した HTTPS、token は OS の資格情報）。どれも別のスレッドで、答えは切り替えた先の PC のものだけを使う。5 秒ごとに読み直す。
   - この PC の箱（トレイから開く「次の 1 回だけスキップ」など）が開いたら、この PC に戻す。
 - **入れた形（81 の 1 つ目、ito 0.158.0）:** `crates/koyomi/web/` の `index.html`・`app.js`・`app.css` を `include_str!` で実行ファイルに入れ、`GET /`・`/app.js`・`/app.css` で返す（トークンなしで読める道は、この 3 つだけ）。
   - サインインは ito-http の `POST /session`（Bearer のトークン → HttpOnly・SameSite=Strict のクッキー。TLS なら Secure）。トークンは `sessionStorage` などにも残さない。クッキーだけで来た変更には `X-Ito-Csrf: 1` が要る（ito-http が見る）。
   - ページは `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; …; frame-ancestors 'none'`。インラインのスクリプト・外の CDN・`innerHTML` を使わず、値は `textContent` で入れる（定義やログの中身で HTML を作らせない）。
   - `GET /me` で名前とロールを返し、ページは届くボタンだけを出す（出さないだけで、守るのはサーバーの 403）。
-  - できるのは見る・流す（確認済みのネットだけ）・止める（`POST /runs/<id>/stop` → `Request::Kill`）・ログ。流し直す・飛ばす・保留・定義を変えるはまだ。
+  - できるのは見る・流す（確認済みのネットだけ）・止める（`POST /runs/<id>/stop` → `Request::Kill`）・ログ。
+- **入れた形（81 の 2 つ目）:** 流し直す・飛ばす・保留を HTTP と Web UI に足した。どれも CLI と同じ要求をエンジンに渡すだけで、HTTP 用の別の決まりは持たない。
+  - `POST /runs/<id>/rerun` → `Request::Rerun`。体は空・`from`・`next`（+ `warn`）のどれか（`koyomi rerun --from|--next [--warn]` と同じ）。`from` と `next` を両方書く・`next` なしの `warn` は 400。202 で新しい回の id。
+  - `POST /runs/<id>/skip` → `Request::Skip`。`POST /nets/hold`・`/nets/release` → `Request::Hold`・`Release`（`job` を書けばそのジョブだけ）。エンジンが断れば 422。
+  - ロールはどれも `run`（流す・止めると同じ重さ。定義は変えない）。`over_http` にも足した。
+  - ページ: ネットに「保留」「保留を解く」、終わった回に「再実行」、回のジョブに「スキップ」（回が動いていて、ジョブがまだ始まっていない）・「ここから再実行」（回が終わっている）。どれも確かめてから送る。定義を変えるのはまだ（83 の `edit` の道と合わせる）。
 
 ## メールを受けて起動する（TODO 84、2026-10-31）
 

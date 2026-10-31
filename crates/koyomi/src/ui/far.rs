@@ -49,6 +49,8 @@ enum Act {
     Run(String),
     /// Kill the run (its id).
     Stop(String),
+    /// Run the ended run (its id) again from where it stopped.
+    Rerun(String),
 }
 
 pub struct Far {
@@ -212,6 +214,8 @@ impl Far {
                     .map(|j| format!("{net}: {}", j["run"].as_str().unwrap_or("?"))),
                 Act::Stop(run) => crate::remote::ask(&pc, |c| c.post_json(&format!("/runs/{}/stop", query(run)), &serde_json::json!({})))
                     .map(|j| j["said"].as_str().unwrap_or(run).to_owned()),
+                Act::Rerun(run) => crate::remote::ask(&pc, |c| c.post_json(&format!("/runs/{}/rerun", query(run)), &serde_json::json!({})))
+                    .map(|j| format!("{run} → {}", j["run"].as_str().unwrap_or("?"))),
             };
             Got::Did(pc, said)
         });
@@ -273,6 +277,7 @@ impl Far {
                 let (text, yes) = match &a {
                     Act::Run(net) => (t.trf("far.ask_run", &[&pc, net]), t.tr("run.now")),
                     Act::Stop(run) => (t.trf("far.ask_stop", &[&pc, run]), t.tr("run.kill_yes")),
+                    Act::Rerun(run) => (t.trf("far.ask_rerun", &[&pc, run]), t.tr("run.rerun")),
                 };
                 let r = ui.label(egui::RichText::new(&text).strong());
                 ito_a11y::say(&r, Role::Label, &text);
@@ -367,7 +372,11 @@ impl Far {
                 ui.label(show::hms(run.started));
                 ui.label(ended);
                 if run.is_over() {
-                    ui.label("");
+                    let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.rerun")));
+                    ito_a11y::say(&b, Role::Button, &format!("{} {}", t.tr("run.rerun"), run.title));
+                    if b.clicked() {
+                        press = Some(Act::Rerun(run.id.clone()));
+                    }
                 } else {
                     let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.kill")));
                     ito_a11y::say(&b, Role::Button, &format!("{} {}", t.tr("run.kill"), run.title));
