@@ -402,25 +402,38 @@ impl Browser {
         let c = ito_theme::colors();
         let starts = self.snap.as_ref().map(|s| crate::plan::day(&s.defs, &s.calendars, d).1).unwrap_or_default();
         let mut pressed = false;
-        egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
-            ui.set_width(240.0);
-            let head =
-                t.trf("calendar.day_head", &[&format!("{}/{}", d.month(), d.day()), &weekday(t, d.weekday()), &day_kind(t, cal, d, day)]);
-            let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
-            ito_a11y::say(&r, Role::Heading, &head);
-            ui.add_space(4.0);
-            if starts.is_empty() {
-                ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
-            }
-            for (at, net) in &starts {
-                ui.add(egui::Label::new(format!("{}  {net}", at.format("%H:%M"))).wrap());
-            }
-            ui.add_space(4.0);
-            ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
-            ui.add_space(4.0);
-            let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(toggle_key(day))));
-            ito_a11y::say(&r, Role::Button, t.tr(toggle_key(day)));
-            pressed = r.clicked();
+        // As wide as the room beside the month allows, up to 300 (the frame's margin and line take 22).
+        let width = (ui.available_width() - 22.0).clamp(180.0, 300.0);
+        egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(10.0).corner_radius(4.0).show(ui, |ui| {
+            // The box sits in the month's row; inside it reads top to bottom, or each word would
+            // stand beside the last and wrap a letter at a time.
+            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
+                ui.set_width(width);
+                let head = t.trf(
+                    "calendar.day_head",
+                    &[&format!("{}/{}", d.month(), d.day()), &weekday(t, d.weekday()), &day_kind(t, cal, d, day)],
+                );
+                let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
+                ito_a11y::say(&r, Role::Heading, &head);
+                ui.add_space(6.0);
+                if starts.is_empty() {
+                    ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
+                } else {
+                    egui::Grid::new("cal_day_starts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
+                        for (at, net) in &starts {
+                            ui.label(egui::RichText::new(at.format("%H:%M").to_string()).monospace().color(c.dim));
+                            ui.add(egui::Label::new(net.to_string()).wrap());
+                            ui.end_row();
+                        }
+                    });
+                }
+                ui.add_space(6.0);
+                ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
+                ui.add_space(6.0);
+                let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(toggle_key(day))));
+                ito_a11y::say(&r, Role::Button, t.tr(toggle_key(day)));
+                pressed = r.clicked();
+            });
         });
         pressed
     }
