@@ -693,9 +693,9 @@ waking = "PC を起こす: {0}（{1}）"
 not_waking = "PC を起こせない: {0}"
 
 [tray]
-starting = "koyomi · 起動中"
+starting = "koyomi: 起動中"
 open = "開く"
-today = "今日"
+today = "今日の一覧"
 pause = "スケジュールを止める"
 resume = "スケジュールを戻す"
 quit = "終了（エンジンを止める）"
@@ -707,6 +707,7 @@ running = "実行中 {0}"
 next = "次 {0}"
 paused = "スケジュールを止めている"
 quiet = "異常なし"
+sep = "・"
 
 [report]
 line = "{0}  {1} 回  成功 {2}  いつもは {3}"

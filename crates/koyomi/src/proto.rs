@@ -409,7 +409,7 @@ mod tests {
         assert_eq!(since, Some(7));
         let view = TrayView {
             badge: "error".into(),
-            tip: "koyomi · 異常 1".into(),
+            tip: "koyomi: 異常 1".into(),
             busy: 2,
             notes: vec![Note { seq: 8, event: "failed".into(), title: "t".into(), body: "b\nc".into() }],
             last: 8,

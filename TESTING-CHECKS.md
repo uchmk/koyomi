@@ -266,7 +266,7 @@
 - [ ] **24.8** `calendar = "工場"` (no file), then write `calendars/工場.toml` with `holidays = 1` → `カレンダーがない: calendars/工場.toml`, then `calendars/工場.toml が読めない（…）`; the window's band 「カレンダーの注意」 and `koyomi list`'s `注意:` line show `calendars/工場.toml: …`; nothing else stops 〔未訳〕
 - [ ] **24.9** `KOYOMI_DATE=2027-10-15` (fewer than 90 days left), `koyomi list`, the window, `koyomi check calendars/会社.toml` → The band and the `注意:` line read `祝日の表は 2027-12-31 までの分です（あと 77 日）`; `koyomi check` prints the same line and exits 0 〔未訳〕
 - [ ] **24.10** `KOYOMI_DATE=2028-01-05`, a net on 会社 with `every = "day"`, `at` a minute away; `koyomi check calendars/会社.toml`, `koyomi next`, wait for the time → The band reads `祝日の表が古い（2027-12-31 まで）。それより後の日は流さない`; `koyomi check` prints it and exits 1; `koyomi next` marks each row `祝日の表が古い`; when the time comes, 今日 has a 🔒 run with the reason `祝日の表が古い（2027-12-31 まで）`, no job ran, and a notification was sent 〔未訳〕
-- [ ] **24.11** In the window, pick 会社 under カレンダー; use ◀ ▶; click a Saturday, a holiday, a weekday, and each again → The month table shows the holidays and closed days in the warning colour with `( )`, weekends dim, `open` days in the done colour with `[ ]`, today selected; the names list under it; the clicks write `calendars/会社.toml` (`open = [...]` / `closed = [...]` appear and go), the engine reads it again and the table follows within a few seconds; `<file> に書きました` under the month 〔未訳〕
+- [ ] **24.11** In the window, pick 会社 under カレンダー; use ◀ ▶; click a Saturday, a holiday, a weekday, and each again → The month table starts on Sunday, one framed cell per day: days off sit on a darker fill, holidays and closed days in the warning colour, `open` days in the done colour, each named day's name under its date in the cell (cut to 3 characters and … when longer; the full name on hover), today outlined in blue; the names list under it; the clicks write `calendars/会社.toml` (`open = [...]` / `closed = [...]` appear and go), the engine reads it again and the table follows within a few seconds; `<file> に書きました` under the month 〔未訳〕
 - [ ] **24.12** Make `calendars/会社.toml` read-only, click a day → `calendars/会社.toml に書けない: …` in the error colour; the table does not change 〔未訳〕
 - [ ] **24.13** Pick a net that uses 会社 in the tree, then pick 会社 under カレンダー → The calendar view lists the net under 「このカレンダーで流す定義」 and its next 10 times under it, counted by 会社 〔未訳〕
 - [ ] **24.14** `koyomi approve` a net on 会社 with `every = "day"` → The week's count in the approval box and in the CLI skips the weekend (5 times, not 7) 〔未訳〕
@@ -631,12 +631,12 @@
 
 ## 63. タスクトレイの常駐アイコン
 
-- [ ] **63.1** Start koyomi, close the window → The koyomi calendar icon stays in the task tray with a green ✔ badge; hovering reads `✔ koyomi · 次 HH:MM` (or `異常なし`) 〔未訳〕
+- [ ] **63.1** Start koyomi, close the window → The koyomi calendar icon stays in the task tray with a green ✔ badge; hovering reads `✔ koyomi: 次 HH:MM` (or `異常なし`); the right-click menu starts with the same words greyed 〔未訳〕
 - [ ] **63.2** Run a net whose job takes a minute → The badge turns blue … and the tip reads `実行中 1` 〔未訳〕
 - [ ] **63.3** Run a net that fails → The badge turns red ✖ and the tip reads `異常 1`; after the same net runs and ends 正常, it is green again 〔未訳〕
 - [ ] **63.4** Left-click the icon while the window is closed → The window opens 〔未訳〕
 - [ ] **63.5** Minimise the window, then left-click the icon → The window comes back to the front 〔未訳〕
-- [ ] **63.6** Right-click → 今日 → The window comes forward with ガント in the detail (unless a net is open in the editor) 〔未訳〕
+- [ ] **63.6** Right-click → 今日の一覧 → The window comes forward with ガント in the detail (unless a net is open in the editor) 〔未訳〕
 - [ ] **63.7** Right-click → スケジュールを止める → The badge turns grey –, the tip reads `スケジュールを止めている`, the window's band says the schedule is paused; the menu now reads スケジュールを戻す 〔未訳〕
 - [ ] **63.8** Right-click while a job runs → 終了（ジョブ 1 件が実行中） is greyed 〔未訳〕
 - [ ] **63.9** Right-click → 終了（エンジンを止める） with nothing running → The icon goes away; `koyomi engine status` says the engine is not running 〔未訳〕
@@ -894,7 +894,7 @@
 - [ ] **88.2** Then `koyomi tray` → The icon appears with the engine's color and tooltip; a second `koyomi tray` says `トレイはもう動いている` and exits 1 〔未訳〕
 - [ ] **88.3** Run a net that ends ✕ with `[notify] system` on for failures → The tray shows the OS notification within about a second; the engine shows none itself 〔未訳〕
 - [ ] **88.4** Right-click the icon → The last item reads `トレイを閉じる（エンジンは動き続ける）` and is enabled even while a job runs; 一時停止 pauses the engine (`koyomi engine status` says so) 〔未訳〕
-- [ ] **88.5** `koyomi engine stop` while the tray is up → The icon turns grey with `koyomi · エンジンは動いていない`; start the engine again with `--no-tray` and it comes back without old notifications 〔未訳〕
+- [ ] **88.5** `koyomi engine stop` while the tray is up → The icon turns grey with `koyomi: エンジンは動いていない`; start the engine again with `--no-tray` and it comes back without old notifications 〔未訳〕
 - [ ] **88.6** Pick トレイを閉じる → The tray exits; `koyomi engine status` still answers 〔未訳〕
 - [ ] **88.7** `koyomi engine` (with its own tray), then `koyomi tray` → `koyomi tray` says the engine has its own tray and exits 1 〔未訳〕
 

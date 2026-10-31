@@ -694,9 +694,9 @@ waking = "Wakes the PC: {0} ({1})"
 not_waking = "Cannot wake the PC: {0}"
 
 [tray]
-starting = "koyomi · starting"
+starting = "koyomi: starting"
 open = "Open"
-today = "Today"
+today = "Today's runs"
 pause = "Pause the schedule"
 resume = "Resume the schedule"
 quit = "Quit (stop the engine)"
@@ -708,6 +708,7 @@ running = "{0} running"
 next = "next {0}"
 paused = "schedule paused"
 quiet = "no errors"
+sep = ", "
 
 [report]
 line = "{0}  {1} runs  passed {2}  usually {3}"

@@ -24,7 +24,8 @@ use super::whens::WhenEdit;
 use crate::show;
 
 const RADIUS: f32 = 9.0;
-const MARGIN: f32 = 24.0;
+/// Room before the first part, so its name (centred under it) is not cut at the edge.
+const MARGIN: f32 = 64.0;
 /// How far from the centre the out port sits.
 const PORT: f32 = RADIUS + 7.0;
 /// How close to a line a click has to be.
@@ -1208,15 +1209,22 @@ impl Editor {
                 None => {}
             }
         });
-        egui::Panel::left("shelf").default_size(130.0).size_range(90.0..=320.0).resizable(true).show(ui, |ui| {
+        egui::Panel::left("shelf").default_size(160.0).size_range(90.0..=320.0).resizable(true).show(ui, |ui| {
             let r = ui.label(t.tr("canvas.shelf"));
             ito_a11y::say(&r, Role::Heading, t.tr("canvas.shelf"));
             for part in shelf() {
-                let name = show::part_name(t, &part);
+                let key = format!("part.{}", part.key());
+                let name = t.tr(&key);
                 let mark = match part.key() {
                     "job" => "▭ ",
+                    "loop" => "↻ ",
                     "jobnet" => "▣ ",
                     "branch" => "◇ ",
+                    "join" => "⊕ ",
+                    "time" => "🕑 ",
+                    "file" => "📄 ",
+                    "notify" => "✉ ",
+                    "approval" => "👤 ",
                     _ => "",
                 };
                 let label = format!("{mark}{name}");

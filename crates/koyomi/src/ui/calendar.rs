@@ -19,6 +19,10 @@ use super::{bad_file_name, Browser, Why};
 use crate::show;
 
 const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
+/// The month table's columns: Sunday first, as a wall calendar.
+const GRID: [Weekday; 7] = [Weekday::Sun, Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat];
+/// A day's cell: the date over its name, wide enough for four characters of the name.
+const CELL: egui::Vec2 = egui::vec2(72.0, 44.0);
 
 /// The 新しいカレンダー box: the name (the file's stem), Japan's holidays, and the days off each week.
 pub(super) struct NewCal {
@@ -190,15 +194,15 @@ impl Browser {
         let days = show::month_days(&cal, y, m);
         let mut toggle: Option<(NaiveDate, Day)> = None;
         let mut naming = None;
-        egui::Grid::new("calendar").min_col_width(36.0).show(ui, |ui| {
-            for w in WEEK {
+        egui::Grid::new("calendar").min_col_width(CELL.x).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+            for w in GRID {
                 let colour = if matches!(w, Weekday::Sat | Weekday::Sun) { c.dim } else { c.fg };
-                ui.label(egui::RichText::new(weekday(t, w)).color(colour));
+                ui.add_sized([CELL.x, 20.0], egui::Label::new(egui::RichText::new(weekday(t, w)).color(colour)));
             }
             ui.end_row();
             let Some((first, _)) = days.first() else { return };
-            for _ in 0..first.weekday().num_days_from_monday() {
-                ui.label("");
+            for _ in 0..first.weekday().num_days_from_sunday() {
+                ui.allocate_space(CELL);
             }
             for (d, day) in &days {
                 let colour = match day {
@@ -207,14 +211,29 @@ impl Browser {
                     Day::Closed(_) | Day::Holiday(_) => c.wait_text(),
                     Day::WeeklyOff => c.dim,
                 };
-                let text = match day {
-                    Day::Open(_) => format!("[{:>2}]", d.day()),
-                    Day::Closed(_) | Day::Holiday(_) | Day::WeeklyOff => format!("({:>2})", d.day()),
-                    Day::Business => format!(" {:>2} ", d.day()),
+                // A named day carries its name under the date, cut to fit; the whole name is on hover.
+                let named = show::day_name(t, day);
+                let short = named.as_deref().map(|n| {
+                    if n.chars().count() > 4 {
+                        format!("{}…", n.chars().take(3).collect::<String>())
+                    } else {
+                        n.to_owned()
+                    }
+                });
+                let text = format!(
+                    "{}
+{}",
+                    d.day(),
+                    short.unwrap_or_default()
+                );
+                let fill = if day.is_business() { c.panel } else { c.side };
+                let stroke = if *d == today { egui::Stroke::new(2.0, c.blue) } else { egui::Stroke::new(1.0, c.border) };
+                let r = ui.add_sized(CELL, egui::Button::new(egui::RichText::new(text).color(colour)).fill(fill).stroke(stroke));
+                let r = match &named {
+                    Some(n) => r.on_hover_text(n),
+                    None => r,
                 };
-                let r = ui.selectable_label(*d == today, egui::RichText::new(text).color(colour).monospace());
-                let kind = show::day_name(t, day)
-                    .unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
+                let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
                 ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
                 if r.clicked() {
                     toggle = Some((*d, day.clone()));
@@ -229,7 +248,7 @@ impl Browser {
                         ui.close();
                     }
                 });
-                if d.weekday() == Weekday::Sun {
+                if d.weekday() == Weekday::Sat {
                     ui.end_row();
                 }
             }
