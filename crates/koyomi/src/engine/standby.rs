@@ -278,6 +278,15 @@ impl Standby {
         })
     }
 
+    /// What `koyomi standby` says: the status line, then the poll's and the copy's trouble.
+    pub fn status(&self) -> Option<String> {
+        let line = self.line()?;
+        Some(std::iter::once(line).chain(self.notes()).collect::<Vec<_>>().join(
+            "
+",
+        ))
+    }
+
     /// What a person should see: the poll's trouble.
     pub fn notes(&self) -> Vec<String> {
         let name = self.cfg.as_ref().map(|c| c.watch.trim()).unwrap_or_default();
@@ -454,6 +463,9 @@ mod tests {
         s.copy_tx.send(Err("定義を写せない: x".into())).unwrap();
         assert!(s.copies(BTreeMap::new).is_empty());
         assert_eq!(s.notes().len(), 1);
+        // `koyomi standby` says the trouble under the status line.
+        let status = s.status().unwrap();
+        assert!(status.starts_with("待機中") && status.ends_with("定義を写せない: x"), "{status}");
         s.copy_tx.send(Ok(vec![one.clone()])).unwrap();
         assert_eq!(s.copies(BTreeMap::new), std::slice::from_ref(&one));
         assert!(s.notes().is_empty());

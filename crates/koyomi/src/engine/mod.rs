@@ -1819,7 +1819,7 @@ impl State {
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
             Request::Standby { give_back: true } => self.standby.give_back(),
-            Request::Standby { give_back: false } => self.standby.line().ok_or_else(|| "koyomi.toml に [standby] がない".to_owned()),
+            Request::Standby { give_back: false } => self.standby.status().ok_or_else(|| "koyomi.toml に [standby] がない".to_owned()),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
             Request::VersionText { id, version } => self.version_text(id, version),

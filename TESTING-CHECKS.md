@@ -1054,7 +1054,7 @@
 - [ ] **99.2** Confirm them in B's window → They show 確認済み; nothing more is copied (the hashes match) 〔未訳〕
 - [ ] **99.3** Change and confirm `g/a` on A; wait up to 5 minutes → B copies `g/a` again, 未確認, the confirm box shows the change; `koyomi versions g/a` on B keeps the one before 〔未訳〕
 - [ ] **99.4** On A, change `g/a` but do not confirm it → B does not copy it 〔未訳〕
-- [ ] **99.5** On A make `b`'s role `view`; restart B → B's cautions show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
+- [ ] **99.5** On A make `b`'s role `view`; restart B → B's cautions and `koyomi standby` show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
 - [ ] **99.6** A net on A that calls a child net (`kind = "net"`), both new to B → Both land on B in one copy (the child first) 〔未訳〕
 - [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone 〔未訳〕
 - [ ] **99.9** Start A again; `koyomi standby giveback` on B → B watches again and copies at once (no 5-minute wait) 〔未訳〕
