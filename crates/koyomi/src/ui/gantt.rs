@@ -11,7 +11,7 @@ use koyomi_core::run::{Run, State};
 
 use super::graph;
 
-const LANE: f32 = 20.0;
+const LANE: f32 = 26.0;
 const LABEL: f32 = 200.0;
 const BAR_H: f32 = 12.0;
 const MIN_BAR: f32 = 4.0;
@@ -116,14 +116,16 @@ pub fn draw(
     let origin = resp.rect.min;
     let x_of = |f: f32| origin.x + LABEL + f * width;
     let font = egui::FontId::proportional(12.0);
+    let mono = egui::FontId::monospace(11.0);
+    // A line every hour, a stronger one with its time every two.
     for h in 0..=hours {
         let x = x_of(h as f32 / hours as f32);
-        let major = h % 3 == 0;
-        let line = if major { c.border } else { c.border.gamma_multiply(0.4) };
-        painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, line));
-        if major {
-            let label = format!("{:02}", h);
-            painter.text(Pos2::new(x, origin.y), egui::Align2::CENTER_TOP, label, font.clone(), c.dim);
+        let major = h % 2 == 0;
+        let line = if major { c.border } else { c.faint() };
+        painter.line_segment([Pos2::new(x, origin.y + 18.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, line));
+        if major && h < hours {
+            let label = format!("{:02}:00", h);
+            painter.text(Pos2::new(x + 3.0, origin.y + 2.0), egui::Align2::LEFT_TOP, label, mono.clone(), c.dim);
         }
     }
     let mut clicked = None;
@@ -134,7 +136,7 @@ pub fn draw(
         let r = ui.interact(area, id, Sense::click());
         let latest = lane.latest().map(|b| runs[b.run]);
         if latest.is_some_and(|run| picked == Some(run.id.as_str())) || r.hovered() {
-            painter.rect_filled(area, 2.0, c.border.gamma_multiply(0.35));
+            painter.rect_filled(area, 4.0, if r.hovered() { c.hover() } else { c.chosen() });
         }
         let text = words(lane, runs, to_come);
         painter.text(Pos2::new(origin.x + 4.0, y + LANE / 2.0), egui::Align2::LEFT_CENTER, &text, font.clone(), c.fg);
@@ -142,12 +144,30 @@ pub fn draw(
         for bar in &lane.bars {
             let (x0, x1) = (x_of(bar.from), x_of(bar.to).max(x_of(bar.from) + MIN_BAR));
             let rect = Rect::from_min_max(Pos2::new(x0, top), Pos2::new(x1, top + BAR_H));
-            painter.rect_filled(rect, 3.0, graph::colour(&c, runs[bar.run].state));
+            let state = runs[bar.run].state;
+            let colour = graph::colour(&c, state);
+            if state == State::Held {
+                // Held: a light fill with an edge, and the hold mark when it fits.
+                painter.rect_filled(rect, 3.0, c.wait_bg());
+                painter.rect_stroke(rect, 3.0, Stroke::new(1.0, colour), egui::StrokeKind::Inside);
+                if rect.width() > 16.0 {
+                    painter.text(
+                        rect.center(),
+                        egui::Align2::CENTER_CENTER,
+                        State::Held.mark(),
+                        egui::FontId::proportional(9.0),
+                        c.wait_text(),
+                    );
+                }
+            } else {
+                painter.rect_filled(rect, 3.0, colour);
+            }
         }
         // A start still to come is an outline, not a fill.
         for (_, f) in &lane.planned {
             let rect = Rect::from_min_max(Pos2::new(x_of(*f), top), Pos2::new(x_of(*f) + PLAN_W, top + BAR_H));
-            painter.rect_stroke(rect, 3.0, Stroke::new(1.5, graph::colour(&c, State::Waiting)), egui::StrokeKind::Inside);
+            painter.rect_filled(rect, 3.0, c.faint());
+            dashed(&painter, rect, Stroke::new(1.0, graph::colour(&c, State::Waiting)));
         }
         // The marks are a picture; the words say them.
         let mut said = match lane.latest() {
@@ -168,8 +188,40 @@ pub fn draw(
     }
     // Now, over the bars.
     let x = x_of(position(lo, hi, now));
-    painter.line_segment([Pos2::new(x, origin.y + 16.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.5, c.run));
+    painter.line_segment([Pos2::new(x, origin.y + 18.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(2.0, c.wait));
+    let head = Pos2::new(x, origin.y + 18.0);
+    let d = 4.5;
+    painter.add(egui::Shape::convex_polygon(
+        vec![head + Vec2::new(0.0, -d), head + Vec2::new(d, 0.0), head + Vec2::new(0.0, d), head + Vec2::new(-d, 0.0)],
+        c.wait,
+        Stroke::NONE,
+    ));
     clicked
+}
+
+/// A dashed outline round `rect`: a start that has not come yet.
+fn dashed(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
+    let pts = [rect.left_top(), rect.right_top(), rect.right_bottom(), rect.left_bottom(), rect.left_top()];
+    painter.extend(egui::Shape::dashed_line(&pts, stroke, 3.0, 2.0));
+}
+
+/// The key under the chart's title: a small swatch and a word for each state the bars show.
+pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table) {
+    let c = ito_theme::colors();
+    for state in [State::Held, State::Running, State::Ok, State::Error] {
+        let word = super::show::tag(t, state);
+        let word = word.trim_start_matches(|ch: char| !ch.is_whitespace()).trim();
+        let r = ui.label(egui::RichText::new(word).small().color(c.dim));
+        let at = Pos2::new(r.rect.left() - 12.0, r.rect.center().y - 4.0);
+        let swatch = Rect::from_min_size(at, Vec2::splat(8.0));
+        if state == State::Held {
+            ui.painter().rect_filled(swatch, 2.0, c.wait_bg());
+            ui.painter().rect_stroke(swatch, 2.0, Stroke::new(1.0, graph::colour(&c, state)), egui::StrokeKind::Inside);
+        } else {
+            ui.painter().rect_filled(swatch, 2.0, graph::colour(&c, state));
+        }
+        ui.add_space(14.0);
+    }
 }
 
 #[cfg(test)]

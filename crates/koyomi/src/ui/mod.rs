@@ -1576,7 +1576,13 @@ impl Browser {
                 Some(lang) => t.trf("tree.new_easy", &[&crate::glossary::GLOSSARY.label("jobnet", lang, true, "")]),
                 None => t.tr("tree.new").to_owned(),
             };
-            let r = ui.button(&label);
+            // The list's title, with a small ＋ for a new net at the right (its words on hover and to a reader).
+            let r = ui
+                .horizontal(|ui| {
+                    ui.label(egui::RichText::new(t.tr("tree.heading")).small().strong().color(c.dim));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.small_button("＋").on_hover_text(&label)).inner
+                })
+                .inner;
             ito_a11y::say(&r, Role::Button, &label);
             if let Some(lang) = &self.easy {
                 ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "jobnet", lang, "tree");
@@ -1584,6 +1590,7 @@ impl Browser {
             if r.clicked() {
                 self.new_box(None);
             }
+            ui.add_space(4.0);
         }
         let Some(snap) = &self.snap else {
             let text = match (&self.down, self.starting) {
@@ -1626,14 +1633,7 @@ impl Browser {
                 group = Some(&d.group);
                 let mark = if self.folded.contains(&d.group) { "▶" } else { "▼" };
                 let todo = todo.get(d.group.as_str()).copied().unwrap_or(0);
-                let mut head = egui::text::LayoutJob::default();
-                let font = egui::TextStyle::Body.resolve(ui.style());
-                let fmt = |color| egui::TextFormat { font_id: font.clone(), color, ..Default::default() };
-                head.append(&format!("{mark} {}", d.group), 0.0, fmt(ui.visuals().strong_text_color()));
-                if todo > 0 {
-                    head.append(&format!("  ✕{todo}"), 0.0, fmt(c.err));
-                }
-                let r = ui.add(egui::Label::new(head).sense(egui::Sense::click()));
+                let r = tree_group(ui, &c, &format!("{mark} {}", d.group), todo);
                 let state = t.tr(if self.folded.contains(&d.group) { "tree.folded" } else { "tree.open" });
                 let said = if todo > 0 {
                     t.trf("tree.group_todo", &[&d.group, state, &t.trf("tree.todo", &[&todo.to_string()])])
@@ -1655,7 +1655,7 @@ impl Browser {
                 continue;
             }
             let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started).map(|r| r.state);
-            let mut text = review::row_with(t, d, snap.held.contains(&d.id), last);
+            let mut text = review::row_with(t, d, snap.held.contains(&d.id), None);
             if snap.held_jobs.iter().any(|h| h.net == d.id) {
                 text = format!("{text}  {} {}", State::Held.mark(), t.tr("state.job_held"));
             }
@@ -1663,7 +1663,7 @@ impl Browser {
                 text = review::twin_row(text, d);
             }
             let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
-            let r = ui.selectable_label(on, format!("  {text}"));
+            let r = tree_row(ui, &c, on, last, &text);
             // The mark is a picture; the word for the last run's state is what is said.
             let said = match last {
                 Some(l) => {
@@ -1674,7 +1674,7 @@ impl Browser {
                             String::new()
                         }
                 }
-                None => text.clone(),
+                None => text,
             };
             ito_a11y::say(&r, Role::Row, &said);
             if r.clicked() {
@@ -1766,67 +1766,55 @@ impl Browser {
             (show::tag(t, State::Ok).to_owned(), count(&|s| matches!(s, State::Ok | State::Warn)), graph::colour(&c, State::Ok)),
         ];
         ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let look = ito_prefs::Look { c, q: "" };
             for (label, n, colour) in &parts {
                 let text = format!("{label} {n}");
-                let r = ui.label(egui::RichText::new(&text).strong().color(if *n == 0 { c.dim } else { *colour }));
+                let colour = if *n == 0 { c.dim } else { *colour };
+                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(colour));
                 ito_a11y::say(&r, Role::Label, &text);
-                ui.add_space(8.0);
             }
         });
-        ui.add_space(4.0);
+        ui.add_space(8.0);
         let mut pick = None;
         let mut runs: Vec<&Run> = self.runs.iter().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
-        {
-            egui::Grid::new("today_grid").num_columns(7).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
-                for key in ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"] {
-                    ui.label(egui::RichText::new(t.tr(&format!("today.{key}"))).small().color(c.dim));
-                }
-                ui.end_row();
-                for (at, id, title, mark) in &coming {
-                    let colour = graph::colour(&c, State::Waiting);
-                    ui.label(egui::RichText::new(show::tag(t, State::Waiting)).color(colour));
-                    let name = ui.label(title);
-                    ito_a11y::say(&name, Role::Row, title);
-                    let planned = match mark {
-                        Some(m) => format!("{}  {m}", show::hms(*at)),
-                        None => show::hms(*at),
-                    };
-                    ui.label(planned);
-                    ui.label("");
-                    ui.label("");
-                    ui.label(average(id).map(|a| t.trf("today.average", &[&show::duration(t, a)])).unwrap_or_default());
-                    ui.label(next_of(id, *at));
-                    ui.end_row();
-                }
-                for run in runs {
-                    let colour = graph::colour(&c, run.state);
-                    let on = self.run_sel.as_deref() == Some(run.id.as_str());
-                    ui.label(egui::RichText::new(show::tag(t, run.state)).color(colour));
-                    let r = ui.selectable_label(on, egui::RichText::new(&run.title).color(colour));
-                    let planned = run.planned.map(show::hms).unwrap_or_default();
-                    let ended = run.ended.map(show::hms).unwrap_or_default();
-                    let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(t, a)]));
-                    let took = match (run.duration(), &usual) {
-                        (Some(d), _) => show::duration(t, d),
-                        (None, Some(u)) => format!("{}… {u}", show::duration(t, now - run.started)),
-                        (None, None) => format!("{}…", show::duration(t, now - run.started)),
-                    };
-                    let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
-                    let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
-                    ito_a11y::say(&r, Role::Row, &said.join(" "));
-                    ui.label(planned);
-                    ui.label(show::hms(run.started));
-                    ui.label(ended);
-                    ui.label(took);
-                    ui.label(next_of(&run.jobnet, now));
-                    ui.end_row();
-                    if r.clicked() {
-                        pick = Some(run.id.clone());
-                    }
-                }
-            });
+        let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+        let mut table = TodayTable::new(ui, &c);
+        let heads: Vec<String> = ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"]
+            .map(|k| t.tr(&format!("today.{k}")).to_owned())
+            .to_vec();
+        table.head(ui, &heads);
+        for (at, id, title, mark) in &coming {
+            let planned = match mark {
+                Some(m) => format!("{}  {m}", show::hms(*at)),
+                None => show::hms(*at),
+            };
+            let usual = average(id).map(|a| t.trf("today.average", &[&show::duration(t, a)])).unwrap_or_default();
+            let cells = [planned, String::new(), String::new(), usual, next_of(id, *at)];
+            let r = table.row(ui, State::Waiting, &show::tag(t, State::Waiting), title, &cells, false, false);
+            ito_a11y::say(&r, Role::Row, title);
         }
+        for run in runs {
+            let on = self.run_sel.as_deref() == Some(run.id.as_str());
+            let planned = run.planned.map(show::hms).unwrap_or_default();
+            let ended = run.ended.map(show::hms).unwrap_or_default();
+            let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(t, a)]));
+            let took = match (run.duration(), &usual) {
+                (Some(d), _) => show::duration(t, d),
+                (None, Some(u)) => format!("{}… {u}", show::duration(t, now - run.started)),
+                (None, None) => format!("{}…", show::duration(t, now - run.started)),
+            };
+            let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
+            let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
+            let cells = [planned, show::hms(run.started), ended, took, next_of(&run.jobnet, now)];
+            let r = table.row(ui, run.state, &show::tag(t, run.state), &run.title, &cells, on, true);
+            ito_a11y::say(&r, Role::Row, &said.join(" "));
+            if r.clicked() {
+                pick = Some(run.id.clone());
+            }
+        }
+        ui.spacing_mut().item_spacing.y = gap;
         if pick.is_some() {
             self.run_sel = pick;
             self.cal_sel = None;
@@ -1835,7 +1823,7 @@ impl Browser {
         }
     }
 
-    /// The tabs over the detail, at the right: 今日 (the chart), ジョブネット (the net picked on the
+    /// The tabs over the detail, at the left: 今日 (the chart), ジョブネット (the net picked on the
     /// left), カレンダー (the first one, or the one picked) and 履歴.
     fn tabs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         if self.snap.is_none() {
@@ -1845,29 +1833,36 @@ impl Browser {
         let (today, history, calendar) = (self.gantt, self.hist.is_some(), self.cal_sel.is_some() && !self.gantt && self.hist.is_none());
         let net = !today && !history && !calendar;
         let mut go = None;
+        let c = ito_theme::colors();
         // One row high: a centred layout would take the whole height and push the view below off the screen.
-        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y);
-        ui.allocate_ui_with_layout(row, egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            // Right to left: the last tab is added first.
-            let tab = |ui: &mut egui::Ui, on: bool, key: &str, enabled: bool| {
+        let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
+        ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+            ui.spacing_mut().item_spacing.x = 4.0;
+            for (i, (on, key)) in
+                [(today, "tabs.today"), (net, "tabs.net"), (calendar, "tabs.calendar"), (history, "tabs.history")].into_iter().enumerate()
+            {
                 let label = t.tr(key);
-                let r = ui.add_enabled(enabled, egui::Button::selectable(on, label));
+                let r = pill_tab(ui, &c, on, label);
                 ito_a11y::say(&r, Role::Button, label);
-                r.clicked()
-            };
-            if tab(ui, history, "tabs.history", true) {
-                go = Some(3);
+                if r.clicked() {
+                    go = Some(i);
+                }
             }
-            if tab(ui, calendar, "tabs.calendar", true) {
-                go = Some(2);
-            }
-            if tab(ui, net, "tabs.net", true) {
-                go = Some(1);
-            }
-            if tab(ui, today, "tabs.today", true) {
-                go = Some(0);
-            }
+            // The day the chart is about, at the right end.
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let day = chrono::Local::now().date_naive();
+                let wd = ["weekday.mon", "weekday.tue", "weekday.wed", "weekday.thu", "weekday.fri", "weekday.sat", "weekday.sun"]
+                    [chrono::Datelike::weekday(&day).num_days_from_monday() as usize];
+                let text = format!("{}({})", day.format("%Y-%m-%d"), t.tr(wd));
+                let r = ui.label(egui::RichText::new(&text).monospace().color(c.dim));
+                ito_a11y::say(&r, Role::Label, &text);
+            });
         });
+        // A hairline under the tabs, as the page's top edge.
+        let y = ui.cursor().top();
+        let x = ui.max_rect().x_range();
+        ui.painter().hline(x, y, egui::Stroke::new(1.0, c.border));
+        ui.add_space(6.0);
         match go {
             Some(0) => self.open_gantt(),
             Some(1) => {
@@ -2055,16 +2050,11 @@ impl Browser {
     /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        ui.heading(t.tr("run.today"));
-        ui.add_space(6.0);
         self.today_table(ui, t);
-        ui.add_space(8.0);
-        let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.dim));
-        ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
+        ui.add_space(14.0);
         let now = chrono::Local::now().naive_local();
         let planned = self.planned_today(now);
         if self.runs.is_empty() && planned.is_empty() {
-            ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
             return;
         }
         if self.runs.iter().any(|r| !r.is_over()) {
@@ -2073,9 +2063,24 @@ impl Browser {
         let runs: Vec<&Run> = self.runs.iter().collect();
         let picked = self.run_sel.clone();
         let mut pick = None;
-        egui::ScrollArea::horizontal().id_salt("gantt").show(ui, |ui| {
-            pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
-        });
+        // The chart in a card: its title and what the bars mean, the key at the right, then the lanes.
+        egui::Frame::new()
+            .fill(c.side)
+            .stroke(egui::Stroke::new(1.0, c.border))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::same(12))
+            .show(ui, |ui| {
+                ui.horizontal(|ui| {
+                    let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.fg));
+                    ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
+                    ui.label(egui::RichText::new(t.tr("run.gantt_note")).small().color(c.dim));
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| gantt::legend(ui, t));
+                });
+                ui.add_space(6.0);
+                egui::ScrollArea::horizontal().id_salt("gantt").show(ui, |ui| {
+                    pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
+                });
+            });
         if pick.is_some() {
             self.run_sel = pick;
             self.job_sel = None;
@@ -2321,116 +2326,126 @@ impl Browser {
         ui.heading(&big);
         ui.label(egui::RichText::new(small).small().color(c.dim));
         ui.add_space(6.0);
-        ui.horizontal(|ui| {
-            // Only the buttons that mean something for this run are drawn.
-            if !run.is_over() {
-                let r = ui.button(t.tr("run.kill"));
-                ito_a11y::say(&r, Role::Button, t.tr("run.kill"));
-                if r.clicked() && !self.box_open() {
-                    self.killing = Some(run.id.clone());
-                    // The safe button first: Enter on a fresh box does not kill.
-                    self.focus = 1;
-                }
-            }
-            // Again, once it is over, from one menu: what passed is carried over, or from the picked
-            // job on. A run where everything passed can only go again from a picked job.
-            let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
-            if run.is_over() {
-                let head = format!("{} ▾", t.tr("run.rerun"));
-                let tx = &self.tx;
-                let r = ui.add_enabled_ui(!self.blocked(), |ui| {
-                    ui.menu_button(&head, |ui| {
-                        let rest = !run.jobs.iter().all(|j| j.state.passed());
-                        let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
-                        ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
-                        if r.clicked() {
-                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
-                        }
-                        let label = match &picked {
-                            Some(j) => t.trf("run.rerun_from", &[j]),
-                            None => t.tr("run.rerun_pick").to_owned(),
-                        };
-                        let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
+        // The actions on this run, as one bar: which run they act on at the left, then the buttons.
+        egui::Frame::new()
+            .fill(c.panel)
+            .stroke(egui::Stroke::new(1.0, c.border))
+            .corner_radius(6)
+            .inner_margin(egui::Margin::symmetric(10, 8))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    let chip = t.trf("run.selected", &[&run.title]);
+                    let r =
+                        ito_prefs::tag(ui, ito_prefs::Look { c, q: "" }, ito_prefs::Tag::new(&chip).color(graph::colour(&c, run.state)));
+                    ito_a11y::say(&r, Role::Label, &chip);
+                    ui.add_space(6.0);
+                    // Only the buttons that mean something for this run are drawn.
+                    if !run.is_over() && danger(ui, t.tr("run.kill")).clicked() && !self.box_open() {
+                        self.killing = Some(run.id.clone());
+                        // The safe button first: Enter on a fresh box does not kill.
+                        self.focus = 1;
+                    }
+                    // Again, once it is over, from one menu: what passed is carried over, or from the picked
+                    // job on. A run where everything passed can only go again from a picked job.
+                    let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
+                    if run.is_over() {
+                        let head = format!("{} ▾", t.tr("run.rerun"));
+                        let tx = &self.tx;
+                        let r = ui.add_enabled_ui(!self.blocked(), |ui| {
+                            ui.menu_button(&head, |ui| {
+                                let rest = !run.jobs.iter().all(|j| j.state.passed());
+                                let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
+                                ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
+                                if r.clicked() {
+                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
+                                }
+                                let label = match &picked {
+                                    Some(j) => t.trf("run.rerun_from", &[j]),
+                                    None => t.tr("run.rerun_pick").to_owned(),
+                                };
+                                let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
+                                ito_a11y::say(&r, Role::Button, &label);
+                                if r.clicked() {
+                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
+                                }
+                                // From the jobs after the picked one, which ends as スキップ or 警告 without running.
+                                for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
+                                    let Some(j) = &picked else { break };
+                                    let label = t.trf(key, &[j]);
+                                    let r = ui.button(&label);
+                                    ito_a11y::say(&r, Role::Button, &label);
+                                    if r.clicked() {
+                                        let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
+                                    }
+                                }
+                            })
+                            .response
+                        });
+                        ito_a11y::say(&r.inner, Role::Button, &head);
+                    }
+                    // A failure dealt with: it leaves the count in the status bar.
+                    let done = self.acked.contains(&run.id);
+                    let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
+                    if run.is_over() && run.state.is_error() && primary(ui, !done, words).clicked() {
+                        self.acked.insert(run.id.clone());
+                        self.to_ack.push(run.id.clone());
+                        self.result = Some(Ok(t.tr("run.acked").to_owned()));
+                    }
+                    // Skip the picked job before it starts: the jobs after it go on.
+                    let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
+                    let label = match &picked {
+                        Some(j) => t.trf("run.skip_from", &[j]),
+                        None => t.tr("run.skip_pick").to_owned(),
+                    };
+                    if !run.is_over() && pending {
+                        let r = ui.button(&label);
                         ito_a11y::say(&r, Role::Button, &label);
                         if r.clicked() {
-                            let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
-                        }
-                        // From the jobs after the picked one, which ends as スキップ or 警告 without running.
-                        for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
-                            let Some(j) = &picked else { break };
-                            let label = t.trf(key, &[j]);
-                            let r = ui.button(&label);
-                            ito_a11y::say(&r, Role::Button, &label);
-                            if r.clicked() {
-                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
+                            if let Some(job) = picked.clone() {
+                                let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
                             }
                         }
-                    })
-                    .response
+                    }
+                    // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
+                    if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
+                        self.hold_job_button(ui, t, &run.jobnet, job);
+                    }
+                    // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
+                    let asking: Vec<&str> = run
+                        .jobs
+                        .iter()
+                        .filter(|j| j.state == State::Running && j.part == koyomi_core::jobnet::Part::Approval)
+                        .map(|j| j.id.as_str())
+                        .collect();
+                    let target =
+                        picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
+                    for (yes, key) in [(true, "run.approve"), (false, "run.reject")].into_iter().filter(|_| target.is_some()) {
+                        let label = match target {
+                            Some(j) => t.trf(&format!("{key}_from"), &[j]),
+                            None => t.tr(key).to_owned(),
+                        };
+                        let r = ui.button(&label);
+                        ito_a11y::say(&r, Role::Button, &label);
+                        if r.clicked() {
+                            if let Some(job) = target {
+                                let _ = self.tx.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
+                            }
+                        }
+                    }
+                    // Mark this run, then pick another: the two are shown side by side under the buttons.
+                    let marked = self.compare_base.as_deref() == Some(run.id.as_str());
+                    let label = t.tr(if marked { "run.compare_clear" } else { "run.compare_mark" });
+                    let r = ui.button(label);
+                    ito_a11y::say(&r, Role::Button, label);
+                    if r.clicked() {
+                        self.compare_base = (!marked).then(|| run.id.clone());
+                    }
+                    if run.is_over() && picked.is_none() {
+                        ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
+                    }
                 });
-                ito_a11y::say(&r.inner, Role::Button, &head);
-            }
-            // A failure dealt with: it leaves the count in the status bar.
-            let done = self.acked.contains(&run.id);
-            let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
-            if run.is_over() && run.state.is_error() && primary(ui, !done, words).clicked() {
-                self.acked.insert(run.id.clone());
-                self.to_ack.push(run.id.clone());
-                self.result = Some(Ok(t.tr("run.acked").to_owned()));
-            }
-            // Skip the picked job before it starts: the jobs after it go on.
-            let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
-            let label = match &picked {
-                Some(j) => t.trf("run.skip_from", &[j]),
-                None => t.tr("run.skip_pick").to_owned(),
-            };
-            if !run.is_over() && pending {
-                let r = ui.button(&label);
-                ito_a11y::say(&r, Role::Button, &label);
-                if r.clicked() {
-                    if let Some(job) = picked.clone() {
-                        let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
-                    }
-                }
-            }
-            // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
-            if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
-                self.hold_job_button(ui, t, &run.jobnet, job);
-            }
-            // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
-            let asking: Vec<&str> = run
-                .jobs
-                .iter()
-                .filter(|j| j.state == State::Running && j.part == koyomi_core::jobnet::Part::Approval)
-                .map(|j| j.id.as_str())
-                .collect();
-            let target =
-                picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
-            for (yes, key) in [(true, "run.approve"), (false, "run.reject")].into_iter().filter(|_| target.is_some()) {
-                let label = match target {
-                    Some(j) => t.trf(&format!("{key}_from"), &[j]),
-                    None => t.tr(key).to_owned(),
-                };
-                let r = ui.button(&label);
-                ito_a11y::say(&r, Role::Button, &label);
-                if r.clicked() {
-                    if let Some(job) = target {
-                        let _ = self.tx.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
-                    }
-                }
-            }
-            // Mark this run, then pick another: the two are shown side by side under the buttons.
-            let marked = self.compare_base.as_deref() == Some(run.id.as_str());
-            let label = t.tr(if marked { "run.compare_clear" } else { "run.compare_mark" });
-            let r = ui.button(label);
-            ito_a11y::say(&r, Role::Button, label);
-            if r.clicked() {
-                self.compare_base = (!marked).then(|| run.id.clone());
-            }
-            if run.is_over() && picked.is_none() {
-                ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
-            }
-        });
+            });
         self.show_result(ui);
         if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
             ui.add_space(6.0);
@@ -2823,6 +2838,196 @@ pub(crate) fn primary(ui: &mut egui::Ui, enabled: bool, words: &str) -> egui::Re
     let r = ui.add_enabled_ui(enabled, |ui| ito_prefs::button_with(ui, look, words, ito_prefs::Tone::Primary)).inner;
     ito_a11y::say(&r, Role::Button, words);
     r
+}
+
+/// A button that does something hard to take back (kill), in the theme's danger tone.
+pub(crate) fn danger(ui: &mut egui::Ui, words: &str) -> egui::Response {
+    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+    let r = ito_prefs::button_with(ui, look, words, ito_prefs::Tone::Danger);
+    ito_a11y::say(&r, Role::Button, words);
+    r
+}
+
+/// Today's table, drawn row by row: a header band, then rows with the state (mark and word) in its
+/// colour, the net, and the times in a fixed-width face. A picked row is filled with a stripe at the
+/// left in its state's colour.
+struct TodayTable {
+    c: ito_theme::Colors,
+    /// The left edge of each column, from the table's left.
+    cols: [f32; 7],
+    width: f32,
+}
+
+impl TodayTable {
+    const ROW: f32 = 26.0;
+    const PAD: f32 = 10.0;
+
+    fn new(ui: &egui::Ui, c: &ito_theme::Colors) -> Self {
+        let width = ui.available_width().max(640.0);
+        // State, net (the rest), planned, start, end, time, next.
+        let fixed = [110.0, 0.0, 110.0, 80.0, 80.0, 170.0, 100.0];
+        let net = (width - fixed.iter().sum::<f32>()).max(160.0);
+        let mut cols = [0.0; 7];
+        let mut x = 0.0;
+        for (i, w) in fixed.iter().enumerate() {
+            cols[i] = x;
+            x += if i == 1 { net } else { *w };
+        }
+        Self { c: *c, cols, width }
+    }
+
+    fn cell_right(&self, i: usize) -> f32 {
+        self.cols.get(i + 1).copied().unwrap_or(self.width)
+    }
+
+    fn head(&mut self, ui: &mut egui::Ui, heads: &[String]) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width, Self::ROW - 2.0), egui::Sense::hover());
+        let p = ui.painter();
+        p.rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, self.c.panel);
+        p.hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, self.c.border));
+        let font = egui::TextStyle::Small.resolve(ui.style());
+        for (i, h) in heads.iter().enumerate() {
+            p.text(
+                egui::pos2(rect.left() + self.cols[i] + Self::PAD, rect.center().y),
+                egui::Align2::LEFT_CENTER,
+                h,
+                font.clone(),
+                self.c.dim,
+            );
+        }
+    }
+
+    /// One row: `cells` are planned, start, end, time and next. Empty cells show a dim dash.
+    #[allow(clippy::too_many_arguments)]
+    fn row(
+        &mut self,
+        ui: &mut egui::Ui,
+        state: State,
+        word: &str,
+        title: &str,
+        cells: &[String; 5],
+        on: bool,
+        click: bool,
+    ) -> egui::Response {
+        let sense = if click { egui::Sense::click() } else { egui::Sense::hover() };
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(self.width, Self::ROW), sense);
+        if !ui.is_rect_visible(rect) {
+            return r;
+        }
+        let c = &self.c;
+        let colour = graph::colour(c, state);
+        let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        if on {
+            p.rect_filled(rect, 0.0, c.chosen());
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, colour);
+        } else if click && r.hovered() {
+            p.rect_filled(rect, 0.0, c.hover());
+        }
+        p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, c.faint()));
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let y = rect.center().y;
+        let at = |i: usize| rect.left() + self.cols[i] + Self::PAD;
+        let clip =
+            |i: usize| egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i) - 4.0, rect.y_range());
+        p.with_clip_rect(clip(0)).text(egui::pos2(at(0), y), egui::Align2::LEFT_CENTER, word, body.clone(), colour);
+        let ink = if on { c.strong() } else { c.fg };
+        p.with_clip_rect(clip(1)).text(egui::pos2(at(1), y), egui::Align2::LEFT_CENTER, title, body.clone(), ink);
+        for (k, cell) in cells.iter().enumerate() {
+            let i = k + 2;
+            let (text, ink) = if cell.is_empty() { ("—", c.dim) } else { (cell.as_str(), c.fg) };
+            // The time column carries words ("12分… (平均 10分)"); the rest are clock times.
+            let font = if i == 5 { body.clone() } else { mono.clone() };
+            p.with_clip_rect(clip(i)).text(egui::pos2(at(i), y), egui::Align2::LEFT_CENTER, text, font, ink);
+        }
+        if click {
+            r.on_hover_cursor(egui::CursorIcon::PointingHand)
+        } else {
+            r
+        }
+    }
+}
+
+/// A group's heading in the tree: its fold mark and name, and how many nets in it wait for a person
+/// as a small badge at the right.
+fn tree_group(ui: &mut egui::Ui, c: &ito_theme::Colors, text: &str, todo: usize) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        if r.hovered() {
+            p.rect_filled(rect, 4.0, c.hover());
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let mut right = rect.right() - 4.0;
+        if todo > 0 {
+            let words = format!("✕{todo}");
+            let tag = ito_prefs::Tag::new(&words).color(c.err);
+            let w = ito_prefs::tag_width(ui, tag);
+            right -= w;
+            ito_prefs::paint_tag(p, ui.ctx(), c, egui::pos2(right, rect.center().y - 8.5), tag, w);
+        }
+        let clip = egui::Rect::from_x_y_ranges(rect.left()..=right - 4.0, rect.y_range());
+        p.with_clip_rect(clip).text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, c.strong());
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A net's row in the tree, a step in from its group: the mark of its last run today in that run's
+/// colour, then the net. The open one is filled with a stripe at the left; a failed one has a dot
+/// at the right.
+fn tree_row(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, last: Option<State>, text: &str) -> egui::Response {
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        if on {
+            p.rect_filled(rect, 4.0, c.chosen());
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, c.run);
+        } else if r.hovered() {
+            p.rect_filled(rect, 4.0, c.hover());
+        }
+        let font = egui::TextStyle::Body.resolve(ui.style());
+        let y = rect.center().y;
+        if let Some(l) = last {
+            p.text(egui::pos2(rect.left() + 24.0, y), egui::Align2::CENTER_CENTER, l.mark(), font.clone(), graph::colour(c, l));
+        }
+        let failed = last.is_some_and(State::is_error);
+        let right = rect.right() - if failed { 16.0 } else { 4.0 };
+        if failed {
+            p.circle_filled(egui::pos2(rect.right() - 8.0, y), 3.0, c.err);
+        }
+        let ink = if on { c.strong() } else { c.fg };
+        let clip = egui::Rect::from_x_y_ranges(rect.left()..=right, rect.y_range());
+        p.with_clip_rect(clip).text(egui::pos2(rect.left() + 36.0, y), egui::Align2::LEFT_CENTER, text, font, ink);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// A page tab as a pill: the open one raised with a border and a dot in the running colour, the
+/// others plain dim words that light up under the pointer.
+fn pill_tab(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, label: &str) -> egui::Response {
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let ink = if on { c.fg } else { c.dim };
+    let g = ui.painter().layout_no_wrap(label.to_owned(), font, ink);
+    let dot = if on { 12.0 } else { 0.0 };
+    let size = egui::vec2(g.size().x + 24.0 + dot, g.size().y + 10.0);
+    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+    if ui.is_rect_visible(rect) {
+        let p = ui.painter();
+        let radius = rect.height() / 2.0;
+        if on {
+            p.rect_filled(rect, radius, c.raised());
+            p.rect_stroke(rect, radius, egui::Stroke::new(1.0, c.border_strong()), egui::StrokeKind::Inside);
+            p.circle_filled(egui::pos2(rect.left() + 14.0, rect.center().y), 3.0, c.run);
+        } else if r.hovered() {
+            p.rect_filled(rect, radius, c.hover());
+        }
+        let ink = if r.hovered() && !on { c.fg } else { ink };
+        p.galley_with_override_text_color(egui::pos2(rect.left() + 12.0 + dot, rect.center().y - g.size().y / 2.0), g, ink);
+    }
+    if r.has_focus() {
+        ui.painter().rect_stroke(rect.expand(2.0), rect.height() / 2.0 + 2.0, ui.visuals().selection.stroke, egui::StrokeKind::Outside);
+    }
+    r.on_hover_cursor(egui::CursorIcon::PointingHand)
 }
 
 /// Everything in the settings folder, as one file under `exports/` in the
