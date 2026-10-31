@@ -1547,7 +1547,7 @@ impl Browser {
                         .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
                         .show(ui, |ui| {
                             ui.set_min_height(ui.available_height());
-                            egui::ScrollArea::vertical().id_salt("jobs_pane").auto_shrink(false).show(ui, |ui| self.jobs_pane(ui, t));
+                            self.jobs_pane(ui, t);
                         });
                 }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
@@ -2831,7 +2831,9 @@ impl Browser {
                     .to_vec();
                 let picked = self.job_sel.clone();
                 let mut pick = None;
-                egui::ScrollArea::horizontal().id_salt("net_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                // The heading above and the header band stay put; only the rows scroll up and down. Sideways the
+                // header and the rows scroll together.
+                egui::ScrollArea::horizontal().id_salt("net_jobs_scroll").auto_shrink(false).show(ui, |ui| {
                     one_size(ui.style_mut());
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
                     let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|(_, r)| r.clone()).collect();
@@ -2840,16 +2842,19 @@ impl Browser {
                     if let Some(col) = table.head(ui, &heads, self.net_sort, t.tr("today.sort")) {
                         self.net_sort = TodayTable::next_sort(self.net_sort, col);
                     }
-                    for (i, cells) in &rows {
-                        let id = &net.jobs[*i].id;
-                        let on = picked.as_deref() == Some(id.as_str());
-                        let r = table.cells(ui, cells, on);
-                        let said: Vec<&str> = cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
-                        ito_a11y::say(&r, Role::Button, &said.join(" "));
-                        if r.clicked() {
-                            pick = Some(if on { None } else { Some(id.clone()) });
+                    egui::ScrollArea::vertical().id_salt("net_jobs_rows").auto_shrink([true, false]).show(ui, |ui| {
+                        ui.spacing_mut().item_spacing.y = 0.0;
+                        for (i, cells) in &rows {
+                            let id = &net.jobs[*i].id;
+                            let on = picked.as_deref() == Some(id.as_str());
+                            let r = table.cells(ui, cells, on);
+                            let said: Vec<&str> = cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
+                            ito_a11y::say(&r, Role::Button, &said.join(" "));
+                            if r.clicked() {
+                                pick = Some(if on { None } else { Some(id.clone()) });
+                            }
                         }
-                    }
+                    });
                     ui.spacing_mut().item_spacing.y = gap;
                 });
                 if let Some(p) = pick {
