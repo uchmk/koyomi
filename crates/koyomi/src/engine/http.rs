@@ -331,7 +331,8 @@ fn health(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     }
 }
 
-/// `GET /nets`: each definition's id, name, standing and hold. Not the text (it stays on this PC).
+/// `GET /nets`: each definition's id, name, standing, hold and `[params]` (name and default, so a
+/// caller can ask for the values before `POST /runs`). Not the text (it stays on this PC).
 fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let snap = match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
         Ok(s) => s,
@@ -347,6 +348,7 @@ fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
                 "name": d.label(),
                 "standing": d.standing,
                 "held": snap.held.contains(&d.id),
+                "params": d.net.as_ref().map(|n| n.params.clone()).unwrap_or_default(),
             })
         })
         .collect();
@@ -607,7 +609,27 @@ mod tests {
                 Request::History { .. } => Ok(runs(&["20261030-230000-01", "20261030-235000-01"])),
                 Request::Log { job, .. } if job == "copy" => Ok("line 1\n***\n".to_owned()),
                 Request::Log { .. } => Err("ログがない".to_owned()),
-                Request::List => Ok(Snapshot { held: vec!["g/b".into()], ..Default::default() }.to_toml()),
+                Request::List => {
+                    let net = koyomi_core::jobnet::Jobnet {
+                        params: [("month".to_owned(), "{month-1:%Y-%m}".to_owned())].into(),
+                        ..Default::default()
+                    };
+                    let def = koyomi_core::scan::Def {
+                        id: "g/a".into(),
+                        group: "g".into(),
+                        name: "a".into(),
+                        title: None,
+                        file: "g/a.toml".into(),
+                        standing: koyomi_core::scan::Standing::Confirmed,
+                        problems: Vec::new(),
+                        net: Some(net),
+                        sha256: String::new(),
+                        text: String::new(),
+                        previous: None,
+                        calendar: None,
+                    };
+                    Ok(Snapshot { defs: vec![def], held: vec!["g/b".into()], ..Default::default() }.to_toml())
+                }
                 _ => Err("no".to_owned()),
             }
         };
@@ -628,7 +650,9 @@ mod tests {
         assert_eq!(handle(&req("GET", "/runs/20261031-090000-01/log", ""), ask).status, 400);
         assert_eq!(handle(&with_query(req("GET", "/runs/20261031-090000-01/log", ""), &[("job", "x")]), ask).status, 404);
         let n = handle(&req("GET", "/nets", ""), ask);
-        assert_eq!((n.status, n.json["nets"].as_array().map(Vec::len), n.json["paused"].as_bool()), (200, Some(0), Some(false)));
+        assert_eq!((n.status, n.json["nets"].as_array().map(Vec::len), n.json["paused"].as_bool()), (200, Some(1), Some(false)));
+        // The values a run can be given, with their defaults: what a caller asks for before POST /runs.
+        assert_eq!(n.json["nets"][0]["params"]["month"].as_str(), Some("{month-1:%Y-%m}"));
     }
 
     /// The listener as the engine starts it: the token first, then the handler.

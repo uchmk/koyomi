@@ -1239,6 +1239,9 @@ Two PCs: `B` with `[http] lan = true` and a `[[http.user]]` `I` of role `run` (a
 | 96.13 | Let a run on B fail, pick it, 再実行, then やめる | Nothing starts |
 | 96.14 | 再実行, then 再実行 in the question | `<run> → <new run>`; the new run starts from the failed job, the passed ones carried over; on B, `koyomi ops` shows `rerun … （HTTP: ito）` |
 | 96.15 | With `S`'s token, 再実行 | The refusal (403) in red; nothing starts |
+| 96.16 | On B, a confirmed net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`; here, 今すぐ流す on it | Above the question, a field for each value with its default in it |
+| 96.17 | Change `dept` to `経理`, leave `month`, then 今すぐ流す in the question | A run starts on B; its job sees `dept = 経理` and last month for `month` |
+| 96.18 | 今すぐ流す on a net without `[params]` | Only the question, no fields |
 
 ## 97. Rerun, skip and hold from the Web UI (TODO 81)
 
@@ -1256,3 +1259,6 @@ As §95, signed in with `I` (run) unless said.
 | 97.8 | `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` | 403; nothing starts |
 | 97.9 | `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` | 400 (`from と next はどちらか 1 つ`) |
 | 97.10 | `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` | 422 with the engine's reason |
+| 97.11 | 流す on a net with `[params]` | One question per value with its default filled in; キャンセル on any sends nothing |
+| 97.12 | Change one value, keep the others, confirm | The confirmation names only the changed value; the run gets it, the others take their defaults |
+| 97.13 | `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` | Each net has `params` with its names and defaults (`{}` when none) |

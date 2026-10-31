@@ -1,11 +1,13 @@
 //! Another PC's engine in the window (TODO 80): the PC list at the top switches the window to
 //! one of the `[[remote]]` of koyomi.toml, and the page shows that engine's nets and today's
-//! runs, a run's jobs and a job's log, with 今すぐ流す and 強制終了 behind a yes or no.
+//! runs, a run's jobs and a job's log, with 今すぐ流す and 強制終了 behind a yes or no. A net
+//! with `[params]` asks for its values in the same yes or no, as 今すぐ実行 on this PC does.
 //!
 //! Every call goes over HTTPS with the certificate pinned (`crate::remote`) on its own thread;
 //! the answers come back on a channel and are kept only while that PC is still the one shown.
 //! What the other PC lets this one do is its `[[user]]` role's: a refusal shows as its words.
 
+use std::collections::BTreeMap;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -29,6 +31,9 @@ struct Net {
     standing: String,
     #[serde(default)]
     held: bool,
+    /// `[params]`: name and default.
+    #[serde(default)]
+    params: BTreeMap<String, String>,
 }
 
 /// What a thread brought back, with the PC it asked.
@@ -45,8 +50,8 @@ enum Got {
 /// A press waiting for its yes.
 #[derive(Debug, Clone, PartialEq)]
 enum Act {
-    /// Run the net (its id) now.
-    Run(String),
+    /// Run the net (its id) now, with its `[params]` as name, default, what the field holds.
+    Run(String, Vec<(String, String, String)>),
     /// Kill the run (its id).
     Stop(String),
     /// Run the ended run (its id) again from where it stopped.
@@ -210,7 +215,7 @@ impl Far {
         let Some(pc) = self.on.clone() else { return };
         self.spawn(move || {
             let said = match &a {
-                Act::Run(net) => crate::remote::ask(&pc, |c| c.post_json("/runs", &serde_json::json!({ "net": net })))
+                Act::Run(net, values) => crate::remote::ask(&pc, |c| c.post_json("/runs", &run_body(net, values)))
                     .map(|j| format!("{net}: {}", j["run"].as_str().unwrap_or("?"))),
                 Act::Stop(run) => crate::remote::ask(&pc, |c| c.post_json(&format!("/runs/{}/stop", query(run)), &serde_json::json!({})))
                     .map(|j| j["said"].as_str().unwrap_or(run).to_owned()),
@@ -271,11 +276,24 @@ impl Far {
             }
             None => {}
         }
+        if let Some(Act::Run(_, values)) = &mut self.asking {
+            if !values.is_empty() {
+                ui.add_space(4.0);
+                egui::Grid::new("far_give").num_columns(2).show(ui, |ui| {
+                    for (name, default, value) in values.iter_mut() {
+                        ui.label(name.as_str());
+                        let r = ui.add(egui::TextEdit::singleline(value).hint_text(default.as_str()).desired_width(300.0));
+                        ito_a11y::say(&r, Role::Label, name);
+                        ui.end_row();
+                    }
+                });
+            }
+        }
         if let Some(a) = self.asking.clone() {
             ui.add_space(4.0);
             ui.horizontal_wrapped(|ui| {
                 let (text, yes) = match &a {
-                    Act::Run(net) => (t.trf("far.ask_run", &[&pc, net]), t.tr("run.now")),
+                    Act::Run(net, _) => (t.trf("far.ask_run", &[&pc, net]), t.tr("run.now")),
                     Act::Stop(run) => (t.trf("far.ask_stop", &[&pc, run]), t.tr("run.kill_yes")),
                     Act::Rerun(run) => (t.trf("far.ask_rerun", &[&pc, run]), t.tr("run.rerun")),
                 };
@@ -330,7 +348,8 @@ impl Far {
                 let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.now")));
                 ito_a11y::say(&b, Role::Button, &format!("{} {title}", t.tr("run.now")));
                 if b.clicked() {
-                    press = Some(Act::Run(n.id.clone()));
+                    let values = n.params.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
+                    press = Some(Act::Run(n.id.clone(), values));
                 }
                 ui.end_row();
             }
@@ -450,6 +469,16 @@ fn error(ui: &mut egui::Ui, e: &str) {
     ito_a11y::say(&r, Role::Label, e);
 }
 
+/// What `POST /runs` is sent: the net, and only the values changed from their default (as on this PC).
+fn run_body(net: &str, values: &[(String, String, String)]) -> serde_json::Value {
+    let params: BTreeMap<&str, &str> = values.iter().filter(|(_, d, v)| v != d).map(|(k, _, v)| (k.as_str(), v.as_str())).collect();
+    if params.is_empty() {
+        serde_json::json!({ "net": net })
+    } else {
+        serde_json::json!({ "net": net, "params": params })
+    }
+}
+
 /// `s` for a path segment or a query value: anything but a letter, a digit and `-._~` as `%XX`.
 fn query(s: &str) -> String {
     s.bytes()
@@ -488,6 +517,19 @@ mod tests {
         assert_eq!(f.said, Some(Err("other: 403 edit が要る".into())));
     }
 
+    /// 今すぐ実行 on another PC sends only the values changed, and no `params` when none is.
+    #[test]
+    fn a_run_is_sent_with_the_changed_values() {
+        let values = vec![
+            ("dept".to_owned(), "all".to_owned(), "経理".to_owned()),
+            ("month".to_owned(), "{month-1:%Y-%m}".to_owned(), "{month-1:%Y-%m}".to_owned()),
+        ];
+        assert_eq!(run_body("g/a", &values), serde_json::json!({ "net": "g/a", "params": { "dept": "経理" } }));
+        assert_eq!(run_body("g/a", &values[1..]), serde_json::json!({ "net": "g/a" }));
+        let n: Net = serde_json::from_value(serde_json::json!({ "id": "g/a", "params": { "month": "x" } })).unwrap();
+        assert_eq!(n.params.get("month").map(String::as_str), Some("x"));
+    }
+
     #[test]
     fn a_job_is_sent_as_a_query_value() {
         assert_eq!(query("20261030-020000-01"), "20261030-020000-01");
@@ -511,7 +553,7 @@ mod tests {
         frame(&mut f);
         f.take(Got::Nets("b".into(), Ok(serde_json::json!({ "nets": [{ "id": "g/a", "standing": "unconfirmed" }] }))));
         f.take(Got::Runs("b".into(), Err("b: つながらない".into())));
-        f.asking = Some(Act::Run("g/a".into()));
+        f.asking = Some(Act::Run("g/a".into(), vec![("month".into(), "{month-1:%Y-%m}".into(), "2026-09".into())]));
         frame(&mut f);
         assert_eq!(f.on.as_deref(), Some("b"));
     }

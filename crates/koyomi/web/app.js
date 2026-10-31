@@ -125,7 +125,7 @@ function drawNets(nets) {
     cell(tr, STANDINGS[n.standing] || n.standing, n.standing === "confirmed" ? "" : "warn");
     cell(tr, n.held ? "⏸" : "");
     const td = cell(tr, "");
-    if (can("run") && n.standing === "confirmed") button(td, "流す", () => runNet(n.id));
+    if (can("run") && n.standing === "confirmed") button(td, "流す", () => runNet(n.id, n.params || {}));
     if (can("run")) button(td, n.held ? "保留を解く" : "保留", () => holdNet(n.id, !n.held));
     body.appendChild(tr);
   }
@@ -148,10 +148,19 @@ function drawRuns(runs) {
   }
 }
 
-async function runNet(id) {
-  if (!window.confirm(`${id} を今流す`)) return;
+// Each `[params]` value is asked for with its default filled in; only the changed ones are sent.
+async function runNet(id, defaults) {
+  const params = {};
+  for (const [name, def] of Object.entries(defaults)) {
+    const v = window.prompt(`${id} の ${name}（空のままなら既定）`, def);
+    if (v === null) return;
+    if (v !== "" && v !== def) params[name] = v;
+  }
+  const given = Object.entries(params).map(([k, v]) => `${k}=${v}`).join(" ");
+  if (!window.confirm(given ? `${id} を今流す（${given}）` : `${id} を今流す`)) return;
   try {
-    const r = await call("POST", "/runs", { net: id });
+    const body = Object.keys(params).length ? { net: id, params } : { net: id };
+    const r = await call("POST", "/runs", body);
     say(`${id} を流した（${r.run}）`);
     await refresh();
   } catch (e) {
