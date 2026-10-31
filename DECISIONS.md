@@ -783,6 +783,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - HTTP から来た要求は、エンジンへ `Request::Over { by, request }` で渡す。通すのは HTTP の道が使うもの（状態・一覧・回・履歴・ログ・流す）だけで、確認・保存・消すなどはエンジンの側でも断る（「初回の確認」を HTTP から越えさせない）。
   - 手でした操作の記録（`koyomi ops`）に `（HTTP: <name>）` を付ける。`[http] token` で来たものは `default`。
   - `edit` のロールで定義を出す道はまだない（窓の確認を通す形と合わせて作る）。
+- **入れた形（81 の 1 つ目、ito 0.158.0）:** `crates/koyomi/web/` の `index.html`・`app.js`・`app.css` を `include_str!` で実行ファイルに入れ、`GET /`・`/app.js`・`/app.css` で返す（トークンなしで読める道は、この 3 つだけ）。
+  - サインインは ito-http の `POST /session`（Bearer のトークン → HttpOnly・SameSite=Strict のクッキー。TLS なら Secure）。トークンは `sessionStorage` などにも残さない。クッキーだけで来た変更には `X-Ito-Csrf: 1` が要る（ito-http が見る）。
+  - ページは `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; …; frame-ancestors 'none'`。インラインのスクリプト・外の CDN・`innerHTML` を使わず、値は `textContent` で入れる（定義やログの中身で HTML を作らせない）。
+  - `GET /me` で名前とロールを返し、ページは届くボタンだけを出す（出さないだけで、守るのはサーバーの 403）。
+  - できるのは見る・流す（確認済みのネットだけ）・止める（`POST /runs/<id>/stop` → `Request::Kill`）・ログ。流し直す・飛ばす・保留・定義を変えるはまだ。
 
 ## メールを受けて起動する（TODO 84、2026-10-31）
 

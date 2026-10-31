@@ -1,6 +1,6 @@
 # Checklist
 
-685 checks in TESTING.md, 681 left for a person.
+697 checks in TESTING.md, 693 left for a person.
 
 ## 1. Start
 
@@ -968,3 +968,18 @@
 - [ ] **94.5** Remove `token` from `[http]` (keep the users); restart the engine → It listens; `T` gets 401, `S` and `I` as before 〔未訳〕
 - [ ] **94.6** `koyomi check` with `role = "admin"`, `name = "default"`, two users named `sato`, `token = "S"`, and `[http]` with neither `token` nor users → Each refused with its reason 〔未訳〕
 - [ ] **94.7** `koyomi secret delete sato` (or never set it); restart → The status says `[http] で待ち受けられない（token の秘密 sato: …）` and tries again every 60 s 〔未訳〕
+
+## 95. The Web UI (`http://127.0.0.1:<port>/`; TODO 81)
+
+- [ ] **95.1** Open `http://127.0.0.1:8790/` → The サインイン form; no other request than `/`, `/app.js`, `/app.css`, `/me` (the browser's network tab) 〔未訳〕
+- [ ] **95.2** Sign in with a wrong token → トークンが合わない; still signed out 〔未訳〕
+- [ ] **95.3** Sign in with `S` → The header shows `sato（view）`; the nets and today's runs show, with no 流す or 止める buttons; the token field is empty 〔未訳〕
+- [ ] **95.4** ジョブ on a run, then ログ on a job → Its jobs with state, times and exit code; the log tail, with secrets as `***` 〔未訳〕
+- [ ] **95.5** Reload the page → Still signed in (the cookie); refreshes every 5 s 〔未訳〕
+- [ ] **95.6** サインアウト, then sign in with `I` → `ito（run）`; 流す on each confirmed net (not on 未確認 ones) 〔未訳〕
+- [ ] **95.7** 流す a net and confirm → A new running run in the list; `koyomi ops` shows `run … （HTTP: ito）` 〔未訳〕
+- [ ] **95.8** 止める on a running run and confirm → Its jobs stop (■ 止めた); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
+- [ ] **95.9** `curl -i http://127.0.0.1:8790/` → 200 with `Content-Security-Policy` (`script-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 〔未訳〕
+- [ ] **95.10** With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) → Refused; nothing starts 〔未訳〕
+- [ ] **95.11** Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
+- [ ] **95.12** With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) → The same page; the cookie is `Secure` 〔未訳〕

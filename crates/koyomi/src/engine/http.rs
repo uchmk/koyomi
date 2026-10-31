@@ -11,6 +11,10 @@
 //!   `GET /health` (the engine's status line), `GET /nets` (each definition's id, name,
 //!   standing and hold), `GET /runs` (today's and the running ones; `?from=&to=` for days)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
+//! - `POST /runs/<id>/stop` stops the run's jobs (`koyomi kill`).
+//! - The Web UI (TODO 81): `GET /` and its script and style sheet, kept in the exe, need no
+//!   token; the page signs in with a token at ito-http's `POST /session` and goes on with the
+//!   cookie (a change also sends `X-Ito-Csrf: 1`). `GET /me` says who and with what role.
 //!
 //! Every request carries a bearer token kept as `secret:<name>` in the OS credential
 //! store (read once when the listener starts); ito-http turns a missing or wrong one away
@@ -157,6 +161,10 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     for u in &cfg.user {
         c = c.token_named(u.name.trim(), token(u.secret())?);
     }
+    for (path, ..) in PAGES {
+        c = c.public_path(path);
+    }
+    c.sessions = true;
     c.ipv6 = cfg.ipv6;
     let at = if cfg.lan {
         let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
@@ -168,11 +176,50 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     let roles = roles(cfg);
     let serve = move |req: ito_http::Request| {
         let by = req.who.clone().unwrap_or_default();
-        allowed(&req, &roles).unwrap_or_else(|| {
+        page(&req).or_else(|| allowed(&req, &roles)).or_else(|| me(&req, &roles)).unwrap_or_else(|| {
             handle(&req, |r| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) }))
         })
     };
     Server::start(c, serve, log).map_err(|e| format!("{at}: {e}"))
+}
+
+/// The Web UI's files, kept in the exe: path, content type, body.
+const PAGES: [(&str, &str, &str); 3] = [
+    ("/", "text/html; charset=utf-8", include_str!("../../web/index.html")),
+    ("/app.js", "text/javascript; charset=utf-8", include_str!("../../web/app.js")),
+    ("/app.css", "text/css; charset=utf-8", include_str!("../../web/app.css")),
+];
+
+/// One of the Web UI's files for a `GET`. Nothing but these files and the API: no other
+/// origin, no inline script, no frames.
+fn page(req: &ito_http::Request) -> Option<Response> {
+    if !matches!(req.method.as_str(), "GET" | "HEAD") {
+        return None;
+    }
+    let (_, kind, body) = PAGES.iter().find(|(p, ..)| *p == req.path)?;
+    Some(
+        Response::bytes(200, kind, body.as_bytes())
+            .with_header(
+                "Content-Security-Policy",
+                "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+            )
+            .with_header("X-Content-Type-Options", "nosniff")
+            .with_header("Referrer-Policy", "no-referrer")
+            .with_header("Cache-Control", "no-store"),
+    )
+}
+
+/// `GET /me`: who signed in and their role, so the page shows only the buttons it may use.
+fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Response> {
+    if req.path.trim_end_matches('/') != "/me" {
+        return None;
+    }
+    if req.method != "GET" {
+        return Some(Response::error(405, "GET で読む"));
+    }
+    let who = req.who.as_deref().unwrap_or_default();
+    let role = roles.get(who).map_or("view", |r| r.name());
+    Some(Response::ok(serde_json::json!({ "who": who, "role": role })))
 }
 
 /// A refusal when the caller's role does not reach what the request needs; `None` lets it through.
@@ -211,8 +258,10 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
     let path = req.path.trim_end_matches('/');
     let one = path.strip_prefix("/runs/").filter(|id| !id.is_empty() && !id.contains('/'));
     let log = path.strip_prefix("/runs/").and_then(|p| p.strip_suffix("/log")).filter(|id| !id.is_empty() && !id.contains('/'));
+    let stop = path.strip_prefix("/runs/").and_then(|p| p.strip_suffix("/stop")).filter(|id| !id.is_empty() && !id.contains('/'));
     match (req.method.as_str(), path, one, log) {
         ("POST", "/runs", ..) => start_run(req, ask),
+        ("POST", ..) if stop.is_some() => stop_run(stop.unwrap_or_default(), ask),
         ("GET", "/runs", ..) => list_runs(req, ask),
         ("GET", "/health", ..) => health(ask),
         ("GET", "/nets", ..) => nets(ask),
@@ -220,7 +269,11 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("GET", _, _, Some(id)) => job_log(req, id, ask),
         (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
         (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
-        _ => Response::error(404, "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・GET /nets・GET /health だけ"),
+        _ if stop.is_some() => Response::error(405, "POST で止める"),
+        _ => Response::error(
+            404,
+            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop・GET /nets・GET /health だけ",
+        ),
     }
 }
 
@@ -303,6 +356,14 @@ fn start_run(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
     let r = Request::Run { id: s.net.trim().to_owned(), date: s.date, from: s.from, dry: false, params: s.params };
     match ask(&r) {
         Ok(id) => Response::new(202, serde_json::json!({ "run": id.trim() })),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
+/// `POST /runs/<id>/stop`: stops the run's jobs, as `koyomi kill <id>` does.
+fn stop_run(run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    match ask(&Request::Kill { run: run.to_owned(), job: None }) {
+        Ok(text) => Response::ok(serde_json::json!({ "run": run, "said": text.trim() })),
         Err(e) => Response::error(422, &e),
     }
 }
@@ -526,5 +587,34 @@ mod tests {
         assert_eq!(started_on("2026103-090000-01"), None);
         assert_eq!(started_on("20261031"), None);
         assert_eq!(started_on("２０２６1031-0"), None);
+    }
+
+    /// The Web UI's files need no token and forbid other origins and inline script; `/me` says
+    /// the role; a stop is `koyomi kill`.
+    #[test]
+    fn the_page_is_served_and_a_stop_is_a_kill() {
+        let p = page(&req("GET", "/", "")).expect("the page");
+        assert_eq!(p.status, 200);
+        assert!(p.headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("script-src 'self'") && !v.contains("unsafe")));
+        assert!(page(&req("GET", "/app.js", "")).is_some() && page(&req("GET", "/app.css", "")).is_some());
+        assert!(page(&req("POST", "/", "")).is_none() && page(&req("GET", "/runs", "")).is_none());
+        for (_, _, body) in PAGES {
+            assert!(!body.contains("innerHTML") && !body.contains("onclick=") && !body.contains("http://") && !body.contains("https://"));
+        }
+        let known = BTreeMap::from([("sato".to_owned(), Role::View)]);
+        let mut r = req("GET", "/me", "");
+        r.who = Some("sato".into());
+        let m = me(&r, &known).expect("me");
+        assert_eq!(m.status, 200);
+        assert_eq!((m.json["who"].as_str(), m.json["role"].as_str()), (Some("sato"), Some("view")));
+        assert!(me(&req("GET", "/runs", ""), &known).is_none());
+        let asked = RefCell::new(Vec::new());
+        let ask = |r: &Request| {
+            asked.borrow_mut().push(format!("{r:?}"));
+            Ok("止めた".to_owned())
+        };
+        assert_eq!(handle(&req("POST", "/runs/20261031-090000-01/stop", ""), ask).status, 200);
+        assert!(asked.borrow()[0].starts_with("Kill") && asked.borrow()[0].contains("job: None"), "{:?}", asked.borrow());
+        assert_eq!(handle(&req("GET", "/runs/20261031-090000-01/stop", ""), ask).status, 405);
     }
 }

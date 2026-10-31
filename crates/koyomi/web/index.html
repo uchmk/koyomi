@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>koyomi</title>
+<link rel="stylesheet" href="/app.css">
+<script src="/app.js" defer></script>
+</head>
+<body>
+<header>
+  <h1>koyomi</h1>
+  <span id="status" class="muted"></span>
+  <span class="grow"></span>
+  <span id="who" class="muted"></span>
+  <button id="signout" type="button" hidden>サインアウト</button>
+</header>
+
+<section id="signin" hidden>
+  <h2>サインイン</h2>
+  <p class="muted">koyomi.toml の <code>[http]</code> か <code>[[http.user]]</code> のトークンを入れる。トークンはこのページに残らない（サインインのあと、クッキーで続く）。</p>
+  <form id="signin-form">
+    <input id="token" type="password" autocomplete="off" placeholder="トークン" required>
+    <button type="submit">サインイン</button>
+  </form>
+</section>
+
+<main id="main" hidden>
+  <p id="message" role="status"></p>
+
+  <section>
+    <h2>ジョブネット</h2>
+    <p id="paused" class="warn" hidden>スケジュールを止めている（⏸）</p>
+    <table>
+      <thead><tr><th>ネット</th><th>状態</th><th>保留</th><th></th></tr></thead>
+      <tbody id="nets"></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>今日の回</h2>
+    <table>
+      <thead><tr><th>開始</th><th>ネット</th><th>状態</th><th>終了</th><th></th></tr></thead>
+      <tbody id="runs"></tbody>
+    </table>
+  </section>
+
+  <section id="detail" hidden>
+    <h2 id="detail-title"></h2>
+    <table>
+      <thead><tr><th>ジョブ</th><th>状態</th><th>開始</th><th>終了</th><th>終了コード</th><th></th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+    <h3 id="log-title" hidden></h3>
+    <pre id="log" hidden></pre>
+  </section>
+</main>
+</body>
+</html>

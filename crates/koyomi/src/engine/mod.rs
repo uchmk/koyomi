@@ -1761,7 +1761,16 @@ impl State {
 /// What may come over HTTP: what its paths ask for. Not an approval or a save, which only this
 /// PC's window gives (DECISIONS「実行するコマンドの安全」の初回の確認).
 fn over_http(request: &Request) -> bool {
-    matches!(request, Request::Status | Request::List | Request::Runs | Request::History { .. } | Request::Log { .. } | Request::Run { .. })
+    matches!(
+        request,
+        Request::Status
+            | Request::List
+            | Request::Runs
+            | Request::History { .. }
+            | Request::Log { .. }
+            | Request::Run { .. }
+            | Request::Kill { .. }
+    )
 }
 
 /// The name and target a request is written down under when it succeeds: what a person did by hand.
@@ -2056,6 +2065,7 @@ mod tests {
     fn only_the_http_paths_come_over_http() {
         assert!(over_http(&Request::Status) && over_http(&Request::Runs));
         assert!(over_http(&Request::Run { id: "g/a".into(), date: None, from: None, dry: false, params: Default::default() }));
+        assert!(over_http(&Request::Kill { run: "20261031-090000-01".into(), job: None }));
         assert!(!over_http(&Request::Approve { id: "g/a".into(), sha256: String::new() }));
         assert!(!over_http(&Request::Stop) && !over_http(&Request::Pause));
         assert!(!over_http(&Request::Delete { id: "g/a".into() }));
