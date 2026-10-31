@@ -2058,9 +2058,9 @@ impl Browser {
         if csv {
             let mut shown = h.filtered();
             shown.reverse();
-            let text = crate::csv::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
+            let table = crate::sheet::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
             self.result = Some(Ok(t.tr("run.writing").to_owned()));
-            Self::background(&self.io, move || export_csv("history", &text).map(|path| ("run.history_csv_done", vec![path])));
+            Self::background(&self.io, move || export_csv("history", &table).map(|path| ("run.history_csv_done", vec![path])));
         }
         if search {
             let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
@@ -2695,12 +2695,12 @@ fn export_all() -> Result<(String, usize), Said> {
     Ok((path.display().to_string(), b.len()))
 }
 
-/// `text` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
-fn export_csv(what: &str, text: &str) -> Result<String, Said> {
+/// `table` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
+fn export_csv(what: &str, table: &ito_table::Table) -> Result<String, Said> {
     let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{what}-{}.csv", chrono::Local::now().format("%Y%m%d-%H%M%S"))).display().to_string();
-    crate::csv::write(&path, text).map_err(plain)?;
+    crate::sheet::write(&path, table).map_err(plain)?;
     Ok(path)
 }
 

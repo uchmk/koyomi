@@ -14,7 +14,6 @@ mod acked;
 mod cli;
 mod client;
 mod compare;
-mod csv;
 mod engine;
 mod envreport;
 mod eventlog;
@@ -34,6 +33,7 @@ mod review;
 mod service;
 mod settings;
 mod sftp;
+mod sheet;
 mod show;
 mod ui;
 

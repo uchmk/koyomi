@@ -1,6 +1,6 @@
 # Checklist
 
-698 checks in TESTING.md, 694 left for a person.
+700 checks in TESTING.md, 696 left for a person.
 
 ## 1. Start
 
@@ -738,6 +738,8 @@
 - [ ] **73.4** `koyomi plan --csv -` → The table on the console with no BOM, and no file name said 〔未訳〕
 - [ ] **73.5** A net whose name has a comma; `koyomi list --csv -` → The name is in double quotes; Excel shows it in one cell 〔未訳〕
 - [ ] **73.6** Set the language to English in Settings; `koyomi plan --csv -` → The heads are Day,Weekday,Time,Jobnet 〔未訳〕
+- [ ] **73.7** `koyomi history --from <a week ago> --csv runs.xlsx`; open it in Excel → A workbook: bold frozen heads; 日付・開始・終了 are dates (sortable), 秒 is a number 〔未訳〕
+- [ ] **73.8** A job whose id starts with `=`; `koyomi list --csv jobs.csv` and open it in Excel → The id shows as text with a leading `'`, not as a formula 〔未訳〕
 
 ## 74. ジョブネットの名前を変える・複製・消す
 

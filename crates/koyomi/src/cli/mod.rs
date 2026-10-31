@@ -121,7 +121,7 @@ usage: koyomi [--version | --help | env]
 
 /// What every command takes, under the usage.
 pub const NOTE: &str = "every command takes --help (its lines) and --toml (the answer as TOML, for other programs)\n\
-a --csv file is UTF-8 with a BOM, for Excel\n";
+a --csv file is UTF-8 with a BOM, for Excel; one ending in .xlsx is an Excel workbook\n";
 
 /// What the sign-in entry runs: the engine, not the window; only the tray when the service runs the engine.
 pub fn startup_args() -> [&'static str; 1] {
@@ -492,9 +492,9 @@ fn check_config(name: &str, text: &str) -> i32 {
     i32::from(!notes.is_empty())
 }
 
-/// `--csv <to>`: writes `text` and says where (nothing said for `-`, the table is the output).
-fn wrote(to: &str, text: &str) -> i32 {
-    if let Err(e) = crate::csv::write(to, text) {
+/// `--csv <to>`: writes `table` and says where (nothing said for `-`, the table is the output).
+fn wrote(to: &str, table: &ito_table::Table) -> i32 {
+    if let Err(e) = crate::sheet::write(to, table) {
         return fail(&format!("koyomi: {e}"));
     }
     if to != "-" {
@@ -532,7 +532,7 @@ fn list(args: &[String]) -> i32 {
         snap.defs.retain(|d| &d.group == g);
     }
     if let Some(to) = csv {
-        return wrote(&to, &crate::csv::jobs(&table(), &snap.defs));
+        return wrote(&to, &crate::sheet::jobs(&table(), &snap.defs));
     }
     if toml() {
         emit(&snap.to_toml());
@@ -801,7 +801,7 @@ fn plan(args: &[String]) -> i32 {
     let (y, m) = month.unwrap_or((today.year(), today.month()));
     let days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
     if let Some(to) = csv {
-        let code = wrote(&to, &crate::csv::plan(&table(), &days));
+        let code = wrote(&to, &crate::sheet::plan(&table(), &days));
         if code != 0 || (pdf.is_none() && !print) {
             return code;
         }
@@ -1128,7 +1128,7 @@ fn history(args: &[String]) -> i32 {
     let rs: Vec<Run> =
         rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
     if let Some(to) = csv {
-        return wrote(&to, &crate::csv::runs(&table(), &rs));
+        return wrote(&to, &crate::sheet::runs(&table(), &rs));
     }
     if toml() {
         emit(&Runs { runs: rs }.to_toml());
@@ -1172,7 +1172,7 @@ fn report(args: &[String]) -> i32 {
     let rows = koyomi_core::report::summarize(&runs);
     let t = table();
     if let Some(to) = csv {
-        return wrote(&to, &crate::csv::report(&t, &rows));
+        return wrote(&to, &crate::sheet::report(&t, &rows));
     }
     if toml() {
         #[derive(Serialize)]
