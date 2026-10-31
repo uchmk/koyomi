@@ -12,6 +12,8 @@
 //!   standing, hold and the hash of its file), `GET /runs` (today's and the running ones; `?from=&to=` for days)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //! - `POST /runs/<id>/stop` stops the run's jobs (`koyomi kill`).
+//! - `POST /nets/skip-next` with `{"net", "cancel"?}` skips the net's next scheduled run
+//!   (`koyomi skip-next`), for the `run` role like hold and release.
 //! - Definitions, for the `edit` role (TODO 83): `GET /nets/text?net=<group>/<name>` is the
 //!   file's text and hash; `POST /nets/propose` with `{"net", "text", "base"?}` writes it as
 //!   the editor's save does, but leaves it unconfirmed: it runs only once this PC's window
@@ -286,6 +288,15 @@ struct Hold {
     job: Option<String>,
 }
 
+/// What `POST /nets/skip-next` takes: the net, and `cancel` to take the skip back.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SkipNext {
+    net: String,
+    #[serde(default)]
+    cancel: bool,
+}
+
 /// What `POST /nets/propose` takes: the net, its whole text, and the hash `GET /nets/text` gave
 /// (none for a new net).
 #[derive(Deserialize)]
@@ -312,6 +323,7 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("POST", "/runs", ..) => start_run(req, ask),
         ("POST", "/nets/hold", ..) => hold(req, true, ask),
         ("POST", "/nets/release", ..) => hold(req, false, ask),
+        ("POST", "/nets/skip-next", ..) => skip_next(req, ask),
         ("POST", "/nets/propose", ..) => propose(req, ask),
         ("GET", "/nets/text", ..) => def_text(req, ask),
         ("POST", ..) if act.is_some() => match act.unwrap_or_default() {
@@ -327,12 +339,13 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
         (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
         (_, "/nets/hold" | "/nets/release", ..) => Response::error(405, "POST で保留にする・外す"),
+        (_, "/nets/skip-next", ..) => Response::error(405, "POST で次の回を飛ばす・取り消す"),
         (_, "/nets/propose", ..) => Response::error(405, "POST で定義を出す"),
         (_, "/nets/text", ..) => Response::error(405, "GET で読む"),
         _ if act.is_some() => Response::error(405, "POST で止める・流し直す・飛ばす"),
         _ => Response::error(
             404,
-            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|propose・GET /health だけ",
+            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|skip-next|propose・GET /health だけ",
         ),
     }
 }
@@ -480,6 +493,21 @@ fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<Stri
     }
 }
 
+/// `POST /nets/skip-next`: skips the net's next scheduled run (or, with `cancel`, takes the skip
+/// back), as `koyomi skip-next` does.
+fn skip_next(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let s = match req.json::<SkipNext>() {
+        Ok(Some(s)) if !s.net.trim().is_empty() => s,
+        Ok(_) => return Response::error(400, "net が要る: {\"net\": \"<グループ>/<名前>\"}"),
+        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+    };
+    let id = s.net.trim().to_owned();
+    match ask(&Request::SkipNext { id: id.clone(), cancel: s.cancel }) {
+        Ok(text) => Response::ok(serde_json::json!({ "net": id, "skip": !s.cancel, "said": text.trim() })),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
 /// `GET /nets/text?net=<group>/<name>`: the definition's file as it is, with the hash to send
 /// back as `base` and whether it is confirmed.
 fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
@@ -607,6 +635,15 @@ mod tests {
         assert_eq!(handle(&req("POST", "/nets/hold", r#"{"net": "g/a", "job": "x"}"#), ask).status, 422);
         assert_eq!(handle(&req("POST", "/nets/hold", "{}"), ask).status, 400);
         assert_eq!(handle(&req("GET", "/nets/hold", ""), ask).status, 405);
+
+        let r = handle(&req("POST", "/nets/skip-next", r#"{"net": "g/a"}"#), ask);
+        assert_eq!((r.status, r.json["skip"].as_bool()), (200, Some(true)));
+        let r = handle(&req("POST", "/nets/skip-next", r#"{"net": "g/a", "cancel": true}"#), ask);
+        assert_eq!((r.status, r.json["skip"].as_bool()), (200, Some(false)));
+        assert!(asked.borrow().last().is_some_and(|a| a.contains(r#"SkipNext { id: "g/a", cancel: true }"#)));
+        assert_eq!(handle(&req("POST", "/nets/skip-next", r#"{"net": "g/a", "job": "b"}"#), ask).status, 400);
+        assert_eq!(handle(&req("POST", "/nets/skip-next", "{}"), ask).status, 400);
+        assert_eq!(handle(&req("GET", "/nets/skip-next", ""), ask).status, 405);
     }
 
     /// A definition is read with its hash and sent back as a proposal, which the engine leaves unconfirmed.

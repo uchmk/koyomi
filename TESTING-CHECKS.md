@@ -1,6 +1,6 @@
 # Checklist
 
-761 checks in TESTING.md, 757 left for a person.
+764 checks in TESTING.md, 760 left for a person.
 
 ## 1. Start
 
@@ -1034,6 +1034,9 @@
 - [ ] **97.11** 流す on a net with `[params]` → One question per value with its default filled in; キャンセル on any sends nothing 〔未訳〕
 - [ ] **97.12** Change one value, keep the others, confirm → The confirmation names only the changed value; the run gets it, the others take their defaults 〔未訳〕
 - [ ] **97.13** `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` → Each net has `params` with its names and defaults (`{}` when none) 〔未訳〕
+- [ ] **97.14** `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) → 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` 〔未訳〕
+- [ ] **97.15** The same with `{"net":"g/a","cancel":true}`; then once more → 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) 〔未訳〕
+- [ ] **97.16** The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` → 403; 405; 400 〔未訳〕
 
 ## 98. Definitions from the `edit` role (`GET /nets/text`, `POST /nets/propose`; TODO 83)
 

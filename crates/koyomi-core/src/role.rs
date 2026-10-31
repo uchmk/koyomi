@@ -47,7 +47,8 @@ impl fmt::Display for Role {
 }
 
 /// The role a request needs. Reads need `view`, but a definition's text needs `edit` (it is what
-/// would run); starting, stopping, rerunning and skipping runs and holding nets need `run`;
+/// would run); starting, stopping, rerunning and skipping runs and holding nets or skipping their
+/// next run need `run`;
 /// anything else, including what this table does not know yet, needs `edit`.
 pub fn needs(method: &str, path: &str) -> Role {
     let path = path.trim_end_matches('/');
@@ -55,7 +56,7 @@ pub fn needs(method: &str, path: &str) -> Role {
     match method {
         "GET" | "HEAD" if path == "/nets/text" => Role::Edit,
         "GET" | "HEAD" => Role::View,
-        "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release") => Role::Run,
+        "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release" | "/nets/skip-next") => Role::Run,
         "POST" => match run_part.as_deref() {
             Some([id, "stop" | "rerun" | "skip"]) if !id.is_empty() => Role::Run,
             _ => Role::Edit,
@@ -89,6 +90,7 @@ mod tests {
         assert_eq!(needs("POST", "/runs//stop"), Role::Edit);
         assert_eq!(needs("POST", "/runs/20261031-090000-01/rerun"), Role::Run);
         assert_eq!(needs("POST", "/nets/hold"), Role::Run);
+        assert_eq!(needs("POST", "/nets/skip-next"), Role::Run);
         assert_eq!(needs("POST", "/nets/release/"), Role::Run);
         assert_eq!(needs("POST", "/nets"), Role::Edit);
         assert_eq!(needs("PUT", "/nets/g/a"), Role::Edit);
