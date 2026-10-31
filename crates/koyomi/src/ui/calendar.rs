@@ -193,7 +193,7 @@ impl Browser {
                 rules = Some((holidays, off));
             }
             ui.separator();
-            for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table"].into_iter().enumerate() {
+            for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table", "calendar.print"].into_iter().enumerate() {
                 let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
                 ito_a11y::say(&r, Role::Button, t.tr(key));
                 if r.clicked() {
@@ -211,6 +211,12 @@ impl Browser {
         match act {
             Some(0) => self.rename_cal_box(&name),
             Some(1) => self.delete_cal_box(&name),
+            Some(3) => {
+                // The month's sheet of every approved net, as `koyomi plan --print` makes it.
+                let days = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+                self.result = Some(Ok(t.tr("run.writing").to_owned()));
+                Self::background(&self.io, move || super::print_plan(&days, y, m));
+            }
             Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
             None => {}
         }
@@ -307,7 +313,7 @@ impl Browser {
             let colour = if cal.stale(today) { c.wait_text() } else { c.dim };
             ui.label(egui::RichText::new(line).color(colour));
         }
-        if let Some(r) = &self.cal_result {
+        for r in [&self.cal_result, &self.result].into_iter().flatten() {
             match r {
                 Ok(s) => ui.label(egui::RichText::new(s).color(c.dim)),
                 Err(e) => ui.label(egui::RichText::new(e).color(c.err)),

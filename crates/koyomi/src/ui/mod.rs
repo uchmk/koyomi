@@ -2704,6 +2704,19 @@ fn export_csv(what: &str, text: &str) -> Result<String, Said> {
     Ok(path)
 }
 
+/// The month's sheet written as a PDF under `exports` and handed to the OS to print; where it went.
+fn print_plan(days: &[crate::plan::Day], year: i32, m: u32) -> Result<Said, Said> {
+    let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
+    std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
+    let path = dir.join(format!("plan-{year}-{m:02}.pdf"));
+    crate::plan::pdf(days, year, m, &path).map_err(plain)?;
+    let shown = path.display().to_string();
+    match ito_export::print(&path).map_err(plain)? {
+        ito_export::Printed::Sent => Ok(("calendar.printed", vec![shown])),
+        _ => Ok(("calendar.print_opened", vec![shown])),
+    }
+}
+
 /// A failure from below, whose words are already made: told as they are.
 fn plain(e: String) -> Said {
     ("port.plain", vec![e])
