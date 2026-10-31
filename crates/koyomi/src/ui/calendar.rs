@@ -132,28 +132,48 @@ impl Browser {
             };
             return;
         };
-        // This calendar's own cautions: this is where the person looks to fix them.
-        for l in self.snap.iter().flat_map(|s| s.calendar_cautions.get(&name).into_iter().flatten()) {
-            let r = ui
-                .add(egui::Label::new(egui::RichText::new(format!("{} {l}", ito_a11y::State::Warning.mark())).color(c.wait_text())).wrap());
-            ito_a11y::say(&r, Role::Label, l);
-        }
         let today = chrono::Local::now().date_naive();
+        // This calendar's own cautions in a band: this is where the person looks to fix them. When
+        // the holiday table ends soon, the band carries the button that brings a new one.
+        let cautions: Vec<String> = self.snap.iter().flat_map(|s| s.calendar_cautions.get(&name).into_iter().flatten().cloned()).collect();
+        let table_ends = cal.until().is_some_and(|u| (u - today).num_days() <= crate::engine::CAUTION_DAYS);
+        let mut bring = false;
+        if !cautions.is_empty() {
+            egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.wait)).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
+                for l in &cautions {
+                    let line = format!("{} {l}", ito_a11y::State::Warning.mark());
+                    let r = ui.add(egui::Label::new(egui::RichText::new(line).color(c.wait_text())).wrap());
+                    ito_a11y::say(&r, Role::Label, l);
+                }
+                if table_ends {
+                    let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr("calendar.table")));
+                    ito_a11y::say(&r, Role::Button, t.tr("calendar.table"));
+                    bring = r.clicked();
+                }
+            });
+            ui.add_space(4.0);
+        }
         let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
+        // 会社  ◀ 2026年11月 ▶  営業日 20 日; the screen reader hears it as one heading.
         let head = show::month_head(t, &cal, y, m);
+        let business = show::month_days(&cal, y, m).iter().filter(|(_, d)| d.is_business()).count();
         ui.horizontal(|ui| {
+            ui.label(egui::RichText::new(&name).strong());
+            ui.add_space(8.0);
             let r = ui.button("◀");
             ito_a11y::say(&r, Role::Button, t.tr("calendar.prev"));
             if r.clicked() {
                 self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
             }
-            let r = ui.heading(&head);
+            let r = ui.heading(t.trf("calendar.ym", &[&y.to_string(), &m.to_string()]));
             ito_a11y::say(&r, Role::Heading, &head);
             let r = ui.button("▶");
             ito_a11y::say(&r, Role::Button, t.tr("calendar.next"));
             if r.clicked() {
                 self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
             }
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new(t.trf("calendar.business_n", &[&business.to_string()])).color(c.dim));
         });
         ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.hint")).color(c.dim)).wrap());
         // The rules of the week, set in place; and the file itself.
@@ -165,8 +185,9 @@ impl Browser {
             let mut changed = ui.checkbox(&mut holidays, t.tr("newcal.holidays")).changed();
             ui.label(t.tr("newcal.off"));
             let mut off = WEEK.map(|w| cal.weekly_off.contains(&w));
-            for (w, on) in WEEK.iter().zip(off.iter_mut()) {
-                changed |= ui.checkbox(on, weekday(t, *w)).changed();
+            // Sunday first, as the table below; `off` stays Monday first.
+            for w in GRID {
+                changed |= ui.checkbox(&mut off[w.num_days_from_monday() as usize], weekday(t, w)).changed();
             }
             if changed {
                 rules = Some((holidays, off));
@@ -183,6 +204,9 @@ impl Browser {
         if let Some((holidays, off)) = rules {
             let off = days_off(off);
             self.cal_result = Some(edit_file(t, &name, |text| set_rules(text, holidays, &off)));
+        }
+        if bring {
+            act = Some(2);
         }
         match act {
             Some(0) => self.rename_cal_box(&name),
@@ -205,12 +229,7 @@ impl Browser {
                 ui.allocate_space(CELL);
             }
             for (d, day) in &days {
-                let colour = match day {
-                    Day::Business => c.fg,
-                    Day::Open(_) => c.done,
-                    Day::Closed(_) | Day::Holiday(_) => c.wait_text(),
-                    Day::WeeklyOff => c.dim,
-                };
+                let colour = day_colour(&c, day);
                 // A named day carries its name under the date, cut to fit; the whole name is on hover.
                 let named = show::day_name(t, day);
                 let short = named.as_deref().map(|n| {
@@ -259,12 +278,29 @@ impl Browser {
         if naming.is_some() {
             self.cal_inline = naming;
         }
+        // What the colours and the frame mean.
+        ui.add_space(4.0);
+        ui.horizontal_wrapped(|ui| {
+            let legend = [
+                (c.fg, "calendar.business"),
+                (c.dim, "calendar.legend_off"),
+                (c.wait, "calendar.legend_holiday"),
+                (c.magenta, "calendar.legend_closed"),
+                (c.done, "calendar.open"),
+            ];
+            for (colour, key) in legend {
+                ui.label(egui::RichText::new("■").color(colour));
+                ui.label(egui::RichText::new(t.tr(key)).color(c.dim));
+                ui.add_space(6.0);
+            }
+            ui.label(egui::RichText::new("□").color(c.blue));
+            ui.label(egui::RichText::new(t.tr("calendar.legend_today")).color(c.dim));
+        });
         self.inline_view(ui, t, &name, &cal);
         ui.add_space(6.0);
         for (d, day) in &days {
             if let Some(n) = show::day_name(t, day) {
-                let colour = if matches!(day, Day::Open(_)) { c.done } else { c.wait_text() };
-                ui.label(egui::RichText::new(format!("{} {n}", d.day())).color(colour));
+                ui.label(egui::RichText::new(format!("{} {n}", d.day())).color(day_colour(&c, day)));
             }
         }
         if let Some(line) = show::until_line(t, &cal, today) {
@@ -490,8 +526,8 @@ impl Browser {
                     ui.end_row();
                     ui.label(t.tr("newcal.off"));
                     ui.horizontal(|ui| {
-                        for (w, on) in WEEK.iter().zip(m.off.iter_mut()) {
-                            ui.checkbox(on, weekday(t, *w));
+                        for w in GRID {
+                            ui.checkbox(&mut m.off[w.num_days_from_monday() as usize], weekday(t, w));
                         }
                     });
                     ui.end_row();
@@ -628,6 +664,18 @@ pub fn users(defs: &[Def], name: &str) -> Vec<String> {
         }
     }
     out
+}
+
+/// A day's colour in the table, in the list under it and in the legend: the company's own days
+/// off stand apart from the holidays.
+fn day_colour(c: &ito_theme::Colors, day: &Day) -> egui::Color32 {
+    match day {
+        Day::Business => c.fg,
+        Day::Open(_) => c.done,
+        Day::Holiday(_) => c.wait,
+        Day::Closed(_) => c.magenta,
+        Day::WeeklyOff => c.dim,
+    }
 }
 
 fn weekday(t: &ito_i18n::Table, w: Weekday) -> String {
