@@ -21,30 +21,6 @@ use crate::show;
 const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
 /// The month table's columns: Sunday first, as a wall calendar.
 const GRID: [Weekday; 7] = [Weekday::Sun, Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat];
-/// A day's cell: the date over its name, wide enough for four characters of the name.
-const CELL: egui::Vec2 = egui::vec2(72.0, 44.0);
-/// A day's cell in a month with a named day: the date and two lines of the name.
-const NAMED_CELL: egui::Vec2 = egui::vec2(72.0, 58.0);
-
-/// The date and, under it, the day's name in up to two lines as wide as the cell (… past that).
-fn day_text(ui: &egui::Ui, rect: egui::Rect, date: u32, name: Option<&str>, colour: egui::Color32) {
-    let painter = ui.painter_at(rect);
-    let top = rect.center_top() + egui::vec2(0.0, 6.0);
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    let galley = painter.layout_no_wrap(date.to_string(), font, colour);
-    let at = egui::pos2(top.x - galley.size().x / 2.0, top.y);
-    let below = at.y + galley.size().y + 1.0;
-    painter.galley(at, galley, colour);
-    let Some(name) = name else { return };
-    let mut job = egui::text::LayoutJob::simple(name.to_owned(), egui::TextStyle::Small.resolve(ui.style()), colour, rect.width() - 6.0);
-    job.wrap.max_rows = 2;
-    job.wrap.break_anywhere = true;
-    job.wrap.overflow_character = Some('…');
-    job.halign = egui::Align::Center;
-    let galley = painter.layout_job(job);
-    painter.galley(egui::pos2(top.x, below), galley, colour);
-}
-
 /// The 新しいカレンダー box: the name (the file's stem), Japan's holidays, and the days off each week.
 pub(super) struct NewCal {
     /// The calendar the box renames; `None` makes a new one.
@@ -165,287 +141,514 @@ impl Browser {
             return;
         };
         let today = chrono::Local::now().date_naive();
-        // This calendar's own cautions in a band: this is where the person looks to fix them. When
-        // the holiday table ends soon, the band carries the button that brings a new one.
-        let cautions: Vec<String> = self.snap.iter().flat_map(|s| s.calendar_cautions.get(&name).into_iter().flatten().cloned()).collect();
-        let table_ends = cal.until().is_some_and(|u| (u - today).num_days() <= crate::engine::CAUTION_DAYS);
-        let mut bring = false;
-        if !cautions.is_empty() {
-            egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.wait)).inner_margin(6.0).corner_radius(4.0).show(ui, |ui| {
-                for l in &cautions {
-                    let line = format!("{} {l}", ito_a11y::State::Warning.mark());
-                    let r = ui.add(egui::Label::new(egui::RichText::new(line).color(c.wait_text())).wrap());
-                    ito_a11y::say(&r, Role::Label, l);
-                }
-                if table_ends {
-                    let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr("calendar.table")));
-                    ito_a11y::say(&r, Role::Button, t.tr("calendar.table"));
-                    bring = r.clicked();
+        let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
+        let days = show::month_days(&cal, y, m);
+        // The day whose starts show in the pane: the one picked, or today in this month.
+        let picked =
+            self.cal_day.filter(|d| d.year() == y && d.month() == m).or_else(|| days.iter().any(|(d, _)| *d == today).then_some(today));
+        // The picked day, the named days and the nets on this calendar: a pane at the right, shown
+        // before the month so the month takes the room that is left.
+        let wide = ui.available_width();
+        let mut toggle_box = None;
+        egui::Panel::right("calendar_side")
+            .resizable(true)
+            .default_size(340.0_f32.min(wide * 0.4))
+            .size_range(240.0..=(wide * 0.6).max(240.0))
+            .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::same(12)))
+            .show(ui, |ui| {
+                super::one_size(ui.style_mut());
+                egui::ScrollArea::vertical().id_salt("calendar_side_scroll").auto_shrink(false).show(ui, |ui| {
+                    toggle_box = self.side_pane(ui, t, &name, &cal, &days, picked, today);
+                });
+            });
+        // The month and what goes with it scroll under the pane when the window is short.
+        egui::ScrollArea::vertical().id_salt("calendar_page").auto_shrink(false).show(ui, |ui| {
+            // This calendar's own cautions in a band: this is where the person looks to fix them. When
+            // the holiday table ends soon, the band carries the button that brings a new one.
+            let cautions: Vec<String> =
+                self.snap.iter().flat_map(|s| s.calendar_cautions.get(&name).into_iter().flatten().cloned()).collect();
+            let table_ends = cal.until().is_some_and(|u| (u - today).num_days() <= crate::engine::CAUTION_DAYS);
+            let mut bring = false;
+            if !cautions.is_empty() {
+                egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.wait)).inner_margin(6.0).corner_radius(4.0).show(
+                    ui,
+                    |ui| {
+                        for l in &cautions {
+                            let line = format!("{} {l}", ito_a11y::State::Warning.mark());
+                            let r = ui.add(egui::Label::new(egui::RichText::new(line).color(c.wait_text())).wrap());
+                            ito_a11y::say(&r, Role::Label, l);
+                        }
+                        if table_ends {
+                            let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr("calendar.table")));
+                            ito_a11y::say(&r, Role::Button, t.tr("calendar.table"));
+                            bring = r.clicked();
+                        }
+                    },
+                );
+                ui.add_space(4.0);
+            }
+            // 会社 [営業日 19 日]  ‹ 2026年11月 ›; the screen reader hears the month as one heading.
+            let head = show::month_head(t, &cal, y, m);
+            let business = days.iter().filter(|(_, d)| d.is_business()).count();
+            let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+            ui.horizontal(|ui| {
+                let r = ui.label(egui::RichText::new(&name).heading().strong());
+                ito_a11y::say(&r, Role::Heading, &name);
+                let words = t.trf("calendar.business_n", &[&business.to_string()]);
+                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&words).color(c.done));
+                ito_a11y::say(&r, Role::Label, &words);
+                ui.add_space(10.0);
+                egui::Frame::new()
+                    .fill(c.panel)
+                    .stroke(egui::Stroke::new(1.0, c.border))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(4, 1))
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            let r = ui.add(egui::Button::new(egui::RichText::new("◀").color(c.dim)).frame(false));
+                            ito_a11y::say(&r, Role::Button, t.tr("calendar.prev"));
+                            if r.clicked() {
+                                self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
+                            }
+                            let ym = t.trf("calendar.ym", &[&y.to_string(), &format!("{m:02}")]);
+                            let r = ui.label(egui::RichText::new(ym).heading().strong());
+                            ito_a11y::say(&r, Role::Heading, &head);
+                            let r = ui.add(egui::Button::new(egui::RichText::new("▶").color(c.dim)).frame(false));
+                            ito_a11y::say(&r, Role::Button, t.tr("calendar.next"));
+                            if r.clicked() {
+                                self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
+                            }
+                        });
+                    });
+            });
+            ui.add_space(4.0);
+            // The file itself; then the rules of the week, set in place.
+            let mut rules = None;
+            let mut act = None;
+            ui.horizontal_wrapped(|ui| {
+                for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table", "calendar.print"].into_iter().enumerate() {
+                    let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
+                    ito_a11y::say(&r, Role::Button, t.tr(key));
+                    if r.clicked() {
+                        act = Some(i);
+                    }
                 }
             });
             ui.add_space(4.0);
-        }
-        let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
-        // 会社  ◀ 2026年11月 ▶  営業日 20 日; the screen reader hears it as one heading.
-        let head = show::month_head(t, &cal, y, m);
-        let business = show::month_days(&cal, y, m).iter().filter(|(_, d)| d.is_business()).count();
-        ui.horizontal(|ui| {
-            ui.label(egui::RichText::new(&name).strong());
-            ui.add_space(8.0);
-            let r = ui.button("◀");
-            ito_a11y::say(&r, Role::Button, t.tr("calendar.prev"));
-            if r.clicked() {
-                self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
-            }
-            let r = ui.heading(t.trf("calendar.ym", &[&y.to_string(), &m.to_string()]));
-            ito_a11y::say(&r, Role::Heading, &head);
-            let r = ui.button("▶");
-            ito_a11y::say(&r, Role::Button, t.tr("calendar.next"));
-            if r.clicked() {
-                self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
-            }
-            ui.add_space(8.0);
-            ui.label(egui::RichText::new(t.trf("calendar.business_n", &[&business.to_string()])).color(c.dim));
-        });
-        ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.hint")).color(c.dim)).wrap());
-        // The rules of the week, set in place; and the file itself.
-        let mut rules = None;
-        let mut act = None;
-        ui.horizontal_wrapped(|ui| {
             let mut holidays = cal.holidays;
             // egui names a checkbox for the screen reader itself.
             let mut changed = ui.checkbox(&mut holidays, t.tr("newcal.holidays")).changed();
-            ui.label(t.tr("newcal.off"));
             let mut off = WEEK.map(|w| cal.weekly_off.contains(&w));
-            // Sunday first, as the table below; `off` stays Monday first.
-            for w in GRID {
-                changed |= ui.checkbox(&mut off[w.num_days_from_monday() as usize], weekday(t, w)).changed();
-            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(format!("{}:", t.tr("newcal.off")));
+                // Sunday first, as the table below; `off` stays Monday first.
+                for w in GRID {
+                    let words = egui::RichText::new(weekday(t, w)).color(weekday_colour(&c, w));
+                    changed |= ui.checkbox(&mut off[w.num_days_from_monday() as usize], words).changed();
+                }
+            });
             if changed {
                 rules = Some((holidays, off));
             }
-            ui.separator();
-            for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table", "calendar.print"].into_iter().enumerate() {
-                let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
-                ito_a11y::say(&r, Role::Button, t.tr(key));
-                if r.clicked() {
-                    act = Some(i);
+            ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.hint")).small().color(c.dim)).wrap());
+            if let Some((holidays, off)) = rules {
+                let off = days_off(off);
+                self.cal_result = Some(edit_file(t, &name, |text| set_rules(text, holidays, &off)));
+            }
+            if bring {
+                act = Some(2);
+            }
+            match act {
+                Some(0) => self.rename_cal_box(&name),
+                Some(1) => self.delete_cal_box(&name),
+                Some(3) => {
+                    // The month's sheet of every approved net, as `koyomi plan --print` makes it.
+                    let days = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+                    self.result = Some(Ok(t.tr("run.writing").to_owned()));
+                    Self::background(&self.io, move || super::print_plan(&days, y, m));
                 }
+                Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
+                None => {}
+            }
+            ui.add_space(8.0);
+            let starts = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+            let out = month_grid(ui, t, &name, (y, m), &days, &starts, picked, today);
+            self.month_notes(ui, t, &name, &cal);
+            if out.pick.is_some() {
+                self.cal_day = out.pick;
+            }
+            if let Some((d, day)) = out.toggle.or(toggle_box) {
+                self.cal_result = Some(toggle_day(t, &name, &cal, d, &day));
+            }
+            if out.naming.is_some() {
+                self.cal_inline = out.naming;
             }
         });
-        if let Some((holidays, off)) = rules {
-            let off = days_off(off);
-            self.cal_result = Some(edit_file(t, &name, |text| set_rules(text, holidays, &off)));
-        }
-        if bring {
-            act = Some(2);
-        }
-        match act {
-            Some(0) => self.rename_cal_box(&name),
-            Some(1) => self.delete_cal_box(&name),
-            Some(3) => {
-                // The month's sheet of every approved net, as `koyomi plan --print` makes it.
-                let days = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
-                self.result = Some(Ok(t.tr("run.writing").to_owned()));
-                Self::background(&self.io, move || super::print_plan(&days, y, m));
-            }
-            Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
-            None => {}
-        }
-        ui.add_space(6.0);
-        let days = show::month_days(&cal, y, m);
-        // The day whose starts show beside the month: the one picked, or today in this month.
-        let picked =
-            self.cal_day.filter(|d| d.year() == y && d.month() == m).or_else(|| days.iter().any(|(d, _)| *d == today).then_some(today));
-        let mut pick = None;
-        let mut toggle: Option<(NaiveDate, Day)> = None;
-        let mut naming = None;
-        ui.horizontal_top(|ui| {
-            egui::Grid::new("calendar").min_col_width(CELL.x).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
-                for w in GRID {
-                    let colour = if matches!(w, Weekday::Sat | Weekday::Sun) { c.dim } else { c.fg };
-                    ui.add_sized([CELL.x, 20.0], egui::Label::new(egui::RichText::new(weekday(t, w)).color(colour)));
-                }
-                ui.end_row();
-                let Some((first, _)) = days.first() else { return };
-                // A month with a named day gets taller cells, room for the name in two lines.
-                let cell = if days.iter().any(|(_, day)| show::day_name(t, day).is_some()) { NAMED_CELL } else { CELL };
-                for _ in 0..first.weekday().num_days_from_sunday() {
-                    ui.allocate_space(cell);
-                }
-                for (d, day) in &days {
-                    let colour = day_colour(&c, day);
-                    // A named day carries its name under the date, in up to two lines as wide as the
-                    // cell, cut with … only past that; the whole name is on hover.
-                    let named = show::day_name(t, day);
-                    let fill = if day.is_business() { c.panel } else { c.side };
-                    let here = picked == Some(*d);
-                    let stroke = match (*d == today, here) {
-                        (true, true) => egui::Stroke::new(3.0, c.blue),
-                        (true, false) => egui::Stroke::new(2.0, c.blue),
-                        (false, true) => egui::Stroke::new(2.0, c.fg),
-                        (false, false) => egui::Stroke::new(1.0, c.border),
-                    };
-                    let r = ui.add_sized(cell, egui::Button::new("").fill(fill).stroke(stroke));
-                    day_text(ui, r.rect, d.day(), named.as_deref(), colour);
-                    let r = match &named {
-                        Some(n) => r.on_hover_text(n),
-                        None => r,
-                    };
-                    let kind =
-                        named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-                    ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
-                    // A click picks the day; a double click or the menu moves it between open and closed.
-                    if r.double_clicked() {
-                        toggle = Some((*d, day.clone()));
-                    } else if r.clicked() {
-                        pick = Some(*d);
+    }
+
+    /// Under the month: what the colours mean, the field typed in, and what was just done.
+    fn month_notes(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, name: &str, cal: &Calendar) {
+        let c = ito_theme::colors();
+        ui.add_space(8.0);
+        egui::Frame::new()
+            .fill(c.panel)
+            .stroke(egui::Stroke::new(1.0, c.border))
+            .corner_radius(6.0)
+            .inner_margin(egui::Margin::symmetric(10, 6))
+            .show(ui, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    let legend = [
+                        (c.fg, "calendar.business"),
+                        (c.dim, "calendar.legend_off"),
+                        (c.err, "calendar.legend_holiday"),
+                        (c.magenta, "calendar.legend_closed"),
+                        (c.done, "calendar.open"),
+                        (c.blue, "calendar.legend_today"),
+                        (c.run, "calendar.picked"),
+                    ];
+                    for (colour, key) in legend {
+                        let (rect, _) = ui.allocate_exact_size(egui::vec2(12.0, 12.0), egui::Sense::hover());
+                        ui.painter().rect_filled(rect, 2.0, ito_theme::mix(c.panel, colour, 0.18));
+                        ui.painter().rect_stroke(rect, 2.0, egui::Stroke::new(1.0, colour), egui::StrokeKind::Inside);
+                        ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                        ui.add_space(8.0);
                     }
-                    r.context_menu(|ui| {
-                        if ui.button(t.tr(toggle_key(day))).clicked() {
-                            toggle = Some((*d, day.clone()));
-                            ui.close();
-                        }
-                        if ui.button(t.tr("calendar.name_day")).clicked() {
-                            let text = match day {
-                                Day::Open(n) | Day::Closed(n) => n.clone(),
-                                _ => String::new(),
-                            };
-                            naming = Some(Inline::Name { cal: name.clone(), day: *d, text, fresh: true });
-                            ui.close();
-                        }
-                    });
-                    if d.weekday() == Weekday::Sat {
-                        ui.end_row();
-                    }
-                }
+                });
             });
-            ui.add_space(12.0);
-            if let Some(d) = picked {
-                let day = days.iter().find(|(x, _)| *x == d).map(|(_, day)| day.clone()).unwrap_or(Day::Business);
-                if self.day_box(ui, t, &cal, d, &day) {
-                    toggle = Some((d, day));
-                }
-            }
-        });
-        if pick.is_some() {
-            self.cal_day = pick;
-        }
-        if let Some((d, day)) = toggle {
-            self.cal_result = Some(toggle_day(t, &name, &cal, d, &day));
-        }
-        if naming.is_some() {
-            self.cal_inline = naming;
-        }
-        // What the colours and the frame mean.
-        ui.add_space(4.0);
-        ui.horizontal_wrapped(|ui| {
-            let legend = [
-                (c.fg, "calendar.business"),
-                (c.dim, "calendar.legend_off"),
-                (c.wait, "calendar.legend_holiday"),
-                (c.magenta, "calendar.legend_closed"),
-                (c.done, "calendar.open"),
-            ];
-            for (colour, key) in legend {
-                ui.label(egui::RichText::new("■").color(colour));
-                ui.label(egui::RichText::new(t.tr(key)).color(c.dim));
-                ui.add_space(6.0);
-            }
-            ui.label(egui::RichText::new("□").color(c.blue));
-            ui.label(egui::RichText::new(t.tr("calendar.legend_today")).color(c.dim));
-        });
-        self.inline_view(ui, t, &name, &cal);
-        ui.add_space(6.0);
-        for (d, day) in &days {
-            if let Some(n) = show::day_name(t, day) {
-                ui.label(egui::RichText::new(format!("{} {n}", d.day())).color(day_colour(&c, day)));
-            }
-        }
-        if let Some(line) = show::until_line(t, &cal, today) {
-            let colour = if cal.stale(today) { c.wait_text() } else { c.dim };
-            ui.label(egui::RichText::new(line).color(colour));
-        }
+        self.inline_view(ui, t, name, cal);
         for r in [&self.cal_result, &self.result].into_iter().flatten() {
             match r {
                 Ok(s) => ui.label(egui::RichText::new(s).color(c.dim)),
                 Err(e) => ui.label(egui::RichText::new(e).color(c.err)),
             };
         }
-        // The definitions on this calendar; the one picked in the tree with its next times.
-        ui.add_space(8.0);
-        let Some(snap) = &self.snap else { return };
-        let users: Vec<_> = snap.defs.iter().filter(|d| d.calendar.as_deref() == Some(name.as_str())).collect();
-        if users.is_empty() {
-            ui.label(egui::RichText::new(t.tr("calendar.used_none")).color(c.dim));
-            return;
-        }
-        let r = ui.label(egui::RichText::new(t.tr("calendar.used_by")).strong().color(c.dim));
-        ito_a11y::say(&r, Role::Heading, t.tr("calendar.used_by"));
-        for d in &users {
-            ui.label(format!("  {}", d.label()));
-        }
-        let picked = users.iter().find(|d| self.selected.as_deref() == Some(d.id.as_str()));
-        if let Some(net) = picked.and_then(|d| d.net.as_ref().map(|n| (d, n))) {
-            let (d, net) = net;
-            if !net.when.is_empty() {
-                ui.add_space(6.0);
-                let head = format!("{}: {}", d.label(), t.trf("run.next", &["10"]));
-                let r = ui.label(egui::RichText::new(&head).strong().color(c.dim));
-                ito_a11y::say(&r, Role::Heading, &head);
-                if d.standing != Standing::Confirmed {
-                    ui.label(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text()));
-                }
-                let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
-                let now = chrono::Local::now().naive_local();
-                for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(&cal), now, 10, power.as_ref()) {
-                    ui.label(format!("  {row}"));
-                }
+    }
+
+    /// The pane at the right of the month: the picked day, the month's named days with the holiday
+    /// table's end, and the definitions that count by this calendar. The day pressed to move
+    /// between open and closed, if any.
+    #[allow(clippy::too_many_arguments)]
+    fn side_pane(
+        &self,
+        ui: &mut egui::Ui,
+        t: &ito_i18n::Table,
+        name: &str,
+        cal: &Calendar,
+        days: &[(NaiveDate, Day)],
+        picked: Option<NaiveDate>,
+        today: NaiveDate,
+    ) -> Option<(NaiveDate, Day)> {
+        let c = ito_theme::colors();
+        let mut toggle = None;
+        if let Some(d) = picked {
+            let day = days.iter().find(|(x, _)| *x == d).map(|(_, day)| day.clone()).unwrap_or(Day::Business);
+            if self.day_box(ui, t, cal, d, &day) {
+                toggle = Some((d, day));
             }
+            ui.add_space(10.0);
         }
+        let named: Vec<_> = days.iter().filter_map(|(d, day)| show::day_name(t, day).map(|n| (*d, day, n))).collect();
+        let until = show::until_line(t, cal, today);
+        if !named.is_empty() || until.is_some() {
+            card(ui, &c, |ui| {
+                let r = ui.label(egui::RichText::new(t.tr("calendar.named_head")).strong());
+                ito_a11y::say(&r, Role::Heading, t.tr("calendar.named_head"));
+                ui.add_space(4.0);
+                for (d, day, n) in &named {
+                    let line = format!("{}/{} ({}) {n}", d.month(), d.day(), weekday(t, d.weekday()));
+                    ui.add(egui::Label::new(egui::RichText::new(line).color(day_colour(&c, day))).wrap());
+                }
+                if let Some(line) = until {
+                    ui.add_space(4.0);
+                    let colour = if cal.stale(today) { c.wait_text() } else { c.dim };
+                    ui.add(egui::Label::new(egui::RichText::new(line).small().color(colour)).wrap());
+                }
+            });
+            ui.add_space(10.0);
+        }
+        self.used_by(ui, t, name, cal);
+        toggle
+    }
+
+    /// The definitions on this calendar; the one picked in the tree with its next times.
+    fn used_by(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, name: &str, cal: &Calendar) {
+        let c = ito_theme::colors();
+        let Some(snap) = &self.snap else { return };
+        let users: Vec<_> = snap.defs.iter().filter(|d| d.calendar.as_deref() == Some(name)).collect();
+        card(ui, &c, |ui| {
+            let r = ui.label(egui::RichText::new(t.tr("calendar.used_by")).strong());
+            ito_a11y::say(&r, Role::Heading, t.tr("calendar.used_by"));
+            ui.add_space(4.0);
+            if users.is_empty() {
+                ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.used_none")).color(c.dim)).wrap());
+                return;
+            }
+            for d in &users {
+                let on = self.selected.as_deref() == Some(d.id.as_str());
+                let text = egui::RichText::new(d.label());
+                ui.add(egui::Label::new(if on { text.strong() } else { text }).wrap());
+            }
+            let picked = users.iter().find(|d| self.selected.as_deref() == Some(d.id.as_str()));
+            let Some((d, net)) = picked.and_then(|d| d.net.as_ref().map(|n| (d, n))) else { return };
+            if net.when.is_empty() {
+                return;
+            }
+            ui.add_space(6.0);
+            let head = format!("{}: {}", d.label(), t.trf("run.next", &["10"]));
+            let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong().color(c.dim)).wrap());
+            ito_a11y::say(&r, Role::Heading, &head);
+            if d.standing != Standing::Confirmed {
+                ui.add(egui::Label::new(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text())).wrap());
+            }
+            let power = Some(show::Sleep::of(&snap.power, net.wake));
+            let now = chrono::Local::now().naive_local();
+            for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(cal), now, 10, power.as_ref()) {
+                ui.label(egui::RichText::new(row).monospace().small());
+            }
+        });
     }
 }
 
+/// What a click in the month asked for.
+#[derive(Default)]
+struct Grid {
+    pick: Option<NaiveDate>,
+    toggle: Option<(NaiveDate, Day)>,
+    naming: Option<Inline>,
+}
+
+/// A card in the pane beside the month: the panel's colour, a line round it, as wide as the pane.
+fn card(ui: &mut egui::Ui, c: &ito_theme::Colors, add: impl FnOnce(&mut egui::Ui)) {
+    egui::Frame::new().fill(c.panel).stroke(egui::Stroke::new(1.0, c.border)).corner_radius(8.0).inner_margin(12.0).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.with_layout(egui::Layout::top_down(egui::Align::Min), add);
+    });
+}
+
+/// Sunday and Saturday stand out in the table's head, its dates and the week's boxes.
+fn weekday_colour(c: &ito_theme::Colors, w: Weekday) -> egui::Color32 {
+    match w {
+        Weekday::Sun => c.err,
+        Weekday::Sat => c.blue,
+        _ => c.fg,
+    }
+}
+
+/// The month as one table without gaps, Sunday first, as wide as the room: a band of weekdays,
+/// then a cell a day. Each cell has its date at the top left, its name (or 選択中) as a tag at the
+/// top right, a tint by what the day is, and the times that start on it. The days of the months
+/// either side fill the first and last weeks, faint and not pressed.
+#[allow(clippy::too_many_arguments)]
+fn month_grid(
+    ui: &mut egui::Ui,
+    t: &ito_i18n::Table,
+    name: &str,
+    (y, m): (i32, u32),
+    days: &[(NaiveDate, Day)],
+    starts: &[crate::plan::Day],
+    picked: Option<NaiveDate>,
+    today: NaiveDate,
+) -> Grid {
+    let c = ito_theme::colors();
+    let mut out = Grid::default();
+    let Some(first) = NaiveDate::from_ymd_opt(y, m, 1) else { return out };
+    let lead = first.weekday().num_days_from_sunday() as usize;
+    let rows = (lead + days.len()).div_ceil(7);
+    let start = first - chrono::Days::new(lead as u64);
+    let cw = (ui.available_width().max(7.0 * 60.0) / 7.0).floor();
+    let ch = (cw * 0.9).clamp(88.0, 124.0);
+    let band = 30.0;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(cw * 7.0, band + ch * rows as f32), egui::Sense::hover());
+    let painter = ui.painter_at(rect.expand(1.0));
+    let base = c.bg;
+    painter.rect_filled(rect, 6.0, base);
+    // The band of weekdays.
+    let head = egui::Rect::from_min_size(rect.min, egui::vec2(rect.width(), band));
+    painter.rect_filled(head, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, c.panel);
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    for (i, w) in GRID.into_iter().enumerate() {
+        let x = rect.min.x + cw * (i as f32 + 0.5);
+        let colour = if matches!(w, Weekday::Sun | Weekday::Sat) { weekday_colour(&c, w) } else { c.dim };
+        painter.text(egui::pos2(x, head.center().y), egui::Align2::CENTER_CENTER, weekday(t, w), font.clone(), colour);
+    }
+    let mono = egui::TextStyle::Monospace.resolve(ui.style());
+    let small = egui::FontId::monospace(egui::TextStyle::Small.resolve(ui.style()).size);
+    for i in 0..rows * 7 {
+        let d = start + chrono::Days::new(i as u64);
+        let (row, col) = (i / 7, i % 7);
+        let cell = egui::Rect::from_min_size(egui::pos2(rect.min.x + cw * col as f32, head.max.y + ch * row as f32), egui::vec2(cw, ch));
+        let Some((_, day)) = days.iter().find(|(x, _)| *x == d) else {
+            // A day of the month before or after: its date, faint.
+            let colour = ito_theme::mix(base, c.dim, 0.45);
+            painter.text(cell.min + egui::vec2(8.0, 6.0), egui::Align2::LEFT_TOP, format!("{}", d.day()), mono.clone(), colour);
+            continue;
+        };
+        let id = ui.id().with(("cal_cell", d));
+        let r = ui.interact(cell, id, egui::Sense::click());
+        // The tint says what the day is; a hover lifts it a little.
+        let tint = match day {
+            Day::Holiday(_) => ito_theme::mix(base, c.err, 0.12),
+            Day::Closed(_) => ito_theme::mix(base, c.magenta, 0.12),
+            Day::Open(_) => ito_theme::mix(base, c.done, 0.10),
+            Day::WeeklyOff => ito_theme::mix(base, weekday_colour(&c, d.weekday()), 0.06),
+            Day::Business => base,
+        };
+        let tint = if r.hovered() { ito_theme::mix(tint, c.fg, 0.05) } else { tint };
+        painter.rect_filled(cell, 0.0, tint);
+        let named = show::day_name(t, day);
+        let red = matches!(day, Day::Holiday(_)) || d.weekday() == Weekday::Sun;
+        let number = if red { c.err } else { weekday_colour(&c, d.weekday()) };
+        let here = picked == Some(d);
+        let galley = painter.layout_no_wrap(d.day().to_string(), mono.clone(), number);
+        let at = cell.min + egui::vec2(8.0, 6.0);
+        let size = galley.size();
+        if d == today {
+            // Today: the date on a round mark of the today colour.
+            let mark = egui::Rect::from_min_size(at - egui::vec2(4.0, 1.0), size + egui::vec2(8.0, 2.0));
+            painter.rect_filled(mark, mark.height() / 2.0, c.blue);
+            painter.text(at, egui::Align2::LEFT_TOP, d.day().to_string(), mono.clone(), c.on_accent());
+        } else {
+            painter.galley(at, galley, number);
+        }
+        // The name (or 選択中) as a tag at the top right, as wide as is left. A name too long for
+        // the corner takes a line of its own under the date; 選択中 is left out (the ring says it).
+        let tag_words = named.clone().or_else(|| here.then(|| t.tr("calendar.picked").to_owned()));
+        let line = 16.0;
+        let mut top = cell.min.y + 28.0;
+        if let Some(words) = &tag_words {
+            let colour = if named.is_some() { day_colour(&c, day) } else { c.run };
+            let tag = ito_prefs::Tag::new(words).color(colour);
+            let max = (cell.width() - size.x - 26.0).max(20.0);
+            let w = ito_prefs::tag_width(ui, tag);
+            if w <= max {
+                ito_prefs::paint_tag(&painter, ui.ctx(), &c, egui::pos2(cell.max.x - 6.0 - w, cell.min.y + 5.0), tag, max);
+            } else if named.is_some() {
+                let r = ito_prefs::paint_tag(&painter, ui.ctx(), &c, egui::pos2(cell.min.x + 5.0, top), tag, cell.width() - 10.0);
+                top = r.max.y + 3.0;
+            }
+        }
+        // The times that start on the day, one a line, as many as fit; +N for the rest.
+        let times = starts.iter().find(|(x, _)| *x == d).map(|(_, s)| s.as_slice()).unwrap_or_default();
+        let fit = (((cell.max.y - 4.0 - top) / (line + 2.0)).floor() as usize).max(1);
+        for (k, (at, net)) in times.iter().enumerate() {
+            let y = top + k as f32 * (line + 2.0);
+            let chip = egui::Rect::from_min_size(egui::pos2(cell.min.x + 5.0, y), egui::vec2(cell.width() - 10.0, line));
+            if k + 1 == fit && times.len() > fit {
+                let more = format!("+{}", times.len() - k);
+                painter.text(chip.left_center() + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, more, small.clone(), c.dim);
+                break;
+            }
+            painter.rect_filled(chip, 3.0, ito_theme::mix(tint, c.run, 0.10));
+            painter.rect_stroke(chip, 3.0, egui::Stroke::new(1.0, ito_theme::mix(tint, c.run, 0.35)), egui::StrokeKind::Inside);
+            let mut job = egui::text::LayoutJob::default();
+            let fmt = |colour| egui::TextFormat { font_id: small.clone(), color: colour, ..Default::default() };
+            let hm = at.format("%H:%M").to_string();
+            let hm_w = painter.layout_no_wrap(hm.clone(), small.clone(), c.run).size().x;
+            job.append(&hm, 0.0, fmt(c.run));
+            // The net only when a few letters of it fit; else the time alone, and the pane says the rest.
+            if chip.width() - 8.0 - hm_w > 40.0 {
+                job.append(net, 6.0, fmt(c.fg));
+            }
+            job.wrap.max_width = chip.width() - 8.0;
+            job.wrap.max_rows = 1;
+            job.wrap.break_anywhere = true;
+            job.wrap.overflow_character = Some('…');
+            let g = painter.layout_job(job);
+            painter.galley(egui::pos2(chip.min.x + 4.0, chip.center().y - g.size().y / 2.0), g, c.fg);
+        }
+        // The rings: today in its colour, the picked day in the accent inside it.
+        if d == today && !here {
+            painter.rect_stroke(cell.shrink(1.0), 0.0, egui::Stroke::new(2.0, c.blue), egui::StrokeKind::Inside);
+        }
+        if here {
+            painter.rect_stroke(cell.shrink(1.0), 0.0, egui::Stroke::new(2.0, c.run), egui::StrokeKind::Inside);
+        }
+        if r.has_focus() {
+            painter.rect_stroke(cell.shrink(4.0), 2.0, egui::Stroke::new(1.0, c.fg), egui::StrokeKind::Inside);
+        }
+        let r = match &named {
+            Some(n) => r.on_hover_text(n),
+            None => r,
+        };
+        let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
+        ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
+        // A click picks the day; a double click or the menu moves it between open and closed.
+        if r.double_clicked() {
+            out.toggle = Some((d, day.clone()));
+        } else if r.clicked() {
+            out.pick = Some(d);
+        }
+        r.context_menu(|ui| {
+            if ui.button(t.tr(toggle_key(day))).clicked() {
+                out.toggle = Some((d, day.clone()));
+                ui.close();
+            }
+            if ui.button(t.tr("calendar.name_day")).clicked() {
+                let text = match day {
+                    Day::Open(n) | Day::Closed(n) => n.clone(),
+                    _ => String::new(),
+                };
+                out.naming = Some(Inline::Name { cal: name.to_owned(), day: d, text, fresh: true });
+                ui.close();
+            }
+        });
+    }
+    // The lines between the cells, and round the whole.
+    let line = egui::Stroke::new(1.0, c.border);
+    for k in 1..7 {
+        let x = rect.min.x + cw * k as f32;
+        painter.line_segment([egui::pos2(x, head.max.y), egui::pos2(x, rect.max.y)], line);
+    }
+    for k in 0..rows {
+        let y = head.max.y + ch * k as f32;
+        painter.line_segment([egui::pos2(rect.min.x, y), egui::pos2(rect.max.x, y)], line);
+    }
+    painter.rect_stroke(rect, 6.0, line, egui::StrokeKind::Inside);
+    out
+}
+
 impl Browser {
-    /// この日に動くもの（11/7 土・営業日 5）beside the month: the approved starts of that day, on
-    /// every calendar, and the button that moves the day between open and closed. True when it
-    /// is pressed.
+    /// この日に動くもの beside the month: the date with what the day is, the button that moves it
+    /// between open and closed, and the approved starts of that day on every calendar, a card each.
+    /// True when the button is pressed.
     fn day_box(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, cal: &Calendar, d: NaiveDate, day: &Day) -> bool {
         let c = ito_theme::colors();
         let starts = self.snap.as_ref().map(|s| crate::plan::day(&s.defs, &s.calendars, d).1).unwrap_or_default();
         let mut pressed = false;
-        // As wide as the room beside the month allows, up to 300 (the frame's margin and line take 22).
-        let width = (ui.available_width() - 22.0).clamp(180.0, 300.0);
-        egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(10.0).corner_radius(4.0).show(ui, |ui| {
-            // The box sits in the month's row; inside it reads top to bottom, or each word would
-            // stand beside the last and wrap a letter at a time.
-            ui.with_layout(egui::Layout::top_down(egui::Align::Min), |ui| {
-                ui.set_width(width);
-                let head = t.trf(
-                    "calendar.day_head",
-                    &[&format!("{}/{}", d.month(), d.day()), &weekday(t, d.weekday()), &day_kind(t, cal, d, day)],
-                );
-                let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
-                ito_a11y::say(&r, Role::Heading, &head);
-                ui.add_space(6.0);
-                if starts.is_empty() {
-                    ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
-                } else {
-                    egui::Grid::new("cal_day_starts").num_columns(2).spacing([12.0, 4.0]).show(ui, |ui| {
-                        for (at, net) in &starts {
-                            ui.label(egui::RichText::new(at.format("%H:%M").to_string()).monospace().color(c.dim));
-                            ui.add(egui::Label::new(net.to_string()).wrap());
-                            ui.end_row();
-                        }
-                    });
-                }
-                ui.add_space(6.0);
-                ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
-                ui.add_space(6.0);
-                let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(toggle_key(day))));
-                ito_a11y::say(&r, Role::Button, t.tr(toggle_key(day)));
-                pressed = r.clicked();
+        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+        card(ui, &c, |ui| {
+            let kind = day_kind(t, cal, d, day);
+            ui.horizontal(|ui| {
+                let date = format!("{} ({})", d.format("%Y/%m/%d"), weekday(t, d.weekday()));
+                ui.label(egui::RichText::new(date).monospace().strong().size(16.0));
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ito_prefs::tag(ui, look, ito_prefs::Tag::new(&kind).color(day_colour(&c, day)));
+                });
             });
+            ui.add_space(8.0);
+            pressed = super::primary(ui, !self.blocked(), t.tr(toggle_key(day))).clicked();
+            ui.add_space(10.0);
+            let head = t.trf("calendar.day_head", &[&format!("{}/{}", d.month(), d.day()), &weekday(t, d.weekday()), &kind]);
+            let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
+            ito_a11y::say(&r, Role::Heading, &head);
+            ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
+            ui.add_space(6.0);
+            if starts.is_empty() {
+                ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
+            }
+            for (at, net) in &starts {
+                egui::Frame::new()
+                    .fill(c.raised())
+                    .stroke(egui::Stroke::new(1.0, c.border))
+                    .corner_radius(6.0)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
+                        ui.set_width(ui.available_width());
+                        ui.label(egui::RichText::new(at.format("%H:%M").to_string()).monospace().strong().color(c.run));
+                        ui.add(egui::Label::new(net.to_string()).wrap());
+                    });
+                ui.add_space(4.0);
+            }
         });
         pressed
     }
@@ -774,7 +977,7 @@ fn day_colour(c: &ito_theme::Colors, day: &Day) -> egui::Color32 {
     match day {
         Day::Business => c.fg,
         Day::Open(_) => c.done,
-        Day::Holiday(_) => c.wait,
+        Day::Holiday(_) => c.err,
         Day::Closed(_) => c.magenta,
         Day::WeeklyOff => c.dim,
     }
