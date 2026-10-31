@@ -326,8 +326,6 @@ pub struct Browser {
     run_sort: Option<(usize, bool)>,
     /// The nets overview's sort (the ジョブネット tab with no net picked), as `today_sort`.
     nets_sort: Option<(usize, bool)>,
-    /// The net picked (not opened) in the nets overview by a single click.
-    nets_pick: Option<String>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -463,7 +461,6 @@ impl Browser {
             net_sort: None,
             run_sort: None,
             nets_sort: None,
-            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1777,8 +1774,8 @@ impl Browser {
     }
 
     /// The ジョブネット tab with no net picked: every net in one table, in the tree's order, with its last
-    /// run's state, start and time, its next start and whether it waits for a person. A click picks a
-    /// row, a double click opens the net; a head sorts.
+    /// run's state, start and time, its next start and whether it waits for a person. A click opens the
+    /// net, as a click on it in the tree does (the tree marks it too); a head sorts.
     fn nets_overview(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
@@ -1855,8 +1852,7 @@ impl Browser {
         let heads: Vec<String> = ["col_state", "col_net", "col_group", "col_last", "col_time", "col_next", "col_note"]
             .map(|k| t.tr(&format!("nets.{k}")).to_owned())
             .to_vec();
-        let picked = self.nets_pick.clone();
-        let (mut pick, mut open) = (None, None);
+        let mut open = None;
         // The header band stays put; only the rows scroll up and down. Sideways they scroll together.
         egui::ScrollArea::horizontal().id_salt("nets_scroll").auto_shrink(false).show(ui, |ui| {
             one_size(ui.style_mut());
@@ -1870,24 +1866,18 @@ impl Browser {
             egui::ScrollArea::vertical().id_salt("nets_rows").auto_shrink([true, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for row in &rows {
-                    let on = picked.as_deref() == Some(row.id.as_str());
-                    let r = table.cells_of(ui, &row.cells, on, row.state).on_hover_text(t.tr("nets.open_hint"));
+                    let r = table.cells_of(ui, &row.cells, false, row.state).on_hover_text(t.tr("nets.open_hint"));
                     let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
                     ito_a11y::say(&r, Role::Row, &said.join(" "));
-                    if r.double_clicked() {
+                    if r.clicked() {
                         open = Some(row.id.clone());
-                    } else if r.clicked() {
-                        pick = Some(row.id.clone());
                     }
                 }
             });
             ui.spacing_mut().item_spacing.y = gap;
         });
         if let Some(id) = open {
-            self.nets_pick = Some(id.clone());
             self.open_net(&id);
-        } else if let Some(id) = pick {
-            self.nets_pick = Some(id);
         }
     }
 
@@ -2092,6 +2082,10 @@ impl Browser {
         match go {
             Some(0) => self.open_gantt(),
             Some(1) => {
+                // Pressed again on a net's page: back to every net (the tree lets go of it too).
+                if net && self.run_sel.is_none() && self.editor.is_none() {
+                    self.selected = None;
+                }
                 self.hist = None;
                 self.gantt = false;
                 self.run_sel = None;
@@ -3851,7 +3845,6 @@ mod tests {
             net_sort: None,
             run_sort: None,
             nets_sort: None,
-            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
