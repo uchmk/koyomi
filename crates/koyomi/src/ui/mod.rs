@@ -326,6 +326,8 @@ pub struct Browser {
     run_sort: Option<(usize, bool)>,
     /// The nets overview's sort (the ジョブネット tab with no net picked), as `today_sort`.
     nets_sort: Option<(usize, bool)>,
+    /// The net picked (not opened) in the nets overview by a single click; the tree marks it too.
+    nets_pick: Option<String>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -461,6 +463,7 @@ impl Browser {
             net_sort: None,
             run_sort: None,
             nets_sort: None,
+            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1715,7 +1718,13 @@ impl Browser {
             if twins.contains(&d.id) {
                 text = review::twin_row(text, d);
             }
-            let on = self.run_sel.is_none() && self.hist.is_none() && self.selected.as_deref() == Some(d.id.as_str());
+            // On the overview (no net open) the row picked there is marked here too.
+            let shown = if self.selected.is_none() && !self.gantt && self.cal_sel.is_none() {
+                self.nets_pick.as_deref()
+            } else {
+                self.selected.as_deref()
+            };
+            let on = self.run_sel.is_none() && self.hist.is_none() && shown == Some(d.id.as_str());
             let r = tree_row(ui, &c, on, last, &text);
             // The mark is a picture; the word for the last run's state is what is said.
             let said = match last {
@@ -1763,6 +1772,7 @@ impl Browser {
 
     /// Opens the net `id` on the ジョブネット tab, as a pick in the tree does.
     fn open_net(&mut self, id: &str) {
+        self.nets_pick = Some(id.to_owned());
         self.selected = Some(id.to_owned());
         self.run_sel = None;
         self.cal_sel = None;
@@ -1774,8 +1784,8 @@ impl Browser {
     }
 
     /// The ジョブネット tab with no net picked: every net in one table, in the tree's order, with its last
-    /// run's state, start and time, its next start and whether it waits for a person. A click opens the
-    /// net, as a click on it in the tree does (the tree marks it too); a head sorts.
+    /// run's state, start and time, its next start and whether it waits for a person. A click picks a row
+    /// (the tree marks it too), a double click opens the net; a head sorts.
     fn nets_overview(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
@@ -1852,7 +1862,8 @@ impl Browser {
         let heads: Vec<String> = ["col_state", "col_net", "col_group", "col_last", "col_time", "col_next", "col_note"]
             .map(|k| t.tr(&format!("nets.{k}")).to_owned())
             .to_vec();
-        let mut open = None;
+        let picked = self.nets_pick.clone();
+        let (mut pick, mut open) = (None, None);
         // The header band stays put; only the rows scroll up and down. Sideways they scroll together.
         egui::ScrollArea::horizontal().id_salt("nets_scroll").auto_shrink(false).show(ui, |ui| {
             one_size(ui.style_mut());
@@ -1866,11 +1877,14 @@ impl Browser {
             egui::ScrollArea::vertical().id_salt("nets_rows").auto_shrink([true, false]).show(ui, |ui| {
                 ui.spacing_mut().item_spacing.y = 0.0;
                 for row in &rows {
-                    let r = table.cells_of(ui, &row.cells, false, row.state).on_hover_text(t.tr("nets.open_hint"));
+                    let on = picked.as_deref() == Some(row.id.as_str());
+                    let r = table.cells_of(ui, &row.cells, on, row.state).on_hover_text(t.tr("nets.open_hint"));
                     let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
                     ito_a11y::say(&r, Role::Row, &said.join(" "));
-                    if r.clicked() {
+                    if r.double_clicked() {
                         open = Some(row.id.clone());
+                    } else if r.clicked() {
+                        pick = Some(row.id.clone());
                     }
                 }
             });
@@ -1878,6 +1892,8 @@ impl Browser {
         });
         if let Some(id) = open {
             self.open_net(&id);
+        } else if pick.is_some() {
+            self.nets_pick = pick;
         }
     }
 
@@ -2083,8 +2099,9 @@ impl Browser {
             Some(0) => self.open_gantt(),
             Some(1) => {
                 // Pressed again on a net's page: back to every net (the tree lets go of it too).
-                if net && self.run_sel.is_none() && self.editor.is_none() {
-                    self.selected = None;
+                if net && self.run_sel.is_none() && self.editor.is_none() && self.selected.is_some() {
+                    // The net just left stays picked in the overview.
+                    self.nets_pick = self.selected.take();
                 }
                 self.hist = None;
                 self.gantt = false;
@@ -3845,6 +3862,7 @@ mod tests {
             net_sort: None,
             run_sort: None,
             nets_sort: None,
+            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),

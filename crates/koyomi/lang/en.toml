@@ -316,7 +316,7 @@ average = "(avg {0})"
 [nets]
 heading = "All jobnets"
 empty = "No jobnets yet. Make one with the ＋ on the left"
-open_hint = "Click to open its page"
+open_hint = "Double-click to open its page"
 col_state = "State"
 col_group = "Group"
 col_net = "Jobnet"
