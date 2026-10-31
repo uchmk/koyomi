@@ -295,6 +295,20 @@ missed = "時刻を過ぎた"
 locked = "止めた"
 not_run = "未実行"
 
+[inspect]
+title = "選んだジョブネット"
+none = "今日の表かチャートで行を選ぶと、そのジョブネットがここに出ます。"
+fold = "右の欄をたたむ"
+open = "右の欄を開く"
+last = "前回: {0}"
+graph = "図（実行フロー）"
+jobs = "構成ジョブ定義"
+name = "名前"
+before = "先行ジョブ"
+after = "後続ジョブ"
+log = "最新の実行ログ抜粋"
+no_log = "（まだログはありません）"
+
 [today]
 open_net = "ジョブネットのページを開く"
 unhandled = "未対応"

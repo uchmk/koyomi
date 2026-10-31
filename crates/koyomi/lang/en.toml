@@ -296,6 +296,20 @@ missed = "time passed"
 locked = "locked"
 not_run = "not run"
 
+[inspect]
+title = "Picked net"
+none = "Pick a row in today's table or chart to see its net here."
+fold = "Fold the pane"
+open = "Open the pane"
+last = "Last: {0}"
+graph = "Picture (flow)"
+jobs = "Jobs"
+name = "Name"
+before = "Waits for"
+after = "Followed by"
+log = "End of the newest log"
+no_log = "(no log yet)"
+
 [today]
 open_net = "Open the net's page"
 unhandled = "Unhandled"

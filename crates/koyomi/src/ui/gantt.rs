@@ -120,13 +120,16 @@ pub fn draw(
     let x_of = |f: f32| origin.x + LABEL + f * width;
     let font = egui::FontId::proportional(super::ONE_SIZE);
     let mono = egui::FontId::monospace(super::ONE_SIZE);
-    // A line every hour, a stronger one with its time every two.
+    // A line every hour, a stronger one every two; the times go as often as they fit side by side.
+    let room = painter.layout_no_wrap("00:00".to_owned(), mono.clone(), c.dim).size().x + 10.0;
+    let per_hour = width / hours as f32;
+    let every = [2, 3, 4, 6, 12, 24].into_iter().find(|n| *n as f32 * per_hour >= room).unwrap_or(24);
     for h in 0..=hours {
         let x = x_of(h as f32 / hours as f32);
         let major = h % 2 == 0;
         let line = if major { c.border } else { ito_theme::mix(c.border, c.side, 0.5) };
         painter.line_segment([Pos2::new(x, origin.y + 18.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, line));
-        if major && h < hours {
+        if h % every == 0 && h < hours {
             let label = format!("{:02}:00", h);
             painter.text(Pos2::new(x + 3.0, origin.y + 2.0), egui::Align2::LEFT_TOP, label, mono.clone(), c.dim);
         }
@@ -216,7 +219,9 @@ fn dashed(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
 /// The key under the chart's title: a small swatch and a word for each state the bars show.
 pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table) {
     let c = ito_theme::colors();
-    for state in [State::Held, State::Running, State::Ok, State::Error] {
+    // Laid left to right, each swatch in the room before its word.
+    for state in [State::Error, State::Ok, State::Running, State::Held] {
+        ui.add_space(14.0);
         let word = super::show::tag(t, state);
         let word = word.trim_start_matches(|ch: char| !ch.is_whitespace()).trim();
         let r = ui.label(egui::RichText::new(word).small().color(c.dim));
@@ -228,7 +233,6 @@ pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table) {
         } else {
             ui.painter().rect_filled(swatch, 2.0, graph::colour(&c, state));
         }
-        ui.add_space(14.0);
     }
 }
 

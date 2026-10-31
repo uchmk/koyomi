@@ -187,6 +187,9 @@ struct Kept {
     /// `horizontal` (the default) or `vertical`: which way a run's picture flows.
     #[serde(default)]
     flow: Option<String>,
+    /// `false` once the inspector at the right of 今日 was folded.
+    #[serde(default)]
+    inspector: Option<bool>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -318,6 +321,10 @@ pub struct Browser {
     gantt: bool,
     /// The today table's chip that is on: only its rows show.
     today_kind: Option<TodayKind>,
+    /// The net of the row picked on 今日 (a start still to come has no run); the inspector shows it.
+    today_net: Option<String>,
+    /// The inspector at the right of 今日 is open (not folded to its strip).
+    inspector: bool,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
     today_sort: Option<(usize, bool)>,
     /// The jobs table's sort on the net page, as `today_sort`.
@@ -411,6 +418,7 @@ impl Browser {
         let path = state.map(|d| d.join("state.toml"));
         let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
         let vertical = kept.flow.as_deref() == Some("vertical");
+        let inspector = kept.inspector != Some(false);
         let flow = path.map(|p| kept::Writer::new(p, true));
         let far = far::Far::start(&io.1);
         Browser {
@@ -459,6 +467,8 @@ impl Browser {
             hist: None,
             gantt: true,
             today_kind: None,
+            today_net: None,
+            inspector,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -750,8 +760,14 @@ impl Browser {
 
     fn set_flow(&mut self, vertical: bool) {
         self.vertical = vertical;
+        self.save_kept();
+    }
+
+    /// Writes the picture's flow and the inspector's fold to `state.toml`.
+    fn save_kept(&self) {
         if let Some(w) = &self.flow {
-            w.save_toml(&Kept { flow: Some(if vertical { "vertical" } else { "horizontal" }.to_owned()) });
+            let flow = Some(if self.vertical { "vertical" } else { "horizontal" }.to_owned());
+            w.save_toml(&Kept { flow, inspector: Some(self.inspector) });
         }
     }
 
@@ -1524,6 +1540,8 @@ impl Browser {
             if self.editor.is_some() {
                 self.editor_view(ui, t);
             } else if self.gantt {
+                // The picked row's net at the right, folded to a strip when not wanted.
+                self.inspector_pane(ui, t);
                 // The chart in a pane at the bottom, its top edge dragged to size it; the table above.
                 egui::Panel::bottom("gantt_pane")
                     .resizable(true)
@@ -1536,7 +1554,8 @@ impl Browser {
                         ui.set_min_height(ui.available_height());
                         self.gantt_view(ui, t);
                     });
-                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
+                // Both ways: with the inspector open the table may be wider than what is left.
+                egui::ScrollArea::both().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
                     one_size(ui.style_mut());
                     self.today_table(ui, t);
                 });
@@ -2039,8 +2058,11 @@ impl Browser {
         let blocked = self.blocked();
         let (mut ask, mut go_net) = (None, None);
         for row in &rows {
-            let on = row.run.is_some() && self.run_sel == row.run;
-            let mut r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, row.run.is_some());
+            let on = match &row.run {
+                Some(_) => self.run_sel == row.run,
+                None => self.run_sel.is_none() && self.today_net.as_deref() == Some(row.net.as_str()),
+            };
+            let mut r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, true);
             if row.run.is_some() {
                 r = r.on_hover_text(t.tr("today.open_hint"));
             }
@@ -2048,7 +2070,7 @@ impl Browser {
             if r.double_clicked() {
                 open = row.run.clone();
             } else if r.clicked() {
-                pick = row.run.clone();
+                pick = Some((row.run.clone(), row.net.clone()));
             }
             r.context_menu(|ui| {
                 let net_held = held.contains(&row.net);
@@ -2083,8 +2105,9 @@ impl Browser {
         // net page.
         if let Some(id) = open {
             self.open_run(&id);
-        } else if let Some(id) = pick {
-            self.run_sel = Some(id);
+        } else if let Some((run, net)) = pick {
+            self.run_sel = run;
+            self.today_net = Some(net);
         }
     }
 
@@ -2168,6 +2191,7 @@ impl Browser {
         self.cal_sel = None;
         self.job_sel = None;
         self.result = None;
+        self.today_net = None;
         self.gantt = true;
     }
 
@@ -2338,11 +2362,12 @@ impl Browser {
             .corner_radius(6)
             .inner_margin(egui::Margin::same(12))
             .show(ui, |ui| {
-                ui.horizontal(|ui| {
+                // The key at the right when it fits, else on its own line under the title.
+                ui.horizontal_wrapped(|ui| {
                     let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.fg));
                     ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
                     ui.label(egui::RichText::new(t.tr("run.gantt_note")).small().color(c.dim));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| gantt::legend(ui, t));
+                    gantt::legend(ui, t);
                 });
                 ui.add_space(6.0);
                 egui::ScrollArea::both().id_salt("gantt").auto_shrink(false).show(ui, |ui| {
@@ -2361,7 +2386,10 @@ impl Browser {
         // As a row of the table: a click picks the run, a double click opens it on the net page.
         match pick {
             Some((id, true)) => self.open_run(&id),
-            Some((id, false)) => self.run_sel = Some(id),
+            Some((id, false)) => {
+                self.today_net = None;
+                self.run_sel = Some(id);
+            }
             None => {}
         }
     }
@@ -2916,6 +2944,193 @@ impl Browser {
         }
     }
 
+    /// The net the inspector on 今日 shows: that of the row picked in the table, else of the run picked
+    /// on the chart.
+    fn inspected(&self) -> Option<Def> {
+        let id = self.today_net.clone().or_else(|| self.selected_run().map(|r| r.jobnet.clone()))?;
+        self.snap.as_ref()?.defs.iter().find(|d| d.id == id).cloned()
+    }
+
+    /// The pane at the right of 今日: the picked net's name, its main buttons, its picture, its next
+    /// starts, its jobs one card each and the end of its last log. Folded, it is a thin strip with ‹.
+    fn inspector_pane(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        if !self.inspector {
+            egui::Panel::right("inspector_strip")
+                .resizable(false)
+                .exact_size(28.0)
+                .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)))
+                .show(ui, |ui| {
+                    let r = ui.add(egui::Button::new("‹").frame(false)).on_hover_text(t.tr("inspect.open"));
+                    ito_a11y::say(&r, Role::Button, t.tr("inspect.open"));
+                    if r.clicked() {
+                        self.inspector = true;
+                        self.save_kept();
+                    }
+                });
+            return;
+        }
+        let wide = ui.available_width();
+        egui::Panel::right("inspector")
+            .resizable(true)
+            .default_size(300.0_f32.min(wide * 0.4))
+            .size_range(220.0..=(wide * 0.7).max(220.0))
+            .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::same(12)))
+            .show(ui, |ui| {
+                one_size(ui.style_mut());
+                egui::ScrollArea::vertical().id_salt("inspector_scroll").auto_shrink(false).show(ui, |ui| self.inspector_body(ui, t));
+            });
+    }
+
+    fn inspector_body(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let look = ito_prefs::Look { c, q: "" };
+        let def = self.inspected();
+        // The head: the name (a click opens the net's page), the fold mark at the right.
+        let mut fold = false;
+        let mut go = None;
+        ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let r = ui.add(egui::Button::new("›").frame(false)).on_hover_text(t.tr("inspect.fold"));
+                ito_a11y::say(&r, Role::Button, t.tr("inspect.fold"));
+                fold = r.clicked();
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                    let Some(def) = &def else {
+                        let r = ui.label(egui::RichText::new(t.tr("inspect.title")).strong().color(c.dim));
+                        ito_a11y::say(&r, Role::Heading, t.tr("inspect.title"));
+                        return;
+                    };
+                    let r = ui
+                        .add(egui::Label::new(egui::RichText::new(def.label()).strong().size(15.0)).sense(egui::Sense::click()))
+                        .on_hover_text(t.tr("today.open_net"))
+                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    ito_a11y::say(&r, Role::Heading, def.label());
+                    if r.clicked() {
+                        go = Some(def.id.clone());
+                    }
+                });
+            });
+        });
+        if fold {
+            self.inspector = false;
+            self.save_kept();
+        }
+        let Some(def) = def else {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.tr("inspect.none")).color(c.dim));
+            return;
+        };
+        // The net's newest run today, if any: its state is the badge, its log the excerpt at the end.
+        let last = self.runs.iter().filter(|r| r.jobnet == def.id).max_by_key(|r| r.started).cloned();
+        let shown = self.selected_run().filter(|r| r.jobnet == def.id).cloned().or(last);
+        ui.horizontal_wrapped(|ui| {
+            if let Some(run) = &shown {
+                let text = t.trf("inspect.last", &[&show::tag(t, run.state)]);
+                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(graph::colour(&c, run.state)));
+                ito_a11y::say(&r, Role::Label, &text);
+            }
+            ui.label(egui::RichText::new(&def.file).small().color(c.dim));
+        });
+        let held = self.snap.as_ref().is_some_and(|s| s.held.contains(&def.id));
+        ui.add_space(8.0);
+        ui.horizontal_wrapped(|ui| {
+            self.run_now_button(ui, t, &def, held);
+            self.approve_button(ui, t, &def);
+            self.edit_button(ui, t, &def);
+            self.hold_button(ui, t, &def, held);
+        });
+        if held {
+            let text = format!("{} {}", State::Held.mark(), t.tr("run.held_note"));
+            let r = ui.label(egui::RichText::new(&text).color(graph::colour(&c, State::Held)));
+            ito_a11y::say(&r, Role::Label, &text);
+        }
+        self.show_result(ui);
+        let section = |ui: &mut egui::Ui, key: &str| {
+            ui.add_space(12.0);
+            let r = ui.label(egui::RichText::new(t.tr(key)).strong().color(c.fg));
+            ito_a11y::say(&r, Role::Heading, t.tr(key));
+            ui.add_space(2.0);
+        };
+        let code = |ui: &mut egui::Ui, lines: &[(String, egui::Color32)]| {
+            egui::Frame::new()
+                .fill(c.bg)
+                .stroke(egui::Stroke::new(1.0, c.border))
+                .corner_radius(4)
+                .inner_margin(egui::Margin::same(6))
+                .show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    for (l, colour) in lines {
+                        let r = ui.add(egui::Label::new(egui::RichText::new(l).monospace().color(*colour)).wrap());
+                        ito_a11y::say(&r, Role::Label, l);
+                    }
+                });
+        };
+        if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
+            section(ui, "inspect.graph");
+            self.net_graph(ui, t, &def, "inspector_graph");
+            section(ui, "net.sec_timing");
+            self.net_timing(ui, t, &def);
+            section(ui, "inspect.jobs");
+            let rows = review::job_rows(t, &def);
+            for (i, j) in net.jobs.iter().enumerate() {
+                let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
+                let next: Vec<String> = net.jobs.iter().filter(|k| k.after.iter().any(|l| l.job == j.id)).map(|k| k.id.clone()).collect();
+                egui::Frame::new()
+                    .fill(c.panel)
+                    .stroke(egui::Stroke::new(1.0, c.border))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal_wrapped(|ui| {
+                            let r = ui.label(egui::RichText::new(&j.id).monospace().strong());
+                            ito_a11y::say(&r, Role::Heading, &j.id);
+                            ui.label(egui::RichText::new(t.tr(&format!("part.{}", j.part.key()))).color(c.dim));
+                        });
+                        let mut fact = |key: &str, v: String| {
+                            if !v.is_empty() {
+                                let text = format!("{}: {v}", t.tr(key));
+                                let r = ui.label(egui::RichText::new(&text).color(c.dim));
+                                ito_a11y::say(&r, Role::Label, &text);
+                            }
+                        };
+                        fact("inspect.name", j.name.clone().unwrap_or_default());
+                        fact("inspect.before", after.join(", "));
+                        fact("inspect.after", next.join(", "));
+                        if let Some(cmd) = rows.get(i).and_then(|r| r.command.clone()) {
+                            code(ui, &[(cmd, c.fg)]);
+                        }
+                    });
+                ui.add_space(4.0);
+            }
+        } else if def.net.is_some() {
+            section(ui, "net.sec_timing");
+            self.net_timing(ui, t, &def);
+        }
+        // The end of the newest run's log: the job that failed, else the one running or the last.
+        if let Some(run) = shown {
+            let job = run.jobs.iter().find(|j| j.state.is_error()).map(|j| j.id.clone()).or_else(|| Self::watched_job(&run, None));
+            if let Some(job) = job {
+                *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some((run.id.clone(), job.clone()));
+                section(ui, "inspect.log");
+                ui.label(egui::RichText::new(format!("{} / {job}", run.id)).small().color(c.dim));
+                let text = self.log.as_ref().filter(|(r, j, _)| r == &run.id && j == &job).map(|(_, _, s)| s.as_str()).unwrap_or("");
+                let colour = if run.state.is_error() { c.err } else { c.fg };
+                let lines: Vec<&str> = text.lines().collect();
+                let tail: Vec<(String, egui::Color32)> =
+                    lines[lines.len().saturating_sub(8)..].iter().map(|l| ((*l).to_owned(), colour)).collect();
+                if tail.is_empty() {
+                    ui.label(egui::RichText::new(t.tr("inspect.no_log")).color(c.dim));
+                } else {
+                    code(ui, &tail);
+                }
+            }
+        }
+        if let Some(id) = go {
+            self.open_net(&id);
+        }
+    }
+
     fn detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(def) = self.selected_def().cloned() else { return };
@@ -2928,40 +3143,10 @@ impl Browser {
         ui.label(egui::RichText::new(&def.file).color(c.dim));
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            let can = def.standing == Standing::Unconfirmed && !self.blocked();
-            let label = match &self.easy {
-                Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
-                None => t.tr("confirm.approve").to_owned(),
-            };
-            let r = ui.add_enabled(can, egui::Button::new(&label));
-            ito_a11y::say(&r, Role::Button, &label);
-            if let Some(lang) = &self.easy {
-                ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
-            }
-            if r.clicked() && !self.box_open() {
-                self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
-                self.focus = 0;
-            }
-            let r = ui.add_enabled(def.net.is_some(), egui::Button::new(t.tr("canvas.edit")));
-            ito_a11y::say(&r, Role::Button, t.tr("canvas.edit"));
-            if r.clicked() {
-                self.open_editor(&def.id);
-                self.focus = 0;
-            }
-            let can = def.standing == Standing::Confirmed && !self.blocked();
-            let r = ui.add_enabled(can && !held, egui::Button::new(t.tr("run.now")));
-            ito_a11y::say(&r, Role::Button, t.tr("run.now"));
-            if r.clicked() {
-                self.run_now(def.id.clone(), def.net.as_ref().map(|n| &n.params));
-            }
-            // On hold: its times are written down as ⏸ and nothing runs until it is released.
-            let key = if held { "run.release" } else { "run.hold" };
-            let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
-            ito_a11y::say(&r, Role::Button, t.tr(key));
-            if r.clicked() {
-                let id = def.id.clone();
-                let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
-            }
+            self.approve_button(ui, t, &def);
+            self.edit_button(ui, t, &def);
+            self.run_now_button(ui, t, &def, held);
+            self.hold_button(ui, t, &def, held);
             // The job picked on the graph or in the jobs table is held from here too, next to the net's own hold.
             let job = self.job_sel.clone().filter(|p| def.net.as_ref().is_some_and(|n| n.jobs.iter().any(|j| &j.id == p)));
             if let Some(job) = job {
@@ -2984,8 +3169,74 @@ impl Browser {
             let r = ui.label(egui::RichText::new(t.tr(key)).strong().size(15.0));
             ito_a11y::say(&r, Role::Heading, t.tr(key));
         };
-        if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
+        if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_graph");
+            self.net_graph(ui, t, &def, "net_graph");
+        }
+        if def.net.is_some() {
+            section(ui, "net.sec_timing");
+            self.net_timing(ui, t, &def);
+        }
+        let lines = review::settings(t, &def);
+        if !lines.is_empty() {
+            section(ui, "net.sec_settings");
+            for l in lines {
+                ui.label(l);
+            }
+        }
+    }
+
+    /// 確かめる…: opens the box that marks the net 確認済み (only while it is not).
+    fn approve_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
+        let can = def.standing == Standing::Unconfirmed && !self.blocked();
+        let label = match &self.easy {
+            Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
+            None => t.tr("confirm.approve").to_owned(),
+        };
+        let r = ui.add_enabled(can, egui::Button::new(&label));
+        ito_a11y::say(&r, Role::Button, &label);
+        if let Some(lang) = &self.easy {
+            ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
+        }
+        if r.clicked() && !self.box_open() {
+            self.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
+            self.focus = 0;
+        }
+    }
+
+    /// 編集: the net in the editor.
+    fn edit_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
+        let r = ui.add_enabled(def.net.is_some(), egui::Button::new(t.tr("canvas.edit")));
+        ito_a11y::say(&r, Role::Button, t.tr("canvas.edit"));
+        if r.clicked() {
+            self.open_editor(&def.id);
+            self.focus = 0;
+        }
+    }
+
+    /// 今すぐ流す: the page's main action, filled with the accent.
+    fn run_now_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
+        let can = def.standing == Standing::Confirmed && !self.blocked() && !held;
+        if primary(ui, can, t.tr("run.now")).clicked() && can {
+            self.run_now(def.id.clone(), def.net.as_ref().map(|n| &n.params));
+        }
+    }
+
+    /// Holds the net, or releases it: on hold its times are written down as ⏸ and nothing runs.
+    fn hold_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
+        let key = if held { "run.release" } else { "run.hold" };
+        let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
+        ito_a11y::say(&r, Role::Button, t.tr(key));
+        if r.clicked() {
+            let id = def.id.clone();
+            let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
+        }
+    }
+
+    /// The net's picture, laid out as the editor placed it; a click on a job picks it.
+    fn net_graph(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, salt: &str) {
+        let c = ito_theme::colors();
+        if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
             let now = chrono::Local::now().naive_local();
             let mut preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
             // A held job shows ⏸ on its station.
@@ -2996,7 +3247,7 @@ impl Browser {
             }
             let picked = self.job_sel.clone().filter(|p| net.jobs.iter().any(|j| &j.id == p));
             let mut pick = None;
-            egui::ScrollArea::horizontal().id_salt("net_graph").auto_shrink([false, true]).show(ui, |ui| {
+            egui::ScrollArea::horizontal().id_salt(salt).auto_shrink([false, true]).show(ui, |ui| {
                 pick = graph::draw(ui, &preview, self.vertical, picked.as_deref(), Some(&net.jobs));
             });
             if pick.is_some() {
@@ -3008,8 +3259,12 @@ impl Browser {
                 ito_a11y::say(&r, Role::Label, text);
             }
         }
+    }
+
+    /// The net's next ten starts, in figures of one width; the first, the one coming, is bold.
+    fn net_timing(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
+        let c = ito_theme::colors();
         if let Some(net) = &def.net {
-            section(ui, "net.sec_timing");
             if net.when.is_empty() {
                 ui.label(egui::RichText::new(t.tr("run.next_none")).color(c.dim));
             } else {
@@ -3026,16 +3281,11 @@ impl Browser {
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
                 }
-                for row in rows {
-                    ui.label(format!("  {row}"));
+                for (i, row) in rows.iter().enumerate() {
+                    let text = egui::RichText::new(format!("  {row}")).monospace();
+                    let r = ui.label(if i == 0 { text.strong() } else { text });
+                    ito_a11y::say(&r, Role::Label, row);
                 }
-            }
-        }
-        let lines = review::settings(t, &def);
-        if !lines.is_empty() {
-            section(ui, "net.sec_settings");
-            for l in lines {
-                ui.label(l);
             }
         }
     }
@@ -3882,6 +4132,8 @@ mod tests {
             hist: None,
             gantt: false,
             today_kind: None,
+            today_net: None,
+            inspector: true,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -4569,7 +4821,7 @@ run = [\"x.exe\"]
         assert!(matches!(&b.result, Some(Err(m)) if m == "C:/e を作れない: denied"), "{:?}", b.result);
     }
 
-    /// The 対応済みにする button hands over the run's id only for a run that ended in failure.
+    /// A right click on a row of 今日 holds or releases its net without leaving the page.
     #[test]
     fn today_s_right_click_holds_and_releases_the_net() {
         use koyomi_core::held::HeldJob;
@@ -4602,6 +4854,34 @@ run = [\"x.exe\"]
         s.click("ジョブネットを保留", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: None }) if id == "試験/bom"));
         assert!(b.gantt, "the right click does not leave 今日");
+    }
+
+    /// A click on a row of 今日 shows its net in the pane at the right; the pane folds and opens again.
+    #[test]
+    fn a_click_on_today_shows_the_net_at_the_right() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{How, State};
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.state = State::Error;
+        run.jobs[0].state = State::Error;
+        run.ended = Some(now);
+        let mut b = quiet(defs());
+        b.runs = vec![run];
+        b.gantt = true;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|n| n.0 == "選んだジョブネット"));
+        s.click("✕ 異常終了 bom", &mut b);
+        assert_eq!(b.today_net.as_deref(), Some("試験/bom"));
+        assert_eq!(b.run_sel.as_deref(), Some("r1"));
+        assert!(s.nodes.values().any(|n| n.0 == "構成ジョブ定義"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+        assert_eq!(b.watch.lock().unwrap().clone(), Some(("r1".to_owned(), "a".to_owned())));
+        s.click("右の欄をたたむ", &mut b);
+        assert!(!b.inspector);
+        s.click("右の欄を開く", &mut b);
+        assert!(b.inspector);
     }
 
     #[test]
