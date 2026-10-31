@@ -1879,7 +1879,7 @@ impl Browser {
             TodayRow::sort(&mut rows, col, down);
         }
         ui.add_space(8.0);
-        let mut pick = None;
+        let (mut pick, mut open) = (None, None);
         let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
         let mut table = TodayTable::new(ui, &c);
         let heads: Vec<String> = ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"]
@@ -1895,16 +1895,24 @@ impl Browser {
         }
         for row in &rows {
             let on = row.run.is_some() && self.run_sel == row.run;
-            let r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, row.run.is_some());
+            let mut r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, row.run.is_some());
+            if row.run.is_some() {
+                r = r.on_hover_text(t.tr("today.open_hint"));
+            }
             ito_a11y::say(&r, Role::Row, &row.said);
-            if r.clicked() {
+            if r.double_clicked() {
+                open = row.run.clone();
+            } else if r.clicked() {
                 pick = row.run.clone();
             }
         }
         ui.spacing_mut().item_spacing.y = gap;
-        // A row opens its run on the net page: the chart below keeps its room.
-        if let Some(id) = pick {
+        // A click picks the row here (marked in the chart below too); a double click opens its run on the
+        // net page.
+        if let Some(id) = open {
             self.open_run(&id);
+        } else if let Some(id) = pick {
+            self.run_sel = Some(id);
         }
     }
 
