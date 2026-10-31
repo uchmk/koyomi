@@ -182,6 +182,9 @@ impl Standby {
             }
         }
         if !self.waiting() {
+            // A copy's trouble means nothing while this PC runs; copy at once on a giveback.
+            self.copy_note = None;
+            self.copied_at = None;
             return Vec::new();
         }
         let Some(remote) = self.remote.clone() else { return got };
@@ -459,6 +462,9 @@ mod tests {
         assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(_))));
         s.copy_tx.send(Ok(vec![one])).unwrap();
         assert!(s.copies(BTreeMap::new).is_empty());
+        // The copy's trouble goes with the takeover, and a giveback copies at once.
+        assert!(s.notes().is_empty());
+        assert!(s.copied_at.is_none());
         let _ = std::fs::remove_dir_all(&d);
     }
 }

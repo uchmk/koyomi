@@ -1,6 +1,6 @@
 # Checklist
 
-760 checks in TESTING.md, 756 left for a person.
+761 checks in TESTING.md, 757 left for a person.
 
 ## 1. Start
 
@@ -1056,5 +1056,6 @@
 - [ ] **99.4** On A, change `g/a` but do not confirm it → B does not copy it 〔未訳〕
 - [ ] **99.5** On A make `b`'s role `view`; restart B → B's cautions show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
 - [ ] **99.6** A net on A that calls a child net (`kind = "net"`), both new to B → Both land on B in one copy (the child first) 〔未訳〕
-- [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more 〔未訳〕
+- [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone 〔未訳〕
+- [ ] **99.9** Start A again; `koyomi standby giveback` on B → B watches again and copies at once (no 5-minute wait) 〔未訳〕
 - [ ] **99.8** A net only on B → Still there after copies 〔未訳〕
