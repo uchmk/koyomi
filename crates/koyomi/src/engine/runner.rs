@@ -955,14 +955,20 @@ impl Runner {
     }
 
     /// Writes down a thing a person did by hand, in the file of today.
-    pub fn record_op(&mut self, op: &str, target: &str, detail: &str) {
+    pub fn record_op(&mut self, op: &str, target: &str, detail: &str, by: &str) {
         let at = Local::now().naive_local();
         let day = at.date();
         let (d, w) = self.days.entry(day).or_insert_with(|| {
             let file = history::path(&self.history, day);
             (Day::load(&file).unwrap_or_default(), kept::Writer::new(file, true))
         });
-        d.events.push(history::Event::Op { at, op: op.to_owned(), target: target.to_owned(), detail: detail.to_owned() });
+        d.events.push(history::Event::Op {
+            at,
+            op: op.to_owned(),
+            target: target.to_owned(),
+            detail: detail.to_owned(),
+            by: by.to_owned(),
+        });
         w.save_toml(d);
     }
 
@@ -986,9 +992,10 @@ impl Runner {
                 }
             };
             for e in events {
-                if let history::Event::Op { at, op, target, detail } = e {
+                if let history::Event::Op { at, op, target, detail, by } = e {
                     let sep = if detail.is_empty() { "" } else { "  " };
-                    out.push(format!("{}  {op:<8} {target}{sep}{detail}", at.format("%Y-%m-%d %H:%M:%S")));
+                    let by = if by.is_empty() { String::new() } else { format!("  （HTTP: {by}）") };
+                    out.push(format!("{}  {op:<8} {target}{sep}{detail}{by}", at.format("%Y-%m-%d %H:%M:%S")));
                 }
             }
             let Some(next) = day.succ_opt() else { break };

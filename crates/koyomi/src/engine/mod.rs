@@ -1687,11 +1687,16 @@ impl State {
     }
 
     fn answer(&mut self, request: &Request) -> Result<String, String> {
+        let (request, by) = match request {
+            Request::Over { by, request } if over_http(request) => (&**request, by.as_str()),
+            Request::Over { .. } => return Err("HTTP からはできない".to_owned()),
+            r => (r, ""),
+        };
         let out = self.dispatch(request);
         if let Ok(text) = &out {
             if let Some((op, target)) = by_hand(request) {
                 let detail: String = text.lines().next().unwrap_or_default().chars().take(120).collect();
-                self.runner.record_op(op, &target, &detail);
+                self.runner.record_op(op, &target, &detail, by);
             }
         }
         out
@@ -1748,8 +1753,15 @@ impl State {
                 ))
             }
             Request::Tray { since } => Ok(self.tray_view(*since).to_toml()),
+            Request::Over { .. } => Err("HTTP からはできない".to_owned()),
         }
     }
+}
+
+/// What may come over HTTP: what its paths ask for. Not an approval or a save, which only this
+/// PC's window gives (DECISIONS「実行するコマンドの安全」の初回の確認).
+fn over_http(request: &Request) -> bool {
+    matches!(request, Request::Status | Request::List | Request::Runs | Request::History { .. } | Request::Log { .. } | Request::Run { .. })
 }
 
 /// The name and target a request is written down under when it succeeds: what a person did by hand.
@@ -2038,6 +2050,17 @@ fn followed<'a>(runs: &'a [Run], id: &str, date: &str) -> Option<&'a Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// over HTTP only what its paths ask for goes through; never an approval or a save.
+    #[test]
+    fn only_the_http_paths_come_over_http() {
+        assert!(over_http(&Request::Status) && over_http(&Request::Runs));
+        assert!(over_http(&Request::Run { id: "g/a".into(), date: None, from: None, dry: false, params: Default::default() }));
+        assert!(!over_http(&Request::Approve { id: "g/a".into(), sha256: String::new() }));
+        assert!(!over_http(&Request::Stop) && !over_http(&Request::Pause));
+        assert!(!over_http(&Request::Delete { id: "g/a".into() }));
+        assert!(!over_http(&Request::Over { by: "x".into(), request: Box::new(Request::Status) }));
+    }
 
     fn def_with(id: &str, text: &str, standing: Standing) -> Def {
         let (group, name) = id.split_once('/').unwrap();

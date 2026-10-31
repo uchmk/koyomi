@@ -1170,3 +1170,17 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 93.8 | On B: change one digit of `a`'s fingerprint; stop A | A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) |
 | 93.9 | `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` | Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` |
 | 93.10 | Remove `[standby]` from B's koyomi.toml | B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] がない` |
+
+## 94. People and roles over HTTP (`[[http.user]]`; TODO 83)
+
+`[http]` as in §87 plus `[[http.user]]` `sato` (`role = "view"`, `token = "secret:sato"`) and `ito` (`role = "run"`, `token = "secret:ito"`); `koyomi secret set sato` / `ito` with `S` / `I`. `T` is `[http]`'s token.
+
+| # | Do | Expect |
+|---|---|---|
+| 94.1 | `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/runs` | 200 and the runs |
+| 94.2 | `curl -X POST -H "Authorization: Bearer S" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` | 403 `sato は view のロール。これには run が要る`; nothing starts |
+| 94.3 | The same POST with `I`; then with `T` | 202 both times; `koyomi ops` shows the two `run` lines ending `（HTTP: ito）` and `（HTTP: default）` |
+| 94.4 | Run a net from this PC's window and with `koyomi run` | Their `koyomi ops` lines have no `（HTTP: …）` |
+| 94.5 | Remove `token` from `[http]` (keep the users); restart the engine | It listens; `T` gets 401, `S` and `I` as before |
+| 94.6 | `koyomi check` with `role = "admin"`, `name = "default"`, two users named `sato`, `token = "S"`, and `[http]` with neither `token` nor users | Each refused with its reason |
+| 94.7 | `koyomi secret delete sato` (or never set it); restart | The status says `[http] で待ち受けられない（token の秘密 sato: …）` and tries again every 60 s |

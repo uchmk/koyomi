@@ -778,6 +778,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - 引き継いだことは `state_dir` の `standby.toml` に書き、エンジンを起こし直しても引き継いだまま。引き継いだとき・両方で流していると分かったときは、`failed` で一度ずつ知らせる。
   - `koyomi standby` で今の立場、`koyomi standby giveback` で戻す（手でした操作の記録に `giveback`）。
   - 定義を相手から写すのはまだ（定義の本文を出す道が API にない）。今は両方に同じ定義を置き、どちらでも確認しておく。
+- **入れた形（83 の 1 つ目、ito 0.158.0）:** `[[http.user]]` の `name`（空白なし・`default` は使わない・重ねない）・`role`・`token = "secret:<名前>"`。`[[http.user]]` があれば `[http] token` は書かなくてよい。
+  - 要るロールは `koyomi_core::role::needs` の表（読むのは `view`、`POST /runs` と回の止める・流し直す・飛ばすは `run`、表にないものは `edit`）。届かなければ 403。
+  - HTTP から来た要求は、エンジンへ `Request::Over { by, request }` で渡す。通すのは HTTP の道が使うもの（状態・一覧・回・履歴・ログ・流す）だけで、確認・保存・消すなどはエンジンの側でも断る（「初回の確認」を HTTP から越えさせない）。
+  - 手でした操作の記録（`koyomi ops`）に `（HTTP: <name>）` を付ける。`[http] token` で来たものは `default`。
+  - `edit` のロールで定義を出す道はまだない（窓の確認を通す形と合わせて作る）。
 
 ## メールを受けて起動する（TODO 84、2026-10-31）
 

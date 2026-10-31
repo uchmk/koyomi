@@ -115,18 +115,47 @@ impl Ping {
 
 /// `[http]`: the engine listens on `port` of 127.0.0.1 (and ::1 with `ipv6`), or with `lan`
 /// on every address over TLS only, and answers a caller with the bearer token kept in the OS
-/// credential store as `token`.
+/// credential store as `token`, or with one of the `[[http.user]]`'s tokens (TODO 83).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Http {
     pub port: u16,
-    /// `secret:<name>`: never the token itself.
+    /// `secret:<name>`: never the token itself. A nameless caller with the `run` role; may be
+    /// left out when there are `[[http.user]]`.
+    #[serde(default)]
     pub token: String,
     #[serde(default)]
     pub ipv6: bool,
     /// Listen on the network, over TLS with a self-signed certificate (kept in `app_dir`).
     #[serde(default)]
     pub lan: bool,
+    /// `[[http.user]]`: one token per person, each with a role.
+    #[serde(default)]
+    pub user: Vec<HttpUser>,
+}
+
+/// `[[http.user]]`: a person who calls over HTTP, with the role their token gets.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HttpUser {
+    /// Written down with what they did (`koyomi ops`).
+    pub name: String,
+    /// `view`, `run` or `edit`.
+    pub role: String,
+    /// `secret:<name>`.
+    pub token: String,
+}
+
+impl HttpUser {
+    /// The role; [`Config::parse`] has checked it reads.
+    pub fn role(&self) -> crate::role::Role {
+        crate::role::Role::parse(self.role.trim()).unwrap_or(crate::role::Role::View)
+    }
+
+    /// The name the token is kept under.
+    pub fn secret(&self) -> &str {
+        self.token.trim().strip_prefix("secret:").map(str::trim).unwrap_or_default()
+    }
 }
 
 /// `[[remote]]`: another PC's engine. `fingerprint` is its certificate's SHA-256 as
@@ -181,8 +210,22 @@ impl Http {
         if self.port == 0 {
             return Err("[http] の port は 1 から 65535".to_owned());
         }
-        if self.secret().is_empty() {
+        if self.secret().is_empty() && (!self.token.trim().is_empty() || self.user.is_empty()) {
             return Err("[http] の token は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".to_owned());
+        }
+        let mut names = std::collections::BTreeSet::new();
+        for u in &self.user {
+            let name = u.name.trim();
+            if name.is_empty() || name.contains(char::is_whitespace) || name == "default" {
+                return Err("[[http.user]] の name は空白を含まない名前（default は使わない）".to_owned());
+            }
+            if !names.insert(name) {
+                return Err(format!("[[http.user]] の name {name} が 2 つある"));
+            }
+            crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+            if u.secret().is_empty() {
+                return Err(format!("[[http.user]] {name} の token は secret:<名前> で書く"));
+            }
         }
         Ok(())
     }
@@ -331,6 +374,29 @@ evry = \"5m\"
             "[http]\nport = 8790\ntoken = \"secret:t\"\nhost = \"0.0.0.0\"\n",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// each person has a token and a role; the nameless token may then be left out.
+    #[test]
+    fn http_users_have_a_role_and_a_secret_token() {
+        let user =
+            |name: &str, role: &str, token: &str| format!("[[http.user]]\nname = \"{name}\"\nrole = \"{role}\"\ntoken = \"{token}\"\n");
+        let c =
+            Config::parse(&format!("[http]\nport = 8790\n{}{}", user("sato", "view", "secret:sato"), user("ito", "edit", "secret:ito")))
+                .unwrap();
+        let h = c.http.unwrap();
+        assert_eq!((h.secret(), h.user.len()), ("", 2));
+        assert_eq!((h.user[0].role(), h.user[1].secret()), (crate::role::Role::View, "ito"));
+        for bad in [
+            "[http]\nport = 8790\n".to_owned(),
+            format!("[http]\nport = 8790\n{}", user("sato", "admin", "secret:s")),
+            format!("[http]\nport = 8790\n{}", user("sato", "view", "plain")),
+            format!("[http]\nport = 8790\n{}", user("default", "view", "secret:s")),
+            format!("[http]\nport = 8790\n{}", user("a b", "view", "secret:s")),
+            format!("[http]\nport = 8790\n{}{}", user("sato", "view", "secret:s"), user("sato", "run", "secret:t")),
+        ] {
+            assert!(Config::parse(&bad).is_err(), "{bad}");
         }
     }
 

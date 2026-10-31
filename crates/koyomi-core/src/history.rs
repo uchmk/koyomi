@@ -68,6 +68,10 @@ pub enum Event {
         target: String,
         #[serde(default)]
         detail: String,
+        /// Who did it over HTTP (`[[http.user]]`'s name, `default` for `[http]`'s token); empty
+        /// for this PC's window and CLI.
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        by: String,
     },
 }
 
@@ -293,7 +297,13 @@ mod tests {
     #[test]
     fn an_op_is_kept_in_the_day_and_builds_no_run() {
         let day = Day {
-            events: vec![Event::Op { at: at("2026-10-30 09:00:00"), op: "hold".into(), target: "g/a".into(), detail: String::new() }],
+            events: vec![Event::Op {
+                at: at("2026-10-30 09:00:00"),
+                op: "hold".into(),
+                target: "g/a".into(),
+                detail: String::new(),
+                by: String::new(),
+            }],
         };
         let back = Day::parse(&day.to_toml()).unwrap();
         assert_eq!(back, day);

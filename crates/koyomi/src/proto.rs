@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 28;
+pub const PROTO: u32 = 29;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -113,6 +113,12 @@ pub enum Request {
     /// schedules back to the PC it watches and watch again.
     Standby {
         give_back: bool,
+    },
+    /// `request` came over HTTP from `by` (`[[http.user]]`'s name, or `default` for `[http]`'s
+    /// token): written down with who did it. Only what the HTTP paths ask for goes through.
+    Over {
+        by: String,
+        request: Box<Request>,
     },
     /// The editor's save: `text` becomes `jobnets/<id>.toml` and counts as confirmed
     /// (the editor shows what it saves). `base_sha256` is what the file hashed to when

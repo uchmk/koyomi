@@ -12,10 +12,12 @@
 //!   standing and hold), `GET /runs` (today's and the running ones; `?from=&to=` for days)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //!
-//! Every request carries the bearer token kept as `secret:<name>` in the OS credential
+//! Every request carries a bearer token kept as `secret:<name>` in the OS credential
 //! store (read once when the listener starts); ito-http turns a missing or wrong one away
-//! with 401 and never logs it. The requests go through the engine's own door, so they are
-//! what the CLI may do and are written down as by-hand ops.
+//! with 401 and never logs it. `[http]`'s own token has the `run` role; each
+//! `[[http.user]]` has its own token and role (TODO 83), and a path the role does not reach
+//! gets 403. The requests go through the engine's own door as `Request::Over`, so they are
+//! what the CLI may do and are written down as by-hand ops with who sent them.
 
 use std::collections::BTreeMap;
 use std::sync::mpsc;
@@ -23,6 +25,7 @@ use std::time::{Duration, Instant};
 
 use ito_http::{Response, Server};
 use koyomi_core::config;
+use koyomi_core::role::{self, Role};
 use koyomi_core::run::Run;
 use serde::Deserialize;
 
@@ -132,10 +135,28 @@ pub fn fingerprint() -> Result<String, String> {
     ito_http::tls::fingerprint(&dir).map(|fp| ito_http::tls::format(&fp)).map_err(|e| format!("{}: {e}", dir.display()))
 }
 
+/// Reads a token kept as `secret:<name>`.
+fn token(name: &str) -> Result<String, String> {
+    ito_http::token_from_secret("koyomi", name).map_err(|e| format!("token の秘密 {name}: {e}（koyomi secret set {name}）"))
+}
+
+/// Who may do what: `default` for `[http]`'s token, then each `[[http.user]]`.
+fn roles(cfg: &config::Http) -> BTreeMap<String, Role> {
+    let mut roles = BTreeMap::new();
+    if !cfg.secret().is_empty() {
+        roles.insert("default".to_owned(), Role::Run);
+    }
+    for u in &cfg.user {
+        roles.insert(u.name.trim().to_owned(), u.role());
+    }
+    roles
+}
+
 fn start(cfg: &config::Http) -> Result<Server, String> {
-    let name = cfg.secret();
-    let token = ito_http::token_from_secret("koyomi", name).map_err(|e| format!("token の秘密 {name}: {e}（koyomi secret set {name}）"))?;
-    let mut c = ito_http::Config::new(cfg.port, token);
+    let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { token(cfg.secret())? });
+    for u in &cfg.user {
+        c = c.token_named(u.name.trim(), token(u.secret())?);
+    }
     c.ipv6 = cfg.ipv6;
     let at = if cfg.lan {
         let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
@@ -144,7 +165,28 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     } else {
         format!("127.0.0.1:{}", cfg.port)
     };
-    Server::start(c, |req| handle(&req, |r| ito_ipc::door::ask(&proto::door(), r)), log).map_err(|e| format!("{at}: {e}"))
+    let roles = roles(cfg);
+    let serve = move |req: ito_http::Request| {
+        let by = req.who.clone().unwrap_or_default();
+        allowed(&req, &roles).unwrap_or_else(|| {
+            handle(&req, |r| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) }))
+        })
+    };
+    Server::start(c, serve, log).map_err(|e| format!("{at}: {e}"))
+}
+
+/// A refusal when the caller's role does not reach what the request needs; `None` lets it through.
+fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Response> {
+    let Some(who) = req.who.as_deref() else {
+        return Some(Response::error(401, "token が要る"));
+    };
+    let has = roles.get(who).copied();
+    let needs = role::needs(&req.method, &req.path);
+    match has {
+        Some(has) if has.allows(needs) => None,
+        Some(has) => Some(Response::error(403, &format!("{who} は {has} のロール。これには {needs} が要る"))),
+        None => Some(Response::error(403, &format!("{who} は [[http.user]] にない"))),
+    }
 }
 
 fn log(l: &ito_http::LogLine) {
@@ -425,6 +467,32 @@ mod tests {
         let ok = send("Authorization: Bearer tok\r\n");
         assert!(ok.starts_with("HTTP/1.1 202") && ok.contains("20261031-090000-01"), "{ok}");
         server.stop();
+    }
+
+    /// each token gets its role: view reads only, run also starts runs, and a request with no
+    /// token never reaches the engine.
+    #[test]
+    fn a_role_reaches_only_its_paths() {
+        let cfg = config::Config::parse(
+            "[http]\nport = 8790\ntoken = \"secret:t\"\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntoken = \"secret:s\"\n[[http.user]]\nname = \"ito\"\nrole = \"edit\"\ntoken = \"secret:i\"\n",
+        )
+        .unwrap();
+        let known = roles(cfg.http.as_ref().unwrap());
+        let as_who = |who: Option<&str>, method: &str, path: &str| {
+            let mut r = req(method, path, "");
+            r.who = who.map(str::to_owned);
+            allowed(&r, &known).map(|r| r.status)
+        };
+        assert_eq!(as_who(Some("sato"), "GET", "/runs"), None);
+        assert_eq!(as_who(Some("sato"), "POST", "/runs"), Some(403));
+        assert_eq!(as_who(Some("default"), "POST", "/runs"), None);
+        assert_eq!(as_who(Some("default"), "POST", "/nets"), Some(403));
+        assert_eq!(as_who(Some("ito"), "POST", "/nets"), None);
+        assert_eq!(as_who(Some("gone"), "GET", "/runs"), Some(403));
+        assert_eq!(as_who(None, "GET", "/runs"), Some(401));
+        let only_users =
+            config::Config::parse("[http]\nport = 8790\n[[http.user]]\nname = \"sato\"\nrole = \"run\"\ntoken = \"secret:s\"\n").unwrap();
+        assert!(!roles(only_users.http.as_ref().unwrap()).contains_key("default"));
     }
 
     /// on the LAN another PC reaches the same paths over TLS, only with the pinned certificate.
