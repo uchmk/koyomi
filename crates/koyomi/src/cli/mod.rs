@@ -62,6 +62,9 @@ usage: koyomi [--version | --help | env]
        koyomi shift <group/name> <from> <to|--cancel>
                                      start its time <from> at <to> this once (HH:MM is today, or YYYY-MM-DD HH:MM);
                                      the definition does not change; --cancel takes the move back
+       koyomi skip-next <group/name> [--cancel]
+                                     do not start its next time, once (written down as skipped); again skips the
+                                     time after it; the definition does not change; --cancel takes the skips back
        koyomi ops [--from YYYY-MM-DD] [--to YYYY-MM-DD]
                                      what people did by hand (run, kill, hold, save, approve ...), oldest first (today when none)
        koyomi uses <calendar|group/name|program>
@@ -138,7 +141,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 44] = [
+const COMMANDS: [&str; 45] = [
     "check",
     "list",
     "show",
@@ -156,6 +159,7 @@ const COMMANDS: [&str; 44] = [
     "skip",
     "approve-step",
     "shift",
+    "skip-next",
     "ops",
     "uses",
     "pause",
@@ -224,6 +228,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "skip" => skip(rest),
         "approve-step" => approve_step(rest),
         "shift" => shift(rest),
+        "skip-next" => skip_next(rest),
         "ops" => ops(rest),
         "uses" => uses(rest),
         "pause" => plain(rest, "pause", Request::Pause),
@@ -1543,6 +1548,14 @@ fn shift(args: &[String]) -> i32 {
         [id, from, to] if to == "--cancel" => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: None }),
         [id, from, to] => ask_and_say(&Request::Shift { id: id.clone(), from: at(from), to: Some(at(to)) }),
         _ => usage("shift takes a group/name, its time and the new time (or --cancel)"),
+    }
+}
+
+fn skip_next(args: &[String]) -> i32 {
+    match args {
+        [id] => ask_and_say(&Request::SkipNext { id: id.replace(char::from(92), "/"), cancel: false }),
+        [id, c] if c == "--cancel" => ask_and_say(&Request::SkipNext { id: id.replace(char::from(92), "/"), cancel: true }),
+        _ => usage("skip-next takes a group/name (and --cancel to take the skips back)"),
     }
 }
 

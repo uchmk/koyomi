@@ -557,6 +557,15 @@ impl State {
             if self.held.is_shifted(&def.id, *planned) {
                 continue;
             }
+            // Skipped once with `koyomi skip-next`: written down, and the skip is used up.
+            if !self.held.skips.is_empty() && self.held_bad.is_none() {
+                let hit = self.held.take_skip(&def.id, *planned);
+                let _ = self.save_held();
+                if hit {
+                    self.runner.not_run(&def, *planned, RunState::Skipped, "次の 1 回だけスキップ（koyomi skip-next）");
+                    continue;
+                }
+            }
             if let Some((state, why)) = self.stopped(&def, planned.date()) {
                 self.runner.not_run(&def, *planned, state, &why);
                 continue;
@@ -986,6 +995,7 @@ impl State {
             notes,
             held: self.held.held.clone(),
             held_jobs: self.held.jobs.clone(),
+            skips: self.held.skips.clone(),
             paused: self.held.paused,
             cautions: self
                 .outage_line()
@@ -1210,6 +1220,31 @@ impl State {
         self.held.shift(id, from, to);
         self.save_held()?;
         Ok(format!("{} の {} を {} にずらした（定義は変えない）", id, from.format("%Y-%m-%d %H:%M"), to.format("%Y-%m-%d %H:%M")))
+    }
+    /// `koyomi skip-next`: the next time of `id` that is not yet skipped or moved does not start
+    /// (`cancel`: every skip of `id` is taken back).
+    fn skip_next(&mut self, id: &str, cancel: bool) -> Result<String, String> {
+        self.held_writable()?;
+        if cancel {
+            if !self.held.unskip(id) {
+                return Err(format!("{id} は飛ばしていない"));
+            }
+            self.save_held()?;
+            return Ok(format!("{id} を飛ばすのをやめた"));
+        }
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let net = def.net.as_ref().ok_or_else(|| format!("定義が読めない: {id}"))?;
+        if def.standing != Standing::Confirmed {
+            return Err(format!("{id} は承認されていないので、時刻では流れない"));
+        }
+        let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
+        let held = &self.held;
+        let at =
+            koyomi_core::held::next_open(&net.when, cal, Local::now().naive_local(), |t| held.is_skipped(id, t) || held.is_shifted(id, t))
+                .ok_or_else(|| format!("{id} にこの先の時刻がない（koyomi next {id} で見る）"))?;
+        self.held.skip(id, at);
+        self.save_held()?;
+        Ok(format!("{} の {} を飛ばす（定義は変えない。戻すのは koyomi skip-next {} --cancel）", id, at.format("%Y-%m-%d %H:%M"), id))
     }
     /// Starts the times that were moved once their new time comes.
     fn tick_shift(&mut self) {
@@ -1729,6 +1764,7 @@ impl State {
             Request::Skip { run, job } => self.runner.skip(run, job),
             Request::Answer { run, job, yes } => self.runner.answer(run, job, *yes),
             Request::Shift { id, from, to } => self.shift(id, from, to.as_deref()),
+            Request::SkipNext { id, cancel } => self.skip_next(id, *cancel),
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
             Request::Standby { give_back: true } => self.standby.give_back(),
@@ -1786,6 +1822,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Skip { run, job } => ("skip", format!("{run} {job}")),
         Request::Answer { run, job, yes } => (if *yes { "approve-step" } else { "reject-step" }, format!("{run} {job}")),
         Request::Shift { id, .. } => ("shift", id.clone()),
+        Request::SkipNext { id, cancel } => (if *cancel { "unskip-next" } else { "skip-next" }, id.clone()),
         Request::Pause => ("pause", String::new()),
         Request::Resume => ("resume", String::new()),
         Request::Standby { give_back: true } => ("giveback", String::new()),
@@ -2311,6 +2348,35 @@ run = [\"x.exe\"]
     }
 
     #[test]
+    fn skip_next_takes_the_next_times_in_turn_and_cancel_takes_them_back() {
+        let paths = temp_paths("skipnext");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1
+[[when]]
+every = \"day\"
+at = [\"02:00\"]
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        assert!(s.save("経理/夜", net, None, false).is_ok());
+        assert!(s.skip_next("経理/無い", false).is_err());
+        assert_eq!(s.skip_next("経理/夜", true), Err("経理/夜 は飛ばしていない".to_owned()));
+        let first = s.skip_next("経理/夜", false).unwrap();
+        let second = s.skip_next("経理/夜", false).unwrap();
+        assert!(first.contains("02:00") && second.contains("02:00") && first != second, "{first} / {second}");
+        let times: Vec<_> = s.held.skips_of("経理/夜").collect();
+        assert_eq!(times.len(), 2);
+        assert_eq!(times[1] - times[0], chrono::Duration::days(1));
+        assert_eq!(Held::load(&paths.held).unwrap().skips.len(), 2, "kept in held.toml");
+        assert_eq!(s.snapshot().skips.len(), 2);
+        assert!(s.skip_next("経理/夜", true).is_ok());
+        assert!(s.held.skips.is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
     fn a_save_is_checked_kept_and_confirmed_and_a_restore_is_not() {
         let paths = temp_paths("save");
         let mut s = State::new(paths.clone());
@@ -2522,6 +2588,7 @@ run = [\"x.exe\"]
             notes: vec!["n".into()],
             held: vec!["共通/x".into()],
             held_jobs: vec![koyomi_core::held::HeldJob { net: "共通/x".into(), job: "b".into() }],
+            skips: Vec::new(),
             paused: true,
             cautions: vec!["c".into()],
             calendar_cautions: Default::default(),

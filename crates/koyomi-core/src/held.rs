@@ -23,6 +23,9 @@ pub struct Held {
     /// `koyomi shift`: times of nets that start at another time this once.
     #[serde(default, rename = "shift", skip_serializing_if = "Vec::is_empty")]
     pub shifts: Vec<Shift>,
+    /// `koyomi skip-next`: times of nets that do not start this once (written down as skipped).
+    #[serde(default, rename = "skip", skip_serializing_if = "Vec::is_empty")]
+    pub skips: Vec<Skip>,
 }
 
 /// One job on hold: `job` of the net `net`.
@@ -38,6 +41,13 @@ pub struct Shift {
     pub id: String,
     pub from: chrono::NaiveDateTime,
     pub to: chrono::NaiveDateTime,
+}
+
+/// One time skipped for once: the net's time `at` does not start (the definition is not changed).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Skip {
+    pub id: String,
+    pub at: chrono::NaiveDateTime,
 }
 
 impl Held {
@@ -131,6 +141,41 @@ impl Held {
         self.shifts.iter().any(|s| s.id == id && s.from == from)
     }
 
+    /// Skips the time `at` of `id` this once; `false` when it already was.
+    pub fn skip(&mut self, id: &str, at: chrono::NaiveDateTime) -> bool {
+        if self.is_skipped(id, at) {
+            return false;
+        }
+        self.skips.push(Skip { id: id.to_owned(), at });
+        self.skips.sort_by(|a, b| (a.at, &a.id).cmp(&(b.at, &b.id)));
+        true
+    }
+
+    /// Whether the time `at` of `id` is skipped.
+    pub fn is_skipped(&self, id: &str, at: chrono::NaiveDateTime) -> bool {
+        self.skips.iter().any(|s| s.id == id && s.at == at)
+    }
+
+    /// The times of `id` that are skipped, earliest first.
+    pub fn skips_of<'a>(&'a self, id: &'a str) -> impl Iterator<Item = chrono::NaiveDateTime> + 'a {
+        self.skips.iter().filter(move |s| s.id == id).map(|s| s.at)
+    }
+
+    /// Uses up the skip of the time `at` of `id`, with any of its skips at or before `at` (they
+    /// are past); `true` when `at` itself was skipped.
+    pub fn take_skip(&mut self, id: &str, at: chrono::NaiveDateTime) -> bool {
+        let hit = self.is_skipped(id, at);
+        self.skips.retain(|s| !(s.id == id && s.at <= at));
+        hit
+    }
+
+    /// Puts the skipped times of `id` back; `false` when there were none.
+    pub fn unskip(&mut self, id: &str) -> bool {
+        let before = self.skips.len();
+        self.skips.retain(|s| s.id != id);
+        self.skips.len() != before
+    }
+
     /// Takes `id` off hold; `false` when it was not on it.
     pub fn release(&mut self, id: &str) -> bool {
         let before = self.held.len();
@@ -138,7 +183,7 @@ impl Held {
         self.held.len() != before
     }
 
-    /// Carries the hold and the moved times of `from` over to `to` (the net's new name), or drops
+    /// Carries the hold, the held jobs and the moved and skipped times of `from` over to `to` (the net's new name), or drops
     /// them when `to` is `None` (the net is gone); `false` when there was nothing of `from`.
     pub fn carry(&mut self, from: &str, to: Option<&str>) -> bool {
         let held = self.release(from);
@@ -151,14 +196,38 @@ impl Held {
             None => self.shifts.retain(|s| s.id != from),
         }
         let moved = self.shifts.iter().any(|s| to.is_some_and(|t| s.id == t));
+        let skipped = self.skips.iter().any(|s| s.id == from);
+        match to {
+            Some(to) => self.skips.iter_mut().filter(|s| s.id == from).for_each(|s| s.id = to.to_owned()),
+            None => self.skips.retain(|s| s.id != from),
+        }
         let jobs = self.jobs.iter().any(|h| h.net == from);
         match to {
             Some(to) => self.jobs.iter_mut().filter(|h| h.net == from).for_each(|h| h.net = to.to_owned()),
             None => self.jobs.retain(|h| h.net != from),
         }
         self.jobs.sort();
-        held || moved || jobs || self.shifts.len() != before
+        held || moved || skipped || jobs || self.shifts.len() != before
     }
+}
+
+/// The next time of `whens` after `now` that `taken` does not claim (skipped or moved already):
+/// what `koyomi skip-next` skips. `None` when there is no such time ahead.
+pub fn next_open(
+    whens: &[crate::when::When],
+    cal: Option<&crate::calendar::Calendar>,
+    now: chrono::NaiveDateTime,
+    taken: impl Fn(chrono::NaiveDateTime) -> bool,
+) -> Option<chrono::NaiveDateTime> {
+    let mut cursor = now;
+    for _ in 0..1000 {
+        let t = *crate::when::next_times_in(whens, cursor, 1, cal).first()?;
+        if !taken(t) {
+            return Some(t);
+        }
+        cursor = t;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -175,6 +244,25 @@ mod tests {
         assert_eq!(Held::parse(&h.to_toml()).unwrap(), h);
         assert!(h.is_shifted("g/a", at("2026-10-30 09:00")) && !h.is_shifted("g/b", at("2026-10-30 09:00")));
         assert!(h.unshift("g/a", at("2026-10-30 09:00")) && !h.unshift("g/a", at("2026-10-30 09:00")));
+    }
+
+    #[test]
+    fn a_skip_is_kept_used_up_and_carried() {
+        let at = |s: &str| chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
+        let mut h = Held::default();
+        assert!(h.skip("g/a", at("2026-10-31 09:00")));
+        assert!(!h.skip("g/a", at("2026-10-31 09:00")));
+        assert!(h.skip("g/a", at("2026-11-01 09:00")));
+        assert!(h.to_toml().contains("[[skip]]"), "{}", h.to_toml());
+        assert_eq!(Held::parse(&h.to_toml()).unwrap(), h);
+        assert!(!h.take_skip("g/b", at("2026-10-31 09:00")));
+        assert!(!h.take_skip("g/a", at("2026-10-31 10:00")), "a time not skipped runs, and the past skip goes");
+        assert_eq!(h.skips_of("g/a").collect::<Vec<_>>(), [at("2026-11-01 09:00")]);
+        assert!(h.carry("g/a", Some("g/c")));
+        assert!(h.take_skip("g/c", at("2026-11-01 09:00")) && h.skips.is_empty());
+        h.skip("g/c", at("2026-11-02 09:00"));
+        assert!(h.unskip("g/c") && !h.unskip("g/c"));
+        assert!(!Held::default().to_toml().contains("skip"));
     }
 
     #[test]

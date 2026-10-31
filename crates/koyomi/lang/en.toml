@@ -674,6 +674,18 @@ ask = "Delete {0}? Its file is kept as a version: Compare versions brings it bac
 users = "Other jobnets use it, so it cannot be deleted. Change them first: {0}"
 yes = "Delete"
 
+[skipnext]
+title = "Skip the next run once"
+lead = "The chosen jobnet's next time does not run, once, and is written down as skipped. The definition is not changed. Press again to skip the time after it too."
+net = "Jobnet"
+next = "Next time"
+skipped = "Skipped"
+skip = "Skip"
+undo = "Undo"
+none = "No approved jobnet runs on a schedule"
+close = "Close"
+hint = "Esc: close"
+
 [give]
 title = "Run with values"
 lead = "The [params] values of {0}. Only the ones you change are used for this run (an emptied field gives an empty value)."
@@ -707,6 +719,7 @@ starting = "koyomi: starting"
 open = "Open"
 today = "Today's runs"
 failed = "See what failed ({0})"
+skip_next = "Skip the next run once…"
 pause = "Pause the schedule"
 resume = "Resume the schedule"
 quit = "Quit (stop the engine)"

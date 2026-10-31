@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use ito_ipc::door::Door;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::held::HeldJob;
+use koyomi_core::held::{HeldJob, Skip};
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
@@ -105,6 +105,12 @@ pub enum Request {
         id: String,
         from: String,
         to: Option<String>,
+    },
+    /// Skip the next time of the net `id` this once (it is written down as skipped); the definition
+    /// stays. Each call skips the time after the ones already skipped. With `cancel`, the skips are taken back.
+    SkipNext {
+        id: String,
+        cancel: bool,
     },
     /// Stop the whole schedule: every time is written down as ⏸ 保留 until `Resume`. Runs by hand still go.
     Pause,
@@ -218,6 +224,8 @@ pub enum Show {
     Today,
     /// Come forward on the newest failure not yet marked 対応済み (今日 when there is none).
     Failed,
+    /// Come forward with the box that skips a net's next time once.
+    SkipNext,
 }
 
 /// The window's own door: the engine's tray brings it forward through it.
@@ -241,6 +249,9 @@ pub struct Snapshot {
     /// The jobs on hold (`koyomi hold <net> <job>`).
     #[serde(default)]
     pub held_jobs: Vec<HeldJob>,
+    /// The times skipped once (`koyomi skip-next`), not yet come.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub skips: Vec<Skip>,
     /// `koyomi pause`: no time starts anything.
     #[serde(default)]
     pub paused: bool,

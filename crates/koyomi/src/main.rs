@@ -224,6 +224,10 @@ impl App {
                     self.settings_open = false;
                     self.browser.show_failed();
                 }
+                proto::Show::SkipNext => {
+                    self.settings_open = false;
+                    self.browser.show_skip_next();
+                }
                 proto::Show::Front => {}
             }
             ask.answer(Ok(String::new()));

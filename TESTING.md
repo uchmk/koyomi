@@ -593,6 +593,9 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 42.2 | The next day | The net runs at 09:00 as the definition says (the file was not changed) |
 | 42.3 | `koyomi shift g/a 09:00 09:30` then `koyomi shift g/a 09:00 --cancel` | The move is taken back; 09:00 runs as usual |
 | 42.4 | A time the net does not have, or a new time before the old one or already past | It is refused with the reason |
+| 42.5 | `koyomi skip-next g/a` (an approved net with a time later today) | It answers which time it skips; `held.toml` has a `[[skip]]` with it; at that time nothing starts and the history shows the time as スキップ「次の 1 回だけスキップ」; the time after runs as usual |
+| 42.6 | `koyomi skip-next g/a` twice, then `koyomi skip-next g/a --cancel` | The second skips the time after the first; `--cancel` takes both back and the times run; `--cancel` with nothing skipped is refused |
+| 42.7 | `koyomi rename g/a g/b` with a time skipped | The skip moves to g/b and still holds |
 
 ## 43. 操作の記録
 
@@ -783,6 +786,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 63.5 | Minimise the window, then left-click the icon | The window comes back to the front |
 | 63.6 | Right-click → 今日の一覧 | The window comes forward with ガント in the detail (unless a net is open in the editor) |
 | 63.6a | Right-click with nothing failed today; then run two nets that fail, mark one run 対応済み in the window, close the window, right-click → 未対応を見る (2); do it again after marking the other | 未対応を見る (0) is greyed at first; after the failures it reads 未対応を見る (2) and the window comes forward on the newest failed run not marked 対応済み (its picture and log in the detail); with every one marked it opens ガント instead. With a net open in the editor the window only comes forward. `koyomi tray` (with `engine --no-tray`) shows the same item and count |
+| 63.6b | Right-click → 次の 1 回だけスキップ… | The window comes forward with the 次の 1 回だけスキップ box: each approved net on a schedule with its next time. 飛ばす fills 飛ばす回 with that time and moves 次の回 to the one after; 戻す clears it; Esc or 閉じる closes the box. A held or unapproved net is not listed. With a net open in the editor the window only comes forward |
 | 63.7 | Right-click → スケジュールを止める | The badge turns grey –, the tip reads `スケジュールを止めている`, the window's band says the schedule is paused; the menu now reads スケジュールを戻す |
 | 63.8 | Right-click while a job runs | 終了（ジョブ 1 件が実行中） is greyed |
 | 63.9 | Right-click → 終了（エンジンを止める） with nothing running | The icon goes away; `koyomi engine status` says the engine is not running |

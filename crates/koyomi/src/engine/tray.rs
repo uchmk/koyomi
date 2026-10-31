@@ -99,6 +99,7 @@ impl Tray {
                     "open" => front(Show::Front),
                     "today" => front(Show::Today),
                     "failed" => front(Show::Failed),
+                    "skipnext" => front(Show::SkipNext),
                     "pause" => out.push(Want::Pause(true)),
                     "resume" => out.push(Want::Pause(false)),
                     "quit" => out.push(Want::Quit),
@@ -138,6 +139,7 @@ pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
         Item::entry("today", t.tr("tray.today")),
         failed,
         Item::Separator,
+        Item::entry("skipnext", t.tr("tray.skip_next")),
         pause,
         Item::Separator,
         quit,
@@ -376,11 +378,11 @@ mod tests {
         let Some(Item::Entry { label, .. }) = items.first() else { panic!("no head") };
         assert_eq!(label, "koyomi: 異常なし");
         let m = ids(&items);
-        assert_eq!(m.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["head", "open", "today", "failed", "pause", "quit"]);
-        assert_eq!(m.iter().map(|(_, on)| *on).collect::<Vec<_>>(), [false, true, true, false, true, true]);
+        assert_eq!(m.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["head", "open", "today", "failed", "skipnext", "pause", "quit"]);
+        assert_eq!(m.iter().map(|(_, on)| *on).collect::<Vec<_>>(), [false, true, true, false, true, true, true]);
         let m = ids(&menu(&t, &look(&t, &[], true, 2, None), false));
-        assert_eq!(m[4].0, "resume");
-        assert_eq!(m[5], ("quit".to_owned(), false));
+        assert_eq!(m[5].0, "resume");
+        assert_eq!(m[6], ("quit".to_owned(), false));
         // 未対応を見る counts the nets whose last run of today failed, and opens once there is one.
         let failed = [run("a/x", at(8, 0), RunState::Error), run("a/y", at(8, 0), RunState::Error)];
         let items = menu(&t, &look(&t, &failed, false, 0, None), false);

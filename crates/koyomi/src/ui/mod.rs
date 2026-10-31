@@ -88,6 +88,14 @@ enum Re {
     Copy,
 }
 
+/// One net of the 次の 1 回だけスキップ box: its next time not yet skipped, and the times it skips.
+struct SkipRow {
+    id: String,
+    name: String,
+    next: Option<chrono::NaiveDateTime>,
+    skipped: Vec<chrono::NaiveDateTime>,
+}
+
 /// The box 今すぐ実行 opens for a net with `[params]`: each value, its default filled in.
 struct Give {
     id: String,
@@ -319,6 +327,8 @@ pub struct Browser {
     cal_deleting: Option<String>,
     /// The values box of 今すぐ実行, while it is open.
     give: Option<Give>,
+    /// The 次の 1 回だけスキップ box the tray opens, while it is up.
+    skip_pick: bool,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
 }
@@ -436,6 +446,7 @@ impl Browser {
             new_cal: None,
             cal_deleting: None,
             give: None,
+            skip_pick: false,
             easy: None,
         }
     }
@@ -673,6 +684,7 @@ impl Browser {
             || self.new_cal.is_some()
             || self.cal_deleting.is_some()
             || self.give.is_some()
+            || self.skip_pick
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing)
     }
 
@@ -1345,7 +1357,7 @@ impl Browser {
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
-        let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some();
+        let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;
         let closing = self.editor.as_ref().is_some_and(|e| e.closing);
         if closing && !self.close_asked {
             // The safe button first: Enter on a fresh box does not throw the changes away.
@@ -1485,6 +1497,7 @@ impl Browser {
             self.give.is_some(),
             self.new_cal.is_some(),
             self.cal_deleting.is_some(),
+            self.skip_pick,
         ];
         let first = open.iter().position(|o| *o);
         let key_for = |i: usize| if first == Some(i) { key } else { None };
@@ -1498,6 +1511,7 @@ impl Browser {
         self.confirm_give(&ctx, t, key_for(7));
         self.confirm_new_cal(&ctx, t, key_for(8));
         self.confirm_cal_delete(&ctx, t, key_for(9));
+        self.confirm_skip_next(&ctx, t, key_for(10));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -1884,6 +1898,108 @@ impl Browser {
         match newest.map(|r| r.id.clone()) {
             Some(id) => self.open_run(&id),
             None => self.open_gantt(),
+        }
+    }
+
+    /// The tray's 次の 1 回だけスキップ…: the box that picks the net, unless another box or the editor is up.
+    pub fn show_skip_next(&mut self) {
+        if self.editor.is_some() || self.box_open() {
+            return;
+        }
+        self.result = None;
+        self.skip_pick = true;
+    }
+
+    /// The approved, not held nets that run on a schedule, each with its next time not yet skipped
+    /// and the times it skips: the rows of the 次の 1 回だけスキップ box.
+    fn skip_rows(&self, now: chrono::NaiveDateTime) -> Vec<SkipRow> {
+        let Some(snap) = &self.snap else { return Vec::new() };
+        snap.defs
+            .iter()
+            .filter(|d| d.standing == Standing::Confirmed && !snap.held.contains(&d.id))
+            .filter_map(|d| {
+                let net = d.net.as_ref()?;
+                let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                let skipped: Vec<_> = snap.skips.iter().filter(|s| s.id == d.id && s.at > now).map(|s| s.at).collect();
+                let next = koyomi_core::held::next_open(&net.when, cal, now, |t| skipped.contains(&t));
+                (next.is_some() || !skipped.is_empty()).then(|| SkipRow {
+                    id: d.id.clone(),
+                    name: d.title.as_ref().map_or(d.id.clone(), |title| format!("{title}（{}）", d.id)),
+                    next,
+                    skipped,
+                })
+            })
+            .collect()
+    }
+
+    /// The 次の 1 回だけスキップ box: a row a net, 飛ばす sends `SkipNext` (the engine says which
+    /// time it took), 戻す takes the net's skips back. Esc or 閉じる closes it.
+    fn confirm_skip_next(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        if !self.skip_pick {
+            return;
+        }
+        let c = ito_theme::colors();
+        let rows = self.skip_rows(chrono::Local::now().naive_local());
+        let mut send = None;
+        let mut close = key.is_some();
+        egui::Window::new(t.tr("skipnext.title"))
+            .id(egui::Id::new("skipnext"))
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+            .show(ctx, |ui| {
+                ui.set_width(560.0);
+                ui.add(egui::Label::new(t.tr("skipnext.lead")).wrap());
+                ui.add_space(4.0);
+                if rows.is_empty() {
+                    ui.label(egui::RichText::new(t.tr("skipnext.none")).color(c.dim));
+                }
+                egui::ScrollArea::vertical().max_height(360.0).show(ui, |ui| {
+                    egui::Grid::new("skipnext-rows").num_columns(4).striped(true).show(ui, |ui| {
+                        for h in ["skipnext.net", "skipnext.next", "skipnext.skipped"] {
+                            ui.label(egui::RichText::new(t.tr(h)).strong());
+                        }
+                        ui.label("");
+                        ui.end_row();
+                        for SkipRow { id, name, next, skipped } in &rows {
+                            ui.label(name.as_str());
+                            ui.label(next.map(|n| n.format("%m-%d %H:%M").to_string()).unwrap_or_default());
+                            let gone = skipped.iter().map(|s| s.format("%m-%d %H:%M").to_string()).collect::<Vec<_>>().join(", ");
+                            ui.label(egui::RichText::new(gone).color(c.dim));
+                            ui.horizontal(|ui| {
+                                if next.is_some() {
+                                    let label = format!("{} {}", t.tr("skipnext.skip"), name);
+                                    let r = ui.button(t.tr("skipnext.skip"));
+                                    ito_a11y::say(&r, Role::Button, &label);
+                                    if r.clicked() {
+                                        send = Some(Request::SkipNext { id: id.clone(), cancel: false });
+                                    }
+                                }
+                                if !skipped.is_empty() {
+                                    let label = format!("{} {}", t.tr("skipnext.undo"), name);
+                                    let r = ui.button(t.tr("skipnext.undo"));
+                                    ito_a11y::say(&r, Role::Button, &label);
+                                    if r.clicked() {
+                                        send = Some(Request::SkipNext { id: id.clone(), cancel: true });
+                                    }
+                                }
+                            });
+                            ui.end_row();
+                        }
+                    });
+                });
+                ui.add_space(4.0);
+                let r = ui.button(t.tr("skipnext.close"));
+                ito_a11y::say(&r, Role::Button, t.tr("skipnext.close"));
+                close |= r.clicked();
+                ui.label(egui::RichText::new(t.tr("skipnext.hint")).color(c.dim).small());
+            });
+        if let Some(r) = send {
+            self.result = None;
+            let _ = self.tx.send(r);
+        }
+        if close {
+            self.skip_pick = false;
         }
     }
 
@@ -2873,6 +2989,7 @@ mod tests {
             new_cal: None,
             cal_deleting: None,
             give: None,
+            skip_pick: false,
             easy: None,
         }
     }
