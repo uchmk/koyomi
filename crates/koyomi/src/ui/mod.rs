@@ -324,6 +324,10 @@ pub struct Browser {
     net_sort: Option<(usize, bool)>,
     /// The run's jobs table's sort, as `net_sort` (`None`: the run's own order).
     run_sort: Option<(usize, bool)>,
+    /// The nets overview's sort (the ジョブネット tab with no net picked), as `today_sort`.
+    nets_sort: Option<(usize, bool)>,
+    /// The net picked (not opened) in the nets overview by a single click.
+    nets_pick: Option<String>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -458,6 +462,8 @@ impl Browser {
             today_sort: None,
             net_sort: None,
             run_sort: None,
+            nets_sort: None,
+            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1553,7 +1559,11 @@ impl Browser {
                             self.jobs_pane(ui, t);
                         });
                 }
-                egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
+                if self.selected_def().is_some() {
+                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
+                } else {
+                    self.nets_overview(ui, t);
+                }
             }
         });
         // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
@@ -1749,15 +1759,135 @@ impl Browser {
             }
             _ => {}
         }
-        if pick.is_some() {
-            self.selected = pick;
-            self.run_sel = None;
-            self.cal_sel = None;
-            self.job_sel = None;
-            self.result = None;
-            self.hist = None;
-            self.gantt = false;
-            self.leave_editor();
+        if let Some(id) = pick {
+            self.open_net(&id);
+        }
+    }
+
+    /// Opens the net `id` on the ジョブネット tab, as a pick in the tree does.
+    fn open_net(&mut self, id: &str) {
+        self.selected = Some(id.to_owned());
+        self.run_sel = None;
+        self.cal_sel = None;
+        self.job_sel = None;
+        self.result = None;
+        self.hist = None;
+        self.gantt = false;
+        self.leave_editor();
+    }
+
+    /// The ジョブネット tab with no net picked: every net in one table, in the tree's order, with its last
+    /// run's state, start and time, its next start and whether it waits for a person. A click picks a
+    /// row, a double click opens the net; a head sorts.
+    fn nets_overview(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let Some(snap) = &self.snap else { return };
+        let r = ui.label(egui::RichText::new(t.tr("nets.heading")).strong().size(15.0));
+        ito_a11y::say(&r, Role::Heading, t.tr("nets.heading"));
+        ui.add_space(4.0);
+        if snap.defs.is_empty() {
+            ui.label(egui::RichText::new(t.tr("nets.empty")).color(c.dim));
+            return;
+        }
+        let now = chrono::Local::now().naive_local();
+        let when = |at: chrono::NaiveDateTime| at.format("%m-%d %H:%M").to_string();
+        let twins = review::twins(&snap.defs);
+        struct Row {
+            order: usize,
+            id: String,
+            state: Option<State>,
+            cells: Vec<(String, bool)>,
+            keys: [Option<i64>; 7],
+        }
+        let mut rows: Vec<Row> = snap
+            .defs
+            .iter()
+            .enumerate()
+            .map(|(order, d)| {
+                let held = snap.held.contains(&d.id);
+                let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started);
+                let next = match (&d.net, d.standing == Standing::Confirmed && !held) {
+                    (Some(net), true) => {
+                        let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+                        koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal).into_iter().next()
+                    }
+                    _ => None,
+                };
+                let took = last.map(|r| r.duration().unwrap_or(now - r.started));
+                let note = match d.standing {
+                    Standing::Confirmed if held => t.tr("state.held").to_owned(),
+                    Standing::Confirmed => String::new(),
+                    Standing::Unconfirmed => t.tr("standing.unconfirmed").to_owned(),
+                    Standing::Invalid => t.tr("standing.invalid").to_owned(),
+                };
+                let state = last.map(|r| r.state);
+                // Two nets of one name read apart as the tree tells them: with the file's name after it.
+                let name = if twins.contains(&d.id) { format!("{} · {}", d.label(), d.name) } else { d.label().to_owned() };
+                let cells = vec![
+                    (state.map(|s| show::tag(t, s).to_owned()).unwrap_or_default(), false),
+                    (name, false),
+                    (d.group.clone(), false),
+                    (last.map(|r| when(r.started)).unwrap_or_default(), true),
+                    (took.map(|d| show::duration(t, d)).unwrap_or_default(), true),
+                    (next.map(when).unwrap_or_default(), true),
+                    (note, false),
+                ];
+                let keys = [None, None, None, last.map(|r| stamp(r.started)), took.map(|d| d.num_milliseconds()), next.map(stamp), None];
+                Row { order, id: d.id.clone(), state, cells, keys }
+            })
+            .collect();
+        if let Some((col, down)) = self.nets_sort {
+            rows.sort_by(|a, b| {
+                let o = match (a.keys[col], b.keys[col], a.cells[col].0.is_empty(), b.cells[col].0.is_empty()) {
+                    (_, _, true, false) => return std::cmp::Ordering::Greater,
+                    (_, _, false, true) => return std::cmp::Ordering::Less,
+                    (Some(x), Some(y), _, _) => x.cmp(&y),
+                    _ => ito_common::text::natural_cmp(&a.cells[col].0, &b.cells[col].0, false),
+                };
+                let o = o.then(a.order.cmp(&b.order));
+                if down {
+                    o.reverse()
+                } else {
+                    o
+                }
+            });
+        }
+        let heads: Vec<String> = ["col_state", "col_net", "col_group", "col_last", "col_time", "col_next", "col_note"]
+            .map(|k| t.tr(&format!("nets.{k}")).to_owned())
+            .to_vec();
+        let picked = self.nets_pick.clone();
+        let (mut pick, mut open) = (None, None);
+        // The header band stays put; only the rows scroll up and down. Sideways they scroll together.
+        egui::ScrollArea::horizontal().id_salt("nets_scroll").auto_shrink(false).show(ui, |ui| {
+            one_size(ui.style_mut());
+            let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+            let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|r| r.cells.clone()).collect();
+            let widths = TodayTable::fit(ui, &heads, &cells);
+            let mut table = TodayTable::with(&c, &widths, ui.available_width());
+            if let Some(col) = table.head(ui, &heads, self.nets_sort, t.tr("today.sort")) {
+                self.nets_sort = TodayTable::next_sort(self.nets_sort, col);
+            }
+            egui::ScrollArea::vertical().id_salt("nets_rows").auto_shrink([true, false]).show(ui, |ui| {
+                ui.spacing_mut().item_spacing.y = 0.0;
+                for row in &rows {
+                    let on = picked.as_deref() == Some(row.id.as_str());
+                    let r = table.cells_of(ui, &row.cells, on, row.state).on_hover_text(t.tr("nets.open_hint"));
+                    let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
+                    ito_a11y::say(&r, Role::Row, &said.join(" "));
+                    if r.double_clicked() {
+                        open = Some(row.id.clone());
+                    } else if r.clicked() {
+                        pick = Some(row.id.clone());
+                    }
+                }
+            });
+            ui.spacing_mut().item_spacing.y = gap;
+        });
+        if let Some(id) = open {
+            self.nets_pick = Some(id.clone());
+            self.open_net(&id);
+        } else if let Some(id) = pick {
+            self.nets_pick = Some(id);
         }
     }
 
@@ -3720,6 +3850,8 @@ mod tests {
             today_sort: None,
             net_sort: None,
             run_sort: None,
+            nets_sort: None,
+            nets_pick: None,
             vers: None,
             editor: None,
             editors: Vec::new(),

@@ -313,6 +313,18 @@ col_next = "Next"
 col_date = "Date"
 average = "(avg {0})"
 
+[nets]
+heading = "All jobnets"
+empty = "No jobnets yet. Make one with the ＋ on the left"
+open_hint = "Double-click to open its page"
+col_state = "State"
+col_group = "Group"
+col_net = "Jobnet"
+col_last = "Last run"
+col_time = "Time"
+col_next = "Next"
+col_note = "Check"
+
 [tabs]
 today = "Today"
 net = "Jobnets"

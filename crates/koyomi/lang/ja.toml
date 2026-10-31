@@ -312,6 +312,18 @@ col_next = "次の回"
 col_date = "日付"
 average = "(平均 {0})"
 
+[nets]
+heading = "すべてのジョブネット"
+empty = "ジョブネットはまだありません。左の「＋」で作れます"
+open_hint = "ダブルクリックでジョブネットのページに開く"
+col_state = "状態"
+col_group = "グループ"
+col_net = "ジョブネット"
+col_last = "最後の回"
+col_time = "時間"
+col_next = "次の回"
+col_note = "確認"
+
 [tabs]
 today = "今日"
 net = "ジョブネット"
