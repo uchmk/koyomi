@@ -98,7 +98,9 @@ fn words(lane: &Lane, runs: &[&Run], to_come: &str) -> String {
     format!("{}  {when}", lane.title)
 }
 
-/// Draws the lanes; the id of the run clicked, when one was (the latest run of the lane).
+/// Draws the lanes; the id of the run clicked, when one was (the latest run of the lane), and whether it was
+/// a double click. `hint` is shown on hovering a lane that has a run.
+#[allow(clippy::too_many_arguments)]
 pub fn draw(
     ui: &mut egui::Ui,
     runs: &[&Run],
@@ -107,7 +109,8 @@ pub fn draw(
     picked: Option<&str>,
     earlier: &str,
     to_come: &str,
-) -> Option<String> {
+    hint: &str,
+) -> Option<(String, bool)> {
     let c = ito_theme::colors();
     let (lo, hi, list) = lanes(runs, planned, now);
     let width = (ui.available_width() - LABEL - 16.0).max(200.0);
@@ -133,8 +136,11 @@ pub fn draw(
         let y = origin.y + 22.0 + row as f32 * LANE;
         let area = Rect::from_min_size(Pos2::new(origin.x, y), Vec2::new(LABEL + width, LANE));
         let id = ui.id().with(("gantt", &lane.id));
-        let r = ui.interact(area, id, Sense::click());
+        let mut r = ui.interact(area, id, Sense::click());
         let latest = lane.latest().map(|b| runs[b.run]);
+        if latest.is_some() {
+            r = r.on_hover_text(hint);
+        }
         if latest.is_some_and(|run| picked == Some(run.id.as_str())) || r.hovered() {
             painter.rect_filled(area, 4.0, if r.hovered() { c.hover() } else { c.chosen() });
         }
@@ -182,8 +188,10 @@ pub fn draw(
             };
         }
         ito_a11y::say(&r, ito_a11y::Role::Row, &said);
-        if r.clicked() {
-            clicked = latest.map(|run| run.id.clone());
+        if r.double_clicked() {
+            clicked = latest.map(|run| (run.id.clone(), true));
+        } else if r.clicked() {
+            clicked = latest.map(|run| (run.id.clone(), false));
         }
     }
     // Now, over the bars.

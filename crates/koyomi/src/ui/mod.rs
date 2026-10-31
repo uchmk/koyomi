@@ -2172,12 +2172,23 @@ impl Browser {
                 });
                 ui.add_space(6.0);
                 egui::ScrollArea::both().id_salt("gantt").auto_shrink(false).show(ui, |ui| {
-                    pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
+                    pick = gantt::draw(
+                        ui,
+                        &runs,
+                        &planned,
+                        now,
+                        picked.as_deref(),
+                        t.tr("run.gantt_earlier"),
+                        t.tr("run.gantt_planned"),
+                        t.tr("today.open_hint"),
+                    );
                 });
             });
-        // A bar opens its run on the net page, as a row of the table does.
-        if let Some(id) = pick {
-            self.open_run(&id);
+        // As a row of the table: a click picks the run, a double click opens it on the net page.
+        match pick {
+            Some((id, true)) => self.open_run(&id),
+            Some((id, false)) => self.run_sel = Some(id),
+            None => {}
         }
     }
 
