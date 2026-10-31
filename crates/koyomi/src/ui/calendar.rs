@@ -111,6 +111,8 @@ impl Browser {
             self.job_sel = None;
             self.result = None;
             self.hist = None;
+            // Off the today page too, or the chart keeps the detail and the click shows nothing.
+            self.gantt = false;
         }
     }
 

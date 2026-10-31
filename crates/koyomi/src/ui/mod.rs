@@ -673,7 +673,13 @@ impl Browser {
 
     /// Shows run `id` in the detail (a click under the bell).
     pub fn open_run(&mut self, id: &str) {
+        // Mark its net in the tree too, so the run shows where it belongs.
+        if let Some(net) = self.runs.iter().find(|r| r.id == id).map(|r| r.jobnet.clone()) {
+            self.selected = Some(net);
+        }
         self.run_sel = Some(id.to_owned());
+        self.cal_sel = None;
+        self.result = None;
         self.job_sel = None;
         self.hist = None;
         self.gantt = false;
@@ -1499,7 +1505,18 @@ impl Browser {
             if self.editor.is_some() {
                 self.editor_view(ui, t);
             } else if self.gantt {
-                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| self.gantt_view(ui, t));
+                // The chart in a pane at the bottom, its top edge dragged to size it; the table above.
+                egui::Panel::bottom("gantt_pane")
+                    .resizable(true)
+                    .default_size(320.0)
+                    .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
+                    .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
+                    .show(ui, |ui| {
+                        // The panel keeps the size its content took, so fill it (an empty first frame would shrink it).
+                        ui.set_min_height(ui.available_height());
+                        self.gantt_view(ui, t);
+                    });
+                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| self.today_table(ui, t));
             } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
@@ -1815,11 +1832,9 @@ impl Browser {
             }
         }
         ui.spacing_mut().item_spacing.y = gap;
-        if pick.is_some() {
-            self.run_sel = pick;
-            self.cal_sel = None;
-            self.job_sel = None;
-            self.result = None;
+        // A row opens its run on the net page: the chart below keeps its room.
+        if let Some(id) = pick {
+            self.open_run(&id);
         }
     }
 
@@ -2050,8 +2065,6 @@ impl Browser {
     /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        self.today_table(ui, t);
-        ui.add_space(14.0);
         let now = chrono::Local::now().naive_local();
         let planned = self.planned_today(now);
         if self.runs.is_empty() && planned.is_empty() {
@@ -2077,19 +2090,13 @@ impl Browser {
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| gantt::legend(ui, t));
                 });
                 ui.add_space(6.0);
-                egui::ScrollArea::horizontal().id_salt("gantt").show(ui, |ui| {
+                egui::ScrollArea::both().id_salt("gantt").auto_shrink(false).show(ui, |ui| {
                     pick = gantt::draw(ui, &runs, &planned, now, picked.as_deref(), t.tr("run.gantt_earlier"), t.tr("run.gantt_planned"));
                 });
             });
-        if pick.is_some() {
-            self.run_sel = pick;
-            self.job_sel = None;
-            self.result = None;
-        }
-        if self.run_sel.is_some() {
-            ui.add_space(10.0);
-            ui.separator();
-            self.run_view(ui, t);
+        // A bar opens its run on the net page, as a row of the table does.
+        if let Some(id) = pick {
+            self.open_run(&id);
         }
     }
 
