@@ -320,6 +320,8 @@ pub struct Browser {
     today_kind: Option<TodayKind>,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
     today_sort: Option<(usize, bool)>,
+    /// The jobs table's sort on the net page, as `today_sort`.
+    net_sort: Option<(usize, bool)>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -452,6 +454,7 @@ impl Browser {
             gantt: true,
             today_kind: None,
             today_sort: None,
+            net_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1872,11 +1875,7 @@ impl Browser {
             .to_vec();
         if let Some(col) = table.head(ui, &heads, self.today_sort, t.tr("today.sort")) {
             // A column's first click sorts it up, the second down, the third puts the order back.
-            self.today_sort = match self.today_sort {
-                Some((was, false)) if was == col => Some((col, true)),
-                Some((was, true)) if was == col => None,
-                _ => Some((col, false)),
-            };
+            self.today_sort = TodayTable::next_sort(self.today_sort, col);
         }
         if rows.is_empty() {
             ui.add_space(6.0);
@@ -2661,6 +2660,11 @@ impl Browser {
                 let id = def.id.clone();
                 let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
             }
+            // The job picked on the graph or in the jobs table is held from here too, next to the net's own hold.
+            let job = self.job_sel.clone().filter(|p| def.net.as_ref().is_some_and(|n| n.jobs.iter().any(|j| &j.id == p)));
+            if let Some(job) = job {
+                self.hold_job_button(ui, t, &def.id, &job);
+            }
         });
         if held {
             let text = format!("{} {}", State::Held.mark(), t.tr("run.held_note"));
@@ -2701,9 +2705,6 @@ impl Browser {
                 let r = ui.label(egui::RichText::new(text).color(graph::colour(&c, State::Held)));
                 ito_a11y::say(&r, Role::Label, text);
             }
-            if let Some(job) = picked {
-                ui.horizontal(|ui| self.hold_job_button(ui, t, &def.id, &job));
-            }
         }
         if let Some(net) = &def.net {
             section(ui, "net.sec_timing");
@@ -2738,47 +2739,95 @@ impl Browser {
         if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_jobs");
             if let Some(net) = &def.net {
-                // One row a job: what it is, what it waits for, what it runs and where, and the rest of its settings.
-                let rows = review::job_rows(t, &def);
-                let none = || egui::RichText::new("—").color(c.dim);
-                egui::ScrollArea::horizontal().id_salt("net_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
-                    egui::Grid::new("net_jobs").striped(true).num_columns(7).spacing([16.0, 6.0]).show(ui, |ui| {
-                        for h in
-                            ["net.col_id", "net.col_kind", "net.col_name", "net.col_after", "net.col_run", "net.col_dir", "net.col_more"]
-                        {
-                            let r = ui.label(egui::RichText::new(t.tr(h)).strong().color(c.dim));
-                            ito_a11y::say(&r, Role::Heading, t.tr(h));
-                        }
-                        ui.end_row();
-                        for (j, row) in net.jobs.iter().zip(rows.iter().map(Some).chain(std::iter::repeat(None))) {
-                            ui.label(egui::RichText::new(&j.id).monospace());
-                            ui.label(t.tr(&format!("part.{}", j.part.key())));
-                            match j.name.as_deref().filter(|n| !n.is_empty()) {
-                                Some(n) => ui.label(n),
-                                None => ui.label(none()),
-                            };
-                            let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
-                            if after.is_empty() {
-                                ui.label(none());
-                            } else {
-                                ui.label(egui::RichText::new(after.join(", ")).monospace());
+                // One row a job, drawn as the today table: what it is, what comes before and after it, what it
+                // runs and where, and the rest of its settings. A click picks the job (as on the graph).
+                let details = review::job_rows(t, &def);
+                let mut rows: Vec<(usize, Vec<(String, bool)>)> = net
+                    .jobs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, j)| {
+                        let row = details.get(i);
+                        let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
+                        // The jobs that wait for this one, written as their own `after` names it.
+                        let next: Vec<String> = net
+                            .jobs
+                            .iter()
+                            .flat_map(|k| {
+                                k.after.iter().filter(|l| l.job == j.id).map(move |l| format!("{}{}", k.id, &l.text()[l.job.len()..]))
+                            })
+                            .collect();
+                        let cells = vec![
+                            (j.id.clone(), true),
+                            (t.tr(&format!("part.{}", j.part.key())).to_owned(), false),
+                            (j.name.clone().unwrap_or_default(), false),
+                            (after.join(", "), true),
+                            (next.join(", "), true),
+                            (row.and_then(|r| r.command.clone()).unwrap_or_default(), true),
+                            (row.and_then(|r| r.dir.clone()).unwrap_or_default(), true),
+                            (
+                                row.map(|r| {
+                                    r.rest.join(
+                                        "
+",
+                                    )
+                                })
+                                .unwrap_or_default(),
+                                false,
+                            ),
+                        ];
+                        (i, cells)
+                    })
+                    .collect();
+                if let Some((col, down)) = self.net_sort {
+                    rows.sort_by(|(ia, a), (ib, b)| {
+                        // The id sorts in the net's order; the rest by their words, the empty ones last.
+                        let o = if col == 0 {
+                            ia.cmp(ib)
+                        } else {
+                            let (x, y) = (&a[col].0, &b[col].0);
+                            match (x.is_empty(), y.is_empty()) {
+                                (true, false) => return std::cmp::Ordering::Greater,
+                                (false, true) => return std::cmp::Ordering::Less,
+                                _ => x.to_lowercase().cmp(&y.to_lowercase()),
                             }
-                            match row.and_then(|r| r.command.as_deref()) {
-                                Some(cmd) => ui.label(egui::RichText::new(cmd).monospace()),
-                                None => ui.label(none()),
-                            };
-                            match row.and_then(|r| r.dir.as_deref()) {
-                                Some(d) => ui.label(egui::RichText::new(d).monospace()),
-                                None => ui.label(none()),
-                            };
-                            match row.filter(|r| !r.rest.is_empty()) {
-                                Some(r) => ui.label(r.rest.join("\n")),
-                                None => ui.label(none()),
-                            };
-                            ui.end_row();
+                        };
+                        if down {
+                            o.reverse()
+                        } else {
+                            o
                         }
                     });
+                }
+                let heads: Vec<String> = ["col_id", "col_kind", "col_name", "col_after", "col_next", "col_run", "col_dir", "col_more"]
+                    .map(|k| t.tr(&format!("net.{k}")).to_owned())
+                    .to_vec();
+                let picked = self.job_sel.clone();
+                let mut pick = None;
+                egui::ScrollArea::horizontal().id_salt("net_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
+                    one_size(ui.style_mut());
+                    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+                    let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|(_, r)| r.clone()).collect();
+                    let widths = TodayTable::fit(ui, &heads, &cells);
+                    let mut table = TodayTable::with(&c, &widths, ui.available_width());
+                    if let Some(col) = table.head(ui, &heads, self.net_sort, t.tr("today.sort")) {
+                        self.net_sort = TodayTable::next_sort(self.net_sort, col);
+                    }
+                    for (i, cells) in &rows {
+                        let id = &net.jobs[*i].id;
+                        let on = picked.as_deref() == Some(id.as_str());
+                        let r = table.cells(ui, cells, on);
+                        let said: Vec<&str> = cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
+                        ito_a11y::say(&r, Role::Button, &said.join(" "));
+                        if r.clicked() {
+                            pick = Some(if on { None } else { Some(id.clone()) });
+                        }
+                    }
+                    ui.spacing_mut().item_spacing.y = gap;
                 });
+                if let Some(p) = pick {
+                    self.job_sel = p;
+                }
             }
         }
     }
@@ -3036,7 +3085,7 @@ impl TodayRow {
 struct TodayTable {
     c: ito_theme::Colors,
     /// The left edge of each column, from the table's left.
-    cols: [f32; 7],
+    cols: Vec<f32>,
     width: f32,
 }
 
@@ -3049,13 +3098,28 @@ impl TodayTable {
         // State, net (the rest), planned, start, end, time, next.
         let fixed = [110.0, 0.0, 110.0, 80.0, 80.0, 170.0, 100.0];
         let net = (width - fixed.iter().sum::<f32>()).max(160.0);
-        let mut cols = [0.0; 7];
+        let widths: Vec<f32> = fixed.iter().enumerate().map(|(i, w)| if i == 1 { net } else { *w }).collect();
+        Self::with(c, &widths, width)
+    }
+
+    /// A table of these column widths, `width` wide at least (the last column takes what is over).
+    fn with(c: &ito_theme::Colors, widths: &[f32], width: f32) -> Self {
+        let mut cols = Vec::with_capacity(widths.len());
         let mut x = 0.0;
-        for (i, w) in fixed.iter().enumerate() {
-            cols[i] = x;
-            x += if i == 1 { net } else { *w };
+        for w in widths {
+            cols.push(x);
+            x += w;
         }
-        Self { c: *c, cols, width }
+        Self { c: *c, cols, width: width.max(x) }
+    }
+
+    /// The sort after a click on column `col`: up first, then down, then back to none.
+    fn next_sort(was: Option<(usize, bool)>, col: usize) -> Option<(usize, bool)> {
+        match was {
+            Some((w, false)) if w == col => Some((col, true)),
+            Some((w, true)) if w == col => None,
+            _ => Some((col, false)),
+        }
     }
 
     fn cell_right(&self, i: usize) -> f32 {
@@ -3071,7 +3135,7 @@ impl TodayTable {
         let mut hit = None;
         for (i, h) in heads.iter().enumerate() {
             let cell = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i), rect.y_range());
-            let r = ui.interact(cell, ui.id().with(("today-head", i)), egui::Sense::click());
+            let r = ui.interact(cell, ui.id().with(("table-head", i)), egui::Sense::click());
             let arrow = match sort {
                 Some((col, false)) if col == i => " ▲",
                 Some((col, true)) if col == i => " ▼",
@@ -3155,6 +3219,64 @@ impl TodayTable {
         } else {
             r
         }
+    }
+}
+
+impl TodayTable {
+    /// A row of plain cells (`(text, fixed-width)`; empty shows a dim dash, a line break makes the row
+    /// taller), without a state: hover tints it, a picked row is filled and striped at the left in `run`.
+    fn cells(&mut self, ui: &mut egui::Ui, cells: &[(String, bool)], on: bool) -> egui::Response {
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let lines = cells.iter().map(|(t, _)| t.lines().count().max(1)).max().unwrap_or(1);
+        let line = ui.fonts_mut(|f| f.row_height(&body));
+        let height = Self::ROW.max(lines as f32 * line + 10.0);
+        let (rect, r) = ui.allocate_exact_size(egui::vec2(self.width, height), egui::Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return r;
+        }
+        let c = &self.c;
+        let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        if on {
+            p.rect_filled(rect, 0.0, c.chosen());
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, c.run);
+        } else if r.hovered() {
+            p.rect_filled(rect, 0.0, c.hover());
+        }
+        p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, c.border));
+        let ink = if on { c.strong() } else { c.fg };
+        // One line sits in the middle as in the today table; a taller row starts its cells at the top.
+        let (y, align) = if lines == 1 {
+            (rect.center().y, egui::Align2::LEFT_CENTER)
+        } else {
+            (rect.top() + (Self::ROW - line) / 2.0, egui::Align2::LEFT_TOP)
+        };
+        for (i, (text, fixed)) in cells.iter().enumerate() {
+            let clip = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i) - 4.0, rect.y_range());
+            let (text, ink) = if text.is_empty() { ("—", c.dim) } else { (text.as_str(), ink) };
+            // The dash is the same in every column, fixed-width or not.
+            let font = if *fixed && text != "—" { mono.clone() } else { body.clone() };
+            p.with_clip_rect(clip).text(egui::pos2(rect.left() + self.cols[i] + Self::PAD, y), align, text, font, ink);
+        }
+        r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    }
+
+    /// Column widths that fit `heads` and `rows` (each cell's longest line), padded.
+    fn fit(ui: &egui::Ui, heads: &[String], rows: &[Vec<(String, bool)>]) -> Vec<f32> {
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let p = ui.painter();
+        let w = |t: &str, f: &egui::FontId| p.layout_no_wrap(t.to_owned(), f.clone(), egui::Color32::WHITE).size().x;
+        heads
+            .iter()
+            .enumerate()
+            .map(|(i, h)| {
+                let cells = rows.iter().filter_map(|r| r.get(i)).map(|(t, fixed)| w(t, if *fixed { &mono } else { &body }));
+                // Room for the sort arrow next to the head.
+                cells.fold(w(&format!("{h} ▼"), &small), f32::max) + 2.0 * Self::PAD + 6.0
+            })
+            .collect()
     }
 }
 
@@ -3439,6 +3561,7 @@ mod tests {
             gantt: false,
             today_kind: None,
             today_sort: None,
+            net_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -3854,11 +3977,11 @@ run = [\"x.exe\"]
         s.click("a の次から（a は警告終了）", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), next: Some(State::Warn), .. }) if f == "a"));
         // The picked job is held for the net (H3); held, the button lets it go.
-        s.click("a を保留", &mut b);
+        s.click("ジョブ a を保留", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
         b.snap.as_mut().unwrap().held_jobs.push(koyomi_core::held::HeldJob { net: "試験/bom".into(), job: "a".into() });
         s.settle(&mut b);
-        s.click("a の保留を解く", &mut b);
+        s.click("ジョブ a の保留を解く", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
     }
 
