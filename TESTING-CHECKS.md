@@ -1,6 +1,6 @@
 # Checklist
 
-668 checks in TESTING.md, 664 left for a person.
+678 checks in TESTING.md, 674 left for a person.
 
 ## 1. Start
 
@@ -945,3 +945,16 @@
 - [ ] **92.8** On B: `koyomi secret set a-token` with a wrong value; or delete it → `token が合わない…`; `token の秘密 a-token がない…` 〔未訳〕
 - [ ] **92.9** `koyomi check` koyomi.toml with `url = "http://A:8790"`, a short fingerprint, `token = "T"`, two `[[remote]]` with the same name → Each refused: `url は https://<PC>:<port> で書く…`, `fingerprint は SHA-256…`, `token は secret:<名前> で書く`, `name … が 2 つある` 〔未訳〕
 - [ ] **92.10** `koyomi remote status nope`; `koyomi remote frob` → `nope: [[remote]] にない（あるのは a）`; the usage line, exit 2 〔未訳〕
+
+## 93. Standby for another PC (`[standby]`, `koyomi standby [giveback]`; TODO 87)
+
+- [ ] **93.1** Start B's engine; `koyomi status` and `koyomi standby` on B → `待機中: a を見張っている。こちらではスケジュールとイベントで流さない`; the window's cautions show the same line 〔未訳〕
+- [ ] **93.2** Let a net's time pass on both → It runs on A only; B's history has no row for it 〔未訳〕
+- [ ] **93.3** On B: `koyomi run <net>` → It runs on B (by hand still goes) 〔未訳〕
+- [ ] **93.4** Stop A's engine; wait about 15 s → B tells `koyomi: 待機から引き継いだ` with `a が答えなくなった（つながらない: …）ので、… からこの PC で流す。向こうで動いていた回は引き継いでいない…`; `koyomi status` says `a から引き継いで流している（… から。koyomi standby giveback で戻す）`; the next time runs on B 〔未訳〕
+- [ ] **93.5** Restart B's engine → Still taken over at once (`standby.toml` in the state folder has `active = true`) 〔未訳〕
+- [ ] **93.6** Start A's engine again → B tells `koyomi: 両方で流している` once, and stays taken over 〔未訳〕
+- [ ] **93.7** On B: `koyomi standby giveback`; again → `a に戻した。また見張る`, back to 93.1; the second says `引き継いでいない（a を見張っている）`; `koyomi ops` shows `giveback` 〔未訳〕
+- [ ] **93.8** On B: change one digit of `a`'s fingerprint; stop A → A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) 〔未訳〕
+- [ ] **93.9** `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` → Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` 〔未訳〕
+- [ ] **93.10** Remove `[standby]` from B's koyomi.toml → B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] がない` 〔未訳〕

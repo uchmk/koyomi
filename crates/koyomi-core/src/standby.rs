@@ -46,6 +46,11 @@ impl Watch {
         Watch { misses: misses.max(1), state: State::Watching { missed: 0 } }
     }
 
+    /// Resumes a takeover kept over a restart, so it does not wait for the misses again.
+    pub fn resumed(misses: u32) -> Watch {
+        Watch { misses: misses.max(1), state: State::Active { both_said: false } }
+    }
+
     pub fn state(&self) -> State {
         self.state
     }
@@ -126,5 +131,8 @@ mod tests {
         assert!(w.give_back());
         assert_eq!(w.state(), State::Watching { missed: 0 });
         assert_eq!(w.poll(true), Step::Stay);
+        let mut w = Watch::resumed(3);
+        assert!(w.active());
+        assert_eq!(w.poll(true), Step::BothActive);
     }
 }

@@ -67,6 +67,7 @@ usage: koyomi [--version | --help | env]
        koyomi uses <calendar|group/name|program>
                                      where it is used: nets by calendar, child nets, nets that wait for or follow it, jobs that run it
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
+       koyomi standby [giveback]     with [standby]: watching the other PC or taken over; giveback hands the schedules back
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
        koyomi report [YYYY-MM] [--csv <file>]
@@ -137,7 +138,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 43] = [
+const COMMANDS: [&str; 44] = [
     "check",
     "list",
     "show",
@@ -159,6 +160,7 @@ const COMMANDS: [&str; 43] = [
     "uses",
     "pause",
     "resume",
+    "standby",
     "calendar",
     "plan",
     "report",
@@ -226,6 +228,11 @@ pub fn run(args: &[String]) -> Option<i32> {
         "uses" => uses(rest),
         "pause" => plain(rest, "pause", Request::Pause),
         "resume" => plain(rest, "resume", Request::Resume),
+        "standby" => match rest {
+            [] => ask_and_say(&Request::Standby { give_back: false }),
+            [op] if op == "giveback" => ask_and_say(&Request::Standby { give_back: true }),
+            _ => usage("standby takes nothing or giveback"),
+        },
         "calendar" => calendar(rest),
         "new" => new_cmd(rest),
         "versions" => versions(rest),

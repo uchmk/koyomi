@@ -772,6 +772,12 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - **入れた形（80 の 1 つ目、ito 0.155.0）:** 証明書と鍵は `app_dir` の `tls`。指紋は `koyomi status` と `koyomi http fingerprint` に出す。
   - 呼ぶ側は CLI から: `koyomi remote [list]`・`peek <url>`・`status|nets|runs <name>`・`run <name> <net>`。指紋を固定せずに証明書を見るのは `peek` だけで、向こうの `koyomi http fingerprint` と比べてから `[[remote]]` に書く。
   - `[[remote]]` の `url` は `https://` だけ（パスは書かない）。`fingerprint` は `:` 区切りでもなくてもよい。`name` は重ねない。
+- **入れた形（87 の 1 つ目）:** `[standby]` は `watch`（要る）・`every`（5s〜10m、既定 20s）・`misses`（1〜20、既定 3）。
+  - 答えなかったと数えるのは、つながらないときと TLS が通らないときだけ。証明書が指紋と違う・token の秘密がない・`/health` が 200 以外（401 など）は「分からない」か「答えた」として、引き継がずに注意を出す（別の PC や設定の誤りで引き継がないため）。
+  - 待つ間、時刻の分は何も書かない（履歴が積もらない）。イベントで来たものは「待機中」として飛ばしたと書く。手で流すものは流す。
+  - 引き継いだことは `state_dir` の `standby.toml` に書き、エンジンを起こし直しても引き継いだまま。引き継いだとき・両方で流していると分かったときは、`failed` で一度ずつ知らせる。
+  - `koyomi standby` で今の立場、`koyomi standby giveback` で戻す（手でした操作の記録に `giveback`）。
+  - 定義を相手から写すのはまだ（定義の本文を出す道が API にない）。今は両方に同じ定義を置き、どちらでも確認しておく。
 
 ## メールを受けて起動する（TODO 84、2026-10-31）
 

@@ -3,7 +3,8 @@
 //! the app with ito-prefs's shape; kept whole here), `[ping]`, the
 //! address the engine calls while it is alive, `[http]`, where it
 //! listens for other programs (on this PC, or with `lan` on the network over
-//! TLS), and `[[remote]]`, the other PCs' engines this one calls.
+//! TLS), `[[remote]]`, the other PCs' engines this one calls, and `[standby]`, which of them
+//! this one stands by for (HA).
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -27,6 +28,52 @@ pub struct Config {
     pub http: Option<Http>,
     /// `[[remote]]`: other PCs' engines, called over HTTPS with their certificate pinned.
     pub remote: Vec<Remote>,
+    /// `[standby]`: stand by for one `[[remote]]`; run the schedules here only once it stops answering.
+    pub standby: Option<Standby>,
+}
+
+/// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
+/// it does not answer, take over its schedules (`koyomi standby giveback` hands them back).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Standby {
+    pub watch: String,
+    /// As a length (`20s`). From 5 seconds to 10 minutes.
+    #[serde(default = "Standby::every_default")]
+    pub every: String,
+    /// From 1 to 20.
+    #[serde(default = "Standby::misses_default")]
+    pub misses: u32,
+}
+
+impl Standby {
+    fn every_default() -> String {
+        format!("{}s", crate::standby::INTERVAL.as_secs())
+    }
+
+    fn misses_default() -> u32 {
+        crate::standby::MISSES
+    }
+
+    /// The seconds between polls; [`Config::parse`] has checked it reads.
+    pub fn every_secs(&self) -> u64 {
+        crate::duration::parse(&self.every).unwrap_or(crate::standby::INTERVAL.as_secs())
+    }
+
+    fn check(&self, remotes: &[Remote]) -> Result<(), String> {
+        let watch = self.watch.trim();
+        if !remotes.iter().any(|r| r.name.trim() == watch) {
+            return Err(format!("[standby] の watch {watch:?} は [[remote]] の name で書く"));
+        }
+        let secs = crate::duration::parse(&self.every).map_err(|e| format!("[standby] の every: {e}"))?;
+        if !(5..=600).contains(&secs) {
+            return Err("[standby] の every は 5s から 10m まで".to_owned());
+        }
+        if !(1..=20).contains(&self.misses) {
+            return Err("[standby] の misses は 1 から 20 まで".to_owned());
+        }
+        Ok(())
+    }
 }
 
 /// `[ping]`: the engine calls `url` every `every`, so a watcher elsewhere
@@ -143,7 +190,16 @@ impl Http {
 
 impl Default for Config {
     fn default() -> Config {
-        Config { concurrency: 4, keep_days: 90, log_max_mb: 10, notify: toml::Table::new(), ping: None, http: None, remote: Vec::new() }
+        Config {
+            concurrency: 4,
+            keep_days: 90,
+            log_max_mb: 10,
+            notify: toml::Table::new(),
+            ping: None,
+            http: None,
+            remote: Vec::new(),
+            standby: None,
+        }
     }
 }
 
@@ -170,6 +226,9 @@ impl Config {
             if c.remote[..i].iter().any(|o| o.name.trim() == r.name.trim()) {
                 return Err(format!("[[remote]] の name {} が 2 つある", r.name.trim()));
             }
+        }
+        if let Some(s) = &c.standby {
+            s.check(&c.remote)?;
         }
         Ok(c)
     }
@@ -292,6 +351,76 @@ evry = \"5m\"
             one("pc2", "https://pc2:8790", &fp, "plain"),
             one("", "https://pc2:8790", &fp, "secret:pc2"),
             one("pc2", "https://a:1", &fp, "secret:a") + &one("pc2", "https://b:1", &fp, "secret:b"),
+        ] {
+            assert!(Config::parse(&bad).is_err(), "{bad}");
+        }
+    }
+
+    /// a standby names a remote, and polls at a sane pace.
+    #[test]
+    fn a_standby_watches_a_named_remote() {
+        let fp = "AB:".repeat(31) + "CD";
+        let remote = format!(
+            "[[remote]]
+name = \"pc1\"
+url = \"https://pc1:8790\"
+fingerprint = \"{fp}\"
+token = \"secret:pc1\"
+"
+        );
+        let c = Config::parse(&format!(
+            "{remote}[standby]
+watch = \"pc1\"
+"
+        ))
+        .unwrap();
+        let s = c.standby.unwrap();
+        assert_eq!((s.watch.as_str(), s.every_secs(), s.misses), ("pc1", 20, 3));
+        let s = Config::parse(&format!(
+            "{remote}[standby]
+watch = \"pc1\"
+every = \"1m\"
+misses = 5
+"
+        ))
+        .unwrap()
+        .standby
+        .unwrap();
+        assert_eq!((s.every_secs(), s.misses), (60, 5));
+        for bad in [
+            "[standby]
+watch = \"pc1\"
+"
+            .to_owned(),
+            format!(
+                "{remote}[standby]
+watch = \"pc2\"
+"
+            ),
+            format!(
+                "{remote}[standby]
+watch = \"pc1\"
+every = \"1s\"
+"
+            ),
+            format!(
+                "{remote}[standby]
+watch = \"pc1\"
+every = \"1h\"
+"
+            ),
+            format!(
+                "{remote}[standby]
+watch = \"pc1\"
+misses = 0
+"
+            ),
+            format!(
+                "{remote}[standby]
+watch = \"pc1\"
+mises = 3
+"
+            ),
         ] {
             assert!(Config::parse(&bad).is_err(), "{bad}");
         }

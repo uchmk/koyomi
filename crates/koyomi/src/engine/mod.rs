@@ -42,6 +42,7 @@ mod ping;
 mod retain;
 mod runner;
 mod schedule;
+mod standby;
 mod tray;
 
 use backup::Backup;
@@ -184,6 +185,8 @@ struct State {
     /// `[http]`: the loopback listener that starts nets and reads runs for other programs.
     http: http::Http,
     http_cfg: Option<koyomi_core::config::Http>,
+    /// `[standby]`: while the PC it watches answers, no schedule or event runs here.
+    standby: standby::Standby,
     /// Keeps the PC from sleeping while a job's process runs.
     awake: Option<ito_power::Awake>,
     /// The wake timer for the soonest time of a `wake = true` net; `None`: no net asks.
@@ -240,6 +243,7 @@ impl State {
         let retain = Retain::new(&paths.state);
         let backup = Backup::new(&paths.app, &paths.state);
         let alive = alive::Alive::new(&paths.state);
+        let standby = standby::Standby::new(&paths.state);
         let (reveal_tx, reveal_rx) = mpsc::channel();
         let mut s = State {
             paths,
@@ -264,6 +268,7 @@ impl State {
             ping_plain_ok: false,
             http: http::Http::default(),
             http_cfg: None,
+            standby,
             awake: None,
             wake: None,
             power_look: None,
@@ -318,6 +323,7 @@ impl State {
                 self.keep_days = c.keep_days;
                 self.ping_cfg = c.ping.clone();
                 self.http_cfg = c.http.clone();
+                self.standby.set(c.standby.as_ref(), &c.remote);
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -531,6 +537,12 @@ impl State {
     fn tick_schedule(&mut self) {
         let now = Utc::now();
         let Some(checked) = self.schedule.look(now) else { return };
+        // Standing by: the PC watched runs these times. Nothing is written for them here, and
+        // after a takeover only the times from then on run.
+        if self.standby.waiting() {
+            self.schedule.looked(now, false);
+            return;
+        }
         let mut due: Vec<(usize, DateTime<Utc>, NaiveDateTime)> = Vec::new();
         for (i, d) in self.defs.iter().enumerate() {
             if let Some(net) = &d.net {
@@ -573,6 +585,17 @@ impl State {
             self.begin(&def, *planned, verdict);
         }
         self.schedule.looked(now, !due.is_empty());
+    }
+
+    /// Polls the PC `[standby]` watches, and tells of a takeover or of both running.
+    fn tick_standby(&mut self) {
+        let (title, line) = match self.standby.tick() {
+            Some(standby::Told::TookOver(line)) => ("koyomi: 待機から引き継いだ", line),
+            Some(standby::Told::Both(line)) => ("koyomi: 両方で流している", line),
+            None => return,
+        };
+        crate::notify::tell(&self.notify, "failed", title, &line);
+        crate::say(&format!("koyomi: {line}"), false);
     }
 
     /// Does what `verdict` says with the time `planned` of `def`.
@@ -686,6 +709,9 @@ impl State {
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         if let Some(until) = cal.filter(|c| c.stale(day)).and_then(|c| c.until()) {
             return Some((RunState::Locked, format!("祝日の表が古い（{until} まで）")));
+        }
+        if self.standby.waiting() {
+            return Some((RunState::Skipped, "待機中（見張っている PC が流す）".to_owned()));
         }
         if self.held.paused {
             return Some((RunState::Held, "スケジュールを止めている（koyomi resume）".to_owned()));
@@ -944,7 +970,15 @@ impl State {
         warnings.extend(self.logs.problems());
         warnings.extend(self.mails.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
-        let notes = self.notify_notes.iter().chain(&self.reveal_notes).cloned().chain(ping).chain(self.http.notes()).collect();
+        let notes = self
+            .notify_notes
+            .iter()
+            .chain(&self.reveal_notes)
+            .cloned()
+            .chain(ping)
+            .chain(self.http.notes())
+            .chain(self.standby.notes())
+            .collect();
         Snapshot {
             defs: self.defs.clone(),
             warnings,
@@ -952,7 +986,12 @@ impl State {
             held: self.held.held.clone(),
             held_jobs: self.held.jobs.clone(),
             paused: self.held.paused,
-            cautions: self.outage_line().into_iter().chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS)).collect(),
+            cautions: self
+                .outage_line()
+                .into_iter()
+                .chain(self.standby.line())
+                .chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS))
+                .collect(),
             calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
             power: self.power(),
@@ -972,6 +1011,9 @@ impl State {
             self.backup.line()
         );
         if let Some(line) = self.http.line() {
+            out.push_str(&format!("\n{line}"));
+        }
+        if let Some(line) = self.standby.line() {
             out.push_str(&format!("\n{line}"));
         }
         if self.held.paused {
@@ -1683,6 +1725,8 @@ impl State {
             Request::Shift { id, from, to } => self.shift(id, from, to.as_deref()),
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
+            Request::Standby { give_back: true } => self.standby.give_back(),
+            Request::Standby { give_back: false } => self.standby.line().ok_or_else(|| "koyomi.toml に [standby] がない".to_owned()),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
             Request::VersionText { id, version } => self.version_text(id, version),
@@ -1722,6 +1766,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Shift { id, .. } => ("shift", id.clone()),
         Request::Pause => ("pause", String::new()),
         Request::Resume => ("resume", String::new()),
+        Request::Standby { give_back: true } => ("giveback", String::new()),
         Request::Save { id, .. } => ("save", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
@@ -1921,6 +1966,7 @@ pub fn run(own_tray: bool) -> i32 {
         state.alive.tick();
         state.ping.tick(state.ping_cfg.as_ref(), state.ping_plain_ok);
         state.http.tick(state.http_cfg.as_ref());
+        state.tick_standby();
         state.tick_wake();
         state.tick_awake();
         state.tick_late();

@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 27;
+pub const PROTO: u32 = 28;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -109,6 +109,11 @@ pub enum Request {
     /// Stop the whole schedule: every time is written down as ⏸ 保留 until `Resume`. Runs by hand still go.
     Pause,
     Resume,
+    /// `[standby]`: where this engine stands (watching or taken over); with `give_back`, hand the
+    /// schedules back to the PC it watches and watch again.
+    Standby {
+        give_back: bool,
+    },
     /// The editor's save: `text` becomes `jobnets/<id>.toml` and counts as confirmed
     /// (the editor shows what it saves). `base_sha256` is what the file hashed to when
     /// the editor read it (`None`: a new net); when the file is not that now, the save
