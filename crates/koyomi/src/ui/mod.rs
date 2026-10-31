@@ -2534,9 +2534,16 @@ impl Browser {
                 }
             }
         });
+        // Where the editor put the jobs, from the net as it is now.
+        let saved = self
+            .snap
+            .as_ref()
+            .and_then(|s| s.defs.iter().find(|d| d.id == run.jobnet))
+            .and_then(|d| d.net.as_ref())
+            .map(|n| n.jobs.clone());
         let mut pick = None;
         egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
-            pick = graph::draw(ui, &run, self.vertical, watched.as_deref());
+            pick = graph::draw(ui, &run, self.vertical, watched.as_deref(), saved.as_deref());
         });
         graph::legend(ui, t, &c, &run);
         egui::Grid::new("jobs_grid").num_columns(8).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
@@ -2695,7 +2702,7 @@ impl Browser {
             let picked = self.job_sel.clone().filter(|p| net.jobs.iter().any(|j| &j.id == p));
             let mut pick = None;
             egui::ScrollArea::horizontal().id_salt("net_graph").auto_shrink([false, true]).show(ui, |ui| {
-                pick = graph::draw(ui, &preview, self.vertical, picked.as_deref());
+                pick = graph::draw(ui, &preview, self.vertical, picked.as_deref(), Some(&net.jobs));
             });
             if pick.is_some() {
                 self.job_sel = if pick == picked { None } else { pick };

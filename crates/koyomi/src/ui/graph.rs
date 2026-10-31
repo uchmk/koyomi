@@ -8,7 +8,8 @@
 //! the screen reader get.
 
 use egui::{Color32, Pos2, Rect, Sense, Shape, Stroke, StrokeKind, Vec2};
-use koyomi_core::jobnet::On;
+use koyomi_core::jobnet::{Job, On};
+use koyomi_core::layout;
 use koyomi_core::run::{JobRun, Run, State, Tone};
 
 const STEP_ALONG: f32 = 150.0;
@@ -34,24 +35,55 @@ fn line_colour(c: &ito_theme::Colors, s: State) -> Color32 {
     ito_theme::mix(colour(c, s), c.bg, if c.light { 0.55 } else { 0.45 })
 }
 
-/// Where each job sits, by its index in `run.jobs`.
-pub fn places(run: &Run, vertical: bool) -> Vec<Pos2> {
+/// Where each job sits, by its index in `run.jobs`. With the net's `jobs`
+/// (when every job of the run is among them), each sits where the editor
+/// puts it: its saved `pos`, or the place 整列 gives one without, so the
+/// picture is the flow the person laid out. Else by the run's layers.
+pub fn places(run: &Run, vertical: bool, net: Option<&[Job]>) -> Vec<Pos2> {
+    if let Some(at) = net.and_then(|jobs| laid_out(run, vertical, jobs)) {
+        return at;
+    }
     let mut at = vec![Pos2::ZERO; run.jobs.len()];
     for (l, layer) in run.layers().iter().enumerate() {
         for (i, &j) in layer.iter().enumerate() {
             let (along, across) = (MARGIN + l as f32 * STEP_ALONG, MARGIN + i as f32 * STEP_ACROSS);
-            // Room before the first station for its name, centred under it.
-            at[j] = if vertical { Pos2::new(across + 60.0, along) } else { Pos2::new(along + 50.0, across) };
+            at[j] = turn(along, across, vertical);
         }
     }
     at
 }
 
+/// A place along and across the flow, on the picture.
+fn turn(along: f32, across: f32, vertical: bool) -> Pos2 {
+    // Room before the first station for its name, centred under it.
+    if vertical {
+        Pos2::new(across + 60.0, along)
+    } else {
+        Pos2::new(along + 50.0, across)
+    }
+}
+
+/// The editor's places of the run's jobs, moved so the first sits at the margin.
+fn laid_out(run: &Run, vertical: bool, jobs: &[Job]) -> Option<Vec<Pos2>> {
+    let placed = layout::places(jobs);
+    let editor: Vec<(f64, f64)> = jobs
+        .iter()
+        .zip(placed)
+        .map(|(j, (l, r))| j.pos.unwrap_or((l as f64 * layout::STEP_ALONG, r as f64 * layout::STEP_ACROSS)))
+        .collect();
+    let mine: Vec<(f64, f64)> =
+        run.jobs.iter().map(|r| jobs.iter().position(|j| j.id == r.id).map(|i| editor[i])).collect::<Option<_>>()?;
+    let x0 = mine.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+    let y0 = mine.iter().map(|p| p.1).fold(f64::INFINITY, f64::min);
+    // The editor's rows are closer than the picture's, which has names under its stations.
+    let across = (STEP_ACROSS as f64) / layout::STEP_ACROSS;
+    Some(mine.iter().map(|&(x, y)| turn(MARGIN + (x - x0) as f32, MARGIN + ((y - y0) * across) as f32, vertical)).collect())
+}
+
 /// The size the picture needs.
-pub fn size(run: &Run, vertical: bool) -> Vec2 {
-    let at = places(run, vertical);
+pub fn size(at: &[Pos2], vertical: bool) -> Vec2 {
     let (mut w, mut h) = (0f32, 0f32);
-    for p in &at {
+    for p in at {
         w = w.max(p.x);
         h = h.max(p.y);
     }
@@ -145,11 +177,13 @@ pub fn subtext(j: &JobRun) -> Option<String> {
 }
 
 /// Draws the run; the job clicked, when one was.
-pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>) -> Option<String> {
+/// `net` is the net's jobs, for where the editor put them.
+pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>, net: Option<&[Job]>) -> Option<String> {
     let c = ito_theme::colors();
-    let (resp, painter) = ui.allocate_painter(size(run, vertical), Sense::click());
+    let at = places(run, vertical, net);
+    let (resp, painter) = ui.allocate_painter(size(&at, vertical), Sense::click());
     let origin = resp.rect.min.to_vec2();
-    let at: Vec<Pos2> = places(run, vertical).into_iter().map(|p| p + origin).collect();
+    let at: Vec<Pos2> = at.into_iter().map(|p| p + origin).collect();
     let moving = run.jobs.iter().any(|j| j.state.tone() == Tone::Running);
     let time = ui.input(|i| i.time);
     let phase = if moving { (time * FLOW) as f32 } else { 0.0 };
@@ -280,12 +314,28 @@ mod tests {
     #[test]
     fn later_layers_sit_further_along() {
         let r = run();
-        let h = places(&r, false);
+        let h = places(&r, false, None);
         assert!(h[0].x < h[1].x && h[1].x == h[2].x && h[2].x < h[3].x);
         assert!(h[1].y < h[2].y);
-        let v = places(&r, true);
+        let v = places(&r, true, None);
         assert!(v[0].y < v[1].y && v[1].y == v[2].y && v[2].y < v[3].y);
         assert!(v[1].x < v[2].x);
+    }
+
+    #[test]
+    fn the_editors_places_are_kept() {
+        let r = run();
+        let mut jobs: Vec<Job> = ["a", "b", "c", "d"].iter().map(|id| Job { id: id.to_string(), ..Default::default() }).collect();
+        // Laid out in one row by the editor, out of the layers' order.
+        for (i, j) in jobs.iter_mut().enumerate() {
+            j.pos = Some((100.0 + i as f64 * 150.0, 40.0));
+        }
+        let at = places(&r, false, Some(&jobs));
+        assert!(at.iter().all(|p| p.y == at[0].y));
+        assert!(at[0].x < at[1].x && at[1].x < at[2].x && at[2].x < at[3].x);
+        assert_eq!(at[0], places(&r, false, None)[0]);
+        // A job the net no longer has: the run's own layers.
+        assert_eq!(places(&r, false, Some(&jobs[..3])), places(&r, false, None));
     }
 
     #[test]
@@ -346,8 +396,9 @@ mod tests {
     #[test]
     fn the_picture_fits_its_stations() {
         let r = run();
-        let s = size(&r, false);
-        for p in places(&r, false) {
+        let at = places(&r, false, None);
+        let s = size(&at, false);
+        for p in at {
             assert!(p.x + RADIUS < s.x && p.y + RADIUS < s.y);
         }
     }
