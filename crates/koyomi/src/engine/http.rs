@@ -12,6 +12,10 @@
 //!   standing and hold), `GET /runs` (today's and the running ones; `?from=&to=` for days)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //! - `POST /runs/<id>/stop` stops the run's jobs (`koyomi kill`).
+//! - Definitions, for the `edit` role (TODO 83): `GET /nets/text?net=<group>/<name>` is the
+//!   file's text and hash; `POST /nets/propose` with `{"net", "text", "base"?}` writes it as
+//!   the editor's save does, but leaves it unconfirmed: it runs only once this PC's window
+//!   confirms it. `base` is the hash read with the text; a file changed since gets 409.
 //! - The Web UI (TODO 81): `GET /` and its script and style sheet, kept in the exe, need no
 //!   token; the page signs in with a token at ito-http's `POST /session` and goes on with the
 //!   cookie (a change also sends `X-Ito-Csrf: 1`). `GET /me` says who and with what role.
@@ -282,6 +286,17 @@ struct Hold {
     job: Option<String>,
 }
 
+/// What `POST /nets/propose` takes: the net, its whole text, and the hash `GET /nets/text` gave
+/// (none for a new net).
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Proposal {
+    net: String,
+    text: String,
+    #[serde(default)]
+    base: Option<String>,
+}
+
 /// The run id of `/runs/<id>/<what>`.
 fn run_part<'a>(path: &'a str, what: &str) -> Option<&'a str> {
     path.strip_prefix("/runs/")?.strip_suffix(what)?.strip_suffix('/').filter(|id| !id.is_empty() && !id.contains('/'))
@@ -297,6 +312,8 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("POST", "/runs", ..) => start_run(req, ask),
         ("POST", "/nets/hold", ..) => hold(req, true, ask),
         ("POST", "/nets/release", ..) => hold(req, false, ask),
+        ("POST", "/nets/propose", ..) => propose(req, ask),
+        ("GET", "/nets/text", ..) => def_text(req, ask),
         ("POST", ..) if act.is_some() => match act.unwrap_or_default() {
             ("stop", id) => stop_run(id, ask),
             ("rerun", id) => rerun(req, id, ask),
@@ -310,10 +327,12 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
         (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
         (_, "/nets/hold" | "/nets/release", ..) => Response::error(405, "POST で保留にする・外す"),
+        (_, "/nets/propose", ..) => Response::error(405, "POST で定義を出す"),
+        (_, "/nets/text", ..) => Response::error(405, "GET で読む"),
         _ if act.is_some() => Response::error(405, "POST で止める・流し直す・飛ばす"),
         _ => Response::error(
             404,
-            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・POST /nets/hold|release・GET /health だけ",
+            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|propose・GET /health だけ",
         ),
     }
 }
@@ -459,6 +478,46 @@ fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<Stri
     }
 }
 
+/// `GET /nets/text?net=<group>/<name>`: the definition's file as it is, with the hash to send
+/// back as `base` and whether it is confirmed.
+fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let Some(id) = req.query("net").map(str::trim).filter(|n| !n.is_empty()) else {
+        return Response::error(400, "net が要る: /nets/text?net=<グループ>/<名前>");
+    };
+    let def = match ask(&Request::Show { id: id.to_owned() }) {
+        Ok(t) => toml::from_str::<koyomi_core::scan::Def>(&t).map_err(|e| e.to_string()),
+        Err(e) => return Response::error(404, &e),
+    };
+    match def {
+        Ok(d) => Response::ok(serde_json::json!({
+            "net": d.id,
+            "text": d.text,
+            "sha256": d.sha256,
+            "standing": d.standing,
+        })),
+        Err(e) => Response::error(500, &e),
+    }
+}
+
+/// `POST /nets/propose`: writes the definition but leaves it unconfirmed (TODO 83). 409 when the
+/// file changed since `base`, 422 when it cannot be written as it is.
+fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let p = match req.json::<Proposal>() {
+        Ok(Some(p)) if !p.net.trim().is_empty() && !p.text.trim().is_empty() => p,
+        Ok(_) => {
+            return Response::error(400, "net と text が要る: {\"net\": \"<グループ>/<名前>\", \"text\": \"…\", \"base\"?: \"<sha256>\"}")
+        }
+        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+    };
+    let id = p.net.trim().to_owned();
+    let base = p.base.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty());
+    match ask(&Request::Propose { id: id.clone(), text: p.text, base_sha256: base }) {
+        Ok(text) => Response::ok(serde_json::json!({ "net": id, "confirmed": false, "said": text.trim() })),
+        Err(e) if e.starts_with("ほかで変わっています") => Response::error(409, &e),
+        Err(e) => Response::error(422, &e),
+    }
+}
+
 /// A run of today or still going, then one of the day its id says it started.
 fn look(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(day) = started_on(id) else {
@@ -546,6 +605,56 @@ mod tests {
         assert_eq!(handle(&req("POST", "/nets/hold", r#"{"net": "g/a", "job": "x"}"#), ask).status, 422);
         assert_eq!(handle(&req("POST", "/nets/hold", "{}"), ask).status, 400);
         assert_eq!(handle(&req("GET", "/nets/hold", ""), ask).status, 405);
+    }
+
+    /// A definition is read with its hash and sent back as a proposal, which the engine leaves unconfirmed.
+    #[test]
+    fn a_definition_is_read_and_proposed() {
+        let asked = RefCell::new(Vec::new());
+        let ask = |r: &Request| {
+            asked.borrow_mut().push(format!("{r:?}"));
+            match r {
+                Request::Show { id } if id == "g/a" => {
+                    let def = koyomi_core::scan::Def {
+                        id: "g/a".into(),
+                        group: "g".into(),
+                        name: "a".into(),
+                        title: None,
+                        file: "g/a.toml".into(),
+                        standing: koyomi_core::scan::Standing::Confirmed,
+                        problems: Vec::new(),
+                        net: None,
+                        sha256: "abc".into(),
+                        text: "format = 1\n".into(),
+                        previous: None,
+                        calendar: None,
+                    };
+                    Ok(toml::to_string(&def).expect("def"))
+                }
+                Request::Propose { base_sha256: Some(b), .. } if b == "old" => Err("ほかで変わっています: g/a".to_owned()),
+                Request::Propose { text, .. } if text.contains("bad") => Err("保存できない:\nx".to_owned()),
+                Request::Propose { .. } => Ok("置いた（未確認。この PC の窓で確認するまで動かない）: g/a\n".to_owned()),
+                _ => Err("定義がない".to_owned()),
+            }
+        };
+        let mut r = req("GET", "/nets/text", "");
+        r.query = vec![("net".into(), "g/a".into())];
+        let got = handle(&r, ask);
+        assert_eq!((got.status, got.json["sha256"].as_str(), got.json["standing"].as_str()), (200, Some("abc"), Some("confirmed")));
+        assert_eq!(got.json["text"].as_str(), Some("format = 1\n"));
+        r.query = vec![("net".into(), "g/x".into())];
+        assert_eq!(handle(&r, ask).status, 404);
+        assert_eq!(handle(&req("GET", "/nets/text", ""), ask).status, 400);
+
+        let got = handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "format = 1\n", "base": "abc"}"#), ask);
+        assert_eq!((got.status, got.json["confirmed"].as_bool()), (200, Some(false)));
+        assert!(asked.borrow().last().is_some_and(|a| a.contains(r#"base_sha256: Some("abc")"#)), "{:?}", asked.borrow());
+        assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "x", "base": "old"}"#), ask).status, 409);
+        assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "bad"}"#), ask).status, 422);
+        assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a"}"#), ask).status, 400);
+        assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "x", "force": true}"#), ask).status, 400);
+        assert_eq!(handle(&req("GET", "/nets/propose", ""), ask).status, 405);
+        assert_eq!(handle(&req("POST", "/nets/text", ""), ask).status, 405);
     }
 
     #[test]

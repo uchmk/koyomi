@@ -1,6 +1,6 @@
 # Checklist
 
-742 checks in TESTING.md, 738 left for a person.
+752 checks in TESTING.md, 748 left for a person.
 
 ## 1. Start
 
@@ -1034,3 +1034,16 @@
 - [ ] **97.11** 流す on a net with `[params]` → One question per value with its default filled in; キャンセル on any sends nothing 〔未訳〕
 - [ ] **97.12** Change one value, keep the others, confirm → The confirmation names only the changed value; the run gets it, the others take their defaults 〔未訳〕
 - [ ] **97.13** `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` → Each net has `params` with its names and defaults (`{}` when none) 〔未訳〕
+
+## 98. Definitions from the `edit` role (`GET /nets/text`, `POST /nets/propose`; TODO 83)
+
+- [ ] **98.1** `curl -H "Authorization: Bearer I" "http://127.0.0.1:8790/nets/text?net=g/a"` → 403 `ito は run のロール。これには edit が要る` 〔未訳〕
+- [ ] **98.2** The same with `K` → 200 with `text` (the file as it is), `sha256` and `standing` 〔未訳〕
+- [ ] **98.3** `curl -X POST -H "Authorization: Bearer K" -d '{"net":"g/a","text":"<the text with a job changed>","base":"<sha256 from 98.2>"}' http://127.0.0.1:8790/nets/propose` → 200, `"confirmed": false`; the file on disk is the new text; the window shows `g/a` as 未確認 and its confirm box shows the change 〔未訳〕
+- [ ] **98.4** Wait for `g/a`'s next scheduled time, or `koyomi run g/a` → It does not run the new text (refused as unconfirmed) 〔未訳〕
+- [ ] **98.5** Confirm `g/a` in the window → It runs again as scheduled, with the new text 〔未訳〕
+- [ ] **98.6** Send 98.3 again with the old `base` → 409 `ほかで変わっています: g/a`; the file is not touched 〔未訳〕
+- [ ] **98.7** Send a text that does not read (`format = 1` and a job without `run`) → 422 `保存できない: …`; the file is not touched 〔未訳〕
+- [ ] **98.8** Send a new net `g/new` without `base` → 200; `jobnets/g/new.toml` is there, 未確認 in the window 〔未訳〕
+- [ ] **98.9** `koyomi ops` → `propose g/a （HTTP: kato）` and `propose g/new （HTTP: kato）` 〔未訳〕
+- [ ] **98.10** `koyomi versions g/a` → The text before 98.3 is kept as a version 〔未訳〕

@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 30;
+pub const PROTO: u32 = 31;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -205,6 +205,14 @@ pub enum Request {
     /// `since` (`None`: none, only the number of the last one).
     Tray {
         since: Option<u64>,
+    },
+    /// A definition sent over HTTP by someone with the `edit` role (TODO 83): checked and
+    /// written as [`Request::Save`] does (`base_sha256` the same way), but not confirmed.
+    /// It stays unconfirmed, and runs only after this PC's window confirms it.
+    Propose {
+        id: String,
+        text: String,
+        base_sha256: Option<String>,
     },
 }
 

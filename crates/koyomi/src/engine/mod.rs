@@ -1310,6 +1310,25 @@ impl State {
     /// The editor's save (see [`Request::Save`]): checked as a file would be, the old
     /// file kept under `versions/`, written whole, and approved at once.
     fn save(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool) -> Result<String, String> {
+        self.write_def(id, text, base_sha256, force, true)?;
+        Ok(format!("保存した: {id}"))
+    }
+
+    /// A definition sent over HTTP (see [`Request::Propose`]): written as a save is, but left
+    /// unconfirmed for this PC's window to confirm.
+    fn propose(&mut self, id: &str, text: &str, base_sha256: Option<&str>) -> Result<String, String> {
+        self.write_def(id, text, base_sha256, false, false)?;
+        let left = self.defs.iter().find(|d| d.id == id).is_some_and(|d| d.standing != Standing::Confirmed);
+        Ok(if left {
+            format!("置いた（未確認。この PC の窓で確認するまで動かない）: {id}")
+        } else {
+            format!("置いた（確認済みと同じ中身）: {id}")
+        })
+    }
+
+    /// Checks `text` as a file would be, keeps the old file under `versions/` and writes it
+    /// whole; with `approve`, confirms it too.
+    fn write_def(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool, approve: bool) -> Result<(), String> {
         if !self.warnings.is_empty() {
             return Err(format!("保存できない: {}", self.warnings.join(" / ")));
         }
@@ -1335,15 +1354,17 @@ impl State {
             std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
         }
         ito_common::write_atomic(&path, text)?;
-        let mut next = self.store.clone();
-        next.approve(id, &def.sha256, text);
-        if let Some(dir) = self.paths.approved.parent() {
-            let _ = std::fs::create_dir_all(dir);
+        if approve {
+            let mut next = self.store.clone();
+            next.approve(id, &def.sha256, text);
+            if let Some(dir) = self.paths.approved.parent() {
+                let _ = std::fs::create_dir_all(dir);
+            }
+            ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
+            self.store = next;
         }
-        ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
-        self.store = next;
         self.rescan();
-        Ok(format!("保存した: {id}"))
+        Ok(())
     }
 
     /// Copies the file at `path`, when there is one, to
@@ -1790,13 +1811,15 @@ impl State {
                 ))
             }
             Request::Tray { since } => Ok(self.tray_view(*since).to_toml()),
+            Request::Propose { id, text, base_sha256 } => self.propose(id, text, base_sha256.as_deref()),
             Request::Over { .. } => Err("HTTP からはできない".to_owned()),
         }
     }
 }
 
 /// What may come over HTTP: what its paths ask for. Not an approval or a save, which only this
-/// PC's window gives (DECISIONS「実行するコマンドの安全」の初回の確認).
+/// PC's window gives (DECISIONS「実行するコマンドの安全」の初回の確認); a definition comes as
+/// a proposal, left unconfirmed.
 fn over_http(request: &Request) -> bool {
     matches!(
         request,
@@ -1811,6 +1834,8 @@ fn over_http(request: &Request) -> bool {
             | Request::Skip { .. }
             | Request::Hold { .. }
             | Request::Release { .. }
+            | Request::Show { .. }
+            | Request::Propose { .. }
     )
 }
 
@@ -1831,6 +1856,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Resume => ("resume", String::new()),
         Request::Standby { give_back: true } => ("giveback", String::new()),
         Request::Save { id, .. } => ("save", id.clone()),
+        Request::Propose { id, .. } => ("propose", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
         Request::Copy { id, to, .. } => ("copy", format!("{id} {to}")),
@@ -2438,6 +2464,39 @@ run = [\"x.exe\"]
         assert!(s.save("経理/集計", two, Some(&hash), true).is_ok());
         assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 3);
         assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// What comes over HTTP is written as a save is, but stays unconfirmed until the window confirms it.
+    #[test]
+    fn a_proposal_is_written_but_left_unconfirmed() {
+        let paths = temp_paths("propose");
+        let mut s = State::new(paths.clone());
+        let one = "format = 1\nname = \"一\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let two = "format = 1\nname = \"二\"\n\n[[job]]\nid = \"a\"\nrun = [\"y.exe\"]\n";
+        let file = paths.jobnets.join("経理").join("集計.toml");
+        // A new net: written, and unconfirmed.
+        let said = s.propose("経理/集計", one, None).unwrap();
+        assert!(said.contains("未確認"), "{said}");
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Unconfirmed));
+        // Confirmed in the window, then changed over HTTP: unconfirmed again, the old one kept.
+        assert!(s.save("経理/集計", one, Some(&approved::hash(one.as_bytes())), false).is_ok());
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
+        let hash = approved::hash(one.as_bytes());
+        assert_eq!(s.propose("経理/集計", two, Some("stale")), Err("ほかで変わっています: 経理/集計".to_owned()));
+        assert!(s.propose("経理/集計", two, Some(&hash)).is_ok());
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
+        assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Unconfirmed));
+        assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 2);
+        // What does not read is not written.
+        let two_hash = approved::hash(two.as_bytes());
+        assert!(s.propose("経理/集計", "format = 1\n[[job]]\nid = \"a\"\n", Some(&two_hash)).unwrap_err().starts_with("保存できない:"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
+        // It comes over HTTP; a save does not.
+        assert!(over_http(&Request::Propose { id: "経理/集計".into(), text: two.into(), base_sha256: None }));
+        assert!(!over_http(&Request::Save { id: "経理/集計".into(), text: two.into(), base_sha256: None, force: true }));
+        assert!(!over_http(&Request::Approve { id: "経理/集計".into(), sha256: two_hash }));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

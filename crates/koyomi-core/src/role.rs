@@ -46,12 +46,14 @@ impl fmt::Display for Role {
     }
 }
 
-/// The role a request needs. Reads need `view`; starting, stopping, rerunning and skipping runs and
-/// holding nets need `run`; anything else, including what this table does not know yet, needs `edit`.
+/// The role a request needs. Reads need `view`, but a definition's text needs `edit` (it is what
+/// would run); starting, stopping, rerunning and skipping runs and holding nets need `run`;
+/// anything else, including what this table does not know yet, needs `edit`.
 pub fn needs(method: &str, path: &str) -> Role {
     let path = path.trim_end_matches('/');
     let run_part: Option<Vec<&str>> = path.strip_prefix("/runs/").map(|rest| rest.split('/').collect());
     match method {
+        "GET" | "HEAD" if path == "/nets/text" => Role::Edit,
         "GET" | "HEAD" => Role::View,
         "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release") => Role::Run,
         "POST" => match run_part.as_deref() {
@@ -92,5 +94,7 @@ mod tests {
         assert_eq!(needs("PUT", "/nets/g/a"), Role::Edit);
         assert_eq!(needs("DELETE", "/runs"), Role::Edit);
         assert_eq!(needs("POST", "/something-new"), Role::Edit);
+        assert_eq!(needs("GET", "/nets/text/"), Role::Edit);
+        assert_eq!(needs("POST", "/nets/propose"), Role::Edit);
     }
 }
