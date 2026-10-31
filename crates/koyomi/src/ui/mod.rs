@@ -1874,6 +1874,19 @@ impl Browser {
         self.open_gantt();
     }
 
+    /// The tray's 未対応を見る: the newest of today's failures not marked 対応済み, else 今日; as
+    /// [`Self::show_today`], not while a net is open in the editor or a box is.
+    pub fn show_failed(&mut self) {
+        if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() || self.deleting.is_some() {
+            return;
+        }
+        let newest = self.runs.iter().filter(|r| r.state.is_error() && !self.acked.contains(&r.id)).max_by_key(|r| r.started);
+        match newest.map(|r| r.id.clone()) {
+            Some(id) => self.open_run(&id),
+            None => self.open_gantt(),
+        }
+    }
+
     /// Every start of an approved, not held net still to come today: the planned times as the quiet
     /// spans leave them (a skipped one is gone, a waiting one moves to the span's end).
     fn starts_today(snap: &Snapshot, now: chrono::NaiveDateTime) -> Vec<(&Def, chrono::NaiveDateTime)> {

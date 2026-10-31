@@ -215,9 +215,16 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            if ask.request == proto::Show::Today {
-                self.settings_open = false;
-                self.browser.show_today();
+            match ask.request {
+                proto::Show::Today => {
+                    self.settings_open = false;
+                    self.browser.show_today();
+                }
+                proto::Show::Failed => {
+                    self.settings_open = false;
+                    self.browser.show_failed();
+                }
+                proto::Show::Front => {}
             }
             ask.answer(Ok(String::new()));
         }

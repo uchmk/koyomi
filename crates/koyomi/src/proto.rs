@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 29;
+pub const PROTO: u32 = 30;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -216,6 +216,8 @@ pub enum Show {
     Front,
     /// Come forward on today's runs (ガント).
     Today,
+    /// Come forward on the newest failure not yet marked 対応済み (今日 when there is none).
+    Failed,
 }
 
 /// The window's own door: the engine's tray brings it forward through it.
@@ -354,6 +356,9 @@ pub struct TrayView {
     /// Job processes running.
     #[serde(default)]
     pub busy: usize,
+    /// Nets whose last run of today failed (未対応を見る).
+    #[serde(default)]
+    pub errors: usize,
     /// The engine has its own tray (it was not started with `--no-tray`):
     /// `koyomi tray` would only be a second icon.
     #[serde(default)]

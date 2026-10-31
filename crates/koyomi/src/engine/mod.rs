@@ -474,6 +474,7 @@ impl State {
             tip: look.tip,
             paused: look.paused,
             busy: look.busy,
+            errors: look.errors,
             own: !notify::handed_to_tray(),
             notes,
             last,

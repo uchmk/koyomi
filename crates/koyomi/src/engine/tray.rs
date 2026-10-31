@@ -1,8 +1,8 @@
 //! The icon in the task tray (DECISIONS C1): the engine's state while the window is closed.
 //!
 //! Its badge is the worst of today (異常, then スケジュールを止めている, then 実行中), its tip
-//! counts them and names the next time, and its menu opens the window, opens 今日, pauses the
-//! schedule and ends the engine. The window is brought forward through its own door
+//! counts them and names the next time, and its menu opens the window, opens 今日 or the newest
+//! failure (未対応を見る), pauses the schedule and ends the engine. The window is brought forward through its own door
 //! (`proto::window_door`), or started when it does not answer.
 //!
 //! `koyomi tray` ([`apart`]) is the same icon in a process of its own, for an engine that
@@ -37,6 +37,8 @@ pub struct Look {
     pub paused: bool,
     /// Job processes running: the engine is not ended from the menu while there are.
     pub busy: usize,
+    /// Nets whose last run of today failed: 未対応を見る (N) is offered while there are.
+    pub errors: usize,
 }
 
 /// What a click or a menu choice asks the engine to do.
@@ -81,7 +83,7 @@ impl Tray {
         if old.as_ref().map(|o| &o.tip) != Some(&look.tip) {
             self.tray.set_tip(&look.tip);
         }
-        if old.as_ref().map(|o| (&o.tip, o.paused, o.busy > 0)) != Some((&look.tip, look.paused, look.busy > 0)) {
+        if old.as_ref().map(|o| (&o.tip, o.paused, o.busy > 0, o.errors)) != Some((&look.tip, look.paused, look.busy > 0, look.errors)) {
             self.tray.set_menu(menu(t, &look, self.apart));
         }
         self.shown = Some(look);
@@ -96,6 +98,7 @@ impl Tray {
                 Event::Menu(id) => match id.as_str() {
                     "open" => front(Show::Front),
                     "today" => front(Show::Today),
+                    "failed" => front(Show::Failed),
                     "pause" => out.push(Want::Pause(true)),
                     "resume" => out.push(Want::Pause(false)),
                     "quit" => out.push(Want::Quit),
@@ -110,6 +113,7 @@ impl Tray {
 /// The right-click menu, under a greyed line with the tip's counts. 終了 is greyed while a job's process
 /// runs: ending the engine would leave it unwatched.
 /// `apart` (`koyomi tray`): it is 閉じる instead, which leaves the engine running.
+/// 未対応を見る (N) is greyed while no net's last run of today failed.
 pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
     let (paused, busy) = (look.paused, look.busy);
     let head = Item::Entry { id: "head".to_owned(), label: look.tip.clone(), enabled: false, checked: false };
@@ -121,11 +125,18 @@ pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
     } else {
         Item::entry("quit", t.tr("tray.quit"))
     };
+    let failed = Item::Entry {
+        id: "failed".to_owned(),
+        label: t.trf("tray.failed", &[&look.errors.to_string()]),
+        enabled: look.errors > 0,
+        checked: false,
+    };
     vec![
         head,
         Item::Separator,
         Item::entry("open", t.tr("tray.open")),
         Item::entry("today", t.tr("tray.today")),
+        failed,
         Item::Separator,
         pause,
         Item::Separator,
@@ -173,7 +184,7 @@ pub fn look(t: &ito_i18n::Table, runs: &[Run], paused: bool, busy: usize, next: 
     if parts.is_empty() {
         parts.push(t.tr("tray.quiet").to_owned());
     }
-    Look { state, tip: format!("koyomi: {}", parts.join(t.tr("tray.sep"))), paused, busy }
+    Look { state, tip: format!("koyomi: {}", parts.join(t.tr("tray.sep"))), paused, busy, errors }
 }
 
 /// `koyomi tray`: the exit code is 0 when closed from the menu, 1 when another
@@ -234,8 +245,14 @@ pub fn apart() -> i32 {
 /// What `koyomi tray` shows for the engine's answer; `None`: no engine answers.
 fn apart_look(t: &ito_i18n::Table, view: Option<&TrayView>) -> Look {
     match view {
-        Some(v) => Look { state: from_badge(&v.badge).unwrap_or(State::Done), tip: v.tip.clone(), paused: v.paused, busy: v.busy },
-        None => Look { state: State::Disabled, tip: format!("koyomi: {}", t.tr("tray.no_engine")), paused: false, busy: 0 },
+        Some(v) => Look {
+            state: from_badge(&v.badge).unwrap_or(State::Done),
+            tip: v.tip.clone(),
+            paused: v.paused,
+            busy: v.busy,
+            errors: v.errors,
+        },
+        None => Look { state: State::Disabled, tip: format!("koyomi: {}", t.tr("tray.no_engine")), paused: false, busy: 0, errors: 0 },
     }
 }
 
@@ -359,12 +376,16 @@ mod tests {
         let Some(Item::Entry { label, .. }) = items.first() else { panic!("no head") };
         assert_eq!(label, "koyomi: 異常なし");
         let m = ids(&items);
-        assert_eq!(m.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["head", "open", "today", "pause", "quit"]);
-        assert!(m[1..].iter().all(|(_, on)| *on));
-        assert!(!m[0].1);
+        assert_eq!(m.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["head", "open", "today", "failed", "pause", "quit"]);
+        assert_eq!(m.iter().map(|(_, on)| *on).collect::<Vec<_>>(), [false, true, true, false, true, true]);
         let m = ids(&menu(&t, &look(&t, &[], true, 2, None), false));
-        assert_eq!(m[3].0, "resume");
-        assert_eq!(m[4], ("quit".to_owned(), false));
+        assert_eq!(m[4].0, "resume");
+        assert_eq!(m[5], ("quit".to_owned(), false));
+        // 未対応を見る counts the nets whose last run of today failed, and opens once there is one.
+        let failed = [run("a/x", at(8, 0), RunState::Error), run("a/y", at(8, 0), RunState::Error)];
+        let items = menu(&t, &look(&t, &failed, false, 0, None), false);
+        let Some(Item::Entry { label, enabled, .. }) = items.get(4) else { panic!("no failed entry") };
+        assert_eq!((label.as_str(), *enabled), ("未対応を見る (2)", true));
     }
 
     /// `koyomi tray`'s menu closes only itself, so it is never greyed, and says so.
@@ -386,8 +407,8 @@ mod tests {
         let t = ja();
         let l = apart_look(&t, None);
         assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: エンジンは動いていない"));
-        let v = TrayView { badge: "error".into(), tip: "koyomi: 異常 1".into(), busy: 1, ..TrayView::default() };
+        let v = TrayView { badge: "error".into(), tip: "koyomi: 異常 1".into(), busy: 1, errors: 1, ..TrayView::default() };
         let l = apart_look(&t, Some(&v));
-        assert_eq!((l.state, l.tip.as_str(), l.busy), (State::Error, "koyomi: 異常 1", 1));
+        assert_eq!((l.state, l.tip.as_str(), l.busy, l.errors), (State::Error, "koyomi: 異常 1", 1, 1));
     }
 }
