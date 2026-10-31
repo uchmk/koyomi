@@ -300,6 +300,8 @@ pub struct Browser {
     tree_seen: Option<String>,
     /// The month shown, when it is not this one.
     cal_month: Option<(i32, u32)>,
+    /// The day picked in the month, whose starts show beside it; today when none is.
+    cal_day: Option<chrono::NaiveDate>,
     /// What the last click on a day did to the file, shown under the month.
     cal_result: Option<Result<String, String>>,
     /// A day's name or a holiday table's path being typed under the month.
@@ -434,6 +436,7 @@ impl Browser {
             folded: BTreeSet::new(),
             tree_seen: None,
             cal_month: None,
+            cal_day: None,
             cal_result: None,
             cal_inline: None,
             hist: None,
@@ -2977,6 +2980,7 @@ mod tests {
             folded: BTreeSet::new(),
             tree_seen: None,
             cal_month: None,
+            cal_day: None,
             cal_result: None,
             cal_inline: None,
             hist: None,

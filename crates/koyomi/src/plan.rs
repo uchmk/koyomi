@@ -30,6 +30,17 @@ pub fn month(defs: &[Def], calendars: &BTreeMap<String, Calendar>, year: i32, m:
         let Some(n) = d.succ_opt() else { break };
         d = n;
     }
+    fill(defs, calendars, days)
+}
+
+/// One day with what starts on it, as [`month`] counts it.
+pub fn day(defs: &[Def], calendars: &BTreeMap<String, Calendar>, d: NaiveDate) -> Day {
+    fill(defs, calendars, vec![(d, Vec::new())]).pop().unwrap_or((d, Vec::new()))
+}
+
+/// The days given, in order and with none missing, with the approved starts on each.
+fn fill(defs: &[Def], calendars: &BTreeMap<String, Calendar>, mut days: Vec<Day>) -> Vec<Day> {
+    let Some((first, _)) = days.first() else { return days };
     let start = first.and_hms_opt(0, 0, 0).unwrap_or_default() - chrono::Duration::seconds(1);
     let end = days.last().map_or(start, |(d, _)| d.and_hms_opt(23, 59, 59).unwrap_or_default());
     for def in defs.iter().filter(|d| d.standing == Standing::Confirmed) {
@@ -148,6 +159,39 @@ mod tests {
         let days = month(&[], &BTreeMap::new(), 2026, 2);
         assert_eq!(days.len(), 28);
         assert!(days.iter().all(|(_, l)| l.is_empty()));
+    }
+
+    #[test]
+    fn one_day_holds_what_the_month_holds_for_it_and_only_the_approved() {
+        let text = "format = 1
+[[when]]
+every = \"day\"
+at = [\"17:00\", \"02:00\"]
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let net = |id: &str, standing| Def {
+            id: id.to_owned(),
+            group: "g".to_owned(),
+            name: id.to_owned(),
+            title: None,
+            file: format!("{id}.toml"),
+            standing,
+            problems: Vec::new(),
+            net: Some(koyomi_core::jobnet::parse(text).unwrap()),
+            sha256: String::new(),
+            text: text.to_owned(),
+            previous: None,
+            calendar: None,
+        };
+        let defs = [net("yes", Standing::Confirmed), net("no", Standing::Unconfirmed)];
+        let d = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
+        let one = super::day(&defs, &BTreeMap::new(), d);
+        let times: Vec<String> = one.1.iter().map(|(at, n)| format!("{} {n}", at.format("%H:%M"))).collect();
+        assert_eq!(times, ["02:00 yes", "17:00 yes"]);
+        let from_month = month(&defs, &BTreeMap::new(), 2026, 11).into_iter().find(|(x, _)| *x == d).unwrap();
+        assert_eq!(one, from_month);
     }
 }
 

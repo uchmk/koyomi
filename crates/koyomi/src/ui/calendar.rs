@@ -222,62 +222,92 @@ impl Browser {
         }
         ui.add_space(6.0);
         let days = show::month_days(&cal, y, m);
+        // The day whose starts show beside the month: the one picked, or today in this month.
+        let picked =
+            self.cal_day.filter(|d| d.year() == y && d.month() == m).or_else(|| days.iter().any(|(d, _)| *d == today).then_some(today));
+        let mut pick = None;
         let mut toggle: Option<(NaiveDate, Day)> = None;
         let mut naming = None;
-        egui::Grid::new("calendar").min_col_width(CELL.x).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
-            for w in GRID {
-                let colour = if matches!(w, Weekday::Sat | Weekday::Sun) { c.dim } else { c.fg };
-                ui.add_sized([CELL.x, 20.0], egui::Label::new(egui::RichText::new(weekday(t, w)).color(colour)));
-            }
-            ui.end_row();
-            let Some((first, _)) = days.first() else { return };
-            for _ in 0..first.weekday().num_days_from_sunday() {
-                ui.allocate_space(CELL);
-            }
-            for (d, day) in &days {
-                let colour = day_colour(&c, day);
-                // A named day carries its name under the date, cut to fit; the whole name is on hover.
-                let named = show::day_name(t, day);
-                let short = named.as_deref().map(|n| {
-                    if n.chars().count() > 4 {
-                        format!("{}…", n.chars().take(3).collect::<String>())
-                    } else {
-                        n.to_owned()
-                    }
-                });
-                let text = format!(
-                    "{}
-{}",
-                    d.day(),
-                    short.unwrap_or_default()
-                );
-                let fill = if day.is_business() { c.panel } else { c.side };
-                let stroke = if *d == today { egui::Stroke::new(2.0, c.blue) } else { egui::Stroke::new(1.0, c.border) };
-                let r = ui.add_sized(CELL, egui::Button::new(egui::RichText::new(text).color(colour)).fill(fill).stroke(stroke));
-                let r = match &named {
-                    Some(n) => r.on_hover_text(n),
-                    None => r,
-                };
-                let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-                ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
-                if r.clicked() {
-                    toggle = Some((*d, day.clone()));
+        ui.horizontal_top(|ui| {
+            egui::Grid::new("calendar").min_col_width(CELL.x).spacing(egui::vec2(2.0, 2.0)).show(ui, |ui| {
+                for w in GRID {
+                    let colour = if matches!(w, Weekday::Sat | Weekday::Sun) { c.dim } else { c.fg };
+                    ui.add_sized([CELL.x, 20.0], egui::Label::new(egui::RichText::new(weekday(t, w)).color(colour)));
                 }
-                r.context_menu(|ui| {
-                    if ui.button(t.tr("calendar.name_day")).clicked() {
-                        let text = match day {
-                            Day::Open(n) | Day::Closed(n) => n.clone(),
-                            _ => String::new(),
-                        };
-                        naming = Some(Inline::Name { cal: name.clone(), day: *d, text, fresh: true });
-                        ui.close();
+                ui.end_row();
+                let Some((first, _)) = days.first() else { return };
+                for _ in 0..first.weekday().num_days_from_sunday() {
+                    ui.allocate_space(CELL);
+                }
+                for (d, day) in &days {
+                    let colour = day_colour(&c, day);
+                    // A named day carries its name under the date, cut to fit; the whole name is on hover.
+                    let named = show::day_name(t, day);
+                    let short = named.as_deref().map(|n| {
+                        if n.chars().count() > 4 {
+                            format!("{}…", n.chars().take(3).collect::<String>())
+                        } else {
+                            n.to_owned()
+                        }
+                    });
+                    let text = format!(
+                        "{}
+{}",
+                        d.day(),
+                        short.unwrap_or_default()
+                    );
+                    let fill = if day.is_business() { c.panel } else { c.side };
+                    let here = picked == Some(*d);
+                    let stroke = match (*d == today, here) {
+                        (true, true) => egui::Stroke::new(3.0, c.blue),
+                        (true, false) => egui::Stroke::new(2.0, c.blue),
+                        (false, true) => egui::Stroke::new(2.0, c.fg),
+                        (false, false) => egui::Stroke::new(1.0, c.border),
+                    };
+                    let r = ui.add_sized(CELL, egui::Button::new(egui::RichText::new(text).color(colour)).fill(fill).stroke(stroke));
+                    let r = match &named {
+                        Some(n) => r.on_hover_text(n),
+                        None => r,
+                    };
+                    let kind =
+                        named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
+                    ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
+                    // A click picks the day; a double click or the menu moves it between open and closed.
+                    if r.double_clicked() {
+                        toggle = Some((*d, day.clone()));
+                    } else if r.clicked() {
+                        pick = Some(*d);
                     }
-                });
-                if d.weekday() == Weekday::Sat {
-                    ui.end_row();
+                    r.context_menu(|ui| {
+                        if ui.button(t.tr(toggle_key(day))).clicked() {
+                            toggle = Some((*d, day.clone()));
+                            ui.close();
+                        }
+                        if ui.button(t.tr("calendar.name_day")).clicked() {
+                            let text = match day {
+                                Day::Open(n) | Day::Closed(n) => n.clone(),
+                                _ => String::new(),
+                            };
+                            naming = Some(Inline::Name { cal: name.clone(), day: *d, text, fresh: true });
+                            ui.close();
+                        }
+                    });
+                    if d.weekday() == Weekday::Sat {
+                        ui.end_row();
+                    }
+                }
+            });
+            ui.add_space(12.0);
+            if let Some(d) = picked {
+                let day = days.iter().find(|(x, _)| *x == d).map(|(_, day)| day.clone()).unwrap_or(Day::Business);
+                if self.day_box(ui, t, &cal, d, &day) {
+                    toggle = Some((d, day));
                 }
             }
         });
+        if pick.is_some() {
+            self.cal_day = pick;
+        }
         if let Some((d, day)) = toggle {
             self.cal_result = Some(toggle_day(t, &name, &cal, d, &day));
         }
@@ -354,6 +384,36 @@ impl Browser {
 }
 
 impl Browser {
+    /// この日に動くもの（11/7 土・営業日 5）beside the month: the approved starts of that day, on
+    /// every calendar, and the button that moves the day between open and closed. True when it
+    /// is pressed.
+    fn day_box(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, cal: &Calendar, d: NaiveDate, day: &Day) -> bool {
+        let c = ito_theme::colors();
+        let starts = self.snap.as_ref().map(|s| crate::plan::day(&s.defs, &s.calendars, d).1).unwrap_or_default();
+        let mut pressed = false;
+        egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(8.0).corner_radius(4.0).show(ui, |ui| {
+            ui.set_width(240.0);
+            let head =
+                t.trf("calendar.day_head", &[&format!("{}/{}", d.month(), d.day()), &weekday(t, d.weekday()), &day_kind(t, cal, d, day)]);
+            let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
+            ito_a11y::say(&r, Role::Heading, &head);
+            ui.add_space(4.0);
+            if starts.is_empty() {
+                ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
+            }
+            for (at, net) in &starts {
+                ui.add(egui::Label::new(format!("{}  {net}", at.format("%H:%M"))).wrap());
+            }
+            ui.add_space(4.0);
+            ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
+            ui.add_space(4.0);
+            let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(toggle_key(day))));
+            ito_a11y::say(&r, Role::Button, t.tr(toggle_key(day)));
+            pressed = r.clicked();
+        });
+        pressed
+    }
+
     /// 新しいカレンダー: opens the box, with Japan's holidays and Saturday and Sunday off.
     /// The field under the month: a day's name or a holiday table's path, with its button.
     /// Enter does it, Esc or やめる closes it; it goes when another calendar is shown.
@@ -681,6 +741,25 @@ fn day_colour(c: &ito_theme::Colors, day: &Day) -> egui::Color32 {
         Day::Holiday(_) => c.wait,
         Day::Closed(_) => c.magenta,
         Day::WeeklyOff => c.dim,
+    }
+}
+
+/// What a day is, after its date in the day box: 営業日 5 (the fifth of the month), or its name,
+/// or 休み.
+fn day_kind(t: &ito_i18n::Table, cal: &Calendar, d: NaiveDate, day: &Day) -> String {
+    if day.is_business() {
+        let n = show::month_days(cal, d.year(), d.month()).iter().filter(|(x, day)| *x <= d && day.is_business()).count();
+        return t.trf("calendar.day_nth", &[&n.to_string()]);
+    }
+    show::day_name(t, day).unwrap_or_else(|| t.tr("calendar.off").to_owned())
+}
+
+/// The words of what [`toggled`] does to a day.
+fn toggle_key(day: &Day) -> &'static str {
+    match day {
+        Day::Open(_) | Day::Closed(_) => "calendar.toggle_back",
+        Day::Holiday(_) | Day::WeeklyOff => "calendar.toggle_open",
+        Day::Business => "calendar.toggle_closed",
     }
 }
 
