@@ -2781,7 +2781,8 @@ impl Browser {
                     .collect();
                 if let Some((col, down)) = self.net_sort {
                     rows.sort_by(|(ia, a), (ib, b)| {
-                        // The id sorts in the net's order; the rest by their words, the empty ones last.
+                        // The id sorts in the net's order; the rest by their words with numbers as numbers (job2 before
+                        // job10), the empty ones last.
                         let o = if col == 0 {
                             ia.cmp(ib)
                         } else {
@@ -2789,7 +2790,7 @@ impl Browser {
                             match (x.is_empty(), y.is_empty()) {
                                 (true, false) => return std::cmp::Ordering::Greater,
                                 (false, true) => return std::cmp::Ordering::Less,
-                                _ => x.to_lowercase().cmp(&y.to_lowercase()),
+                                _ => ito_common::text::natural_cmp(x, y, false),
                             }
                         };
                         if down {
