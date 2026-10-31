@@ -297,6 +297,7 @@ locked = "locked"
 not_run = "not run"
 
 [today]
+open_net = "Open the net's page"
 unhandled = "Unhandled"
 filter_on = "Show only these"
 filter_off = "Show all"

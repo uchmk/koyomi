@@ -1953,7 +1953,8 @@ impl Browser {
                 said: title.clone(),
                 cells,
                 run: None,
-                kinds: vec![TodayKind::Waiting],
+                net: id.clone(),
+                kinds: vec![TodayKind::Is(State::Waiting)],
                 keys: (Some(*at), None, None, usual.map(|a| a.num_milliseconds()), next.map(stamp)),
             });
         }
@@ -1978,23 +1979,21 @@ impl Browser {
                 said: said.join(" "),
                 cells,
                 run: Some(run.id.clone()),
+                net: run.jobnet.clone(),
                 kinds: TodayKind::of(run.state, self.acked.contains(&run.id)),
                 keys: (run.planned, Some(run.started), run.ended, Some(took), next.map(stamp)),
             });
         }
-        // The chips: what needs a person, what failed, what is going on, what is still to come, what is
-        // done. A click shows only its rows; a second click shows them all again.
+        // The chips: what needs a person, then every state a run can be in (a state with none is dim).
+        // A click shows only its rows; a second click shows them all again.
         let count = |k: TodayKind| rows.iter().filter(|r| r.kinds.contains(&k)).count();
-        let parts = [
-            (TodayKind::Unhandled, t.tr("today.unhandled").to_owned(), graph::colour(&c, State::Error)),
-            (TodayKind::Error, show::tag(t, State::Error).to_owned(), graph::colour(&c, State::Error)),
-            (TodayKind::Running, show::tag(t, State::Running).to_owned(), graph::colour(&c, State::Running)),
-            (TodayKind::Waiting, show::tag(t, State::Waiting).to_owned(), graph::colour(&c, State::Waiting)),
-            (TodayKind::Done, show::tag(t, State::Ok).to_owned(), graph::colour(&c, State::Ok)),
-        ];
+        let mut parts = vec![(TodayKind::Unhandled, t.tr("today.unhandled").to_owned(), graph::colour(&c, State::Error))];
+        parts.extend(
+            State::ALL.into_iter().filter(|s| *s != State::NotRun).map(|s| (TodayKind::Is(s), show::tag(t, s), graph::colour(&c, s))),
+        );
         let mut kind = self.today_kind;
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
+        ui.horizontal_wrapped(|ui| {
+            ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
             let look = ito_prefs::Look { c, q: "" };
             for (k, label, colour) in &parts {
                 let n = count(*k);
@@ -2032,6 +2031,13 @@ impl Browser {
             ui.add_space(6.0);
             ui.label(egui::RichText::new(t.tr("today.none_here")).color(c.dim));
         }
+        // A right click holds or releases the row's net (and releases a job of it held), without opening it.
+        let (held, held_jobs) = match &self.snap {
+            Some(s) => (s.held.clone(), s.held_jobs.clone()),
+            None => Default::default(),
+        };
+        let blocked = self.blocked();
+        let (mut ask, mut go_net) = (None, None);
         for row in &rows {
             let on = row.run.is_some() && self.run_sel == row.run;
             let mut r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, row.run.is_some());
@@ -2044,8 +2050,35 @@ impl Browser {
             } else if r.clicked() {
                 pick = row.run.clone();
             }
+            r.context_menu(|ui| {
+                let net_held = held.contains(&row.net);
+                let key = if net_held { "run.release" } else { "run.hold" };
+                if ui.add_enabled(!blocked, egui::Button::new(t.tr(key))).clicked() {
+                    let id = row.net.clone();
+                    ask = Some(if net_held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
+                    ui.close();
+                }
+                for h in held_jobs.iter().filter(|h| h.net == row.net) {
+                    if ui.add_enabled(!blocked, egui::Button::new(t.trf("run.release_job", &[&h.job]))).clicked() {
+                        ask = Some(Request::Release { id: h.net.clone(), job: Some(h.job.clone()) });
+                        ui.close();
+                    }
+                }
+                ui.separator();
+                if ui.button(t.tr("today.open_net")).clicked() {
+                    go_net = Some(row.net.clone());
+                    ui.close();
+                }
+            });
         }
         ui.spacing_mut().item_spacing.y = gap;
+        if let Some(req) = ask {
+            let _ = self.tx.send(req);
+        }
+        if let Some(id) = go_net {
+            self.open_net(&id);
+            return;
+        }
         // A click picks the row here (marked in the chart below too); a double click opens its run on the
         // net page.
         if let Some(id) = open {
@@ -3253,27 +3286,16 @@ pub(crate) fn danger(ui: &mut egui::Ui, words: &str) -> egui::Response {
 enum TodayKind {
     /// Failed and not marked handled yet.
     Unhandled,
-    Error,
-    Running,
-    Waiting,
-    Done,
+    /// In this state (a start still to come counts as 待ち).
+    Is(State),
 }
 
 impl TodayKind {
     /// The chips a run of `state` counts under; `acked` when someone marked it handled.
     fn of(state: State, acked: bool) -> Vec<Self> {
-        let mut kinds = Vec::new();
-        if state.is_error() {
-            if !acked {
-                kinds.push(Self::Unhandled);
-            }
-            kinds.push(Self::Error);
-        }
-        if matches!(state, State::Running | State::RunningError) {
-            kinds.push(Self::Running);
-        }
-        if matches!(state, State::Ok | State::Warn) {
-            kinds.push(Self::Done);
+        let mut kinds = vec![Self::Is(state)];
+        if state.is_error() && !acked {
+            kinds.push(Self::Unhandled);
         }
         kinds
     }
@@ -3292,6 +3314,8 @@ struct TodayRow {
     cells: [String; 5],
     /// The run's id; `None` for a start still to come.
     run: Option<String>,
+    /// The net's id.
+    net: String,
     kinds: Vec<TodayKind>,
     /// planned, start, end (clock times); time (ms); next (as `stamp`).
     keys: TodayKeys,
@@ -3944,17 +3968,21 @@ mod tests {
 
         /// Presses the one widget whose words contain `words`, with the primary button.
         fn click(&mut self, words: &str, b: &mut Browser) {
+            self.press(words, egui::PointerButton::Primary, b);
+        }
+
+        /// A right click on the widget that says `words`.
+        fn right_click(&mut self, words: &str, b: &mut Browser) {
+            self.press(words, egui::PointerButton::Secondary, b);
+        }
+
+        fn press(&mut self, words: &str, button: egui::PointerButton, b: &mut Browser) {
             let exact: Vec<_> = self.nodes.values().filter(|(label, _)| label == words).collect();
             let found: Vec<_> =
                 if exact.is_empty() { self.nodes.values().filter(|(label, _)| label.contains(words)).collect() } else { exact };
             assert_eq!(found.len(), 1, "one widget says {words:?}: {:?}", self.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
             let pos = found[0].1.center();
-            let button = |pressed| egui::Event::PointerButton {
-                pos,
-                button: egui::PointerButton::Primary,
-                pressed,
-                modifiers: egui::Modifiers::NONE,
-            };
+            let button = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
             self.show(vec![egui::Event::PointerMoved(pos)], b);
             self.show(vec![button(true)], b);
             self.show(vec![button(false)], b);
@@ -4542,6 +4570,40 @@ run = [\"x.exe\"]
     }
 
     /// The 対応済みにする button hands over the run's id only for a run that ended in failure.
+    #[test]
+    fn today_s_right_click_holds_and_releases_the_net() {
+        use koyomi_core::held::HeldJob;
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{How, State};
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = chrono::Local::now().naive_local();
+        let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.state = State::Held;
+        run.ended = Some(now);
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs());
+        b.tx = tx;
+        b.runs = vec![run];
+        b.gantt = true;
+        let snap = b.snap.as_mut().unwrap();
+        snap.held.push("試験/bom".into());
+        snap.held_jobs.push(HeldJob { net: "試験/bom".into(), job: "a".into() });
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.right_click("⏸ 保留 bom", &mut b);
+        s.click("ジョブネットの保留を解く", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: None }) if id == "試験/bom"));
+        s.right_click("⏸ 保留 bom", &mut b);
+        s.click("ジョブ a の保留を解く", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
+        // Not held: the same place holds it.
+        b.snap.as_mut().unwrap().held.clear();
+        s.right_click("⏸ 保留 bom", &mut b);
+        s.click("ジョブネットを保留", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: None }) if id == "試験/bom"));
+        assert!(b.gantt, "the right click does not leave 今日");
+    }
+
     #[test]
     fn a_press_on_ack_marks_only_a_failed_run() {
         use koyomi_core::jobnet::{Job, Jobnet};
