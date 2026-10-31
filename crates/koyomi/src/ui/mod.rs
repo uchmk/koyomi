@@ -322,6 +322,8 @@ pub struct Browser {
     today_sort: Option<(usize, bool)>,
     /// The jobs table's sort on the net page, as `today_sort`.
     net_sort: Option<(usize, bool)>,
+    /// The run's jobs table's sort, as `net_sort` (`None`: the run's own order).
+    run_sort: Option<(usize, bool)>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -455,6 +457,7 @@ impl Browser {
             today_kind: None,
             today_sort: None,
             net_sort: None,
+            run_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1534,7 +1537,7 @@ impl Browser {
             } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
-                self.run_view(ui, t);
+                self.run_page(ui, t, true);
             } else if self.cal_sel.is_some() {
                 self.calendar_view(ui, t);
             } else {
@@ -2400,13 +2403,57 @@ impl Browser {
         }
     }
 
-    /// The run: its line, the buttons, the picture, the jobs in words, the log.
+    /// The run: its line, the buttons, the picture, the jobs in words, the log — one under the other.
     fn run_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
-        let c = ito_theme::colors();
+        self.run_page(ui, t, false);
+    }
+
+    /// The run. `paned`: the jobs in words and the log go in a pane at the bottom (its top edge dragged to size
+    /// it), the jobs at its left and the picked job's facts and log at its right; the rest scrolls above.
+    fn run_page(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, paned: bool) {
         let Some(run) = self.selected_run().cloned() else {
             ui.label(t.tr("run.none"));
             return;
         };
+        let watched = Self::watched_job(&run, self.job_sel.as_deref());
+        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        let watched = watched.as_deref();
+        if !paned {
+            self.run_top(ui, t, &run, watched);
+            self.run_jobs(ui, t, &run, watched, false);
+            ui.add_space(6.0);
+            self.run_detail(ui, t, &run, watched);
+            return;
+        }
+        egui::Panel::bottom("run_pane")
+            .resizable(true)
+            .default_size(360.0)
+            .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
+            .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
+            .show(ui, |ui| {
+                // The panel keeps the size its content took, so fill it (an empty first frame would shrink it).
+                ui.set_min_height(ui.available_height());
+                let wide = ui.available_width();
+                egui::Panel::right("run_log_pane")
+                    .resizable(true)
+                    .default_size(wide * 0.45)
+                    .size_range(200.0..=(wide - 200.0).max(200.0))
+                    .frame(egui::Frame::new().inner_margin(egui::Margin { left: 10, ..Default::default() }))
+                    .show(ui, |ui| {
+                        ui.set_min_height(ui.available_height());
+                        egui::ScrollArea::vertical().id_salt("run_detail").auto_shrink(false).show(ui, |ui| {
+                            self.run_detail(ui, t, &run, watched);
+                        });
+                    });
+                self.run_jobs(ui, t, &run, watched, true);
+            });
+        egui::ScrollArea::vertical().id_salt("run_page").auto_shrink(false).show(ui, |ui| self.run_top(ui, t, &run, watched));
+    }
+
+    /// The run's line, the buttons on it, a run to compare it with, and the picture.
+    fn run_top(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>) {
+        let c = ito_theme::colors();
+        let run = run.clone();
         let (big, small) = show::run_head(t, &run);
         ui.heading(&big);
         ui.label(egui::RichText::new(small).small().color(c.dim));
@@ -2542,8 +2589,6 @@ impl Browser {
             }
         }
         ui.add_space(6.0);
-        let watched = Self::watched_job(&run, self.job_sel.as_deref());
-        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
         // The direction of the picture sits next to the picture.
         ui.horizontal(|ui| {
             for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
@@ -2563,42 +2608,87 @@ impl Browser {
             .map(|n| n.jobs.clone());
         let mut pick = None;
         egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
-            pick = graph::draw(ui, &run, self.vertical, watched.as_deref(), saved.as_deref());
+            pick = graph::draw(ui, &run, self.vertical, watched, saved.as_deref());
         });
         graph::legend(ui, t, &c, &run);
-        egui::Grid::new("jobs_grid").num_columns(8).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
-            for key in ["run.col_job", "run.state", "run.start", "run.end", "run.exit", "run.retried", "run.took", "run.reason"] {
-                ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
-            }
-            ui.end_row();
-            for j in &run.jobs {
-                let colour = graph::colour(&c, j.state);
-                let on = watched.as_deref() == Some(j.id.as_str());
-                let name = format!("{}{}", show::kind(t, &j.part), j.label());
-                let r = ui.selectable_label(on, egui::RichText::new(&name).color(colour));
+        if pick.is_some() {
+            self.job_sel = pick;
+        }
+    }
+
+    /// The run's jobs in words, one row a job, drawn as the today table. A click picks the job (as on the
+    /// picture). `paned`: the heading and the header band stay put and only the rows scroll.
+    fn run_jobs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>, paned: bool) {
+        let c = ito_theme::colors();
+        if paned {
+            let r = ui.label(egui::RichText::new(t.tr("net.sec_jobs")).strong().size(15.0));
+            ito_a11y::say(&r, Role::Heading, t.tr("net.sec_jobs"));
+        }
+        let mut rows: Vec<(usize, Vec<(String, bool)>)> = run
+            .jobs
+            .iter()
+            .enumerate()
+            .map(|(i, j)| {
+                let retried = match (j.retried, j.retry) {
+                    (0, None) => String::new(),
+                    (n, Some(r)) => format!("{n}/{}", r.count),
+                    (n, None) => n.to_string(),
+                };
+                let cells = vec![
+                    (format!("{}{}", show::kind(t, &j.part), j.label()), false),
+                    (show::tag(t, j.state).to_string(), false),
+                    (j.started.map(show::hms).unwrap_or_default(), true),
+                    (j.ended.map(show::hms).unwrap_or_default(), true),
+                    (j.exit.map(|x| x.to_string()).unwrap_or_default(), true),
+                    (retried, true),
+                    (j.duration().map(|d| show::duration(t, d)).unwrap_or_default(), false),
+                    (koyomi_core::run::tidy_reason(&j.reason).to_string(), false),
+                ];
+                (i, cells)
+            })
+            .collect();
+        sort_rows(&mut rows, self.run_sort);
+        let heads: Vec<String> = ["run.col_job", "run.state", "run.start", "run.end", "run.exit", "run.retried", "run.took", "run.reason"]
+            .map(|k| t.tr(k).to_owned())
+            .to_vec();
+        let mut pick = None;
+        let mut body = |ui: &mut egui::Ui, table: &mut TodayTable| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, cells) in &rows {
+                let j = &run.jobs[*i];
+                let on = watched == Some(j.id.as_str());
+                let r = table.cells_of(ui, cells, on, Some(j.state));
                 ito_a11y::say(&r, Role::Row, &graph::words(t, j));
                 if r.clicked() {
                     pick = Some(j.id.clone());
                 }
-                ui.label(egui::RichText::new(show::tag(t, j.state)).color(colour));
-                ui.label(j.started.map(show::hms).unwrap_or_default());
-                ui.label(j.ended.map(show::hms).unwrap_or_default());
-                ui.label(j.exit.map(|x| x.to_string()).unwrap_or_default());
-                ui.label(match (j.retried, j.retry) {
-                    (0, None) => String::new(),
-                    (n, Some(r)) => format!("{n}/{}", r.count),
-                    (n, None) => n.to_string(),
-                });
-                ui.label(j.duration().map(|d| show::duration(t, d)).unwrap_or_default());
-                ui.label(koyomi_core::run::tidy_reason(&j.reason));
-                ui.end_row();
             }
+        };
+        egui::ScrollArea::horizontal().id_salt("run_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            one_size(ui.style_mut());
+            let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+            let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|(_, r)| r.clone()).collect();
+            let widths = TodayTable::fit(ui, &heads, &cells);
+            let mut table = TodayTable::with(&c, &widths, ui.available_width());
+            if let Some(col) = table.head(ui, &heads, self.run_sort, t.tr("today.sort")) {
+                self.run_sort = TodayTable::next_sort(self.run_sort, col);
+            }
+            if paned {
+                egui::ScrollArea::vertical().id_salt("run_jobs_rows").auto_shrink([true, false]).show(ui, |ui| body(ui, &mut table));
+            } else {
+                body(ui, &mut table);
+            }
+            ui.spacing_mut().item_spacing.y = gap;
         });
         if pick.is_some() {
             self.job_sel = pick;
         }
-        if let Some(job) = watched.as_deref().and_then(|w| run.job(w)) {
-            ui.add_space(6.0);
+    }
+
+    /// The picked job's facts and its log (the job running, else the last that started, when none is picked).
+    fn run_detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>) {
+        let c = ito_theme::colors();
+        if let Some(job) = watched.and_then(|w| run.job(w)) {
             egui::Grid::new("job_facts").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
                 for (k, v) in show::job_facts(t, job) {
                     ui.label(egui::RichText::new(&k).color(c.dim));
@@ -2813,27 +2903,7 @@ impl Browser {
                         (i, cells)
                     })
                     .collect();
-                if let Some((col, down)) = self.net_sort {
-                    rows.sort_by(|(ia, a), (ib, b)| {
-                        // The id sorts in the net's order; the rest by their words with numbers as numbers (job2 before
-                        // job10), the empty ones last.
-                        let o = if col == 0 {
-                            ia.cmp(ib)
-                        } else {
-                            let (x, y) = (&a[col].0, &b[col].0);
-                            match (x.is_empty(), y.is_empty()) {
-                                (true, false) => return std::cmp::Ordering::Greater,
-                                (false, true) => return std::cmp::Ordering::Less,
-                                _ => ito_common::text::natural_cmp(x, y, false),
-                            }
-                        };
-                        if down {
-                            o.reverse()
-                        } else {
-                            o
-                        }
-                    });
-                }
+                sort_rows(&mut rows, self.net_sort);
                 let heads: Vec<String> = ["col_id", "col_kind", "col_name", "col_after", "col_next", "col_run", "col_dir", "col_more"]
                     .map(|k| t.tr(&format!("net.{k}")).to_owned())
                     .to_vec();
@@ -3266,6 +3336,12 @@ impl TodayTable {
     /// A row of plain cells (`(text, fixed-width)`; empty shows a dim dash, a line break makes the row
     /// taller), without a state: hover tints it, a picked row is filled and striped at the left in `run`.
     fn cells(&mut self, ui: &mut egui::Ui, cells: &[(String, bool)], on: bool) -> egui::Response {
+        self.cells_of(ui, cells, on, None)
+    }
+
+    /// [`Self::cells`] for a job of a run: the row is tinted with its state's colour (as the today table) and
+    /// its first two cells (the job and its state) are written in that colour.
+    fn cells_of(&mut self, ui: &mut egui::Ui, cells: &[(String, bool)], on: bool, state: Option<State>) -> egui::Response {
         let body = egui::TextStyle::Body.resolve(ui.style());
         let mono = egui::TextStyle::Monospace.resolve(ui.style());
         let lines = cells.iter().map(|(t, _)| t.lines().count().max(1)).max().unwrap_or(1);
@@ -3277,9 +3353,12 @@ impl TodayTable {
         }
         let c = &self.c;
         let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        let colour = state.map(|s| graph::colour(c, s));
         if on {
             p.rect_filled(rect, 0.0, c.chosen());
-            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, c.run);
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, colour.unwrap_or(c.run));
+        } else if let Some(colour) = colour {
+            p.rect_filled(rect, 0.0, ito_theme::mix(c.bg, colour, if r.hovered() { 0.22 } else { 0.1 }));
         } else if r.hovered() {
             p.rect_filled(rect, 0.0, c.hover());
         }
@@ -3293,6 +3372,10 @@ impl TodayTable {
         };
         for (i, (text, fixed)) in cells.iter().enumerate() {
             let clip = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i) - 4.0, rect.y_range());
+            let ink = match colour {
+                Some(colour) if i < 2 => colour,
+                _ => ink,
+            };
             let (text, ink) = if text.is_empty() { ("—", c.dim) } else { (text.as_str(), ink) };
             // The dash is the same in every column, fixed-width or not.
             let font = if *fixed && text != "—" { mono.clone() } else { body.clone() };
@@ -3318,6 +3401,29 @@ impl TodayTable {
             })
             .collect()
     }
+}
+
+/// Sorts a jobs table's `(order, cells)` rows by `sort`. Column 0 (the job) sorts in its own order; the rest by
+/// their words with numbers as numbers (job2 before job10), the empty ones last.
+fn sort_rows(rows: &mut [(usize, Vec<(String, bool)>)], sort: Option<(usize, bool)>) {
+    let Some((col, down)) = sort else { return };
+    rows.sort_by(|(ia, a), (ib, b)| {
+        let o = if col == 0 {
+            ia.cmp(ib)
+        } else {
+            let (x, y) = (&a[col].0, &b[col].0);
+            match (x.is_empty(), y.is_empty()) {
+                (true, false) => return std::cmp::Ordering::Greater,
+                (false, true) => return std::cmp::Ordering::Less,
+                _ => ito_common::text::natural_cmp(x, y, false),
+            }
+        };
+        if down {
+            o.reverse()
+        } else {
+            o
+        }
+    });
 }
 
 /// The tree and the today page read in one size: every text style at [`ONE_SIZE`] (times stay
@@ -3602,6 +3708,7 @@ mod tests {
             today_kind: None,
             today_sort: None,
             net_sort: None,
+            run_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
