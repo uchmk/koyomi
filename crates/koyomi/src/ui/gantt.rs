@@ -115,8 +115,8 @@ pub fn draw(
     let (resp, painter) = ui.allocate_painter(Vec2::new(LABEL + width + 16.0, 22.0 + LANE * list.len() as f32), Sense::hover());
     let origin = resp.rect.min;
     let x_of = |f: f32| origin.x + LABEL + f * width;
-    let font = egui::FontId::proportional(12.0);
-    let mono = egui::FontId::monospace(11.0);
+    let font = egui::FontId::proportional(super::ONE_SIZE);
+    let mono = egui::FontId::monospace(super::ONE_SIZE);
     // A line every hour, a stronger one with its time every two.
     for h in 0..=hours {
         let x = x_of(h as f32 / hours as f32);

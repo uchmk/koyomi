@@ -1484,6 +1484,7 @@ impl Browser {
             if modal {
                 ui.disable();
             }
+            one_size(ui.style_mut());
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 self.tree(ui, t);
                 ui.add_space(10.0);
@@ -1518,11 +1519,15 @@ impl Browser {
                     .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
                     .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
                     .show(ui, |ui| {
+                        one_size(ui.style_mut());
                         // The panel keeps the size its content took, so fill it (an empty first frame would shrink it).
                         ui.set_min_height(ui.available_height());
                         self.gantt_view(ui, t);
                     });
-                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| self.today_table(ui, t));
+                egui::ScrollArea::vertical().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
+                    one_size(ui.style_mut());
+                    self.today_table(ui, t);
+                });
             } else if self.hist.is_some() {
                 self.history_view(ui, t);
             } else if self.run_sel.is_some() {
@@ -3129,6 +3134,19 @@ impl TodayTable {
         }
     }
 }
+
+/// The tree and the today page read in one size: every text style at [`ONE_SIZE`] (times stay
+/// fixed-width).
+fn one_size(style: &mut egui::Style) {
+    for (s, f) in style.text_styles.iter_mut() {
+        let family = if *s == egui::TextStyle::Monospace { egui::FontFamily::Monospace } else { egui::FontFamily::Proportional };
+        *f = egui::FontId::new(ONE_SIZE, family);
+    }
+}
+
+/// The one text size of the tree and the today page: that of `ito_prefs::tag`, so the chips and
+/// badges read the same as the words around them.
+pub(crate) const ONE_SIZE: f32 = 11.5;
 
 /// A group's heading in the tree: its fold mark and name, and how many nets in it wait for a person
 /// as a small badge at the right.
