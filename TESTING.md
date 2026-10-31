@@ -1242,6 +1242,11 @@ Two PCs: `B` with `[http] lan = true` and a `[[http.user]]` `I` of role `run` (a
 | 96.16 | On B, a confirmed net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`; here, 今すぐ流す on it | Above the question, a field for each value with its default in it |
 | 96.17 | Change `dept` to `経理`, leave `month`, then 今すぐ流す in the question | A run starts on B; its job sees `dept = 経理` and last month for `month` |
 | 96.18 | 今すぐ流す on a net without `[params]` | Only the question, no fields |
+| 96.19 | On B's net row, ジョブネットを保留, then ジョブネットを保留 in the question | The line says `保留した: …`; within 5 s the row shows 保留 and the button turns to ジョブネットの保留を解く; on B, `koyomi ops` shows `hold … （HTTP: ito）` |
+| 96.20 | ジョブネットの保留を解く and confirm | `保留を解いた: …`; the 保留 mark goes |
+| 96.21 | 次の回を飛ばす on a confirmed net with a time later today, confirm | The line names the time it skips; on B, `koyomi skip-next` would list it and nothing starts at that time |
+| 96.22 | 飛ばしを戻す and confirm; then 飛ばしを戻す again | `… を飛ばすのをやめた`; the second shows the refusal (`… は飛ばしていない`) in red |
+| 96.23 | With `S`'s token, any of the four | The refusal (403) in red; nothing changes on B |
 
 ## 97. Rerun, skip and hold from the Web UI (TODO 81)
 

@@ -1,6 +1,7 @@
 //! Another PC's engine in the window (TODO 80): the PC list at the top switches the window to
 //! one of the `[[remote]]` of koyomi.toml, and the page shows that engine's nets and today's
-//! runs, a run's jobs and a job's log, with 今すぐ流す and 強制終了 behind a yes or no. A net
+//! runs, a run's jobs and a job's log, with 今すぐ流す and 強制終了 behind a yes or no, and a
+//! net's hold and its next run skipped (`POST /nets/hold|release|skip-next`) the same way. A net
 //! with `[params]` asks for its values in the same yes or no, as 今すぐ実行 on this PC does.
 //!
 //! Every call goes over HTTPS with the certificate pinned (`crate::remote`) on its own thread;
@@ -57,6 +58,10 @@ enum Act {
     Stop(String),
     /// Run the ended run (its id) again from where it stopped.
     Rerun(String),
+    /// Hold the net (its id), or take the hold off (`false`).
+    Hold(String, bool),
+    /// Skip the net's (its id) next scheduled run, or take the skips back (`false`).
+    SkipNext(String, bool),
 }
 
 pub struct Far {
@@ -222,6 +227,14 @@ impl Far {
                     .map(|j| j["said"].as_str().unwrap_or(run).to_owned()),
                 Act::Rerun(run) => crate::remote::ask(&pc, |c| c.post_json(&format!("/runs/{}/rerun", query(run)), &serde_json::json!({})))
                     .map(|j| format!("{run} → {}", j["run"].as_str().unwrap_or("?"))),
+                Act::Hold(net, on) => {
+                    let path = if *on { "/nets/hold" } else { "/nets/release" };
+                    crate::remote::ask(&pc, |c| c.post_json(path, &serde_json::json!({ "net": net }))).map(|j| said(net, &j))
+                }
+                Act::SkipNext(net, on) => {
+                    crate::remote::ask(&pc, |c| c.post_json("/nets/skip-next", &serde_json::json!({ "net": net, "cancel": !on })))
+                        .map(|j| said(net, &j))
+                }
             };
             Got::Did(pc, said)
         });
@@ -297,6 +310,10 @@ impl Far {
                     Act::Run(net, _) => (t.trf("far.ask_run", &[&pc, net]), t.tr("run.now")),
                     Act::Stop(run) => (t.trf("far.ask_stop", &[&pc, run]), t.tr("run.kill_yes")),
                     Act::Rerun(run) => (t.trf("far.ask_rerun", &[&pc, run]), t.tr("run.rerun")),
+                    Act::Hold(net, true) => (t.trf("far.ask_hold", &[&pc, net]), t.tr("run.hold")),
+                    Act::Hold(net, false) => (t.trf("far.ask_release", &[&pc, net]), t.tr("run.release")),
+                    Act::SkipNext(net, true) => (t.trf("far.ask_skip_next", &[&pc, net]), t.tr("far.skip_next")),
+                    Act::SkipNext(net, false) => (t.trf("far.ask_unskip", &[&pc, net]), t.tr("far.unskip")),
                 };
                 let r = ui.label(egui::RichText::new(&text).strong());
                 ito_a11y::say(&r, Role::Label, &text);
@@ -335,7 +352,7 @@ impl Far {
             Some(Ok(n)) => n.clone(),
         };
         let mut press = None;
-        egui::Grid::new("far_nets").num_columns(4).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
+        egui::Grid::new("far_nets").num_columns(5).spacing([14.0, 3.0]).striped(true).show(ui, |ui| {
             for n in &nets {
                 let title = if n.name.is_empty() { &n.id } else { &n.name };
                 let r = ui.label(title);
@@ -352,6 +369,21 @@ impl Far {
                     let values = n.params.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
                     press = Some(Act::Run(n.id.clone(), values));
                 }
+                ui.horizontal(|ui| {
+                    let hold = if n.held { "run.release" } else { "run.hold" };
+                    let acts = [
+                        (hold, Act::Hold(n.id.clone(), !n.held)),
+                        ("far.skip_next", Act::SkipNext(n.id.clone(), true)),
+                        ("far.unskip", Act::SkipNext(n.id.clone(), false)),
+                    ];
+                    for (key, act) in acts {
+                        let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr(key)).small());
+                        ito_a11y::say(&b, Role::Button, &format!("{} {title}", t.tr(key)));
+                        if b.clicked() {
+                            press = Some(act);
+                        }
+                    }
+                });
                 ui.end_row();
             }
         });
@@ -470,6 +502,11 @@ fn error(ui: &mut egui::Ui, e: &str) {
     ito_a11y::say(&r, Role::Label, e);
 }
 
+/// The line shown after a hold or a skip: what the engine said (it names the net), else the net.
+fn said(net: &str, j: &serde_json::Value) -> String {
+    j["said"].as_str().map(str::trim).filter(|s| !s.is_empty()).unwrap_or(net).to_owned()
+}
+
 /// What `POST /runs` is sent: the net, and only the values changed from their default (as on this PC).
 fn run_body(net: &str, values: &[(String, String, String)]) -> serde_json::Value {
     let params: BTreeMap<&str, &str> = values.iter().filter(|(_, d, v)| v != d).map(|(k, _, v)| (k.as_str(), v.as_str())).collect();
@@ -524,6 +561,20 @@ mod tests {
         assert_eq!(n.params.get("month").map(String::as_str), Some("x"));
     }
 
+    /// a hold's or a skip's answer shows as the engine's words, or the net when it said nothing.
+    #[test]
+    fn a_hold_and_a_skip_say_what_the_engine_said() {
+        assert_eq!(
+            said(
+                "g/a",
+                &serde_json::json!({ "said": "保留を解いた: g/a
+" })
+            ),
+            "保留を解いた: g/a"
+        );
+        assert_eq!(said("g/a", &serde_json::json!({ "said": "" })), "g/a");
+    }
+
     #[test]
     fn a_job_is_sent_as_a_query_value() {
         assert_eq!(query("20261030-020000-01"), "20261030-020000-01");
@@ -549,6 +600,15 @@ mod tests {
         f.take(Got::Runs("b".into(), Err("b: つながらない".into())));
         f.asking = Some(Act::Run("g/a".into(), vec![("month".into(), "{month-1:%Y-%m}".into(), "2026-09".into())]));
         frame(&mut f);
+        for a in [
+            Act::Hold("g/a".into(), true),
+            Act::Hold("g/a".into(), false),
+            Act::SkipNext("g/a".into(), true),
+            Act::SkipNext("g/a".into(), false),
+        ] {
+            f.asking = Some(a);
+            frame(&mut f);
+        }
         assert_eq!(f.on.as_deref(), Some("b"));
     }
 }
