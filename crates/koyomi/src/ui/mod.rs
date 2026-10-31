@@ -1538,6 +1538,18 @@ impl Browser {
             } else if self.cal_sel.is_some() {
                 self.calendar_view(ui, t);
             } else {
+                // A net's jobs in a pane at the bottom, its top edge dragged to size it; the page above.
+                if self.selected_def().is_some_and(|d| d.net.as_ref().is_some_and(|n| !n.jobs.is_empty())) {
+                    egui::Panel::bottom("jobs_pane")
+                        .resizable(true)
+                        .default_size(320.0)
+                        .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
+                        .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
+                        .show(ui, |ui| {
+                            ui.set_min_height(ui.available_height());
+                            egui::ScrollArea::vertical().id_salt("jobs_pane").auto_shrink(false).show(ui, |ui| self.jobs_pane(ui, t));
+                        });
+                }
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
             }
         });
@@ -2743,9 +2755,16 @@ impl Browser {
                 ui.label(l);
             }
         }
-        if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
-            section(ui, "net.sec_jobs");
-            if let Some(net) = &def.net {
+    }
+
+    /// The net's jobs, one row a job: the pane under the net's page.
+    fn jobs_pane(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let c = ito_theme::colors();
+        let Some(def) = self.selected_def().cloned() else { return };
+        {
+            let r = ui.label(egui::RichText::new(t.tr("net.sec_jobs")).strong().size(15.0));
+            ito_a11y::say(&r, Role::Heading, t.tr("net.sec_jobs"));
+            if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
                 // One row a job, drawn as the today table: what it is, what comes before and after it, what it
                 // runs and where, and the rest of its settings. A click picks the job (as on the graph).
                 let details = review::job_rows(t, &def);
