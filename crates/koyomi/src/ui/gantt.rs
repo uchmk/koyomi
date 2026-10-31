@@ -121,7 +121,7 @@ pub fn draw(
     for h in 0..=hours {
         let x = x_of(h as f32 / hours as f32);
         let major = h % 2 == 0;
-        let line = if major { c.border } else { c.faint() };
+        let line = if major { c.border } else { ito_theme::mix(c.border, c.side, 0.5) };
         painter.line_segment([Pos2::new(x, origin.y + 18.0), Pos2::new(x, resp.rect.max.y)], Stroke::new(1.0, line));
         if major && h < hours {
             let label = format!("{:02}:00", h);
@@ -166,7 +166,7 @@ pub fn draw(
         // A start still to come is an outline, not a fill.
         for (_, f) in &lane.planned {
             let rect = Rect::from_min_max(Pos2::new(x_of(*f), top), Pos2::new(x_of(*f) + PLAN_W, top + BAR_H));
-            painter.rect_filled(rect, 3.0, c.faint());
+            painter.rect_filled(rect, 3.0, ito_theme::mix(c.side, graph::colour(&c, State::Waiting), 0.15));
             dashed(&painter, rect, Stroke::new(1.0, graph::colour(&c, State::Waiting)));
         }
         // The marks are a picture; the words say them.

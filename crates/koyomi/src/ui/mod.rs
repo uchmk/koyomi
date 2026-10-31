@@ -316,6 +316,10 @@ pub struct Browser {
     hist: Option<History>,
     /// ガント, when it is open: the detail is today's runs on a time axis.
     gantt: bool,
+    /// The today table's chip that is on: only its rows show.
+    today_kind: Option<TodayKind>,
+    /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
+    today_sort: Option<(usize, bool)>,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -446,6 +450,8 @@ impl Browser {
             cal_inline: None,
             hist: None,
             gantt: true,
+            today_kind: None,
+            today_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1753,68 +1759,48 @@ impl Browser {
             .map(|d| (d.id.as_str(), d))
             .collect();
         let average = |id: &str| self.past.get(id).copied();
-        let next_of = |id: &str, from: chrono::NaiveDateTime| -> String {
-            by_id
-                .get(id)
-                .and_then(|d| {
-                    let net = d.net.as_ref()?;
-                    let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                    koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, cal).into_iter().next()
-                })
-                .map(|at| if at.date() == now.date() { show::hms(at) } else { at.format("%m-%d %H:%M").to_string() })
-                .unwrap_or_default()
+        let next_at = |id: &str, from: chrono::NaiveDateTime| -> Option<chrono::NaiveDateTime> {
+            let d = by_id.get(id)?;
+            let net = d.net.as_ref()?;
+            let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
+            koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, cal).into_iter().next()
         };
-        let unconfirmed = snap.defs.iter().filter(|d| d.standing == Standing::Unconfirmed).count();
+        let next_words = |at: Option<chrono::NaiveDateTime>| {
+            at.map(|at| if at.date() == now.date() { show::hms(at) } else { at.format("%m-%d %H:%M").to_string() }).unwrap_or_default()
+        };
         if self.runs.is_empty() && coming.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.none")).color(c.dim));
             return;
         }
-        // The counts: what needs a person, what is going on, what is still to come, what is done.
-        let count = |f: &dyn Fn(State) -> bool| self.runs.iter().filter(|r| f(r.state)).count();
-        let parts = [
-            (t.tr("today.unconfirmed").to_owned(), unconfirmed, c.wait_text()),
-            (show::tag(t, State::Error).to_owned(), count(&|s| s.is_error()), graph::colour(&c, State::Error)),
-            (
-                show::tag(t, State::Running).to_owned(),
-                count(&|s| matches!(s, State::Running | State::RunningError)),
-                graph::colour(&c, State::Running),
-            ),
-            (show::tag(t, State::Waiting).to_owned(), coming.len(), graph::colour(&c, State::Waiting)),
-            (show::tag(t, State::Ok).to_owned(), count(&|s| matches!(s, State::Ok | State::Warn)), graph::colour(&c, State::Ok)),
-        ];
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 6.0;
-            let look = ito_prefs::Look { c, q: "" };
-            for (label, n, colour) in &parts {
-                let text = format!("{label} {n}");
-                let colour = if *n == 0 { c.dim } else { *colour };
-                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(colour));
-                ito_a11y::say(&r, Role::Label, &text);
-            }
-        });
-        ui.add_space(8.0);
-        let mut pick = None;
-        let mut runs: Vec<&Run> = self.runs.iter().collect();
-        runs.sort_by_key(|r| std::cmp::Reverse(r.started));
-        let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
-        let mut table = TodayTable::new(ui, &c);
-        let heads: Vec<String> = ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"]
-            .map(|k| t.tr(&format!("today.{k}")).to_owned())
-            .to_vec();
-        table.head(ui, &heads);
+        // The rows: what is still to come, then the runs, newest first.
+        let mut rows: Vec<TodayRow> = Vec::new();
         for (at, id, title, mark) in &coming {
             let planned = match mark {
                 Some(m) => format!("{}  {m}", show::hms(*at)),
                 None => show::hms(*at),
             };
-            let usual = average(id).map(|a| t.trf("today.average", &[&show::duration(t, a)])).unwrap_or_default();
-            let cells = [planned, String::new(), String::new(), usual, next_of(id, *at)];
-            let r = table.row(ui, State::Waiting, &show::tag(t, State::Waiting), title, &cells, false, false);
-            ito_a11y::say(&r, Role::Row, title);
+            let usual = average(id);
+            let next = next_at(id, *at);
+            let cells = [
+                planned,
+                String::new(),
+                String::new(),
+                usual.map(|a| t.trf("today.average", &[&show::duration(t, a)])).unwrap_or_default(),
+                next_words(next),
+            ];
+            rows.push(TodayRow {
+                state: State::Waiting,
+                title: title.clone(),
+                said: title.clone(),
+                cells,
+                run: None,
+                kinds: vec![TodayKind::Waiting],
+                keys: (Some(*at), None, None, usual.map(|a| a.num_milliseconds()), next.map(stamp)),
+            });
         }
+        let mut runs: Vec<&Run> = self.runs.iter().collect();
+        runs.sort_by_key(|r| std::cmp::Reverse(r.started));
         for run in runs {
-            let on = self.run_sel.as_deref() == Some(run.id.as_str());
-            let planned = run.planned.map(show::hms).unwrap_or_default();
             let ended = run.ended.map(show::hms).unwrap_or_default();
             let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(t, a)]));
             let took = match (run.duration(), &usual) {
@@ -1824,11 +1810,79 @@ impl Browser {
             };
             let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
             let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
-            let cells = [planned, show::hms(run.started), ended, took, next_of(&run.jobnet, now)];
-            let r = table.row(ui, run.state, &show::tag(t, run.state), &run.title, &cells, on, true);
-            ito_a11y::say(&r, Role::Row, &said.join(" "));
+            let next = next_at(&run.jobnet, now);
+            let cells = [run.planned.map(show::hms).unwrap_or_default(), show::hms(run.started), ended, took, next_words(next)];
+            let took = run.duration().unwrap_or(now - run.started).num_milliseconds();
+            rows.push(TodayRow {
+                state: run.state,
+                title: run.title.clone(),
+                said: said.join(" "),
+                cells,
+                run: Some(run.id.clone()),
+                kinds: TodayKind::of(run.state, self.acked.contains(&run.id)),
+                keys: (run.planned, Some(run.started), run.ended, Some(took), next.map(stamp)),
+            });
+        }
+        // The chips: what needs a person, what failed, what is going on, what is still to come, what is
+        // done. A click shows only its rows; a second click shows them all again.
+        let count = |k: TodayKind| rows.iter().filter(|r| r.kinds.contains(&k)).count();
+        let parts = [
+            (TodayKind::Unhandled, t.tr("today.unhandled").to_owned(), graph::colour(&c, State::Error)),
+            (TodayKind::Error, show::tag(t, State::Error).to_owned(), graph::colour(&c, State::Error)),
+            (TodayKind::Running, show::tag(t, State::Running).to_owned(), graph::colour(&c, State::Running)),
+            (TodayKind::Waiting, show::tag(t, State::Waiting).to_owned(), graph::colour(&c, State::Waiting)),
+            (TodayKind::Done, show::tag(t, State::Ok).to_owned(), graph::colour(&c, State::Ok)),
+        ];
+        let mut kind = self.today_kind;
+        ui.horizontal(|ui| {
+            ui.spacing_mut().item_spacing.x = 6.0;
+            let look = ito_prefs::Look { c, q: "" };
+            for (k, label, colour) in &parts {
+                let n = count(*k);
+                let text = format!("{label} {n}");
+                let on = kind == Some(*k);
+                let colour = if n == 0 && !on { c.dim } else { *colour };
+                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(colour).on(on))
+                    .on_hover_text(t.tr(if on { "today.filter_off" } else { "today.filter_on" }))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand);
+                ito_a11y::say(&r, Role::Button, &text);
+                if r.clicked() {
+                    kind = if on { None } else { Some(*k) };
+                }
+            }
+        });
+        self.today_kind = kind;
+        if let Some(k) = kind {
+            rows.retain(|r| r.kinds.contains(&k));
+        }
+        if let Some((col, down)) = self.today_sort {
+            TodayRow::sort(&mut rows, col, down);
+        }
+        ui.add_space(8.0);
+        let mut pick = None;
+        let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+        let mut table = TodayTable::new(ui, &c);
+        let heads: Vec<String> = ["col_state", "col_net", "col_planned", "col_start", "col_end", "col_time", "col_next"]
+            .map(|k| t.tr(&format!("today.{k}")).to_owned())
+            .to_vec();
+        if let Some(col) = table.head(ui, &heads, self.today_sort, t.tr("today.sort")) {
+            // A column's first click sorts it up, the second down, the third puts the order back.
+            self.today_sort = match self.today_sort {
+                Some((was, false)) if was == col => Some((col, true)),
+                Some((was, true)) if was == col => None,
+                _ => Some((col, false)),
+            };
+        }
+        if rows.is_empty() {
+            ui.add_space(6.0);
+            ui.label(egui::RichText::new(t.tr("today.none_here")).color(c.dim));
+        }
+        for row in &rows {
+            let on = row.run.is_some() && self.run_sel == row.run;
+            let r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, row.run.is_some());
+            ito_a11y::say(&r, Role::Row, &row.said);
             if r.clicked() {
-                pick = Some(run.id.clone());
+                pick = row.run.clone();
             }
         }
         ui.spacing_mut().item_spacing.y = gap;
@@ -2855,6 +2909,99 @@ pub(crate) fn danger(ui: &mut egui::Ui, words: &str) -> egui::Response {
     r
 }
 
+/// What a chip over today's table picks out.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TodayKind {
+    /// Failed and not marked handled yet.
+    Unhandled,
+    Error,
+    Running,
+    Waiting,
+    Done,
+}
+
+impl TodayKind {
+    /// The chips a run of `state` counts under; `acked` when someone marked it handled.
+    fn of(state: State, acked: bool) -> Vec<Self> {
+        let mut kinds = Vec::new();
+        if state.is_error() {
+            if !acked {
+                kinds.push(Self::Unhandled);
+            }
+            kinds.push(Self::Error);
+        }
+        if matches!(state, State::Running | State::RunningError) {
+            kinds.push(Self::Running);
+        }
+        if matches!(state, State::Ok | State::Warn) {
+            kinds.push(Self::Done);
+        }
+        kinds
+    }
+}
+
+/// A clock time as a number to sort by.
+fn stamp(at: chrono::NaiveDateTime) -> i64 {
+    at.and_utc().timestamp_millis()
+}
+
+/// One row of today's table, with what it sorts by.
+struct TodayRow {
+    state: State,
+    title: String,
+    said: String,
+    cells: [String; 5],
+    /// The run's id; `None` for a start still to come.
+    run: Option<String>,
+    kinds: Vec<TodayKind>,
+    /// planned, start, end (clock times); time (ms); next (as `stamp`).
+    keys: TodayKeys,
+}
+
+type TodayKeys = (Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<chrono::NaiveDateTime>, Option<i64>, Option<i64>);
+
+impl TodayRow {
+    /// Failures first, then what runs, what waits, what is held, what is done.
+    fn rank(state: State) -> u8 {
+        use koyomi_core::run::Tone;
+        match state.tone() {
+            Tone::Error => 0,
+            Tone::Running => 1,
+            Tone::Warn | Tone::Held => 2,
+            Tone::Dim => 3,
+            Tone::Ok => 4,
+        }
+    }
+
+    /// Sorts by column `col` (state, net, planned, start, end, time, next), down when `down`.
+    /// Rows with nothing in the column go last either way; ties keep their order.
+    fn sort(rows: &mut [TodayRow], col: usize, down: bool) {
+        fn by<T: Ord>(a: Option<T>, b: Option<T>, down: bool) -> std::cmp::Ordering {
+            match (a, b) {
+                (Some(a), Some(b)) => {
+                    if down {
+                        b.cmp(&a)
+                    } else {
+                        a.cmp(&b)
+                    }
+                }
+                (Some(_), None) => std::cmp::Ordering::Less,
+                (None, Some(_)) => std::cmp::Ordering::Greater,
+                (None, None) => std::cmp::Ordering::Equal,
+            }
+        }
+        rows.sort_by(|a, b| match col {
+            0 => by(Some(Self::rank(a.state)), Some(Self::rank(b.state)), down),
+            1 => by(Some(a.title.to_lowercase()), Some(b.title.to_lowercase()), down),
+            2 => by(a.keys.0.map(stamp), b.keys.0.map(stamp), down),
+            3 => by(a.keys.1.map(stamp), b.keys.1.map(stamp), down),
+            4 => by(a.keys.2.map(stamp), b.keys.2.map(stamp), down),
+            5 => by(a.keys.3, b.keys.3, down),
+            _ => by(a.keys.4, b.keys.4, down),
+        });
+    }
+}
+
 /// Today's table, drawn row by row: a header band, then rows with the state (mark and word) in its
 /// colour, the net, and the times in a fixed-width face. A picked row is filled with a stripe at the
 /// left in its state's colour.
@@ -2887,21 +3034,44 @@ impl TodayTable {
         self.cols.get(i + 1).copied().unwrap_or(self.width)
     }
 
-    fn head(&mut self, ui: &mut egui::Ui, heads: &[String]) {
+    /// The header band. A click on a column's name gives its index; the sorted column shows ▲ or ▼.
+    fn head(&mut self, ui: &mut egui::Ui, heads: &[String], sort: Option<(usize, bool)>, hint: &str) -> Option<usize> {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width, Self::ROW - 2.0), egui::Sense::hover());
-        let p = ui.painter();
-        p.rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, self.c.panel);
-        p.hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, self.c.border));
+        ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, self.c.panel);
+        ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, self.c.border));
         let font = egui::TextStyle::Small.resolve(ui.style());
+        let mut hit = None;
         for (i, h) in heads.iter().enumerate() {
-            p.text(
-                egui::pos2(rect.left() + self.cols[i] + Self::PAD, rect.center().y),
+            let cell = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i), rect.y_range());
+            let r = ui.interact(cell, ui.id().with(("today-head", i)), egui::Sense::click());
+            let arrow = match sort {
+                Some((col, false)) if col == i => " ▲",
+                Some((col, true)) if col == i => " ▼",
+                _ => "",
+            };
+            let ink = if !arrow.is_empty() || r.hovered() { self.c.fg } else { self.c.dim };
+            if r.hovered() {
+                ui.painter().rect_filled(cell, 0.0, self.c.hover());
+            }
+            ui.painter().text(
+                egui::pos2(cell.left() + Self::PAD, cell.center().y),
                 egui::Align2::LEFT_CENTER,
-                h,
+                format!("{h}{arrow}"),
                 font.clone(),
-                self.c.dim,
+                ink,
             );
+            let r = r.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand);
+            let said = match arrow {
+                " ▲" => format!("{h} ▲"),
+                " ▼" => format!("{h} ▼"),
+                _ => h.clone(),
+            };
+            ito_a11y::say(&r, Role::Button, &said);
+            if r.clicked() {
+                hit = Some(i);
+            }
         }
+        hit
     }
 
     /// One row: `cells` are planned, start, end, time and next. Empty cells show a dim dash.
@@ -2924,13 +3094,18 @@ impl TodayTable {
         let c = &self.c;
         let colour = graph::colour(c, state);
         let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        // Each row is tinted with its state's colour (a failure reads red at a glance); a hover deepens
+        // the tint, a picked row is filled and striped at the left.
+        let tint = |t: f32| ito_theme::mix(c.bg, colour, t);
         if on {
             p.rect_filled(rect, 0.0, c.chosen());
             p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, colour);
         } else if click && r.hovered() {
-            p.rect_filled(rect, 0.0, c.hover());
+            p.rect_filled(rect, 0.0, tint(0.22));
+        } else {
+            p.rect_filled(rect, 0.0, tint(0.1));
         }
-        p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, c.faint()));
+        p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, c.border));
         let body = egui::TextStyle::Body.resolve(ui.style());
         let mono = egui::TextStyle::Monospace.resolve(ui.style());
         let y = rect.center().y;
@@ -3221,6 +3396,8 @@ mod tests {
             cal_inline: None,
             hist: None,
             gantt: false,
+            today_kind: None,
+            today_sort: None,
             vers: None,
             editor: None,
             editors: Vec::new(),

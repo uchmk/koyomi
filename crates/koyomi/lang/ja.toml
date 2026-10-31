@@ -296,7 +296,11 @@ locked = "止めた"
 not_run = "未実行"
 
 [today]
-unconfirmed = "未対応"
+unhandled = "未対応"
+filter_on = "これだけを表示"
+filter_off = "すべてを表示"
+sort = "クリックで並べ替え（昇順 → 降順 → 元の順）"
+none_here = "当てはまるものはありません"
 col_state = "状態"
 col_net = "ジョブネット"
 col_planned = "予定"

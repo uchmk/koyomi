@@ -297,7 +297,11 @@ locked = "locked"
 not_run = "not run"
 
 [today]
-unconfirmed = "To approve"
+unhandled = "Unhandled"
+filter_on = "Show only these"
+filter_off = "Show all"
+sort = "Click to sort (up, down, back to the usual order)"
+none_here = "Nothing matches"
 col_state = "State"
 col_net = "Jobnet"
 col_planned = "Planned"
