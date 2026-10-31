@@ -61,15 +61,26 @@ impl Browser {
         let c = ito_theme::colors();
         ui.add_space(10.0);
         let mut make = false;
-        let head = egui::Label::new(egui::RichText::new(t.tr("calendar.heading")).strong().color(c.dim)).sense(egui::Sense::click());
-        let r = ui.add(head);
-        ito_a11y::say(&r, Role::Heading, t.tr("calendar.heading"));
-        r.context_menu(|ui| {
-            if ui.button(t.tr("calendar.new")).clicked() {
+        // The list's title with a small ＋ at the right, as the jobnet list has (its words on hover and to a reader).
+        let label = t.tr("calendar.new");
+        ui.horizontal(|ui| {
+            let head =
+                egui::Label::new(egui::RichText::new(t.tr("calendar.heading")).small().strong().color(c.dim)).sense(egui::Sense::click());
+            let r = ui.add(head);
+            ito_a11y::say(&r, Role::Heading, t.tr("calendar.heading"));
+            r.context_menu(|ui| {
+                if ui.button(label).clicked() {
+                    make = true;
+                    ui.close();
+                }
+            });
+            let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.small_button("＋").on_hover_text(label)).inner;
+            ito_a11y::say(&r, Role::Button, label);
+            if r.clicked() {
                 make = true;
-                ui.close();
             }
         });
+        ui.add_space(4.0);
         if snap.calendars.is_empty() {
             let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.none")).color(c.dim)).wrap());
             ito_a11y::say(&r, Role::Label, t.tr("calendar.none"));
@@ -92,9 +103,7 @@ impl Browser {
                 }
             });
         }
-        let r = ui.button(t.tr("calendar.new"));
-        ito_a11y::say(&r, Role::Button, t.tr("calendar.new"));
-        if r.clicked() || make {
+        if make {
             self.new_cal_box();
         }
         match act {
