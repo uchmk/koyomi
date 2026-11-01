@@ -861,3 +861,13 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - 帯は 7 日。`quiet` と `on_quiet` を当てた後の開始（`koyomi plan` と同じ数え方）。カレンダーは定義の `calendar`、無ければスナップショットで数えているもの（グループのもの）。毎分の契機でも目盛りを引くだけで、数は横に出す。`[[when]]` が無いときは帯を出さずに「手で動かすときだけ」と書く。
 - 全体図は部品が 2 つ以上で、図が全体図の 2.5 倍より広いときだけ出す。小さな図では邪魔になる。
 - 駅の中の印は、前は `show::kind` の頭の 1 字で、全部 【 になっていた。棚・駅・凡例で 1 つの `part_mark` を使う。
+
+## 古い記録をしまう（TODO 92、P9、2026-11-01）
+
+- koyomi.toml の `archive = true`（既定は切）で、`keep_days` の整理が消す日の履歴とログを、消す前に状態のフォルダーの `archive/YYYY-MM.zip` に入れる。zip の中は状態のフォルダーと同じ相対パス（`history/2026/07/31.toml`、`logs/2026-07-31/<run>/<job>.log`）。zip は ito の `ito-zip`。
+- 月ごとに 1 回書く（全部入るか、何も変わらないか）。入れられなかった月の日は消さずに残し、理由は `retain.toml` の errors（`engine status` の「消せなかった n 件」）に出る。次の整理でもう一度試す。もう zip のある月には足す（同じ名前は置き換える）。
+- `archive_days`（既定 0 = ずっと残す）より古い月の zip は、月の最後の日で数えて消す。`keep_days` より短くは数えない（入れたその日に消さない）。`archive` を切っても、`archive_days` があれば古い zip は消える。
+- 入れた日の数・消した zip の数は `retain.toml` と `koyomi engine status` の整理の行に出る。
+- 読むのはエンジンを通さず、zip から直接: `koyomi archive [list]`・`koyomi archive show <日>`・`koyomi archive log <run> <job>`。エンジンとの約束（PROTO）は変えない。
+  - `koyomi history` は、エンジンが 1 件も返さなかった日のうち、その月の zip がある日だけ zip から読み足す（zip の無い月の日は何も開かない）。
+  - 窓（実行の一覧・ログの欄）からは読まない。設定の画面にも切り替えを置いていない（koyomi.toml を手で書く）。

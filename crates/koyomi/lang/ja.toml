@@ -101,7 +101,7 @@ notify = "通知"
 notify_lead = "回が終わったときの知らせ方。窓が開いていなくても出ます。koyomi.toml の [notify] に書き、エンジンは 5 秒以内に読み直します。"
 records = "記録"
 keep_days = "ログと履歴を残す日数"
-keep_days_note = "この日数より古い日のログのフォルダーと履歴のファイルを、エンジンが起動のときと日付が変わるときに消します。koyomi.toml の keep_days。"
+keep_days_note = "この日数より古い日のログのフォルダーと履歴のファイルを、エンジンが起動のときと日付が変わるときに消します。koyomi.toml の keep_days。archive = true なら、消す前に archive/YYYY-MM.zip に入れます。"
 concurrency = "同時に動かす数"
 concurrency_note = "全部のジョブネットを合わせて、同時に動くジョブの数。koyomi.toml の concurrency。"
 log_max = "ログの大きさ (MB)"
@@ -442,6 +442,11 @@ history_7 = "過去 7 日"
 history_30 = "過去 30 日"
 history_none = "該当する実行はありません"
 history_bad_date = "日付は YYYY-MM-DD で書く"
+
+[archive]
+none = "archive/ にはまだ何もありません（koyomi.toml の archive = true で、消す前の日をここに入れます）"
+line = "{0}  履歴 {1} 日・ログ {2} 日  {3}"
+day_none = "{0} は archive/ にありません"
 
 [calendar]
 picked = "選択中"

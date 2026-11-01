@@ -1,6 +1,6 @@
 # Checklist
 
-795 checks in TESTING.md, 789 left for a person.
+801 checks in TESTING.md, 795 left for a person.
 
 ## 1. Start
 
@@ -193,6 +193,12 @@
 - [ ] **18.7** Write `keep_days = 45` by hand with a comment above `[notify]`, open the page, pick 60 → The row showed "45 days" among the choices; only `keep_days` changed; the comment, `[notify]` and the line order stay 〔未訳〕
 - [ ] **18.8** Put `logs/notes/` and `logs/2026-01-05-old/` in the state folder and shorten the days → Neither is counted nor removed: only names that are a day (`2026-01-05`, `2026/01/05.toml`) are swept 〔未訳〕
 - [ ] **18.9** Search the settings for `keep_days`, `concurrency`, `log_max_mb` or `koyomi.toml` → The results show the General page 〔未訳〕
+- [ ] **18.10** On a test profile with runs from 3 or more days ago, write `archive = true` and `keep_days = 1` in `koyomi.toml` → Within 5 s those days leave `logs/` and `history/`; `archive/YYYY-MM.zip` in the state folder holds them under the same names (`history/2026/10/28.toml`, `logs/2026-10-28/<run>/<job>.log`); `engine status` says `…を消した、n 日分を archive/ に入れた`; today and yesterday stay 〔未訳〕
+- [ ] **18.11** `koyomi archive`; `koyomi archive --toml` → A line per month, `2026-10  履歴 n 日・ログ n 日  <size>`, then the folder; under `--toml`: `dir`, `errors` and a `[[zip]]` per month with `month`, `path`, `bytes`, `history`, `logs` 〔未訳〕
+- [ ] **18.12** `koyomi archive show <one of those days>`; `koyomi archive log <its run> <job>`; `koyomi archive show` of a day not there → The day's runs as `koyomi history` lists them; the job's whole log; `<day> は archive/ にありません` and exit 1 〔未訳〕
+- [ ] **18.13** `koyomi history --from <the first of those days>` → Those days' runs are listed again (read from the zip), oldest first, before today's 〔未訳〕
+- [ ] **18.14** Make the month's zip read-only, then change `keep_days` so that another day of that month goes → That day stays in `logs/` and `history/`; `engine status` says `消せなかった 1 件: …YYYY-MM.zip: …`; once the zip is writable again, the next sweep puts the day in and removes it 〔未訳〕
+- [ ] **18.15** Put a copy of a zip as `archive/2025-01.zip` and write `archive_days = 30` → At the sweep it goes and `engine status` says `古い zip 1 個を消した`; the zips of the months of the last 30 days stay 〔未訳〕
 
 ## 19. Retry
 

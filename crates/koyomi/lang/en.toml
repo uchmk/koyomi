@@ -102,7 +102,7 @@ notify = "Notifications"
 notify_lead = "How koyomi tells you that a run ended, whether or not its window is open. Written to [notify] in koyomi.toml; the engine reads it again within 5 s."
 records = "Records"
 keep_days = "Days of logs and history to keep"
-keep_days_note = "The engine removes the log folders and history files of older days when it starts and when the date changes. keep_days in koyomi.toml."
+keep_days_note = "The engine removes the log folders and history files of older days when it starts and when the date changes. keep_days in koyomi.toml. With archive = true, they go into archive/YYYY-MM.zip first."
 concurrency = "Jobs at a time"
 concurrency_note = "How many jobs run at the same time, over every jobnet. concurrency in koyomi.toml."
 log_max = "Log size (MB)"
@@ -443,6 +443,11 @@ history_7 = "Last 7 days"
 history_30 = "Last 30 days"
 history_none = "No runs match"
 history_bad_date = "Dates are written YYYY-MM-DD"
+
+[archive]
+none = "Nothing in archive/ yet (with archive = true in koyomi.toml, the days go there before they are removed)"
+line = "{0}  history {1} days, logs {2} days  {3}"
+day_none = "{0} is not in archive/"
 
 [calendar]
 picked = "Picked"

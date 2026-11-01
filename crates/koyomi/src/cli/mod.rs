@@ -1,5 +1,6 @@
 //! The commands that print and exit: `check`, `list`, `show`, `approve`, `run`, `rerun`, `next`, `status`,
-//! `history`, `log`, `kill`, `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`, `secret`.
+//! `history`, `log`, `kill`, `hold`, `release`, `skip`, `pause`, `resume`, `calendar`, `engine`, `startup`, `secret`,
+//! `archive` (in `archive.rs`).
 //!
 //! Every command takes `--help` (its lines of the usage) and `--toml` (the answer as TOML, for
 //! another program: the commands that answer with data print it as such, the rest print `ok`
@@ -22,6 +23,8 @@ use serde::Serialize;
 
 use crate::proto::{self, Request, Runs, Snapshot};
 use crate::{client, engine, review, say, show};
+
+mod archive;
 
 pub const USAGE: &str = "\
 usage: koyomi [--version | --help | env]
@@ -48,8 +51,13 @@ usage: koyomi [--version | --help | env]
        koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [--csv <file>] [<group/name>]
                                      the runs of those days, oldest first (the last 7 days when none;
                                      --status: ok, warn, error, timeout, killed, running, running_error,
-                                     waiting, held, skipped, missed, locked or not_run; --csv: one row per run)
+                                     waiting, held, skipped, missed, locked or not_run; --csv: one row per run;
+                                     the days that went into archive/ are read from there)
        koyomi log <run> <job>        the tail of one job's log
+       koyomi archive [list]         the month zips that archive = true in koyomi.toml keeps in archive/,
+                                     and the days of history and logs each holds
+       koyomi archive show <YYYY-MM-DD>  that day's runs as archive/ keeps them
+       koyomi archive log <run> <job>    that job's whole log from archive/
        koyomi compare <run-a> <run-b>
                                      two runs side by side: how long each job took, its state and exit code, and how the logs differ
        koyomi kill <run> [<job>]     stop one job, or the whole run
@@ -144,7 +152,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 45] = [
+const COMMANDS: [&str; 46] = [
     "check",
     "list",
     "show",
@@ -155,6 +163,7 @@ const COMMANDS: [&str; 45] = [
     "status",
     "history",
     "log",
+    "archive",
     "compare",
     "kill",
     "hold",
@@ -224,6 +233,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "report" => report(rest),
         "map" => map_cmd(rest),
         "log" => log(rest),
+        "archive" => archive::cmd(rest),
         "compare" => compare(rest),
         "kill" => kill(rest),
         "hold" => id_and_job(rest, "hold", |id, job| Request::Hold { id, job }),
@@ -1215,10 +1225,16 @@ fn history(args: &[String]) -> i32 {
     let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
     let from = from.unwrap_or(to - chrono::Duration::days(7));
     let reply = client::call(&Request::History { from: from.to_string(), to: to.to_string() });
-    let rs = match reply.and_then(|s| Runs::parse(&s)) {
+    let mut rs = match reply.and_then(|s| Runs::parse(&s)) {
         Ok(r) => r.runs,
         Err(e) => return fail(&e),
     };
+    // The days the sweep put into archive/; a stable sort by day keeps each day's order.
+    let archived = archive::runs_between(from, to, &rs);
+    if !archived.is_empty() {
+        rs.extend(archived);
+        rs.sort_by_key(archive::run_day);
+    }
     let rs: Vec<Run> =
         rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
     if let Some(to) = csv {

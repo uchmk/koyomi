@@ -1,5 +1,5 @@
 //! `koyomi.toml` in the settings folder: how many jobs run at once, how long
-//! history is kept, how big one job's log may grow, `[notify]` (read by
+//! history is kept (and whether it goes into `archive/` zips first), how big one job's log may grow, `[notify]` (read by
 //! the app with ito-prefs's shape; kept whole here), `[ping]`, the
 //! address the engine calls while it is alive, `[http]`, where it
 //! listens for other programs (on this PC, or with `lan` on the network over
@@ -18,6 +18,10 @@ pub struct Config {
     pub concurrency: usize,
     /// Days of history and logs kept.
     pub keep_days: u32,
+    /// Put what `keep_days` lets go into `archive/YYYY-MM.zip` before it is deleted.
+    pub archive: bool,
+    /// Months whose last day is this many days old leave `archive/`; 0 keeps them forever.
+    pub archive_days: u32,
     /// One job's log stops growing here; the rest of its output is not written.
     pub log_max_mb: u64,
     /// `[notify]` as written: which events are told how. The app reads it.
@@ -251,6 +255,8 @@ impl Default for Config {
         Config {
             concurrency: 4,
             keep_days: 90,
+            archive: false,
+            archive_days: 0,
             log_max_mb: 10,
             notify: toml::Table::new(),
             ping: None,
@@ -328,6 +334,14 @@ mod tests {
         let c = Config::parse("concurrency = 2\n").unwrap();
         assert_eq!(c, Config { concurrency: 2, ..Config::default() });
         assert_eq!(Config::parse("").unwrap(), Config::default());
+        let c = Config::parse(
+            "archive = true
+archive_days = 365
+",
+        )
+        .unwrap();
+        assert_eq!((c.archive, c.archive_days, c.keep_days), (true, 365, 90));
+        assert!(!Config::default().archive);
     }
 
     #[test]

@@ -201,7 +201,8 @@ struct State {
     quieted: Vec<Quieted>,
     /// The line about the time the engine was not running, and when it was first told.
     outage: Option<(String, Instant)>,
-    keep_days: u32,
+    /// `keep_days`, `archive` and `archive_days`: what the sweep is for.
+    keep: retain::Settings,
     /// `[notify]` as runs are told with: the `secret:` addresses read back
     /// (on a thread; until it answers they are not sent to).
     notify: NotifyCfg,
@@ -237,7 +238,7 @@ impl State {
             Ok(c) => (c, None),
             Err(e) => (Config::default(), Some(e)),
         };
-        let keep_days = config.keep_days;
+        let keep = retain::Settings::of(&config);
         let runner = Runner::new(&paths.state, config);
         let schedule = Schedule::new(&paths.state);
         let retain = Retain::new(&paths.state);
@@ -276,7 +277,7 @@ impl State {
             waiting: Vec::new(),
             quieted: Vec::new(),
             outage: None,
-            keep_days,
+            keep,
             notify: NotifyCfg::default(),
             notify_raw: None,
             notify_notes: Vec::new(),
@@ -320,7 +321,7 @@ impl State {
                         let _ = tx.send((gen, n, notes));
                     });
                 }
-                self.keep_days = c.keep_days;
+                self.keep = retain::Settings::of(&c);
                 self.ping_cfg = c.ping.clone();
                 self.http_cfg = c.http.clone();
                 self.standby.set(c.standby.as_ref(), &c.remote);
@@ -1092,14 +1093,14 @@ impl State {
         out
     }
 
-    /// The sweep of old records: started for a new day or a new `keep_days`
+    /// The sweep of old records: started for a new day or new settings
     /// (not while koyomi.toml does not read: a typo must not sweep), its
     /// end told on the console.
     fn tick_retain(&mut self) {
         if self.bad_config.is_some() {
             return;
         }
-        if let Some(line) = self.retain.tick(self.keep_days) {
+        if let Some(line) = self.retain.tick(self.keep) {
             crate::say(&format!("koyomi: {line}"), false);
         }
     }
