@@ -249,12 +249,15 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             }
             v
         }
-        Chore::Winrm { on, command, cert, password } => {
+        Chore::Winrm { on, command, cert, password, auth } => {
             let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
-            for (name, value) in [("cert", cert), ("password", password)] {
-                if let Some(x) = value {
-                    v.push(line(name, x));
-                }
+            if let Some(c) = cert {
+                v.push(line("cert", c));
+            }
+            // How the password goes is part of what is approved.
+            v.push(line("auth", auth.name()));
+            if let Some(p) = password {
+                v.push(line("password", p));
             }
             v
         }
@@ -525,6 +528,29 @@ run_as = {{ user = \"batch\", password = \"secret:batch\" }}
         let all = jobs(&table(), &d);
         assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードは秘密 batch）"), "{all:#?}");
         assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードは秘密 batch）"), "{all:#?}");
+    }
+
+    /// A winrm shows its PC, command, certificate, how it logs in and the secret's name.
+    #[test]
+    fn a_winrm_shows_how_it_logs_in() {
+        let text = format!(
+            "{NET}[[job]]
+id = \"w\"
+kind = \"winrm\"
+on = 'winrm://CORP\\ops@app01'
+command = \"backup.cmd\"
+cert = \"{}\"
+auth = \"ntlm\"
+password = \"secret:app01\"
+after = [\"a\"]
+",
+            ["AB"; 32].join(":")
+        );
+        let d = def(&text, &Store::default());
+        let all = jobs(&table(), &d);
+        for want in ["  動かす PC: winrm://CORP\\ops@app01", "  認証: NTLM", "  パスワード: secret:app01"] {
+            assert!(all.iter().any(|l| l == want), "{want}\n{all:#?}");
+        }
     }
 
     /// the row has a symbol and a word.

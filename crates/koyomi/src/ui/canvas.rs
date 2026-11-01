@@ -13,7 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::Chore;
+use koyomi_core::chore::{Chore, WinrmAuth};
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
@@ -51,7 +51,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "fetch" => M::Download,
         "http" => M::Globe,
         "ssh" => M::Server,
-        "winrm" => M::Link,
+        "winrm" => M::Desktop,
         _ => return None,
     })
 }
@@ -183,8 +183,9 @@ pub struct Fields {
     /// An `ssh`'s or a `winrm`'s PC (`ssh://…`, `winrm://…`) and its command, as typed.
     pub on: String,
     pub command: String,
-    /// A `winrm`'s certificate fingerprint.
+    /// A `winrm`'s certificate fingerprint and how it logs in.
     pub cert: String,
+    pub auth: WinrmAuth,
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
@@ -277,11 +278,12 @@ impl Fields {
                     f.host_key = host_key.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
                 }
-                Chore::Winrm { on, command, cert, password } => {
+                Chore::Winrm { on, command, cert, password, auth } => {
                     f.on = on.clone();
                     f.command = command.clone();
                     f.cert = cert.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
+                    f.auth = *auth;
                 }
             },
             _ => {}
@@ -412,6 +414,7 @@ impl Fields {
                         command: self.command.clone(),
                         cert: opt(&self.cert),
                         password: opt(&self.password),
+                        auth: self.auth,
                     },
                 };
                 chore.check()?;
@@ -2508,12 +2511,16 @@ X-Day: 1"
         fields.warn = "1".into();
         assert_eq!(e.apply_fields(&h, &fields), Ok(()));
         let j = &e.net.jobs[1];
-        let Part::Chore(Chore::Winrm { on, command, cert, password }) = &j.part else { panic!() };
+        let Part::Chore(Chore::Winrm { on, command, cert, password, auth }) = &j.part else { panic!() };
         assert_eq!((on.as_str(), command.as_str()), ("winrm://ops@app01", "backup.cmd {date}"));
         assert!(cert.is_some() && password.as_deref() == Some("secret:app01"));
+        assert_eq!(*auth, WinrmAuth::Basic);
         assert_eq!(j.judge.as_ref().map(|jd| jd.warn.len()), Some(1));
         let again = Fields::of(j);
         assert_eq!((again.on.as_str(), again.cert.as_str()), ("winrm://ops@app01", fields.cert.as_str()));
+        fields.auth = WinrmAuth::Ntlm;
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        assert_eq!(Fields::of(&e.net.jobs[1]).auth, WinrmAuth::Ntlm);
     }
 
     #[test]

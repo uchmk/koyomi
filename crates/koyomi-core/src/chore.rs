@@ -98,9 +98,9 @@ pub enum Chore {
     },
     /// 別の Windows で動かす（WinRM）: `command`, a `cmd.exe` line as it is written,
     /// on `on` (`winrm://user@host[:port]`) over WinRM on HTTPS (5986), logged in
-    /// as the user with `password` (Basic). `cert` pins the server's certificate
-    /// (its SHA-256, `koyomi winrm cert`). Its output and exit code go as an
-    /// `ssh`'s do.
+    /// as the user with `password` the way `auth` says. `cert` pins the server's
+    /// certificate (its SHA-256, `koyomi winrm cert`). Its output and exit code go
+    /// as an `ssh`'s do.
     Winrm {
         on: String,
         command: String,
@@ -108,7 +108,48 @@ pub enum Chore {
         cert: Option<String>,
         #[serde(default)]
         password: Option<String>,
+        #[serde(default)]
+        auth: WinrmAuth,
     },
+}
+
+/// How a `winrm` logs in (`auth`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WinrmAuth {
+    /// The user and password as they are, inside the TLS: a local account of that
+    /// PC, with Basic turned on in its WinRM.
+    #[default]
+    Basic,
+    /// NTLM: a domain account (`CORP\name`) or a local one, without the password
+    /// itself going over the wire.
+    Ntlm,
+}
+
+impl WinrmAuth {
+    /// Each, in the order of the editor's list.
+    pub const ALL: [WinrmAuth; 2] = [WinrmAuth::Basic, WinrmAuth::Ntlm];
+
+    /// As written in `auth`.
+    pub fn key(self) -> &'static str {
+        match self {
+            WinrmAuth::Basic => "basic",
+            WinrmAuth::Ntlm => "ntlm",
+        }
+    }
+
+    /// As people call it, in the editor and the confirm box.
+    pub fn name(self) -> &'static str {
+        match self {
+            WinrmAuth::Basic => "Basic",
+            WinrmAuth::Ntlm => "NTLM",
+        }
+    }
+
+    /// The one written as `s`.
+    pub fn of(s: &str) -> Option<WinrmAuth> {
+        WinrmAuth::ALL.into_iter().find(|a| a.key() == s)
+    }
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
@@ -180,7 +221,7 @@ impl Chore {
                 expect: Vec::new(),
             },
             "ssh" => Chore::Ssh { on: String::new(), command: String::new(), key: None, host_key: None, password: None },
-            "winrm" => Chore::Winrm { on: String::new(), command: String::new(), cert: None, password: None },
+            "winrm" => Chore::Winrm { on: String::new(), command: String::new(), cert: None, password: None, auth: WinrmAuth::Basic },
             _ => return None,
         })
     }
@@ -331,7 +372,7 @@ impl Chore {
                 far_command(command)?;
                 login("ssh://", true, key, host_key, password)?;
             }
-            Chore::Winrm { on, command, cert, password } => {
+            Chore::Winrm { on, command, cert, password, .. } => {
                 if on.trim().is_empty() {
                     return Err("on が空（動かす PC を winrm://ユーザー@ホスト[:ポート] で書く）".into());
                 }
@@ -440,7 +481,8 @@ impl Chore {
     /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
     /// (the password as `secret:<name>`, read when the job starts); an `ssh` as
     /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
-    /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`).
+    /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`),
+    /// its `auth` always (`basic` when none is written).
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
@@ -468,9 +510,12 @@ impl Chore {
                 }
                 v
             }
-            Chore::Winrm { on, command, cert, password } => {
-                let mut v =
-                    vec![("KOYOMI_WINRM_ON".to_owned(), on.trim().to_owned()), ("KOYOMI_WINRM_COMMAND".to_owned(), command.clone())];
+            Chore::Winrm { on, command, cert, password, auth } => {
+                let mut v = vec![
+                    ("KOYOMI_WINRM_ON".to_owned(), on.trim().to_owned()),
+                    ("KOYOMI_WINRM_COMMAND".to_owned(), command.clone()),
+                    ("KOYOMI_WINRM_AUTH".to_owned(), auth.key().to_owned()),
+                ];
                 for (name, value) in [("CERT", cert), ("PASSWORD", password)] {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_WINRM_{name}"), x.to_owned()));
@@ -1011,7 +1056,13 @@ mod tests {
     }
 
     fn windows(on: &str, command: &str, cert: Option<&str>, password: Option<&str>) -> Chore {
-        Chore::Winrm { on: on.into(), command: command.into(), cert: cert.map(Into::into), password: password.map(Into::into) }
+        Chore::Winrm {
+            on: on.into(),
+            command: command.into(),
+            cert: cert.map(Into::into),
+            password: password.map(Into::into),
+            auth: WinrmAuth::Basic,
+        }
     }
 
     #[test]
@@ -1051,6 +1102,12 @@ mod tests {
         assert_eq!(get("KOYOMI_WINRM_COMMAND"), Some("  dir \"C:\\a b\" & exit /b 3\r\n"));
         assert_eq!(get("KOYOMI_WINRM_CERT"), Some(CERT));
         assert_eq!(get("KOYOMI_WINRM_PASSWORD"), Some("secret:ops"));
+        assert_eq!(get("KOYOMI_WINRM_AUTH"), Some("basic"));
+        let Chore::Winrm { on, command, cert, password, .. } = w.clone() else { unreachable!() };
+        let ntlm = Chore::Winrm { on, command, cert, password, auth: WinrmAuth::Ntlm };
+        assert!(ntlm.env().contains(&("KOYOMI_WINRM_AUTH".to_owned(), "ntlm".to_owned())));
+        assert_eq!(WinrmAuth::ALL.map(|a| WinrmAuth::of(a.key())), [Some(WinrmAuth::Basic), Some(WinrmAuth::Ntlm)]);
+        assert_eq!(WinrmAuth::of("NTLM"), None);
         let mut net = crate::jobnet::parse(&format!(
             "format = 1\n[[job]]\nid = \"w\"\nkind = \"winrm\"\non = 'winrm://ops@app01'\ncommand = 'backup.cmd'\ncert = \"{CERT}\"\npassword = \"secret:ops\"\njudge = {{ warn = \"1\" }}\nenv = {{ DAY = \"1\" }}\n"
         ))

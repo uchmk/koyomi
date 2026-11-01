@@ -2152,7 +2152,13 @@ id = \"a\"
         });
         // More than the 2 s ito-sftp gives the far command's TERM and close.
         assert!(grace(&ssh) > Duration::from_secs(2));
-        let winrm = Part::Chore(Chore::Winrm { on: "winrm://ops@app01".into(), command: "x".into(), cert: None, password: None });
+        let winrm = Part::Chore(Chore::Winrm {
+            on: "winrm://ops@app01".into(),
+            command: "x".into(),
+            cert: None,
+            password: None,
+            auth: Default::default(),
+        });
         assert_eq!(grace(&winrm), grace(&ssh));
         assert_eq!(grace(&Part::Job), Duration::ZERO);
         assert_eq!(grace(&Part::Chore(Chore::Zip { from: "a".into(), into: "b.zip".into() })), Duration::ZERO);

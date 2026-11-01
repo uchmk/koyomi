@@ -707,10 +707,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - `cert = "AB:CD:…"`（相手の証明書の SHA-256 の指紋）は必ず要る。WinRM の HTTPS は自分で作った証明書のことが多く、CA で確かめられないので、`ssh` の `host_key` と同じく指紋で固定する。違えばパスワードを送る前に止める。`koyomi winrm cert <ホスト>[:<ポート>]`（`winrm://…` でもよい）が書く行を出す。
 - `password = "secret:<名前>"` は必ず要る（鍵は無い）。値は `koyomi secret set <名前>` で OS の資格情報に置き、定義には名前だけを書く。
 - 認証は初めは Basic だけ（持ち主の答え: 「Basic で先に作って、Kerberos を追加してもらって」）。Basic で入れるのは相手の PC のローカル アカウントだけで、相手の WinRM で `winrm set winrm/config/service/auth @{Basic="true"}` が要る。断られたときの理由にこの 2 つを書く。NTLM・Kerberos・Negotiate は uchmk/ito#134 で頼んだ（NTLM は持ち主が足した）。届いたら `auth = "ntlm"` などを足し、書かなければ Basic のままにする。
+- NTLM（ito v0.199.0 の NTLMv2）は `auth = "ntlm"` にした（持ち主の答え: 「ito に NTLM も対応だけしておいてほしい」）。ドメインのアカウント（`winrm://CORP\ops@…`）でも入れ、パスワードそのものは送らない。書けるのは `"basic"`・`"ntlm"` だけ（小文字）で、ほかは `koyomi check` が断る。`kind = "winrm"` のほかに書いても断る。書き戻すときは Basic なら書かない（いまある定義の字面を変えない）。エンジンからは `KOYOMI_WINRM_AUTH` でいつも渡す。断られたときの理由は auth ごとに見るところを書く（NTLM: ドメインの書き方と、相手の WinRM の Negotiate）。Kerberos・Negotiate は #134 の残りで、届いたら同じ `auth` に足す。
 - 動かし方は `ssh` と同じ: 回を始めるときにふつうのジョブにし、エンジンが `koyomi.exe winrm run` をじかに動かして `KOYOMI_WINRM_{ON,COMMAND,CERT,PASSWORD,ENV}` で渡す。出力・`! ` の標準エラー・コードページ・終わりのコード・255 と `KOYOMI_REASON`・`judge`・`env`（WinRM のシェルの環境変数として渡すので、`ssh` の `AcceptEnv` のような断りは無い）・`timeout`・`retry` は `ssh` と同じ。`encoding` は書けない。
 - 止めるも `ssh` と同じく先に頼んで 10 秒待つ（猶予の名前を `FAR_GRACE` にした）。ito-winrm は 200 ms ごとに旗を見て、コマンドを送る前なら何も始めずに返し、送ったあとなら新しいつながりで相手のコマンドに終わりを頼み（10 秒まで）、シェルを消す（10 秒まで）。ふつうは 2 秒もかからない。✕ の理由は「強制終了、app01: 止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）」。`run_as` では `ssh` と同じく頼めないのですぐ終わらせる。
-- 部品の棚では「基本」の組の `ssh` の次に置く。印は ito の Link（棚の印は部品ごとに違うものにする。Windows の PC の印は ito に頼む）。
-- エンジンとの約束の版を 36 に上げた（定義の形が増えたので）。
+- 部品の棚では「基本」の組の `ssh` の次に置く。印は初めは ito の Link（棚の印は部品ごとに違うものにする。Windows の PC の印は ito に頼んだ）で、ito v0.200.0 から Desktop。
+- エンジンとの約束の版を 36 に上げた（定義の形が増えたので）。`auth` を足したときに 37 に上げた（古い窓が書き戻すと `auth` が落ちるので）。
 
 ## 別のアカウントで動かす（TODO 79、H8、2026-10-31 に持ち主と決めた）
 

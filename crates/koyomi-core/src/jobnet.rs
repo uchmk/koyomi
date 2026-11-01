@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::chore::Chore;
+use crate::chore::{Chore, WinrmAuth};
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
@@ -687,6 +687,7 @@ struct RawJob {
     key: Field,
     host_key: Field,
     cert: Field,
+    auth: Field,
     password: Field,
     on: Field,
     command: Field,
@@ -1022,6 +1023,7 @@ impl Checker<'_> {
         }
         if kind != "winrm" {
             self.only(&j.cert, "cert", "\"winrm\"");
+            self.only(&j.auth, "auth", "\"winrm\"");
         }
         if kind != "http" {
             for (field, name) in [
@@ -1222,7 +1224,8 @@ impl Checker<'_> {
                     }
                 }
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
-                Chore::Winrm { on, command, cert, password }
+                let auth = self.choice(&j.auth, "auth", &WinrmAuth::ALL.map(WinrmAuth::key)).and_then(WinrmAuth::of).unwrap_or_default();
+                Chore::Winrm { on, command, cert, password, auth }
             }
             "http" => self.http(j, start),
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
@@ -3328,8 +3331,11 @@ after = [{ job = \"way\", code = \"else\" }]
                 command: "backup.cmd {date} \"a b\"".into(),
                 cert: Some(cert.into()),
                 password: Some("secret:ops".into()),
+                auth: WinrmAuth::Basic,
             })
         );
+        let ntlm = parse_winrm(&format!("on = 'winrm://CORP\\ops@app01'\ncommand = 'x'\n{login}auth = \"ntlm\"\n")).unwrap();
+        assert!(matches!(ntlm.part, Part::Chore(Chore::Winrm { auth: WinrmAuth::Ntlm, .. })));
         assert_eq!(j.judge.unwrap().warn, vec![Range { from: 1, to: 1 }]);
         assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
         assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
@@ -3347,6 +3353,11 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}encoding = 'utf8'\n")).contains("encoding"));
         assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\ncert = '{date+1q}'\npassword = 'secret:ops'\n")
             .contains("cert: {date+1q}: 単位が読めない"));
+        for auth in ["'kerberos'", "'NTLM'", "1"] {
+            assert!(
+                bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}auth = {auth}\n")).contains("auth は \"basic\"・\"ntlm\" のどれか")
+            );
+        }
         let other = parse(&format!(
             "format = 1\n[[job]]\nid = \"s\"\nkind = \"ssh\"\non = 'ssh://h'\ncommand = 'y'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\ncert = \"{cert}\"\n"
         ))
@@ -3356,6 +3367,8 @@ after = [{ job = \"way\", code = \"else\" }]
         .collect::<Vec<_>>()
         .join("\n");
         assert!(other.contains("cert は kind = \"winrm\" にだけ書く"), "{other}");
+        let other = parse("format = 1\n[[job]]\nid = \"j\"\nrun = [\"x\"]\nauth = \"ntlm\"\n").unwrap_err();
+        assert!(other.iter().any(|p| p.in_file("a.toml").contains("auth は kind = \"winrm\" にだけ書く")), "{other:?}");
     }
 
     #[test]

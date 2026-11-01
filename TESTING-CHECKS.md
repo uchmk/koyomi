@@ -1,6 +1,6 @@
 # Checklist
 
-898 checks in TESTING.md, 892 left for a person.
+901 checks in TESTING.md, 895 left for a person.
 
 ## 1. Start
 
@@ -1222,3 +1222,6 @@
 - [ ] **107.7** `koyomi check` with `on = "<pc>"`, `on = "winrm://<pc>"`, `on = "winrm://<you>@<pc>/wsman"`, no `cert`, `cert = "AB:CD"`, no `password`, `password = "plain"`, `host_key` or `key` on a winrm, `cert` on an ssh, `encoding` on a winrm → Each is refused with the line and why in Japanese; the missing `cert` names `koyomi winrm cert` 〔未訳〕
 - [ ] **107.8** The editor: drag 別の Windows で動かす（WinRM） from 基本 → The pane shows 動かす PC・コマンド・証明書の指紋・パスワード (all required), 結果の判定, timeout and retry; a malformed 証明書の指紋 is marked; saving writes `kind = "winrm"` with `on`・`command`・`cert`・`password` (and `judge` when set) 〔未訳〕
 - [ ] **107.9** Approve a net with a winrm → The confirm box shows 動かす PC, コマンド (lines joined with ⏎), 証明書の指紋 and パスワード as `secret:winrm` (the name, not the value) instead of a script 〔未訳〕
+- [ ] **107.10** With Negotiate on in that PC's WinRM (`winrm get winrm/config/service/auth`; the default), add `auth = "ntlm"` to 107.2's job and run it; then `on = 'winrm://<DOMAIN>\<user>@<pc>'` with a domain account's secret; then a wrong password → ✓ both times with the same lines as 107.2; then ✕ 255 with `<pc>: ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは…）` (no word of Basic) 〔未訳〕
+- [ ] **107.11** `koyomi check` with `auth = "kerberos"`, `auth = "NTLM"`, and `auth = "ntlm"` on an `ssh` → Each is refused: `auth は "basic"・"ntlm" のどれか` twice, then `auth は kind = "winrm" にだけ書く` 〔未訳〕
+- [ ] **107.12** The editor: a winrm's pane; pick NTLM, save; reopen it and pick Basic, save; then approve → The shelf and the canvas show the Windows PC mark; 認証 shows Basic and NTLM, each with its own note; saving writes `auth = "ntlm"`, then no `auth` line; the confirm box shows 認証: NTLM (or Basic) 〔未訳〕

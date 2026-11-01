@@ -8,7 +8,7 @@
 
 use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
-use crate::chore::Chore;
+use crate::chore::{Chore, WinrmAuth};
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Takeover, Wait};
 use crate::quiet::OnQuiet;
@@ -377,11 +377,14 @@ fn job(j: &Job, out: &mut String) {
                     push(out, "on", &q(on));
                     push(out, "command", &q(command));
                 }
-                Chore::Winrm { on, command, cert, .. } => {
+                Chore::Winrm { on, command, cert, auth, .. } => {
                     push(out, "on", &q(on));
                     push(out, "command", &q(command));
                     if let Some(c) = cert {
                         push(out, "cert", &q(c));
+                    }
+                    if *auth != WinrmAuth::Basic {
+                        push(out, "auth", &q(auth.key()));
                     }
                 }
             }
@@ -642,6 +645,17 @@ id = "em"
 kind = "empty"
 path = "D:\\work"
 after = ["cp"]
+
+[[job]]
+id = "win"
+kind = "winrm"
+on = "winrm://CORP\\ops@app01"
+command = "backup.cmd {date}"
+cert = "3F:2A:91:0C:5B:77:E4:18:A0:6D:C2:9F:41:B8:0E:D3:57:6A:FC:21:94:8B:3E:70:CD:12:65:A9:F0:4E:B7:83"
+auth = "ntlm"
+password = "secret:app01"
+judge = { warn = "1" }
+after = ["em"]
 "#;
 
     #[test]

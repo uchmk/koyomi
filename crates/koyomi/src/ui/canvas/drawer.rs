@@ -11,7 +11,7 @@ use ito_prefs::{
     fieldset, form_label, mark_button, seg_named, tag, CodeBox, FormWords, IconButton, InputField, Look, Mark as M, Need, Tag, Tone,
 };
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::Chore;
+use koyomi_core::chore::{Chore, WinrmAuth};
 use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
 use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
@@ -515,11 +515,17 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
         }
         Chore::Winrm { .. } => {
-            changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Link));
+            changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Desktop));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             let bad = !f.cert.trim().is_empty() && koyomi_core::chore::cert_ok(f.cert.trim()).is_err();
             changed |= form.line(ui, "field.cert", req, bad, &mut f.cert, |i| i.mono());
             changed |= form.line(ui, "field.winrm_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            let options = WinrmAuth::ALL.map(|a| (a, a.name()));
+            let note = form.t.tr(match f.auth {
+                WinrmAuth::Basic => "field.winrm_auth_basic",
+                WinrmAuth::Ntlm => "field.winrm_auth_ntlm",
+            });
+            changed |= form.choice(ui, "field.winrm_auth", &mut f.auth, &options, note);
         }
         Chore::Http { .. } => {
             changed |= form.line(ui, "field.url", req, false, &mut f.url, |i| i.mono().mark(M::Globe));

@@ -1,6 +1,6 @@
 //! `koyomi winrm run`: what a `winrm` job runs. As `koyomi ssh run` does, it
 //! reads what to do from the `KOYOMI_WINRM_*` the engine sets, runs the command
-//! on the far Windows PC (WinRM over HTTPS, its certificate pinned, Basic), passes
+//! on the far Windows PC (WinRM over HTTPS, its certificate pinned, Basic or NTLM), passes
 //! its output on line by line as it comes (the far standard error after `! `) and
 //! ends with the far command's exit code; without one, with [`NO_EXIT`] and why in
 //! the file `KOYOMI_REASON` names. The certificate to pin comes from `koyomi winrm
@@ -13,7 +13,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use koyomi_core::chore::{self, WINRM_PORT};
+use koyomi_core::chore::{self, WinrmAuth, WINRM_PORT};
 
 use crate::ssh::{cut, say, text};
 
@@ -48,7 +48,7 @@ fn cert(at: &str) -> i32 {
             0
         }
         Err(e) => {
-            crate::say(&format!("koyomi: {host}:{port}: {}", reason(&e)), true);
+            crate::say(&format!("koyomi: {host}:{port}: {}", reason(&e, WinrmAuth::Basic)), true);
             1
         }
     }
@@ -77,7 +77,14 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let cert = var("CERT").ok_or("cert がない（koyomi winrm cert <ホスト> で調べる）")?;
     let pin = ito_winrm::fingerprint::parse(&cert).ok_or_else(|| format!("cert が読めない（AB:CD:… の形）: {cert}"))?;
     let password = crate::sftp::password(var("PASSWORD").ok_or("password がない（secret:<名前> で書く）")?)?;
-    let mut target = ito_winrm::Target::https(&far.host, &user, &password, Some(pin));
+    let auth = match var("AUTH") {
+        None => WinrmAuth::Basic,
+        Some(a) => WinrmAuth::of(&a).ok_or_else(|| format!("auth は \"basic\" か \"ntlm\": {a}"))?,
+    };
+    let mut target = ito_winrm::Target::https(&far.host, &user, &password, Some(pin)).with_auth(match auth {
+        WinrmAuth::Basic => ito_winrm::Auth::Basic,
+        WinrmAuth::Ntlm => ito_winrm::Auth::Ntlm,
+    });
     target.port = far.port.unwrap_or(WINRM_PORT);
     let opts = ito_winrm::ExecOptions { env: crate::ssh::forwarded("KOYOMI_WINRM_ENV"), timeout: None };
     let (mut out, mut err) = (Vec::new(), Vec::new());
@@ -95,17 +102,18 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
             say(&text(&buf), stderr);
         }
     }
-    let exit = result.map_err(|e| format!("{}: {}", far.host, reason(&e)))?;
+    let exit = result.map_err(|e| format!("{}: {}", far.host, reason(&e, auth)))?;
     // A Windows code such as 0xC0000005 goes through as the same bits.
     exit.status.map(|code| code as i32).ok_or_else(|| format!("{}: 終了コードを受け取れなかった", far.host))
 }
 
 /// Why it failed, as the job's ✕ reason: what to look at on which side.
-fn reason(e: &ito_winrm::Error) -> String {
+fn reason(e: &ito_winrm::Error, auth: WinrmAuth) -> String {
     use ito_winrm::Error as E;
     match e {
         E::Stopped => "止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）".into(),
-        E::AuthRefused => "ユーザーかパスワードを断られた（相手の WinRM で Basic が有効か: winrm set winrm/config/service/auth @{Basic=\"true\"}。Basic で入れるのは相手の PC のローカルのアカウントだけ）".into(),
+        E::AuthRefused if auth == WinrmAuth::Ntlm => "ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは on に winrm://CORP\\名前@ホスト と書く。相手の WinRM で Negotiate が有効か: winrm get winrm/config/service/auth）".into(),
+        E::AuthRefused => "ユーザーかパスワードを断られた（相手の WinRM で Basic が有効か: winrm set winrm/config/service/auth @{Basic=\"true\"}。Basic で入れるのは相手の PC のローカルのアカウントだけ。ドメインのアカウントなら auth = \"ntlm\"）".into(),
         E::Fingerprint(got) => format!("証明書が cert と違う（相手が出したのは {got}。証明書を入れ替えたのなら koyomi winrm cert で確かめて cert を直す）"),
         E::Connect(e) => format!("つながらない（WinRM の HTTPS のリスナーとファイアウォールの 5986）: {e}"),
         E::Tls(e) => format!("TLS で失敗した: {e}"),
@@ -134,11 +142,14 @@ mod tests {
     #[test]
     fn each_failure_says_what_to_look_at() {
         use ito_winrm::Error as E;
-        assert!(reason(&E::AuthRefused).contains("Basic=\"true\""));
+        let basic = |e: &E| reason(e, WinrmAuth::Basic);
+        assert!(basic(&E::AuthRefused).contains("Basic=\"true\"") && basic(&E::AuthRefused).contains("auth = \"ntlm\""));
+        let ntlm = reason(&E::AuthRefused, WinrmAuth::Ntlm);
+        assert!(ntlm.contains("CORP\\名前") && !ntlm.contains("Basic"), "{ntlm}");
         let fp = "AB:CD";
-        assert!(reason(&E::Fingerprint(fp.into())).contains("相手が出したのは AB:CD"));
-        assert!(reason(&E::Connect("refused".into())).contains("5986"));
-        assert!(reason(&E::Stopped).starts_with("止めた"));
-        assert_eq!(reason(&E::Other("x".into())), "x");
+        assert!(basic(&E::Fingerprint(fp.into())).contains("相手が出したのは AB:CD"));
+        assert!(basic(&E::Connect("refused".into())).contains("5986"));
+        assert!(basic(&E::Stopped).starts_with("止めた"));
+        assert_eq!(basic(&E::Other("x".into())), "x");
     }
 }
