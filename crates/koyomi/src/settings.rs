@@ -344,6 +344,7 @@ fn keep_ask(ui: &mut Ui, app: &mut App, no_folder: &str) {
         rows: &rows,
         body: &body,
         buttons: &buttons,
+        marks: &[Some(ito_prefs::Mark::Trash), Some(ito_prefs::Mark::Close)],
         focus: Some(0),
         primary: Some(0),
         ..Default::default()

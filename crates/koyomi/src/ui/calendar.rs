@@ -1060,6 +1060,7 @@ impl Browser {
             rows: &rows,
             body: &body,
             buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Trash), Some(ito_prefs::Mark::Close)],
             focus: Some(self.focus),
             primary: Some(0),
             danger: true,

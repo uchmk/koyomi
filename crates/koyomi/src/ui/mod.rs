@@ -1313,12 +1313,19 @@ impl Browser {
                 t.tr("port.skip").to_owned(),
             ],
         };
+        use ito_prefs::Mark;
+        let marks: &[Option<Mark>] = match stage {
+            Stage::Close => &[Some(Mark::Close)],
+            Stage::Go => &[Some(Mark::Import), Some(Mark::Close)],
+            _ => &[Some(Mark::Save), Some(Mark::Close), Some(Mark::Pencil), Some(Mark::Skip)],
+        };
         let q = ito_confirm::Question {
             title: t.tr("port.title"),
             rows: &rows,
             body: &body,
             notes: &notes,
             buttons: &buttons,
+            marks,
             focus: Some(self.focus),
             primary: if stage == Stage::Go { Some(0) } else { None },
             ..Default::default()
@@ -1418,6 +1425,7 @@ impl Browser {
                 body: &body,
                 diff: &diff,
                 buttons: &buttons,
+                marks: &[Some(ito_prefs::Mark::Refresh), Some(ito_prefs::Mark::Close), Some(ito_prefs::Mark::Save)],
                 focus: Some(self.focus),
                 primary: Some(0),
                 danger: true,
@@ -1444,6 +1452,7 @@ impl Browser {
                 title: t.tr("canvas.close_title"),
                 body: &body,
                 buttons: &buttons,
+                marks: &[Some(ito_prefs::Mark::Trash), Some(ito_prefs::Mark::Close)],
                 focus: Some(self.focus),
                 primary: Some(0),
                 danger: true,
@@ -2640,6 +2649,12 @@ impl Browser {
             body: &body,
             diff: &diff,
             buttons: &buttons,
+            marks: &[
+                Some(ito_prefs::Mark::Undo),
+                Some(ito_prefs::Mark::Close),
+                Some(ito_prefs::Mark::ChevronLeft),
+                Some(ito_prefs::Mark::ChevronRight),
+            ],
             focus: Some(self.focus),
             primary: Some(0),
             danger: true,
@@ -3767,6 +3782,7 @@ impl Browser {
             body: &body,
             diff: &diff,
             buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Check), Some(ito_prefs::Mark::Close)],
             focus: Some(self.focus),
             primary: Some(0),
             ..Default::default()
@@ -3797,6 +3813,7 @@ impl Browser {
             rows: &rows,
             body: &body,
             buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Stop), Some(ito_prefs::Mark::Close)],
             focus: Some(self.focus),
             primary: Some(0),
             ..Default::default()
@@ -3827,6 +3844,7 @@ impl Browser {
             rows: &rows,
             body: &body,
             buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Trash), Some(ito_prefs::Mark::Close)],
             focus: Some(self.focus),
             primary: Some(0),
             danger: true,
