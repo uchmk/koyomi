@@ -1477,12 +1477,9 @@ impl Browser {
                     let head = format!("{} {}", State::Held.mark(), t.tr("band.paused"));
                     let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
                     ito_a11y::say(&r, Role::Label, &head);
-                    // The same quiet outlined button as the rest, in the words' own size.
-                    let r = ui
-                        .add_enabled_ui(!modal, |ui| {
-                            ito_prefs::icon_button(ui, ito_prefs::Mark::Play, t.tr("run.resume"), t.tr("run.resume"))
-                        })
-                        .inner;
+                    // Filled with the warn colour of the band: it undoes the pause, in the words' own size.
+                    let resume = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.resume")).tone(ito_prefs::Tone::Warn);
+                    let r = ui.add_enabled_ui(!modal, |ui| resume.show(ui)).inner;
                     if r.clicked() {
                         let _ = self.tx.send(Request::Resume);
                     }
