@@ -82,6 +82,7 @@ input {
 .chip.paused { --tone: var(--wait); }
 .chip.down { --tone: var(--err); }
 .chip.run { --tone: var(--run); }
+.chip.calm { --tone: var(--dim); }
 
 /* Sign-in. */
 .signin { max-width: 520px; margin: 48px auto; padding: 0 16px; }

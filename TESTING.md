@@ -1151,6 +1151,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 89.8 | Sign out; wait past a net's scheduled time; sign in | The net ran while you were signed out; the tray (started at sign-in) shows the result |
 | 89.9 | Give a wrong password at install, then `koyomi service start` | Start says the service could not sign in, and that the password is wrong |
 | 89.10 | `koyomi service uninstall` (elevated) | The service is gone; `koyomi startup` points at the engine again; opening the window starts an engine as before |
+| 89.11 | Do 89.3 and 89.10 with the koyomi that `cargo install --path crates/koyomi` put in `~\.cargo\bin` (its `koyomi-com.exe`), not a copy in Temp or Downloads; then `Get-MpThreatDetection \| Sort-Object InitialDetectionTime \| Select-Object -Last 3` (TODO 89) | No new detection (a copy in Temp named `koyomi.com` was taken as `Behavior:Win32/Persistence.A!ml`); `koyomi.exe` and `koyomi-com.exe` are still in `~\.cargo\bin` |
 
 ## 90. Reading the engine over HTTP (`GET /health`, `/nets`, `/runs`, `/runs/<id>/log`; for TODO 80, 81, 87)
 
@@ -1254,7 +1255,7 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 95.18 | Put a job's title or log line `<img src=x onerror=alert(1)>` and view it | Shown as text; no dialog |
 | 95.19 | With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) | The same page; the cookie is `Secure` |
 | 95.20 | Pause the schedule (`koyomi engine pause`); stop the engine | スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays |
-| 95.21 | With `[standby]` (or `[primary]`) on the engine | The header says which PC runs the schedules (`待機中: … を見張っている`, `… から引き継いで流している`, `… が待機している`) |
+| 95.21 | With `[standby]` (or `[primary]`) on the engine; then §102's take-over and give-back | The header says which PC runs the schedules in the window's words and colours (40.5, 40.6): `待機中: … を見張っている` amber, `… から引き継いで流している（YYYY-MM-DD HH:MM から）` green, `… が待機している` grey; after a give-back the standby's chip ends `（YYYY-MM-DD HH:MM に戻した）` |
 | 95.22 | Make the window narrower than 900 px | The tree, 今日 and the pane stack in one column; nothing is cut off |
 
 ## 96. Another PC in the window (the PC list; TODO 80)

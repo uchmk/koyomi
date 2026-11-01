@@ -317,14 +317,18 @@ function drawHa() {
   const ha = !view.down && view.health ? view.health.ha : null;
   chip.hidden = !ha;
   if (!ha) return;
+  // The same words and tones as the window's status bar (ui/ha.rs), with the time the engine
+  // gives: when a standby took the schedules over, or last gave them back.
   let words;
   let tone;
   if (ha.role === "standby") {
-    [words, tone] = ha.active ? [`${ha.watch} から引き継いで流している`, "run"] : [`待機中: ${ha.watch} を見張っている`, "paused"];
+    [words, tone] = ha.active
+      ? [`${ha.watch} から引き継いで流している${ha.since ? `（${ha.since} から）` : ""}`, "run"]
+      : [`待機中: ${ha.watch} を見張っている${ha.back ? `（${ha.back} に戻した）` : ""}`, "paused"];
   } else {
     [words, tone] = ha.hold === "held"
       ? [`${ha.standby} が引き継いでいる`, "paused"]
-      : ha.hold === "asking" ? [`${ha.standby} に聞いている`, "paused"] : [`${ha.standby} が待機している`, "ok"];
+      : ha.hold === "asking" ? [`${ha.standby} に聞いている`, "paused"] : [`${ha.standby} が待機している`, "calm"];
   }
   chip.textContent = words;
   chip.className = `chip ${tone}`;
