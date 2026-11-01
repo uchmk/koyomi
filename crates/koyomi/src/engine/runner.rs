@@ -8,7 +8,9 @@
 //! A job is stopped through one flag, whoever asks: `kill` from a person, or
 //! the timer a `timeout` starts. `ito_proc` then kills the whole process tree;
 //! an `ssh` job is asked to stop first and killed only after its grace
-//! ([`grace`]), so `koyomi ssh run` can ask the far command to stop too.
+//! ([`grace`]), so `koyomi ssh run` can ask the far command to stop too. The
+//! ask reaches it without a console as well (`ITO_PROC_STOP_EVENT`), so also
+//! from the release `koyomi.exe`, which has none.
 //! Which of the two asked first is kept beside the flag, so the job ends as
 //! 強制終了 or 打ち切り and never as the other.
 //!
@@ -332,7 +334,9 @@ impl Runner {
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
         let values = template::values(&net, set)?;
         let mut net = template::expand_net(&net, date, cal, &values)?;
-        koyomi_core::chore::fill(&mut net)?;
+        // An `ssh` runs koyomi itself (`koyomi ssh run`).
+        let exe = std::env::current_exe().map_or_else(|_| "koyomi".to_owned(), |p| p.to_string_lossy().into_owned());
+        koyomi_core::chore::fill(&mut net, &exe)?;
         Ok(net)
     }
 
@@ -1113,8 +1117,9 @@ const SSH_GRACE: Duration = Duration::from_secs(10);
 /// How long a stop waits after asking `part` before it kills: [`SSH_GRACE`] for an
 /// `ssh` job, which can pass the ask on to the far side. Anything else is killed at
 /// once, as before: a script or program that does not watch for the ask would only
-/// make a kill slower. Under `run_as` nothing can be asked (another account's
-/// console is out of reach), so an `ssh` job there is killed at once too, and its
+/// make a kill slower. Under `run_as` nothing can be asked: `ito_proc` gives another
+/// account's process neither CTRL_BREAK nor the stop event its own children get
+/// (`ITO_PROC_STOP_EVENT`), so an `ssh` job there is killed at once too, and its
 /// far command is left to end by itself.
 fn grace(part: &Part) -> Duration {
     match part {
@@ -1561,7 +1566,7 @@ fn attempt(
         let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
     }
     cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
-    // An SFTP `send` or `fetch` runs `koyomi sftp run`, an `ssh` `koyomi ssh run` (chore.rs).
+    // An SFTP `send` or `fetch` runs `koyomi sftp run` from its script (chore.rs).
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("KOYOMI_EXE", exe);
     }

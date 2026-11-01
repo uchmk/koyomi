@@ -6,9 +6,11 @@
 //! file `KOYOMI_REASON` names, which the engine shows as the job's ✕ reason.
 //! The host key to pin comes from `koyomi sftp hostkey`.
 //!
-//! The engine stops an `ssh` job by asking first (`ito_proc::run_lines_soft`):
-//! the ask sets [`ito_proc::stop_requested`], and the far command is sent TERM
-//! and the channel closed before this ends, so it does not run on alone.
+//! The engine runs this straight, not through PowerShell, and stops an `ssh`
+//! job by asking first (`ito_proc::run_lines_soft`): the ask, a CTRL_BREAK or
+//! the event named in `ITO_PROC_STOP_EVENT` (which needs no console), sets
+//! [`ito_proc::stop_requested`], and the far command is sent TERM and the
+//! channel closed before this ends, so it does not run on alone.
 
 use std::sync::atomic::AtomicBool;
 
@@ -33,7 +35,8 @@ fn var(name: &str) -> Option<String> {
 }
 
 fn run() -> i32 {
-    // First of all: the handler is what turns the engine's ask into the flag.
+    // First of all, before connecting: the handler and the watcher of the stop
+    // event are what turn the engine's ask into the flag.
     let stop = ito_proc::stop_requested();
     match exec(stop) {
         Ok(code) => code,

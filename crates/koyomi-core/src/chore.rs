@@ -4,8 +4,8 @@
 //! command on another PC over SSH. Each is written in the file as its own
 //! `kind` and runs as a PowerShell script the engine writes when the run
 //! starts, so it has the job's slot, log, `timeout` and `retry`. Over SFTP
-//! the script runs `koyomi sftp run`, over SSH `koyomi ssh run`; each reads
-//! what to do from the environment.
+//! the script runs `koyomi sftp run`; an `ssh` runs `koyomi ssh run` itself,
+//! without PowerShell. Each reads what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -307,7 +307,8 @@ impl Chore {
     }
 
     /// The PowerShell script that does it, and how its exit code is judged.
-    /// The paths are already filled in.
+    /// The paths are already filled in. An `ssh` has none: [`fill`] runs
+    /// `koyomi ssh run` straight.
     pub fn script(&self) -> (String, Option<Judge>) {
         match self {
             Chore::Delete { path, pattern, keep_days } => {
@@ -372,8 +373,8 @@ impl Chore {
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 (http(url, method, body, content_type, headers, expect), None)
             }
-            // Judged by the job's own `judge`, which fill() leaves as it is.
-            Chore::Ssh { .. } => (SSH_SCRIPT.to_owned(), None),
+            // Not a script (fill()); judged by the job's own `judge`.
+            Chore::Ssh { .. } => (String::new(), None),
         }
     }
 
@@ -480,24 +481,26 @@ fn http(
 
 /// Gives each chore of `net` (its paths filled in) the script that does it, so it
 /// runs as a PowerShell job; a root or an empty path after the filling stops the run.
-/// An `ssh` keeps its own `judge`, and the names of its own `env` go to the far
-/// side as `KOYOMI_SSH_ENV`.
-pub fn fill(net: &mut Jobnet) -> Result<(), String> {
+/// An `ssh` runs `exe` (koyomi itself) as `exe ssh run`, not through PowerShell:
+/// the engine's ask to stop reaches it straight, and PowerShell's debugger does
+/// not take the ask and write into the log. It keeps its own `judge`, and the
+/// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`.
+pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
             c.check().map_err(|e| format!("{}: {e}", j.id))?;
-            let (script, judge) = c.script();
-            j.shell = Some("powershell".to_owned());
-            j.script = Some(script);
             if let Chore::Ssh { .. } = c {
+                (j.shell, j.script) = (None, None);
+                j.run = [exe, "ssh", "run"].map(str::to_owned).to_vec();
                 // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
                 let names = j.env.keys().filter(|k| !k.starts_with("KOYOMI_SSH_")).map(String::as_str).collect::<Vec<_>>().join(",");
                 j.env.insert("KOYOMI_SSH_ENV".to_owned(), names);
             } else {
-                j.judge = judge;
+                let (script, judge) = c.script();
+                (j.shell, j.script, j.judge) = (Some("powershell".to_owned()), Some(script), judge);
+                j.run.clear();
             }
             j.env.extend(c.env());
-            j.run.clear();
         }
     }
     Ok(())
@@ -547,10 +550,6 @@ fn not_root(path: &str) -> Result<(), String> {
 /// (a windowed program) and reads its UTF-8 lines.
 const SFTP_SCRIPT: &str =
     "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n& $env:KOYOMI_EXE sftp run | ForEach-Object { $_ }\nexit $LASTEXITCODE\n";
-
-/// What an `ssh` runs, as [`SFTP_SCRIPT`]; its exit code is the far command's.
-const SSH_SCRIPT: &str =
-    "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n& $env:KOYOMI_EXE ssh run | ForEach-Object { $_ }\nexit $LASTEXITCODE\n";
 
 /// Where an `sftp://[user@]host[:port]/path` points.
 #[derive(Debug, PartialEq, Eq)]
@@ -847,13 +846,9 @@ mod tests {
     }
 
     #[test]
-    fn an_ssh_script_leaves_the_work_to_koyomi_and_keeps_the_command_out_of_it() {
+    fn an_ssh_leaves_the_work_to_koyomi_and_keeps_the_command_in_the_environment() {
         let s = remote("ssh://ops@db1:2222 ", " backup.sh 'it''s' ; echo $HOME\n", Some("C:\\keys\\id"), Some(HK), None);
-        let (script, judge) = s.script();
-        assert!(script.contains("& $env:KOYOMI_EXE ssh run | ForEach-Object"), "{script}");
-        assert!(script.ends_with("exit $LASTEXITCODE\n"), "{script}");
-        assert!(!script.contains("db1") && !script.contains("backup"), "{script}");
-        assert!(judge.is_none());
+        assert_eq!(s.script(), (String::new(), None));
         let env = s.env();
         let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
         assert_eq!(get("KOYOMI_SSH_ON"), Some("ssh://ops@db1:2222"));
@@ -873,17 +868,19 @@ mod tests {
             "format = 1\n[[job]]\nid = \"r\"\nkind = \"ssh\"\non = \"ssh://ops@db1\"\ncommand = \"backup.sh\"\nhost_key = \"{HK}\"\njudge = {{ warn = \"1\" }}\nenv = {{ DAY = \"1\", WHO = \"me\" }}\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'D:\\out'\ninto = 'E:\\in'\nafter = [\"r\"]\n"
         ))
         .unwrap();
-        fill(&mut net).unwrap();
+        fill(&mut net, "C:\\koyomi\\koyomi.exe").unwrap();
         let r = &net.jobs[0];
-        assert_eq!(r.shell.as_deref(), Some("powershell"));
-        assert!(r.script.as_deref().unwrap().contains("ssh run"));
+        // koyomi itself, not through PowerShell; the far command is not on the line.
+        assert_eq!((r.shell.as_deref(), r.script.as_deref()), (None, None));
+        assert_eq!(r.run, ["C:\\koyomi\\koyomi.exe", "ssh", "run"]);
         assert_eq!(r.judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
         assert_eq!(r.env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
         assert_eq!(r.env.get("KOYOMI_SSH_COMMAND").map(String::as_str), Some("backup.sh"));
         // A copy is still judged as robocopy is.
         assert!(net.jobs[1].judge.is_some());
+        assert_eq!(net.jobs[1].shell.as_deref(), Some("powershell"));
         // Filled again, the far side is still asked for the job's own env only.
-        fill(&mut net).unwrap();
+        fill(&mut net, "koyomi").unwrap();
         assert_eq!(net.jobs[0].env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
     }
 
