@@ -190,7 +190,7 @@
 - [x] 97. 見た目の仕上げ（M）: 今日・ジョブネット・カレンダー・履歴・設定・エディターを、暗い・明るい・ハイコントラストのテーマで `--keys` の画面にして、崩れ（切れる罫線・読めない色・はみ出し）を直す。節の見出し（15px 太字）を 1 つの部品にまとめる（D12 の残り）。（2026-11-01: 窓がハイコントラストを効かせていなかった・押せないボタンを含む列が折り返さない・左の一覧と表のはみ出しを直し、見出しを `section_head` に。ほかの uchmk のアプリも egui ではハイコントラストを効かせていない）
 - [x] 98. COMPETITORS.md の Web UI（H10）を今に合わせる（S）: 81 で窓の今日の画面に寄せたので「作り途中」を外す。（2026-11-01: 表の H10 を ○ に、まとめの弱いところは「本体は窓で、Web は見る・流す・止める・流し直すまで」に）
 - [x] 99. 通知を押したら窓を開く（S〜M）: 今はエンジンが出すので、押しても何も起きない（持ち主に聞くこと 4）。押したらその回を窓で開く（窓が無ければ起こす）。ito-notify に押したときの口が無ければ `crate-request`。（2026-11-01: ito-prefs の `tell_open`・`take_clicks` で足りた（crate-request は要らない）。回の通知を押すか「開く」で、出したプロセス（エンジンか `koyomi tray`）が窓の口に `Show::Run` を頼み、窓が無ければ起こす。窓の持つ回はその詳細、無ければ履歴の 7 日でその回を選ぶ。エディター・箱が開いていれば何もしない。PROTO 35）
-- [x] 100. H9 WinRM で Windows の PC にコマンドを流す（M）: 95 の ssh の部品の Windows 版。ito に部品が無いので `crate-request` から。（2026-11-01: uchmk/ito#132 を立てた。届くまで待ち、先の項目に進む）（2026-11-01: ito v0.195.0（38e337d）に `ito-winrm` が入ったので、koyomi の ito をそこまで上げた。`kind = "winrm"` はこれから）（2026-11-01: `kind = "winrm"` を足した。`on = "winrm://ユーザー@ホスト[:ポート]"`・`command`・`cert`（`koyomi winrm cert` で調べる）・`password = "secret:…"`。HTTPS だけ、認証は Basic だけ。動かし方・止め方は ssh と同じ。NTLM・Kerberos・Negotiate は uchmk/ito#134 で頼み、届いたら `auth = …` を足す。TESTING.md の 107）（2026-11-01: ito v0.200.0 で `auth = "ntlm"`（NTLMv2、ドメインのアカウントも）を足した。印は Desktop に。Kerberos は #134 の残り）
+- [x] 100. H9 WinRM で Windows の PC にコマンドを流す（M）: 95 の ssh の部品の Windows 版。ito に部品が無いので `crate-request` から。（2026-11-01: uchmk/ito#132 を立てた。届くまで待ち、先の項目に進む）（2026-11-01: ito v0.195.0（38e337d）に `ito-winrm` が入ったので、koyomi の ito をそこまで上げた。`kind = "winrm"` はこれから）（2026-11-01: `kind = "winrm"` を足した。`on = "winrm://ユーザー@ホスト[:ポート]"`・`command`・`cert`（`koyomi winrm cert` で調べる）・`password = "secret:…"`。HTTPS だけ、認証は Basic だけ。動かし方・止め方は ssh と同じ。NTLM・Kerberos・Negotiate は uchmk/ito#134 で頼み、届いたら `auth = …` を足す。TESTING.md の 107）（2026-11-01: ito v0.200.0 で `auth = "ntlm"`（NTLMv2、ドメインのアカウントも）を足した。印は Desktop に。Kerberos は #134 の残り）（2026-11-01: 持ち主の答えで Kerberos は後回し。#134 は開いたまま）
 - [x] 101. H12 ネットごとに違うロール（M）: 今は 1 人のロールがどのネットにも同じに効く（`nets` は見える範囲だけ）。JP1 の資源グループのように「経理は run、基盤は view」と分ける。（2026-11-01: `[[http.user]]` に `roles = { "経理/*" = "run" }`。合うネットはいちばん強いもの、ほかは `role`。入口は強いほうで通し、`narrow` がネットごとに見る。`GET /nets` にネットごとの `role`、`GET /me` に `roles`。Web UI のボタンもネットごと。PROTO はそのまま）
 
 サンプルのネット（`jobnets/サンプル/`）を作って試して見つけたこと（2026-11-01）。
@@ -198,6 +198,10 @@
 - [x] 102. イベント ログのきっかけが koyomi 自身の記録で流れる（S）: koyomi は回の終わりを Application に出どころ `koyomi` で書く（正常 1000・警告 1001・異常 2000 …）。`[[when]] eventlog = "Application"` で `ids` がこれと重なり `source` を書かないと、自分の回の終わりでまた流れ、止まらなくなる。`source` を書かないときは出どころ `koyomi` を外すか、`koyomi check` で言う。（サンプル「時刻の決め方」は `source = "Application Error"` で避けた） → `source` を書かないときは出どころ `koyomi` の記録を数えない（`engine/logs.rs` の `heard`）。`source = "koyomi"` と書けば数える（2026-11-01）。
 - [x] 103. PowerShell のジョブのログに CLIXML が混じる（S）: `shell = "powershell"` のログに `#< CLIXML` と、エラー・警告・進み具合（「モジュールを初めて使用するための準備しています」）をまとめた XML の 1 行が `! ` の行で出る。進み具合だけでなく、エラーと警告も読めない。→ 標準エラーの CLIXML を文に戻す（`koyomi_core::clixml`）。エラーはその行のまま、警告・詳細・デバッグは印を付け、進み具合と情報の記録は書かない。`error_output` も戻した文に合わせる。`$ProgressPreference` は進み具合しか消えないので使わなかった（2026-11-01）。
 - [x] 104. `koyomi history` の理由が複数行のとき行が崩れる（S）: 理由（スキップのわけに入ったイベントの文など）の改行をそのまま出すので、別の回の行に見える。表では改行を空白にして 1 行にする。 → `koyomi_core::run::one_line`。history・show のジョブネット・`--only missing --dry` の行で使う。`koyomi show <回> <ジョブ>` は改行のまま（2026-11-01）。
+
+ito に頼んで待っているもの（2026-11-01）。
+
+- [ ] 105. Tailscale の相手を token なしで通す（M）: 同じ持ち主の PC どうしなら、tailnet の中では token と指紋を PC ごとに配らずに済むようにする。ito-http が tailscaled の whois で `who` を埋める口を uchmk/ito#135 で頼んだ（ito-ec の問いに「要る、急がない」と答え、持ち主が依頼した）。届いたら、`[[http.user]]` にログイン名（タグの端末はタグ）を書けるようにして、ロール・`nets`・`roles` はそのまま効かせる。窓の `[[remote]]`（80）と HA の待機（87）から tailnet の名前で呼ぶ形は、届いた形を見て決める。届くまで待ち。
 
 ## デザイン（画面の見本との差）
 
