@@ -697,7 +697,7 @@ impl App {
                 self.bell_open = false;
                 if let Some(run) = go {
                     self.acked.ack([run.as_str()]);
-                    self.browser.open_run(&run);
+                    self.browser.link_run(&run);
                 }
             }
             Some(ito_notices::Action::ReadAll) => {

@@ -344,6 +344,10 @@ net = "Jobnets"
 calendar = "Calendars"
 history = "History"
 
+[nav]
+back = "Back"
+back_to = "Back to {0}"
+
 [run]
 none = "No runs today"
 planned = "Planned"

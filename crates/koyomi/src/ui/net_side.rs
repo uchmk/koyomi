@@ -83,7 +83,7 @@ impl Browser {
             });
         });
         if let Some(id) = go {
-            self.open_net(&id);
+            self.follow(|b| b.open_net(&id));
         }
         fold
     }
@@ -187,10 +187,10 @@ impl Browser {
             self.net_side_job(ui, t, def, &section);
         }
         if let Some(id) = open {
-            self.open_run(&id);
+            self.follow(|b| b.open_run(&id));
         }
         if let Some(name) = cal {
-            self.open_calendar(&name);
+            self.follow(|b| b.open_calendar(&name));
         }
     }
 

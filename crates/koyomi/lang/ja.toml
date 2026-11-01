@@ -343,6 +343,10 @@ net = "ジョブネット"
 calendar = "カレンダー"
 history = "履歴"
 
+[nav]
+back = "戻る"
+back_to = "{0}に戻る"
+
 [run]
 none = "今日の実行はありません"
 planned = "予定"

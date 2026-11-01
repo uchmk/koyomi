@@ -220,6 +220,7 @@ struct Vers {
 }
 
 /// 履歴: the days asked for, what narrows the rows, and the rows the engine sent for those days.
+#[derive(Clone)]
 struct History {
     from: String,
     to: String,
@@ -258,6 +259,45 @@ impl History {
             self.rows.iter().filter(|r| (self.net.is_empty() || r.jobnet == self.net) && self.state.is_none_or(|s| r.state == s)).collect();
         rows.sort_by_key(|r| std::cmp::Reverse(r.started));
         rows
+    }
+}
+
+/// How many places 戻る keeps; the oldest goes first.
+const BACK_MAX: usize = 20;
+
+/// Where the detail was before a link left it: the view and what was picked on it, so 戻る comes
+/// back to the same row.
+#[derive(Clone)]
+struct Place {
+    gantt: bool,
+    hist: Option<History>,
+    selected: Option<String>,
+    nets_pick: Option<String>,
+    run_sel: Option<String>,
+    today_net: Option<String>,
+    job_sel: Option<String>,
+    cal_sel: Option<String>,
+    cal_month: Option<(i32, u32)>,
+    cal_day: Option<chrono::NaiveDate>,
+}
+
+impl Place {
+    /// The same view with the same row picked; a history's rows aside, as the engine sends them again.
+    fn same(&self, o: &Place) -> bool {
+        let hist = match (&self.hist, &o.hist) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.from == b.from && a.to == b.to && a.net == b.net && a.state == b.state,
+            _ => false,
+        };
+        hist && self.gantt == o.gantt
+            && self.selected == o.selected
+            && self.nets_pick == o.nets_pick
+            && self.run_sel == o.run_sel
+            && self.today_net == o.today_net
+            && self.job_sel == o.job_sel
+            && self.cal_sel == o.cal_sel
+            && self.cal_month == o.cal_month
+            && self.cal_day == o.cal_day
     }
 }
 
@@ -367,6 +407,11 @@ pub struct Browser {
     nets_sort: Option<(usize, bool)>,
     /// The net picked (not opened) in the nets overview by a single click; the tree marks it too.
     nets_pick: Option<String>,
+    /// Where each link came from, newest last: 戻る goes to the last one. A tab or a pick in the tree
+    /// forgets them.
+    back: Vec<Place>,
+    /// 戻る just came back: the picked row is scrolled into sight on the next frame.
+    reveal: bool,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -513,6 +558,8 @@ impl Browser {
             run_sort: None,
             nets_sort: None,
             nets_pick: None,
+            back: Vec::new(),
+            reveal: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1614,6 +1661,8 @@ impl Browser {
                     }
                 });
             }
+            // The row 戻る came back to is in sight now.
+            self.reveal = false;
         });
         // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
         // open one, so a single Enter cannot decide two of them.
@@ -1817,6 +1866,8 @@ impl Browser {
             _ => {}
         }
         if let Some(id) = pick {
+            // A pick in the tree is not a link: there is nothing to go back to.
+            self.forget_back();
             self.open_net(&id);
         }
     }
@@ -1832,6 +1883,92 @@ impl Browser {
         self.hist = None;
         self.gantt = false;
         self.leave_editor();
+    }
+
+    /// Where the detail is now, for 戻る.
+    fn here(&self) -> Place {
+        Place {
+            gantt: self.gantt,
+            hist: self.hist.clone(),
+            selected: self.selected.clone(),
+            nets_pick: self.nets_pick.clone(),
+            run_sel: self.run_sel.clone(),
+            today_net: self.today_net.clone(),
+            job_sel: self.job_sel.clone(),
+            cal_sel: self.cal_sel.clone(),
+            cal_month: self.cal_month,
+            cal_day: self.cal_day,
+        }
+    }
+
+    /// Back to `p`, its picked row scrolled into sight; a history asks the engine for its days again.
+    fn put(&mut self, p: Place) {
+        if let Some(h) = &p.hist {
+            let _ = self.tx.send(h.request());
+        }
+        self.gantt = p.gantt;
+        self.hist = p.hist;
+        self.selected = p.selected;
+        self.nets_pick = p.nets_pick;
+        self.run_sel = p.run_sel;
+        self.today_net = p.today_net;
+        self.job_sel = p.job_sel;
+        self.cal_sel = p.cal_sel;
+        self.cal_month = p.cal_month;
+        self.cal_day = p.cal_day;
+        self.result = None;
+        self.cal_result = None;
+        self.cal_inline = None;
+        self.reveal = true;
+        self.leave_editor();
+    }
+
+    /// Follows a link: `go` moves the detail, and where it was is kept for 戻る (not when it stayed).
+    fn follow(&mut self, go: impl FnOnce(&mut Self)) {
+        let from = self.here();
+        go(self);
+        if !self.here().same(&from) {
+            self.back.push(from);
+            if self.back.len() > BACK_MAX {
+                self.back.remove(0);
+            }
+        }
+        self.reveal = false;
+    }
+
+    /// 戻る: to where the last link came from.
+    fn go_back(&mut self) {
+        if let Some(p) = self.back.pop() {
+            self.put(p);
+        }
+    }
+
+    /// A tab, a pick in the tree or the tray moves on its own: 戻る goes away.
+    fn forget_back(&mut self) {
+        self.back.clear();
+        self.reveal = false;
+    }
+
+    /// Opens run `id` as a link does (the bell's): 戻る comes back to where the detail was.
+    pub fn link_run(&mut self, id: &str) {
+        self.follow(|b| b.open_run(id));
+    }
+
+    /// What 戻る goes back to, in words: the tab, or the run, calendar or net that was open.
+    fn place_name(&self, t: &ito_i18n::Table, p: &Place) -> String {
+        if p.gantt {
+            t.tr("tabs.today").to_owned()
+        } else if p.hist.is_some() {
+            t.tr("tabs.history").to_owned()
+        } else if let Some(id) = &p.run_sel {
+            self.runs.iter().find(|r| &r.id == id).map_or_else(|| id.clone(), |r| r.title.clone())
+        } else if let Some(name) = &p.cal_sel {
+            name.clone()
+        } else if let Some(id) = &p.selected {
+            id.clone()
+        } else {
+            t.tr("tabs.net").to_owned()
+        }
     }
 
     /// The ジョブネット tab with no net picked: every net in one table, in the tree's order, with its last
@@ -1914,6 +2051,7 @@ impl Browser {
             .map(|k| t.tr(&format!("nets.{k}")).to_owned())
             .to_vec();
         let picked = self.nets_pick.clone();
+        let reveal = self.reveal;
         let (mut pick, mut open) = (None, None);
         // The header band stays put; only the rows scroll up and down. Sideways they scroll together.
         egui::ScrollArea::horizontal().id_salt("nets_scroll").auto_shrink(false).show(ui, |ui| {
@@ -1930,6 +2068,9 @@ impl Browser {
                 for row in &rows {
                     let on = picked.as_deref() == Some(row.id.as_str());
                     let r = table.cells_of(ui, &row.cells, on, row.state).on_hover_text(t.tr("nets.open_hint"));
+                    if on && reveal {
+                        r.scroll_to_me(Some(egui::Align::Center));
+                    }
                     let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
                     ito_a11y::say(&r, Role::Row, &said.join(" "));
                     if r.double_clicked() {
@@ -1942,7 +2083,7 @@ impl Browser {
             ui.spacing_mut().item_spacing.y = gap;
         });
         if let Some(id) = open {
-            self.open_net(&id);
+            self.follow(|b| b.open_net(&id));
         } else if pick.is_some() {
             self.nets_pick = pick;
         }
@@ -1991,6 +2132,8 @@ impl Browser {
             };
             let usual = average(id);
             let next = next_at(id, *at);
+            // Read out as a run's row is: its state, the net and when it starts.
+            let said = format!("{} {title} {planned}", show::tag(t, State::Waiting));
             let cells = [
                 planned,
                 String::new(),
@@ -2001,7 +2144,7 @@ impl Browser {
             rows.push(TodayRow {
                 state: State::Waiting,
                 title: title.clone(),
-                said: title.clone(),
+                said,
                 cells,
                 run: None,
                 net: id.clone(),
@@ -2097,13 +2240,15 @@ impl Browser {
                 Some(_) => self.run_sel == row.run,
                 None => self.run_sel.is_none() && self.today_net.as_deref() == Some(row.net.as_str()),
             };
-            let mut r = table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, true);
-            if row.run.is_some() {
-                r = r.on_hover_text(t.tr("today.open_hint"));
+            let r =
+                table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, true).on_hover_text(t.tr("today.open_hint"));
+            if on && self.reveal {
+                r.scroll_to_me(Some(egui::Align::Center));
             }
             ito_a11y::say(&r, Role::Row, &row.said);
             if r.double_clicked() {
-                open = row.run.clone();
+                // A start still to come has no run yet: its net opens instead.
+                open = Some(row.run.clone().ok_or_else(|| row.net.clone()));
             } else if r.clicked() {
                 pick = Some((row.run.clone(), row.net.clone()));
             }
@@ -2133,16 +2278,19 @@ impl Browser {
             let _ = self.tx.send(req);
         }
         if let Some(id) = go_net {
-            self.open_net(&id);
+            self.follow(|b| b.open_net(&id));
             return;
         }
         // A click picks the row here (marked in the chart below too); a double click opens its run on the
-        // net page.
-        if let Some(id) = open {
-            self.open_run(&id);
-        } else if let Some((run, net)) = pick {
-            self.run_sel = run;
-            self.today_net = Some(net);
+        // net page, or the net of a start still to come.
+        match (open, pick) {
+            (Some(Ok(run)), _) => self.follow(|b| b.open_run(&run)),
+            (Some(Err(net)), _) => self.follow(|b| b.open_net(&net)),
+            (None, Some((run, net))) => {
+                self.run_sel = run;
+                self.today_net = Some(net);
+            }
+            (None, None) => {}
         }
     }
 
@@ -2156,6 +2304,8 @@ impl Browser {
         let (today, history, calendar) = (self.gantt, self.hist.is_some(), self.cal_sel.is_some() && !self.gantt && self.hist.is_none());
         let net = !today && !history && !calendar;
         let mut go = None;
+        let mut back = false;
+        let back_to = self.back.last().map(|p| t.trf("nav.back_to", &[&self.place_name(t, p)]));
         let c = ito_theme::colors();
         // One row high: a centred layout would take the whole height and push the view below off the screen.
         let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
@@ -2179,12 +2329,26 @@ impl Browser {
                 let text = format!("{}({})", day.format("%Y-%m-%d"), t.tr(wd));
                 let r = ui.label(egui::RichText::new(&text).monospace().color(c.dim));
                 ito_a11y::say(&r, Role::Label, &text);
+                // Where a link came from, beside the day: back to the same row.
+                if let Some(to) = &back_to {
+                    ui.add_space(8.0);
+                    // Its hover and its spoken name say where it goes.
+                    back = ito_prefs::IconButton::new(ito_prefs::Mark::ChevronLeft, t.tr("nav.back")).said(to).show(ui).clicked();
+                }
             });
         });
         // A hairline right under the tabs, as the page's top edge; a pane at the right starts on it.
         let y = bar.response.rect.bottom();
         let x = ui.max_rect().x_range();
         ui.painter().hline(x, y, egui::Stroke::new(1.0, c.border));
+        if back {
+            self.go_back();
+            return;
+        }
+        if go.is_some() {
+            // A tab is not a link: there is nothing to go back to.
+            self.forget_back();
+        }
         match go {
             Some(0) => self.open_gantt(),
             Some(1) => {
@@ -2234,6 +2398,7 @@ impl Browser {
         if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() || self.deleting.is_some() {
             return;
         }
+        self.forget_back();
         self.open_gantt();
     }
 
@@ -2243,6 +2408,7 @@ impl Browser {
         if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() || self.deleting.is_some() {
             return;
         }
+        self.forget_back();
         let newest = self.runs.iter().filter(|r| r.state.is_error() && !self.acked.contains(&r.id)).max_by_key(|r| r.started);
         match newest.map(|r| r.id.clone()) {
             Some(id) => self.open_run(&id),
@@ -2419,7 +2585,7 @@ impl Browser {
             });
         // As a row of the table: a click picks the run, a double click opens it on the net page.
         match pick {
-            Some((id, true)) => self.open_run(&id),
+            Some((id, true)) => self.follow(|b| b.open_run(&id)),
             Some((id, false)) => {
                 self.today_net = None;
                 self.run_sel = Some(id);
@@ -2740,6 +2906,7 @@ impl Browser {
                 .map(|k| t.tr(&format!("today.{k}")).to_owned())
                 .collect();
             let sort = h.sort;
+            let reveal = self.reveal;
             let none = rows.is_empty() && h.error.is_none();
             let mut sorted = None;
             let tall = ui.available_height();
@@ -2755,6 +2922,9 @@ impl Browser {
                         let word = show::tag(t, run.state);
                         let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
                         let r = table.row(ui, run.state, &word, &run.title, &cells, on, true);
+                        if on && reveal {
+                            r.scroll_to_me(Some(egui::Align::Center));
+                        }
                         let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
                         let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
                         ito_a11y::say(&r, Role::Row, &said);
@@ -3285,7 +3455,7 @@ impl Browser {
             }
         }
         if let Some(id) = go {
-            self.open_net(&id);
+            self.follow(|b| b.open_net(&id));
         }
     }
 
@@ -4364,6 +4534,8 @@ mod tests {
             run_sort: None,
             nets_sort: None,
             nets_pick: None,
+            back: Vec::new(),
+            reveal: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -4453,16 +4625,32 @@ mod tests {
             self.press(words, egui::PointerButton::Secondary, b);
         }
 
-        fn press(&mut self, words: &str, button: egui::PointerButton, b: &mut Browser) {
+        /// The middle of the one widget whose words are `words`, or else contain them.
+        fn at(&self, words: &str) -> egui::Pos2 {
             let exact: Vec<_> = self.nodes.values().filter(|(label, _)| label == words).collect();
             let found: Vec<_> =
                 if exact.is_empty() { self.nodes.values().filter(|(label, _)| label.contains(words)).collect() } else { exact };
             assert_eq!(found.len(), 1, "one widget says {words:?}: {:?}", self.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
-            let pos = found[0].1.center();
+            found[0].1.center()
+        }
+
+        fn press(&mut self, words: &str, button: egui::PointerButton, b: &mut Browser) {
+            self.presses(words, button, 1, b);
+        }
+
+        /// Two quick clicks on the widget that says `words`.
+        fn double_click(&mut self, words: &str, b: &mut Browser) {
+            self.presses(words, egui::PointerButton::Primary, 2, b);
+        }
+
+        fn presses(&mut self, words: &str, button: egui::PointerButton, times: usize, b: &mut Browser) {
+            let pos = self.at(words);
             let button = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
             self.show(vec![egui::Event::PointerMoved(pos)], b);
-            self.show(vec![button(true)], b);
-            self.show(vec![button(false)], b);
+            for _ in 0..times {
+                self.show(vec![button(true)], b);
+                self.show(vec![button(false)], b);
+            }
             self.settle(b);
         }
     }
@@ -5128,6 +5316,72 @@ run = [\"x.exe\"]
         assert!(!b.inspector);
         s.click("右の欄を開く", &mut b);
         assert!(b.inspector);
+    }
+
+    /// 56.5: A double click on a start still to come opens its net; 戻る, at the right of the tabs,
+    /// comes back to 今日 with the same row picked, and then goes away.
+    #[test]
+    fn a_waiting_row_opens_its_net_and_back_returns_to_it() {
+        let now = chrono::Local::now().naive_local();
+        if now.time() >= chrono::NaiveTime::from_hms_opt(23, 58, 0).unwrap() {
+            // The day's last start is past: no row waits.
+            return;
+        }
+        let mut d = defs();
+        let when = "format = 1
+[[when]]
+every = \"day\"
+at = [\"23:59\"]
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        d[0].net = Some(koyomi_core::jobnet::parse(when).unwrap());
+        d[0].standing = Standing::Confirmed;
+        let mut b = quiet(d);
+        b.gantt = true;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(!s.nodes.values().any(|n| n.0 == "今日に戻る"), "no link was followed yet");
+        s.double_click("待ち bom 23:59:00", &mut b);
+        assert!(!b.gantt && b.run_sel.is_none(), "the net page is open");
+        assert_eq!(b.selected.as_deref(), Some("試験/bom"));
+        s.click("今日に戻る", &mut b);
+        assert!(b.gantt, "back on 今日");
+        assert_eq!(b.today_net.as_deref(), Some("試験/bom"), "with the row picked");
+        assert!(b.back.is_empty() && !b.reveal, "nothing more to go back to, and the row was brought into sight");
+    }
+
+    /// Each link keeps where it came from, newest last; one that stays where it is keeps nothing, and a
+    /// tab forgets them all.
+    #[test]
+    fn back_goes_where_each_link_came_from() {
+        let mut b = quiet(defs());
+        b.gantt = true;
+        b.run_sel = Some("r1".into());
+        b.today_net = Some("試験/bom".into());
+        b.follow(|b| b.open_net("試験/bom"));
+        b.follow(|b| b.open_net("試験/bom"));
+        assert_eq!(b.back.len(), 1, "a link to the page already open keeps nothing");
+        b.job_sel = Some("a".into());
+        b.follow(|b| b.open_calendar("会社"));
+        assert_eq!(b.back.len(), 2);
+        b.go_back();
+        assert_eq!((b.selected.as_deref(), b.job_sel.as_deref(), b.cal_sel.as_deref()), (Some("試験/bom"), Some("a"), None));
+        assert!(b.reveal, "the picked row is brought into sight");
+        b.go_back();
+        assert!(b.gantt);
+        assert_eq!((b.run_sel.as_deref(), b.today_net.as_deref()), (Some("r1"), Some("試験/bom")));
+        assert!(b.back.is_empty());
+        for _ in 0..BACK_MAX + 5 {
+            b.follow(|b| b.open_net("試験/bom"));
+            b.follow(|b| b.open_gantt());
+        }
+        assert_eq!(b.back.len(), BACK_MAX, "the oldest go first");
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("履歴", &mut b);
+        assert!(b.hist.is_some() && b.back.is_empty(), "a tab is not a link");
     }
 
     #[test]

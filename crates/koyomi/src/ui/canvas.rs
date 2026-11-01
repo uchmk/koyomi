@@ -1251,6 +1251,12 @@ impl Editor {
                     if IconButton::new(M::Settings, t.tr("canvas.net")).show(ui).clicked() {
                         self.open_net();
                     }
+                    // Inside a sub-net, back to its parent from the right as well.
+                    if depth > 0 && IconButton::new(M::ChevronLeft, t.tr("canvas.back")).show(ui).clicked() {
+                        if let Some(a) = self.edit(Cmd::Close) {
+                            action = Some(a);
+                        }
+                    }
                 });
             });
             ui.horizontal_wrapped(|ui| {

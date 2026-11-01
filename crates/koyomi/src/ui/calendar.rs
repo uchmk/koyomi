@@ -110,6 +110,8 @@ impl Browser {
             None => {}
         }
         if let Some(name) = pick {
+            // A pick in the tree is not a link: there is nothing to go back to.
+            self.forget_back();
             self.open_calendar(&name);
         }
     }
@@ -345,7 +347,7 @@ impl Browser {
                     self.cal_inline = out.naming;
                 }
                 if let Some(id) = out.open.or(side.open.take()) {
-                    self.open_net(&id);
+                    self.follow(|b| b.open_net(&id));
                 }
             });
         });

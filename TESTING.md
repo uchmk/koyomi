@@ -458,6 +458,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 29.28 | Under the legend, with `[[when]]` every day at 09:00; then add a `quiet` span over one of them; then remove all `[[when]]` | この先 7 日の開始 with `7 回` and a strip of 7 days (dates at the dividers, a tick at each 09:00; hover a tick for its date and time); the quiet one moves or goes as `on_quiet` says; with no `[[when]]` it says the net runs only by hand |
 | 29.29 | A net with many parts, zoomed in; look at the bottom-right corner of the canvas; click and drag there | A small picture of every part as a dot (red for a part with a problem, blue for the selected) and a blue frame for what is in view; a click or a drag brings that place to the middle; on a small canvas or with one part it is not drawn |
 | 29.30 | Open the editor; look at the right; double-click a job; empty its 実行; press Escape; press › at the pane's top | The pane is there from the start with the net's fields (基本設定 / 動かし方 / いつ / 次の 10 回); each label has a red `*` when it must be filled or `(任意)` when it may be empty; the job's fields come in sections (基本設定 / 実行コマンド・スクリプト / タイムアウトと再試行 / 結果の判定 / 別のアカウントで動かす) with 保存 at the bottom right and この部品を消す at the bottom left; the empty 実行 turns red; Escape goes back to the net's fields; › folds the pane to a strip at the right edge and a click on the strip opens it again |
+| 29.31 | Open a net that calls a child net; double-click the child to go into it; press 戻る at the right of the header | The child's canvas opens; 戻る (‹) is at the right of the header beside ジョブネット and takes you back to the parent, the same as 戻る at the left; at the top net there is no 戻る at the right |
 
 ## 30. Import, export and the daily backup (`koyomi export` / `import`, `backups/`)
 
@@ -721,6 +722,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 56.2 | While a net is running | Its bar keeps growing to now |
 | 56.3 | Click a lane | That run opens under the chart |
 | 56.4 | With no runs today | 「今日の実行はありません」 |
+| 56.5 | Confirm a net that starts later today; on the 今日 tab double-click its 待ち row | The net page opens on that net |
+| 56.6 | Then look at the right of the tab row and press 戻る (hover it first) | 戻る sits left of the date; its hover says 今日に戻る; the 今日 tab comes back with the 待ち row selected and in view; 戻る is gone. Going on through links (a run, a net, a calendar from the right pane) and pressing 戻る walks back one link at a time; clicking a tab or the tree forgets the way back |
 
 ## 57. 月の予定表（plan）
 
