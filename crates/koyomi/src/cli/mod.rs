@@ -150,6 +150,26 @@ pub fn startup_args() -> [&'static str; 1] {
     }
 }
 
+/// Set to `1`, it lets a service or the sign-in start point at an exe in Temp anyway: the owner's
+/// tests install from there (TODO 89).
+pub const ALLOW_TEMP: &str = "KOYOMI_ALLOW_TEMP";
+
+/// Refuses to point a service or the sign-in start at an exe in a Temp folder: cleanup deletes it,
+/// and Defender took such a one for persistence (TODO 89, DECISIONS「Windows のサービスとして動かす」).
+pub fn refuse_temp(exe: &std::path::Path) -> Result<(), String> {
+    temp_words(exe, ito_common::in_temp(exe), std::env::var(ALLOW_TEMP).is_ok_and(|v| v.trim() == "1"))
+}
+
+fn temp_words(exe: &std::path::Path, in_temp: bool, allowed: bool) -> Result<(), String> {
+    if !in_temp || allowed {
+        return Ok(());
+    }
+    Err(format!(
+        "{} は Temp のフォルダーにあり、掃除で消える。`~\\.cargo\\bin` か Program Files に置いて、そこから回す（試すときは {ALLOW_TEMP}=1 で通る）",
+        exe.display()
+    ))
+}
+
 /// Words for the person at the console: common.toml's language.
 pub fn table() -> ito_i18n::Table {
     let common = ito_common::base_dir().and_then(|b| ito_common::Common::read(&b).ok()).map(|(c, _)| c).unwrap_or_default();
@@ -1842,6 +1862,12 @@ fn startup_cmd(args: &[String]) -> i32 {
             return 1;
         }
     };
+    if on {
+        if let Err(e) = refuse_temp(&exe) {
+            out(&format!("koyomi: {e}"), true);
+            return 1;
+        }
+    }
     match ito_common::startup::set("koyomi", &exe, &startup_args(), on) {
         Ok(()) => {
             out(
@@ -1866,6 +1892,16 @@ fn startup_cmd(args: &[String]) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::day_range;
+
+    /// an exe in Temp is refused with where to put it instead, unless KOYOMI_ALLOW_TEMP lets a test through.
+    #[test]
+    fn an_exe_in_temp_is_refused_unless_allowed() {
+        let exe = std::path::Path::new(r"C:\Users\a\AppData\Local\Temp\x\koyomi.com");
+        let e = super::temp_words(exe, true, false).expect_err("Temp is refused");
+        assert!(e.contains("Temp") && e.contains("Program Files") && e.contains(super::ALLOW_TEMP));
+        assert_eq!(super::temp_words(exe, true, true), Ok(()));
+        assert_eq!(super::temp_words(exe, false, false), Ok(()));
+    }
 
     #[test]
     fn a_date_range_lists_both_ends() {

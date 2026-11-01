@@ -99,12 +99,13 @@ fn install() -> Result<String, String> {
     if state().is_some() {
         return Err(format!("サービス {} はもう入っている", name()));
     }
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    crate::cli::refuse_temp(&exe)?;
     let account = account();
     let password = ito_service::read_password(&format!("{account} のパスワード（Windows のサインインのもの）: ")).map_err(|e| why(&e))?;
     if password.is_empty() {
         return Err("パスワードが空。パスワードの無い（PIN だけの）アカウントでは入れられない".to_owned());
     }
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let user = std::env::var("USERNAME").unwrap_or_default();
     ito_service::install(&Install {
         name: name(),
@@ -118,7 +119,7 @@ fn install() -> Result<String, String> {
     })
     .map_err(|e| why(&e))?;
     let mut text = format!("サービス {} を入れた（PC が起きたら少し遅れて始まる）", name());
-    if restart_entry() {
+    if restart_entry() == Ok(true) {
         text.push_str("。サインイン時にはトレイだけを起こす");
     }
     if crate::client::running() {
@@ -136,10 +137,13 @@ fn uninstall() -> Result<String, String> {
     }
     ito_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
     ito_service::uninstall(&name()).map_err(|e| why(&e))?;
-    let then = if restart_entry() {
-        "サインイン時にはまたエンジンを起こす"
-    } else {
-        "エンジンは窓を開けば起きる（サインイン時に起こすなら `koyomi startup on`）"
+    let then = match restart_entry() {
+        Ok(true) => "サインイン時にはまたエンジンを起こす",
+        Ok(false) => "エンジンは窓を開けば起きる（サインイン時に起こすなら `koyomi startup on`）",
+        // The entry still starts only the tray: the exe that would take its place is in Temp.
+        Err(_) => {
+            "サインイン時の起動はトレイだけを起こすまま（この exe は Temp にあるので向け直さなかった）。置いた場所の koyomi で `koyomi startup on` を回す"
+        }
     };
     Ok(format!("サービス {} を外した。{then}", name()))
 }
@@ -178,12 +182,17 @@ fn stop() -> Result<String, String> {
 }
 
 /// Points the sign-in entry, when there is one, at what it should start now: the tray beside a
-/// service, the engine without one. True when there was one.
-fn restart_entry() -> bool {
+/// service, the engine without one. True when there was one. An exe in Temp is refused, and the
+/// entry is left as it was.
+fn restart_entry() -> Result<bool, String> {
     if !ito_common::startup::enabled("koyomi") {
-        return false;
+        return Ok(false);
     }
-    std::env::current_exe().is_ok_and(|exe| ito_common::startup::set("koyomi", &exe, &crate::cli::startup_args(), true).is_ok())
+    let Ok(exe) = std::env::current_exe() else {
+        return Ok(false);
+    };
+    crate::cli::refuse_temp(&exe)?;
+    Ok(ito_common::startup::set("koyomi", &exe, &crate::cli::startup_args(), true).is_ok())
 }
 
 /// What the Service Control Manager runs: the engine, until the service is asked to stop.
