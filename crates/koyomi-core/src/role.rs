@@ -6,8 +6,10 @@
 //! placed here.
 //!
 //! A caller may also be narrowed to some nets ([`Nets`], TODO 94): the others are as if they
-//! were not there.
+//! were not there. And a caller may hold a role per net ([`Access`], TODO 101), as JP1's resource
+//! groups do: `run` on 経理's nets, `view` on 基盤's.
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 /// A caller's role. Ordered: `View < Run < Edit`.
@@ -64,25 +66,92 @@ impl Nets {
         }
         let mut out = Vec::new();
         for p in patterns {
-            let p = p.trim();
-            let parts: Vec<&str> = p.split('/').collect();
-            if parts.len() != 2 || parts.iter().any(|s| s.trim().is_empty()) {
-                return Err(format!("nets は <グループ>/<名前> で書く（グループの全部なら 経理/*）: {p}"));
-            }
-            out.push(p.to_owned());
+            out.push(pattern(p).map_err(|e| format!("nets は {e}"))?.to_owned());
         }
         Ok(Nets(out))
     }
 
     /// Whether the net `id` (`<group>/<name>`) is one of these.
     pub fn reaches(&self, id: &str) -> bool {
-        let Some((group, name)) = id.split_once('/').filter(|(_, n)| !n.contains('/')) else { return false };
-        self.0.iter().any(|p| p.split_once('/').is_some_and(|(g, n)| glob(g, group) && glob(n, name)))
+        self.0.iter().any(|p| names(p, id))
     }
 
     pub fn patterns(&self) -> &[String] {
         &self.0
     }
+}
+
+/// One `<group>/<name>` pattern, trimmed; the error says how to write one.
+fn pattern(p: &str) -> Result<&str, String> {
+    let p = p.trim();
+    let parts: Vec<&str> = p.split('/').collect();
+    if parts.len() != 2 || parts.iter().any(|s| s.trim().is_empty()) {
+        return Err(format!("<グループ>/<名前> で書く（グループの全部なら 経理/*）: {p}"));
+    }
+    Ok(p)
+}
+
+/// Whether the pattern names the net `id`.
+fn names(pattern: &str, id: &str) -> bool {
+    let Some((group, name)) = id.split_once('/').filter(|(_, n)| !n.contains('/')) else { return false };
+    pattern.split_once('/').is_some_and(|(g, n)| glob(g, group) && glob(n, name))
+}
+
+/// What a caller may do over HTTP: one role, or one per net (TODO 101), and which nets they see
+/// at all (TODO 94). A net they do not see is as if it were not there, whatever its role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Access {
+    /// The role on a net no pattern in `roles` names, and on what is not one net's (pausing the
+    /// schedule, the ops log, an HA primary taking the schedules back …).
+    pub role: Role,
+    /// The nets they see (`nets`); `None` is every net.
+    pub nets: Option<Nets>,
+    /// A role per pattern (`roles`): a net one or more of these name gets the strongest of those,
+    /// even when that is less than `role` (`基盤/* = "view"` under `role = "run"`).
+    pub roles: Vec<(String, Role)>,
+}
+
+impl Access {
+    /// One role on everything: what a caller without `nets` or `roles` has.
+    pub fn all(role: Role) -> Access {
+        Access { role, nets: None, roles: Vec::new() }
+    }
+
+    /// Whether they see the net `id`.
+    pub fn sees(&self, id: &str) -> bool {
+        self.nets.as_ref().is_none_or(|n| n.reaches(id))
+    }
+
+    /// Their role on the net `id`.
+    pub fn role_on(&self, id: &str) -> Role {
+        self.roles.iter().filter(|(p, _)| names(p, id)).map(|&(_, r)| r).max().unwrap_or(self.role)
+    }
+
+    /// The most they may do anywhere: what the gate in front of every path checks, before the
+    /// net a request is about is known.
+    pub fn top(&self) -> Role {
+        self.roles.iter().map(|&(_, r)| r).fold(self.role, Role::max)
+    }
+
+    /// Whether anything is narrowed, so each request is checked against its net.
+    pub fn narrowed(&self) -> bool {
+        self.nets.is_some() || !self.roles.is_empty()
+    }
+}
+
+/// `[[http.user]]`'s `roles` as `koyomi.toml` writes it (`{ "経理/*" = "run" }`). Empty is an
+/// error: no `roles` at all means `role` on every net.
+pub fn per_net(roles: &BTreeMap<String, String>) -> Result<Vec<(String, Role)>, String> {
+    if roles.is_empty() {
+        return Err("roles を空にしない（どのネットも role なら roles を書かない）".to_owned());
+    }
+    let mut out = Vec::new();
+    for (key, role) in roles {
+        let p = pattern(key).map_err(|e| format!("roles のキーは {e}"))?;
+        let r = Role::parse(role.trim()).map_err(|e| format!("roles の {p} の {e}"))?;
+        out.push((p.to_owned(), r));
+    }
+    Ok(out)
 }
 
 /// `*` is any run of characters (none too); everything else stands for itself.
@@ -187,7 +256,44 @@ mod tests {
     fn nets_that_do_not_read_are_said() {
         assert!(nets(&[]).unwrap_err().contains("空にしない"));
         for bad in ["経理", "経理/", "/日次", "a/b/c", " ", "経理/ "] {
-            assert!(nets(&["共通/日次", bad]).unwrap_err().contains("<グループ>/<名前>"), "{bad}");
+            let e = nets(&["共通/日次", bad]).unwrap_err();
+            assert!(e.starts_with("nets は <グループ>/<名前>"), "{bad}: {e}");
         }
+    }
+
+    fn per(pairs: &[(&str, &str)]) -> Result<Vec<(String, Role)>, String> {
+        per_net(&pairs.iter().map(|&(p, r)| (p.to_owned(), r.to_owned())).collect())
+    }
+
+    /// a net a pattern names gets the strongest role of those naming it, even less than the base;
+    /// the others, and what is no net's, get the base.
+    #[test]
+    fn a_role_per_net_overrides_the_one_role() {
+        let a =
+            Access {
+                role: Role::Run, nets: None, roles: per(&[("経理/*", "edit"), ("経理/月次", "view"), ("基盤/*", "view")]).unwrap()
+            };
+        assert_eq!(a.role_on("経理/月次"), Role::Edit);
+        assert_eq!(a.role_on("経理/日次"), Role::Edit);
+        assert_eq!(a.role_on("基盤/監視"), Role::View);
+        assert_eq!(a.role_on("人事/給与"), Role::Run);
+        assert_eq!(a.top(), Role::Edit);
+        assert!(a.narrowed() && a.sees("人事/給与"));
+        let low = Access { role: Role::View, nets: None, roles: per(&[("経理/*", "run")]).unwrap() };
+        assert_eq!((low.top(), low.role_on("経理/a"), low.role_on("人事/a")), (Role::Run, Role::Run, Role::View));
+        let seen = Access { role: Role::Edit, nets: Some(nets(&["経理/*"]).unwrap()), roles: Vec::new() };
+        assert!(seen.narrowed() && seen.sees("経理/a") && !seen.sees("人事/a"));
+        assert_eq!((seen.top(), seen.role_on("人事/a")), (Role::Edit, Role::Edit));
+        assert!(!Access::all(Role::View).narrowed() && Access::all(Role::View).sees("x/y"));
+    }
+
+    /// each key is a `<group>/<name>` pattern and each value a role; an empty table is not "every net".
+    #[test]
+    fn roles_per_net_that_do_not_read_are_said() {
+        assert_eq!(per(&[(" 経理/* ", " run ")]).unwrap(), [("経理/*".to_owned(), Role::Run)]);
+        assert!(per(&[]).unwrap_err().contains("空にしない"));
+        assert!(per(&[("経理", "run")]).unwrap_err().starts_with("roles のキーは <グループ>/<名前>"));
+        let e = per(&[("経理/*", "admin")]).unwrap_err();
+        assert!(e.starts_with("roles の 経理/* の role は view・run・edit"), "{e}");
     }
 }

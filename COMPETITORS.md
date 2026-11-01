@@ -39,7 +39,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 - Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi の本体は窓で、Web は見る・流す・止める・流し直すまで（定義を直すのは窓）。
 - 長い保管とつながりの広さ。Control-M は Workload Archiving（最長 7 年）と MFT（FTP・SFTP・S3・Azure）、
   Airflow は provider（SFTP・IMAP・HTTP など）で広げる。koyomi の履歴は既定 90 日。
-- 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れる（1 人のロールはどのネットでも同じ）。
+- 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れ、`roles` でネット・グループごとに違うロールを持てる（JP1 の 5 つほど細かくはない）。
 
 **差が無くなったところ**
 
@@ -113,7 +113,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H9 | 複数の PC・エージェント | ○ `[[remote]]`（LAN、TLS） | ○ マネージャーから実行エージェント・エージェントグループで実行 | ○ 各ホストに Agent、Host Group で振り分け | ○ SSH・WinRM で複数のノードに実行。Runner もある | △ Celery・Edge・Kubernetes executor（各 provider）。Edge の Windows は PoC | △ schtasks /s・-CimSession で遠隔の PC を 1 台ずつ。集中管理なし |
 | H10 | Web UI | ○ 今日・履歴・ログを見る、流す・止める・流し直す・飛ばす・保留。見た目は窓の今日の画面と同じ（TODO 81）。定義を直すのは窓 | ○ Web GUI（ジョブポータル／マネジメントポータル）で監視・実行・保留。Web Console 要 | ○ Control-M Web（Planning・Monitoring 等）をブラウザで | ○ ブラウザーの UI が本体 | ○ React の Web UI（API server）。17 言語 | △ Windows Admin Center の Scheduled tasks ツール（別製品・履歴なし） |
 | H11 | REST API・HTTP で起動 | ○ `POST /runs` など | ○ HTTP の API：ユニットの実行登録と実行情報の取得 | ○ Automation API の REST（run/order・run status） | ○ REST API と Webhook（Run Job）。高度な Webhook は有償 | ○ REST API（v2）で DAG run の起動・照会 | × GUI と COM API・PowerShell・schtasks のみ。HTTP の口なし |
-| H12 | 利用者とロール | ○ `[[http.user]]` に view・run・edit。`nets = ["経理/*"]` でネット・グループごとに絞る | ○ 資源グループごとに 5 種のロール（JP1_AJS_Admin〜Guest） | ○ Role で権限。既定ロール 3 つ、API でも設定可 | ○ ACL ポリシーでプロジェクト・ジョブごとの権限 | △ 標準の Simple auth manager は固定 4 ロールで開発用。本番 RBAC は FAB 等の provider | △ ロールなし。タスクごとの DACL で読む・変える・実行を分ける |
+| H12 | 利用者とロール | ○ `[[http.user]]` に view・run・edit。`nets = ["経理/*"]` でネット・グループごとに絞り、`roles = { "経理/*" = "run" }` でネットごとに違うロール | ○ 資源グループごとに 5 種のロール（JP1_AJS_Admin〜Guest） | ○ Role で権限。既定ロール 3 つ、API でも設定可 | ○ ACL ポリシーでプロジェクト・ジョブごとの権限 | △ 標準の Simple auth manager は固定 4 ロールで開発用。本番 RBAC は FAB 等の provider | △ ロールなし。タスクごとの DACL で読む・変える・実行を分ける |
 | H13 | メールを受けて起動 | ○ `[[when]] mail`（IMAP） | △ メール受信監視ジョブ。Windows は 32bit 版 Outlook 必須（64bit・365 版不可） | ? メール受信での起動は未発見（Mail は送信の Action のみ） | ? メールでの起動は見当たらず | △ IMAP provider の ImapAttachmentSensor（添付の名前を待つ） | × メールのトリガーなし |
 | H14 | 同じフローを並べて動かす（上限つき） | ○ `max` | △ ルートジョブネットごとに多重起動の可否。本数の上限は記載なし | ○ 同じ folder を New で何度も order 可。同時数は Resource:Pool | ○ Multiple Executions と Limit で同時の本数の上限 | ○ DAG の max_active_runs・設定の max_active_runs_per_dag | ○ MultipleInstancesPolicy=Parallel。同時数の上限は指定できない |
 | H15 | サービスとして動かす（サインインなし） | ○ 入れるのに管理者のターミナルが要る | ○ Windows サービス。JP1/Base の起動管理で OS 起動時に自動起動 | ○ Windows の Agent は既定で Local System のサービス | ○ Windows サービスとして入れられ、サインインなしで動く | △ Linux 用の systemd unit あり。Windows は WSL2/コンテナのみでネイティブ非対応 | ○ Password・S4U（schtasks /np）でログオンなしに実行 |

@@ -35,6 +35,12 @@
 //! answer is cut to them in [`narrow`], a net or run outside answers as one that is not there,
 //! and a proposal outside or anything about every net gets 403. `GET /me` says the patterns.
 //! An HA standby copies every net, so its user has no `nets`.
+//!
+//! A `[[http.user]]` with `roles = { "経理/*" = "run", "基盤/*" = "view" }` (TODO 101) has a role
+//! per net, as JP1's resource groups do. The gate in front of every path lets through what their
+//! strongest role reaches; [`narrow`] then checks their role on the net the request is about, and
+//! what is no one net's (an HA primary taking its schedules back) against `role`. `GET /nets`
+//! says their role on each net, and `GET /me` the patterns, so the page shows each net's buttons.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -43,7 +49,7 @@ use std::time::{Duration, Instant};
 
 use ito_http::{Response, Server};
 use koyomi_core::config;
-use koyomi_core::role::{self, Nets, Role};
+use koyomi_core::role::{self, Access, Nets, Role};
 use koyomi_core::run::{Run, State};
 use serde::Deserialize;
 
@@ -158,21 +164,23 @@ fn token(name: &str) -> Result<String, String> {
     ito_http::token_from_secret("koyomi", name).map_err(|e| format!("token の秘密 {name}: {e}（koyomi secret set {name}）"))
 }
 
-/// Who may do what: `default` for `[http]`'s token, then each `[[http.user]]`.
+/// Who may do what at most: `default` for `[http]`'s token, then each `[[http.user]]` with the
+/// strongest of `role` and their `roles` (TODO 101), which [`within`] narrows per net.
 fn roles(cfg: &config::Http) -> BTreeMap<String, Role> {
     let mut roles = BTreeMap::new();
     if !cfg.secret().is_empty() {
         roles.insert("default".to_owned(), Role::Run);
     }
     for u in &cfg.user {
-        roles.insert(u.name.trim().to_owned(), u.role());
+        roles.insert(u.name.trim().to_owned(), u.access().top());
     }
     roles
 }
 
-/// The `[[http.user]]` narrowed to some nets with `nets` (TODO 94); the others reach every net.
-fn narrowed(cfg: &config::Http) -> BTreeMap<String, Nets> {
-    cfg.user.iter().filter_map(|u| u.nets().map(|n| (u.name.trim().to_owned(), n))).collect()
+/// The `[[http.user]]` narrowed with `nets` (TODO 94) or `roles` (TODO 101); the others have one
+/// role on every net.
+fn access(cfg: &config::Http) -> BTreeMap<String, Access> {
+    cfg.user.iter().map(|u| (u.name.trim().to_owned(), u.access())).filter(|(_, a)| a.narrowed()).collect()
 }
 
 fn start(cfg: &config::Http) -> Result<Server, String> {
@@ -192,12 +200,12 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     } else {
         format!("127.0.0.1:{}", cfg.port)
     };
-    let (roles, narrowed) = (roles(cfg), narrowed(cfg));
+    let (roles, access) = (roles(cfg), access(cfg));
     let serve = move |req: ito_http::Request| {
         let by = req.who.clone().unwrap_or_default();
         let ask = |r: &Request| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) });
-        page(&req).or_else(|| allowed(&req, &roles)).or_else(|| me(&req, &roles, &narrowed)).unwrap_or_else(|| match narrowed.get(&by) {
-            Some(nets) => within(&req, nets, ask),
+        page(&req).or_else(|| allowed(&req, &roles)).or_else(|| me(&req, &roles, &access)).unwrap_or_else(|| match access.get(&by) {
+            Some(a) => within(&req, a, ask),
             None => handle(&req, ask),
         })
     };
@@ -264,9 +272,10 @@ fn theme_css(base: Option<&std::path::Path>) -> String {
     })
 }
 
-/// `GET /me`: who signed in, their role and the nets they are narrowed to (`null`: every net),
-/// so the page shows only the buttons it may use.
-fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, narrowed: &BTreeMap<String, Nets>) -> Option<Response> {
+/// `GET /me`: who signed in, their role, the nets they are narrowed to (`null`: every net) and
+/// their role per net (`roles`, `null`: `role` on every net), so the page shows only the buttons
+/// it may use.
+fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap<String, Access>) -> Option<Response> {
     if req.path.trim_end_matches('/') != "/me" {
         return None;
     }
@@ -274,48 +283,76 @@ fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, narrowed: &BTreeM
         return Some(Response::error(405, "GET で読む"));
     }
     let who = req.who.as_deref().unwrap_or_default();
-    let role = roles.get(who).map_or("view", |r| r.name());
-    let nets = narrowed.get(who).map(Nets::patterns);
-    Some(Response::ok(serde_json::json!({ "who": who, "role": role, "nets": nets })))
+    let a = access.get(who);
+    let role = a.map(|a| a.role).or_else(|| roles.get(who).copied()).map_or("view", Role::name);
+    let nets = a.and_then(|a| a.nets.as_ref()).map(Nets::patterns);
+    let per: Option<BTreeMap<&str, &str>> =
+        a.filter(|a| !a.roles.is_empty()).map(|a| a.roles.iter().map(|(p, r)| (p.as_str(), r.name())).collect());
+    Some(Response::ok(serde_json::json!({ "who": who, "role": role, "nets": nets, "roles": per })))
 }
 
-/// One request of a caller narrowed to `nets` (TODO 94): every question to the engine goes
-/// through [`narrow`], and one it refuses makes the answer 403.
-fn within(req: &ito_http::Request, nets: &Nets, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+/// One request of a caller narrowed by `nets` (TODO 94) or `roles` (TODO 101): every question
+/// to the engine goes through [`narrow`], and one it refuses makes the answer 403. `GET /nets`
+/// also says their role on each net.
+fn within(req: &ito_http::Request, access: &Access, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    let needs = role::needs(&req.method, &req.path);
     let refused = RefCell::new(None);
-    let out = handle(req, |r| {
-        narrow(r, nets, &ask).unwrap_or_else(|e| {
+    let narrowed = |r: &Request| {
+        narrow(r, access, needs, &ask).unwrap_or_else(|e| {
             *refused.borrow_mut() = Some(e.clone());
             Err(e)
         })
-    });
+    };
+    let out = if req.method == "GET" && req.path.trim_end_matches('/') == "/nets" {
+        nets(narrowed, |id| Some(access.role_on(id)))
+    } else {
+        handle(req, narrowed)
+    };
     match refused.into_inner() {
         Some(e) => Response::error(403, &e),
         None => out,
     }
 }
 
-/// What a caller narrowed to `nets` gets for `r`: the engine's answer cut to those nets, or
-/// `Err` when it is refused. Deny by default: what is not named here is refused, as is what is
-/// about every net. A net outside, and a run of one, answer as ones that are not there, so
-/// nothing says they exist; a proposal outside is refused, whether the net is there or not.
-fn narrow(r: &Request, nets: &Nets, ask: &impl Fn(&Request) -> Result<String, String>) -> Result<Result<String, String>, String> {
+/// What a caller narrowed by `access` gets for `r`, sent for an HTTP request that needs `needs`:
+/// the engine's answer cut to the nets they see, or `Err` when it is refused. Deny by default:
+/// what is not named here is refused to a caller with `nets`, as is what is about every net. A
+/// net they do not see, and a run of one, answer as ones that are not there, so nothing says they
+/// exist; a proposal outside is refused, whether the net is there or not. On a net they see, their
+/// role there must reach `needs`; what is no one net's needs it of `role`.
+fn narrow(
+    r: &Request,
+    access: &Access,
+    needs: Role,
+    ask: &impl Fn(&Request) -> Result<String, String>,
+) -> Result<Result<String, String>, String> {
+    let may = |id: &str| {
+        let has = access.role_on(id);
+        if has.allows(needs) {
+            Ok(())
+        } else {
+            Err(format!("{id} では {has} のロール。これには {needs} が要る"))
+        }
+    };
+    let all = access.nets.is_none();
+    let sees = |id: &str| access.sees(id);
     Ok(match r {
+        Request::Status | Request::List | Request::Runs | Request::History { .. } if all => ask(r),
         Request::Status => ask(r).map(|s| s.lines().next().and_then(|l| l.split(':').next()).unwrap_or_default().to_owned()),
         Request::Handover { release: false } => ask(r),
         Request::List => ask(r).and_then(|t| Snapshot::parse(&t)).map(|s| {
             Snapshot {
-                defs: s.defs.into_iter().filter(|d| nets.reaches(&d.id)).collect(),
-                held: s.held.into_iter().filter(|id| nets.reaches(id)).collect(),
-                held_jobs: s.held_jobs.into_iter().filter(|h| nets.reaches(&h.net)).collect(),
-                skips: s.skips.into_iter().filter(|k| nets.reaches(&k.id)).collect(),
+                defs: s.defs.into_iter().filter(|d| sees(&d.id)).collect(),
+                held: s.held.into_iter().filter(|id| sees(id)).collect(),
+                held_jobs: s.held_jobs.into_iter().filter(|h| sees(&h.net)).collect(),
+                skips: s.skips.into_iter().filter(|k| sees(&k.id)).collect(),
                 paused: s.paused,
                 ..Snapshot::default()
             }
             .to_toml()
         }),
         Request::Runs | Request::History { .. } => ask(r).and_then(|t| Runs::parse(&t)).map(|mut runs| {
-            runs.runs.retain(|run| nets.reaches(&run.jobnet));
+            runs.runs.retain(|run| sees(&run.jobnet));
             runs.to_toml()
         }),
         Request::Run { id, .. }
@@ -323,21 +360,33 @@ fn narrow(r: &Request, nets: &Nets, ask: &impl Fn(&Request) -> Result<String, St
         | Request::Hold { id, .. }
         | Request::Release { id, .. }
         | Request::SkipNext { id, .. } => {
-            if nets.reaches(id) {
+            if sees(id) {
+                may(id)?;
                 ask(r)
             } else {
                 Err(format!("定義がない: {id}"))
             }
         }
-        Request::Propose { id, .. } if nets.reaches(id) => ask(r),
-        Request::Propose { id, .. } => return Err(format!("nets の外なので出せない: {id}（出せるのは {}）", nets.patterns().join("・"))),
+        Request::Propose { id, .. } if sees(id) => {
+            may(id)?;
+            ask(r)
+        }
+        Request::Propose { id, .. } => {
+            let within = access.nets.as_ref().map(|n| n.patterns().join("・")).unwrap_or_default();
+            return Err(format!("nets の外なので出せない: {id}（出せるのは {within}）"));
+        }
         Request::Kill { run, .. } | Request::Rerun { run, .. } | Request::Skip { run, .. } | Request::Log { run, .. } => {
             match run_net(run, ask) {
-                Some(net) if nets.reaches(&net) => ask(r),
+                Some(net) if sees(&net) => {
+                    may(&net)?;
+                    ask(r)
+                }
                 _ => Err(format!("実行がない: {run}")),
             }
         }
-        _ => return Err("nets で絞った利用者にはできない（全部のネットにかかる）".to_owned()),
+        _ if !all => return Err("nets で絞った利用者にはできない（全部のネットにかかる）".to_owned()),
+        _ if access.role.allows(needs) => ask(r),
+        _ => return Err(format!("ネットごとでないものは {} のロール。これには {needs} が要る", access.role)),
     })
 }
 
@@ -456,7 +505,7 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         },
         ("GET", "/runs", ..) => list_runs(req, ask),
         ("GET", "/health", ..) => health(ask),
-        ("GET", "/nets", ..) => nets(ask),
+        ("GET", "/nets", ..) => nets(ask, |_| None),
         ("GET", _, Some(id), _) => look(id, ask),
         ("GET", _, _, Some(id)) => job_log(req, id, ask),
         (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
@@ -513,15 +562,16 @@ fn release_standby(ask: impl Fn(&Request) -> Result<String, String>) -> Response
 /// With them, as the window's 今日 counts them: `today`, the starts still to come today, and
 /// `next`, the next one (none for a net not approved or on hold), `then`, the one after the last
 /// of `today` (each start's 次の回); and `skips`, the times `koyomi skip-next` skips that have not come.
-fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+/// For a caller with a role per net, `role`: theirs on that net (`role_of`, TODO 101).
+fn nets(ask: impl Fn(&Request) -> Result<String, String>, role_of: impl Fn(&str) -> Option<Role>) -> Response {
     match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
-        Ok(snap) => Response::ok(nets_at(&snap, chrono::Local::now().naive_local())),
+        Ok(snap) => Response::ok(nets_at(&snap, chrono::Local::now().naive_local(), role_of)),
         Err(e) => Response::error(500, &e),
     }
 }
 
 /// What `GET /nets` answers at `now`.
-fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime) -> serde_json::Value {
+fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime, role_of: impl Fn(&str) -> Option<Role>) -> serde_json::Value {
     let mut today: BTreeMap<&str, Vec<chrono::NaiveDateTime>> = BTreeMap::new();
     for (d, at) in snap.starts_today(now) {
         today.entry(d.id.as_str()).or_default().push(at);
@@ -533,7 +583,7 @@ fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime) -> serde_json::Value {
             let mut starts = today.remove(d.id.as_str()).unwrap_or_default();
             starts.sort();
             let then = snap.next_start(d, starts.last().copied().unwrap_or(now));
-            serde_json::json!({
+            let mut net = serde_json::json!({
                 "id": d.id,
                 "group": d.group,
                 "name": d.label(),
@@ -545,7 +595,11 @@ fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime) -> serde_json::Value {
                 "next": snap.next_start(d, now),
                 "then": then,
                 "skips": snap.skips.iter().filter(|s| s.id == d.id && s.at > now).map(|s| s.at).collect::<Vec<_>>(),
-            })
+            });
+            if let Some(r) = role_of(&d.id) {
+                net["role"] = r.name().into();
+            }
+            net
         })
         .collect();
     serde_json::json!({ "nets": nets, "paused": snap.paused, "warnings": snap.warnings })
@@ -814,11 +868,12 @@ mod tests {
                 _ => Ok("ok".to_owned()),
             }
         };
-        let nets = Nets::parse(&["経理/*".to_owned()]).unwrap();
+        let nets = Access { role: Role::Edit, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
         let go = |method: &str, path: &str, body: &str, q: &[(&str, &str)]| within(&with_query(req(method, path, body), q), &nets, ask);
 
         let n = go("GET", "/nets", "", &[]);
         assert_eq!((n.status, n.json["nets"].as_array().map(Vec::len), n.json["nets"][0]["id"].as_str()), (200, Some(1), Some("経理/a")));
+        assert_eq!(n.json["nets"][0]["role"].as_str(), Some("edit"));
         assert_eq!((n.json["nets"][0]["held"].as_bool(), n.json["warnings"].as_array().map(Vec::len)), (Some(true), Some(0)));
         assert_eq!(go("GET", "/health", "", &[]).json["status"].as_str(), Some("koyomi engine pid 7"));
         let r = go("GET", "/runs", "", &[]);
@@ -857,24 +912,27 @@ mod tests {
         // What this does not name, or what is about every net, is refused.
         for r in [Request::Pause, Request::Stop, Request::Delete { id: "経理/a".into() }, Request::Ops { from: "a".into(), to: "b".into() }]
         {
-            assert!(narrow(&r, &nets, &ask).is_err(), "{r:?}");
+            assert!(narrow(&r, &nets, Role::Edit, &ask).is_err(), "{r:?}");
         }
-        // With no `nets`, every net, as before.
-        assert_eq!(handle(&req("GET", "/nets", ""), ask).json["nets"].as_array().map(Vec::len), Some(2));
+        // With no `nets`, every net, as before, and no role per net.
+        let all = handle(&req("GET", "/nets", ""), ask);
+        assert_eq!((all.json["nets"].as_array().map(Vec::len), all.json["nets"][0].get("role")), (Some(2), None));
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "人事/new", "text": "x"}"#), ask).status, 200);
     }
 
-    /// only the users with `nets` are narrowed, and `/me` says to what.
+    /// only the users with `nets` or `roles` are narrowed, and `/me` says to what.
     #[test]
     fn the_narrowed_users_are_those_with_nets() {
         let cfg = config::Config::parse(
-            "[http]\nport = 8790\ntoken = \"secret:t\"\n[[http.user]]\nname = \"sato\"\nrole = \"edit\"\ntoken = \"secret:s\"\nnets = [\"経理/*\", \"共通/日次\"]\n[[http.user]]\nname = \"ito\"\nrole = \"view\"\ntoken = \"secret:i\"\n",
+            "[http]\nport = 8790\ntoken = \"secret:t\"\n[[http.user]]\nname = \"sato\"\nrole = \"edit\"\ntoken = \"secret:s\"\nnets = [\"経理/*\", \"共通/日次\"]\n[[http.user]]\nname = \"ito\"\nrole = \"view\"\ntoken = \"secret:i\"\n[[http.user]]\nname = \"kato\"\nrole = \"view\"\ntoken = \"secret:k\"\nroles = { \"経理/*\" = \"run\" }\n",
         )
         .unwrap();
         let http = cfg.http.as_ref().unwrap();
-        let (known, narrowed) = (roles(http), narrowed(http));
-        assert_eq!(narrowed.keys().collect::<Vec<_>>(), ["sato"]);
-        assert!(narrowed["sato"].reaches("共通/日次") && !narrowed["sato"].reaches("共通/週次"));
+        let (known, narrowed) = (roles(http), access(http));
+        assert_eq!(narrowed.keys().collect::<Vec<_>>(), ["kato", "sato"]);
+        assert!(narrowed["sato"].sees("共通/日次") && !narrowed["sato"].sees("共通/週次"));
+        // The gate lets kato through to what run reaches; the net decides the rest.
+        assert_eq!((known["kato"], known["ito"]), (Role::Run, Role::View));
         let as_who = |who: &str| {
             let mut r = req("GET", "/me", "");
             r.who = Some(who.into());
@@ -882,6 +940,75 @@ mod tests {
         };
         assert_eq!(as_who("sato")["nets"], serde_json::json!(["経理/*", "共通/日次"]));
         assert_eq!((as_who("sato")["role"].as_str(), as_who("ito")["nets"].is_null()), (Some("edit"), true));
+        assert_eq!((as_who("sato")["roles"].is_null(), as_who("ito")["roles"].is_null()), (true, true));
+        let kato = as_who("kato");
+        assert_eq!(
+            (kato["role"].as_str(), kato["nets"].is_null(), &kato["roles"]),
+            (Some("view"), true, &serde_json::json!({ "経理/*": "run" }))
+        );
+    }
+
+    /// `roles` gives a user a role per net (TODO 101): what a request does to a net needs that
+    /// net's role, a net no pattern names keeps `role`, and so does what is no one net's.
+    #[test]
+    fn a_user_has_a_role_per_net() {
+        let asked = RefCell::new(Vec::new());
+        let ask = |r: &Request| {
+            asked.borrow_mut().push(format!("{r:?}"));
+            match r {
+                Request::List => Ok(Snapshot { defs: vec![def("経理/a"), def("経理/b"), def("人事/b")], ..Default::default() }.to_toml()),
+                Request::Runs => Ok(runs_of(&[("20261031-090000-01", "経理/a"), ("20261031-090000-02", "人事/b")])),
+                Request::History { .. } => Ok(runs_of(&[])),
+                Request::Show { id } => Ok(toml::to_string(&def(id)).expect("def")),
+                Request::Run { .. } => Ok("20261031-100000-01".to_owned()),
+                Request::Handover { .. } => Ok(r#"{"role": "standby"}"#.to_owned()),
+                _ => Ok("ok".to_owned()),
+            }
+        };
+        let per = |base: Role, nets: Option<&[&str]>, roles: &[(&str, &str)]| Access {
+            role: base,
+            nets: nets.map(|n| Nets::parse(&n.iter().map(|p| p.to_string()).collect::<Vec<_>>()).unwrap()),
+            roles: role::per_net(&roles.iter().map(|&(p, r)| (p.to_owned(), r.to_owned())).collect()).unwrap(),
+        };
+        let go =
+            |a: &Access, method: &str, path: &str, body: &str, q: &[(&str, &str)]| within(&with_query(req(method, path, body), q), a, ask);
+
+        // sato: view, but run on 経理.
+        let sato = per(Role::View, None, &[("経理/*", "run")]);
+        assert_eq!(go(&sato, "POST", "/runs", r#"{"net": "経理/a"}"#, &[]).status, 202);
+        let r = go(&sato, "POST", "/runs", r#"{"net": "人事/b"}"#, &[]);
+        assert_eq!(r.status, 403, "{:?}", r.json);
+        assert!(r.json["error"].as_str().unwrap_or_default().contains("人事/b では view のロール"), "{:?}", r.json);
+        assert_eq!(go(&sato, "GET", "/nets/text", "", &[("net", "経理/a")]).status, 403);
+        assert_eq!(go(&sato, "POST", "/nets/hold", r#"{"net": "人事/b"}"#, &[]).status, 403);
+        assert_eq!(go(&sato, "POST", "/runs/20261031-090000-02/stop", "", &[]).status, 403);
+        assert_eq!(go(&sato, "POST", "/runs/20261031-090000-01/stop", "", &[]).status, 200);
+        assert_eq!(go(&sato, "GET", "/runs/20261031-090000-02/log", "", &[("job", "x")]).status, 200);
+        assert_eq!(go(&sato, "GET", "/runs", "", &[]).json["runs"].as_array().map(Vec::len), Some(2));
+        let n = go(&sato, "GET", "/nets", "", &[]);
+        let role_of = |i: usize| n.json["nets"][i]["role"].as_str().map(str::to_owned);
+        assert_eq!(n.json["nets"].as_array().map(Vec::len), Some(3));
+        assert_eq!((role_of(0), role_of(2)), (Some("run".into()), Some("view".into())), "{:?}", n.json);
+        assert_eq!(go(&sato, "POST", "/standby/release", "{}", &[]).status, 403);
+        // What was refused never reached the engine.
+        let sent = |a: &String| {
+            ((a.starts_with("Run {") || a.starts_with("Hold {")) && a.contains("人事")) || (a.starts_with("Kill {") && a.contains("-02\""))
+        };
+        assert!(!asked.borrow().iter().any(sent), "{:?}", asked.borrow());
+
+        // ito: run, but only view on 人事; what is no one net's goes by run.
+        let ito = per(Role::Run, None, &[("人事/*", "view")]);
+        assert_eq!(go(&ito, "POST", "/runs", r#"{"net": "経理/b"}"#, &[]).status, 202);
+        assert_eq!(go(&ito, "POST", "/runs", r#"{"net": "人事/b"}"#, &[]).status, 403);
+        assert_eq!(go(&ito, "POST", "/standby/release", "{}", &[]).status, 200);
+        assert_eq!(go(&ito, "GET", "/health", "", &[]).status, 200);
+
+        // Both: a net they do not see is not there, whatever its role.
+        let both = per(Role::View, Some(&["経理/*"]), &[("経理/a", "run")]);
+        assert_eq!(go(&both, "POST", "/runs", r#"{"net": "経理/a"}"#, &[]).status, 202);
+        assert_eq!(go(&both, "POST", "/runs", r#"{"net": "経理/b"}"#, &[]).status, 403);
+        assert_eq!(go(&both, "POST", "/runs", r#"{"net": "人事/b"}"#, &[]).status, 422);
+        assert_eq!(go(&both, "GET", "/nets", "", &[]).json["nets"].as_array().map(Vec::len), Some(2));
     }
 
     /// rerun, skip, hold and release ask as `koyomi rerun`, `skip`, `hold` and `release` do.
@@ -1065,7 +1192,7 @@ mod tests {
         };
         assert!(handle(&req("GET", "/health", ""), plain).json.get("ha").is_none());
         // A user narrowed to some nets reads "ha" but cannot take the schedules back.
-        let nets = Nets::parse(&["経理/*".to_owned()]).unwrap();
+        let nets = Access { role: Role::Edit, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
         assert_eq!(within(&req("GET", "/health", ""), &nets, ask).json["ha"]["role"].as_str(), Some("standby"));
         assert_eq!(within(&req("POST", "/standby/release", "{}"), &nets, let_go).status, 403);
     }
@@ -1159,7 +1286,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let v = nets_at(&snap, at("2026-10-31 07:30"));
+        let v = nets_at(&snap, at("2026-10-31 07:30"), |_| None);
         let a = &v["nets"][0];
         assert_eq!(a["today"], serde_json::json!(["2026-10-31T12:00:00", "2026-10-31T18:00:00"]));
         assert_eq!((a["next"].as_str(), a["then"].as_str()), (Some("2026-10-31T12:00:00"), Some("2026-11-01T00:00:00")));

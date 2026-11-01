@@ -1442,3 +1442,21 @@ Setup: a few confirmed nets, one with a long name (`経理/とても長い名前
 | 104.3 | Narrow the window until the net list, a run's jobs and the net page's jobs no longer fit | The word columns (name, command, folder, reason) end in `…` and the table stays inside the window; ID, kind and times stay whole; the heads end in `…` too, and hovering a cut cell or head shows all of it |
 | 104.4 | Narrow the window on a calendar page, in the editor with nothing to save, and on the PC list | Each row of buttons wraps to a new line instead of pushing the page off the right side |
 | 104.5 | Look at the headings of the net list, the net page, a run's jobs and the right pane | All the same size and weight; a screen reader reads them as headings |
+
+## 105. A role per net over HTTP (`roles`; TODO 101)
+
+As §100 without `nets` on `kato`, plus `roles = { "経理/*" = "run" }` on `sato` (`S`, `role = "view"`) and `roles = { "人事/*" = "view" }` on `ito` (`I`, `role = "run"`). Nets `経理/a` and `人事/b`, both confirmed, each with a run today.
+
+| # | Do | Expect |
+|---|---|---|
+| 105.1 | `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/me` | `"role": "view"`, `"roles": {"経理/*": "run"}`; with `K`, `"roles": null` |
+| 105.2 | `GET /nets` with `S` | Both nets; `経理/a` has `"role": "run"`, `人事/b` `"role": "view"`; with `K`, no `role` on the nets |
+| 105.3 | `POST /runs` `{"net":"経理/a"}` with `S`; then `{"net":"人事/b"}` | 202 and it runs; then 403 `人事/b では view のロール。これには run が要る`, nothing starts |
+| 105.4 | `POST /runs/<人事/b's run>/stop` and `POST /nets/hold` `{"net":"人事/b"}` with `S` | 403 both times; nothing stops or is held. With `経理/a` (and a run of it still going) both are done |
+| 105.5 | `GET /runs/<人事/b's run>/log?job=…` with `S` | 200 with the log (view is enough) |
+| 105.6 | `GET "/nets/text?net=経理/a"` with `S` | 403 `sato は run のロール。これには edit が要る` (the strongest of `S`'s roles is still not edit) |
+| 105.7 | `POST /runs` `{"net":"人事/b"}` with `I`; then `{"net":"経理/a"}` | 403 `人事/b では view のロール…`; then 202 |
+| 105.8 | On the standby of §99, `POST /standby/release` with `S`; then with `I` | 403 `ネットごとでないものは view のロール。これには run が要る`; then 200 |
+| 105.9 | Open the Web UI and sign in with `S` | Next to the name, `sato（view、経理/* は run）`. `経理/a` and its run have 今すぐ流す, 保留, 強制終了 / 流し直す and スキップ; `人事/b` and its run have none of them |
+| 105.10 | `koyomi check` with `roles = {}`, `roles = { "経理" = "run" }` and `roles = { "経理/*" = "admin" }` | Each refused: `[[http.user]] sato の roles を空にしない…`, `… roles のキーは <グループ>/<名前> で書く…`, `… roles の 経理/* の role は view・run・edit のどれか…` |
+| 105.11 | This PC's window and `koyomi run 人事/b` | Both work as before |

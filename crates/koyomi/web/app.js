@@ -86,7 +86,12 @@ function say(text, bad) {
   m.className = bad ? "message bad" : "message";
 }
 
-const can = (role) => view.me && RANK[view.me.role] >= RANK[role];
+// The role on one net: what GET /nets says for a user with a role per net (TODO 101), else theirs.
+const roleOn = (id) => {
+  const n = netOf(id);
+  return (n && n.role) || (view.me && view.me.role);
+};
+const canOn = (id, role) => view.me && RANK[roleOn(id)] >= RANK[role];
 
 // Times as the window writes them. The engine sends local times without a zone.
 const pad = (n) => String(n).padStart(2, "0");
@@ -201,7 +206,8 @@ async function start() {
   $("signin").hidden = true;
   $("app").hidden = false;
   $("signout").hidden = false;
-  $("who").textContent = `${view.me.who}（${view.me.role}）`;
+  const per = view.me.roles ? Object.entries(view.me.roles).map(([p, r]) => `${p} は ${r}`) : [];
+  $("who").textContent = `${view.me.who}（${[view.me.role, ...per].join("、")}）`;
   say("");
   await refresh();
 }
@@ -457,10 +463,10 @@ function drawRun(r) {
   note(r.reason || "");
 
   const actions = $("pane-actions");
-  if (can("run") && !r.over) {
+  if (canOn(r.jobnet, "run") && !r.over) {
     actions.append(button("強制終了", () => kill(r), "danger", { data: { key: "a:kill" } }));
   }
-  if (can("run") && r.over) actions.append(rerunMenu(r));
+  if (canOn(r.jobnet, "run") && r.over) actions.append(rerunMenu(r));
   actions.append(button("ジョブネットを開く", () => pick({ net: r.jobnet }), "quiet", { data: { key: "a:net" } }));
 
   const body = $("pane-body");
@@ -471,7 +477,7 @@ function drawRun(r) {
     const name = el("td", { class: "name" }, j.name || j.id);
     const acts = el("td", { class: "acts" });
     if (j.started) acts.append(button("ログ", () => showLog(r.id, j.id), "small", { data: { key: `l:${j.id}` } }));
-    if (can("run") && !r.over && NOT_STARTED.includes(j.state)) {
+    if (canOn(r.jobnet, "run") && !r.over && NOT_STARTED.includes(j.state)) {
       acts.append(button("スキップ", () => skipJob(r, j), "small", { data: { key: `s:${j.id}` } }));
     }
     const on = view.log && view.log.job === j.id;
@@ -526,7 +532,7 @@ function drawNet(n) {
   else if (n.standing !== "confirmed") note("承認するまで流れません。承認は窓でします");
 
   const actions = $("pane-actions");
-  if (can("run")) {
+  if (canOn(n.id, "run")) {
     const ready = n.standing === "confirmed" && !n.held;
     actions.append(button("今すぐ流す", () => runNow(n), "primary", { disabled: !ready, data: { key: "a:now" } }));
     actions.append(n.held

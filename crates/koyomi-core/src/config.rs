@@ -206,6 +206,10 @@ pub struct HttpUser {
     /// The nets they reach, as `<group>/<name>` patterns (`経理/*`, TODO 94); none: every net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nets: Option<Vec<String>>,
+    /// A role per net, keyed by the same patterns (`{ "経理/*" = "run" }`, TODO 101): a net one
+    /// names gets the strongest of those that name it; the rest keep `role`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub roles: Option<std::collections::BTreeMap<String, String>>,
 }
 
 impl HttpUser {
@@ -218,6 +222,16 @@ impl HttpUser {
     /// ones that do not reach nothing.
     pub fn nets(&self) -> Option<crate::role::Nets> {
         self.nets.as_deref().map(|p| crate::role::Nets::parse(p).unwrap_or_default())
+    }
+
+    /// What they may do: `role`, `nets` and `roles` together. [`Config::parse`] has checked
+    /// `roles` reads; one that does not adds nothing.
+    pub fn access(&self) -> crate::role::Access {
+        crate::role::Access {
+            role: self.role(),
+            nets: self.nets(),
+            roles: self.roles.as_ref().and_then(|r| crate::role::per_net(r).ok()).unwrap_or_default(),
+        }
     }
 
     /// The name the token is kept under.
@@ -296,6 +310,9 @@ impl Http {
             }
             if let Some(p) = &u.nets {
                 crate::role::Nets::parse(p).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+            }
+            if let Some(r) = &u.roles {
+                crate::role::per_net(r).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
             }
         }
         Ok(())
@@ -533,6 +550,24 @@ evry = \"5m\"
         let e = Config::parse(&format!("{head}nets = [\"経理\"]\n")).unwrap_err();
         assert!(e.contains("[[http.user]] sato の nets は <グループ>/<名前>"), "{e}");
         assert!(Config::parse(&format!("{head}nets = []\n")).unwrap_err().contains("空にしない"));
+    }
+
+    /// `roles` gives a role per net; without it `role` is on every net, as before.
+    #[test]
+    fn an_http_user_may_have_a_role_per_net() {
+        use crate::role::Role;
+        let head = "[http]\nport = 8790\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntoken = \"secret:sato\"\n";
+        let c = Config::parse(&format!("{head}roles = {{ \"経理/*\" = \"run\", \"基盤/監視\" = \"edit\" }}\n")).unwrap();
+        let a = c.http.unwrap().user[0].access();
+        assert_eq!((a.role, a.nets.as_ref(), a.roles.len()), (Role::View, None, 2));
+        assert_eq!((a.role_on("経理/月次"), a.role_on("基盤/監視"), a.role_on("人事/給与")), (Role::Run, Role::Edit, Role::View));
+        let plain = Config::parse(head).unwrap().http.unwrap().user[0].access();
+        assert_eq!(plain, crate::role::Access::all(Role::View));
+        let e = Config::parse(&format!("{head}roles = {{ \"経理\" = \"run\" }}\n")).unwrap_err();
+        assert!(e.contains("[[http.user]] sato の roles のキーは <グループ>/<名前>"), "{e}");
+        let e = Config::parse(&format!("{head}roles = {{ \"経理/*\" = \"admin\" }}\n")).unwrap_err();
+        assert!(e.contains("[[http.user]] sato の roles の 経理/* の role は"), "{e}");
+        assert!(Config::parse(&format!("{head}roles = {{}}\n")).unwrap_err().contains("空にしない"));
     }
 
     /// a remote needs an https address, a SHA-256 fingerprint and the token as a secret.
