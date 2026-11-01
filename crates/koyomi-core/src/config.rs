@@ -3,8 +3,8 @@
 //! the app with ito-prefs's shape; kept whole here), `[ping]`, the
 //! address the engine calls while it is alive, `[http]`, where it
 //! listens for other programs (on this PC, or with `lan` on the network over
-//! TLS), `[[remote]]`, the other PCs' engines this one calls, and `[standby]`, which of them
-//! this one stands by for (HA).
+//! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
+//! this one stands by for (HA), and `[locks]`, how many nets may hold a `lock` at once.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -30,6 +30,9 @@ pub struct Config {
     pub remote: Vec<Remote>,
     /// `[standby]`: stand by for one `[[remote]]`; run the schedules here only once it stops answering.
     pub standby: Option<Standby>,
+    /// `[locks]`: `"API枠" = 3`, how many nets may hold that `lock` exclusively at once.
+    /// A name not listed has 1. Kept as written so [`Config::parse`] can say what is wrong in Japanese.
+    pub locks: toml::Table,
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
@@ -242,6 +245,7 @@ impl Default for Config {
             http: None,
             remote: Vec::new(),
             standby: None,
+            locks: toml::Table::new(),
         }
     }
 }
@@ -273,7 +277,20 @@ impl Config {
         if let Some(s) = &c.standby {
             s.check(&c.remote)?;
         }
+        for (name, n) in &c.locks {
+            if !crate::calendar::valid_name(name) {
+                return Err(format!("[locks] の {name:?} は lock の名前で書く（ジョブネットの lock と同じ。/ \\ : などは使えない）"));
+            }
+            if !n.as_integer().is_some_and(|n| n >= 1) {
+                return Err(format!("[locks] の {name:?} は同時に持てる数で、1 以上（例: \"API枠\" = 3）"));
+            }
+        }
         Ok(c)
+    }
+
+    /// How many nets may hold the lock `name` exclusively at once: `[locks]`'s number, or 1.
+    pub fn lock_count(&self, name: &str) -> usize {
+        self.locks.get(name).and_then(toml::Value::as_integer).map_or(1, |n| usize::try_from(n).unwrap_or(usize::MAX).max(1))
     }
 
     /// The file, or the defaults when there is none.
@@ -308,6 +325,26 @@ mod tests {
         assert!(Config::parse("keep_days = 0\n").is_err());
         assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    /// `[locks]` gives a lock name more than one place; a name not listed has one.
+    #[test]
+    fn locks_count_places_and_a_name_not_listed_has_one() {
+        let c = Config::parse("[locks]\n\"API枠\" = 3\n\"販売DB\" = 1\n").unwrap();
+        assert_eq!((c.lock_count("API枠"), c.lock_count("販売DB"), c.lock_count("ほか")), (3, 1, 1));
+        assert_eq!(Config::default().lock_count("API枠"), 1);
+        for (bad, want) in [
+            ("[locks]\n\"API枠\" = 0\n", "[locks] の \"API枠\" は同時に持てる数で、1 以上"),
+            ("[locks]\n\"API枠\" = -2\n", "1 以上"),
+            ("[locks]\n\"API枠\" = \"3\"\n", "1 以上"),
+            ("[locks]\n\"API枠\" = 2.5\n", "1 以上"),
+            ("[locks]\n\"a/b\" = 2\n", "[locks] の \"a/b\" は lock の名前で書く"),
+            ("[locks]\n\"\" = 2\n", "lock の名前で書く"),
+            ("locks = 3\n", ""),
+        ] {
+            let e = Config::parse(bad).unwrap_err();
+            assert!(e.contains(want), "{bad}: {e}");
+        }
     }
 
     #[test]

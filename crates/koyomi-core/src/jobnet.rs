@@ -54,9 +54,14 @@ pub struct Jobnet {
     /// `calendar = "会社"`: `calendars/会社.toml`. None: the group's, or no calendar.
     #[serde(default)]
     pub calendar: Option<String>,
-    /// `lock = "販売DB"`: nets with the same lock name never run at the same time.
+    /// `lock = "販売DB"`: nets with the same lock name never run at the same time
+    /// (or as many as koyomi.toml's `[locks]` says; see [`crate::lock`]).
     #[serde(default)]
     pub lock: Option<String>,
+    /// `lock = { name = "販売DB", shared = true }`: the net only reads, and goes with the other
+    /// shared holders of the lock, never with an exclusive one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_shared: bool,
     /// `wake = true`: the engine wakes a sleeping PC a little before the net's next time.
     #[serde(default)]
     pub wake: bool,
@@ -701,7 +706,8 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
     let mut c = Checker { text, problems: Vec::new(), params: BTreeMap::new() };
     let (missed, overlap) = c.top(&raw);
     let calendar = c.calendar(&raw.calendar);
-    let lock = c.lock(&raw.lock);
+    let (lock, lock_shared) = c.lock(&raw.lock).unzip();
+    let lock_shared = lock_shared.unwrap_or(false);
     let wake = c.wake(&raw.wake);
     let late_start = c.deadline(&raw.late_start, "late_start");
     let late_end = c.deadline(&raw.late_end, "late_end");
@@ -727,6 +733,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             overlap,
             calendar,
             lock,
+            lock_shared,
             wake,
             params,
             late_start,
@@ -1335,15 +1342,57 @@ impl Checker<'_> {
         }
     }
 
-    /// `lock = "販売DB"`: a name the same rules as a calendar's (a file name, no path).
-    fn lock(&mut self, field: &Field) -> Option<String> {
+    /// `lock = "販売DB"` (exclusive) or `lock = { name = "販売DB", shared = true }`: the name
+    /// and whether it is shared. The name has the same rules as a calendar's (a file name, no path).
+    fn lock(&mut self, field: &Field) -> Option<(String, bool)> {
+        const NAME: &str = "lock は名前（例: lock = \"販売DB\"）。同じ名前のジョブネットは同時に動かさない";
+        const SHAPE: &str =
+            "lock は \"販売DB\"（排他）か { name = \"販売DB\", shared = true }（共有: 読むだけのネットどうしは一緒に動く）の形で書く";
         let f = field.as_ref()?;
-        match f.get_ref().as_str() {
-            Some(s) if crate::calendar::valid_name(s) => Some(s.to_owned()),
+        let at = f.span().start;
+        let t = match f.get_ref() {
+            toml::Value::String(s) if crate::calendar::valid_name(s) => return Some((s.to_owned(), false)),
+            toml::Value::String(_) => {
+                self.add(at, NAME);
+                return None;
+            }
+            toml::Value::Table(t) => t,
             _ => {
-                self.add(f.span().start, "lock は名前（例: lock = \"販売DB\"）。同じ名前のジョブネットは同時に動かさない");
+                self.add(at, SHAPE);
+                return None;
+            }
+        };
+        let mut ok = true;
+        for k in t.keys() {
+            if k != "name" && k != "shared" {
+                self.add(at, format!("lock に知らない欄 {k}（{SHAPE}）"));
+                ok = false;
+            }
+        }
+        let name = match t.get("name").map(|v| v.as_str()) {
+            None => {
+                self.add(at, format!("lock に name が無い（{SHAPE}）"));
                 None
             }
+            Some(Some(s)) if crate::calendar::valid_name(s) => Some(s.to_owned()),
+            Some(_) => {
+                self.add(at, "lock の name は名前（例: name = \"販売DB\"。/ \\ : などは使えない）");
+                None
+            }
+        };
+        let shared = match t.get("shared").map(|v| v.as_bool()) {
+            None => false,
+            Some(Some(b)) => b,
+            Some(None) => {
+                self.add(at, "lock の shared は true か false（true: 読むだけ。共有どうしは一緒に動き、排他とは一緒に動かない）");
+                ok = false;
+                false
+            }
+        };
+        if ok {
+            name.map(|n| (n, shared))
+        } else {
+            None
         }
     }
 
@@ -2633,6 +2682,31 @@ after = ["extract"]
         }
         let p = problems("format = 1\n[[job]]\nid = \"a\"\nkind = \"notify\"\nrun_as = { user = \"b\", password = \"secret:b\" }\n");
         assert!(p.iter().any(|m| m.contains("run_as は kind = ")), "{p:?}");
+    }
+
+    /// `lock` is a name (exclusive, as before) or `{ name, shared }`.
+    #[test]
+    fn a_lock_is_a_name_or_a_name_that_is_shared() {
+        let job = "\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let net = parse(&format!("format = 1\nlock = \"販売DB\"{job}")).unwrap();
+        assert_eq!((net.lock.as_deref(), net.lock_shared), (Some("販売DB"), false));
+        let net = parse(&format!("format = 1\nlock = {{ name = \"販売DB\", shared = true }}{job}")).unwrap();
+        assert_eq!((net.lock.as_deref(), net.lock_shared), (Some("販売DB"), true));
+        let net = parse(&format!("format = 1\nlock = {{ name = \"販売DB\" }}{job}")).unwrap();
+        assert_eq!((net.lock.as_deref(), net.lock_shared), (Some("販売DB"), false));
+        let net = parse(&format!("format = 1{job}")).unwrap();
+        assert_eq!((net.lock, net.lock_shared), (None, false));
+        for (bad, want) in [
+            ("lock = \"a/b\"", "lock は名前"),
+            ("lock = 3", "の形で書く"),
+            ("lock = { shared = true }", "lock に name が無い"),
+            ("lock = { name = \"a/b\", shared = true }", "lock の name は名前"),
+            ("lock = { name = \"db\", shared = \"yes\" }", "lock の shared は true か false"),
+            ("lock = { name = \"db\", count = 3 }", "lock に知らない欄 count"),
+        ] {
+            let p = problems(&format!("format = 1\n{bad}{job}"));
+            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+        }
     }
 
     #[test]

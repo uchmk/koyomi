@@ -35,6 +35,7 @@ use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
+use koyomi_core::lock::{admit, Holder};
 use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
 use koyomi_core::scan::Def;
 use koyomi_core::template;
@@ -444,7 +445,7 @@ impl Runner {
         set: &BTreeMap<String, String>,
     ) -> Result<Run, String> {
         let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
-        self.not_running(&def.id, def.label(), net.lock.as_deref())?;
+        self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
         let now = Local::now().naive_local();
         let id = self.new_id(now);
         let date = date.format("%Y-%m-%d").to_string();
@@ -454,6 +455,7 @@ impl Runner {
         };
         run.planned = planned;
         run.lock = net.lock.clone();
+        run.lock_shared = net.lock_shared;
         run.priority = net.slot_priority();
         run.require = net.require;
         run.params = set.clone();
@@ -468,11 +470,12 @@ impl Runner {
         if !prev.is_over() {
             return Err(format!("{}: まだ終わっていない", prev.id));
         }
-        let lock = std::fs::read_to_string(self.run_dir(previous).join("definition.toml"))
+        let (lock, shared) = std::fs::read_to_string(self.run_dir(previous).join("definition.toml"))
             .ok()
             .and_then(|t| jobnet::parse(&t).ok())
-            .and_then(|n| n.lock);
-        self.not_running(&prev.jobnet, &prev.title, lock.as_deref())?;
+            .map(|n| (n.lock, n.lock_shared))
+            .unwrap_or_default();
+        self.not_running(&prev.jobnet, &prev.title, lock.as_deref(), shared)?;
         let path = self.run_dir(previous).join("definition.toml");
         let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let net =
@@ -488,6 +491,7 @@ impl Runner {
             _ => Run::rerun(&id, &prev, &net, from, now)?,
         };
         run.lock = net.lock.clone();
+        run.lock_shared = net.lock_shared;
         run.priority = net.slot_priority();
         run.require = net.require;
         run.params = set;
@@ -504,14 +508,20 @@ impl Runner {
         loaded.runs().into_iter().find(|r| r.id == id).ok_or_else(|| format!("実行がない: {id}"))
     }
 
-    fn not_running(&self, jobnet: &str, label: &str, lock: Option<&str>) -> Result<(), String> {
+    /// No other run of `jobnet` is going, and the net may take its `lock` (`shared` or not)
+    /// beside the runs that hold it now ([`admit`], `[locks]`'s count).
+    fn not_running(&self, jobnet: &str, label: &str, lock: Option<&str>, shared: bool) -> Result<(), String> {
         if self.runs.iter().any(|r| r.jobnet == jobnet && !r.is_over()) {
             return Err(format!("{label}: 動いている間はもう一度は流せない"));
         }
         if let Some(l) = lock {
-            if let Some(h) = self.runs.iter().find(|r| !r.is_over() && r.lock.as_deref() == Some(l)) {
-                return Err(format!("{label}: 排他「{l}」を {} が使っている", h.title));
-            }
+            let holders: Vec<Holder> = self
+                .runs
+                .iter()
+                .filter(|r| !r.is_over() && r.lock.as_deref() == Some(l))
+                .map(|r| Holder { title: &r.title, shared: r.lock_shared })
+                .collect();
+            admit(l, shared, self.config.lock_count(l), &holders).map_err(|e| format!("{label}: {e}"))?;
         }
         Ok(())
     }
@@ -2713,6 +2723,46 @@ id = \"a\"
         // Once the holder is over the lock is free.
         let idb = r.start(&b, day, How::Manual, None).unwrap();
         assert_eq!(wait_over(&mut r, &idb).state, State::Ok);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn shared_holders_go_together_and_a_counted_lock_lets_that_many_in() {
+        let dir = scratch("lock-shared");
+        let net = |id: &str, lock: &str| {
+            def(
+                id,
+                &format!(
+                    "format = 1
+lock = {lock}
+[[job]]
+id = \"a\"
+{}
+",
+                    sleep(2)
+                ),
+            )
+        };
+        let shared = "{ name = \"db\", shared = true }";
+        let (r1, r2, w) = (net("r1", shared), net("r2", shared), net("w", "\"db\""));
+        let mut r = Runner::new(&dir, Config::default());
+        let day = Local::now().date_naive();
+        let id1 = r.start(&r1, day, How::Manual, None).unwrap();
+        let id2 = r.start(&r2, day, How::Manual, None).unwrap();
+        assert!(r.runs.iter().find(|x| x.id == id2).is_some_and(|x| x.lock_shared));
+        let err = r.start(&w, day, How::Manual, None).unwrap_err();
+        assert_eq!(err, "w: 排他「db」は r1、r2 が共有で使っている");
+        wait_over(&mut r, &id1);
+        wait_over(&mut r, &id2);
+        // `[locks] api = 2`: two exclusive holders go, the third is kept out.
+        r.set_config(Config::parse("[locks]\napi = 2\n").unwrap());
+        let (a, b, c) = (net("a", "\"api\""), net("b", "\"api\""), net("c", "\"api\""));
+        let ida = r.start(&a, day, How::Manual, None).unwrap();
+        let idb = r.start(&b, day, How::Manual, None).unwrap();
+        let err = r.start(&c, day, How::Manual, None).unwrap_err();
+        assert_eq!(err, "c: 排他「api」は 2 本まで。a、b が使っている");
+        wait_over(&mut r, &ida);
+        wait_over(&mut r, &idb);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

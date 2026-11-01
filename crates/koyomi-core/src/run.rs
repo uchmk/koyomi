@@ -355,6 +355,9 @@ pub struct Run {
     /// The net's `lock` name while it runs: no other run with it goes at the same time.
     #[serde(default)]
     pub lock: Option<String>,
+    /// It holds `lock` shared (`lock = { name, shared = true }`): with other shared holders, never an exclusive one.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub lock_shared: bool,
     /// The net's `priority`: whose ready job gets a free slot first (5 first).
     #[serde(default = "default_priority")]
     pub priority: u8,
@@ -429,6 +432,7 @@ impl Run {
             reason: String::new(),
             file: None,
             lock: None,
+            lock_shared: false,
             priority: crate::jobnet::DEFAULT_PRIORITY,
             require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),
@@ -467,6 +471,7 @@ impl Run {
             reason: reason.to_owned(),
             file: None,
             lock: None,
+            lock_shared: false,
             priority: crate::jobnet::DEFAULT_PRIORITY,
             require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),

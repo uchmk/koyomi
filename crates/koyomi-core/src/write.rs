@@ -36,7 +36,11 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
         push(&mut out, "calendar", &q(c));
     }
     if let Some(l) = &net.lock {
-        push(&mut out, "lock", &q(l));
+        if net.lock_shared {
+            push(&mut out, "lock", &format!("{{ name = {}, shared = true }}", q(l)));
+        } else {
+            push(&mut out, "lock", &q(l));
+        }
     }
     if net.wake {
         push(&mut out, "wake", "true");
@@ -719,6 +723,23 @@ run = [\"x\"]
 "
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_shared_lock_survives_a_round_trip() {
+        let src = "format = 1
+lock = { name = \"販売DB\", shared = true }
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let net = jobnet::parse(src).unwrap();
+        assert_eq!((net.lock.as_deref(), net.lock_shared), (Some("販売DB"), true));
+        assert_eq!(text(&net), src);
+        // `shared = false` is the plain name: it is written back as one.
+        let plain = jobnet::parse(&src.replace("shared = true", "shared = false")).unwrap();
+        assert_eq!(text(&plain), src.replace("{ name = \"販売DB\", shared = true }", "\"販売DB\""));
     }
 
     #[test]

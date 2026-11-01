@@ -1,6 +1,6 @@
 # Checklist
 
-778 checks in TESTING.md, 772 left for a person.
+784 checks in TESTING.md, 778 left for a person.
 
 ## 1. Start
 
@@ -562,6 +562,12 @@
 - [ ] **51.1** Give two nets `lock = "db"`; start the first (a slow job), then start the second by hand → The second is refused with a message naming the lock and the net that holds it 〔未訳〕
 - [ ] **51.2** Start a net without `lock` meanwhile → It starts normally 〔未訳〕
 - [ ] **51.3** Wait for the first to end, start the second again → It starts 〔未訳〕
+- [ ] **51.4** Give two nets `lock = { name = "db", shared = true }` and one `lock = "db"`; start both shared nets (slow jobs), then the plain one by hand → Both shared nets run together; the plain one is refused with 「排他「db」は … が共有で使っている」 〔未訳〕
+- [ ] **51.5** While the plain `lock = "db"` net runs, start a shared one by hand → Refused with 「共有「db」は … が排他で使っている」 〔未訳〕
+- [ ] **51.6** Put `[locks]` `"api" = 2` in koyomi.toml; give three nets `lock = "api"` (slow jobs) and start them one after another → The first two run together; the third is refused with 「排他「api」は 2 本まで。… が使っている」 〔未訳〕
+- [ ] **51.7** Give the third of 51.6 a schedule a minute ahead while the other two still run → At its time the day shows it 🔒 止めた, with the same reason 〔未訳〕
+- [ ] **51.8** Write `"api" = 0` (or `"a/b" = 2`) under `[locks]` → The engine shows 「koyomi.toml が読めない（[locks] の "api" は同時に持てる数で、1 以上 …）。直すまで流さない」 (or the line about the name) 〔未訳〕
+- [ ] **51.9** Save a net with `lock = { name = "db", shared = true }` from the editor → The file still has the same `lock` line 〔未訳〕
 
 ## 52. 人の確認待ち
 

@@ -17,6 +17,7 @@ pub mod history;
 pub mod jobnet;
 pub mod late;
 pub mod layout;
+pub mod lock;
 pub mod preflight;
 pub mod quiet;
 pub mod rename;
