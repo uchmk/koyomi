@@ -2082,7 +2082,7 @@ impl Browser {
                     let on = picked.as_deref() == Some(row.id.as_str());
                     let r = table.cells_of(ui, &row.cells, on, row.state).on_hover_text(t.tr("nets.open_hint"));
                     if on && reveal {
-                        r.scroll_to_me(Some(egui::Align::Center));
+                        reveal_row(ui, &r);
                     }
                     let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
                     ito_a11y::say(&r, Role::Row, &said.join(" "));
@@ -2256,7 +2256,7 @@ impl Browser {
             let r =
                 table.row(ui, row.state, &show::tag(t, row.state), &row.title, &row.cells, on, true).on_hover_text(t.tr("today.open_hint"));
             if on && self.reveal {
-                r.scroll_to_me(Some(egui::Align::Center));
+                reveal_row(ui, &r);
             }
             ito_a11y::say(&r, Role::Row, &row.said);
             if r.double_clicked() {
@@ -2942,7 +2942,7 @@ impl Browser {
                         let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
                         let r = table.row(ui, run.state, &word, &run.title, &cells, on, true);
                         if on && reveal {
-                            r.scroll_to_me(Some(egui::Align::Center));
+                            reveal_row(ui, &r);
                         }
                         let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
                         let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
@@ -4260,6 +4260,13 @@ pub(super) fn folded_pane(ui: &mut egui::Ui, id: &str, title: &str, words: &str)
     open
 }
 
+/// Scrolls a table's row to the middle of the view, up or down only. `scroll_to_me` would also
+/// centre a row wider than the view sideways, and cut off the table's first columns.
+fn reveal_row(ui: &egui::Ui, r: &egui::Response) {
+    let rect = egui::Rect::from_x_y_ranges(ui.clip_rect().x_range(), r.rect.y_range());
+    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+}
+
 /// The tree and the today page read in one size: every text style at [`ONE_SIZE`] (times stay
 /// fixed-width).
 fn one_size(style: &mut egui::Style) {
@@ -5418,6 +5425,7 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         assert!(!s.nodes.values().any(|n| n.0 == "今日に戻る"), "no link was followed yet");
+        let left = s.rect("待ち bom 23:59:00").min.x;
         s.double_click("待ち bom 23:59:00", &mut b);
         assert!(!b.gantt && b.run_sel.is_none(), "the net page is open");
         assert_eq!(b.selected.as_deref(), Some("試験/bom"));
@@ -5425,6 +5433,9 @@ run = [\"x.exe\"]
         assert!(b.gantt, "back on 今日");
         assert_eq!(b.today_net.as_deref(), Some("試験/bom"), "with the row picked");
         assert!(b.back.is_empty() && !b.reveal, "nothing more to go back to, and the row was brought into sight");
+        // Brought up or down only: the inspector leaves the table wider than its room, and centring
+        // the row sideways too would cut off its first columns.
+        assert_eq!(s.rect("待ち bom 23:59:00").min.x, left, "the table did not slide sideways");
     }
 
     /// Each link keeps where it came from, newest last; one that stays where it is keeps nothing, and a
