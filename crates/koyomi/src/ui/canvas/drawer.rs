@@ -192,16 +192,10 @@ impl Editor {
                 });
                 egui::CentralPanel::default().frame(Frame::new()).show(ui, |ui| {
                     egui::ScrollArea::vertical().id_salt("fields_scroll").auto_shrink(false).show(ui, |ui| {
-                        // Hold the form to the pane's width: a field a fraction wider than its room would otherwise
-                        // widen the pane a little every frame (the pane keeps the width of what it holds).
-                        let room = ui.available_rect_before_wrap();
-                        let mut held = ui.new_child(egui::UiBuilder::new().max_rect(room).layout(*ui.layout()));
-                        Frame::new().inner_margin(Margin::symmetric(14, 12)).show(&mut held, |ui| match &mut pane {
+                        Frame::new().inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| match &mut pane {
                             Pane::Part(id, f) => self.part_form(ui, &form, id, f, action),
                             Pane::Net(f) => self.net_form(ui, &form, f, calendars, power, action),
                         });
-                        let used = held.min_rect();
-                        ui.advance_cursor_after_rect(egui::Rect::from_min_size(room.min, egui::vec2(room.width(), used.height())));
                     });
                 });
             });
