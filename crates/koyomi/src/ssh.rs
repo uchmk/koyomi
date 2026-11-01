@@ -5,6 +5,10 @@
 //! a signal, a lost connection) it ends with [`NO_EXIT`] and leaves why in the
 //! file `KOYOMI_REASON` names, which the engine shows as the job's ✕ reason.
 //! The host key to pin comes from `koyomi sftp hostkey`.
+//!
+//! The engine stops an `ssh` job by asking first (`ito_proc::run_lines_soft`):
+//! the ask sets [`ito_proc::stop_requested`], and the far command is sent TERM
+//! and the channel closed before this ends, so it does not run on alone.
 
 use std::sync::atomic::AtomicBool;
 
@@ -29,7 +33,9 @@ fn var(name: &str) -> Option<String> {
 }
 
 fn run() -> i32 {
-    match exec() {
+    // First of all: the handler is what turns the engine's ask into the flag.
+    let stop = ito_proc::stop_requested();
+    match exec(stop) {
         Ok(code) => code,
         Err(reason) => {
             // To stdout, so the job's log keeps it in order with the rest.
@@ -42,8 +48,9 @@ fn run() -> i32 {
     }
 }
 
-/// Runs the command; its exit code, or why there is none.
-fn exec() -> Result<i32, String> {
+/// Runs the command; its exit code, or why there is none. `stop` set: the far
+/// command is asked to stop too, and this ends without an exit code.
+fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let on = var("ON").ok_or("KOYOMI_SSH_ON がない（koyomi ssh run は kind = \"ssh\" のジョブが動かす）")?;
     let far = chore::ssh(&on).ok_or_else(|| format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"))??;
     // As it is written: not trimmed.
@@ -51,10 +58,8 @@ fn exec() -> Result<i32, String> {
     let host_key = var("HOST_KEY").ok_or("host_key がない（koyomi sftp hostkey <ホスト> で調べる）")?;
     let target = crate::sftp::target(&far, host_key, "ssh")?;
     let opts = ito_sftp::ExecOptions { env: forwarded(), timeout: None };
-    // The engine's stop ends this process, so there is nothing to set this flag.
-    let never = AtomicBool::new(false);
     let (mut out, mut err) = (Vec::new(), Vec::new());
-    let result = ito_sftp::exec(&target, &command, &opts, &never, &mut |stream, bytes| {
+    let result = ito_sftp::exec(&target, &command, &opts, stop, &mut |stream, bytes| {
         let (buf, stderr) = match stream {
             ito_sftp::Stream::Stdout => (&mut out, false),
             ito_sftp::Stream::Stderr => (&mut err, true),
@@ -68,12 +73,21 @@ fn exec() -> Result<i32, String> {
             say(&text(&buf), stderr);
         }
     }
-    let exit = result.map_err(|e| format!("{}: {e}", far.host))?;
+    let exit = result.map_err(|e| match e {
+        ito_sftp::Error::Stopped => stopped(&far.host),
+        e => format!("{}: {e}", far.host),
+    })?;
     if !exit.env_refused.is_empty() {
         let names = exit.env_refused.join(", ");
         crate::say(&format!("! {}: env を受け付けなかった: {names}（相手の sshd_config の AcceptEnv）", far.host), false);
     }
     outcome(exit.status, exit.signal).map_err(|e| format!("{}: {e}", far.host))
+}
+
+/// Why there is no exit code after a stop: the engine shows it after 強制終了 or
+/// 打ち切り, so it says what was done on the far side.
+fn stopped(host: &str) -> String {
+    format!("{host} のコマンドにも止まるよう頼んだ（TERM）")
 }
 
 /// The exit code to end with, or why the command has none.
@@ -143,6 +157,12 @@ mod tests {
         // A line without an end does not wait without bound.
         assert_eq!(cut(&mut buf, &vec![b'x'; LINE_MAX + 1]).len(), 1);
         assert!(buf.is_empty());
+    }
+
+    #[test]
+    fn a_stop_says_the_far_command_was_asked_too() {
+        let reason = stopped("web01");
+        assert_eq!(reason, "web01 のコマンドにも止まるよう頼んだ（TERM）");
     }
 
     #[test]

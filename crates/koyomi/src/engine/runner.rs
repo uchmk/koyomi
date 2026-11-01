@@ -1,12 +1,14 @@
 //! The runs: the engine's jobs as processes, their logs, and the day's history.
 //!
-//! Each job runs on a thread of its own through `ito_proc::run_lines`, which
+//! Each job runs on a thread of its own through `ito_proc::run_lines_soft`, which
 //! writes the lines to `logs/<day>/<run>/<job>.log` and tells the main loop
 //! how it ended. The order between jobs is `koyomi_core::run`'s; this file
 //! only starts what it says is ready and keeps the files current.
 //!
 //! A job is stopped through one flag, whoever asks: `kill` from a person, or
-//! the timer a `timeout` starts. `ito_proc` then kills the whole process tree.
+//! the timer a `timeout` starts. `ito_proc` then kills the whole process tree;
+//! an `ssh` job is asked to stop first and killed only after its grace
+//! ([`grace`]), so `koyomi ssh run` can ask the far command to stop too.
 //! Which of the two asked first is kept beside the flag, so the job ends as
 //! 強制終了 or 打ち切り and never as the other.
 //!
@@ -30,6 +32,7 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::calendar::Calendar;
+use koyomi_core::chore::Chore;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
@@ -739,10 +742,11 @@ impl Runner {
             let now = Local::now().naive_local();
             let Some(r) = self.runs.iter_mut().find(|r| r.id == done.run) else { continue };
             r.retried(&done.job, done.retried);
-            if done.reason.is_empty() {
-                r.finish(&done.job, done.outcome, now);
-            } else {
-                r.fail(&done.job, &done.reason, now);
+            match done.outcome {
+                _ if done.reason.is_empty() => r.finish(&done.job, done.outcome, now),
+                // A stop's reason says how it went (an `ssh` job's far command was asked too).
+                Outcome::Killed | Outcome::Timeout => r.finish_noted(&done.job, done.outcome, &done.reason, now),
+                _ => r.fail(&done.job, &done.reason, now),
             }
             let r = r.clone();
             if let Some(j) = r.job(&done.job) {
@@ -888,6 +892,7 @@ impl Runner {
             command: j.command(),
             dir: j.dir.clone(),
             timeout: j.timeout,
+            grace: grace(&j.part),
             retry: j.retry,
             judge: j.judge.clone(),
             env: j.env.clone(),
@@ -1032,6 +1037,8 @@ struct JobSpec {
     dir: Option<String>,
     /// Seconds before the timer asks the job to stop.
     timeout: Option<u64>,
+    /// How long a stop waits after asking before it kills ([`grace`]).
+    grace: Duration,
     retry: Option<Retry>,
     /// What the exit codes mean: a 警告 end is not run again.
     judge: Option<Judge>,
@@ -1053,6 +1060,24 @@ struct JobSpec {
     io_ready: bool,
     log: PathBuf,
     cap: u64,
+}
+
+/// How long an `ssh` job asked to stop has before it is killed. `koyomi ssh run` sends
+/// TERM to the far command and closes the channel, which ito-sftp gives 2 s; 10 s
+/// leaves room for a slow link while a kill or a `timeout` still ends it soon.
+const SSH_GRACE: Duration = Duration::from_secs(10);
+
+/// How long a stop waits after asking `part` before it kills: [`SSH_GRACE`] for an
+/// `ssh` job, which can pass the ask on to the far side. Anything else is killed at
+/// once, as before: a script or program that does not watch for the ask would only
+/// make a kill slower. Under `run_as` nothing can be asked (another account's
+/// console is out of reach), so an `ssh` job there is killed at once too, and its
+/// far command is left to end by itself.
+fn grace(part: &Part) -> Duration {
+    match part {
+        Part::Chore(Chore::Ssh { .. }) => SSH_GRACE,
+        _ => Duration::ZERO,
+    }
 }
 
 /// The slots a part takes when `free` are free: a loop with `max` as many of them as its
@@ -1376,18 +1401,21 @@ fn resolve_logon(
     }
 }
 
-/// Runs `cmd` as `account` (`run_as`), its lines to `on_line` as `run_lines_with` does.
+/// Runs `cmd` as `account` (`run_as`), its lines to `on_line` as `run_lines_soft` does.
+/// Another account's process cannot be asked to stop: whatever `grace` is, a stop
+/// kills it at once (`ito_proc` ends it as `Killed`).
 fn run_as(
     cmd: std::process::Command,
     account: &RunAs,
     password: &str,
     stop: &AtomicBool,
+    grace: Duration,
     enc: ito_proc::Encoding,
     on_line: &mut dyn FnMut(ito_proc::Stream, &str) -> bool,
 ) -> std::io::Result<ito_proc::Lines> {
     let (domain, user) = account.split();
     let logon = ito_proc::Logon { user, domain, password };
-    ito_proc::run_lines_as(cmd, &logon, stop, enc, on_line)
+    ito_proc::run_lines_as_soft(cmd, &logon, stop, grace, enc, on_line)
 }
 
 /// `exe` as a full path: a bare name is looked up on this process's `PATH`
@@ -1531,8 +1559,8 @@ fn attempt(
     let over = Arc::new(AtomicBool::new(false));
     let timer = job.timeout.map(|secs| timer(secs, stop.clone(), why.clone(), over.clone()));
     let result = match &env.logon {
-        None => ito_proc::run_lines_with(cmd, stop, decoding(job.encoding), &mut on_line),
-        Some((account, password)) => run_as(cmd, account, password, stop, decoding(job.encoding), &mut on_line),
+        None => ito_proc::run_lines_soft(cmd, stop, job.grace, decoding(job.encoding), &mut on_line),
+        Some((account, password)) => run_as(cmd, account, password, stop, job.grace, decoding(job.encoding), &mut on_line),
     };
     // The process is over either way: let the timer go, and say in the log who stopped the job.
     over.store(true, Ordering::SeqCst);
@@ -1541,14 +1569,21 @@ fn attempt(
     }
     let left = left_reason(&reason);
     match result {
-        Ok(lines) if lines.stopped() => {
+        // Asked (it ended within its grace) has an exit status, so `stopped()` alone would miss it.
+        Ok(lines) if lines.ending != ito_proc::Ending::Exited => {
+            // How it took the ask, from what it left in KOYOMI_REASON: `koyomi ssh run` says the far
+            // command was asked to stop too. A kill has nothing to add.
+            let note = match lines.ending {
+                ito_proc::Ending::Asked => left.unwrap_or_default(),
+                _ => String::new(),
+            };
             if why.load(Ordering::SeqCst) == WHY_TIMEOUT {
                 let text = koyomi_core::duration::text(job.timeout.unwrap_or(0));
                 let _ = writeln!(file, "! 打ち切り（{text} を超えた）");
-                (Outcome::Timeout, String::new())
+                (Outcome::Timeout, note)
             } else {
                 let _ = writeln!(file, "! 強制終了");
-                (Outcome::Killed, String::new())
+                (Outcome::Killed, note)
             }
         }
         Ok(lines) => {
@@ -1938,6 +1973,22 @@ id = \"a\"
         wait_over(&mut r, &high);
         wait_over(&mut r, &low);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An `ssh` job is asked to stop and given time to pass the ask on; anything else is killed at once.
+    #[test]
+    fn only_an_ssh_job_gets_a_grace_before_the_kill() {
+        let ssh = Part::Chore(Chore::Ssh {
+            on: "ssh://ops@web01".into(),
+            command: "sleep 600".into(),
+            key: None,
+            host_key: None,
+            password: None,
+        });
+        // More than the 2 s ito-sftp gives the far command's TERM and close.
+        assert!(grace(&ssh) > Duration::from_secs(2));
+        assert_eq!(grace(&Part::Job), Duration::ZERO);
+        assert_eq!(grace(&Part::Chore(Chore::Zip { from: "a".into(), into: "b.zip".into() })), Duration::ZERO);
     }
 
     #[test]

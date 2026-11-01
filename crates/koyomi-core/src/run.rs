@@ -776,6 +776,13 @@ impl Run {
     /// Marks `id` ended, and everything that follows from it. The reason says
     /// how many times the job was run again, when it was.
     pub fn finish(&mut self, id: &str, outcome: Outcome, now: NaiveDateTime) {
+        self.finish_noted(id, outcome, "", now);
+    }
+
+    /// [`finish`](Run::finish), with `note` after the reason of a stop (強制終了 or
+    /// 打ち切り): how the stop went, such as an `ssh` job's far command asked to
+    /// stop too. Other outcomes leave it out.
+    pub fn finish_noted(&mut self, id: &str, outcome: Outcome, note: &str, now: NaiveDateTime) {
         if let Some(i) = self.index(id) {
             let j = &mut self.jobs[i];
             if j.started.is_none() {
@@ -819,6 +826,9 @@ impl Run {
                     State::Error
                 }
             };
+            if matches!(outcome, Outcome::Killed | Outcome::Timeout) && !note.is_empty() {
+                j.reason = format!("{}、{note}", j.reason);
+            }
             if j.retried > 0 {
                 let note = format!("やり直し {} 回", j.retried);
                 j.reason = if j.reason.is_empty() { note } else { format!("{}、{note}", j.reason) };
@@ -1278,6 +1288,26 @@ mod tests {
         r.end_part("f", State::Timeout, "打ち切り（1h を超えた）", None, at("2026-10-30 10:00:00"));
         assert_eq!(r.job("z").unwrap().state, State::NotRun);
         assert_eq!(r.state, State::Error);
+    }
+
+    /// a stop's note goes after 強制終了 or 打ち切り and before the retries; any other end leaves it out.
+    #[test]
+    fn a_stops_note_follows_its_reason() {
+        let asked = "web01 のコマンドにも止まるよう頼んだ（TERM）";
+        let mut r = net_of(vec![job("a", &[]), job("b", &[]), job("c", &[])]);
+        r.jobs[1].timeout = Some(1800);
+        for id in ["a", "b", "c"] {
+            r.start(id, at("2026-10-30 09:00:01"));
+        }
+        r.finish_noted("a", Outcome::Killed, asked, at("2026-10-30 09:00:02"));
+        assert_eq!(r.job("a").unwrap().state, State::Killed);
+        assert_eq!(r.job("a").unwrap().reason, format!("強制終了、{asked}"));
+        r.retried("b", 1);
+        r.finish_noted("b", Outcome::Timeout, asked, at("2026-10-30 09:30:02"));
+        assert_eq!(r.job("b").unwrap().state, State::Timeout);
+        assert_eq!(r.job("b").unwrap().reason, format!("打ち切り（30m を超えた）、{asked}、やり直し 1 回"));
+        r.finish_noted("c", Outcome::Exited(0), asked, at("2026-10-30 09:30:03"));
+        assert_eq!(r.job("c").unwrap().reason, "");
     }
 
     /// the station of a child jobnet ends when the child's jobs have: an error of any of them is its error.

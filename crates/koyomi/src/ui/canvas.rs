@@ -50,7 +50,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "send" => M::Upload,
         "fetch" => M::Download,
         "http" => M::Globe,
-        "ssh" => M::Link,
+        "ssh" => M::Server,
         _ => return None,
     })
 }

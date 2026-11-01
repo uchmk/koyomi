@@ -1,6 +1,6 @@
 # Checklist
 
-812 checks in TESTING.md, 806 left for a person.
+813 checks in TESTING.md, 807 left for a person.
 
 ## 1. Start
 
@@ -1113,8 +1113,9 @@
 - [ ] **101.4** A wrong `host_key`; then `on = "ssh://<you>@localhost:2"`; then `key` = a key the server does not take; also with `retry = { count = 1, wait = "1m" }` → ✕ each time with exit code 255, the why in Japanese as the reason (`localhost: …`) and on the log's last line after `! `; nothing asks anything; the retry tries once more 〔未訳〕
 - [ ] **101.5** `password = "secret:ssh"` instead of the key, after `koyomi secret set ssh` (a server that takes passwords) → ✓; neither the log nor the confirm box shows the password 〔未訳〕
 - [ ] **101.6** `env = { DAY = "{date}" }` and `command = "echo %DAY%"` (`echo $DAY`) → When the server's `AcceptEnv` takes `DAY`: today's date. When it does not (the default): `! localhost: env を受け付けなかった: DAY（相手の sshd_config の AcceptEnv）` and the job goes on 〔未訳〕
-- [ ] **101.7** `command = "ping -n 120 127.0.0.1"` (`sleep 120`) with `timeout = "10s"`; then without the timeout, 強制終了 it → 打ち切り, then 強制終了, as for any job. On the server the command may go on (the limit in DECISIONS.md): look with Task Manager (`ps`) 〔未訳〕
+- [ ] **101.7** `command = "ping -n 120 127.0.0.1"` (`sleep 120`) with `timeout = "10s"`; then without the timeout, 強制終了 it → 打ち切り, then 強制終了, each within about 10 s of the ask (an ssh job is asked first). Where the ask cannot reach `koyomi ssh run` (the limit in DECISIONS.md), the command on the server may go on: look with Task Manager (`ps`) 〔未訳〕
 - [ ] **101.8** Linux only: `command = "kill -9 $$"` → ✕ with exit code 255 and `localhost: 相手のコマンドがシグナル KILL で終わった` as the reason 〔未訳〕
 - [ ] **101.9** `koyomi check` with `on = "db1"`, `on = "ssh://db1/tmp"`, no `command`, an 8001-character `command`, no `host_key`, `password = "plain"`, both `key` and `password`, `on` on a `copy`, `encoding` on an ssh → Each is refused with the line and why in Japanese; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
 - [ ] **101.10** The editor: drag 別の PC で動かす（SSH） from 基本 → The pane shows 動かす PC・コマンド・ホスト鍵・SSH の秘密鍵・パスワード, 結果の判定, timeout and retry; saving writes `kind = "ssh"` with `on`・`command`・`host_key` (and `key`・`password`・`judge` when set); an `on` without `ssh://` is refused 〔未訳〕
 - [ ] **101.11** Approve a net with an ssh → The confirm box shows 動かす PC, コマンド (lines joined with ⏎) and the host key instead of a script 〔未訳〕
+- [ ] **101.12** A Linux server: `command = "sleep 600"`; run it with an engine that has a console (`cargo run -p koyomi -- engine` on Windows, or the engine on Linux or macOS), and once the log shows it started, 強制終了 it; then the same with the release `koyomi.exe` on Windows, and with `run_as` → With the console: 強制終了 within a few seconds, the reason `強制終了、<server> のコマンドにも止まるよう頼んだ（TERM）`, and `pgrep -f "sleep 600"` on the server finds nothing. The release `koyomi.exe`: 強制終了 after about 10 s with no 頼んだ (the limit in DECISIONS.md). `run_as`: 強制終了 at once with no 頼んだ 〔未訳〕
