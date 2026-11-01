@@ -180,7 +180,7 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     for u in &cfg.user {
         c = c.token_named(u.name.trim(), token(u.secret())?);
     }
-    for (path, ..) in PAGES {
+    for path in PAGES.iter().map(|(p, ..)| *p).chain([THEME_CSS]) {
         c = c.public_path(path);
     }
     c.sessions = true;
@@ -211,15 +211,22 @@ const PAGES: [(&str, &str, &str); 3] = [
     ("/app.css", "text/css; charset=utf-8", include_str!("../../web/app.css")),
 ];
 
+/// The colours of the Web UI: every colour in `app.css` is a variable of this sheet.
+const THEME_CSS: &str = "/theme.css";
+
 /// One of the Web UI's files for a `GET`. Nothing but these files and the API: no other
 /// origin, no inline script, no frames.
 fn page(req: &ito_http::Request) -> Option<Response> {
     if !matches!(req.method.as_str(), "GET" | "HEAD") {
         return None;
     }
-    let (_, kind, body) = PAGES.iter().find(|(p, ..)| *p == req.path)?;
+    let (kind, body) = match PAGES.iter().find(|(p, ..)| *p == req.path) {
+        Some((_, kind, body)) => (*kind, body.to_string()),
+        None if req.path == THEME_CSS => ("text/css; charset=utf-8", theme_css(ito_common::base_dir().as_deref())),
+        None => return None,
+    };
     Some(
-        Response::bytes(200, kind, body.as_bytes())
+        Response::bytes(200, kind, body)
             .with_header(
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
@@ -228,6 +235,33 @@ fn page(req: &ito_http::Request) -> Option<Response> {
             .with_header("Referrer-Policy", "no-referrer")
             .with_header("Cache-Control", "no-store"),
     )
+}
+
+/// `/theme.css`: the theme common.toml under `base` picks, as the window picks it (the window's
+/// own themes and the files in `themes/`), so the page has the window's colours. `system` follows
+/// the browser's light or dark rather than this PC's. Read on each request: a theme changed in the
+/// window shows at the next reload. A theme that is not found gives the first built-in one, as the
+/// window does.
+fn theme_css(base: Option<&std::path::Path>) -> String {
+    let mut themes = ito_theme::builtin();
+    let mut common = ito_common::Common::default();
+    if let Some(b) = base {
+        themes.extend(ito_theme::load_dir(&ito_common::themes_dir(b)).0);
+        if let Ok((c, _)) = ito_common::Common::read(b) {
+            common = c;
+        }
+    }
+    let (choice, dark, light) = common.theme_choice(Some(crate::settings::THEMES));
+    let high = common.high_contrast_or_off();
+    ito_theme::stylesheet(&themes, &choice, &dark, &light, high).unwrap_or_else(|_| {
+        let c = if high { themes[0].colors.high_contrast() } else { themes[0].colors };
+        format!(
+            ":root {{
+{}}}
+",
+            c.css_vars()
+        )
+    })
 }
 
 /// `GET /me`: who signed in, their role and the nets they are narrowed to (`null`: every net),
@@ -476,15 +510,29 @@ fn release_standby(ask: impl Fn(&Request) -> Result<String, String>) -> Response
 /// `GET /nets`: each definition's id, name, standing, hold, `[params]` (name and default, so a
 /// caller can ask for the values before `POST /runs`) and the hash of its file, so a standby
 /// fetches only what changed (TODO 87). Not the text: that is `GET /nets/text`, for `edit`.
+/// With them, as the window's 今日 counts them: `today`, the starts still to come today, and
+/// `next`, the next one (none for a net not approved or on hold), `then`, the one after the last
+/// of `today` (each start's 次の回); and `skips`, the times `koyomi skip-next` skips that have not come.
 fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
-    let snap = match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
-        Ok(s) => s,
-        Err(e) => return Response::error(500, &e),
-    };
+    match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
+        Ok(snap) => Response::ok(nets_at(&snap, chrono::Local::now().naive_local())),
+        Err(e) => Response::error(500, &e),
+    }
+}
+
+/// What `GET /nets` answers at `now`.
+fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime) -> serde_json::Value {
+    let mut today: BTreeMap<&str, Vec<chrono::NaiveDateTime>> = BTreeMap::new();
+    for (d, at) in snap.starts_today(now) {
+        today.entry(d.id.as_str()).or_default().push(at);
+    }
     let nets: Vec<_> = snap
         .defs
         .iter()
         .map(|d| {
+            let mut starts = today.remove(d.id.as_str()).unwrap_or_default();
+            starts.sort();
+            let then = snap.next_start(d, starts.last().copied().unwrap_or(now));
             serde_json::json!({
                 "id": d.id,
                 "group": d.group,
@@ -493,10 +541,14 @@ fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
                 "sha256": d.sha256,
                 "held": snap.held.contains(&d.id),
                 "params": d.net.as_ref().map(|n| n.params.clone()).unwrap_or_default(),
+                "today": starts,
+                "next": snap.next_start(d, now),
+                "then": then,
+                "skips": snap.skips.iter().filter(|s| s.id == d.id && s.at > now).map(|s| s.at).collect::<Vec<_>>(),
             })
         })
         .collect();
-    Response::ok(serde_json::json!({ "nets": nets, "paused": snap.paused, "warnings": snap.warnings }))
+    serde_json::json!({ "nets": nets, "paused": snap.paused, "warnings": snap.warnings })
 }
 
 /// `GET /runs`: today's and the running ones, or with `from` and `to` (`YYYY-MM-DD`) the days'.
@@ -1076,6 +1128,46 @@ mod tests {
         assert_eq!(n.json["nets"][0]["params"]["month"].as_str(), Some("{month-1:%Y-%m}"));
     }
 
+    /// The Web UI's 今日 from `GET /nets`: the starts still to come today, the next one, the one
+    /// after today's last, and the skips not yet come; nothing for a net on hold.
+    #[test]
+    fn the_nets_carry_todays_starts() {
+        let def = |id: &str| {
+            let text = "format = 1\n[[when]]\nevery = \"minutes\"\nn = 360\nfrom = \"00:00\"\nto = \"23:59\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n";
+            koyomi_core::scan::Def {
+                id: id.into(),
+                group: "g".into(),
+                name: id.trim_start_matches("g/").into(),
+                title: None,
+                file: format!("{id}.toml"),
+                standing: koyomi_core::scan::Standing::Confirmed,
+                problems: Vec::new(),
+                net: Some(koyomi_core::jobnet::parse(text).unwrap()),
+                sha256: String::new(),
+                text: String::new(),
+                previous: None,
+                calendar: None,
+            }
+        };
+        let at = |t: &str| chrono::NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M").unwrap();
+        let snap = Snapshot {
+            defs: vec![def("g/a"), def("g/b")],
+            held: vec!["g/b".into()],
+            skips: vec![
+                koyomi_core::held::Skip { id: "g/a".into(), at: at("2026-10-31 18:00") },
+                koyomi_core::held::Skip { id: "g/a".into(), at: at("2026-10-31 06:00") },
+            ],
+            ..Default::default()
+        };
+        let v = nets_at(&snap, at("2026-10-31 07:30"));
+        let a = &v["nets"][0];
+        assert_eq!(a["today"], serde_json::json!(["2026-10-31T12:00:00", "2026-10-31T18:00:00"]));
+        assert_eq!((a["next"].as_str(), a["then"].as_str()), (Some("2026-10-31T12:00:00"), Some("2026-11-01T00:00:00")));
+        assert_eq!(a["skips"], serde_json::json!(["2026-10-31T18:00:00"]));
+        let b = &v["nets"][1];
+        assert_eq!((b["held"].as_bool(), b["today"].as_array().map(Vec::len), b["next"].is_null()), (Some(true), Some(0), true));
+    }
+
     /// The listener as the engine starts it: the token first, then the handler.
     #[test]
     fn a_request_without_the_token_is_turned_away() {
@@ -1160,6 +1252,79 @@ mod tests {
         assert_eq!(started_on("２０２６1031-0"), None);
     }
 
+    /// `/theme.css` is the theme common.toml picks: one `:root` for a fixed theme, the light one
+    /// under `prefers-color-scheme` for `system`, the stronger colours with `high_contrast`, and
+    /// the first built-in theme for a name not found.
+    #[test]
+    fn the_theme_follows_common_toml() {
+        let dir = std::env::temp_dir().join(format!("koyomi-http-theme-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let write = |text: &str| std::fs::write(ito_common::common_path(&dir), text).expect("common.toml");
+        let themes = ito_theme::builtin();
+        let named = |n: &str| themes.iter().find(|t| t.name == n).expect("a built-in theme").colors;
+        write(
+            "theme = \"system\"
+dark_theme = \"Nord\"
+light_theme = \"Catppuccin Latte\"
+",
+        );
+        let css = theme_css(Some(&dir));
+        assert!(
+            css.starts_with(&format!(
+                ":root {{
+{}}}
+",
+                named("Nord").css_vars()
+            )),
+            "{css}"
+        );
+        assert!(
+            css.contains("@media (prefers-color-scheme: light)")
+                && css.contains(named("Catppuccin Latte").css_vars().lines().next().unwrap())
+        );
+        write(
+            "theme = \"Catppuccin Latte\"
+",
+        );
+        assert_eq!(
+            theme_css(Some(&dir)),
+            format!(
+                ":root {{
+{}}}
+",
+                named("Catppuccin Latte").css_vars()
+            )
+        );
+        write(
+            "theme = \"Catppuccin Latte\"
+high_contrast = true
+",
+        );
+        assert_eq!(
+            theme_css(Some(&dir)),
+            format!(
+                ":root {{
+{}}}
+",
+                named("Catppuccin Latte").high_contrast().css_vars()
+            )
+        );
+        write(
+            "theme = \"nope\"
+",
+        );
+        assert_eq!(
+            theme_css(Some(&dir)),
+            format!(
+                ":root {{
+{}}}
+",
+                themes[0].colors.css_vars()
+            )
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// The Web UI's files need no token and forbid other origins and inline script; `/me` says
     /// the role; a stop is `koyomi kill`.
     #[test]
@@ -1168,6 +1333,8 @@ mod tests {
         assert_eq!(p.status, 200);
         assert!(p.headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("script-src 'self'") && !v.contains("unsafe")));
         assert!(page(&req("GET", "/app.js", "")).is_some() && page(&req("GET", "/app.css", "")).is_some());
+        let css = page(&req("GET", "/theme.css", "")).expect("the theme");
+        assert!(css.headers.iter().any(|(k, _)| k == "Content-Security-Policy"));
         assert!(page(&req("POST", "/", "")).is_none() && page(&req("GET", "/runs", "")).is_none());
         for (_, _, body) in PAGES {
             assert!(!body.contains("innerHTML") && !body.contains("onclick=") && !body.contains("http://") && !body.contains("https://"));

@@ -1,6 +1,6 @@
 # Checklist
 
-832 checks in TESTING.md, 826 left for a person.
+844 checks in TESTING.md, 838 left for a person.
 
 ## 1. Start
 
@@ -1013,18 +1013,28 @@
 
 ## 95. The Web UI (`http://127.0.0.1:<port>/`; TODO 81)
 
-- [ ] **95.1** Open `http://127.0.0.1:8790/` → The サインイン form; no other request than `/`, `/app.js`, `/app.css`, `/me` (the browser's network tab) 〔未訳〕
-- [ ] **95.2** Sign in with a wrong token → トークンが合わない; still signed out 〔未訳〕
-- [ ] **95.3** Sign in with `S` → The header shows `sato（view）`; the nets and today's runs show, with no 流す or 止める buttons; the token field is empty 〔未訳〕
-- [ ] **95.4** ジョブ on a run, then ログ on a job → Its jobs with state, times and exit code; the log tail, with secrets as `***` 〔未訳〕
-- [ ] **95.5** Reload the page → Still signed in (the cookie); refreshes every 5 s 〔未訳〕
-- [ ] **95.6** サインアウト, then sign in with `I` → `ito（run）`; 流す on each confirmed net (not on 未確認 ones) 〔未訳〕
-- [ ] **95.7** 流す a net and confirm → A new running run in the list; `koyomi ops` shows `run … （HTTP: ito）` 〔未訳〕
-- [ ] **95.8** 止める on a running run and confirm → Its jobs stop (■ 止めた); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
-- [ ] **95.9** `curl -i http://127.0.0.1:8790/` → 200 with `Content-Security-Policy` (`script-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 〔未訳〕
-- [ ] **95.10** With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) → Refused; nothing starts 〔未訳〕
-- [ ] **95.11** Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
-- [ ] **95.12** With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) → The same page; the cookie is `Secure` 〔未訳〕
+- [ ] **95.1** Open `http://127.0.0.1:8790/` → The サインイン form; no other request than `/`, `/theme.css`, `/app.css`, `/app.js`, `/me` (the browser's network tab) 〔未訳〕
+- [ ] **95.2** Sign in with a wrong token → トークンが合いません; still signed out 〔未訳〕
+- [ ] **95.3** Sign in with `S` → The header shows `sato（view）` and 稼働中; at the left ジョブネット一覧 by group, each net with the mark of its last run today; in the middle 今日 with today's date; no 今すぐ流す or 強制終了 anywhere; the token field is empty 〔未訳〕
+- [ ] **95.4** Look at 今日 with nets that start later today and runs that ended, failed and run now → As the window's 今日: a ○ 待ち row for each start still to come (予定 and 次の回), then the runs newest first (開始・終了・時間, `…` while running); rows tinted by state; a chip per state that has rows (`✕ 異常終了 1` …) 〔未訳〕
+- [ ] **95.5** Press a chip; press it again → Only that state's rows; then all again 〔未訳〕
+- [ ] **95.6** Click a run row → The pane at the right: its state, `id · date · times · time taken`, the reason, and its jobs with state, times and exit code 〔未訳〕
+- [ ] **95.7** ログ on a job of it → The log tail under the jobs, secrets as `***`; while the run goes it follows 〔未訳〕
+- [ ] **95.8** Click a 待ち row, or a net in the tree → The pane shows the net: its id, 次の回, 今日の予定 and today's runs of it (a click opens the run) 〔未訳〕
+- [ ] **95.9** Reload the page → Still signed in (the cookie); refreshes every 5 s; the picked row and the focus stay through a refresh 〔未訳〕
+- [ ] **95.10** 履歴, then pick a day → That day's runs; no 次の回 column; 今日 comes back to today's 〔未訳〕
+- [ ] **95.11** In the window's 設定, set the theme to a dark one, then a light one, then system, reloading the page each time; then put `high_contrast = true` in common.toml and reload → The page takes the window's colours each time, also with a page-darkening add-on such as Dark Reader on; with system it follows the browser's light or dark; with high_contrast the stronger colours 〔未訳〕
+- [ ] **95.12** `curl -i http://127.0.0.1:8790/theme.css` → 200 `text/css` with `:root {` and `--bg`; no token needed 〔未訳〕
+- [ ] **95.13** サインアウト, then sign in with `I` → `ito（run）`; on a picked confirmed net 今すぐ流す (greyed on 未承認 and held ones) 〔未訳〕
+- [ ] **95.14** 今すぐ流す a net, then 今すぐ流す in the question → A new running run in 今日, picked in the pane; `koyomi ops` shows `run … （HTTP: ito）` 〔未訳〕
+- [ ] **95.15** Pick a running run, 強制終了 → The question starts on やめる; with 強制終了する its jobs stop (■ 強制終了); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
+- [ ] **95.16** `curl -i http://127.0.0.1:8790/` → 200 with `Content-Security-Policy` (`script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 〔未訳〕
+- [ ] **95.17** With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) → Refused; nothing starts 〔未訳〕
+- [ ] **95.18** Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
+- [ ] **95.19** With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) → The same page; the cookie is `Secure` 〔未訳〕
+- [ ] **95.20** Pause the schedule (`koyomi engine pause`); stop the engine → スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays 〔未訳〕
+- [ ] **95.21** With `[standby]` (or `[primary]`) on the engine → The header says which PC runs the schedules (`待機中: … を見張っている`, `… から引き継いで流している`, `… が待機している`) 〔未訳〕
+- [ ] **95.22** Make the window narrower than 900 px → The tree, 今日 and the pane stack in one column; nothing is cut off 〔未訳〕
 
 ## 96. Another PC in the window (the PC list; TODO 80)
 
@@ -1054,22 +1064,24 @@
 
 ## 97. Rerun, skip and hold from the Web UI (TODO 81)
 
-- [ ] **97.1** 保留 on a net and confirm → The net shows ⏸ and the button turns to 保留を解く; its next scheduled time does not start; `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
-- [ ] **97.2** 保留を解く and confirm → The ⏸ mark goes; `koyomi ops` shows `release … （HTTP: ito）` 〔未訳〕
-- [ ] **97.3** Let a run fail, then 再実行 on it and confirm → A new run that starts from the failed job (passed jobs carried over) is shown 〔未訳〕
-- [ ] **97.4** ジョブ on an ended run, ここから再実行 on a middle job, confirm → A new run that starts from that job 〔未訳〕
-- [ ] **97.5** While a run waits on a long job, スキップ on a later job that has not started, confirm → The job ends as ⊘ and the next ones go when their turn comes 〔未訳〕
-- [ ] **97.6** Any of these, then キャンセル in the question → Nothing is sent 〔未訳〕
-- [ ] **97.7** Sign in with `S` (view) → No 保留, 再実行, スキップ or ここから再実行 buttons 〔未訳〕
-- [ ] **97.8** `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` → 403; nothing starts 〔未訳〕
-- [ ] **97.9** `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` → 400 (`from と next はどちらか 1 つ`) 〔未訳〕
-- [ ] **97.10** `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` → 422 with the engine's reason 〔未訳〕
-- [ ] **97.11** 流す on a net with `[params]` → One question per value with its default filled in; キャンセル on any sends nothing 〔未訳〕
-- [ ] **97.12** Change one value, keep the others, confirm → The confirmation names only the changed value; the run gets it, the others take their defaults 〔未訳〕
-- [ ] **97.13** `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` → Each net has `params` with its names and defaults (`{}` when none) 〔未訳〕
-- [ ] **97.14** `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) → 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` 〔未訳〕
-- [ ] **97.15** The same with `{"net":"g/a","cancel":true}`; then once more → 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) 〔未訳〕
-- [ ] **97.16** The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` → 403; 405; 400 〔未訳〕
+- [ ] **97.1** Pick a net, ジョブネットを保留, then ジョブネットを保留 in the question → The tree shows ⏸ and the button turns to ジョブネットの保留を解く, with the note that it does not run; its next scheduled time does not start; `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
+- [ ] **97.2** ジョブネットの保留を解く and confirm → The ⏸ mark goes; `koyomi ops` shows `release … （HTTP: ito）` 〔未訳〕
+- [ ] **97.3** Let a run fail, pick it, 再実行 ▾ → 止まったところから（済んだジョブは引き継ぐ）, confirm → A new run that starts from the failed job (passed jobs carried over), picked in the pane 〔未訳〕
+- [ ] **97.4** 再実行 ▾ → `<middle job> から再実行`, confirm → A new run that starts from that job 〔未訳〕
+- [ ] **97.5** 再実行 ▾ on a failed run → `<failed job> の次から（… はスキップ）`; again with `（… は警告終了）` → New runs that start after that job, which ends ⊘ (then △) 〔未訳〕
+- [ ] **97.6** While a run waits on a long job, スキップ on a later job that has not started, confirm → The job ends as ⊘ and the next ones go when their turn comes 〔未訳〕
+- [ ] **97.7** Any of these, then やめる (or Esc) in the question → Nothing is sent 〔未訳〕
+- [ ] **97.8** Sign in with `S` (view) → No 今すぐ流す, 保留, 再実行 ▾, スキップ, 次の回を飛ばす or 強制終了 buttons; ログ is there 〔未訳〕
+- [ ] **97.9** `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` → 403; nothing starts 〔未訳〕
+- [ ] **97.10** `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` → 400 (`from と next はどちらか 1 つ`) 〔未訳〕
+- [ ] **97.11** `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` → 422 with the engine's reason 〔未訳〕
+- [ ] **97.12** 今すぐ流す on a net with `[params]` → One question with a field per value, its default filled in; やめる sends nothing 〔未訳〕
+- [ ] **97.13** Change one value, keep the others, 今すぐ流す → The run gets the changed value, the others take their defaults 〔未訳〕
+- [ ] **97.14** `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` → Each net has `params` with its names and defaults (`{}` when none), and `today` (the starts still to come today), `next`, `then` (the one after today's last) and `skips`; a held or unapproved net has no `today` and `next` null 〔未訳〕
+- [ ] **97.15** `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) → 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` 〔未訳〕
+- [ ] **97.16** The same with `{"net":"g/a","cancel":true}`; then once more → 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) 〔未訳〕
+- [ ] **97.17** The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` → 403; 405; 400 〔未訳〕
+- [ ] **97.18** In the page, pick the net, 次の回を飛ばす, 飛ばす → The line names the time it skips; the pane lists it under 飛ばす回 and shows 飛ばしを戻す; 飛ばしを戻す, 戻す takes it back 〔未訳〕
 
 ## 98. Definitions from the `edit` role (`GET /nets/text`, `POST /nets/propose`; TODO 83)
 

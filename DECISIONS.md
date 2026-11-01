@@ -847,7 +847,7 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
     - 既定の値は定義の一部だが、`view` でも返す（流す人が何を渡せるか見えないと困る。秘密は `secret:` で定義に平文で無い）。
   - 呼ぶのは `crate::remote` と同じ（指紋を固定した HTTPS、token は OS の資格情報）。どれも別のスレッドで、答えは切り替えた先の PC のものだけを使う。5 秒ごとに読み直す。
   - この PC の箱（トレイから開く「次の 1 回だけスキップ」など）が開いたら、この PC に戻す。
-- **入れた形（81 の 1 つ目、ito 0.158.0）:** `crates/koyomi/web/` の `index.html`・`app.js`・`app.css` を `include_str!` で実行ファイルに入れ、`GET /`・`/app.js`・`/app.css` で返す（トークンなしで読める道は、この 3 つだけ）。
+- **入れた形（81 の 1 つ目、ito 0.158.0）:** `crates/koyomi/web/` の `index.html`・`app.js`・`app.css` を `include_str!` で実行ファイルに入れ、`GET /`・`/app.js`・`/app.css` で返す（トークンなしで読める道は、この 3 つと、81 の 3 つ目で足した `/theme.css` だけ）。
   - サインインは ito-http の `POST /session`（Bearer のトークン → HttpOnly・SameSite=Strict のクッキー。TLS なら Secure）。トークンは `sessionStorage` などにも残さない。クッキーだけで来た変更には `X-Ito-Csrf: 1` が要る（ito-http が見る）。
   - ページは `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; …; frame-ancestors 'none'`。インラインのスクリプト・外の CDN・`innerHTML` を使わず、値は `textContent` で入れる（定義やログの中身で HTML を作らせない）。
   - `GET /me` で名前とロールを返し、ページは届くボタンだけを出す（出さないだけで、守るのはサーバーの 403）。
@@ -857,6 +857,15 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - `POST /runs/<id>/skip` → `Request::Skip`。`POST /nets/hold`・`/nets/release` → `Request::Hold`・`Release`（`job` を書けばそのジョブだけ）。エンジンが断れば 422。
   - ロールはどれも `run`（流す・止めると同じ重さ。定義は変えない）。`over_http` にも足した。
   - ページ: ネットに「保留」「保留を解く」、終わった回に「再実行」、回のジョブに「スキップ」（回が動いていて、ジョブがまだ始まっていない）・「ここから再実行」（回が終わっている）。どれも確かめてから送る。定義を変えるのはまだ（83 の `edit` の道と合わせる）。
+- **入れた形（81 の 3 つ目、窓に近い見た目、ito 0.189.0）:** ページの並びを窓の今日に合わせた。左にジョブネット一覧（グループごと。今日の最後の回の印・✕ の数・保留の ⏸）、真ん中に 今日｜履歴 と状態ごとの札と表、右に選んだ回かネットのペイン。
+  - 今日の表は窓と同じ: まだ来ない時刻の ○ 待ち の行（予定・次の回）のあとに、回を新しい順。次の 1 回だけスキップした時刻も 待ち の行に残す（窓と同じ）。保留中・未承認のネットには 待ち の行を出さない。
+  - そのために `GET /nets` に `today`（今日これから流れる時刻）・`next`・`then`（今日の最後の次）・`skips` を足した。窓と同じ `Snapshot` の関数（`starts_today` など）から作る。JSON の項目を足しただけなので `PROTO` は変えない。
+  - 色は `GET /theme.css`（トークンなしで読める 4 つ目の道）。`ito_theme::stylesheet` が、窓と同じ common.toml の `theme`・`dark_theme`・`light_theme`・`high_contrast` から `:root` の変数を作る。
+    - 要求のたびに読み直すので、窓で変えたテーマはページを読み直せば移る。`system` は `@media (prefers-color-scheme: light)` でブラウザの明暗に従う。テーマが見つからなければ最初の組み込みのテーマ。
+    - `app.css` は hex を書かず、この変数だけを使う。
+    - `<meta name="darkreader-lock">` で、ページを暗くするアドオン（Dark Reader）に塗り直させない（ページは自分でテーマを持つ。uchmk のほかのページの見本と同じ）。
+  - 窓の「未対応」の札は出さない（対応済みは窓の中だけの印で、エンジンは持っていない）。
+  - 今すぐ流すは、保留中・未承認のネットでは押せない形で出し、理由はペインの注記に書く。
 
 - **入れた形（83 の 2 つ目）:** `edit` のロールで定義を読んで出す道。出した定義は未確認のまま置き、その PC の窓で確認するまで動かない。
   - `GET /nets/text?net=<グループ>/<名前>` → `Request::Show`。ファイルの本文・`sha256`・`standing` を返す。定義の本文は流れる中身そのものなので、読むのも `edit`（`view`・`run` には `GET /nets` の名前・既定の値までを見せる）。

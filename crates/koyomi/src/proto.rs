@@ -5,11 +5,13 @@
 
 use std::collections::BTreeMap;
 
+use chrono::NaiveDateTime;
 use ito_ipc::door::Door;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::held::{HeldJob, Skip};
 use koyomi_core::run::{Run, State};
-use koyomi_core::scan::Def;
+use koyomi_core::scan::{Def, Standing};
+use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
@@ -309,6 +311,37 @@ impl Snapshot {
 
     pub fn parse(text: &str) -> Result<Snapshot, String> {
         toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// Every start of an approved, not held net still to come today: the planned times as the quiet
+    /// spans leave them (a skipped one is gone, a waiting one moves to the span's end). What the
+    /// window's 今日 and the Web UI list as 待ち.
+    pub fn starts_today(&self, now: NaiveDateTime) -> Vec<(&Def, NaiveDateTime)> {
+        let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
+        let mut out = Vec::new();
+        for d in self.defs.iter().filter(|d| self.starts(d)) {
+            if let Some(net) = &d.net {
+                let times = when::between_in(&net.when, now, end, self.calendar_of(d));
+                out.extend(quiet::starts(&net.quiet, net.on_quiet, times).into_iter().filter(|at| *at <= end).map(|at| (d, at)));
+            }
+        }
+        out
+    }
+
+    /// The next start of `d` after `from`, quiet spans seen; none for a net not approved or on hold.
+    pub fn next_start(&self, d: &Def, from: NaiveDateTime) -> Option<NaiveDateTime> {
+        let net = d.net.as_ref().filter(|_| self.starts(d))?;
+        quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, self.calendar_of(d)).into_iter().next()
+    }
+
+    /// Whether a time of `d` starts it: approved and not on hold.
+    fn starts(&self, d: &Def) -> bool {
+        d.standing == Standing::Confirmed && !self.held.contains(&d.id)
+    }
+
+    /// The calendar `d` counts by, as the engine read it.
+    fn calendar_of(&self, d: &Def) -> Option<&Calendar> {
+        d.calendar.as_deref().and_then(|c| self.calendars.get(c))
     }
 }
 

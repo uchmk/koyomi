@@ -3,57 +3,87 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="darkreader-lock">
 <title>koyomi</title>
+<link rel="stylesheet" href="/theme.css">
 <link rel="stylesheet" href="/app.css">
 <script src="/app.js" defer></script>
 </head>
 <body>
-<header>
-  <h1>koyomi</h1>
-  <span id="status" class="muted"></span>
+<header class="bar">
+  <span class="brand">koyomi</span>
+  <span id="engine" class="chip" hidden></span>
+  <span id="ha" class="chip" hidden></span>
   <span class="grow"></span>
-  <span id="who" class="muted"></span>
-  <button id="signout" type="button" hidden>サインアウト</button>
+  <span id="who" class="dim"></span>
+  <button id="signout" type="button" class="quiet" hidden>サインアウト</button>
 </header>
 
-<section id="signin" hidden>
-  <h2>サインイン</h2>
-  <p class="muted">koyomi.toml の <code>[http]</code> か <code>[[http.user]]</code> のトークンを入れる。トークンはこのページに残らない（サインインのあと、クッキーで続く）。</p>
+<section id="signin" class="signin" hidden>
+  <h1>サインイン</h1>
+  <p class="dim">koyomi.toml の <code>[http]</code> か <code>[[http.user]]</code> のトークンを入れてください。トークンはこのページに残りません（サインインのあとはクッキーで続きます）。</p>
   <form id="signin-form">
-    <input id="token" type="password" autocomplete="off" placeholder="トークン" required>
-    <button type="submit">サインイン</button>
+    <input id="token" type="password" autocomplete="off" placeholder="トークン" aria-label="トークン" required>
+    <button type="submit" class="primary">サインイン</button>
   </form>
+  <p id="signin-message" class="message bad" role="status"></p>
 </section>
 
-<main id="main" hidden>
-  <p id="message" role="status"></p>
+<div id="app" class="app" hidden>
+  <nav id="tree" class="tree" aria-label="ジョブネット一覧">
+    <div class="tree-head">ジョブネット一覧</div>
+    <p id="todo" class="todo" hidden></p>
+    <div id="groups"></div>
+  </nav>
 
-  <section>
-    <h2>ジョブネット</h2>
-    <p id="paused" class="warn" hidden>スケジュールを止めている（⏸）</p>
-    <table>
-      <thead><tr><th>ネット</th><th>状態</th><th>保留</th><th></th></tr></thead>
-      <tbody id="nets"></tbody>
-    </table>
-  </section>
+  <main class="center">
+    <p id="paused" class="band" hidden>スケジュール停止中: 時刻が来ても流れません</p>
+    <div class="tabs" role="tablist">
+      <button id="tab-today" type="button" role="tab" aria-selected="true">今日</button>
+      <button id="tab-history" type="button" role="tab" aria-selected="false">履歴</button>
+      <span class="grow"></span>
+      <input id="day" type="date" aria-label="日付" hidden>
+      <span id="date" class="date mono"></span>
+    </div>
+    <div id="counts" class="counts"></div>
+    <p id="message" class="message" role="status"></p>
+    <div class="table-wrap">
+      <table class="runs">
+        <thead>
+          <tr><th>状態</th><th>ジョブネット</th><th id="col-planned">予定</th><th>開始</th><th>終了</th><th>時間</th><th id="col-next">次の回</th></tr>
+        </thead>
+        <tbody id="rows"></tbody>
+      </table>
+      <p id="empty" class="empty dim" hidden></p>
+    </div>
+  </main>
 
-  <section>
-    <h2>今日の回</h2>
-    <table>
-      <thead><tr><th>開始</th><th>ネット</th><th>状態</th><th>終了</th><th></th></tr></thead>
-      <tbody id="runs"></tbody>
-    </table>
-  </section>
+  <aside id="pane" class="pane" hidden>
+    <div class="pane-head">
+      <h2 id="pane-title"></h2>
+      <button id="pane-close" type="button" class="quiet" aria-label="閉じる">✕</button>
+    </div>
+    <p id="pane-state" class="state-line"></p>
+    <p id="pane-sub" class="sub mono"></p>
+    <p id="pane-note" class="note" hidden></p>
+    <div id="pane-actions" class="actions"></div>
+    <div id="pane-body"></div>
+  </aside>
+</div>
 
-  <section id="detail" hidden>
-    <h2 id="detail-title"></h2>
-    <table>
-      <thead><tr><th>ジョブ</th><th>状態</th><th>開始</th><th>終了</th><th>終了コード</th><th></th></tr></thead>
-      <tbody id="jobs"></tbody>
-    </table>
-    <h3 id="log-title" hidden></h3>
-    <pre id="log" hidden></pre>
-  </section>
-</main>
+<footer class="statusbar">
+  <span id="foot"></span>
+</footer>
+
+<dialog id="ask">
+  <form method="dialog">
+    <p id="ask-text"></p>
+    <div id="ask-fields" class="fields"></div>
+    <div class="actions end">
+      <button id="ask-no" type="submit" value="no" autofocus>やめる</button>
+      <button id="ask-yes" type="submit" value="yes" class="primary">はい</button>
+    </div>
+  </form>
+</dialog>
 </body>
 </html>
