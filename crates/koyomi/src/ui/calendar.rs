@@ -1130,8 +1130,7 @@ impl Browser {
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
-                ui.horizontal(|ui| pressed = super::go_or_cancel(ui, mark, go, t.tr("make.cancel")));
-                ui.label(egui::RichText::new(t.tr("make.hint")).color(c.dim).small());
+                pressed = super::box_answer(ui, mark, go, t.tr("make.cancel"));
             });
         match pressed.or(key) {
             Some(0) => self.new_cal_go(t),

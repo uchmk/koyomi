@@ -1057,8 +1057,7 @@ impl Browser {
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
-                ui.horizontal(|ui| pressed = go_or_cancel(ui, mark, go, t.tr("make.cancel")));
-                ui.label(egui::RichText::new(t.tr("make.hint")).color(c.dim).small());
+                pressed = box_answer(ui, mark, go, t.tr("make.cancel"));
             });
         match pressed.or(key) {
             Some(0) => self.make_go(t),
@@ -1087,7 +1086,6 @@ impl Browser {
     /// The values box of 今すぐ実行: one field a value, then 流す or やめる.
     fn confirm_give(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
         let Some(g) = &mut self.give else { return };
-        let c = ito_theme::colors();
         let mut pressed = None;
         egui::Window::new(t.tr("give.title"))
             .id(egui::Id::new("give"))
@@ -1109,8 +1107,7 @@ impl Browser {
                         ui.end_row();
                     }
                 });
-                ui.horizontal(|ui| pressed = go_or_cancel(ui, ito_prefs::Mark::Play, t.tr("give.go"), t.tr("give.cancel")));
-                ui.label(egui::RichText::new(t.tr("give.hint")).color(c.dim).small());
+                pressed = box_answer(ui, ito_prefs::Mark::Play, t.tr("give.go"), t.tr("give.cancel"));
             });
         match pressed.or(key) {
             Some(0) => {
@@ -1227,8 +1224,7 @@ impl Browser {
                     if let Some(e) = &p.error {
                         ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                     }
-                    ui.horizontal(|ui| pressed = go_or_cancel(ui, ito_prefs::Mark::Import, t.tr("port.read"), t.tr("port.cancel")));
-                    ui.label(egui::RichText::new(t.tr("port.hint_path")).color(c.dim).small());
+                    pressed = box_answer(ui, ito_prefs::Mark::Import, t.tr("port.read"), t.tr("port.cancel"));
                 });
             match pressed.or(key) {
                 Some(0) => self.port_read(),
@@ -2342,9 +2338,7 @@ impl Browser {
                         }
                     });
                 });
-                ui.add_space(4.0);
-                close |= ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("skipnext.close")).show(ui).clicked();
-                ui.label(egui::RichText::new(t.tr("skipnext.hint")).color(c.dim).small());
+                close |= box_foot(ui, |ui| ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("skipnext.close")).show(ui).clicked());
             });
         if let Some(r) = send {
             self.result = None;
@@ -3697,7 +3691,30 @@ pub(crate) fn danger(ui: &mut egui::Ui, mark: ito_prefs::Mark, words: &str) -> e
     ito_prefs::IconButton::new(mark, words).tone(ito_prefs::Tone::Danger).show(ui)
 }
 
-/// A box's two buttons: what it is for (filled, with `mark`), then one that closes it doing nothing. `Some(0)` or
+/// The foot of a box: a blank line under what it asks, then its buttons at its right edge, as ito's confirm box lays
+/// them. `buttons` draws them right to left: the rightmost first.
+pub(crate) fn box_foot<R>(ui: &mut egui::Ui, buttons: impl FnOnce(&mut egui::Ui) -> R) -> R {
+    ui.add_space(ui.text_style_height(&egui::TextStyle::Body));
+    // Sized to its own height: a bare `with_layout` would take all the room left and grow the box every frame.
+    let layout = egui::Layout::right_to_left(egui::Align::Center);
+    ui.allocate_ui_with_layout(egui::vec2(ui.available_width(), 0.0), layout, buttons).inner
+}
+
+/// A box's two buttons at its foot: what it is for (filled, with `mark`), then one that closes it doing nothing,
+/// rightmost. `Some(0)` or `Some(1)` for the one clicked, as Enter and Esc give.
+pub(crate) fn box_answer(ui: &mut egui::Ui, mark: ito_prefs::Mark, go: &str, cancel: &str) -> Option<usize> {
+    box_foot(ui, |ui| {
+        let cancel = ito_prefs::IconButton::new(ito_prefs::Mark::Close, cancel).show(ui).clicked();
+        let go = primary(ui, true, mark, go).clicked();
+        if go {
+            Some(0)
+        } else {
+            cancel.then_some(1)
+        }
+    })
+}
+
+/// A row's two buttons: what it is for (filled, with `mark`), then one that closes it doing nothing. `Some(0)` or
 /// `Some(1)` for the one clicked, as Enter and Esc give.
 pub(crate) fn go_or_cancel(ui: &mut egui::Ui, mark: ito_prefs::Mark, go: &str, cancel: &str) -> Option<usize> {
     let go = primary(ui, true, mark, go).clicked();
