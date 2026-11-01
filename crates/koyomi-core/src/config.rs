@@ -5,12 +5,18 @@
 //! listens for other programs (on this PC, or with `lan` on the network over
 //! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
 //! this one stands by for (HA), `[primary]`, which of them stands by for this one, and
-//! `[locks]`, how many nets may hold a `lock` at once.
+//! `[locks]`, how many nets may hold a `lock` at once, and `work_dir`, where a job without
+//! `dir` runs.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
+
+/// `work_dir = "definition"`: a job without `dir` runs in the folder its net's file is in.
+pub const DEFINITION: &str = "definition";
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -40,6 +46,12 @@ pub struct Config {
     /// `[locks]`: `"API枠" = 3`, how many nets may hold that `lock` exclusively at once.
     /// A name not listed has 1. Kept as written so [`Config::parse`] can say what is wrong in Japanese.
     pub locks: toml::Table,
+    /// Where a job without `dir` runs, and what a relative `dir` is read from. Not written: the
+    /// engine's own working folder (where it was started; the service's is `C:\Windows\System32`).
+    /// [`DEFINITION`]: the folder its net's file is in (`jobnets/<group>`). Else one folder, an
+    /// absolute path, for every net.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_dir: Option<String>,
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
@@ -334,6 +346,7 @@ impl Default for Config {
             standby: None,
             primary: None,
             locks: toml::Table::new(),
+            work_dir: None,
         }
     }
 }
@@ -379,7 +392,24 @@ impl Config {
                 return Err(format!("[locks] の {name:?} は同時に持てる数で、1 以上（例: \"API枠\" = 3）"));
             }
         }
+        if let Some(w) = &c.work_dir {
+            let w = w.trim();
+            if w != DEFINITION && !Path::new(w).is_absolute() {
+                return Err(format!(
+                    "work_dir は \"{DEFINITION}\"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\\batch'）: {w}"
+                ));
+            }
+        }
         Ok(c)
+    }
+
+    /// The folder a job without `dir` runs in, with `folder` the one its net's file is in;
+    /// `None` is the engine's own working folder.
+    pub fn work_folder(&self, folder: Option<&Path>) -> Option<PathBuf> {
+        match self.work_dir.as_deref().map(str::trim)? {
+            DEFINITION => folder.map(Path::to_path_buf),
+            p => Some(PathBuf::from(p)),
+        }
     }
 
     /// How many nets may hold the lock `name` exclusively at once: `[locks]`'s number, or 1.
@@ -427,6 +457,23 @@ archive_days = 365
         assert!(Config::parse("keep_days = 0\n").is_err());
         assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    /// `work_dir`: not written, the engine's folder; `"definition"`, the net's own; else one
+    /// absolute folder. A relative one would hang on where the engine was started, so it is refused.
+    #[test]
+    fn work_dir_is_the_engine_s_the_definition_s_or_one_folder() {
+        let net = Path::new("C:/koyomi/jobnets/経理");
+        assert_eq!(Config::default().work_folder(Some(net)), None);
+        let c = Config::parse("work_dir = \"definition\"\n").unwrap();
+        assert_eq!((c.work_folder(Some(net)), c.work_folder(None)), (Some(net.to_path_buf()), None));
+        let abs = std::env::temp_dir().display().to_string();
+        let c = Config::parse(&format!("work_dir = '{abs}'\n")).unwrap();
+        assert_eq!((c.work_folder(Some(net)), c.work_dir.as_deref()), (Some(PathBuf::from(&abs)), Some(abs.as_str())));
+        for bad in ["batch", "", ".\\batch", "Definition"] {
+            let e = Config::parse(&format!("work_dir = '{bad}'\n")).unwrap_err();
+            assert!(e.starts_with("work_dir は \"definition\"（定義のあるフォルダー）か絶対パスで書く"), "{bad}: {e}");
+        }
     }
 
     /// `[locks]` gives a lock name more than one place; a name not listed has one.

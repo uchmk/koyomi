@@ -231,6 +231,8 @@ pub struct Runner {
     calendar_of: BTreeMap<String, String>,
     /// The jobs on hold (`koyomi hold <net> <job>`): a run that comes to one waits there.
     held: Held,
+    /// `jobnets/`, the folder of each group's definitions: what `work_dir = "definition"` needs.
+    jobnets: Option<PathBuf>,
 }
 
 impl Runner {
@@ -256,6 +258,7 @@ impl Runner {
             notices: Vec::new(),
             asks: Vec::new(),
             held: Held::default(),
+            jobnets: None,
         };
         let today = Local::now().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -303,6 +306,11 @@ impl Runner {
         self.start_ready();
     }
 
+    /// `jobnets/`: a net `<group>/<name>`'s file is in `<jobnets>/<group>`.
+    pub fn set_jobnets(&mut self, jobnets: PathBuf) {
+        self.jobnets = Some(jobnets);
+    }
+
     /// The `kind = "notify"` parts that ended since the last call, oldest first: (run id, job id).
     pub fn take_asks(&mut self) -> Vec<(String, String)> {
         std::mem::take(&mut self.asks)
@@ -337,12 +345,14 @@ impl Runner {
     }
 
     /// The net with its child nets in, and `{param:…}` (`set` over the defaults) and `{date}`
-    /// in its jobs written out for the business day `date`.
+    /// in its jobs written out for the business day `date`; each job in the folder `work_dir` gives.
     fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<Jobnet, String> {
         let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
         let values = template::values(&net, set)?;
         let mut net = template::expand_net(&net, date, cal, &values)?;
+        let folder = |id: &str| self.jobnets.as_ref().zip(id.split_once('/')).map(|(j, (group, _))| j.join(group));
+        jobnet::place(&mut net, jobnet, &|id| self.config.work_folder(folder(id).as_deref()));
         // An `ssh` runs koyomi itself (`koyomi ssh run`).
         let exe = std::env::current_exe().map_or_else(|_| "koyomi".to_owned(), |p| p.to_string_lossy().into_owned());
         koyomi_core::chore::fill(&mut net, &exe)?;
@@ -1720,6 +1730,52 @@ mod tests {
         } else {
             format!("run = [\"sleep\", \"{secs}\"]")
         }
+    }
+
+    /// `work_dir = "definition"`: a job without `dir` runs in its net's folder (a child net's job
+    /// in the child's), a relative `dir` is read from there, an absolute one is kept. Not written:
+    /// the jobs are as they were.
+    #[test]
+    fn work_dir_runs_a_job_without_dir_in_its_definition_s_folder() {
+        let dir = scratch("workdir");
+        let jobnets = dir.join("jobnets");
+        std::fs::create_dir_all(jobnets.join("g").join("sub")).unwrap();
+        let pwd = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"cd\"]" } else { "run = [\"pwd\"]" };
+        let abs = dir.display().to_string().replace('\\', "/");
+        let d = def(
+            "g/net",
+            &format!(
+                "format = 1\n[[job]]\nid = \"a\"\n{pwd}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{pwd}\ndir = \"sub\"\n\
+                 [[job]]\nid = \"c\"\nafter = [\"b\"]\n{pwd}\ndir = '{abs}'\n[[job]]\nid = \"k\"\nafter = [\"c\"]\nkind = \"jobnet\"\nuse = \"共通/子\"\n"
+            ),
+        );
+        let child = koyomi_core::jobnet::parse(&format!("format = 1\n[[job]]\nid = \"x\"\n{pwd}\n")).unwrap();
+        let children = BTreeMap::from([("共通/子".to_owned(), Ok(child))]);
+        let day = Local::now().date_naive();
+        let at = |seen: &str, id: &str| {
+            seen.lines().find(|l| l.starts_with(&format!("{id}: "))).and_then(|l| l.rsplit_once(" @ ")).map(|(_, d)| d.to_owned())
+        };
+        let mut plain = Runner::new(&dir.join("plain"), Config::default());
+        plain.set_jobnets(jobnets.clone());
+        plain.set_children(children.clone());
+        let seen = plain.dry(&d, day, &BTreeMap::new()).unwrap();
+        assert_eq!((at(&seen, "a"), at(&seen, "b"), at(&seen, "k/x")), (None, Some("sub".to_owned()), None), "{seen}");
+        let mut r = Runner::new(&dir.join("state"), Config { work_dir: Some("definition".into()), ..Config::default() });
+        r.set_jobnets(jobnets.clone());
+        r.set_children(children);
+        let seen = r.dry(&d, day, &BTreeMap::new()).unwrap();
+        let g = jobnets.join("g");
+        assert_eq!(at(&seen, "a"), Some(g.display().to_string()), "{seen}");
+        assert_eq!(at(&seen, "b"), Some(g.join("sub").display().to_string()), "{seen}");
+        assert_eq!(at(&seen, "c"), Some(abs.clone()), "{seen}");
+        assert_eq!(at(&seen, "k/x"), Some(jobnets.join("共通").display().to_string()), "{seen}");
+        // And the job does run there.
+        let id = r.start(&d, day, How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(r.log_tail(&id, "a").unwrap().trim(), g.display().to_string());
+        assert_eq!(r.log_tail(&id, "b").unwrap().trim(), g.join("sub").display().to_string());
+        // The child's folder is not there: its job does not start.
+        assert_eq!(run.state, State::Error, "{run:?}");
     }
 
     /// A command that exists on every machine the tests run on.

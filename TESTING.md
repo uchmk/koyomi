@@ -1461,3 +1461,19 @@ As §100 without `nets` on `kato`, plus `roles = { "経理/*" = "run" }` on `sat
 | 105.9 | Open the Web UI and sign in with `S` | Next to the name, `sato（view、経理/* は run）`. `経理/a` and its run have 今すぐ流す, 保留, 強制終了 / 流し直す and スキップ; `人事/b` and its run have none of them |
 | 105.10 | `koyomi check` with `roles = {}`, `roles = { "経理" = "run" }` and `roles = { "経理/*" = "admin" }` | Each refused: `[[http.user]] sato の roles を空にしない…`, `… roles のキーは <グループ>/<名前> で書く…`, `… roles の 経理/* の role は view・run・edit のどれか…` |
 | 105.11 | This PC's window and `koyomi run 人事/b` | Both work as before |
+
+## 106. The working folder of a job without `dir` (`work_dir`) and a month's `day = 29`–`31`
+
+Net `経理/a` with job `p` (`run = ["cmd", "/c", "cd"]`, no `dir`) and job `q` (the same `run`, `dir = "out"`). Net `経理/b` that uses `共通/c`, whose job `r` is `cmd /c cd` with no `dir`. Make the folder `jobnets/経理/out`. Both nets confirmed.
+
+| # | Do | Expect |
+|---|---|---|
+| 106.1 | No `work_dir` in koyomi.toml; run `経理/a` | `p`'s log shows the engine's own folder, as before; `q` ends in ✕ (no `out` there) |
+| 106.2 | Write `work_dir = "definition"`; within 5 s run `経理/a` again | `p`'s log shows `…\jobnets\経理`, `q`'s `…\jobnets\経理\out`; both ✓ |
+| 106.3 | Run `経理/b` | `r`'s log shows `…\jobnets\共通` (the child's own folder, not `経理`) |
+| 106.4 | `koyomi run 経理/a --dry` | `p: cmd /c cd @ …\jobnets\経理` and `q: … @ …\jobnets\経理\out` |
+| 106.5 | Write `work_dir = 'D:\batch'` (make `D:\batch` but not `D:\batch\out`) and run `経理/a` | `p`'s log shows `D:\batch`; `q` ends in ✕ |
+| 106.6 | Remove `D:\batch`; `koyomi check jobnets/経理/a.toml` | `q の作業フォルダーがない: D:\batch\out` and `dir のないジョブの作業フォルダーがない: D:\batch（koyomi.toml の work_dir）`; exit 1 |
+| 106.7 | Write `work_dir = "batch"`; `koyomi check koyomi.toml` | Refused: `work_dir は "definition"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\batch'）: batch` |
+| 106.8 | A net with `[[when]]` `every = "month"`, `day = 31`, `at = ["21:00"]`; `koyomi check` it | `注意: [[when]] の day = 31 は 31 日のない月（2・4・6・9・11 月）には流れない。月末に流すなら day = "last"`, then `問題なし`; exit 0 |
+| 106.9 | The same with `day = 30`, `day = 29` and `day = "last"` | `（2 月）`; `（うるう年でない 2 月）`; no word |

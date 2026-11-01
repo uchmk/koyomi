@@ -2556,6 +2556,30 @@ pub fn expand(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>) -> 
     expand_in(net, lookup, &mut Vec::new())
 }
 
+/// Each job of the [`expand`]ed `net` that runs a program, placed in the folder `base` gives for
+/// the net it came from: `own`, or the child net whose part it is under. A job without `dir` runs
+/// there and a relative `dir` is read from there; an absolute `dir`, and a net `base` gives no
+/// folder for, stay as they are. Run after `{…}` are written out: a `{param:…}` may be a whole path.
+pub fn place(net: &mut Jobnet, own: &str, base: &dyn Fn(&str) -> Option<std::path::PathBuf>) {
+    let parts: Vec<(String, String)> = net
+        .jobs
+        .iter()
+        .filter_map(|j| match &j.part {
+            Part::Jobnet { use_ } => Some((format!("{}/", j.id), use_.clone())),
+            _ => None,
+        })
+        .collect();
+    for j in net.jobs.iter_mut().filter(|j| j.part.runs_process() && !matches!(j.part, Part::Chore(_))) {
+        let from = parts.iter().filter(|(p, _)| j.id.starts_with(p.as_str())).max_by_key(|(p, _)| p.len()).map_or(own, |(_, u)| u.as_str());
+        let Some(folder) = base(from) else { continue };
+        j.dir = Some(match j.dir.take() {
+            Some(d) if std::path::Path::new(&d).is_absolute() => d,
+            Some(d) => folder.join(d).to_string_lossy().into_owned(),
+            None => folder.to_string_lossy().into_owned(),
+        });
+    }
+}
+
 fn expand_in(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>, stack: &mut Vec<String>) -> Result<Jobnet, String> {
     let mut out = net.clone();
     out.jobs.clear();
@@ -3417,6 +3441,42 @@ after = [{ job = \"way\", code = \"else\" }]
         let myself = parse("format = 1\n[[job]]\nid = \"me\"\nkind = \"jobnet\"\nuse = \"a/b\"\n").unwrap();
         let loop_ = |u: &str| if u == "a/b" { Ok(myself.clone()) } else { Err(String::new()) };
         assert_eq!(expand(&myself, &loop_).unwrap_err(), "子ジョブネットの呼び合いが輪になっている: a/b → a/b");
+    }
+
+    /// each job goes to the folder of the net it came from, a child's (and its child's) to theirs;
+    /// a relative `dir` is under it, an absolute one kept, a part that runs nothing left alone.
+    #[test]
+    fn place_puts_each_job_in_its_own_net_s_folder() {
+        use std::path::PathBuf;
+        let abs = std::env::temp_dir().display().to_string();
+        let parent = parse(&format!(
+            "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nrun = [\"x\"]\ndir = \"sub\"\nafter = [\"a\"]\n\
+             [[job]]\nid = \"c\"\nrun = [\"x\"]\ndir = '{abs}'\nafter = [\"b\"]\n[[job]]\nid = \"bk\"\nkind = \"jobnet\"\nuse = \"共通/控え\"\nafter = [\"c\"]\n\
+             [[job]]\nid = \"t\"\nkind = \"time\"\nat = \"06:00\"\nafter = [\"bk\"]\n[[job]]\nid = \"z\"\nrun = [\"x\"]\nafter = [\"t\"]\n"
+        ))
+        .unwrap();
+        let child = parse("format = 1\n[[job]]\nid = \"c1\"\nrun = [\"c\"]\n[[job]]\nid = \"in\"\nkind = \"jobnet\"\nuse = \"共通/奥\"\nafter = [\"c1\"]\n").unwrap();
+        let inner = parse("format = 1\n[[job]]\nid = \"i1\"\nrun = [\"c\"]\ndir = \"logs\"\n").unwrap();
+        let lookup = |u: &str| match u {
+            "共通/控え" => Ok(child.clone()),
+            "共通/奥" => Ok(inner.clone()),
+            _ => Err(format!("子ジョブネットがない: {u}")),
+        };
+        let mut net = expand(&parent, &lookup).unwrap();
+        let root = std::env::temp_dir().join("jobnets");
+        place(&mut net, "経理/月次", &|id| Some(root.join(id)));
+        let dir = |id: &str| net.jobs.iter().find(|j| j.id == id).unwrap().dir.clone().map(PathBuf::from);
+        assert_eq!(dir("a"), Some(root.join("経理/月次")));
+        assert_eq!(dir("b"), Some(root.join("経理/月次").join("sub")));
+        assert_eq!(dir("c"), Some(PathBuf::from(&abs)));
+        assert_eq!(dir("bk/c1"), Some(root.join("共通/控え")));
+        assert_eq!(dir("bk/in/i1"), Some(root.join("共通/奥").join("logs")));
+        assert_eq!((dir("bk"), dir("bk/in"), dir("t")), (None, None, None));
+        assert_eq!(dir("z"), Some(root.join("経理/月次")));
+        // No folder for the net: as written.
+        let mut net = expand(&parent, &lookup).unwrap();
+        place(&mut net, "経理/月次", &|_| None);
+        assert_eq!(net, expand(&parent, &lookup).unwrap());
     }
 
     #[test]

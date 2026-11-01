@@ -244,7 +244,8 @@ impl State {
             Err(e) => (Config::default(), Some(e)),
         };
         let keep = retain::Settings::of(&config);
-        let runner = Runner::new(&paths.state, config);
+        let mut runner = Runner::new(&paths.state, config);
+        runner.set_jobnets(paths.jobnets.clone());
         let schedule = Schedule::new(&paths.state);
         let retain = Retain::new(&paths.state);
         let backup = Backup::new(&paths.app, &paths.state);

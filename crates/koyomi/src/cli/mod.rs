@@ -445,12 +445,16 @@ fn check(args: &[String]) -> i32 {
         };
         let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
         let today = chrono::Local::now().date_naive();
-        for f in koyomi_core::preflight::check(net, &cals, today, engine::CAUTION_DAYS, &path_var, &exts) {
+        let config = paths.as_ref().and_then(|p| koyomi_core::config::Config::load(&p.config).ok());
+        // Where a job without `dir` runs: `work_dir = "definition"` is this file's own folder.
+        let folder = std::path::absolute(path).ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf));
+        let work = config.as_ref().and_then(|c| c.work_folder(folder.as_deref()));
+        for f in koyomi_core::preflight::check(net, &cals, today, engine::CAUTION_DAYS, &path_var, &exts, work.as_deref()) {
             out(&format!("{name}: {}", f.text), true);
             bad |= !f.warn;
         }
         // The places it names, in `koyomi.toml`: a name none has is told to no webhook and no mail.
-        if let Some(config) = paths.as_ref().and_then(|p| koyomi_core::config::Config::load(&p.config).ok()) {
+        if let Some(config) = config {
             let unknown = crate::notify::unknown(&crate::notify::read(&config).0, net);
             if !unknown.is_empty() {
                 out(&format!("{name}: 注意: koyomi.toml の [notify] にその名前の通知先がない: {}", unknown.join(", ")), true);
