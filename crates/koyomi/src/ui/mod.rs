@@ -29,6 +29,8 @@ pub mod gantt;
 pub mod graph;
 pub mod whens;
 
+mod net_side;
+
 /// How often the engine is asked for the list and the runs.
 const POLL: Duration = Duration::from_secs(1);
 
@@ -199,6 +201,9 @@ struct Kept {
     /// `true` once the calendar was switched to its week.
     #[serde(default)]
     calendar_week: Option<bool>,
+    /// `false` once the pane at the right of the net page was folded.
+    #[serde(default)]
+    net_pane: Option<bool>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -350,6 +355,8 @@ pub struct Browser {
     cal_pane: bool,
     /// The calendar shows the week of the picked day rather than its month.
     cal_week: bool,
+    /// The pane at the right of the net page is open (not folded to its strip).
+    net_pane: bool,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
     today_sort: Option<(usize, bool)>,
     /// The jobs table's sort on the net page, as `today_sort`.
@@ -446,6 +453,7 @@ impl Browser {
         let inspector = kept.inspector != Some(false);
         let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
         let cal_week = kept.calendar_week == Some(true);
+        let net_pane = kept.net_pane != Some(false);
         let flow = path.map(|p| kept::Writer::new(p, true));
         let far = far::Far::start(&io.1);
         Browser {
@@ -499,6 +507,7 @@ impl Browser {
             hist_pane,
             cal_pane,
             cal_week,
+            net_pane,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -803,6 +812,7 @@ impl Browser {
                 history_pane: Some(self.hist_pane),
                 calendar_pane: Some(self.cal_pane),
                 calendar_week: Some(self.cal_week),
+                net_pane: Some(self.net_pane),
             });
         }
     }
@@ -1609,6 +1619,8 @@ impl Browser {
             } else if self.cal_sel.is_some() {
                 self.calendar_view(ui, t);
             } else {
+                // The net open, or the overview's picked row, at the right; folded to a strip when not wanted.
+                self.net_pane(ui, t);
                 page().show(ui, |ui| {
                     // A net's jobs in a pane at the bottom, its top edge dragged to size it; the page above.
                     if self.selected_def().is_some_and(|d| d.net.as_ref().is_some_and(|n| !n.jobs.is_empty())) {
@@ -3366,10 +3378,7 @@ impl Browser {
             section(ui, "net.sec_graph");
             self.net_graph(ui, t, &def, "net_graph");
         }
-        if def.net.is_some() {
-            section(ui, "net.sec_timing");
-            self.net_timing(ui, t, &def);
-        }
+        // Its next starts are in the pane at the right.
         let lines = review::settings(t, &def);
         if !lines.is_empty() {
             section(ui, "net.sec_settings");
@@ -4370,6 +4379,7 @@ mod tests {
             hist_pane: true,
             cal_pane: true,
             cal_week: false,
+            net_pane: true,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -4653,7 +4663,7 @@ run = [\"x.exe\"]
 
     /// A net's page is split into 図, 実行のタイミング, 設定 and ジョブ, in that order.
     #[test]
-    fn the_net_page_has_its_four_sections() {
+    fn the_net_page_has_its_sections_and_its_times_at_the_right() {
         let dir = std::env::temp_dir().join(format!("koyomi-view-sections-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join("夜間.toml");
@@ -4664,13 +4674,17 @@ run = [\"x.exe\"]
         b.selected = selected;
         let mut s = Screen::new();
         s.settle(&mut b);
-        let y = |w: &str| {
-            let ys: Vec<f32> = s.nodes.values().filter(|(l, _)| l == w).map(|(_, r)| r.center().y).collect();
-            assert!(!ys.is_empty(), "{w} is a heading: {:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
-            ys.into_iter().fold(f32::MIN, f32::max)
+        let at = |w: &str| {
+            let rs: Vec<egui::Rect> = s.nodes.values().filter(|(l, _)| l == w).map(|(_, r)| *r).collect();
+            assert!(!rs.is_empty(), "{w} is a heading: {:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+            rs.into_iter().max_by(|a, b| a.center().y.total_cmp(&b.center().y)).unwrap()
         };
-        let ys = ["図", "実行のタイミング", "設定", "ジョブ"].map(y);
+        let ys = ["図", "設定", "ジョブ"].map(|w| at(w).center().y);
         assert!(ys.windows(2).all(|w| w[0] < w[1]), "in order: {ys:?}");
+        // The next starts are in the pane at the right of the page, not under the graph.
+        let (graph, times) = (at("図"), at("実行のタイミング"));
+        assert!(times.left() > graph.right(), "at the right: {graph:?} {times:?}");
+        assert!(s.nodes.values().any(|(l, _)| l == "今日の実行"), "the pane lists today's runs");
     }
 
     fn key(k: egui::Key) -> Vec<egui::Event> {

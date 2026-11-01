@@ -108,18 +108,23 @@ impl Browser {
             Some((_, name)) => self.delete_cal_box(&name),
             None => {}
         }
-        if pick.is_some() {
-            self.cal_sel = pick;
-            self.cal_month = None;
-            self.cal_result = None;
-            self.cal_inline = None;
-            self.run_sel = None;
-            self.job_sel = None;
-            self.result = None;
-            self.hist = None;
-            // Off the today page too, or the chart keeps the detail and the click shows nothing.
-            self.gantt = false;
+        if let Some(name) = pick {
+            self.open_calendar(&name);
         }
+    }
+
+    /// The calendar's page, from its row in the tree or from a net that counts its days by it.
+    pub(super) fn open_calendar(&mut self, name: &str) {
+        self.cal_sel = Some(name.to_owned());
+        self.cal_month = None;
+        self.cal_result = None;
+        self.cal_inline = None;
+        self.run_sel = None;
+        self.job_sel = None;
+        self.result = None;
+        self.hist = None;
+        // Off the today page too, or the chart keeps the detail and the click shows nothing.
+        self.gantt = false;
     }
 
     /// The month as a table, the named days, the holiday table's end, and the
