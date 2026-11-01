@@ -4,14 +4,16 @@
 //! A run belongs to its business day (`Run::date`), not the day it started on. A record of a
 //! time that never started (時刻を過ぎた, 保留, 未確認で止めた) does not count as a run; a run
 //! still going or waiting does. A day whose latest record is スキップ was let go on purpose and is
-//! left alone. A day older than `keep_days` with no record left (neither in history nor in
+//! left alone, except a time dropped from the queue because the engine stopped
+//! ([`ENGINE_STOPPED`]): nobody let that go, so it counts as never started, like 未確認で止めた.
+//! A day older than `keep_days` with no record left (neither in history nor in
 //! `archive/`) cannot tell whether it ran, so it is left alone too: without `--only` every day runs.
 
 use std::collections::BTreeSet;
 
 use chrono::NaiveDate;
 
-use crate::run::{Run, State};
+use crate::run::{Run, State, ENGINE_STOPPED};
 
 /// Which days `--only` keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -42,7 +44,8 @@ pub enum Day<'a> {
     Nothing,
     /// Only records of times that never started: the latest of them.
     NotStarted(&'a Run),
-    /// Only records of times that never started, the latest of them スキップ: let go on purpose.
+    /// Only records of times that never started, the latest of them スキップ: let go on purpose
+    /// (not [`ENGINE_STOPPED`], which is [`Day::NotStarted`]).
     Skipped(&'a Run),
     /// No run and no record, but older than what history keeps (`keep_days`): it may have run.
     Gone,
@@ -83,7 +86,7 @@ pub fn look<'a>(
             let day = match of_day().filter(|r| !never(r)).max_by(latest) {
                 Some(r) => Day::Ran(r),
                 None => match of_day().max_by(latest) {
-                    Some(r) if r.state == State::Skipped => Day::Skipped(r),
+                    Some(r) if r.state == State::Skipped && r.reason != ENGINE_STOPPED => Day::Skipped(r),
                     Some(r) => Day::NotStarted(r),
                     None if kept_from.is_some_and(|k| d < k) => Day::Gone,
                     None => Day::Nothing,
@@ -215,6 +218,29 @@ mod tests {
         ];
         assert_eq!(picked(&runs, None, Only::Missing), [2, 3, 4]);
         assert_eq!(picked(&runs, None, Only::Failed), [2, 3, 4]);
+    }
+
+    #[test]
+    fn a_time_dropped_because_the_engine_stopped_is_picked() {
+        // Day 1: waiting in the queue when the engine stopped (スキップ, but nobody let it go);
+        // day 2: the same, then a person skipped a later time of it (let go on purpose).
+        let dropped = |d, h| Run { reason: ENGINE_STOPPED.to_owned(), ..run("g/a", d, d, h, State::Skipped, true) };
+        let runs = [
+            dropped(1, 2),
+            dropped(2, 2),
+            run("g/a", 2, 2, 9, State::Skipped, true),
+            run("g/a", 3, 3, 2, State::Ok, true),
+            run("g/a", 4, 4, 2, State::Ok, true),
+            run("g/a", 5, 5, 2, State::Ok, true),
+            run("g/a", 6, 6, 2, State::Ok, true),
+            run("g/a", 7, 7, 2, State::Ok, true),
+        ];
+        assert_eq!(picked(&runs, None, Only::Missing), [1]);
+        assert_eq!(picked(&runs, None, Only::Failed), [1]);
+        let days: Vec<NaiveDate> = (1..=7).map(day).collect();
+        let seen = look(&runs, "g/a", &days, None, None);
+        assert_eq!(seen[0].1, Day::NotStarted(&runs[0]));
+        assert_eq!(seen[1].1, Day::Skipped(&runs[2]));
     }
 
     #[test]

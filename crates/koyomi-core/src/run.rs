@@ -394,6 +394,10 @@ pub fn tidy_reason(reason: &str) -> String {
 /// The reason of a job a person skipped (`koyomi skip`): the ones after it go on as if it passed.
 pub const SKIPPED: &str = "人がスキップした";
 
+/// The reason of a time still waiting (for the run before it) when the engine stopped: it is
+/// recorded スキップ, but nobody let it go, so `--only` runs its day (`backfill`).
+pub const ENGINE_STOPPED: &str = "待っている間にエンジンが止まった";
+
 /// `from` and every job after it (by `after`, and on). `from` must be a job of `jobs`.
 fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
     if !jobs.iter().any(|j| j.id == from) {
@@ -1328,7 +1332,7 @@ mod tests {
     /// a stop's note goes after 強制終了 or 打ち切り and before the retries; any other end leaves it out.
     #[test]
     fn a_stops_note_follows_its_reason() {
-        let asked = "web01 のコマンドにも止まるよう頼んだ（TERM）";
+        let asked = "web01: 止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）";
         let mut r = net_of(vec![job("a", &[]), job("b", &[]), job("c", &[])]);
         r.jobs[1].timeout = Some(1800);
         for id in ["a", "b", "c"] {

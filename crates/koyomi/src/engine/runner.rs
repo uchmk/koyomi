@@ -650,7 +650,7 @@ impl Runner {
     /// would start them.
     pub fn drop_queue(&mut self) {
         for q in self.unqueue(None) {
-            self.not_run(&q.def, q.planned, State::Skipped, "待っている間にエンジンが止まった");
+            self.not_run(&q.def, q.planned, State::Skipped, koyomi_core::run::ENGINE_STOPPED);
         }
     }
     /// Takes the times waiting for the net `net` (every net when `None`) out of the queue:
@@ -2520,7 +2520,7 @@ id = \"a\"
         r2.drop_queue();
         assert!(r2.queued().is_empty());
         let dropped = r2.runs().iter().find(|x| x.planned == Some(p2)).unwrap();
-        assert_eq!((dropped.state, dropped.reason.as_str()), (State::Skipped, "待っている間にエンジンが止まった"));
+        assert_eq!((dropped.state, dropped.reason.as_str()), (State::Skipped, koyomi_core::run::ENGINE_STOPPED));
         let _ = r2.kill(&r2.runs()[0].id.clone(), None);
     }
 

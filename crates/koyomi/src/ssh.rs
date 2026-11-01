@@ -9,8 +9,10 @@
 //! The engine runs this straight, not through PowerShell, and stops an `ssh`
 //! job by asking first (`ito_proc::run_lines_soft`): the ask, a CTRL_BREAK or
 //! the event named in `ITO_PROC_STOP_EVENT` (which needs no console), sets
-//! [`ito_proc::stop_requested`], and the far command is sent TERM and the
-//! channel closed before this ends, so it does not run on alone.
+//! [`ito_proc::stop_requested`]. ito-sftp looks at it from the start: before
+//! the far command is sent, the connection is given up and nothing starts
+//! there; after, the far command is sent TERM and the channel closed before
+//! this ends, so it does not run on alone.
 
 use std::sync::atomic::AtomicBool;
 
@@ -51,8 +53,9 @@ fn run() -> i32 {
     }
 }
 
-/// Runs the command; its exit code, or why there is none. `stop` set: the far
-/// command is asked to stop too, and this ends without an exit code.
+/// Runs the command; its exit code, or why there is none. `stop` set: this
+/// ends without an exit code, at any step (connecting too), and a far command
+/// that has started is asked to stop too.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let on = var("ON").ok_or("KOYOMI_SSH_ON がない（koyomi ssh run は kind = \"ssh\" のジョブが動かす）")?;
     let far = chore::ssh(&on).ok_or_else(|| format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"))??;
@@ -88,9 +91,11 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
 }
 
 /// Why there is no exit code after a stop: the engine shows it after 強制終了 or
-/// 打ち切り, so it says what was done on the far side.
+/// 打ち切り, so it says what was done on the far side. ito-sftp does not say
+/// whether the command had been sent yet (a stop while connecting sends none),
+/// so this holds either way.
 fn stopped(host: &str) -> String {
-    format!("{host} のコマンドにも止まるよう頼んだ（TERM）")
+    format!("{host}: 止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）")
 }
 
 /// The exit code to end with, or why the command has none.
@@ -163,9 +168,9 @@ mod tests {
     }
 
     #[test]
-    fn a_stop_says_the_far_command_was_asked_too() {
+    fn a_stop_says_what_was_done_on_the_far_side() {
         let reason = stopped("web01");
-        assert_eq!(reason, "web01 のコマンドにも止まるよう頼んだ（TERM）");
+        assert_eq!(reason, "web01: 止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）");
     }
 
     #[test]
