@@ -2805,8 +2805,8 @@ impl Browser {
     fn hold_job_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, net: &str, job: &str) {
         let held = self.job_held(net, job);
         let label = t.trf(if held { "run.release_job" } else { "run.hold_job" }, &[job]);
-        let r = ui.add_enabled(!self.blocked(), egui::Button::new(&label));
-        ito_a11y::say(&r, Role::Button, &label);
+        let mark = if held { ito_prefs::Mark::Play } else { ito_prefs::Mark::Pause };
+        let r = ui.add_enabled_ui(!self.blocked(), |ui| ito_prefs::IconButton::new(mark, &label).show(ui)).inner;
         if r.clicked() {
             let (id, job) = (net.to_owned(), Some(job.to_owned()));
             let _ = self.tx.send(if held { Request::Release { id, job } } else { Request::Hold { id, job } });
@@ -3256,43 +3256,38 @@ impl Browser {
             section(ui, "inspect.graph");
             self.net_graph(ui, t, &def, "inspector_graph");
             section(ui, "net.sec_timing");
-            self.net_timing(ui, t, &def);
+            self.timing_card(ui, t, &def);
             section(ui, "inspect.jobs");
             let rows = review::job_rows(t, &def);
             for (i, j) in net.jobs.iter().enumerate() {
                 let after: Vec<String> = j.after.iter().map(|l| l.text()).collect();
                 let next: Vec<String> = net.jobs.iter().filter(|k| k.after.iter().any(|l| l.job == j.id)).map(|k| k.id.clone()).collect();
-                egui::Frame::new()
-                    .fill(c.panel)
-                    .stroke(egui::Stroke::new(1.0, c.border))
-                    .corner_radius(6)
-                    .inner_margin(egui::Margin::same(8))
-                    .show(ui, |ui| {
-                        ui.set_min_width(ui.available_width());
-                        ui.horizontal_wrapped(|ui| {
-                            let r = ui.label(egui::RichText::new(&j.id).monospace().strong());
-                            ito_a11y::say(&r, Role::Heading, &j.id);
-                            ui.label(egui::RichText::new(t.tr(&format!("part.{}", j.part.key()))).color(c.dim));
-                        });
-                        let mut fact = |key: &str, v: String| {
-                            if !v.is_empty() {
-                                let text = format!("{}: {v}", t.tr(key));
-                                let r = ui.label(egui::RichText::new(&text).color(c.dim));
-                                ito_a11y::say(&r, Role::Label, &text);
-                            }
-                        };
-                        fact("inspect.name", j.name.clone().unwrap_or_default());
-                        fact("inspect.before", after.join(", "));
-                        fact("inspect.after", next.join(", "));
-                        if let Some(cmd) = rows.get(i).and_then(|r| r.command.clone()) {
-                            code(ui, &[(cmd, c.fg)]);
-                        }
+                card(&c).show(ui, |ui| {
+                    ui.set_min_width(ui.available_width());
+                    ui.horizontal_wrapped(|ui| {
+                        let r = ui.label(egui::RichText::new(&j.id).monospace().strong());
+                        ito_a11y::say(&r, Role::Heading, &j.id);
+                        ui.label(egui::RichText::new(t.tr(&format!("part.{}", j.part.key()))).color(c.dim));
                     });
+                    let mut fact = |key: &str, v: String| {
+                        if !v.is_empty() {
+                            let text = format!("{}: {v}", t.tr(key));
+                            let r = ui.label(egui::RichText::new(&text).color(c.dim));
+                            ito_a11y::say(&r, Role::Label, &text);
+                        }
+                    };
+                    fact("inspect.name", j.name.clone().unwrap_or_default());
+                    fact("inspect.before", after.join(", "));
+                    fact("inspect.after", next.join(", "));
+                    if let Some(cmd) = rows.get(i).and_then(|r| r.command.clone()) {
+                        code(ui, &[(cmd, c.fg)]);
+                    }
+                });
                 ui.add_space(4.0);
             }
         } else if def.net.is_some() {
             section(ui, "net.sec_timing");
-            self.net_timing(ui, t, &def);
+            self.timing_card(ui, t, &def);
         }
         // The end of the newest run's log: the job that failed, else the one running or the last.
         if let Some(run) = shown {
@@ -3380,8 +3375,7 @@ impl Browser {
             Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
             None => t.tr("confirm.approve").to_owned(),
         };
-        let r = ui.add_enabled(can, egui::Button::new(&label));
-        ito_a11y::say(&r, Role::Button, &label);
+        let r = ui.add_enabled_ui(can, |ui| ito_prefs::IconButton::new(ito_prefs::Mark::Check, &label).show(ui)).inner;
         if let Some(lang) = &self.easy {
             ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
         }
@@ -3393,8 +3387,8 @@ impl Browser {
 
     /// 編集: the net in the editor.
     fn edit_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
-        let r = ui.add_enabled(def.net.is_some(), egui::Button::new(t.tr("canvas.edit")));
-        ito_a11y::say(&r, Role::Button, t.tr("canvas.edit"));
+        let edit = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("canvas.edit"));
+        let r = ui.add_enabled_ui(def.net.is_some(), |ui| edit.show(ui)).inner;
         if r.clicked() {
             self.open_editor(&def.id);
             self.focus = 0;
@@ -3404,16 +3398,16 @@ impl Browser {
     /// 今すぐ流す: the page's main action, filled with the accent.
     fn run_now_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
         let can = def.standing == Standing::Confirmed && !self.blocked() && !held;
-        if primary(ui, can, t.tr("run.now")).clicked() && can {
+        let run = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.now")).tone(ito_prefs::Tone::Primary);
+        if ui.add_enabled_ui(can, |ui| run.show(ui)).inner.clicked() && can {
             self.run_now(def.id.clone(), def.net.as_ref().map(|n| &n.params));
         }
     }
 
     /// Holds the net, or releases it: on hold its times are written down as ⏸ and nothing runs.
     fn hold_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
-        let key = if held { "run.release" } else { "run.hold" };
-        let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
-        ito_a11y::say(&r, Role::Button, t.tr(key));
+        let (key, mark) = if held { ("run.release", ito_prefs::Mark::Play) } else { ("run.hold", ito_prefs::Mark::Pause) };
+        let r = ui.add_enabled_ui(!self.blocked(), |ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui)).inner;
         if r.clicked() {
             let id = def.id.clone();
             let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
@@ -3449,6 +3443,14 @@ impl Browser {
     }
 
     /// The net's next ten starts, in figures of one width; the first, the one coming, is bold.
+    /// The net's next times in the inspector, in a card as each of its jobs is.
+    fn timing_card(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
+        card(&ito_theme::colors()).show(ui, |ui| {
+            ui.set_min_width(ui.available_width());
+            self.net_timing(ui, t, def);
+        });
+    }
+
     fn net_timing(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
         let c = ito_theme::colors();
         if let Some(net) = &def.net {
@@ -4217,6 +4219,11 @@ fn plain(e: String) -> Said {
 /// A folder that could not be made, worded when shown.
 fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
     ("port.no_dir", vec![dir.display().to_string(), e.to_string()])
+}
+
+/// A card in the inspector: the panel's colour with a line round it (a job, the next times).
+fn card(c: &ito_theme::Colors) -> egui::Frame {
+    egui::Frame::new().fill(c.panel).stroke(egui::Stroke::new(1.0, c.border)).corner_radius(6).inner_margin(egui::Margin::same(8))
 }
 
 #[cfg(test)]
