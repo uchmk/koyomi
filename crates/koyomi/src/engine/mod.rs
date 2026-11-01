@@ -300,7 +300,7 @@ impl State {
         s.rescan();
         if let Some((line, crashed)) = s.alive.outage.take() {
             let title = if crashed { "koyomi: エンジンが落ちていた" } else { "koyomi: エンジンが止まっていた" };
-            crate::notify::tell(&s.notify, "failed", title, &line);
+            crate::notify::tell(&s.notify, None, "failed", title, &line);
             crate::say(&format!("koyomi: {line}"), false);
             s.outage = Some((line, Instant::now()));
         }
@@ -353,13 +353,14 @@ impl State {
             let (event, title, body) = notify::part_words(&self.words, r, &job);
             let part = r.job(&job).map(|j| j.to.as_slice()).filter(|to| !to.is_empty());
             let places = notify::to(&self.notify, part.unwrap_or_else(|| self.notify_to(&r.jobnet)));
-            notify::tell(&places, event, &title, &body);
+            notify::tell(&places, notify::open(&self.words, &r.id, notify::Kind::Part).as_ref(), event, &title, &body);
         }
         // A 確認待ち part asks a person.
         for (run, job) in self.runner.take_asks() {
             let Some(r) = self.runner.runs().iter().find(|r| r.id == run) else { continue };
             let (event, title, body) = notify::ask_words(&self.words, r, &job);
-            notify::tell(&notify::to(&self.notify, self.notify_to(&r.jobnet)), event, &title, &body);
+            let open = notify::open(&self.words, &r.id, notify::Kind::Ask);
+            notify::tell(&notify::to(&self.notify, self.notify_to(&r.jobnet)), open.as_ref(), event, &title, &body);
         }
         let over = self.runner.take_over();
         for r in &over {
@@ -372,13 +373,13 @@ impl State {
             let (event, title, body) = notify::words(&self.words, &r);
             let tail = notify::tail(&self.words, &r, |job| self.runner.log_tail(&r.id, job).ok());
             let places = notify::to(&self.notify, self.notify_to(&r.jobnet));
-            notify::tell_tail(&places, event, &title, &body, &tail);
+            notify::tell_tail(&places, notify::open(&self.words, &r.id, notify::Kind::End).as_ref(), event, &title, &body, &tail);
             let (level, id) = crate::eventlog::of(r.state);
             crate::eventlog::write(level, id, &title, &body);
             // An abnormal end told earlier is told to be over.
             if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
                 let (event, title, body) = notify::recovery_words(&self.words, &r, prev);
-                notify::tell(&places, event, &title, &body);
+                notify::tell(&places, notify::open(&self.words, &r.id, notify::Kind::Recovered).as_ref(), event, &title, &body);
                 crate::eventlog::write(ito_eventlog::Level::Info, crate::eventlog::RECOVERED, &title, &body);
             }
         }
@@ -386,7 +387,8 @@ impl State {
             let (event, title, body) = notify::missed_words(&self.words, &runs);
             let (level, id) = crate::eventlog::of(RunState::Missed);
             crate::eventlog::write(level, id, &title, &body);
-            notify::tell(&notify::to(&self.notify, self.notify_to(&runs[0].jobnet)), event, &title, &body);
+            let open = notify::open(&self.words, &runs[0].id, notify::Kind::Missed);
+            notify::tell(&notify::to(&self.notify, self.notify_to(&runs[0].jobnet)), open.as_ref(), event, &title, &body);
         }
     }
 
@@ -427,7 +429,8 @@ impl State {
             let Some(net) = self.defs.iter().find(|d| d.id == r.jobnet).and_then(|d| d.net.as_ref()) else { continue };
             let usual = self.usual.get(&r.jobnet).copied().flatten();
             let (event, title, body) = notify::delay_words(&self.words, net, r, delay, usual, now);
-            notify::tell(&notify::to(&self.notify, &net.notify_to), event, &title, &body);
+            let open = notify::open(&self.words, &r.id, notify::Kind::Late);
+            notify::tell(&notify::to(&self.notify, &net.notify_to), open.as_ref(), event, &title, &body);
         }
         let pending = self
             .runner
@@ -446,7 +449,7 @@ impl State {
             }
         }
         for (places, (event, title, body)) in tell {
-            notify::tell(&places, event, &title, &body);
+            notify::tell(&places, None, event, &title, &body);
         }
         // A time that never got a run (dropped from the queue) is not kept for ever.
         self.late_told.retain(|(_, p)| *p > now - chrono::Days::new(2));
@@ -625,7 +628,7 @@ impl State {
                 standby::Told::Waiting(line) => ("koyomi: 引き取りを待っている", line),
                 standby::Told::GaveBack(line) => ("koyomi: 戻した", line),
             };
-            crate::notify::tell(&self.notify, "failed", title, &line);
+            crate::notify::tell(&self.notify, None, "failed", title, &line);
             crate::say(&format!("koyomi: {line}"), false);
         }
     }
@@ -633,7 +636,7 @@ impl State {
     /// Asks the standby `[primary]` names, and tells when it took the schedules or let them go.
     fn tick_primary(&mut self) {
         if let Some((title, line)) = self.primary.tick() {
-            crate::notify::tell(&self.notify, "failed", title, &line);
+            crate::notify::tell(&self.notify, None, "failed", title, &line);
             crate::say(&format!("koyomi: {line}"), false);
         }
     }
@@ -2210,6 +2213,7 @@ pub fn run(own_tray: bool) -> i32 {
         state.tick_awake();
         state.tick_late();
         state.pump();
+        tray::follow_clicks();
         if let Some(tr) = tray.as_mut() {
             for want in tr.take() {
                 match want {

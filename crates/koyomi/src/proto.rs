@@ -15,7 +15,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 34;
+pub const PROTO: u32 = 35;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -232,7 +232,7 @@ pub fn door() -> Door<Request> {
 pub const WINDOW_ENV: &str = "KOYOMI_WINDOW_ADDRESS";
 
 /// What the tray asks the window (DECISIONS C1).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Show {
     /// Come forward.
     Front,
@@ -242,6 +242,8 @@ pub enum Show {
     Failed,
     /// Come forward with the box that skips a net's next time once.
     SkipNext,
+    /// Come forward on this run (a click on its notice).
+    Run(String),
 }
 
 /// The window's own door: the engine's tray brings it forward through it.
@@ -399,6 +401,9 @@ pub struct Note {
     pub event: String,
     pub title: String,
     pub body: String,
+    /// What a click on it opens (`notify::run_of`); empty: it only shows.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub tag: String,
 }
 
 /// What `Tray` answers: the tray's badge, tip and menu as the engine works them out.
@@ -485,11 +490,17 @@ mod tests {
             badge: "error".into(),
             tip: "koyomi: 異常 1".into(),
             busy: 2,
-            notes: vec![Note { seq: 8, event: "failed".into(), title: "t".into(), body: "b\nc".into() }],
+            notes: vec![
+                Note { seq: 8, event: "failed".into(), title: "t".into(), body: "b\nc".into(), tag: String::new() },
+                Note { seq: 9, event: "failed".into(), title: "u".into(), body: "d".into(), tag: "20261030-090000-01.l".into() },
+            ],
             last: 8,
             ..TrayView::default()
         };
         assert_eq!(TrayView::parse(&view.to_toml()).unwrap(), view);
         assert_eq!(TrayView::parse("").unwrap(), TrayView::default());
+        // A note without a tag (an engine before PROTO 35) reads as one that only shows.
+        let old = TrayView::parse("last = 1\n[[note]]\nseq = 1\nevent = \"failed\"\ntitle = \"t\"\nbody = \"b\"\n").unwrap();
+        assert_eq!(old.notes[0].tag, "");
     }
 }

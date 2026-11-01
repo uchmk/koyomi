@@ -334,23 +334,77 @@ pub fn unknown(n: &NotifyCfg, net: &Jobnet) -> Vec<String> {
     out
 }
 
-/// Tells of `event` in every way `n` turns on for it. While the engine has no
-/// tray of its own ([`hand_to_tray`]), the system's notification and the sound
-/// are kept for `koyomi tray` instead.
-pub fn tell(n: &NotifyCfg, event: &str, title: &str, body: &str) {
-    let Some(rest) = keep_for_tray(n, event, title, body) else {
-        return n.tell(&EVENTS, APP, icon, event, title, body);
+/// Which notice of a run it is, so one kind does not replace another of the
+/// same run on the screen (a notice replaces the last one with its tag).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Kind {
+    End,
+    Recovered,
+    Ask,
+    Part,
+    Late,
+    Missed,
+}
+
+/// The tag of `kind`'s notice of run `run`: the id, then `.` and a letter
+/// for all but the end (well under the 64 characters Windows keeps).
+pub fn tag(run: &str, kind: Kind) -> String {
+    let letter = match kind {
+        Kind::End => return run.to_owned(),
+        Kind::Recovered => "r",
+        Kind::Ask => "a",
+        Kind::Part => "p",
+        Kind::Late => "l",
+        Kind::Missed => "m",
     };
-    rest.tell(&EVENTS, APP, icon, event, title, body);
+    format!("{run}.{letter}")
+}
+
+/// The run a notice's tag names (see [`tag`]).
+pub fn run_of(tag: &str) -> &str {
+    tag.split_once('.').map_or(tag, |(run, _)| run)
+}
+
+/// What a click on the system's notification opens: the run its tag names,
+/// with a button labelled `label` (Windows).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Open {
+    pub tag: String,
+    pub label: String,
+}
+
+/// A click on `kind`'s notice of run `run` opens the window on that run.
+pub fn open(t: &Table, run: &str, kind: Kind) -> Option<Open> {
+    Some(Open { tag: tag(run, kind), label: t.tr("notify.open").to_owned() })
+}
+
+/// Tells of `event` in every way `n` turns on for it; with `open`, a click on
+/// the system's notification opens its run ([`run_of`]). While the engine has
+/// no tray of its own ([`hand_to_tray`]), the system's notification and the
+/// sound are kept for `koyomi tray` instead.
+pub fn tell(n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, body: &str) {
+    match keep_for_tray(n, open, event, title, body) {
+        Some(rest) => rest.tell(&EVENTS, APP, icon, event, title, body),
+        None => show(n, open, event, title, body),
+    }
+}
+
+fn show(n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, body: &str) {
+    match open {
+        Some(o) => n.tell_open(&EVENTS, APP, icon, event, title, body, &o.tag, &o.label),
+        None => n.tell(&EVENTS, APP, icon, event, title, body),
+    }
 }
 
 /// Shows on this desktop what `koyomi tray` took from the engine: the
 /// system's notification and the sound as `n` turns them on, nothing else.
-pub fn tell_here(n: &NotifyCfg, note: &Note) {
+/// A notice of a run opens it when clicked, with a button labelled `label`.
+pub fn tell_here(n: &NotifyCfg, note: &Note, label: &str) {
     let mut here = n.clone();
     here.places.clear();
     here.mail_places.clear();
-    here.tell(&EVENTS, APP, icon, &note.event, &note.title, &note.body);
+    let open = (!note.tag.is_empty()).then(|| Open { tag: note.tag.clone(), label: label.to_owned() });
+    show(&here, open.as_ref(), &note.event, &note.title, &note.body);
 }
 
 /// How many notices are kept for a tray that does not come for them.
@@ -364,11 +418,17 @@ struct Kept {
 
 impl Kept {
     /// Keeps the notice when `n` shows or sounds `event`; then `n` without those two, for the rest.
-    fn keep(&mut self, n: &NotifyCfg, event: &str, title: &str, body: &str) -> NotifyCfg {
+    fn keep(&mut self, n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, body: &str) -> NotifyCfg {
         let on = |l: &Option<Vec<String>>| l.as_ref().is_some_and(|l| l.iter().any(|e| e == event));
         if on(&n.system) || on(&n.sound) {
             self.last += 1;
-            self.notes.push_back(Note { seq: self.last, event: event.to_owned(), title: title.to_owned(), body: body.to_owned() });
+            self.notes.push_back(Note {
+                seq: self.last,
+                event: event.to_owned(),
+                title: title.to_owned(),
+                body: body.to_owned(),
+                tag: open.map(|o| o.tag.clone()).unwrap_or_default(),
+            });
             if self.notes.len() > KEPT {
                 self.notes.pop_front();
             }
@@ -411,21 +471,21 @@ pub fn for_tray(since: Option<u64>) -> (Vec<Note>, u64) {
 
 /// When the notices are handed to the tray: keeps this one for it, and gives
 /// `n` without the system's notification and the sound. `None`: the engine shows it itself.
-fn keep_for_tray(n: &NotifyCfg, event: &str, title: &str, body: &str) -> Option<NotifyCfg> {
+fn keep_for_tray(n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, body: &str) -> Option<NotifyCfg> {
     let mut k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
-    Some(k.as_mut()?.keep(n, event, title, body))
+    Some(k.as_mut()?.keep(n, open, event, title, body))
 }
 
 /// Like [`tell`], with the end of the failed jobs' logs: the system's
 /// notification (and the sound) gets its one line, the webhooks and the mails its lines.
-pub fn tell_tail(n: &NotifyCfg, event: &str, title: &str, body: &str, tail: &Tail) {
+pub fn tell_tail(n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, body: &str, tail: &Tail) {
     if tail.lines.is_empty() {
-        return tell(n, event, title, body);
+        return tell(n, open, event, title, body);
     }
     let mut here = n.clone();
     here.places.clear();
     here.mail_places.clear();
-    tell(&here, event, title, &format!("{body}\n{}", tail.line));
+    tell(&here, open, event, title, &format!("{body}\n{}", tail.line));
     let mut hooks = n.clone();
     hooks.system = Some(Vec::new());
     hooks.sound = Some(Vec::new());
@@ -685,6 +745,23 @@ run = [\"x\"]
         assert!(body.starts_with("g/n: 10/29 2:00、10/30 2:00 の回は"), "{body}");
     }
 
+    #[test]
+    fn a_notice_of_a_run_opens_that_run_and_kinds_do_not_replace_each_other() {
+        let id = "20261030-090000-01";
+        let kinds = [Kind::End, Kind::Recovered, Kind::Ask, Kind::Part, Kind::Late, Kind::Missed];
+        let tags: Vec<String> = kinds.iter().map(|k| tag(id, *k)).collect();
+        assert_eq!(tags[0], id);
+        for t in &tags {
+            assert_eq!(run_of(t), id, "{t}");
+            assert!(t.len() <= 64, "{t}");
+            assert_eq!(tags.iter().filter(|u| *u == t).count(), 1, "{t}");
+        }
+        let (ja, _) = crate::i18n::table("ja");
+        let (en, _) = crate::i18n::table("en");
+        assert_eq!(open(&ja, id, Kind::End).map(|o| o.label), Some("開く".to_owned()));
+        assert_eq!(open(&en, id, Kind::End).map(|o| o.label), Some("Open".to_owned()));
+    }
+
     /// with the notices handed to `koyomi tray`, only what shows or sounds is kept,
     /// the webhooks still go, and a tray that comes back after a restart gets all kept.
     #[test]
@@ -694,16 +771,19 @@ run = [\"x\"]
         n.sound = Some(vec!["warn".into()]);
         n.places = vec![Default::default()];
         let mut k = Kept::default();
-        let rest = k.keep(&n, "failed", "t1", "b1");
+        let rest = k.keep(&n, None, "failed", "t1", "b1");
         assert_eq!((rest.system.as_deref(), rest.sound.as_deref(), rest.places.len()), (Some(&[][..]), Some(&[][..]), 1));
-        k.keep(&n, "ok", "t2", "b2");
-        k.keep(&n, "warn", "t3", "b3");
+        k.keep(&n, None, "ok", "t2", "b2");
+        let open = Open { tag: tag("20261030-090000-01", Kind::Late), label: "開く".into() };
+        k.keep(&n, Some(&open), "warn", "t3", "b3");
         assert_eq!(k.after(0).iter().map(|n| (n.seq, n.title.as_str())).collect::<Vec<_>>(), [(1, "t1"), (2, "t3")]);
+        // The tray gets what a click opens, not the button's word (its own language says that).
+        assert_eq!(k.after(0).iter().map(|n| n.tag.as_str()).collect::<Vec<_>>(), ["", "20261030-090000-01.l"]);
         assert_eq!(k.after(1).len(), 1);
         assert_eq!(k.after(2).len(), 0);
         assert_eq!(k.after(9).len(), 2);
         for i in 0..KEPT + 5 {
-            k.keep(&n, "failed", &i.to_string(), "");
+            k.keep(&n, None, "failed", &i.to_string(), "");
         }
         assert_eq!(k.notes.len(), KEPT);
         assert_eq!(k.after(0).first().map(|n| n.seq), Some(k.last - KEPT as u64 + 1));

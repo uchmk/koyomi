@@ -242,6 +242,7 @@ paused = "The schedule is stopped. Nothing starts when its time comes (runs by h
 caution = "Notices"
 
 [notify]
+open = "Open"
 missed = "{0}: the run at {1} was passed over (the PC was off)"
 recovered_title = "↺ Back to normal"
 recovered = "{0} ended ok again after the abnormal run {1}"

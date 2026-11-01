@@ -225,7 +225,7 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
-            match ask.request {
+            match &ask.request {
                 proto::Show::Today => {
                     self.settings_open = false;
                     self.browser.show_today();
@@ -237,6 +237,10 @@ impl App {
                 proto::Show::SkipNext => {
                     self.settings_open = false;
                     self.browser.show_skip_next();
+                }
+                proto::Show::Run(id) => {
+                    self.settings_open = false;
+                    self.browser.show_run(id);
                 }
                 proto::Show::Front => {}
             }

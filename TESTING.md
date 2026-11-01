@@ -1412,3 +1412,18 @@ Two engines on this PC, A and B, each in its own temp folders, so the real profi
 | 102.12 | Take `[primary]` out of A; with `give_back = "auto"` repeat 102.4, then start A | A runs at once; B says `koyomi: 両方で流している` (`…a が 2 回続けて答えたらこちらは止める`) and after about 10 s `koyomi: 戻した` |
 | 102.13 | Put `[primary]` back; on B give `a` `nets = ["t/*"]`; repeat 102.4, then start A | A stays waiting; its cautions show `[primary] b: 引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）`. Take `nets` out: A takes them back |
 | 102.14 | Clean up | Stop both engines (only the two started here), `koyomi secret delete t96-a` and `t96-b`, remove `%TEMP%\koyomi-t96` |
+
+## 103. A click on a notification opens its run (TODO 99)
+
+Setup: a confirmed net `t/n` with one job `cmd /c exit 1`; `[notify]` `system` has `failed` and `warn` (the 通知 page). Note the pids of the windows already open and leave them alone.
+
+| # | Do | Expect |
+|---|---|---|
+| 103.1 | With the window open on 今日, `koyomi run t/n` and click the notification when it shows | The window comes forward on that run's detail (`t/n` marked at the left) |
+| 103.2 | Run it again; press the notification's 開く button instead | The same |
+| 103.3 | Close every window; run it again and click the notification | A window starts and opens on that run |
+| 103.4 | Leave the notification in the Action Center until the next day (or change the PC's date); click it | The window opens 履歴 (7 days) with that run chosen and the pane at the right open |
+| 103.5 | Open `t/n` in the editor, run it, click the notification | The window comes forward; the editor stays as it was |
+| 103.6 | Make `t/n` late (`late` after a few seconds, job `cmd /c ping -n 30 127.0.0.1 > nul`) and let it end with exit 1 | Two notifications (遅れ and 異常); neither replaces the other; each opens the same run |
+| 103.7 | Start the engine with `--no-tray` and `koyomi tray`; run `t/n` and click the notification | The window opens on the run (the tray showed the notification) |
+| 103.8 | Kill the engine (`taskkill /f` on the pid you started), start it again, click `エンジンが落ちていた` | Nothing opens |

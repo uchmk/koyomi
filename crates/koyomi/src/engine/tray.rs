@@ -208,6 +208,7 @@ pub fn apart() -> i32 {
     let mut since = None;
     let mut cfg: Option<(NotifyCfg, Instant)> = None;
     loop {
+        follow_clicks();
         for want in tray.take() {
             match want {
                 Want::Pause(on) => {
@@ -230,7 +231,7 @@ pub fn apart() -> i32 {
                         }
                         if let Some((n, _)) = &cfg {
                             for note in &v.notes {
-                                notify::tell_here(n, note);
+                                notify::tell_here(n, note, t.tr("notify.open"));
                             }
                         }
                     }
@@ -287,6 +288,13 @@ pub fn from_badge(name: &str) -> Option<State> {
     })
 }
 
+/// The notices of runs clicked since the last call: the window comes forward on each run.
+pub fn follow_clicks() {
+    for tag in ito_prefs::take_clicks() {
+        front(Show::Run(notify::run_of(&tag).to_owned()));
+    }
+}
+
 /// Brings the window forward, or starts it and then asks; on a thread, so the engine does not wait.
 pub fn front(show: Show) {
     std::thread::spawn(move || {
@@ -297,8 +305,8 @@ pub fn front(show: Show) {
         if ito_proc::spawn_detached(std::process::Command::new(exe)).is_err() {
             return;
         }
-        // A window just started opens on its own; 今日 needs the door once it is up.
-        if show == Show::Today {
+        // A window just started opens on its own; the rest (今日, a run…) need the door once it is up.
+        if show != Show::Front {
             let until = Instant::now() + SHOW_WAIT;
             while Instant::now() < until {
                 std::thread::sleep(Duration::from_millis(200));

@@ -2437,6 +2437,23 @@ impl Browser {
         }
     }
 
+    /// A click on a notice of run `id`: the run in the detail, or in 履歴's pane when it is not one of
+    /// the runs the window holds (an older day's); as [`Self::show_today`], not while a net is open in
+    /// the editor or a box is.
+    pub fn show_run(&mut self, id: &str) {
+        if self.editor.is_some() || self.port.is_some() || self.make.is_some() || self.vers.is_some() || self.deleting.is_some() {
+            return;
+        }
+        self.forget_back();
+        if self.runs.iter().any(|r| r.id == id) {
+            self.open_run(id);
+        } else {
+            self.open_history();
+            self.run_sel = Some(id.to_owned());
+            self.hist_pane = true;
+        }
+    }
+
     /// The tray's 次の 1 回だけスキップ…: the box that picks the net, unless another box or the editor is up.
     pub fn show_skip_next(&mut self) {
         if self.editor.is_some() || self.box_open() {
@@ -5362,6 +5379,29 @@ run = [\"x.exe\"]
         s.click("ジョブネットを保留", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: None }) if id == "試験/bom"));
         assert!(b.gantt, "the right click does not leave 今日");
+    }
+
+    /// A click on a run's notice opens that run: today's in the detail with its net marked, an older
+    /// one in 履歴's pane; not over a net open in the editor.
+    #[test]
+    fn a_notice_opens_its_run() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::How;
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = chrono::Local::now().naive_local();
+        let mut b = quiet(defs());
+        b.runs = vec![Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now)];
+        b.gantt = true;
+        b.show_run("r1");
+        assert_eq!((b.run_sel.as_deref(), b.selected.as_deref(), b.gantt, b.hist.is_some()), (Some("r1"), Some("試験/bom"), false, false));
+        b.hist_pane = false;
+        b.show_run("r0");
+        assert_eq!((b.run_sel.as_deref(), b.hist.is_some(), b.hist_pane), (Some("r0"), true, true));
+        b.hist = None;
+        b.run_sel = None;
+        b.open_editor("試験/bom");
+        b.show_run("r1");
+        assert_eq!(b.run_sel, None, "the editor's work stays");
     }
 
     /// A click on a row of 今日 shows its net in the pane at the right; the pane folds and opens again.
