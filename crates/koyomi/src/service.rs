@@ -238,6 +238,9 @@ fn why(e: &Error) -> String {
             "サービスがサインインできなかった。パスワードが違う（変えたら `koyomi service uninstall` してから入れ直す）".to_owned()
         }
         Error::Timeout => "サービスが時間内に切り替わらなかった。`koyomi service status` で見る".to_owned(),
+        Error::NoConsole => {
+            "パスワードを打つ所が無い。ターミナルから `koyomi.com service install` で回すか、パスワードをパイプで渡す".to_owned()
+        }
         Error::Failed(n) => format!("Windows が断った（エラー {n}）"),
     }
 }
