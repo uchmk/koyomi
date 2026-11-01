@@ -1603,21 +1603,27 @@ fn attempt(
     let hidden: Vec<&str> = env.secrets.iter().map(String::as_str).collect();
     let bad_output = job.judge.as_ref().and_then(|g| g.error_output.as_deref()).and_then(|p| ito_match::Matcher::new(p).ok());
     let mut bad_line: Option<String> = None;
+    // PowerShell's errors and warnings arrive as CLIXML: the log (and `error_output`) gets their text.
+    let mut clixml = koyomi_core::clixml::Clixml::default();
     let mut on_line = |stream: ito_proc::Stream, line: &str| {
-        if bad_line.is_none() && bad_output.as_ref().is_some_and(|m| m.is_match(line)) {
-            bad_line = Some(ito_secret::mask(line, &hidden));
-        }
-        if size.capped {
-            return false;
-        }
-        let prefix = if stream == ito_proc::Stream::Err { "! " } else { "" };
-        let text = format!("{prefix}{}\n", ito_secret::mask(line, &hidden));
-        size.written += text.len() as u64;
-        if size.written > job.cap {
-            size.capped = true;
-            let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", job.cap / (1024 * 1024));
-        } else {
-            let _ = file.write_all(text.as_bytes());
+        let err = stream == ito_proc::Stream::Err;
+        let lines = if err { clixml.lines(line) } else { vec![line.to_owned()] };
+        for line in &lines {
+            if bad_line.is_none() && bad_output.as_ref().is_some_and(|m| m.is_match(line)) {
+                bad_line = Some(ito_secret::mask(line, &hidden));
+            }
+            if size.capped {
+                continue;
+            }
+            let prefix = if err { "! " } else { "" };
+            let text = format!("{prefix}{}\n", ito_secret::mask(line, &hidden));
+            size.written += text.len() as u64;
+            if size.written > job.cap {
+                size.capped = true;
+                let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", job.cap / (1024 * 1024));
+            } else {
+                let _ = file.write_all(text.as_bytes());
+            }
         }
         false
     };
@@ -2307,11 +2313,34 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let run = wait_over(&mut r, &id);
         let a = run.job("a").unwrap();
         assert_eq!((a.state, a.exit), (State::Warn, Some(4)), "{a:?}");
-        // powershell.exe may write a CLIXML progress record ("preparing
-        // modules") to stderr; only its stdout is checked.
+        // powershell.exe writes a CLIXML progress record ("preparing modules")
+        // to stderr: it is read and left out.
         let log = r.log_tail(&id, "a").unwrap();
+        assert!(!log.contains("CLIXML") && !log.contains("<Objs"), "{log}");
         let out: Vec<&str> = log.lines().filter(|l| !l.starts_with("! ")).collect();
         assert_eq!(out, ["hi \"there\""], "{log}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_powershell_scripts_warnings_and_errors_are_logged_as_text_and_judged() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = scratch("clixml");
+        // Exit 0: only the error's text, matched by `error_output`, makes it a failure.
+        let text = "format = 1\n[[job]]\nid = \"a\"\nshell = \"powershell\"\nscript = '''\nWrite-Warning 'careful'\nGet-Item 'C:\\nope\\nope'\nexit 0'''\njudge = { error_output = \"^Get-Item\" }\n";
+        let d = def("net", text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let a = run.job("a").unwrap();
+        assert_eq!(a.state, State::Error, "{a:?}");
+        assert!(a.reason.starts_with("出力に異常の行があった: Get-Item"), "{a:?}");
+        let log = r.log_tail(&id, "a").unwrap();
+        assert!(!log.contains("CLIXML") && !log.contains("<Objs") && !log.contains("_x000D_"), "{log}");
+        assert!(log.lines().any(|l| l == "! 警告: careful"), "{log}");
+        assert!(log.lines().any(|l| l.starts_with("! Get-Item")), "{log}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -1097,7 +1097,7 @@ fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfil
         Day::Nothing => "実行の記録がない".to_owned(),
         Day::Gone => "記録が残っていない（keep_days より前）".to_owned(),
         Day::NotStarted(r) | Day::Skipped(r) | Day::Ran(r) => {
-            let reason = if r.reason.is_empty() { String::new() } else { format!("  {}", r.reason) };
+            let reason = if r.reason.is_empty() { String::new() } else { format!("  {}", koyomi_core::run::one_line(&r.reason)) };
             format!("{}  {}{reason}", show::tag(t, r.state), r.id)
         }
     };

@@ -264,9 +264,10 @@ impl JobRun {
     /// What the engine starts: `run` as written, or the shell with the
     /// script as its one argument. The script goes as `-EncodedCommand`
     /// (base64 of UTF-16), so no quote or `$` in it is read by anything but
-    /// the shell itself; no profile, nothing asked, and plain text in and
-    /// out (without `-InputFormat Text`, PowerShell writes its errors as
-    /// CLIXML when its input is not a console).
+    /// the shell itself; no profile, nothing asked, and plain text in.
+    /// Windows PowerShell still writes its errors, warnings and progress
+    /// to a redirected error output as CLIXML; the runner reads them back
+    /// as text (`crate::clixml`).
     pub fn command(&self) -> Vec<String> {
         match (self.shell.as_deref(), &self.script) {
             (Some(_), Some(script)) => {
@@ -389,6 +390,12 @@ pub fn tidy_reason(reason: &str) -> String {
         r = r[CARRIED.len() + ": ".len()..].to_owned();
     }
     r
+}
+
+/// `reason` on one line, for a row of a list: a reason can hold the text that caused it (an
+/// event's message, a command's output), line breaks and all, which would read as rows of their own.
+pub fn one_line(reason: &str) -> String {
+    reason.split(['\r', '\n']).map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" ")
 }
 
 /// The reason of a job a person skipped (`koyomi skip`): the ones after it go on as if it passed.
@@ -1526,6 +1533,15 @@ mod tests {
         assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 前の回の結果"), CARRIED);
         assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 終了コード 1"), "前の回の結果: 終了コード 1");
         assert_eq!(tidy_reason("遅れて実行"), "遅れて実行");
+    }
+
+    #[test]
+    fn a_reason_with_line_breaks_reads_as_one_line() {
+        assert_eq!(
+            one_line("見張りが外した: ID 1000 koyomi: 正常終了\r\n  毎朝の集計\n\n#12"),
+            "見張りが外した: ID 1000 koyomi: 正常終了 毎朝の集計 #12"
+        );
+        assert_eq!(one_line("終了コード 1"), "終了コード 1");
     }
 
     #[test]

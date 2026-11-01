@@ -139,9 +139,15 @@ impl Watch {
             (Reader::File(f), Kind::Log { contains, .. }) => {
                 f.poll().map(|lines| lines.into_iter().filter(|l| l.contains(contains.as_str())).collect()).map_err(|e| e.to_string())
             }
-            (Reader::EventLog(Some(s)), _) => s
+            (Reader::EventLog(Some(s)), Kind::EventLog { source, .. }) => s
                 .poll()
-                .map(|records| records.into_iter().map(|r| format!("ID {} {}: {}", r.id, r.source, r.message.trim())).collect())
+                .map(|records| {
+                    records
+                        .into_iter()
+                        .filter(|r| heard(source.as_deref(), &r.source))
+                        .map(|r| format!("ID {} {}: {}", r.id, r.source, r.message.trim()))
+                        .collect()
+                })
                 .map_err(|e| e.to_string()),
             _ => return Vec::new(),
         };
@@ -158,10 +164,27 @@ impl Watch {
     }
 }
 
+/// Whether an event-log record from `source` starts the net. koyomi writes each run's end to the
+/// Application log itself (`crate::eventlog`, ids 1000, 2000, …): a trigger that names no source
+/// would hear those and start again on its own run's end, over and over. So with no source named,
+/// koyomi's own records are left out; a trigger that names `koyomi` gets them on purpose.
+fn heard(wanted: Option<&str>, source: &str) -> bool {
+    wanted.is_some() || !source.eq_ignore_ascii_case(crate::eventlog::SOURCE)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn with_no_source_named_koyomis_own_run_ends_do_not_start_the_net() {
+        assert!(!heard(None, "koyomi"));
+        assert!(!heard(None, "Koyomi"));
+        assert!(heard(None, "Application Error"));
+        // Named on purpose (another net's failure starts this one): heard.
+        assert!(heard(Some("koyomi"), "koyomi"));
+    }
 
     fn def(id: &str, text: &str) -> Def {
         let net = koyomi_core::jobnet::parse(text).unwrap();

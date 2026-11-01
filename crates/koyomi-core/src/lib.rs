@@ -9,6 +9,7 @@ pub mod backfill;
 pub mod bundle;
 pub mod calendar;
 pub mod chore;
+pub mod clixml;
 pub mod config;
 pub mod duration;
 pub mod group;

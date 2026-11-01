@@ -66,7 +66,7 @@ fn run_tail(t: &Table, r: &Run) -> String {
         out.push_str(&format!("  ⏰{}", t.tr(d.key())));
     }
     if !r.reason.is_empty() {
-        out.push_str(&format!("  {}", r.reason));
+        out.push_str(&format!("  {}", koyomi_core::run::one_line(&r.reason)));
     }
     out
 }
@@ -264,7 +264,7 @@ pub fn job_line(t: &Table, j: &JobRun) -> String {
         line.push_str(&format!("  {}", duration(t, d)));
     }
     if !j.reason.is_empty() {
-        line.push_str(&format!("  {}", koyomi_core::run::tidy_reason(&j.reason)));
+        line.push_str(&format!("  {}", koyomi_core::run::one_line(&koyomi_core::run::tidy_reason(&j.reason))));
     }
     line
 }

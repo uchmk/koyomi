@@ -276,6 +276,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 Write-Output "hi"
 exit 4'''` with `judge = { warn = "4" }`, approve and run | The approve text shows `シェル: powershell` and the script lines under `スクリプト:`; the log has `hi`; the job is 警告 with `終了コード 4（警告）`; no profile is loaded and nothing is asked (the job ends by itself) |
 | 21.6 | Put a `"`, a `$`, a `'` and a Japanese word in the script (`Write-Output "a `"b`" $env:USERNAME 'c' 日本語"`) | The log shows the line as PowerShell prints it: quotes and `$` reach the shell as written (the script is passed as `-EncodedCommand`) |
+| 21.6a | A `shell = "powershell"` job with `Write-Warning 'careful'`, `Write-Verbose 'said' -Verbose`, `Write-Host 'hi'`, `Get-Item 'C:\nope\nope'` and `exit 0`, with `judge = { error_output = "^Get-Item" }` | No `#< CLIXML`, `<Objs` or `_x000D_` in the log and no 「モジュールを初めて使用するための準備」 line; `! 警告: careful`, `! 詳細: said`, `hi` (once) and the error's lines (`! Get-Item : …`, `! 発生場所 行:4 文字:1` …) as PowerShell prints them; the job is 異常 with the reason `出力に異常の行があった: Get-Item : …` |
 | 21.7 | Write `judge = { warn = "5..2" }`, `judge = { ok = "0" }`, `judge = "1"`, `shell = "cmd"`, `shell = "powershell"` with no `script`, `script` with no `shell`, or both `run` and `shell` | `koyomi check` refuses each with the line number and what to write (start not above end, unknown field, the shape, `"powershell" のどれか`, `shell には script が要る`, `script には shell = "powershell" が要る`, `run と shell は両方書けない`) |
 
 ## 22. Rerun and start at a job (`rerun`, `run --from`)
@@ -432,6 +433,7 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.17 | While 履歴 is open: click a net in the tree, a run in the 今日 table, or a calendar; then the 履歴 tab again | Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed |
 | 28.18 | Narrator / NVDA over 履歴 | The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) |
 | 28.19 | `koyomi --keys` report with 履歴 open | A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) |
+| 28.20 | A job whose reason has line breaks (a `[[when]] eventlog` net started by an event whose message has several lines, e.g. from PowerShell `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "line 1$([char]10)line 2"`); `koyomi history`, `koyomi show <net>` and `koyomi run <net> --date <a week ago>..<today> --only missing --dry` | Each run and job is one row: the reason's line breaks read as spaces. `koyomi show <run> <job>`'s 理由 keeps them |
 
 ## 29. Editor (`ui/canvas.rs`, `koyomi new` / `versions` / `restore`)
 
@@ -1038,6 +1040,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 81.6 | `[[when]] log = 'D:\nothere\app.log'`; then make the folder and the file with an `ERROR` line | Nothing is said while the file is not there; the new file is read from its start and the run starts |
 | 81.7 | `[[when]] eventlog = "Security"`, `ids = [4625]` (run the engine as administrator); sign in with a wrong password once | A run starts; `koyomi show` says `イベントログ Security に記録された: ID 4625 …` |
 | 81.8 | `[[when]] eventlog = "Application"`, `source = "MyApp"`; `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "boom"` | A run starts; an event from another source does not start one |
+| 81.8a | `[[when]] eventlog = "Application"`, `ids = [1000, 2000]` and no `source`; run any net by hand so it ends ✓ (koyomi writes ID 1000, source `koyomi`) | The net does not start: koyomi's own records are not counted when no `source` is written. Then write `source = "koyomi"` and `ids = [2000]`, and run another net that fails: this net starts (named on purpose, koyomi's records count); it ends ✓ (1000), so it does not start itself again |
 | 81.9 | `eventlog = "NoSuchLog"`, or `Security` with the engine not as administrator | The window's 注意 says `<net>: イベントログ … を読めない（…）`; the net is still valid |
 | 81.10 | The net has `calendar = "会社"` and the line comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
 | 81.11 | The editor: add a `[[when]]` of ログに行が出たら and one of イベントログに出たら | The fields are ログのファイル・含む文字, and イベントログ・イベント ID・ソース; except / start / end / on_closed are not shown; saving writes `log` / `contains` and `eventlog` / `ids` / `source` |

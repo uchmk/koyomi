@@ -195,9 +195,9 @@
 
 サンプルのネット（`jobnets/サンプル/`）を作って試して見つけたこと（2026-11-01）。
 
-- [ ] 102. イベント ログのきっかけが koyomi 自身の記録で流れる（S）: koyomi は回の終わりを Application に出どころ `koyomi` で書く（正常 1000・警告 1001・異常 2000 …）。`[[when]] eventlog = "Application"` で `ids` がこれと重なり `source` を書かないと、自分の回の終わりでまた流れ、止まらなくなる。`source` を書かないときは出どころ `koyomi` を外すか、`koyomi check` で言う。（サンプル「時刻の決め方」は `source = "Application Error"` で避けた）
-- [ ] 103. PowerShell のジョブのログに CLIXML が混じる（S）: `shell = "powershell"` のログの頭に `#< CLIXML` と「モジュールを初めて使用するための準備しています」の進み具合の記録が `! ` の行で出る。スクリプトの前に `$ProgressPreference = 'SilentlyContinue'` を付ける（ダウンロードの部品は済み）。
-- [ ] 104. `koyomi history` の理由が複数行のとき行が崩れる（S）: 理由（スキップのわけに入ったイベントの文など）の改行をそのまま出すので、別の回の行に見える。表では改行を空白にして 1 行にする。
+- [x] 102. イベント ログのきっかけが koyomi 自身の記録で流れる（S）: koyomi は回の終わりを Application に出どころ `koyomi` で書く（正常 1000・警告 1001・異常 2000 …）。`[[when]] eventlog = "Application"` で `ids` がこれと重なり `source` を書かないと、自分の回の終わりでまた流れ、止まらなくなる。`source` を書かないときは出どころ `koyomi` を外すか、`koyomi check` で言う。（サンプル「時刻の決め方」は `source = "Application Error"` で避けた） → `source` を書かないときは出どころ `koyomi` の記録を数えない（`engine/logs.rs` の `heard`）。`source = "koyomi"` と書けば数える（2026-11-01）。
+- [x] 103. PowerShell のジョブのログに CLIXML が混じる（S）: `shell = "powershell"` のログに `#< CLIXML` と、エラー・警告・進み具合（「モジュールを初めて使用するための準備しています」）をまとめた XML の 1 行が `! ` の行で出る。進み具合だけでなく、エラーと警告も読めない。→ 標準エラーの CLIXML を文に戻す（`koyomi_core::clixml`）。エラーはその行のまま、警告・詳細・デバッグは印を付け、進み具合と情報の記録は書かない。`error_output` も戻した文に合わせる。`$ProgressPreference` は進み具合しか消えないので使わなかった（2026-11-01）。
+- [x] 104. `koyomi history` の理由が複数行のとき行が崩れる（S）: 理由（スキップのわけに入ったイベントの文など）の改行をそのまま出すので、別の回の行に見える。表では改行を空白にして 1 行にする。 → `koyomi_core::run::one_line`。history・show のジョブネット・`--only missing --dry` の行で使う。`koyomi show <回> <ジョブ>` は改行のまま（2026-11-01）。
 
 ## デザイン（画面の見本との差）
 
@@ -281,6 +281,7 @@
 - [x] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。項目ごとに節を足した（1〜17）。
 - [x] `icon.rs` に本当のアイコンを描く。暗いタイルの上の暦のページ（cyan の帯・6 つの日・金色の今日）。`build.rs` が同じファイルで `koyomi.exe` の絵も作る。
 - [ ] 題の帯のロゴ: `main.rs` で自前に描いている（`LOGO_PX`・`logo` の欄）。ito v0.193.0 の `ito_titlebar::brand(ui, rect, name, logo)` が同じ見た目なので、次に ito の rev を上げるときに置き換える（ito-ec から、2026-11-01）。
+- [ ] ito v0.194.0 の設定の画面: `Extras { files: &["koyomi.toml"], .. }` が足された。上げるとき、`Out::open_file` が `Option<usize>` になり、欄ごとの `Extras { … }` に `files: &[]` が要る（ito-ec から、2026-11-01）。
 - [x] リリースの workflow は kura か yagura のものを写す。`scripts/lanes.sh sync` が ito の雛形の `release.yml` を書いていた（`lanes.conf` の `workflows=`）。写す必要はない。
 
 ## 持ち主に聞くこと
