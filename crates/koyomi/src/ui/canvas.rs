@@ -19,7 +19,8 @@ use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
 
 use super::whens::WhenEdit;
-use crate::show;
+
+mod drawer;
 
 const RADIUS: f32 = 9.0;
 /// Room before the first part, so its name (centred under it) is not cut at the edge.
@@ -522,6 +523,8 @@ pub struct Editor {
     connect: Option<Option<String>>,
     menu: Option<Menu>,
     pane: Option<Pane>,
+    /// The fields' pane is folded to its strip.
+    fold: bool,
     clip: Vec<Job>,
     pub dirty: bool,
     problems: Vec<write::Found>,
@@ -614,6 +617,8 @@ impl Editor {
 
     pub fn over(id: &str, net: Jobnet) -> Editor {
         let problems = write::check(&net);
+        // With no part opened, the pane shows the net's fields.
+        let pane = Some(Pane::Net(Box::new(NetFields::of(&net))));
         Editor {
             id: id.into(),
             net,
@@ -631,7 +636,8 @@ impl Editor {
             drag: Drag::None,
             connect: None,
             menu: None,
-            pane: None,
+            pane,
+            fold: false,
             clip: Vec::new(),
             dirty: false,
             problems,
@@ -664,6 +670,7 @@ impl Editor {
         if let Ok(mut e) = Editor::open(def) {
             e.pan = self.pan;
             e.zoom = self.zoom;
+            e.fold = self.fold;
             *self = e;
         }
     }
@@ -806,7 +813,7 @@ impl Editor {
         }
         if let Some(Pane::Part(id, _)) = &self.pane {
             if gone.contains(id) {
-                self.pane = None;
+                self.pane = Some(Pane::Net(Box::new(NetFields::of(&self.net))));
             }
         }
         self.touched();
@@ -912,7 +919,10 @@ impl Editor {
     /// The pane's fields read from the net again.
     fn sync_pane(&mut self) {
         self.pane = match self.pane.take() {
-            Some(Pane::Part(id, _)) => self.index(&id).map(|i| Pane::Part(id, Box::new(Fields::of(&self.net.jobs[i])))),
+            Some(Pane::Part(id, _)) => self
+                .index(&id)
+                .map(|i| Pane::Part(id, Box::new(Fields::of(&self.net.jobs[i]))))
+                .or_else(|| Some(Pane::Net(Box::new(NetFields::of(&self.net))))),
             Some(Pane::Net(_)) => Some(Pane::Net(Box::new(NetFields::of(&self.net)))),
             None => None,
         };
@@ -943,13 +953,16 @@ impl Editor {
     pub fn open_part(&mut self, id: &str) {
         if let Some(i) = self.index(id) {
             self.pane = Some(Pane::Part(id.into(), Box::new(Fields::of(&self.net.jobs[i]))));
+            self.fold = false;
             self.cursor = Some(id.into());
             self.selected = BTreeSet::from([id.to_owned()]);
         }
     }
 
+    /// Shows the net's fields in the pane (the part's are closed).
     pub fn open_net(&mut self) {
         self.pane = Some(Pane::Net(Box::new(NetFields::of(&self.net))));
+        self.fold = false;
     }
 
     /// Puts `fields` into the part `id` (renaming it when the id changed); the reason when they do not read.
@@ -1387,11 +1400,7 @@ impl Editor {
                 }
             });
         });
-        if self.pane.is_some() {
-            egui::Panel::right("fields").default_size(320.0).show(ui, |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| self.fields(ui, t, calendars, power, &mut action));
-            });
-        }
+        self.drawer(ui, t, calendars, power, &mut action);
         egui::Panel::bottom("editor-foot").show(ui, |ui| {
             let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
             self.foot(ui, t, cal);
@@ -1402,276 +1411,6 @@ impl Editor {
             }
         });
         action
-    }
-
-    fn fields(
-        &mut self,
-        ui: &mut egui::Ui,
-        t: &Table,
-        calendars: &BTreeMap<String, Calendar>,
-        power: &crate::proto::Power,
-        action: &mut Option<Action>,
-    ) {
-        let c = ito_theme::colors();
-        let field = |ui: &mut egui::Ui, key: &str, s: &mut String| -> bool {
-            let label = t.tr(key);
-            let mut hit = false;
-            ui.horizontal(|ui| {
-                ui.label(label);
-                let r = ui.add(egui::TextEdit::singleline(s).desired_width(f32::INFINITY));
-                ito_a11y::say(&r, Role::Label, label);
-                hit = r.changed();
-            });
-            hit
-        };
-        let Some(pane) = self.pane.take() else { return };
-        match pane {
-            Pane::Part(mut id, f) => {
-                let mut f = *f;
-                let Some(i) = self.index(&id) else { return };
-                let part = self.net.jobs[i].part.clone();
-                let mut closed = false;
-                ui.horizontal(|ui| {
-                    let head = show::part_name(t, &part);
-                    let r = ui.heading(&head);
-                    ito_a11y::say(&r, Role::Heading, &head);
-                    let r = ui.button(t.tr("canvas.close_pane"));
-                    ito_a11y::say(&r, Role::Button, t.tr("canvas.close_pane"));
-                    closed = r.clicked();
-                });
-                let mut changed = field(ui, "field.id", &mut f.id);
-                changed |= field(ui, "field.name", &mut f.name);
-                ui.label(t.tr("field.note"));
-                let r = ui.add(egui::TextEdit::multiline(&mut f.note).desired_rows(2).desired_width(f32::INFINITY));
-                ito_a11y::say(&r, Role::Label, t.tr("field.note"));
-                changed |= r.changed();
-                match part {
-                    Part::Job | Part::Loop { .. } => {
-                        if matches!(part, Part::Loop { .. }) {
-                            changed |= field(ui, "field.loop_file", &mut f.file);
-                            changed |= field(ui, "field.count", &mut f.count);
-                            changed |= field(ui, "field.loop_max", &mut f.max);
-                        }
-                        ui.label(t.tr("field.run"));
-                        let r = ui.add(egui::TextEdit::multiline(&mut f.run).desired_rows(3).desired_width(f32::INFINITY));
-                        ito_a11y::say(&r, Role::Label, t.tr("field.run"));
-                        changed |= r.changed();
-                        changed |= field(ui, "field.dir", &mut f.dir);
-                        changed |= field(ui, "field.timeout", &mut f.timeout);
-                        changed |= field(ui, "field.retry_count", &mut f.retry_count);
-                        changed |= field(ui, "field.retry_wait", &mut f.retry_wait);
-                        changed |= field(ui, "field.shell", &mut f.shell);
-                        ui.label(t.tr("field.script"));
-                        let r = ui.add(egui::TextEdit::multiline(&mut f.script).desired_rows(4).desired_width(f32::INFINITY).code_editor());
-                        ito_a11y::say(&r, Role::Label, t.tr("field.script"));
-                        changed |= r.changed();
-                        changed |= field(ui, "field.warn", &mut f.warn);
-                        changed |= field(ui, "field.error", &mut f.error);
-                        changed |= field(ui, "field.error_output", &mut f.error_output);
-                        changed |= field(ui, "field.ok_file", &mut f.ok_file);
-                        changed |= field(ui, "field.run_as_user", &mut f.run_as_user);
-                        changed |= field(ui, "field.run_as_secret", &mut f.run_as_secret);
-                        ui.horizontal(|ui| {
-                            ui.label(t.tr("field.encoding"));
-                            for e in [Encoding::Auto, Encoding::Sjis, Encoding::Utf8] {
-                                let key = format!("field.encoding_{}", e.text());
-                                if ui.selectable_label(f.encoding == e, t.tr(&key)).clicked() && f.encoding != e {
-                                    f.encoding = e;
-                                    changed = true;
-                                }
-                            }
-                        });
-                    }
-                    Part::Join { .. } => {
-                        ui.horizontal(|ui| {
-                            ui.label(t.tr("review.wait"));
-                            for (w, key) in [(Wait::All, "review.wait_all"), (Wait::Any, "review.wait_any")] {
-                                if ui.selectable_label(f.wait == w, t.tr(key)).clicked() && f.wait != w {
-                                    f.wait = w;
-                                    changed = true;
-                                }
-                            }
-                        });
-                    }
-                    Part::Time { .. } => {
-                        changed |= field(ui, "review.at", &mut f.at);
-                        changed |= field(ui, "field.days", &mut f.days);
-                    }
-                    Part::File { .. } => {
-                        changed |= field(ui, "review.file_wait", &mut f.file);
-                        changed |= field(ui, "review.settle", &mut f.settle);
-                    }
-                    Part::Jobnet { .. } => {
-                        changed |= field(ui, "review.use", &mut f.use_);
-                        let r = ui.button(t.tr("canvas.enter"));
-                        ito_a11y::say(&r, Role::Button, t.tr("canvas.enter"));
-                        if r.clicked() && jobnet::is_id(f.use_.trim()) {
-                            *action = Some(Action::Enter(f.use_.trim().to_owned()));
-                        }
-                    }
-                    Part::Chore(c) => {
-                        match c {
-                            Chore::Delete { .. } => {
-                                changed |= field(ui, "field.path", &mut f.path);
-                                changed |= field(ui, "field.match", &mut f.pattern);
-                                changed |= field(ui, "field.keep_days", &mut f.keep_days);
-                            }
-                            Chore::Empty { .. } => changed |= field(ui, "field.path", &mut f.path),
-                            Chore::Zip { .. } => {
-                                changed |= field(ui, "field.zip_from", &mut f.from);
-                                changed |= field(ui, "field.zip_into", &mut f.into);
-                            }
-                            Chore::Copy { .. } => {
-                                changed |= field(ui, "field.from", &mut f.from);
-                                changed |= field(ui, "field.into", &mut f.into);
-                                changed |= field(ui, "field.match", &mut f.pattern);
-                            }
-                            Chore::Send { .. } | Chore::Fetch { .. } => {
-                                let send = matches!(c, Chore::Send { .. });
-                                changed |= field(ui, if send { "field.send_from" } else { "field.fetch_from" }, &mut f.from);
-                                changed |= field(ui, if send { "field.send_into" } else { "field.fetch_into" }, &mut f.into);
-                                changed |= field(ui, "field.key", &mut f.key);
-                                changed |= field(ui, "field.host_key", &mut f.host_key);
-                                changed |= field(ui, "field.password", &mut f.password);
-                            }
-                            Chore::Http { .. } => {
-                                changed |= field(ui, "field.url", &mut f.url);
-                                changed |= field(ui, "field.method", &mut f.method);
-                                for (key, s, rows) in [("field.body", &mut f.body, 3), ("field.headers", &mut f.headers, 2)] {
-                                    ui.label(t.tr(key));
-                                    let r =
-                                        ui.add(egui::TextEdit::multiline(s).desired_rows(rows).desired_width(f32::INFINITY).code_editor());
-                                    ito_a11y::say(&r, Role::Label, t.tr(key));
-                                    changed |= r.changed();
-                                }
-                                changed |= field(ui, "field.content_type", &mut f.content_type);
-                                changed |= field(ui, "field.expect", &mut f.expect);
-                            }
-                        }
-                        changed |= field(ui, "field.timeout", &mut f.timeout);
-                        changed |= field(ui, "field.retry_count", &mut f.retry_count);
-                        changed |= field(ui, "field.retry_wait", &mut f.retry_wait);
-                        changed |= field(ui, "field.run_as_user", &mut f.run_as_user);
-                        changed |= field(ui, "field.run_as_secret", &mut f.run_as_secret);
-                    }
-                    Part::Branch | Part::Notify | Part::Approval => {}
-                }
-                if changed {
-                    f.msg = self.apply_fields(&id, &f).err();
-                    // A rename that went through: the pane follows the part.
-                    let new = f.id.trim().to_owned();
-                    if f.msg.is_none() && new != id && self.has(&new) {
-                        id = new;
-                    }
-                }
-                if let Some(m) = &f.msg {
-                    ui.colored_label(c.err, Mark::Error.marked(m));
-                }
-                if !closed {
-                    self.pane = Some(Pane::Part(id, Box::new(f)));
-                }
-            }
-            Pane::Net(f) => {
-                let mut f = *f;
-                let mut closed = false;
-                ui.horizontal(|ui| {
-                    let r = ui.heading(t.tr("canvas.net"));
-                    ito_a11y::say(&r, Role::Heading, t.tr("canvas.net"));
-                    let r = ui.button(t.tr("canvas.close_pane"));
-                    ito_a11y::say(&r, Role::Button, t.tr("canvas.close_pane"));
-                    closed = r.clicked();
-                });
-                let mut changed = field(ui, "field.name", &mut f.name);
-                ui.horizontal(|ui| {
-                    ui.label(t.tr("field.calendar"));
-                    let shown = if f.calendar.is_empty() { t.tr("field.no_calendar").to_owned() } else { f.calendar.clone() };
-                    egui::ComboBox::from_id_salt("net-calendar").selected_text(shown).show_ui(ui, |ui| {
-                        if ui.selectable_label(f.calendar.is_empty(), t.tr("field.no_calendar")).clicked() {
-                            f.calendar.clear();
-                            changed = true;
-                        }
-                        for name in calendars.keys() {
-                            if ui.selectable_label(&f.calendar == name, name).clicked() {
-                                f.calendar = name.clone();
-                                changed = true;
-                            }
-                        }
-                        ui.separator();
-                        if ui.selectable_label(false, t.tr("palette.new_calendar")).clicked() {
-                            *action = Some(Action::NewCalendar);
-                        }
-                    });
-                });
-                ui.horizontal(|ui| {
-                    ui.label(t.tr("field.missed"));
-                    for (m, key) in [(Missed::Skip, "field.skip"), (Missed::Once, "review.missed_once")] {
-                        if ui.selectable_label(f.missed == m, t.tr(key)).clicked() && f.missed != m {
-                            f.missed = m;
-                            changed = true;
-                        }
-                    }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(t.tr("field.overlap"));
-                    for (o, key) in [(Overlap::Skip, "field.skip"), (Overlap::Queue, "review.overlap_queue")] {
-                        if ui.selectable_label(f.overlap == o, t.tr(key)).clicked() && f.overlap != o {
-                            f.overlap = o;
-                            changed = true;
-                        }
-                    }
-                });
-                changed |= ui.checkbox(&mut f.wake, t.tr("field.wake")).changed();
-                ui.separator();
-                let r = ui.heading(t.tr("when.title"));
-                ito_a11y::say(&r, Role::Heading, t.tr("when.title"));
-                let mut remove = None;
-                for (i, w) in f.whens.iter_mut().enumerate() {
-                    ui.push_id(i, |ui| {
-                        egui::Frame::group(ui.style()).show(ui, |ui| {
-                            changed |= w.show(ui, t, i);
-                            let r = ui.button(t.tr("when.remove"));
-                            ito_a11y::say(&r, Role::Button, t.tr("when.remove"));
-                            if r.clicked() {
-                                remove = Some(i);
-                            }
-                        });
-                    });
-                }
-                if let Some(i) = remove {
-                    f.whens.remove(i);
-                    changed = true;
-                }
-                let r = ui.button(t.tr("when.add"));
-                ito_a11y::say(&r, Role::Button, t.tr("when.add"));
-                if r.clicked() {
-                    f.whens.push(WhenEdit::default());
-                    changed = true;
-                }
-                if changed {
-                    self.apply_net(&mut f);
-                }
-                ui.separator();
-                let cal = self.net.calendar.as_ref().and_then(|n| calendars.get(n));
-                let head = t.trf("run.next", &["10"]);
-                let r = ui.label(&head);
-                ito_a11y::say(&r, Role::Heading, &head);
-                let sleep = show::Sleep::of(power, self.net.wake);
-                for row in show::next_rows(
-                    t,
-                    &self.net.when,
-                    (&self.net.quiet, self.net.on_quiet),
-                    cal,
-                    chrono::Local::now().naive_local(),
-                    10,
-                    Some(&sleep),
-                ) {
-                    ui.label(row);
-                }
-                if !closed {
-                    self.pane = Some(Pane::Net(Box::new(f)));
-                }
-            }
-        }
     }
 
     fn canvas(&mut self, ui: &mut egui::Ui, t: &Table, vertical: bool) -> Option<Action> {
@@ -2117,6 +1856,10 @@ impl Editor {
             if self.connect.is_some() {
                 self.connect = None;
             } else {
+                // A part's fields close back to the net's.
+                if matches!(self.pane, Some(Pane::Part(..))) {
+                    self.open_net();
+                }
                 self.clear_target();
             }
         } else if pressed(ui, Modifiers::NONE, Key::A) {
