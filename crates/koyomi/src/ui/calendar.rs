@@ -168,7 +168,7 @@ impl Browser {
                     // The head: the calendar's name, the fold mark at the right.
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            fold = super::fold_button(ui, true, t.tr("inspect.fold")).clicked();
+                            fold = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr("inspect.fold"), 22.0).clicked();
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let r = ui.label(egui::RichText::new(&name).strong());
                                 ito_a11y::say(&r, Role::Heading, &name);

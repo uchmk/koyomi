@@ -1478,7 +1478,11 @@ impl Browser {
                     let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
                     ito_a11y::say(&r, Role::Label, &head);
                     // The same quiet outlined button as the rest, in the words' own size.
-                    let r = ui.add_enabled_ui(!modal, |ui| icon_button(ui, Icon::Play, t.tr("run.resume"), t.tr("run.resume"))).inner;
+                    let r = ui
+                        .add_enabled_ui(!modal, |ui| {
+                            ito_prefs::icon_button(ui, ito_prefs::Mark::Play, t.tr("run.resume"), t.tr("run.resume"))
+                        })
+                        .inner;
                     if r.clicked() {
                         let _ = self.tx.send(Request::Resume);
                     }
@@ -1550,7 +1554,7 @@ impl Browser {
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
                 if !paused && self.snap.is_some() {
                     ui.add_space(10.0);
-                    let r = icon_button(ui, Icon::Pause, t.tr("run.pause"), t.tr("run.pause"));
+                    let r = ito_prefs::icon_button(ui, ito_prefs::Mark::Pause, t.tr("run.pause"), t.tr("run.pause"));
                     if r.clicked() {
                         let _ = self.tx.send(Request::Pause);
                     }
@@ -2550,7 +2554,7 @@ impl Browser {
                     // The head: what the pane is, the fold mark and, with a run picked, ✕ at the right.
                     ui.horizontal(|ui| {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            fold = fold_button(ui, true, t.tr("inspect.fold")).clicked();
+                            fold = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr("inspect.fold"), 22.0).clicked();
                             if picked {
                                 let r = ui.add(egui::Button::new("✕").frame(false)).on_hover_text(t.tr("run.history_close"));
                                 ito_a11y::say(&r, Role::Button, t.tr("run.history_close"));
@@ -2642,8 +2646,11 @@ impl Browser {
                             }
                         });
                         ui.add_space(4.0);
-                        search |= icon_button(ui, Icon::Search, t.tr("run.history_search"), t.tr("run.history_search")).clicked();
-                        csv = icon_button(ui, Icon::Download, t.tr("run.history_csv"), t.tr("run.history_csv")).clicked();
+                        search |=
+                            ito_prefs::icon_button(ui, ito_prefs::Mark::Search, t.tr("run.history_search"), t.tr("run.history_search"))
+                                .clicked();
+                        csv = ito_prefs::icon_button(ui, ito_prefs::Mark::Download, t.tr("run.history_csv"), t.tr("run.history_csv"))
+                            .clicked();
                     });
                 });
             if csv {
@@ -3176,7 +3183,7 @@ impl Browser {
         let mut go = None;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                fold = fold_button(ui, true, t.tr("inspect.fold")).clicked();
+                fold = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr("inspect.fold"), 22.0).clicked();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let Some(def) = &def else {
                         let r = ui.label(egui::RichText::new(t.tr("inspect.title")).strong().color(c.dim));
@@ -4033,92 +4040,6 @@ pub(super) fn page() -> egui::Frame {
     egui::Frame::new().inner_margin(egui::Margin { left: 0, top: 12, right: 8, bottom: 8 })
 }
 
-/// The fold mark of a pane at the right: a small rounded square with a chevron, › to fold the open
-/// pane away to the right, ‹ to open it again. `words` are its tip and what a reader says.
-pub(super) fn fold_button(ui: &mut egui::Ui, open: bool, words: &str) -> egui::Response {
-    let c = ito_theme::colors();
-    let (rect, r) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
-    let r = r.on_hover_text(words).on_hover_cursor(egui::CursorIcon::PointingHand);
-    ito_a11y::say(&r, Role::Button, words);
-    if ui.is_rect_visible(rect) {
-        let hot = r.hovered() || r.has_focus();
-        let (fill, edge, ink) = if hot { (c.hover(), c.border_strong(), c.fg) } else { (c.raised(), c.border, c.dim) };
-        let p = ui.painter();
-        p.rect(rect, 6.0, fill, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-        let m = rect.center();
-        // The chevron points the way the pane goes: right to fold, left to open.
-        let d = if open { 1.0 } else { -1.0 };
-        let pts = vec![m + egui::vec2(-2.5 * d, -4.5), m + egui::vec2(2.5 * d, 0.0), m + egui::vec2(-2.5 * d, 4.5)];
-        p.add(egui::Shape::line(pts, egui::Stroke::new(1.5, ink)));
-    }
-    r
-}
-
-/// A mark drawn in front of the words of an [`icon_button`].
-#[derive(Clone, Copy)]
-pub(super) enum Icon {
-    /// A magnifying glass.
-    Search,
-    /// An arrow down onto a tray.
-    Download,
-    /// A triangle pointing on: start again.
-    Play,
-    /// Two bars: stop for now.
-    Pause,
-}
-
-/// A quiet outlined button with a drawn mark before `words`: the raised fill and a thin edge of the
-/// fields beside it, stronger under the pointer or with the keys. `said` is its spoken name and tip.
-pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, words: &str, said: &str) -> egui::Response {
-    let c = ito_theme::colors();
-    let font = egui::TextStyle::Body.resolve(ui.style());
-    let galley = ui.painter().layout_no_wrap(words.to_owned(), font, c.fg);
-    let (mark, pad, gap) = (14.0, 10.0, 6.0);
-    let size = egui::vec2(pad + mark + gap + galley.size().x + pad, ui.spacing().interact_size.y.max(26.0));
-    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
-    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
-    let r = if said != words { r.on_hover_text(said) } else { r };
-    ito_a11y::say(&r, Role::Button, said);
-    if ui.is_rect_visible(rect) {
-        let hot = r.hovered() || r.has_focus();
-        let (fill, edge, ink) = if hot { (c.hover(), c.border_strong(), c.fg) } else { (c.raised(), c.border, c.fg) };
-        let p = ui.painter();
-        p.rect(rect, 6.0, fill, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
-        let m = egui::pos2(rect.left() + pad + mark / 2.0, rect.center().y);
-        let line = egui::Stroke::new(1.5, if hot { c.fg } else { c.dim });
-        match icon {
-            Icon::Search => {
-                let o = m + egui::vec2(-1.5, -1.5);
-                p.circle_stroke(o, 4.5, line);
-                p.line_segment([o + egui::vec2(3.3, 3.3), o + egui::vec2(7.0, 7.0)], line);
-            }
-            Icon::Download => {
-                p.line_segment([m + egui::vec2(0.0, -6.0), m + egui::vec2(0.0, 2.5)], line);
-                p.add(egui::Shape::line(vec![m + egui::vec2(-3.5, -1.0), m + egui::vec2(0.0, 2.5), m + egui::vec2(3.5, -1.0)], line));
-                p.add(egui::Shape::line(
-                    vec![m + egui::vec2(-6.0, 3.0), m + egui::vec2(-6.0, 6.0), m + egui::vec2(6.0, 6.0), m + egui::vec2(6.0, 3.0)],
-                    line,
-                ));
-            }
-            Icon::Play => {
-                let pts = vec![m + egui::vec2(-3.5, -5.5), m + egui::vec2(5.0, 0.0), m + egui::vec2(-3.5, 5.5)];
-                p.add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, line));
-            }
-            Icon::Pause => {
-                for x in [-2.5, 2.5] {
-                    p.line_segment([m + egui::vec2(x, -5.0), m + egui::vec2(x, 5.0)], egui::Stroke::new(2.0, line.color));
-                }
-            }
-        }
-        let at = egui::pos2(rect.left() + pad + mark + gap, rect.center().y - galley.size().y / 2.0);
-        p.galley(at, galley, ink);
-    }
-    if r.has_focus() {
-        ui.painter().rect_stroke(rect.expand(2.0), 7.0, egui::Stroke::new(1.5, c.run), egui::StrokeKind::Outside);
-    }
-    r
-}
-
 /// A folded pane at the right: a thin strip with the fold mark at its top and the pane's `title`
 /// written down its length. True when the mark was pressed to open the pane again.
 pub(super) fn folded_pane(ui: &mut egui::Ui, id: &str, title: &str, words: &str) -> bool {
@@ -4131,7 +4052,7 @@ pub(super) fn folded_pane(ui: &mut egui::Ui, id: &str, title: &str, words: &str)
         .show(ui, |ui| {
             ui.set_min_height(ui.available_height());
             ui.vertical_centered(|ui| {
-                open = fold_button(ui, false, words).clicked();
+                open = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronLeft, words, 22.0).clicked();
                 ui.add_space(10.0);
                 // The title reads top to bottom, turned a quarter to the right.
                 let font = egui::FontId::proportional(ONE_SIZE);
