@@ -64,6 +64,20 @@ enum Act {
     SkipNext(String, bool),
 }
 
+impl Act {
+    /// The mark on the button that asks for it, and on the answer that does it.
+    fn mark(&self) -> ito_prefs::Mark {
+        match self {
+            Act::Run(..) | Act::Hold(_, false) => ito_prefs::Mark::Play,
+            Act::Stop(_) => ito_prefs::Mark::Stop,
+            Act::Rerun(_) => ito_prefs::Mark::Rerun,
+            Act::Hold(_, true) => ito_prefs::Mark::Pause,
+            Act::SkipNext(_, true) => ito_prefs::Mark::Skip,
+            Act::SkipNext(_, false) => ito_prefs::Mark::Undo,
+        }
+    }
+}
+
 pub struct Far {
     /// The `[[remote]]` names, once read; empty hides the PC list.
     names: Vec<String>,
@@ -269,9 +283,8 @@ impl Far {
         let c = ito_theme::colors();
         ui.horizontal(|ui| {
             ui.heading(t.trf("far.title", &[&pc]));
-            let r = ui.add_enabled(self.pending == 0, egui::Button::new(t.tr("far.refresh")));
-            ito_a11y::say(&r, Role::Button, t.tr("far.refresh"));
-            if r.clicked() {
+            let refresh = ito_prefs::IconButton::new(ito_prefs::Mark::Refresh, t.tr("far.refresh"));
+            if ui.add_enabled_ui(self.pending == 0, |ui| refresh.show(ui)).inner.clicked() {
                 self.asked = None;
             }
             if self.pending > 0 {
@@ -317,10 +330,10 @@ impl Far {
                 };
                 let r = ui.label(egui::RichText::new(&text).strong());
                 ito_a11y::say(&r, Role::Label, &text);
-                let y = ui.button(yes);
-                ito_a11y::say(&y, Role::Button, yes);
-                let n = ui.button(t.tr("run.kill_no"));
-                ito_a11y::say(&n, Role::Button, t.tr("run.kill_no"));
+                // The answer that does it, in the tone of what it does: a stop cannot be taken back.
+                let tone = if matches!(a, Act::Stop(_)) { ito_prefs::Tone::Danger } else { ito_prefs::Tone::Primary };
+                let y = ito_prefs::IconButton::new(a.mark(), yes).tone(tone).show(ui);
+                let n = ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("run.kill_no")).show(ui);
                 if y.clicked() {
                     self.asking = None;
                     self.said = None;
@@ -363,9 +376,10 @@ impl Far {
                     standing = format!("{standing}  {}", t.tr("far.held"));
                 }
                 ui.label(standing);
-                let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.now")));
-                ito_a11y::say(&b, Role::Button, &format!("{} {title}", t.tr("run.now")));
-                if b.clicked() {
+                let free = self.asking.is_none();
+                let said = format!("{} {title}", t.tr("run.now"));
+                let now = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.now")).said(&said);
+                if ui.add_enabled_ui(free, |ui| now.show(ui)).inner.clicked() {
                     let values = n.params.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
                     press = Some(Act::Run(n.id.clone(), values));
                 }
@@ -377,9 +391,9 @@ impl Far {
                         ("far.unskip", Act::SkipNext(n.id.clone(), false)),
                     ];
                     for (key, act) in acts {
-                        let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr(key)).small());
-                        ito_a11y::say(&b, Role::Button, &format!("{} {title}", t.tr(key)));
-                        if b.clicked() {
+                        let said = format!("{} {title}", t.tr(key));
+                        let button = ito_prefs::IconButton::new(act.mark(), t.tr(key)).said(&said);
+                        if ui.add_enabled_ui(free, |ui| button.show(ui)).inner.clicked() {
                             press = Some(act);
                         }
                     }
@@ -423,18 +437,15 @@ impl Far {
                 }
                 ui.label(show::hms(run.started));
                 ui.label(ended);
-                if run.is_over() {
-                    let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.rerun")));
-                    ito_a11y::say(&b, Role::Button, &format!("{} {}", t.tr("run.rerun"), run.title));
-                    if b.clicked() {
-                        press = Some(Act::Rerun(run.id.clone()));
-                    }
+                let (key, act, tone) = if run.is_over() {
+                    ("run.rerun", Act::Rerun(run.id.clone()), ito_prefs::Tone::Plain)
                 } else {
-                    let b = ui.add_enabled(self.asking.is_none(), egui::Button::new(t.tr("run.kill")));
-                    ito_a11y::say(&b, Role::Button, &format!("{} {}", t.tr("run.kill"), run.title));
-                    if b.clicked() {
-                        press = Some(Act::Stop(run.id.clone()));
-                    }
+                    ("run.kill", Act::Stop(run.id.clone()), ito_prefs::Tone::Danger)
+                };
+                let said = format!("{} {}", t.tr(key), run.title);
+                let button = ito_prefs::IconButton::new(act.mark(), t.tr(key)).said(&said).tone(tone);
+                if ui.add_enabled_ui(self.asking.is_none(), |ui| button.show(ui)).inner.clicked() {
+                    press = Some(act);
                 }
                 ui.end_row();
             }

@@ -71,9 +71,10 @@ impl Browser {
                     ui.close();
                 }
             });
-            let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.small_button("＋").on_hover_text(label)).inner;
-            ito_a11y::say(&r, Role::Button, label);
-            if r.clicked() {
+            let r = ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ito_prefs::mark_button(ui, ito_prefs::Mark::Plus, label, 22.0)
+            });
+            if r.inner.clicked() {
                 make = true;
             }
         });
@@ -214,9 +215,8 @@ impl Browser {
                                 ito_a11y::say(&r, Role::Label, l);
                             }
                             if table_ends {
-                                let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr("calendar.table")));
-                                ito_a11y::say(&r, Role::Button, t.tr("calendar.table"));
-                                bring = r.clicked();
+                                let button = ito_prefs::IconButton::new(ito_prefs::Mark::Import, t.tr("calendar.table"));
+                                bring = ui.add_enabled_ui(!self.blocked(), |ui| button.show(ui)).inner.clicked();
                             }
                         },
                     );
@@ -236,41 +236,27 @@ impl Browser {
                     let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&words).color(c.done));
                     ito_a11y::say(&r, Role::Label, &words);
                     ui.add_space(10.0);
-                    egui::Frame::new()
-                        .fill(c.panel)
-                        .stroke(egui::Stroke::new(1.0, c.border))
-                        .corner_radius(6.0)
-                        .inner_margin(egui::Margin::symmetric(4, 1))
-                        .show(ui, |ui| {
-                            ui.horizontal(|ui| {
-                                let r = ui.add(egui::Button::new(egui::RichText::new("◀").color(c.dim)).frame(false));
-                                ito_a11y::say(&r, Role::Button, t.tr(prev));
-                                if r.clicked() && on_week {
-                                    self.cal_go(anchor - chrono::Days::new(7));
-                                } else if r.clicked() {
-                                    self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
-                                }
-                                // A click on the month opens a year and its twelve months, to jump far.
-                                let ym = t.trf("calendar.ym", &[&y.to_string(), &format!("{m:02}")]);
-                                let r = ui
-                                    .add(egui::Label::new(egui::RichText::new(ym).heading().strong()).sense(egui::Sense::click()))
-                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
-                                    .on_hover_text(t.tr("calendar.pick_month"));
-                                ito_a11y::say(&r, Role::Heading, &head);
-                                let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
-                                let mut to = (y, m);
-                                if ito_prefs::month_picker(ui, look, "calendar-month", &words, &r, &mut to) {
-                                    self.cal_month = Some(to);
-                                }
-                                let r = ui.add(egui::Button::new(egui::RichText::new("▶").color(c.dim)).frame(false));
-                                ito_a11y::say(&r, Role::Button, t.tr(next));
-                                if r.clicked() && on_week {
-                                    self.cal_go(anchor + chrono::Days::new(7));
-                                } else if r.clicked() {
-                                    self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
-                                }
-                            });
-                        });
+                    let r = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronLeft, t.tr(prev), 26.0);
+                    if r.clicked() && on_week {
+                        self.cal_go(anchor - chrono::Days::new(7));
+                    } else if r.clicked() {
+                        self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
+                    }
+                    // A click on the month opens a year and its twelve months, to jump far.
+                    let ym = t.trf("calendar.ym", &[&y.to_string(), &format!("{m:02}")]);
+                    let said = format!("{head} {}", t.tr("calendar.pick_month"));
+                    let r = ito_prefs::IconButton::new(ito_prefs::Mark::ChevronDown, &ym).mark_last().said(&said).show(ui);
+                    let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
+                    let mut to = (y, m);
+                    if ito_prefs::month_picker(ui, look, "calendar-month", &words, &r, &mut to) {
+                        self.cal_month = Some(to);
+                    }
+                    let r = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr(next), 26.0);
+                    if r.clicked() && on_week {
+                        self.cal_go(anchor + chrono::Days::new(7));
+                    } else if r.clicked() {
+                        self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
+                    }
                     if on_week {
                         let span = |d: NaiveDate| format!("{}/{}({})", d.month(), d.day(), weekday(t, d.weekday()));
                         let range = format!("{} – {}", span(sunday), span(sunday + chrono::Days::new(6)));
@@ -291,10 +277,15 @@ impl Browser {
                 let mut rules = None;
                 let mut act = None;
                 ui.horizontal_wrapped(|ui| {
-                    for (i, key) in ["calendar.rename", "calendar.delete", "calendar.table", "calendar.print"].into_iter().enumerate() {
-                        let r = ui.add_enabled(!self.blocked(), egui::Button::new(t.tr(key)));
-                        ito_a11y::say(&r, Role::Button, t.tr(key));
-                        if r.clicked() {
+                    let buttons = [
+                        ("calendar.rename", ito_prefs::Mark::Pencil),
+                        ("calendar.delete", ito_prefs::Mark::Trash),
+                        ("calendar.table", ito_prefs::Mark::Import),
+                        ("calendar.print", ito_prefs::Mark::Print),
+                    ];
+                    let blocked = self.blocked();
+                    for (i, (key, mark)) in buttons.into_iter().enumerate() {
+                        if ui.add_enabled_ui(!blocked, |ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui)).inner.clicked() {
                             act = Some(i);
                         }
                     }
@@ -982,12 +973,8 @@ impl Browser {
             if (r.has_focus() || r.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 pressed = Some(1);
             }
-            for (i, key) in ["calendar.inline_go", "make.cancel"].into_iter().enumerate() {
-                let r = ui.button(t.tr(key));
-                ito_a11y::say(&r, Role::Button, t.tr(key));
-                if r.clicked() {
-                    pressed = Some(i);
-                }
+            if let Some(i) = super::go_or_cancel(ui, ito_prefs::Mark::Check, t.tr("calendar.inline_go"), t.tr("make.cancel")) {
+                pressed = Some(i);
             }
         });
         match pressed {
@@ -1096,9 +1083,9 @@ impl Browser {
         let Some(m) = &mut self.new_cal else { return };
         let c = ito_theme::colors();
         let mut pressed = None;
-        let (title, go) = match &m.from {
-            None => (t.tr("newcal.title"), t.tr("newcal.go")),
-            Some(_) => (t.tr("newcal.rename_title"), t.tr("newcal.rename_go")),
+        let (title, go, mark) = match &m.from {
+            None => (t.tr("newcal.title"), t.tr("newcal.go"), ito_prefs::Mark::Plus),
+            Some(_) => (t.tr("newcal.rename_title"), t.tr("newcal.rename_go"), ito_prefs::Mark::Pencil),
         };
         egui::Window::new(title)
             .id(egui::Id::new("new-cal"))
@@ -1143,15 +1130,7 @@ impl Browser {
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
-                ui.horizontal(|ui| {
-                    for (i, label) in [go, t.tr("make.cancel")].into_iter().enumerate() {
-                        let r = ui.button(label);
-                        ito_a11y::say(&r, Role::Button, label);
-                        if r.clicked() {
-                            pressed = Some(i);
-                        }
-                    }
-                });
+                ui.horizontal(|ui| pressed = super::go_or_cancel(ui, mark, go, t.tr("make.cancel")));
                 ui.label(egui::RichText::new(t.tr("make.hint")).color(c.dim).small());
             });
         match pressed.or(key) {

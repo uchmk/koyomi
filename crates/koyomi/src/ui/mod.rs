@@ -993,10 +993,14 @@ impl Browser {
         let Some(m) = &mut self.make else { return };
         let c = ito_theme::colors();
         let mut pressed = None;
-        let (title, lead, go) = match &from {
-            None => (t.tr("make.title").to_owned(), t.tr("make.lead").to_owned(), t.tr("make.go")),
-            Some((id, Re::Rename)) => (t.tr("rename.title").to_owned(), t.trf("rename.lead", &[id]), t.tr("rename.go")),
-            Some((id, Re::Copy)) => (t.tr("rename.copy_title").to_owned(), t.trf("rename.copy_lead", &[id]), t.tr("rename.copy_go")),
+        let (title, lead, go, mark) = match &from {
+            None => (t.tr("make.title").to_owned(), t.tr("make.lead").to_owned(), t.tr("make.go"), ito_prefs::Mark::Plus),
+            Some((id, Re::Rename)) => {
+                (t.tr("rename.title").to_owned(), t.trf("rename.lead", &[id]), t.tr("rename.go"), ito_prefs::Mark::Pencil)
+            }
+            Some((id, Re::Copy)) => {
+                (t.tr("rename.copy_title").to_owned(), t.trf("rename.copy_lead", &[id]), t.tr("rename.copy_go"), ito_prefs::Mark::Copy)
+            }
         };
         egui::Window::new(title)
             .id(egui::Id::new("make"))
@@ -1053,15 +1057,7 @@ impl Browser {
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
-                ui.horizontal(|ui| {
-                    for (i, label) in [go, t.tr("make.cancel")].into_iter().enumerate() {
-                        let r = ui.button(label);
-                        ito_a11y::say(&r, Role::Button, label);
-                        if r.clicked() {
-                            pressed = Some(i);
-                        }
-                    }
-                });
+                ui.horizontal(|ui| pressed = go_or_cancel(ui, mark, go, t.tr("make.cancel")));
                 ui.label(egui::RichText::new(t.tr("make.hint")).color(c.dim).small());
             });
         match pressed.or(key) {
@@ -1113,15 +1109,7 @@ impl Browser {
                         ui.end_row();
                     }
                 });
-                ui.horizontal(|ui| {
-                    for (i, label) in [t.tr("give.go"), t.tr("give.cancel")].into_iter().enumerate() {
-                        let r = ui.button(label);
-                        ito_a11y::say(&r, Role::Button, label);
-                        if r.clicked() {
-                            pressed = Some(i);
-                        }
-                    }
-                });
+                ui.horizontal(|ui| pressed = go_or_cancel(ui, ito_prefs::Mark::Play, t.tr("give.go"), t.tr("give.cancel")));
                 ui.label(egui::RichText::new(t.tr("give.hint")).color(c.dim).small());
             });
         match pressed.or(key) {
@@ -1239,15 +1227,7 @@ impl Browser {
                     if let Some(e) = &p.error {
                         ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                     }
-                    ui.horizontal(|ui| {
-                        for (i, label) in [t.tr("port.read"), t.tr("port.cancel")].into_iter().enumerate() {
-                            let r = ui.button(label);
-                            ito_a11y::say(&r, Role::Button, label);
-                            if r.clicked() {
-                                pressed = Some(i);
-                            }
-                        }
-                    });
+                    ui.horizontal(|ui| pressed = go_or_cancel(ui, ito_prefs::Mark::Import, t.tr("port.read"), t.tr("port.cancel")));
                     ui.label(egui::RichText::new(t.tr("port.hint_path")).color(c.dim).small());
                 });
             match pressed.or(key) {
@@ -1712,10 +1692,12 @@ impl Browser {
             let r = ui
                 .horizontal(|ui| {
                     ui.label(egui::RichText::new(t.tr("tree.heading")).small().strong().color(c.dim));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| ui.small_button("＋").on_hover_text(&label)).inner
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        ito_prefs::mark_button(ui, ito_prefs::Mark::Plus, &label, 22.0)
+                    })
+                    .inner
                 })
                 .inner;
-            ito_a11y::say(&r, Role::Button, &label);
             if let Some(lang) = &self.easy {
                 ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "jobnet", lang, "tree");
             }
@@ -2343,16 +2325,14 @@ impl Browser {
                             ui.horizontal(|ui| {
                                 if next.is_some() {
                                     let label = format!("{} {}", t.tr("skipnext.skip"), name);
-                                    let r = ui.button(t.tr("skipnext.skip"));
-                                    ito_a11y::say(&r, Role::Button, &label);
+                                    let r = ito_prefs::IconButton::new(ito_prefs::Mark::Skip, t.tr("skipnext.skip")).said(&label).show(ui);
                                     if r.clicked() {
                                         send = Some(Request::SkipNext { id: id.clone(), cancel: false });
                                     }
                                 }
                                 if !skipped.is_empty() {
                                     let label = format!("{} {}", t.tr("skipnext.undo"), name);
-                                    let r = ui.button(t.tr("skipnext.undo"));
-                                    ito_a11y::say(&r, Role::Button, &label);
+                                    let r = ito_prefs::IconButton::new(ito_prefs::Mark::Undo, t.tr("skipnext.undo")).said(&label).show(ui);
                                     if r.clicked() {
                                         send = Some(Request::SkipNext { id: id.clone(), cancel: true });
                                     }
@@ -2363,9 +2343,7 @@ impl Browser {
                     });
                 });
                 ui.add_space(4.0);
-                let r = ui.button(t.tr("skipnext.close"));
-                ito_a11y::say(&r, Role::Button, t.tr("skipnext.close"));
-                close |= r.clicked();
+                close |= ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("skipnext.close")).show(ui).clicked();
                 ui.label(egui::RichText::new(t.tr("skipnext.hint")).color(c.dim).small());
             });
         if let Some(r) = send {
@@ -2573,9 +2551,7 @@ impl Browser {
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             fold = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr("inspect.fold"), 22.0).clicked();
                             if picked {
-                                let r = ui.add(egui::Button::new("✕").frame(false)).on_hover_text(t.tr("run.history_close"));
-                                ito_a11y::say(&r, Role::Button, t.tr("run.history_close"));
-                                close = r.clicked();
+                                close = ito_prefs::mark_button(ui, ito_prefs::Mark::Close, t.tr("run.history_close"), 22.0).clicked();
                             }
                             ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                                 let r = ui.label(egui::RichText::new(t.tr("run.history_pane")).strong().color(c.dim));
@@ -2630,16 +2606,14 @@ impl Browser {
                             .show(ui, ito_prefs::Look { c, q: "" }, &mut h.from, &mut h.to);
                         // The presets ask at once for the days up to today.
                         let today = chrono::Local::now().date_naive();
-                        for (key, back) in [("run.history_today", 0), ("run.history_7", 7), ("run.history_30", 30)] {
-                            let from = (today - chrono::Duration::days(back)).to_string();
-                            let on = h.from == from && h.to == today.to_string();
-                            let r = ui.selectable_label(on, t.tr(key));
-                            ito_a11y::say(&r, Role::Button, t.tr(key));
-                            if r.clicked() {
-                                h.from = from;
-                                h.to = today.to_string();
-                                search = true;
-                            }
+                        let from = |back: i64| (today - chrono::Duration::days(back)).to_string();
+                        let now = [0, 7, 30].into_iter().find(|b| h.from == from(*b) && h.to == today.to_string());
+                        let options =
+                            [(Some(0), t.tr("run.history_today")), (Some(7), t.tr("run.history_7")), (Some(30), t.tr("run.history_30"))];
+                        if let Some(Some(back)) = ito_prefs::seg(ui, ito_prefs::Look { c, q: "" }, "history-presets", now, &options) {
+                            h.from = from(back);
+                            h.to = today.to_string();
+                            search = true;
                         }
                     });
                     ui.add_space(2.0);
@@ -2906,7 +2880,7 @@ impl Browser {
                     ito_a11y::say(&r, Role::Label, &chip);
                     ui.add_space(6.0);
                     // Only the buttons that mean something for this run are drawn.
-                    if !run.is_over() && danger(ui, t.tr("run.kill")).clicked() && !self.box_open() {
+                    if !run.is_over() && danger(ui, ito_prefs::Mark::Stop, t.tr("run.kill")).clicked() && !self.box_open() {
                         self.killing = Some(run.id.clone());
                         // The safe button first: Enter on a fresh box does not kill.
                         self.focus = 1;
@@ -2917,8 +2891,9 @@ impl Browser {
                     if run.is_over() {
                         let head = format!("{} ▾", t.tr("run.rerun"));
                         let tx = &self.tx;
-                        let r = ui.add_enabled_ui(!self.blocked(), |ui| {
-                            ui.menu_button(&head, |ui| {
+                        ui.add_enabled_ui(!self.blocked(), |ui| {
+                            let r = ito_prefs::IconButton::new(ito_prefs::Mark::Rerun, &head).show(ui);
+                            egui::Popup::menu(&r).show(|ui| {
                                 let rest = !run.jobs.iter().all(|j| j.state.passed());
                                 let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
                                 ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
@@ -2944,15 +2919,13 @@ impl Browser {
                                         let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
                                     }
                                 }
-                            })
-                            .response
+                            });
                         });
-                        ito_a11y::say(&r.inner, Role::Button, &head);
                     }
                     // A failure dealt with: it leaves the count in the status bar.
                     let done = self.acked.contains(&run.id);
                     let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
-                    if run.is_over() && run.state.is_error() && primary(ui, !done, words).clicked() {
+                    if run.is_over() && run.state.is_error() && primary(ui, !done, ito_prefs::Mark::Check, words).clicked() {
                         self.acked.insert(run.id.clone());
                         self.to_ack.push(run.id.clone());
                         self.result = Some(Ok(t.tr("run.acked").to_owned()));
@@ -2963,14 +2936,9 @@ impl Browser {
                         Some(j) => t.trf("run.skip_from", &[j]),
                         None => t.tr("run.skip_pick").to_owned(),
                     };
-                    if !run.is_over() && pending {
-                        let r = ui.button(&label);
-                        ito_a11y::say(&r, Role::Button, &label);
-                        if r.clicked() {
-                            if let Some(job) = picked.clone() {
-                                let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
-                            }
-                        }
+                    let skip = !run.is_over() && pending && ito_prefs::IconButton::new(ito_prefs::Mark::Skip, &label).show(ui).clicked();
+                    if let Some(job) = picked.clone().filter(|_| skip) {
+                        let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
                     }
                     // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
                     if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
@@ -2985,14 +2953,13 @@ impl Browser {
                         .collect();
                     let target =
                         picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
-                    for (yes, key) in [(true, "run.approve"), (false, "run.reject")].into_iter().filter(|_| target.is_some()) {
+                    let answers = [(true, "run.approve", ito_prefs::Mark::Check), (false, "run.reject", ito_prefs::Mark::Close)];
+                    for (yes, key, mark) in answers.into_iter().filter(|_| target.is_some()) {
                         let label = match target {
                             Some(j) => t.trf(&format!("{key}_from"), &[j]),
                             None => t.tr(key).to_owned(),
                         };
-                        let r = ui.button(&label);
-                        ito_a11y::say(&r, Role::Button, &label);
-                        if r.clicked() {
+                        if ito_prefs::IconButton::new(mark, &label).show(ui).clicked() {
                             if let Some(job) = target {
                                 let _ = self.tx.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
                             }
@@ -3000,10 +2967,12 @@ impl Browser {
                     }
                     // Mark this run, then pick another: the two are shown side by side under the buttons.
                     let marked = self.compare_base.as_deref() == Some(run.id.as_str());
-                    let label = t.tr(if marked { "run.compare_clear" } else { "run.compare_mark" });
-                    let r = ui.button(label);
-                    ito_a11y::say(&r, Role::Button, label);
-                    if r.clicked() {
+                    let (label, mark) = if marked {
+                        (t.tr("run.compare_clear"), ito_prefs::Mark::Close)
+                    } else {
+                        (t.tr("run.compare_mark"), ito_prefs::Mark::Compare)
+                    };
+                    if ito_prefs::IconButton::new(mark, label).show(ui).clicked() {
                         self.compare_base = (!marked).then(|| run.id.clone());
                     }
                     if run.is_over() && picked.is_none() {
@@ -3023,15 +2992,11 @@ impl Browser {
         }
         ui.add_space(6.0);
         // The direction of the picture sits next to the picture.
-        ui.horizontal(|ui| {
-            for (vertical, key) in [(false, "run.horizontal"), (true, "run.vertical")] {
-                let r = ui.selectable_label(self.vertical == vertical, t.tr(key));
-                ito_a11y::say(&r, Role::Button, t.tr(key));
-                if r.clicked() && self.vertical != vertical {
-                    self.set_flow(vertical);
-                }
-            }
-        });
+        let options = [(false, t.tr("run.horizontal")), (true, t.tr("run.vertical"))];
+        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+        if let Some(vertical) = ui.horizontal(|ui| ito_prefs::seg(ui, look, "run-flow", self.vertical, &options)).inner {
+            self.set_flow(vertical);
+        }
         // Where the editor put the jobs, from the net as it is now.
         let saved = self
             .snap
@@ -3210,12 +3175,10 @@ impl Browser {
                         ito_a11y::say(&r, Role::Heading, t.tr("inspect.title"));
                         return;
                     };
-                    let r = ui
-                        .add(egui::Label::new(egui::RichText::new(def.label()).strong().size(15.0)).sense(egui::Sense::click()))
-                        .on_hover_text(t.tr("today.open_net"))
-                        .on_hover_cursor(egui::CursorIcon::PointingHand);
+                    let r = ui.label(egui::RichText::new(def.label()).strong().size(15.0));
                     ito_a11y::say(&r, Role::Heading, def.label());
-                    if r.clicked() {
+                    let open = ito_prefs::IconButton::new(ito_prefs::Mark::ArrowRight, t.tr("canvas.enter")).said(t.tr("today.open_net"));
+                    if open.show(ui).clicked() {
                         go = Some(def.id.clone());
                     }
                 });
@@ -3724,20 +3687,26 @@ impl Browser {
     }
 }
 
-/// A screen's one main button (D13): filled with the theme's accent, greyed when not `enabled`.
-pub(crate) fn primary(ui: &mut egui::Ui, enabled: bool, words: &str) -> egui::Response {
-    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
-    let r = ui.add_enabled_ui(enabled, |ui| ito_prefs::button_with(ui, look, words, ito_prefs::Tone::Primary)).inner;
-    ito_a11y::say(&r, Role::Button, words);
-    r
+/// A screen's one main button (D13): a mark and words, filled with the theme's accent, greyed when not `enabled`.
+pub(crate) fn primary(ui: &mut egui::Ui, enabled: bool, mark: ito_prefs::Mark, words: &str) -> egui::Response {
+    ui.add_enabled_ui(enabled, |ui| ito_prefs::IconButton::new(mark, words).tone(ito_prefs::Tone::Primary).show(ui)).inner
 }
 
 /// A button that does something hard to take back (kill), in the theme's danger tone.
-pub(crate) fn danger(ui: &mut egui::Ui, words: &str) -> egui::Response {
-    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
-    let r = ito_prefs::button_with(ui, look, words, ito_prefs::Tone::Danger);
-    ito_a11y::say(&r, Role::Button, words);
-    r
+pub(crate) fn danger(ui: &mut egui::Ui, mark: ito_prefs::Mark, words: &str) -> egui::Response {
+    ito_prefs::IconButton::new(mark, words).tone(ito_prefs::Tone::Danger).show(ui)
+}
+
+/// A box's two buttons: what it is for (filled, with `mark`), then one that closes it doing nothing. `Some(0)` or
+/// `Some(1)` for the one clicked, as Enter and Esc give.
+pub(crate) fn go_or_cancel(ui: &mut egui::Ui, mark: ito_prefs::Mark, go: &str, cancel: &str) -> Option<usize> {
+    let go = primary(ui, true, mark, go).clicked();
+    let cancel = ito_prefs::IconButton::new(ito_prefs::Mark::Close, cancel).show(ui).clicked();
+    if go {
+        Some(0)
+    } else {
+        cancel.then_some(1)
+    }
 }
 
 /// What a chip over today's table picks out.

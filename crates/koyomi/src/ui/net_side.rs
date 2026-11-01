@@ -70,17 +70,12 @@ impl Browser {
                         ito_a11y::say(&r, Role::Heading, title);
                         return;
                     };
-                    let text = egui::RichText::new(title).strong().size(15.0);
-                    if opened {
-                        let r = ui.add(egui::Label::new(text).wrap());
-                        ito_a11y::say(&r, Role::Heading, title);
-                    } else {
-                        let r = ui
-                            .add(egui::Label::new(text).wrap().sense(egui::Sense::click()))
-                            .on_hover_text(t.tr("today.open_net"))
-                            .on_hover_cursor(egui::CursorIcon::PointingHand);
-                        ito_a11y::say(&r, Role::Heading, title);
-                        if r.clicked() {
+                    let r = ui.add(egui::Label::new(egui::RichText::new(title).strong().size(15.0)).wrap());
+                    ito_a11y::say(&r, Role::Heading, title);
+                    if !opened {
+                        let open =
+                            ito_prefs::IconButton::new(ito_prefs::Mark::ArrowRight, t.tr("canvas.enter")).said(t.tr("today.open_net"));
+                        if open.show(ui).clicked() {
                             go = Some(def.id.clone());
                         }
                     }
@@ -179,9 +174,8 @@ impl Browser {
         let mut cal = None;
         match &def.calendar {
             Some(name) => {
-                let r = ui.link(name).on_hover_text(t.tr("net.side_calendar_open"));
-                ito_a11y::say(&r, Role::Button, name);
-                if r.clicked() {
+                let r = ito_prefs::IconButton::new(ito_prefs::Mark::Calendar, name).show(ui);
+                if r.on_hover_text(t.tr("net.side_calendar_open")).clicked() {
                     cal = Some(name.clone());
                 }
             }

@@ -508,13 +508,15 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.jobnet"), &mut self.jobnet, 160.0);
                 ui.horizontal(|ui| {
                     ui.label(t.tr("when.on"));
-                    for (on, key) in
-                        [(AfterOn::Ok, "canvas.line_ok"), (AfterOn::Error, "canvas.line_error"), (AfterOn::Any, "canvas.line_any")]
-                    {
-                        if ui.selectable_label(self.on == on, t.tr(key)).clicked() && self.on != on {
-                            self.on = on;
-                            changed = true;
-                        }
+                    let options = [
+                        (AfterOn::Ok, t.tr("canvas.line_ok")),
+                        (AfterOn::Error, t.tr("canvas.line_error")),
+                        (AfterOn::Any, t.tr("canvas.line_any")),
+                    ];
+                    let id = format!("when-on-{i}");
+                    if let (Some(on), _) = ito_prefs::seg_named(ui, look, &id, t.tr("when.on"), self.on, &options) {
+                        self.on = on;
+                        changed = true;
                     }
                 });
             }
@@ -528,18 +530,17 @@ impl WhenEdit {
             changed |= field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0);
             ui.horizontal(|ui| {
                 ui.label(t.tr("when.on_closed"));
+                // Five ways: a list that drops down, as a segmented row would not fit the pane.
                 let choices = [
-                    (None, "when.closed_default"),
-                    (Some(OnClosed::Prev), "when.closed_prev"),
-                    (Some(OnClosed::Next), "when.closed_next"),
-                    (Some(OnClosed::Skip), "when.closed_skip"),
-                    (Some(OnClosed::Run), "when.closed_run"),
+                    (None, t.tr("when.closed_default")),
+                    (Some(OnClosed::Prev), t.tr("when.closed_prev")),
+                    (Some(OnClosed::Next), t.tr("when.closed_next")),
+                    (Some(OnClosed::Skip), t.tr("when.closed_skip")),
+                    (Some(OnClosed::Run), t.tr("when.closed_run")),
                 ];
-                for (c, key) in choices {
-                    if ui.selectable_label(self.on_closed == c, t.tr(key)).clicked() && self.on_closed != c {
-                        self.on_closed = c;
-                        changed = true;
-                    }
+                if let Some(c) = ito_prefs::select(ui, &format!("when-closed-{i}"), self.on_closed, &choices) {
+                    self.on_closed = c;
+                    changed = true;
                 }
             });
         }
