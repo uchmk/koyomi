@@ -1,6 +1,6 @@
 # Checklist
 
-774 checks in TESTING.md, 768 left for a person.
+778 checks in TESTING.md, 772 left for a person.
 
 ## 1. Start
 
@@ -575,6 +575,10 @@
 - [ ] **53.2** Run it without `--dry` → The days run one after another, each started after the last ended 〔未訳〕
 - [ ] **53.3** Make one day fail, then run the range → It stops at that day with a non-zero exit 〔未訳〕
 - [ ] **53.4** `--date 2026-05-03..2026-05-01` → Refused: the range ends before it starts 〔未訳〕
+- [ ] **53.5** For a net that runs daily, with runs on some days of the last week and one of them ended 異常: `koyomi run <net> --date <a week ago>..<today> --only missing --dry` → Each day is listed: 流す for the days with no run (実行の記録がない, or only a 時刻を過ぎた/スキップ record), 流さない with the run's state and id for the others; nothing starts 〔未訳〕
+- [ ] **53.6** The same with `--only failed --dry` → The day that ended 異常 is now 流す too; a day off the net's calendar is 流さない 予定のない日 〔未訳〕
+- [ ] **53.7** Run `--only failed` without `--dry` → One line says how many days run and which, then only those days run in turn; with none to run it says 流す日はない and exits 0 〔未訳〕
+- [ ] **53.8** `koyomi run <net> --only missing` (no range) → Refused: `--only` goes with `--date A..B` 〔未訳〕
 
 ## 54. 平均の所要時間と終了の予想
 

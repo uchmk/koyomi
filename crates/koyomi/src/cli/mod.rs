@@ -9,11 +9,12 @@
 //! 2 used wrongly.
 
 use std::cell::RefCell;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 
 use chrono::{Datelike, NaiveDate};
 use ito_ipc::door::ask;
+use koyomi_core::backfill::Only;
 use koyomi_core::calendar::{Calendar, Calendars, Day, Table, TABLE_FILE};
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
@@ -31,10 +32,12 @@ usage: koyomi [--version | --help | env]
                                      --csv: every job of them as a CSV table, - for standard output)
        koyomi show <group/name>      the definition as the engine reads it: what `approve` shows, without asking
        koyomi approve <group/name>   show what it would run, and approve it on `y`
-       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD]] [--set name=value]... [--dry] [--wait]
+       koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD] [--only missing|failed]] [--set name=value]... [--dry] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
-                                     --date: for that business day, or each day of A..B in turn; --dry: start nothing, print each job's
-                                     command with the dates written out; --set: a value for the net's [params];
+                                     --date: for that business day, or each day of A..B in turn; --only: of A..B, only the days the net
+                                     has no run for (missing), or those and the days whose last run failed (failed), days off its
+                                     schedule left out; --dry: start nothing, print each job's command with the dates written out,
+                                     or with --only each day and why it runs or not; --set: a value for the net's [params];
                                      --wait: stay until it ends)
        koyomi rerun <run> [--from <job> | --next <job> [--warn]] [--wait]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too;
@@ -916,11 +919,15 @@ fn run_cmd(args: &[String]) -> i32 {
     let mut rest = args.iter();
     let Some(id) = rest.next() else { return usage("run takes one group/name") };
     let id = id.replace('\\', "/");
-    let (mut date, mut from, mut wait, mut dry) = (None, None, false, false);
+    let (mut date, mut from, mut wait, mut dry, mut only) = (None, None, false, false, None);
     let mut params = BTreeMap::new();
     while let Some(a) = rest.next() {
         match a.as_str() {
             "--dry" => dry = true,
+            "--only" => match rest.next().and_then(|o| Only::parse(o.as_str())) {
+                Some(o) => only = Some(o),
+                None => return usage("--only takes missing or failed"),
+            },
             "--set" => match rest.next().and_then(|kv| kv.split_once('=')) {
                 Some((k, v)) if !k.trim().is_empty() => {
                     params.insert(k.trim().to_owned(), v.to_owned());
@@ -936,14 +943,26 @@ fn run_cmd(args: &[String]) -> i32 {
                 None => return usage("--from takes a job"),
             },
             "--wait" => wait = true,
-            _ => return usage("run takes --from, --date, --set, --dry and --wait"),
+            _ => return usage("run takes --from, --date, --only, --set, --dry and --wait"),
         }
     }
+    if only.is_some() && !date.as_deref().is_some_and(|d| d.contains("..")) {
+        return usage("--only goes with --date A..B");
+    }
     if let Some(range) = date.as_deref().filter(|d| d.contains("..")) {
-        let days = match day_range(range) {
+        let mut days = match day_range(range) {
             Ok(d) => d,
             Err(e) => return usage(&e),
         };
+        if let Some(only) = only {
+            days = match pick_days(&id, &days, only, dry) {
+                Ok(d) => d,
+                Err(e) => return fail(&e),
+            };
+            if dry {
+                return 0;
+            }
+        }
         // One run per day, each to its end before the next starts (a net runs once at a time); stop at the first failure.
         for day in days {
             let date = Some(day.to_string());
@@ -989,6 +1008,76 @@ fn day_range(text: &str) -> Result<Vec<NaiveDate>, String> {
         return Err("--date range is longer than a year".to_owned());
     }
     Ok(days)
+}
+
+/// The days of `days` that `--only` runs, by the net's runs for each business day. With `dry`,
+/// every day is listed with why it runs or not; otherwise one line says which days run.
+fn pick_days(id: &str, days: &[NaiveDate], only: Only, dry: bool) -> Result<Vec<NaiveDate>, String> {
+    let Some(&first) = days.first() else { return Ok(Vec::new()) };
+    let runs = runs_since(first)?;
+    let planned = planned_days(id, days)?;
+    let seen = koyomi_core::backfill::look(&runs, id, days, planned.as_ref());
+    let picked: Vec<NaiveDate> = seen.iter().filter(|(_, d)| d.picked(only)).map(|(d, _)| *d).collect();
+    let t = table();
+    if dry {
+        for (date, day) in &seen {
+            out(&backfill_line(&t, *date, *day, only), false);
+        }
+    } else if picked.is_empty() {
+        out("流す日はない", false);
+    } else {
+        let list: Vec<String> = picked.iter().map(NaiveDate::to_string).collect();
+        out(&format!("{} 日のうち {} 日を流す: {}", days.len(), picked.len(), list.join(", ")), false);
+    }
+    Ok(picked)
+}
+
+/// One day of `run --only --dry`: whether it runs, and why.
+fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfill::Day, only: Only) -> String {
+    use koyomi_core::backfill::Day;
+    let verdict = if day.picked(only) { "流す    " } else { "流さない" };
+    let why = match day {
+        Day::NotPlanned => "予定のない日".to_owned(),
+        Day::Nothing => "実行の記録がない".to_owned(),
+        Day::NotStarted(r) | Day::Ran(r) => {
+            let reason = if r.reason.is_empty() { String::new() } else { format!("  {}", r.reason) };
+            format!("{}  {}{reason}", show::tag(t, r.state), r.id)
+        }
+    };
+    format!("{verdict}  {date}  {why}")
+}
+
+/// The runs whose business day may fall from `first` on: the ones that started from then (or
+/// today, if that is earlier) to today, a year at a time, and the ones still going.
+fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
+    let today = chrono::Local::now().date_naive();
+    let mut from = first.min(today);
+    let mut by_id = BTreeMap::new();
+    while from <= today {
+        let to = (from + chrono::Duration::days(366)).min(today);
+        for r in Runs::parse(&client::call(&Request::History { from: from.to_string(), to: to.to_string() })?)?.runs {
+            by_id.insert(r.id.clone(), r);
+        }
+        from = to + chrono::Duration::days(1);
+    }
+    for r in runs()? {
+        by_id.insert(r.id.clone(), r);
+    }
+    Ok(by_id.into_values().collect())
+}
+
+/// The days of `days` the net's times fall on (its calendar and quiet hours counted), or none to
+/// count every day: a net that starts on events or by hand only, or one the engine does not plan.
+fn planned_days(id: &str, days: &[NaiveDate]) -> Result<Option<BTreeSet<NaiveDate>>, String> {
+    let snap = snapshot()?;
+    let Some(def) = snap.defs.iter().find(|d| d.id == id) else { return Ok(None) };
+    let timed = def.net.as_ref().is_some_and(|n| n.when.iter().any(|w| !w.is_event()));
+    let Some(&first) = days.first() else { return Ok(None) };
+    if !timed || def.standing != Standing::Confirmed {
+        return Ok(None);
+    }
+    let plan = crate::plan::days(std::slice::from_ref(def), &snap.calendars, first, days.len() as u32);
+    Ok(Some(plan.into_iter().filter(|(_, starts)| !starts.is_empty()).map(|(d, _)| d).collect()))
 }
 
 fn rerun_cmd(args: &[String]) -> i32 {

@@ -5,6 +5,7 @@
 //! the editor, the net written back as its file and laid out on the canvas.
 
 pub mod approved;
+pub mod backfill;
 pub mod bundle;
 pub mod calendar;
 pub mod chore;
