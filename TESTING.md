@@ -233,12 +233,13 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 18.10 | On a test profile with runs from 3 or more days ago, write `archive = true` and `keep_days = 1` in `koyomi.toml` | Within 5 s those days leave `logs/` and `history/`; `archive/YYYY-MM.zip` in the state folder holds them under the same names (`history/2026/10/28.toml`, `logs/2026-10-28/<run>/<job>.log`); `engine status` says `…を消した、n 日分を archive/ に入れた`; today and yesterday stay |
 | 18.11 | `koyomi archive`; `koyomi archive --toml` | A line per month, `2026-10  履歴 n 日・ログ n 日  <size>`, then the folder; under `--toml`: `dir`, `errors` and a `[[zip]]` per month with `month`, `path`, `bytes`, `history`, `logs` |
 | 18.12 | `koyomi archive show <one of those days>`; `koyomi archive log <its run> <job>`; `koyomi archive show` of a day not there | The day's runs as `koyomi history` lists them; the job's whole log; `<day> は archive/ にありません` and exit 1 |
-| 18.13 | `koyomi history --from <the first of those days>` | Those days' runs are listed again (read from the zip), oldest first, before today's |
+| 18.13 | `koyomi history --from <the first of those days>` | Those days' runs are listed again (the engine reads them from the zip), oldest first, before today's, each once |
 | 18.14 | Make the month's zip read-only, then change `keep_days` so that another day of that month goes | That day stays in `logs/` and `history/`; `engine status` says `消せなかった 1 件: …YYYY-MM.zip: …`; once the zip is writable again, the next sweep puts the day in and removes it |
 | 18.15 | Put a copy of a zip as `archive/2025-01.zip` and write `archive_days = 30` | At the sweep it goes and `engine status` says `古い zip 1 個を消した`; the zips of the months of the last 30 days stay |
 | 18.16 | Under "Records", turn on 消す前に archive/ にしまう, then off | `archive = true`, then `archive = false`, is written at the top of `koyomi.toml`; the comments and the line order stay; searching the settings for `archive` shows the General page |
 | 18.17 | With it on, shorten the days so that some go (as 18.3) | The box says the n days go into archive/ at the next sweep and can be read with koyomi archive, not that they cannot be brought back; with it off the box says as in 18.3 |
-| 18.18 | `koyomi log <run> <job>` for a run whose day is only in `archive/` (18.10), with the engine running and then stopped | Both times the job's whole log, read from the zip; for a run in neither `logs/` nor `archive/`, the same error as before |
+| 18.18 | `koyomi log <run> <job>` for a run whose day is only in `archive/` (18.10), with the engine running and then stopped | Read from the zip: with the engine, the last 64 KB from a line start (all of a shorter log), as for a log in `logs/`; with it stopped, the whole log; for a run in neither `logs/` nor `archive/`, the same error as before |
+| 18.19 | In the window, open 履歴 with a range that holds one of those days; pick one of its runs, then a job | The day's runs are in the list with the others (each once); the job's log shows in the log pane (its end, as for a run in `logs/`); a day in a month with no zip shows nothing and no error |
 
 ## 19. Retry
 
@@ -408,7 +409,7 @@ A `[[when]]` with `after_jobnet = "経理/売上取込"` starts the net when a r
 
 ## 28. History search and the rest of the CLI (`history`, `show`, `list --group`, `--help`, `--toml`)
 
-The window's 履歴 (a row under 今日) and `koyomi history` show the runs that started on a range of days (the last 7 when none is given, at most a year), narrowed by jobnet and state on the asking side. Every command takes `--help` (its own lines of the usage, exit 0) and `--toml` (the answer as TOML for another program: the commands that answer with data print it as such, the rest print `ok = true|false` and the `lines` they would have said).
+The window's 履歴 (a row under 今日) and `koyomi history` show the runs that started on a range of days (the last 7 when none is given, at most a year; days the sweep put into `archive/` are read from there, 18.19), narrowed by jobnet and state on the asking side. Every command takes `--help` (its own lines of the usage, exit 0) and `--toml` (the answer as TOML for another program: the commands that answer with data print it as such, the rest print `ok = true|false` and the `lines` they would have said).
 
 | # | Do | Expect |
 |---|---|---|
@@ -593,6 +594,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 40.2 | Start a run | `実行中 N` appears in green while it runs and goes when it ends |
 | 40.3 | `koyomi pause` | `スケジュール停止中` shows in red; `koyomi resume` clears it |
 | 40.4 | Stop the engine while the window is open | The bar says the engine is not reachable / starting |
+| 40.5 | §102's two engines (102.1); open a window from each console (`koyomi`) | Within 30 s, after the engine word: B `待機中: a を見張っている` in the colour of 未承認; A `b が待機している` in grey. Your usual profile (neither section) shows no such words |
+| 40.6 | Close A's window (it would start A's engine again); do 102.4 and watch B's window; open A's window again after 102.7 starts A | B: `a から引き継いで流している（YYYY-MM-DD HH:MM から）` in green. A, until B gives them back: `b が引き継いでいる` (or `b に聞いている`) in the colour of 未承認. Then, within 30 s: B `待機中: a を見張っている（YYYY-MM-DD HH:MM に戻した）`, A `b が待機している`. While an engine is down or starting, its window shows none of these |
 
 ## 41. 出力とファイルでの判定
 

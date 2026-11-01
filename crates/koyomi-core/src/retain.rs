@@ -18,6 +18,7 @@ use chrono::{Datelike, Days, Months, NaiveDate};
 use ito_zip::{OnExisting, Source};
 
 use crate::history::Day;
+use crate::run::Run;
 
 /// What one sweep removed, and what it could not.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -303,6 +304,34 @@ pub fn archived_log(state_dir: &Path, run: &str, job: &str) -> Result<Vec<u8>, S
     ito_zip::read(&zip, &name).map_err(|e| e.to_string())
 }
 
+/// Adds to `runs` the runs of the days from `from` to `to` that it has none of
+/// and whose month has a zip in `archive/`, read back from there, and keeps
+/// `runs` by the day they started (each day's order stays). What `History`
+/// answers with for the days the sweep took. Each zip is read only for those
+/// days; what could not be read is left out and said in what comes back.
+pub fn add_archived(state_dir: &Path, from: NaiveDate, to: NaiveDate, runs: &mut Vec<Run>) -> Vec<String> {
+    let months: BTreeSet<NaiveDate> = zips(state_dir).into_iter().map(|(m, _)| m).collect();
+    let have: BTreeSet<NaiveDate> = runs.iter().map(|r| r.started.date()).collect();
+    let (mut added, mut errors) = (Vec::new(), Vec::new());
+    let mut day = from;
+    while day <= to && !months.is_empty() {
+        if !have.contains(&day) && months.contains(&first_of(day)) {
+            match archived_day(state_dir, day) {
+                Ok(Some(d)) => added.extend(d.runs()),
+                Ok(None) => {}
+                Err(e) => errors.push(e),
+            }
+        }
+        let Some(next) = day.succ_opt() else { break };
+        day = next;
+    }
+    if !added.is_empty() {
+        runs.extend(added);
+        runs.sort_by_key(|r| r.started.date());
+    }
+    errors
+}
+
 /// How many days' records would go at once if `keep_days` became
 /// `new_days`: the days with a log folder or a history file from before the
 /// new cutoff that are not before the old one. Zero when `new_days` is not
@@ -438,6 +467,49 @@ mod tests {
         assert_eq!(sweep(&state, day("2026-08-02"), &[], ON).archived, 1);
         assert_eq!(archived_log(&state, "20260729-090000-00", "copy").unwrap(), b"done\n");
         assert_eq!(ito_zip::list(&july).unwrap().len(), 3);
+    }
+
+    /// A history file for day `d` with one started run for each id, an hour apart from 9:00.
+    fn put_runs(state: &Path, d: &str, ids: &[&str]) {
+        let mut events = Vec::new();
+        for (h, id) in (9..).zip(ids) {
+            events.push(crate::history::run_start(&run(id, d, h)));
+        }
+        let p = crate::history::path(&state.join("history"), day(d));
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(p, Day { events }.to_toml()).unwrap();
+    }
+
+    fn run(id: &str, d: &str, hour: u32) -> Run {
+        let at = day(d).and_hms_opt(hour, 0, 0).unwrap();
+        Run::with_jobs(id, "g/n", "n", d, crate::run::How::Manual, Vec::new(), at)
+    }
+
+    #[test]
+    fn archived_days_fill_only_the_days_with_no_runs() {
+        let state = fresh("fill");
+        put_runs(&state, "2026-07-29", &["20260729-090000-00"]);
+        put_runs(&state, "2026-07-30", &["20260730-090000-00", "20260730-100000-00"]);
+        put_runs(&state, "2026-08-01", &["20260801-090000-00"]);
+        assert_eq!(sweep(&state, day("2026-08-02"), &[], ON).archived, 3);
+        // The engine has 07-30 (a run of its own) and 08-03; 07-28 and 07-31 have nothing anywhere.
+        let mut runs = vec![run("20260730-120000-00", "2026-07-30", 12), run("20260803-090000-00", "2026-08-03", 9)];
+        assert!(add_archived(&state, day("2026-07-28"), day("2026-08-03"), &mut runs).is_empty());
+        let ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["20260729-090000-00", "20260730-120000-00", "20260801-090000-00", "20260803-090000-00"]);
+        // Again: every day has its runs now, so nothing comes twice.
+        assert!(add_archived(&state, day("2026-07-28"), day("2026-08-03"), &mut runs).is_empty());
+        assert_eq!(runs.len(), 4);
+        // Outside the range: nothing.
+        let mut none = Vec::new();
+        assert!(add_archived(&state, day("2026-08-02"), day("2026-08-31"), &mut none).is_empty());
+        assert!(none.is_empty());
+        // No archive/ at all, and a zip that cannot be read (said, and left out).
+        assert!(add_archived(&fresh("fill-none"), day("2026-07-28"), day("2026-08-03"), &mut none).is_empty());
+        std::fs::write(state.join("archive/2026-06.zip"), "not a zip").unwrap();
+        let errors = add_archived(&state, day("2026-06-30"), day("2026-07-29"), &mut none);
+        assert_eq!(errors.len(), 1, "{errors:?}");
+        assert_eq!(none.len(), 1, "July's day still comes");
     }
 
     #[test]

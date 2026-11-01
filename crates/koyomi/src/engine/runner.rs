@@ -48,6 +48,15 @@ use koyomi_core::template;
 /// How much of a log `koyomi log` and the window get: the last 64 KB.
 pub const TAIL: u64 = 64 * 1024;
 
+/// The last [`TAIL`] bytes of a log, from the start of a line.
+fn tail(bytes: &[u8]) -> String {
+    let mut from = bytes.len().saturating_sub(TAIL as usize);
+    if from > 0 {
+        from = bytes[from..].iter().position(|&b| b == b'\n').map_or(bytes.len(), |p| from + p + 1);
+    }
+    String::from_utf8_lossy(&bytes[from..]).into_owned()
+}
+
 /// A job's process ended.
 struct Done {
     run: String,
@@ -382,7 +391,8 @@ impl Runner {
 
     /// The runs that started on the days `from` to `to` (both included), oldest
     /// first: the ones kept here for the days this engine writes, the others read
-    /// back from their day's file. At most a year, so a reply stays a reply.
+    /// back from their day's file, or from `archive/` once the sweep took it.
+    /// At most a year, so a reply stays a reply.
     pub fn history(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<Run>, String> {
         if to < from {
             return Err(format!("範囲が逆: {from} → {to}"));
@@ -401,6 +411,10 @@ impl Runner {
             }
             let Some(next) = day.succ_opt() else { break };
             day = next;
+        }
+        // Like a day file that cannot be read, a zip that cannot be is left out.
+        if let Some(state) = self.history.parent() {
+            let _ = koyomi_core::retain::add_archived(state, from, to, &mut out);
         }
         Ok(out)
     }
@@ -729,15 +743,18 @@ impl Runner {
         self.run_dir(run).join(format!("{job}.log"))
     }
 
-    /// The last [`TAIL`] bytes of a job's log (whole lines).
+    /// The last [`TAIL`] bytes of a job's log (whole lines); from `archive/`
+    /// once the sweep took it out of `logs/`.
     pub fn log_tail(&self, run: &str, job: &str) -> Result<String, String> {
         let path = self.log_path(run, job);
-        let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let mut from = bytes.len().saturating_sub(TAIL as usize);
-        if from > 0 {
-            from = bytes[from..].iter().position(|&b| b == b'\n').map_or(bytes.len(), |p| from + p + 1);
-        }
-        Ok(String::from_utf8_lossy(&bytes[from..]).into_owned())
+        let bytes = match std::fs::read(&path) {
+            Ok(b) => b,
+            Err(e) => {
+                let archived = self.logs.parent().and_then(|s| koyomi_core::retain::archived_log(s, run, job).ok());
+                archived.ok_or_else(|| format!("{}: {e}", path.display()))?
+            }
+        };
+        Ok(tail(&bytes))
     }
 
     /// Stops one job, or every job of the run; the ones not started will not start.
@@ -2580,6 +2597,34 @@ id = \"a\"
         assert!(tail.starts_with("line "));
         assert!(tail.ends_with("line 04999 ............................\n"));
         assert!(tail.len() as u64 <= TAIL);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_days_and_logs_the_sweep_took_come_back_from_the_archive() {
+        let dir = scratch("archived");
+        let id = "20260730-090000-00";
+        let at = NaiveDate::from_ymd_opt(2026, 7, 30).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        let run = Run::with_jobs(id, "g/n", "n", "2026-07-30", How::Manual, Vec::new(), at);
+        let file = history::path(&dir.join("history"), at.date());
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, Day { events: vec![history::run_start(&run)] }.to_toml()).unwrap();
+        let log = dir.join("logs/2026-07-30").join(id).join("a.log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let text: String = (0..5000).map(|i| format!("line {i:05} ............................\n")).collect();
+        std::fs::write(&log, &text).unwrap();
+        let on = koyomi_core::retain::Archive { on: true, drop_before: None };
+        let cutoff = NaiveDate::from_ymd_opt(2026, 8, 2).unwrap();
+        assert_eq!(koyomi_core::retain::sweep(&dir, cutoff, &[], on).archived, 1);
+        assert!(!file.exists() && !log.exists());
+        let r = Runner::new(&dir, Config::default());
+        let back = r.history(at.date().pred_opt().unwrap(), at.date().succ_opt().unwrap()).unwrap();
+        assert_eq!(back.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), [id]);
+        let tail = r.log_tail(id, "a").unwrap();
+        assert!(tail.starts_with("line ") && tail.ends_with("line 04999 ............................\n"));
+        assert!(tail.len() as u64 <= TAIL);
+        // In neither place: the error names where logs/ would have it.
+        assert!(r.log_tail(id, "b").unwrap_err().contains("b.log"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

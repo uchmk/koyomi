@@ -478,6 +478,7 @@ impl App {
         let todo = self.browser.todo_count();
         let todo_line = (todo > 0).then(|| self.table.trf("status.todo", &[&todo.to_string()]));
         let ok_line = engine.is_none().then(|| self.table.tr("status.engine_ok").to_owned());
+        let ha = self.browser.ha_fact(&self.table);
         let line = (waiting > 0).then(|| self.table.trf("status.unacked", &[&waiting.to_string()]));
         ito_statusbar::show(
             ui,
@@ -488,6 +489,9 @@ impl App {
                 }
                 if let Some(l) = &ok_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().dim);
+                }
+                if let Some((l, tone)) = &ha {
+                    ito_statusbar::item(ui, l, tone.color());
                 }
                 if let Some(l) = &running_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().run);

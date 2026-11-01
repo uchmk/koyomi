@@ -399,6 +399,8 @@ impl Standby {
             "auto": auto,
             "giving": self.watch.giving(),
             "why": ready.err().map(|r| refusal(&name, r)),
+            "since": (!self.since.is_empty()).then(|| self.since.clone()),
+            "back": last_back(&self.log),
         }))
     }
 
@@ -467,6 +469,11 @@ fn refusal(name: &str, r: Refusal) -> String {
 
 fn stamp() -> String {
     Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+}
+
+/// When it last handed the schedules back, from the handovers written down: `YYYY-MM-DD HH:MM`.
+fn last_back(log: &[String]) -> Option<String> {
+    log.iter().rev().find(|l| l.contains(" に戻した（")).and_then(|l| l.get(..16)).map(str::to_owned)
 }
 
 /// One copy from `r`: the confirmed definitions there whose file differs from `here`.
@@ -727,6 +734,7 @@ mod tests {
         let ha = s.handover(false).unwrap();
         assert_eq!((ha["active"].as_bool(), ha["ready"].as_bool()), (Some(true), Some(false)));
         assert!(ha["why"].as_str().unwrap().contains("manual"));
+        assert_eq!((ha["since"].as_str().map(str::len), ha["back"].as_str()), (Some(16), None), "{ha}");
         assert!(s.handover(true).is_err());
         assert!(matches!(s.take("pc1", answered(Seen::Waiting)), Some(Told::Waiting(_))));
         assert!(s.give_back().unwrap().contains("次に聞いてきたら"));
@@ -735,7 +743,10 @@ mod tests {
         let mut again = Standby::new(&d);
         again.set(Some(&cfg(1)), &[remote()]);
         assert_eq!(again.handover(false).unwrap()["ready"], true);
-        assert_eq!(again.handover(true).unwrap()["active"], false);
+        let back = again.handover(true).unwrap();
+        assert_eq!((back["active"].as_bool(), back["since"].as_str()), (Some(false), None));
+        assert_eq!(back["back"].as_str(), again.log.last().and_then(|l| l.get(..16)));
+        assert!(back["back"].as_str().is_some());
         assert!(again.waiting());
         assert!(matches!(again.told.as_slice(), [Told::GaveBack(_)]));
         assert!(again.log.last().unwrap().contains("引き取りに来た"));
@@ -750,6 +761,21 @@ mod tests {
         assert!(s.handover(true).is_ok());
         let _ = std::fs::remove_dir_all(&d);
         let _ = std::fs::remove_dir_all(dir("release-auto"));
+    }
+
+    /// the last give-back is read off the handovers written down; a decision to give back is not one.
+    #[test]
+    fn the_last_give_back_comes_from_the_log() {
+        let log = |ls: &[&str]| ls.iter().map(|l| (*l).to_owned()).collect::<Vec<_>>();
+        assert_eq!(last_back(&[]), None);
+        assert_eq!(last_back(&log(&["2026-10-30 09:00:01 pc1 から引き継いだ（refused）"])), None);
+        let ls = log(&[
+            "2026-10-30 09:00:01 pc1 に戻した（koyomi standby giveback）",
+            "2026-10-31 08:00:00 pc1 から引き継いだ（refused）",
+            "2026-10-31 10:15:30 pc1 に戻した（向こうが引き取りに来た）",
+            "2026-10-31 11:00:00 戻すと決めた（koyomi standby giveback。pc1 が次に聞いてきたら渡す）",
+        ]);
+        assert_eq!(last_back(&ls).as_deref(), Some("2026-10-31 10:15"));
     }
 
     /// only the confirmed nets there whose file is not the one here are fetched; a peer

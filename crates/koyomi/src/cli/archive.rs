@@ -1,12 +1,12 @@
 //! `koyomi archive [list]`, `koyomi archive show <YYYY-MM-DD>` and `koyomi archive log <run> <job>`:
 //! what the sweep put into `archive/YYYY-MM.zip` (koyomi.toml's `archive = true`), read straight
-//! from the zips, so the engine need not be running. `koyomi history` reads the days from here too.
+//! from the zips, so the engine need not be running. The engine reads the days and the logs from
+//! there too (`History`, `Log`): for `koyomi history`, `koyomi log`, the window and the Web UI.
 
 use std::path::PathBuf;
 
-use chrono::{Datelike, Days, NaiveDate};
+use chrono::NaiveDate;
 use koyomi_core::retain;
-use koyomi_core::run::Run;
 use serde::Serialize;
 
 use super::{emit, fail, out, say_runs, table, usage, Log};
@@ -126,60 +126,19 @@ fn log(run: &str, job: &str) -> i32 {
     }
 }
 
-/// One job's whole log as `archive/` keeps it (`koyomi archive log`, and `koyomi log` once the
-/// sweep has taken it out of `logs/`).
+/// One job's whole log as `archive/` keeps it (`koyomi archive log`, and `koyomi log` with no
+/// engine to ask).
 pub(super) fn log_text(run: &str, job: &str) -> Result<String, String> {
     let bytes = retain::archived_log(&state()?, run, job)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
-/// For `koyomi history`: the runs of the days from `from` to `to` that the engine had none of
-/// (`have`) and whose month has a zip in `archive/`. What could not be read is said and left out.
-pub(super) fn runs_between(from: NaiveDate, to: NaiveDate, have: &[Run]) -> Vec<Run> {
-    let Ok(state) = state() else { return Vec::new() };
-    let months: Vec<NaiveDate> = retain::zips(&state).into_iter().map(|(m, _)| m).collect();
-    let mut out_runs = Vec::new();
-    let mut day = from;
-    while day <= to {
-        let first = day.with_day(1).unwrap_or(day);
-        let known = have.iter().any(|r| run_day(r) == Some(day));
-        if !known && months.contains(&first) {
-            match retain::archived_day(&state, day) {
-                Ok(Some(d)) => out_runs.extend(d.runs()),
-                Ok(None) => {}
-                Err(e) => out(&format!("koyomi: {e}"), true),
-            }
-        }
-        let Some(next) = day.checked_add_days(Days::new(1)) else { break };
-        day = next;
-    }
-    out_runs
-}
-
-/// The day a run started on, from its id (`20260731-090000-00`).
-pub(super) fn run_day(r: &Run) -> Option<NaiveDate> {
-    NaiveDate::parse_from_str(r.id.get(..8)?, "%Y%m%d").ok()
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
-    #[test]
-    fn a_run_s_day_comes_from_its_id() {
-        let at = NaiveDate::from_ymd_opt(2026, 7, 31).unwrap().and_hms_opt(9, 0, 0).unwrap();
-        let how = koyomi_core::run::How::Manual;
-        let run = |id: &str| Run::with_jobs(id, "g/n", "n", "2026-07-31", how, Vec::new(), at);
-        assert_eq!(run_day(&run("20260731-090000-00")), NaiveDate::from_ymd_opt(2026, 7, 31));
-        assert_eq!(run_day(&run("2026")), None);
-        assert_eq!(run_day(&run("x0260731-090000-00")), None);
-    }
-
     #[test]
     fn the_usage_and_the_commands_know_archive() {
         assert!(super::super::COMMANDS.contains(&"archive"));
         assert!(super::super::USAGE.contains("koyomi archive show <YYYY-MM-DD>"));
-        assert!(super::super::USAGE
-            .contains("koyomi log <run> <job>        the tail of one job's log (gone from logs/: the whole of it from archive/)"));
+        assert!(super::super::USAGE.contains("koyomi log <run> <job>        the tail of one job's log (gone from logs/: from archive/)"));
     }
 }

@@ -28,10 +28,13 @@ pub mod gantt;
 pub mod graph;
 pub mod whens;
 
+mod ha;
 mod net_side;
 
 /// How often the engine is asked for the list and the runs.
 const POLL: Duration = Duration::from_secs(1);
+/// How often it is asked which PC runs the schedules (`[standby]` or `[primary]`).
+const HA_POLL: Duration = Duration::from_secs(30);
 
 enum Msg {
     Starting,
@@ -46,6 +49,8 @@ enum Msg {
     Done(Result<Said, Said>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
     PortText(String, Result<String, String>),
+    /// The engine's `"ha"`, every `HA_POLL`: `None` without `[standby]` or `[primary]`.
+    Ha(Option<serde_json::Value>),
 }
 
 pub struct Approval {
@@ -434,6 +439,8 @@ pub struct Browser {
     editors: Vec<canvas::Editor>,
     /// Another PC's engine, when the PC list at the top picks one (TODO 80).
     far: far::Far,
+    /// The engine's `"ha"` (the status bar's HA words).
+    ha: Option<serde_json::Value>,
 }
 
 impl Browser {
@@ -445,6 +452,7 @@ impl Browser {
         let seen = watch.clone();
         let io = (tx_msg.clone(), ctx.clone());
         let ctx = ctx.clone();
+        let mut ha_at: Option<std::time::Instant> = None;
         std::thread::spawn(move || loop {
             let send = |m: Msg| {
                 let alive = tx_msg.send(m).is_ok();
@@ -491,6 +499,13 @@ impl Browser {
                     if !send(Msg::Log(run, job, text)) {
                         return;
                     }
+                }
+            }
+            if ha_at.is_none_or(|at| at.elapsed() >= HA_POLL) {
+                ha_at = Some(std::time::Instant::now());
+                let ha = client::call(&Request::Handover { release: false }).ok().and_then(|t| serde_json::from_str(&t).ok());
+                if !send(Msg::Ha(ha)) {
+                    return;
                 }
             }
         });
@@ -572,6 +587,7 @@ impl Browser {
             give: None,
             skip_pick: false,
             easy: None,
+            ha: None,
         }
     }
 
@@ -630,6 +646,7 @@ impl Browser {
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Done(r) => self.done = Some(r),
                 Msg::PortText(path, r) => self.port_text(&path, r),
+                Msg::Ha(v) => self.ha = v,
                 Msg::Down(e) => {
                     self.starting = false;
                     self.down = Some(e);
@@ -4547,6 +4564,7 @@ mod tests {
             give: None,
             skip_pick: false,
             easy: None,
+            ha: None,
         }
     }
 

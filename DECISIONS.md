@@ -814,7 +814,7 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - **自動で戻す:** `[standby]` に `give_back = "manual"`（既定。前のまま）か `"auto"`。`auto` は、引き継いだあと相手が `misses` 回続けて答えたら渡す。
     - 数は引き継ぐときと同じ `misses` を使う（別の設定を足さない。1 つのつまみで、引き継ぐのも戻すのも同じだけ待つので、つながったり切れたりしても行き来しにくい）。
   - **受け渡し（`[primary]`）:** 1 台目の `koyomi.toml` に `[primary]`（`standby` = 待つ側の `[[remote]]` の `name`・`every`・`misses`。既定は `[standby]` と同じ 20s と 3）。
-    - 1 台目は起きるとすぐはスケジュール・イベント・ずらし・静かなネットを待たせ、待つ側の `GET /health` の `"ha"`（`role`・`active`・`ready`・`auto`・`why`）を聞く。そのあとも `every` ごとに聞く。
+    - 1 台目は起きるとすぐはスケジュール・イベント・ずらし・静かなネットを待たせ、待つ側の `GET /health` の `"ha"`（`role`・`active`・`ready`・`auto`・`why`。窓の下の帯のために、引き継いだ時刻 `since` と最後に戻した時刻 `back` も）を聞く。そのあとも `every` ごとに聞く。
     - 待っている（引き継いでいない）→ 1 台目で流す。引き継いでいて渡せない → 1 台目は待つ（時刻は書かずに過ぎる。待つ側が流している）。
     - 引き継いでいて渡せる（`koyomi standby giveback` をした、か `auto` で `misses` 回続けて答えた）→ 1 台目が `POST /standby/release` で引き取り、200 が返ってから流す。
       待つ側はその答えを返すときに流すのをやめる（引き取りに来るまでは待つ側が流し続ける）。これで 2 台が同時に流すことも、どちらも流さないこともない。
@@ -927,6 +927,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - 月ごとに 1 回書く（全部入るか、何も変わらないか）。入れられなかった月の日は消さずに残し、理由は `retain.toml` の errors（`engine status` の「消せなかった n 件」）に出る。次の整理でもう一度試す。もう zip のある月には足す（同じ名前は置き換える）。
 - `archive_days`（既定 0 = ずっと残す）より古い月の zip は、月の最後の日で数えて消す。`keep_days` より短くは数えない（入れたその日に消さない）。`archive` を切っても、`archive_days` があれば古い zip は消える。
 - 入れた日の数・消した zip の数は `retain.toml` と `koyomi engine status` の整理の行に出る。
-- 読むのはエンジンを通さず、zip から直接: `koyomi archive [list]`・`koyomi archive show <日>`・`koyomi archive log <run> <job>`。エンジンとの約束（PROTO）は変えない。
-  - `koyomi history` は、エンジンが 1 件も返さなかった日のうち、その月の zip がある日だけ zip から読み足す（zip の無い月の日は何も開かない）。
-  - 窓（実行の一覧・ログの欄）からは読まない。設定の画面にも切り替えを置いていない（koyomi.toml を手で書く）。
+- `koyomi archive [list]`・`koyomi archive show <日>`・`koyomi archive log <run> <job>` は、エンジンを通さず zip から直接読む。エンジンとの約束（PROTO）は変えない。
+  - 初めは `koyomi history` だけが、エンジンが 1 件も返さなかった日を zip から読み足し、窓（実行の一覧・ログの欄）からは読まなかった。2026-11-01 にエンジンへ移した（下の決め直し）。
+  - 設定の画面にも切り替えを置いていない（koyomi.toml を手で書く）。
+- **決め直し（2026-11-01）:** 窓の実行一覧・ログの欄でもしまった日を読むため、読み足すのをエンジンに移した（PROTO は変えない。`History`・`Log` の答えが変わるだけ）。
+  - `History` は、範囲の日のうち回が 1 件も無く、その月の zip がある日だけ zip から読み足す（`koyomi_core::retain::add_archived`。日は回の始まった日）。zip の無い月の日は何も開かない。読めない zip は、読めない日のファイルと同じく飛ばす。
+  - `Log` は、`logs/` に無ければ zip のログを、同じ末尾（`TAIL`）に切って返す。
+  - 窓・Web UI・MCP・`koyomi history`・`koyomi log` が同じ答えを読む。CLI は自分では読み足さない（同じ回が 2 度出ない）。全部のログは `koyomi archive log`。エンジンが無いときの `koyomi log` は前のとおり zip から全部。
+  - 見るたびに zip を開く（覚えておかない）。窓でしまったログを開いている間は、毎秒 zip を読む。

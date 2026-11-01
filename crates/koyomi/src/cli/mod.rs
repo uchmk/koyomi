@@ -54,7 +54,7 @@ usage: koyomi [--version | --help | env]
                                      --status: ok, warn, error, timeout, killed, running, running_error,
                                      waiting, held, skipped, missed, locked or not_run; --csv: one row per run;
                                      the days that went into archive/ are read from there)
-       koyomi log <run> <job>        the tail of one job's log (gone from logs/: the whole of it from archive/)
+       koyomi log <run> <job>        the tail of one job's log (gone from logs/: from archive/)
        koyomi archive [list]         the month zips that archive = true in koyomi.toml keeps in archive/,
                                      and the days of history and logs each holds
        koyomi archive show <YYYY-MM-DD>  that day's runs as archive/ keeps them
@@ -1085,8 +1085,8 @@ fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfil
 }
 
 /// The runs whose business day may fall from `first` on: the ones that started from then (or
-/// today, if that is earlier) to today, a year at a time, the ones still going, and those of the
-/// days the sweep put into `archive/`.
+/// today, if that is earlier) to today, a year at a time (the engine reads the days the sweep put
+/// into `archive/` from there), and the ones still going.
 fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
     let today = chrono::Local::now().date_naive();
     let mut from = first.min(today);
@@ -1101,9 +1101,7 @@ fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
     for r in runs()? {
         by_id.insert(r.id.clone(), r);
     }
-    let mut all: Vec<Run> = by_id.into_values().collect();
-    all.extend(archive::runs_between(first.min(today), today, &all));
-    Ok(all)
+    Ok(by_id.into_values().collect())
 }
 
 /// The days of `days` the net's times fall on (its calendar and quiet hours counted), or none to
@@ -1254,17 +1252,12 @@ fn history(args: &[String]) -> i32 {
     }
     let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
     let from = from.unwrap_or(to - chrono::Duration::days(7));
+    // The engine reads the days the sweep put into archive/ from there.
     let reply = client::call(&Request::History { from: from.to_string(), to: to.to_string() });
-    let mut rs = match reply.and_then(|s| Runs::parse(&s)) {
+    let rs = match reply.and_then(|s| Runs::parse(&s)) {
         Ok(r) => r.runs,
         Err(e) => return fail(&e),
     };
-    // The days the sweep put into archive/; a stable sort by day keeps each day's order.
-    let archived = archive::runs_between(from, to, &rs);
-    if !archived.is_empty() {
-        rs.extend(archived);
-        rs.sort_by_key(archive::run_day);
-    }
     let rs: Vec<Run> =
         rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
     if let Some(to) = csv {
@@ -1332,7 +1325,7 @@ fn report(args: &[String]) -> i32 {
 
 fn log(args: &[String]) -> i32 {
     let [run, job] = args else { return usage("log takes a run and a job") };
-    // Gone from logs/ (or no engine to ask): the sweep may have put it into archive/.
+    // The engine reads it from archive/ once the sweep took it; with no engine to ask, read it here.
     let text = match client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
         Ok(text) => text,
         Err(e) => match archive::log_text(run, job) {
