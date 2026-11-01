@@ -1472,12 +1472,13 @@ impl Browser {
         }
         if self.snap.as_ref().is_some_and(|s| s.paused) {
             egui::Panel::top("paused").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
-                ui.horizontal_wrapped(|ui| {
+                // Centred on the row, so the words and the button's words sit on one line.
+                ui.with_layout(egui::Layout::left_to_right(egui::Align::Center).with_main_wrap(true), |ui| {
                     let head = format!("{} {}", State::Held.mark(), t.tr("band.paused"));
                     let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
                     ito_a11y::say(&r, Role::Label, &head);
-                    // Amber once ito has a warn tone (uchmk/ito#111); the accent meanwhile.
-                    let r = primary(ui, !modal, t.tr("run.resume"));
+                    // The same quiet outlined button as the rest, in the words' own size.
+                    let r = ui.add_enabled_ui(!modal, |ui| icon_button(ui, Icon::Play, t.tr("run.resume"), t.tr("run.resume"))).inner;
                     if r.clicked() {
                         let _ = self.tx.send(Request::Resume);
                     }
@@ -1549,8 +1550,7 @@ impl Browser {
                 let paused = self.snap.as_ref().is_some_and(|s| s.paused);
                 if !paused && self.snap.is_some() {
                     ui.add_space(10.0);
-                    let r = ui.button(t.tr("run.pause"));
-                    ito_a11y::say(&r, Role::Button, t.tr("run.pause"));
+                    let r = icon_button(ui, Icon::Pause, t.tr("run.pause"), t.tr("run.pause"));
                     if r.clicked() {
                         let _ = self.tx.send(Request::Pause);
                     }
@@ -2624,7 +2624,7 @@ impl Browser {
                         let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
                         small(ui, "run.history_net");
                         let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
-                        egui::ComboBox::from_id_salt("history_net").width(110.0).selected_text(net_text).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("history_net").width(96.0).selected_text(net_text).show_ui(ui, |ui| {
                             ui.selectable_value(&mut h.net, String::new(), all);
                             for id in &nets {
                                 ui.selectable_value(&mut h.net, id.clone(), id);
@@ -2635,7 +2635,7 @@ impl Browser {
                             Some(s) => show::tag(t, s),
                             None => all.to_owned(),
                         };
-                        egui::ComboBox::from_id_salt("history_state").width(100.0).selected_text(state_text).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("history_state").width(86.0).selected_text(state_text).show_ui(ui, |ui| {
                             ui.selectable_value(&mut h.state, None, all);
                             for s in State::ALL {
                                 ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
@@ -2643,8 +2643,7 @@ impl Browser {
                         });
                         ui.add_space(4.0);
                         search |= icon_button(ui, Icon::Search, t.tr("run.history_search"), t.tr("run.history_search")).clicked();
-                        // Only the mark and "CSV" on the button; its tip and its spoken name say the rest.
-                        csv = icon_button(ui, Icon::Download, "CSV", t.tr("run.history_csv")).clicked();
+                        csv = icon_button(ui, Icon::Download, t.tr("run.history_csv"), t.tr("run.history_csv")).clicked();
                     });
                 });
             if csv {
@@ -4062,6 +4061,10 @@ pub(super) enum Icon {
     Search,
     /// An arrow down onto a tray.
     Download,
+    /// A triangle pointing on: start again.
+    Play,
+    /// Two bars: stop for now.
+    Pause,
 }
 
 /// A quiet outlined button with a drawn mark before `words`: the raised fill and a thin edge of the
@@ -4096,6 +4099,15 @@ pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, words: &str, said: &str
                     vec![m + egui::vec2(-6.0, 3.0), m + egui::vec2(-6.0, 6.0), m + egui::vec2(6.0, 6.0), m + egui::vec2(6.0, 3.0)],
                     line,
                 ));
+            }
+            Icon::Play => {
+                let pts = vec![m + egui::vec2(-3.5, -5.5), m + egui::vec2(5.0, 0.0), m + egui::vec2(-3.5, 5.5)];
+                p.add(egui::Shape::convex_polygon(pts, egui::Color32::TRANSPARENT, line));
+            }
+            Icon::Pause => {
+                for x in [-2.5, 2.5] {
+                    p.line_segment([m + egui::vec2(x, -5.0), m + egui::vec2(x, 5.0)], egui::Stroke::new(2.0, line.color));
+                }
             }
         }
         let at = egui::pos2(rect.left() + pad + mark + gap, rect.center().y - galley.size().y / 2.0);
