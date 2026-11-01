@@ -67,6 +67,8 @@ pub struct Http {
     /// When a start was last asked for.
     tried: Option<Instant>,
     starting: bool,
+    /// Whether the tailnet port was open when last looked at, so its opening is logged once.
+    tailnet_open: bool,
     /// Which `[http]` a start was for; an answer for an older one is dropped.
     gen: u64,
     tx: mpsc::Sender<(u64, Result<Server, String>)>,
@@ -76,7 +78,7 @@ pub struct Http {
 impl Default for Http {
     fn default() -> Http {
         let (tx, rx) = mpsc::channel();
-        Http { cfg: None, server: None, note: None, tried: None, starting: false, gen: 0, tx, rx }
+        Http { cfg: None, server: None, note: None, tried: None, starting: false, tailnet_open: false, gen: 0, tx, rx }
     }
 }
 
@@ -93,11 +95,20 @@ impl Http {
             match r {
                 Ok(s) => {
                     crate::say(&format!("koyomi: {}", listening(self.cfg.as_ref(), &s)), false);
+                    if let Some(why) = tailnet_note(self.cfg.as_ref(), &s) {
+                        crate::say(&why, false);
+                    }
+                    self.tailnet_open = s.tailnet_port().is_some();
                     self.server = Some(s);
                     self.note = None;
                 }
                 Err(e) => self.note = Some(format!("koyomi.toml: [http] で待ち受けられない（{e}）。{} 秒ごとに試す", RETRY.as_secs())),
             }
+        }
+        // ito-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
+        if let Some(p) = self.server.as_ref().filter(|_| !self.tailnet_open).and_then(Server::tailnet_port) {
+            self.tailnet_open = true;
+            crate::say(&format!("koyomi: HTTP: tailnet の :{p} を開いた（Tailscale の相手は token なし）"), false);
         }
         if self.cfg.as_ref() != cfg {
             self.stop();
@@ -119,6 +130,7 @@ impl Http {
     pub fn stop(&mut self) {
         self.gen += 1;
         self.starting = false;
+        self.tailnet_open = false;
         self.tried = None;
         self.note = None;
         if let Some(s) = self.server.take() {
@@ -128,7 +140,8 @@ impl Http {
 
     /// What a person should see about `[http]`.
     pub fn notes(&self) -> Vec<String> {
-        self.note.iter().cloned().collect()
+        let tailnet = self.server.as_ref().and_then(|s| tailnet_note(self.cfg.as_ref(), s));
+        self.note.iter().cloned().chain(tailnet).collect()
     }
 
     /// The status line while it listens.
@@ -139,15 +152,27 @@ impl Http {
 
 fn listening(cfg: Option<&config::Http>, s: &Server) -> String {
     let port = s.port();
-    let tailnet = match s.tailnet_port() {
-        Some(p) => format!("。tailnet の :{p} でも（Tailscale の相手は token なし）"),
-        None => String::new(),
+    let tailnet = match (s.tailnet_port(), cfg.and_then(|c| c.tailnet)) {
+        (Some(p), _) => format!("。tailnet の :{p} でも（Tailscale の相手は token なし）"),
+        (None, Some(p)) => format!("。tailnet の :{p} はまだ開けない"),
+        (None, None) => String::new(),
     };
     if let Some(fp) = s.fingerprint() {
         return format!("HTTP: LAN の :{port} で TLS で待ち受けている（指紋 {}）{tailnet}", ito_http::tls::format(&fp));
     }
     let v6 = if cfg.is_some_and(|c| c.ipv6) { format!("・[::1]:{port}") } else { String::new() };
     format!("HTTP: 127.0.0.1:{port}{v6} で待ち受けている{tailnet}")
+}
+
+/// Why the tailnet port is not open yet (Tailscale not running, no tailnet address, the port
+/// taken). ito-http has opened the other listeners and keeps trying this one behind.
+fn tailnet_note(cfg: Option<&config::Http>, s: &Server) -> Option<String> {
+    let port = cfg?.tailnet?;
+    if s.tailnet_port().is_some() {
+        return None;
+    }
+    let why = s.tailnet_error().map(|e| format!("（{e}）")).unwrap_or_default();
+    Some(format!("koyomi.toml: [http] の tailnet の :{port} がまだ開けない{why}。Tailscale が動けば開く"))
 }
 
 /// Where the LAN listener's certificate and key are kept: `app_dir`'s `tls`, beside the
@@ -968,6 +993,38 @@ mod tests {
         let (known, narrowed) = (roles(http), access(http));
         assert_eq!((known["sato"], known["ha"], known.get("default")), (Role::View, Role::Run, None));
         assert!(narrowed["sato"].sees("経理/a") && !narrowed["sato"].sees("人事/b"));
+    }
+
+    /// Tailscale being down leaves the other listeners open; the person is told why the tailnet
+    /// port is not.
+    #[test]
+    fn a_tailnet_port_that_cannot_open_yet_is_a_note() {
+        struct Down;
+        impl ito_http::tailnet::Whois for Down {
+            fn whois(&self, _: std::net::SocketAddr) -> std::io::Result<Option<ito_http::tailnet::Identity>> {
+                Ok(None)
+            }
+            fn status(&self) -> std::io::Result<ito_http::tailnet::Status> {
+                Err(std::io::Error::new(std::io::ErrorKind::NotFound, "tailscaled is not running"))
+            }
+        }
+        let cfg = config::Config::parse(
+            "[http]\nport = 8790\ntailnet = 8791\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntailscale = \"sato@example.com\"\n",
+        )
+        .unwrap();
+        let http = cfg.http.as_ref().unwrap();
+        let mut t = tailnet(http, 0);
+        t.whois = std::sync::Arc::new(Down);
+        let mut c = ito_http::Config::new(0, "tok");
+        c.tailnet = Some(t);
+        let s = Server::start(c, |_| ito_http::Response::ok(serde_json::Value::Null), |_| {}).unwrap();
+        assert_eq!(s.tailnet_port(), None);
+        let note = tailnet_note(Some(http), &s).unwrap();
+        assert!(note.contains(":8791 がまだ開けない（") && note.contains("tailscaled is not running"), "{note}");
+        assert!(listening(Some(http), &s).ends_with("tailnet の :8791 はまだ開けない"));
+        // Without `tailnet` there is nothing to say.
+        assert_eq!(tailnet_note(None, &s), None);
+        s.stop();
     }
 
     /// only the users with `nets` or `roles` are narrowed, and `/me` says to what.
