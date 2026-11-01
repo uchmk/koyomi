@@ -1539,60 +1539,68 @@ impl Browser {
                 }
             });
         });
-        egui::CentralPanel::default().show(ui, |ui| {
+        // No room at the right and bottom, so a pane there meets the window's edges; each page keeps
+        // its own room with `page`.
+        let central = egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin { left: 8, top: 8, right: 0, bottom: 0 });
+        egui::CentralPanel::default().frame(central).show(ui, |ui| {
             if modal {
                 ui.disable();
             }
             if self.editor.is_none() {
-                self.tabs(ui, t);
-                ui.add_space(6.0);
+                egui::Frame::new().inner_margin(egui::Margin { right: 8, ..Default::default() }).show(ui, |ui| self.tabs(ui, t));
+                // A pane at the right meets the tabs' line; the page keeps its own room under it.
+                ui.add_space(-ui.spacing().item_spacing.y);
             }
             if self.editor.is_some() {
-                self.editor_view(ui, t);
+                page().show(ui, |ui| self.editor_view(ui, t));
             } else if self.gantt {
                 // The picked row's net at the right, folded to a strip when not wanted.
                 self.inspector_pane(ui, t);
-                // The chart in a pane at the bottom, its top edge dragged to size it; the table above.
-                egui::Panel::bottom("gantt_pane")
-                    .resizable(true)
-                    .default_size(320.0)
-                    .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
-                    .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
-                    .show(ui, |ui| {
-                        one_size(ui.style_mut());
-                        // The panel keeps the size its content took, so fill it (an empty first frame would shrink it).
-                        ui.set_min_height(ui.available_height());
-                        self.gantt_view(ui, t);
-                    });
-                // Both ways: with the inspector open the table may be wider than what is left.
-                egui::ScrollArea::both().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
-                    one_size(ui.style_mut());
-                    self.today_table(ui, t);
-                });
-            } else if self.hist.is_some() {
-                self.history_view(ui, t);
-            } else if self.run_sel.is_some() {
-                self.run_page(ui, t, true);
-            } else if self.cal_sel.is_some() {
-                self.calendar_view(ui, t);
-            } else {
-                // A net's jobs in a pane at the bottom, its top edge dragged to size it; the page above.
-                if self.selected_def().is_some_and(|d| d.net.as_ref().is_some_and(|n| !n.jobs.is_empty())) {
-                    egui::Panel::bottom("jobs_pane")
+                page().show(ui, |ui| {
+                    // The chart in a pane at the bottom, its top edge dragged to size it; the table above.
+                    egui::Panel::bottom("gantt_pane")
                         .resizable(true)
                         .default_size(320.0)
                         .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
                         .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
                         .show(ui, |ui| {
+                            one_size(ui.style_mut());
+                            // The panel keeps the size its content took, so fill it (an empty first frame would shrink it).
                             ui.set_min_height(ui.available_height());
-                            self.jobs_pane(ui, t);
+                            self.gantt_view(ui, t);
                         });
-                }
-                if self.selected_def().is_some() {
-                    egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
-                } else {
-                    self.nets_overview(ui, t);
-                }
+                    // Both ways: with the inspector open the table may be wider than what is left.
+                    egui::ScrollArea::both().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
+                        one_size(ui.style_mut());
+                        self.today_table(ui, t);
+                    });
+                });
+            } else if self.hist.is_some() {
+                self.history_view(ui, t);
+            } else if self.run_sel.is_some() {
+                page().show(ui, |ui| self.run_page(ui, t, true));
+            } else if self.cal_sel.is_some() {
+                self.calendar_view(ui, t);
+            } else {
+                page().show(ui, |ui| {
+                    // A net's jobs in a pane at the bottom, its top edge dragged to size it; the page above.
+                    if self.selected_def().is_some_and(|d| d.net.as_ref().is_some_and(|n| !n.jobs.is_empty())) {
+                        egui::Panel::bottom("jobs_pane")
+                            .resizable(true)
+                            .default_size(320.0)
+                            .size_range(120.0..=(ui.available_height() - 80.0).max(120.0))
+                            .frame(egui::Frame::new().inner_margin(egui::Margin { top: 8, ..Default::default() }))
+                            .show(ui, |ui| {
+                                ui.set_min_height(ui.available_height());
+                                self.jobs_pane(ui, t);
+                            });
+                    }
+                    if self.selected_def().is_some() {
+                        egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
+                    } else {
+                        self.nets_overview(ui, t);
+                    }
+                });
             }
         });
         // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
@@ -2160,7 +2168,6 @@ impl Browser {
         let y = ui.cursor().top();
         let x = ui.max_rect().x_range();
         ui.painter().hline(x, y, egui::Stroke::new(1.0, c.border));
-        ui.add_space(6.0);
         match go {
             Some(0) => self.open_gantt(),
             Some(1) => {
@@ -2516,216 +2523,218 @@ impl Browser {
                 self.job_sel = None;
             }
         }
-        let nets: Vec<String> = self.snap.as_ref().map(|s| s.defs.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
-        // What is left of the page up to the pane (the page still reports the width it had before it).
-        let room = (edge.min(ui.max_rect().right()) - ui.cursor().left() - 12.0).max(200.0);
-        let Some(h) = self.hist.as_mut() else { return };
-        let r = ui.heading(egui::RichText::new(t.tr("run.history")).strong());
-        ito_a11y::say(&r, Role::Heading, t.tr("run.history"));
-        ui.add_space(6.0);
-        let (mut search, mut csv) = (false, false);
-        let all = t.tr("run.history_all");
-        egui::Frame::new()
-            .fill(c.panel)
-            .stroke(egui::Stroke::new(1.0, c.border))
-            .corner_radius(6)
-            .inner_margin(egui::Margin::symmetric(10, 8))
-            .show(ui, |ui| {
-                ui.set_width(room - 20.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
-                    small(ui, "run.history_from");
-                    ui.add(egui::TextEdit::singleline(&mut h.from).font(egui::TextStyle::Monospace).desired_width(88.0));
-                    ui.label(egui::RichText::new("〜").color(c.dim));
-                    ui.add(egui::TextEdit::singleline(&mut h.to).font(egui::TextStyle::Monospace).desired_width(88.0));
-                    // The presets ask at once for the days up to today.
-                    let today = chrono::Local::now().date_naive();
-                    for (key, back) in [("run.history_today", 0), ("run.history_7", 7), ("run.history_30", 30)] {
-                        let from = (today - chrono::Duration::days(back)).to_string();
-                        let on = h.from == from && h.to == today.to_string();
-                        let r = ui.selectable_label(on, t.tr(key));
-                        ito_a11y::say(&r, Role::Button, t.tr(key));
-                        if r.clicked() {
-                            h.from = from;
-                            h.to = today.to_string();
-                            search = true;
-                        }
-                    }
-                });
-                ui.add_space(2.0);
-                ui.horizontal_wrapped(|ui| {
-                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                    let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
-                    small(ui, "run.history_net");
-                    let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
-                    egui::ComboBox::from_id_salt("history_net").width(150.0).selected_text(net_text).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut h.net, String::new(), all);
-                        for id in &nets {
-                            ui.selectable_value(&mut h.net, id.clone(), id);
+        page().show(ui, |ui| {
+            let nets: Vec<String> = self.snap.as_ref().map(|s| s.defs.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
+            // What is left of the page up to the pane (the page still reports the width it had before it).
+            let room = (edge.min(ui.max_rect().right()) - ui.cursor().left() - 12.0).max(200.0);
+            let Some(h) = self.hist.as_mut() else { return };
+            let r = ui.heading(egui::RichText::new(t.tr("run.history")).strong());
+            ito_a11y::say(&r, Role::Heading, t.tr("run.history"));
+            ui.add_space(6.0);
+            let (mut search, mut csv) = (false, false);
+            let all = t.tr("run.history_all");
+            egui::Frame::new()
+                .fill(c.panel)
+                .stroke(egui::Stroke::new(1.0, c.border))
+                .corner_radius(6)
+                .inner_margin(egui::Margin::symmetric(10, 8))
+                .show(ui, |ui| {
+                    ui.set_width(room - 20.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                        small(ui, "run.history_from");
+                        ui.add(egui::TextEdit::singleline(&mut h.from).font(egui::TextStyle::Monospace).desired_width(88.0));
+                        ui.label(egui::RichText::new("〜").color(c.dim));
+                        ui.add(egui::TextEdit::singleline(&mut h.to).font(egui::TextStyle::Monospace).desired_width(88.0));
+                        // The presets ask at once for the days up to today.
+                        let today = chrono::Local::now().date_naive();
+                        for (key, back) in [("run.history_today", 0), ("run.history_7", 7), ("run.history_30", 30)] {
+                            let from = (today - chrono::Duration::days(back)).to_string();
+                            let on = h.from == from && h.to == today.to_string();
+                            let r = ui.selectable_label(on, t.tr(key));
+                            ito_a11y::say(&r, Role::Button, t.tr(key));
+                            if r.clicked() {
+                                h.from = from;
+                                h.to = today.to_string();
+                                search = true;
+                            }
                         }
                     });
-                    small(ui, "run.history_state");
-                    let state_text = match h.state {
-                        Some(s) => show::tag(t, s),
-                        None => all.to_owned(),
-                    };
-                    egui::ComboBox::from_id_salt("history_state").width(130.0).selected_text(state_text).show_ui(ui, |ui| {
-                        ui.selectable_value(&mut h.state, None, all);
-                        for s in State::ALL {
-                            ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
-                        }
+                    ui.add_space(2.0);
+                    ui.horizontal_wrapped(|ui| {
+                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                        let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                        small(ui, "run.history_net");
+                        let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
+                        egui::ComboBox::from_id_salt("history_net").width(150.0).selected_text(net_text).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut h.net, String::new(), all);
+                            for id in &nets {
+                                ui.selectable_value(&mut h.net, id.clone(), id);
+                            }
+                        });
+                        small(ui, "run.history_state");
+                        let state_text = match h.state {
+                            Some(s) => show::tag(t, s),
+                            None => all.to_owned(),
+                        };
+                        egui::ComboBox::from_id_salt("history_state").width(130.0).selected_text(state_text).show_ui(ui, |ui| {
+                            ui.selectable_value(&mut h.state, None, all);
+                            for s in State::ALL {
+                                ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
+                            }
+                        });
+                        ui.separator();
+                        search |= primary(ui, true, t.tr("run.history_search")).clicked();
+                        let r = ui.button(format!("⤓ {}", t.tr("run.history_csv")));
+                        ito_a11y::say(&r, Role::Button, t.tr("run.history_csv"));
+                        csv = r.clicked();
                     });
-                    ui.separator();
-                    search |= primary(ui, true, t.tr("run.history_search")).clicked();
-                    let r = ui.button(format!("⤓ {}", t.tr("run.history_csv")));
-                    ito_a11y::say(&r, Role::Button, t.tr("run.history_csv"));
-                    csv = r.clicked();
                 });
-            });
-        if csv {
-            let mut shown = h.filtered();
-            shown.reverse();
-            let table = crate::sheet::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
-            self.result = Some(Ok(t.tr("run.writing").to_owned()));
-            Self::background(&self.io, move || export_csv("history", &table).map(|path| ("run.history_csv_done", vec![path])));
-        }
-        if search {
-            let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
-            match (day(&h.from), day(&h.to)) {
-                (Some(from), Some(to)) => {
-                    h.from = from.to_string();
-                    h.to = to.to_string();
-                    h.error = None;
-                    let _ = self.tx.send(h.request());
-                }
-                _ => h.error = Some(t.tr("run.history_bad_date").to_owned()),
+            if csv {
+                let mut shown = h.filtered();
+                shown.reverse();
+                let table = crate::sheet::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
+                self.result = Some(Ok(t.tr("run.writing").to_owned()));
+                Self::background(&self.io, move || export_csv("history", &table).map(|path| ("run.history_csv_done", vec![path])));
             }
-        }
-        if let Some(e) = &h.error {
-            ui.label(egui::RichText::new(e).color(c.err));
-        }
-        ui.add_space(8.0);
-        // The chips: all the rows of the net, then each state some row is in. A click narrows to that
-        // state; a second click, or the first chip, shows them all again.
-        let look = ito_prefs::Look { c, q: "" };
-        let mut state = h.state;
-        {
-            let of_net: Vec<&Run> = h.rows.iter().filter(|r| h.net.is_empty() || r.jobnet == h.net).collect();
-            ui.horizontal_wrapped(|ui| {
-                ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
-                let text = t.trf("run.history_count", &[&of_net.len().to_string()]);
-                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(c.fg).on(state.is_none()))
-                    .on_hover_cursor(egui::CursorIcon::PointingHand);
-                ito_a11y::say(&r, Role::Button, &text);
-                if r.clicked() {
-                    state = None;
-                }
-                for s in State::ALL {
-                    let n = of_net.iter().filter(|r| r.state == s).count();
-                    let on = state == Some(s);
-                    if n == 0 && !on {
-                        continue;
+            if search {
+                let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
+                match (day(&h.from), day(&h.to)) {
+                    (Some(from), Some(to)) => {
+                        h.from = from.to_string();
+                        h.to = to.to_string();
+                        h.error = None;
+                        let _ = self.tx.send(h.request());
                     }
-                    let text = format!("{} {n}", show::tag(t, s));
-                    let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(graph::colour(&c, s)).on(on))
-                        .on_hover_text(t.tr(if on { "today.filter_off" } else { "today.filter_on" }))
+                    _ => h.error = Some(t.tr("run.history_bad_date").to_owned()),
+                }
+            }
+            if let Some(e) = &h.error {
+                ui.label(egui::RichText::new(e).color(c.err));
+            }
+            ui.add_space(8.0);
+            // The chips: all the rows of the net, then each state some row is in. A click narrows to that
+            // state; a second click, or the first chip, shows them all again.
+            let look = ito_prefs::Look { c, q: "" };
+            let mut state = h.state;
+            {
+                let of_net: Vec<&Run> = h.rows.iter().filter(|r| h.net.is_empty() || r.jobnet == h.net).collect();
+                ui.horizontal_wrapped(|ui| {
+                    ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
+                    let text = t.trf("run.history_count", &[&of_net.len().to_string()]);
+                    let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(c.fg).on(state.is_none()))
                         .on_hover_cursor(egui::CursorIcon::PointingHand);
                     ito_a11y::say(&r, Role::Button, &text);
                     if r.clicked() {
-                        state = if on { None } else { Some(s) };
+                        state = None;
                     }
-                }
-            });
-        }
-        h.state = state;
-        let mut rows = h.filtered();
-        if !rows.is_empty() {
-            ui.add_space(4.0);
-            let owned: Vec<Run> = rows.iter().map(|r| (*r).clone()).collect();
-            let lines = crate::report::lines(t, &koyomi_core::report::summarize(&owned));
-            egui::CollapsingHeader::new(t.tr("report.heading")).id_salt("history_report").show(ui, |ui| {
-                for l in &lines {
-                    ui.label(l);
-                }
-            });
-        }
-        // State, net, date, start, end, time; a sorted column orders the rows, else the newest first.
-        if let Some((col, down)) = h.sort {
-            let never = i64::MAX;
-            rows.sort_by(|a, b| {
-                let key = |r: &Run| -> i64 {
-                    match col {
-                        0 => State::ALL.iter().position(|s| *s == r.state).unwrap_or(0) as i64,
-                        4 => r.ended.map_or(never, |e| e.and_utc().timestamp_millis()),
-                        5 => r.duration().map_or(never, |d| d.num_milliseconds()),
-                        _ => r.started.and_utc().timestamp_millis(),
+                    for s in State::ALL {
+                        let n = of_net.iter().filter(|r| r.state == s).count();
+                        let on = state == Some(s);
+                        if n == 0 && !on {
+                            continue;
+                        }
+                        let text = format!("{} {n}", show::tag(t, s));
+                        let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(graph::colour(&c, s)).on(on))
+                            .on_hover_text(t.tr(if on { "today.filter_off" } else { "today.filter_on" }))
+                            .on_hover_cursor(egui::CursorIcon::PointingHand);
+                        ito_a11y::say(&r, Role::Button, &text);
+                        if r.clicked() {
+                            state = if on { None } else { Some(s) };
+                        }
                     }
-                };
-                if col == 1 {
-                    a.title.cmp(&b.title)
-                } else {
-                    key(a).cmp(&key(b))
-                }
-            });
-            if down {
-                rows.reverse();
+                });
             }
-        }
-        let rows: Vec<Run> = rows.into_iter().cloned().collect();
-        ui.add_space(6.0);
-        let mut pick = None;
-        // The net takes what the fixed columns leave; a page narrower than that scrolls sideways.
-        let width = room - 14.0;
-        let fixed = [100.0, 0.0, 100.0, 84.0, 84.0, 120.0];
-        let net = (width - fixed.iter().sum::<f32>()).max(120.0);
-        let widths: Vec<f32> = fixed.iter().enumerate().map(|(i, w)| if i == 1 { net } else { *w }).collect();
-        let mut table = TodayTable::with(&c, &widths, width);
-        let heads: Vec<String> = ["col_state", "col_net", "col_date", "col_start", "col_end", "col_time"]
-            .iter()
-            .map(|k| t.tr(&format!("today.{k}")).to_owned())
-            .collect();
-        let sort = h.sort;
-        let none = rows.is_empty() && h.error.is_none();
-        let mut sorted = None;
-        let tall = ui.available_height();
-        ui.allocate_ui(egui::vec2(room, tall), |ui| {
-            egui::ScrollArea::both().id_salt("history_rows").auto_shrink(false).show(ui, |ui| {
-                let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
-                sorted = table.head(ui, &heads, sort, t.tr("today.sort"));
-                for run in &rows {
-                    let ended = run.ended.map(show::hms).unwrap_or_default();
-                    let took = run.duration().map(|d| show::duration(t, d)).unwrap_or_default();
-                    let on = self.run_sel.as_deref() == Some(run.id.as_str());
-                    let date = run.started.date().to_string();
-                    let word = show::tag(t, run.state);
-                    let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
-                    let r = table.row(ui, run.state, &word, &run.title, &cells, on, true);
-                    let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
-                    let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
-                    ito_a11y::say(&r, Role::Row, &said);
-                    if r.clicked() {
-                        pick = Some(run.id.clone());
+            h.state = state;
+            let mut rows = h.filtered();
+            if !rows.is_empty() {
+                ui.add_space(4.0);
+                let owned: Vec<Run> = rows.iter().map(|r| (*r).clone()).collect();
+                let lines = crate::report::lines(t, &koyomi_core::report::summarize(&owned));
+                egui::CollapsingHeader::new(t.tr("report.heading")).id_salt("history_report").show(ui, |ui| {
+                    for l in &lines {
+                        ui.label(l);
                     }
+                });
+            }
+            // State, net, date, start, end, time; a sorted column orders the rows, else the newest first.
+            if let Some((col, down)) = h.sort {
+                let never = i64::MAX;
+                rows.sort_by(|a, b| {
+                    let key = |r: &Run| -> i64 {
+                        match col {
+                            0 => State::ALL.iter().position(|s| *s == r.state).unwrap_or(0) as i64,
+                            4 => r.ended.map_or(never, |e| e.and_utc().timestamp_millis()),
+                            5 => r.duration().map_or(never, |d| d.num_milliseconds()),
+                            _ => r.started.and_utc().timestamp_millis(),
+                        }
+                    };
+                    if col == 1 {
+                        a.title.cmp(&b.title)
+                    } else {
+                        key(a).cmp(&key(b))
+                    }
+                });
+                if down {
+                    rows.reverse();
                 }
-                ui.spacing_mut().item_spacing.y = gap;
-                if none {
+            }
+            let rows: Vec<Run> = rows.into_iter().cloned().collect();
+            ui.add_space(6.0);
+            let mut pick = None;
+            // The net takes what the fixed columns leave; a page narrower than that scrolls sideways.
+            let width = room - 14.0;
+            let fixed = [100.0, 0.0, 100.0, 84.0, 84.0, 120.0];
+            let net = (width - fixed.iter().sum::<f32>()).max(120.0);
+            let widths: Vec<f32> = fixed.iter().enumerate().map(|(i, w)| if i == 1 { net } else { *w }).collect();
+            let mut table = TodayTable::with(&c, &widths, width);
+            let heads: Vec<String> = ["col_state", "col_net", "col_date", "col_start", "col_end", "col_time"]
+                .iter()
+                .map(|k| t.tr(&format!("today.{k}")).to_owned())
+                .collect();
+            let sort = h.sort;
+            let none = rows.is_empty() && h.error.is_none();
+            let mut sorted = None;
+            let tall = ui.available_height();
+            ui.allocate_ui(egui::vec2(room, tall), |ui| {
+                egui::ScrollArea::both().id_salt("history_rows").auto_shrink(false).show(ui, |ui| {
+                    let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+                    sorted = table.head(ui, &heads, sort, t.tr("today.sort"));
+                    for run in &rows {
+                        let ended = run.ended.map(show::hms).unwrap_or_default();
+                        let took = run.duration().map(|d| show::duration(t, d)).unwrap_or_default();
+                        let on = self.run_sel.as_deref() == Some(run.id.as_str());
+                        let date = run.started.date().to_string();
+                        let word = show::tag(t, run.state);
+                        let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
+                        let r = table.row(ui, run.state, &word, &run.title, &cells, on, true);
+                        let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
+                        let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
+                        ito_a11y::say(&r, Role::Row, &said);
+                        if r.clicked() {
+                            pick = Some(run.id.clone());
+                        }
+                    }
+                    ui.spacing_mut().item_spacing.y = gap;
+                    if none {
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new(t.tr("run.history_none")).color(c.dim));
+                    }
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new(t.tr("run.history_none")).color(c.dim));
-                }
-                ui.add_space(8.0);
-                self.show_result(ui);
+                    self.show_result(ui);
+                });
             });
+            if let (Some(col), Some(h)) = (sorted, self.hist.as_mut()) {
+                h.sort = TodayTable::next_sort(h.sort, col);
+            }
+            if pick.is_some() {
+                self.run_sel = pick;
+                self.job_sel = None;
+                self.result = None;
+                ui.ctx().request_repaint();
+            }
         });
-        if let (Some(col), Some(h)) = (sorted, self.hist.as_mut()) {
-            h.sort = TodayTable::next_sort(h.sort, col);
-        }
-        if pick.is_some() {
-            self.run_sel = pick;
-            self.job_sel = None;
-            self.result = None;
-            ui.ctx().request_repaint();
-        }
     }
 
     /// Whether `job` of the net `net` is on hold (`held.toml`).
@@ -3971,6 +3980,12 @@ fn sort_rows(rows: &mut [(usize, Vec<(String, bool)>)], sort: Option<(usize, boo
             o
         }
     });
+}
+
+/// The room around a page under the tabs. The central panel keeps none at the right and bottom, so
+/// a pane there meets the window's edges; the page's own content keeps this room instead.
+pub(super) fn page() -> egui::Frame {
+    egui::Frame::new().inner_margin(egui::Margin { left: 0, top: 12, right: 8, bottom: 8 })
 }
 
 /// The tree and the today page read in one size: every text style at [`ONE_SIZE`] (times stay
