@@ -198,8 +198,11 @@ struct Kept {
     /// `false` once the pane at the right of the calendar was folded.
     #[serde(default)]
     calendar_pane: Option<bool>,
-    /// `true` once the calendar was switched to its week.
+    /// The calendar's view: `"day"`, `"week"` or `"month"`.
     #[serde(default)]
+    calendar_view: Option<String>,
+    /// `true` once the calendar was switched to its week, as files before `calendar_view` said.
+    #[serde(default, skip_serializing)]
     calendar_week: Option<bool>,
     /// `false` once the pane at the right of the net page was folded.
     #[serde(default)]
@@ -393,8 +396,8 @@ pub struct Browser {
     hist_pane: bool,
     /// The pane at the right of the calendar is open (not folded to its strip).
     cal_pane: bool,
-    /// The calendar shows the week of the picked day rather than its month.
-    cal_week: bool,
+    /// The calendar shows the picked day, its week or its month.
+    cal_view: calendar::CalView,
     /// The pane at the right of the net page is open (not folded to its strip).
     net_pane: bool,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
@@ -497,7 +500,7 @@ impl Browser {
         let vertical = kept.flow.as_deref() == Some("vertical");
         let inspector = kept.inspector != Some(false);
         let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
-        let cal_week = kept.calendar_week == Some(true);
+        let cal_view = calendar::CalView::kept(kept.calendar_view.as_deref(), kept.calendar_week);
         let net_pane = kept.net_pane != Some(false);
         let flow = path.map(|p| kept::Writer::new(p, true));
         let far = far::Far::start(&io.1);
@@ -551,7 +554,7 @@ impl Browser {
             inspector,
             hist_pane,
             cal_pane,
-            cal_week,
+            cal_view,
             net_pane,
             today_sort: None,
             net_sort: None,
@@ -858,7 +861,8 @@ impl Browser {
                 inspector: Some(self.inspector),
                 history_pane: Some(self.hist_pane),
                 calendar_pane: Some(self.cal_pane),
-                calendar_week: Some(self.cal_week),
+                calendar_view: Some(self.cal_view.word().to_owned()),
+                calendar_week: None,
                 net_pane: Some(self.net_pane),
             });
         }
@@ -4545,7 +4549,7 @@ mod tests {
             inspector: true,
             hist_pane: true,
             cal_pane: true,
-            cal_week: false,
+            cal_view: calendar::CalView::Month,
             net_pane: true,
             today_sort: None,
             net_sort: None,
@@ -4645,11 +4649,16 @@ mod tests {
 
         /// The middle of the one widget whose words are `words`, or else contain them.
         fn at(&self, words: &str) -> egui::Pos2 {
+            self.rect(words).center()
+        }
+
+        /// Where the one widget whose words are `words`, or else contain them, is.
+        fn rect(&self, words: &str) -> egui::Rect {
             let exact: Vec<_> = self.nodes.values().filter(|(label, _)| label == words).collect();
             let found: Vec<_> =
                 if exact.is_empty() { self.nodes.values().filter(|(label, _)| label.contains(words)).collect() } else { exact };
             assert_eq!(found.len(), 1, "one widget says {words:?}: {:?}", self.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
-            found[0].1.center()
+            found[0].1
         }
 
         fn press(&mut self, words: &str, button: egui::PointerButton, b: &mut Browser) {
@@ -4663,6 +4672,15 @@ mod tests {
 
         fn presses(&mut self, words: &str, button: egui::PointerButton, times: usize, b: &mut Browser) {
             let pos = self.at(words);
+            self.presses_at(pos, button, times, b);
+        }
+
+        /// A click at `pos`, for a widget whose parts say nothing of their own.
+        fn click_at(&mut self, pos: egui::Pos2, b: &mut Browser) {
+            self.presses_at(pos, egui::PointerButton::Primary, 1, b);
+        }
+
+        fn presses_at(&mut self, pos: egui::Pos2, button: egui::PointerButton, times: usize, b: &mut Browser) {
             let button = |pressed| egui::Event::PointerButton { pos, button, pressed, modifiers: egui::Modifiers::NONE };
             self.show(vec![egui::Event::PointerMoved(pos)], b);
             for _ in 0..times {
@@ -4717,6 +4735,45 @@ run = [\"x.exe\"]
         assert!(shown(&s, "versions/_calendars/会社/"));
         s.show(key(egui::Key::Enter), &mut b);
         assert!(b.cal_deleting.is_none() && b.cal_result.is_none(), "Enter on the fresh box deletes nothing");
+    }
+
+    /// 24.19: The calendar's view is 日 | 週 | 月 in that order: 日 shows the picked day, whose ◀ ▶
+    /// move a day; a file from before 日 keeps its week or month.
+    #[test]
+    fn the_calendar_shows_a_day_a_week_or_a_month() {
+        let mut b = quiet(defs());
+        let cal = koyomi_core::calendar::Calendar::parse(
+            "会社",
+            "format = 1
+",
+        )
+        .unwrap();
+        b.snap.as_mut().unwrap().calendars.insert("会社".into(), cal);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.cal_sel = Some("会社".into());
+        b.cal_month = Some((2026, 11));
+        b.cal_day = chrono::NaiveDate::from_ymd_opt(2026, 11, 4);
+        s.settle(&mut b);
+        let seg = s.rect("表示: 月");
+        s.click_at(egui::pos2(seg.min.x + 6.0, seg.center().y), &mut b);
+        assert_eq!(b.cal_view, calendar::CalView::Day, "日 is the first of the three");
+        assert!(s.nodes.values().any(|(l, _)| l == "表示: 日"));
+        assert!(s.nodes.values().any(|(l, _)| l.starts_with("11/4(")), "the head says the day");
+        s.click("前の日", &mut b);
+        assert_eq!(b.cal_day, chrono::NaiveDate::from_ymd_opt(2026, 11, 3));
+        let seg = s.rect("表示: 日");
+        s.click_at(egui::pos2(seg.center().x, seg.center().y), &mut b);
+        assert_eq!(b.cal_view, calendar::CalView::Week, "週 is in the middle");
+        let seg = s.rect("表示: 週");
+        s.click_at(egui::pos2(seg.max.x - 6.0, seg.center().y), &mut b);
+        assert_eq!(b.cal_view, calendar::CalView::Month, "月 is the last");
+        use calendar::CalView;
+        assert_eq!(CalView::kept(None, Some(true)), CalView::Week, "a file from before 日 kept its week");
+        assert_eq!(CalView::kept(None, None), CalView::Month);
+        for v in [CalView::Day, CalView::Week, CalView::Month] {
+            assert_eq!(CalView::kept(Some(v.word()), None), v);
+        }
     }
 
     /// The field under the month: a day's name opens with the name it has, Esc closes it, and

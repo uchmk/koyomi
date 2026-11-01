@@ -21,6 +21,36 @@ use crate::show;
 const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
 /// The month table's columns: Sunday first, as a wall calendar.
 const GRID: [Weekday; 7] = [Weekday::Sun, Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat];
+
+/// What the calendar shows: the picked day, its week (Sunday first) or its month.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CalView {
+    Day,
+    Week,
+    Month,
+}
+
+impl CalView {
+    /// The word `state.toml` keeps.
+    pub fn word(self) -> &'static str {
+        match self {
+            CalView::Day => "day",
+            CalView::Week => "week",
+            CalView::Month => "month",
+        }
+    }
+
+    /// The view `state.toml` kept; `week` is how files before `calendar_view` said the week.
+    pub fn kept(view: Option<&str>, week: Option<bool>) -> CalView {
+        match view {
+            Some("day") => CalView::Day,
+            Some("week") => CalView::Week,
+            Some(_) => CalView::Month,
+            None if week == Some(true) => CalView::Week,
+            None => CalView::Month,
+        }
+    }
+}
 /// The 新しいカレンダー box: the name (the file's stem), Japan's holidays, and the days off each week.
 pub(super) struct NewCal {
     /// The calendar the box renames; `None` makes a new one.
@@ -154,11 +184,13 @@ impl Browser {
         // The day whose starts show in the pane: the one picked, or today in this month.
         let picked =
             self.cal_day.filter(|d| d.year() == y && d.month() == m).or_else(|| days.iter().any(|(d, _)| *d == today).then_some(today));
-        // On its week, the calendar shows the seven days round the picked one (or the month's first), Sunday first.
-        let on_week = self.cal_week;
+        // On its day, the calendar shows the picked one (or the month's first); on its week, the seven
+        // days round it, Sunday first.
+        let view = self.cal_view;
         let anchor = picked.or_else(|| NaiveDate::from_ymd_opt(y, m, 1)).unwrap_or(today);
         let sunday = anchor - chrono::Days::new(u64::from(anchor.weekday().num_days_from_sunday()));
         let week: Vec<(NaiveDate, Day)> = sunday.iter_days().take(7).map(|d| (d, cal.day(d))).collect();
+        let one = [(anchor, cal.day(anchor))];
         // The picked day, the named days and the nets on this calendar: a pane at the right, shown
         // before the month so the month takes the room that is left.
         let wide = ui.available_width();
@@ -224,23 +256,38 @@ impl Browser {
                     );
                     ui.add_space(4.0);
                 }
-                // 会社 [営業日 19 日]  ‹ 2026年11月 ›; the screen reader hears the month as one heading.
+                // 会社 [営業日 19 日]  ‹ 2026年11月 ›; the screen reader hears the month as one heading. On
+                // its day, the tag says what the day is instead.
                 let head = show::month_head(t, &cal, y, m);
-                let shown = if on_week { &week } else { &days };
+                let shown: &[(NaiveDate, Day)] = match view {
+                    CalView::Day => &one,
+                    CalView::Week => &week,
+                    CalView::Month => &days,
+                };
                 let business = shown.iter().filter(|(_, d)| d.is_business()).count();
-                // ◀ and ▶ move by the week on its week, and the picked day with it.
-                let (prev, next) = if on_week { ("calendar.prev_week", "calendar.next_week") } else { ("calendar.prev", "calendar.next") };
+                // ◀ and ▶ move by the day or the week on those, and the picked day with them.
+                let (prev, next, step) = match view {
+                    CalView::Day => ("calendar.prev_day", "calendar.next_day", Some(1)),
+                    CalView::Week => ("calendar.prev_week", "calendar.next_week", Some(7)),
+                    CalView::Month => ("calendar.prev", "calendar.next", None),
+                };
                 let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
                 ui.horizontal(|ui| {
                     let r = ui.label(egui::RichText::new(&name).heading().strong());
                     ito_a11y::say(&r, Role::Heading, &name);
-                    let words = t.trf("calendar.business_n", &[&business.to_string()]);
-                    let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&words).color(c.done));
+                    let (words, colour) = match view {
+                        CalView::Day => {
+                            let day = &one[0].1;
+                            (day_kind(t, &cal, anchor, day), if day.is_business() { c.done } else { day_colour(&c, day) })
+                        }
+                        _ => (t.trf("calendar.business_n", &[&business.to_string()]), c.done),
+                    };
+                    let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&words).color(colour));
                     ito_a11y::say(&r, Role::Label, &words);
                     ui.add_space(10.0);
                     let r = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronLeft, t.tr(prev), 26.0);
-                    if r.clicked() && on_week {
-                        self.cal_go(anchor - chrono::Days::new(7));
+                    if let Some(n) = step.filter(|_| r.clicked()) {
+                        self.cal_go(anchor - chrono::Days::new(n));
                     } else if r.clicked() {
                         self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
                     }
@@ -254,22 +301,31 @@ impl Browser {
                         self.cal_month = Some(to);
                     }
                     let r = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronRight, t.tr(next), 26.0);
-                    if r.clicked() && on_week {
-                        self.cal_go(anchor + chrono::Days::new(7));
+                    if let Some(n) = step.filter(|_| r.clicked()) {
+                        self.cal_go(anchor + chrono::Days::new(n));
                     } else if r.clicked() {
                         self.cal_month = Some(if m == 12 { (y + 1, 1) } else { (y, m + 1) });
                     }
-                    if on_week {
-                        let span = |d: NaiveDate| format!("{}/{}({})", d.month(), d.day(), weekday(t, d.weekday()));
-                        let range = format!("{} – {}", span(sunday), span(sunday + chrono::Days::new(6)));
+                    let span = |d: NaiveDate| format!("{}/{}({})", d.month(), d.day(), weekday(t, d.weekday()));
+                    let range = match view {
+                        CalView::Day => Some(span(anchor)),
+                        CalView::Week => Some(format!("{} – {}", span(sunday), span(sunday + chrono::Days::new(6)))),
+                        CalView::Month => None,
+                    };
+                    if let Some(range) = range {
                         let r = ui.label(egui::RichText::new(&range).monospace().color(c.dim));
                         ito_a11y::say(&r, Role::Label, &range);
                     }
-                    // 月 | 週 at the right of the head.
+                    // 日 | 週 | 月 at the right of the head.
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        let options = [(false, t.tr("calendar.view_month")), (true, t.tr("calendar.view_week"))];
-                        if let Some(to) = ito_prefs::seg(ui, look, "calendar-view", on_week, &options) {
-                            self.cal_week = to;
+                        let options = [
+                            (CalView::Day, t.tr("calendar.view_day")),
+                            (CalView::Week, t.tr("calendar.view_week")),
+                            (CalView::Month, t.tr("calendar.view_month")),
+                        ];
+                        let (to, _) = ito_prefs::seg_named(ui, look, "calendar-view", t.tr("calendar.view"), view, &options);
+                        if let Some(to) = to {
+                            self.cal_view = to;
                             self.save_kept();
                         }
                     });
@@ -329,12 +385,16 @@ impl Browser {
                     None => {}
                 }
                 ui.add_space(8.0);
-                let out = if on_week {
-                    let starts = self.snap.as_ref().map(|s| crate::plan::days(&s.defs, &s.calendars, sunday, 7)).unwrap_or_default();
-                    week_grid(ui, t, &name, &week, &starts, picked, today)
-                } else {
-                    let starts = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
-                    month_grid(ui, t, &name, (y, m), &days, &starts, picked, today)
+                let out = match view {
+                    CalView::Day | CalView::Week => {
+                        let (from, n) = if view == CalView::Day { (anchor, 1) } else { (sunday, 7) };
+                        let starts = self.snap.as_ref().map(|s| crate::plan::days(&s.defs, &s.calendars, from, n)).unwrap_or_default();
+                        timetable(ui, t, &name, shown, &starts, picked, today)
+                    }
+                    CalView::Month => {
+                        let starts = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+                        month_grid(ui, t, &name, (y, m), &days, &starts, picked, today)
+                    }
                 };
                 self.month_notes(ui, t, &name, &cal);
                 if let Some(d) = out.pick {
@@ -725,12 +785,12 @@ fn day_press(r: &egui::Response, t: &ito_i18n::Table, name: &str, d: NaiveDate, 
     });
 }
 
-/// The week as a timetable, Sunday first, as wide as the room: a band with each day's weekday,
-/// date and name, then a row for each time something starts in the week, with the nets that start
-/// then as chips in their day's column. A column is tinted by what its day is and pressed as a day
-/// of the month is; a chip picks its day, and a double click on it opens the net.
+/// The week (Sunday first) or one day as a timetable, as wide as the room: a band with each day's
+/// weekday, date and name, then a row for each time something starts on those days, with the nets
+/// that start then as chips in their day's column. A column is tinted by what its day is and
+/// pressed as a day of the month is; a chip picks its day, and a double click on it opens the net.
 #[allow(clippy::too_many_arguments)]
-fn week_grid(
+fn timetable(
     ui: &mut egui::Ui,
     t: &ito_i18n::Table,
     name: &str,
@@ -756,10 +816,11 @@ fn week_grid(
         .collect();
     // The week takes the width there is (as the month does); a name too long for its chip ends in "…".
     let tw = 52.0;
-    let cw = ((ui.available_width() - tw).max(7.0 * 52.0) / 7.0).floor();
+    let n = week.len().max(1) as f32;
+    let cw = ((ui.available_width() - tw).max(n * 52.0) / n).floor();
     let band = 64.0;
     let body = if times.is_empty() { 72.0 } else { heights.iter().sum() };
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(tw + cw * 7.0, band + body), egui::Sense::hover());
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(tw + cw * n, band + body), egui::Sense::hover());
     let painter = ui.painter_at(rect.expand(1.0));
     let base = c.bg;
     painter.rect_filled(rect, 6.0, base);
@@ -864,12 +925,13 @@ fn week_grid(
         y += h;
     }
     if times.is_empty() {
-        let mid = egui::pos2(rect.min.x + tw + cw * 3.5, head.max.y + body / 2.0);
-        painter.text(mid, egui::Align2::CENTER_CENTER, t.tr("calendar.week_none"), font.clone(), c.dim);
+        let mid = egui::pos2(rect.min.x + tw + cw * n / 2.0, head.max.y + body / 2.0);
+        let none = if week.len() == 1 { "calendar.day_none" } else { "calendar.week_none" };
+        painter.text(mid, egui::Align2::CENTER_CENTER, t.tr(none), font.clone(), c.dim);
     }
     // The lines between the columns and the rows, round the whole, then the rings.
     let line = egui::Stroke::new(1.0, c.border);
-    for k in 0..7 {
+    for k in 0..week.len() {
         let x = rect.min.x + tw + cw * k as f32;
         painter.line_segment([egui::pos2(x, rect.min.y), egui::pos2(x, rect.max.y)], line);
     }

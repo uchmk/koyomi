@@ -1,6 +1,6 @@
 # Checklist
 
-773 checks in TESTING.md, 768 left for a person.
+774 checks in TESTING.md, 768 left for a person.
 
 ## 1. Start
 
@@ -255,6 +255,8 @@
 - [ ] **23.16** Open an over run that ended ✔ with no job picked → The button row shows the small dim line 「ジョブを選ぶとそこから再実行」 after 比べる 〔未訳〕
 
 ## 24. Calendar (`calendars/<name>.toml`, `calendar`, `business_day`, `on_closed`, `koyomi calendar`)
+
+自動テスト済みなので下には出していない: 24.19
 
 - [x] **24.1** Write `calendars/会社.toml` with `format = 1`, `holidays = "japan"`, `weekly_off = ["sat", "sun"]`, `closed = [{ date = 2026-11-20, name = "創立記念日" }]`, `open = [2026-11-28]`; then `koyomi calendar 会社 --month 2026-11` → The heading `会社 2026-11（営業日 19 日）`, a weekday header 月〜日, the weeks with `( 3)`, `( 7)( 8)`, `(20)`, `(23)` and `[28]`, then the lines `3 文化の日`, `20 創立記念日`, `23 勤労感謝の日`, `28 休日出勤`, `祝日の表: 2027-12-31 まで` 〔未訳〕
 - [x] **24.2** `koyomi calendar 工場` (no such file), `koyomi calendar 会社 --month 2026-13` → `カレンダーがない: 工場` (exit 1); `--month takes YYYY-MM` 〔未訳〕
