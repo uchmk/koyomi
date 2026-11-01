@@ -165,7 +165,8 @@
 - [x] 84. メールを受けて起動（M）: 決めた件名・差出人のメールが来たらネットを流す。JP1 のメール受信監視ジョブ。（`[[when]] mail` + `secret:`。DECISIONS の「メールを受けて起動する」）
 - [x] 85. G4 繰り返しの回を並べて動かす（M）: `max = 2`。枠の数の約束を決め直す。
 - [x] 86. E6 Windows のサービスとして動かす（L）: サインインしなくても流れる。秘密・通知・トレイ・`state_dir` の置き場と、誰の権限で流すかを決め直す。（2026-10-31。使う人のアカウントで動かす `koyomi service install/uninstall/start/stop/status`、トレイは `koyomi tray`。DECISIONS「Windows のサービスとして動かす」。UAC の確認を出すのは uchmk/ito#103 待ちで、それまでは管理者のターミナルで回す）
-- [ ] 87. HA（L）: 2 台目のエンジンが待機し、1 台目が落ちたら引き継ぐ。JP1 のクラスター構成。80 と 86 が前提。（2026-10-31 に形を決めた: 待つ側が `GET /health` を見張り、答えなければ引き継ぐ。戻すのは人が `koyomi standby giveback`。`[standby]`・見張り・引き継ぎ・`koyomi standby [giveback]`・相手から定義を写す（未確認で置く）は入れた。残りは 86 のサービスで動かしての確かめ）
+- [x] 87. HA（L）: 2 台目のエンジンが待機し、1 台目が落ちたら引き継ぐ。JP1 のクラスター構成。80 と 86 が前提。（2026-10-31 に形を決めた: 待つ側が `GET /health` を見張り、答えなければ引き継ぐ。戻すのは人が `koyomi standby giveback`。`[standby]`・見張り・引き継ぎ・`koyomi standby [giveback]`・相手から定義を写す（未確認で置く）は入れた。2026-11-01 にこの PC で、86 のサービスを相手にして確かめた: サービスを止めて 12 秒で引き継ぎ、戻すと「両方で流している」を 1 度出し、giveback で待機に戻った）
+- [ ] 89. Defender の誤検出（S）: 署名の無い `koyomi.com` を Temp のフォルダーから `service install` すると（サービスを作り、Run を書き換える）、Defender が `Behavior:Win32/Persistence.A!ml` として消した（2026-11-01、`koyomi.exe` は消されなかった）。リリースの exe で、入れる場所（`~\.cargo\bin`・Program Files）と署名で起きるかを確かめる。
 - [x] 88. G5 HTTP を呼ぶ部品（M）: `kind = "http"`、状態コードで判定。API を叩くだけのジョブに curl を書かずに済むように。
 
 ## デザイン（画面の見本との差）

@@ -36,7 +36,6 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 
 - 多くの PC で流す（H9）。JP1・Control-M はエージェント、Rundeck は SSH・WinRM で、1 か所から多くの PC に流す。
   koyomi は PC ごとに koyomi を入れ、`[[remote]]` で LAN の koyomi どうしをつなぐ。
-- HA（H16）。JP1 はクラスタ、Control-M は二次ホストへ自動で、Airflow は scheduler を複数動かす。koyomi はサービスでの確かめが残る（TODO 87）。
 - Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi は見た目が作り途中（TODO 81）。
 - 長い保管とつながりの広さ。Control-M は Workload Archiving（最長 7 年）と MFT（FTP・SFTP・S3・Azure）、
   Airflow は provider（SFTP・IMAP・HTTP など）で広げる。koyomi の履歴は既定 90 日。
@@ -46,6 +45,8 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 
 - MCP（H24）は Rundeck（6.1〜、公式）と Control-M（試験中）も持つ。
 - 承認の待ち（C10）は JP1（保留）・Control-M（Confirm）・Airflow（3.1 からの HITL）も持つ。
+- HA（H16）は、待機系が自動で引き継ぐようになった（2026-11-01 にサービスで確かめた）。JP1 はクラスタ（共有ディスク）、Control-M は二次ホスト、Airflow は scheduler を複数動かす。
+  koyomi は共有のディスクも DB も要らないが、戻すのは人で、相手で動いていた回は引き継がない。
 
 ## 1. 基本の機能
 
@@ -116,7 +117,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H13 | メールを受けて起動 | ○ `[[when]] mail`（IMAP） | △ メール受信監視ジョブ。Windows は 32bit 版 Outlook 必須（64bit・365 版不可） | ? メール受信での起動は未発見（Mail は送信の Action のみ） | ? メールでの起動は見当たらず | △ IMAP provider の ImapAttachmentSensor（添付の名前を待つ） | × メールのトリガーなし |
 | H14 | 同じフローを並べて動かす（上限つき） | ○ `max` | △ ルートジョブネットごとに多重起動の可否。本数の上限は記載なし | ○ 同じ folder を New で何度も order 可。同時数は Resource:Pool | ○ Multiple Executions と Limit で同時の本数の上限 | ○ DAG の max_active_runs・設定の max_active_runs_per_dag | ○ MultipleInstancesPolicy=Parallel。同時数の上限は指定できない |
 | H15 | サービスとして動かす（サインインなし） | ○ 入れるのに管理者のターミナルが要る | ○ Windows サービス。JP1/Base の起動管理で OS 起動時に自動起動 | ○ Windows の Agent は既定で Local System のサービス | ○ Windows サービスとして入れられ、サインインなしで動く | △ Linux 用の systemd unit あり。Windows は WSL2/コンテナのみでネイティブ非対応 | ○ Password・S4U（schtasks /np）でログオンなしに実行 |
-| H16 | HA（待機系の引き継ぎ） | △ 待機と引き継ぎは入った。サービスでの確かめが残り（TODO 87） | ○ クラスタ構成（論理ホスト・共有ディスク、jajs_setup_cluster） | ○ EM・Server の二次ホストへ自動 failover。SaaS は HA 込み | △ 有償の Cluster＋Autotakeover。外部 DB と LB が要る | ○ scheduler を複数動かせる（Postgres/MySQL 8 の行ロック） | △ Failover Clustering の clustered scheduled task（AnyNode 等） |
+| H16 | HA（待機系の引き継ぎ） | ○ 待機系が `/health` を見張り、答えなければ引き継ぐ（共有ディスク・DB は要らない）。戻すのは人。動いていた回は引き継がない | ○ クラスタ構成（論理ホスト・共有ディスク、jajs_setup_cluster） | ○ EM・Server の二次ホストへ自動 failover。SaaS は HA 込み | △ 有償の Cluster＋Autotakeover。外部 DB と LB が要る | ○ scheduler を複数動かせる（Postgres/MySQL 8 の行ロック） | △ Failover Clustering の clustered scheduled task（AnyNode 等） |
 | H17 | HTTP を呼ぶ部品（状態コードで判定） | ○ `kind = "http"` | ○ HTTP 接続ジョブ。ステータスコードごとに終了コード 0〜9 を割当（Win/Linux） | △ Web Services REST plug-in。HTTP コードで成否を決める設定は記載なし | ○ HTTP Request ステップ。5.12 から応答コードの一覧・範囲・2xx で判定 | △ HttpOperator・HttpSensor の response_check（http provider） | × HTTP の動作なし |
 | H18 | 外への生存の合図 | ○ 外の URL を決めた間隔で叩く | ? 外部への生存通知は公式で見つからず | ? Watchdog の異常時スクリプトはあるが外への定期の合図は未発見 | △ 専用の機能は見当たらず。成功時の Webhook 通知で代わりにできる | △ scheduler_heartbeat を StatsD/OTel に送る。外の URL への ping は記載なし | × 生存の合図（heartbeat）なし |
 | H19 | 成績の報告（成功率・所要） | ○ `koyomi report --month` | △ 13-50 で実行エージェント稼働状況レポート。分析は Job Analysis（別） | ○ Reports: Jobs Executions（平均時間）・Workloads 統計。成功率専用は記載なし | ○ メトリクス API・rd metrics・Prometheus で成功率と時間 | △ Runs の所要時間の列・Grid の task duration。成功率の報告は記載なし | × 成績の報告なし |
