@@ -110,7 +110,7 @@ fn glob(pattern: &str, text: &str) -> bool {
 
 /// The role a request needs. Reads need `view`, but a definition's text needs `edit` (it is what
 /// would run); starting, stopping, rerunning and skipping runs and holding nets or skipping their
-/// next run need `run`;
+/// next run need `run`, as does an HA primary taking the schedules back (`POST /standby/release`);
 /// anything else, including what this table does not know yet, needs `edit`.
 pub fn needs(method: &str, path: &str) -> Role {
     let path = path.trim_end_matches('/');
@@ -118,7 +118,7 @@ pub fn needs(method: &str, path: &str) -> Role {
     match method {
         "GET" | "HEAD" if path == "/nets/text" => Role::Edit,
         "GET" | "HEAD" => Role::View,
-        "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release" | "/nets/skip-next") => Role::Run,
+        "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release" | "/nets/skip-next" | "/standby/release") => Role::Run,
         "POST" => match run_part.as_deref() {
             Some([id, "stop" | "rerun" | "skip"]) if !id.is_empty() => Role::Run,
             _ => Role::Edit,
@@ -160,6 +160,7 @@ mod tests {
         assert_eq!(needs("POST", "/something-new"), Role::Edit);
         assert_eq!(needs("GET", "/nets/text/"), Role::Edit);
         assert_eq!(needs("POST", "/nets/propose"), Role::Edit);
+        assert_eq!(needs("POST", "/standby/release"), Role::Run);
     }
 
     fn nets(patterns: &[&str]) -> Result<Nets, String> {

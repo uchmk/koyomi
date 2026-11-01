@@ -10,7 +10,7 @@ use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
 use crate::chore::Chore;
 use crate::duration;
-use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Wait};
+use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Takeover, Wait};
 use crate::quiet::OnQuiet;
 use crate::when::{AfterOn, Kind, MonthRule, OnClosed, When};
 
@@ -70,6 +70,9 @@ pub fn with_lines(net: &Jobnet) -> (String, Vec<(String, usize, usize)>) {
     }
     if !net.notify_to.is_empty() {
         push(&mut out, "notify_to", &list(&net.notify_to));
+    }
+    if net.takeover != Takeover::Leave {
+        push(&mut out, "takeover", "\"rerun\"");
     }
     if !net.params.is_empty() {
         out.push_str("\n[params]\n");

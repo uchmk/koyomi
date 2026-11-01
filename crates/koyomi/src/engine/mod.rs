@@ -26,6 +26,7 @@ use koyomi_core::jobnet::Jobnet;
 use koyomi_core::late::{self, Delay};
 use koyomi_core::run::{How, Run, State as RunState};
 use koyomi_core::scan::{def_of_text, link, scan_in, Def, Standing};
+use koyomi_core::standby::Resume;
 use koyomi_core::when::{self, Kind, OnClosed};
 
 use crate::notify;
@@ -39,6 +40,7 @@ pub mod http;
 mod logs;
 mod mails;
 mod ping;
+mod primary;
 mod retain;
 mod runner;
 mod schedule;
@@ -187,6 +189,9 @@ struct State {
     http_cfg: Option<koyomi_core::config::Http>,
     /// `[standby]`: while the PC it watches answers, no schedule or event runs here.
     standby: standby::Standby,
+    /// `[primary]`: asks the standby it names before the schedules run here, and waits while
+    /// that one has them (TODO 96).
+    primary: primary::Primary,
     /// Keeps the PC from sleeping while a job's process runs.
     awake: Option<ito_power::Awake>,
     /// The wake timer for the soonest time of a `wake = true` net; `None`: no net asks.
@@ -270,6 +275,7 @@ impl State {
             http: http::Http::default(),
             http_cfg: None,
             standby,
+            primary: primary::Primary::new(),
             awake: None,
             wake: None,
             power_look: None,
@@ -325,6 +331,7 @@ impl State {
                 self.ping_cfg = c.ping.clone();
                 self.http_cfg = c.http.clone();
                 self.standby.set(c.standby.as_ref(), &c.remote);
+                self.primary.set(c.primary.as_ref(), &c.remote);
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -539,10 +546,14 @@ impl State {
     fn tick_schedule(&mut self) {
         let now = Utc::now();
         let Some(checked) = self.schedule.look(now) else { return };
-        // Standing by: the PC watched runs these times. Nothing is written for them here, and
-        // after a takeover only the times from then on run.
-        if self.standby.waiting() {
+        // Standing by, or a primary whose standby has them: the other PC runs these times.
+        // Nothing is written for them here, and after a handover only the times from then on run.
+        if self.standby.waiting() || self.primary.held().is_some() {
             self.schedule.looked(now, false);
+            return;
+        }
+        // A primary still asking its standby: the times wait, and are judged once it knows.
+        if self.primary.asking() {
             return;
         }
         let mut due: Vec<(usize, DateTime<Utc>, NaiveDateTime)> = Vec::new();
@@ -598,16 +609,103 @@ impl State {
         self.schedule.looked(now, !due.is_empty());
     }
 
-    /// Polls the PC `[standby]` watches, and tells of a takeover or of both running.
+    /// Polls the PC `[standby]` watches, and tells of a takeover, of both running and of a
+    /// handover back. On a takeover the runs that were going there start again here from where
+    /// they were for the nets that say so (`takeover = "rerun"`); the rest are written down.
     fn tick_standby(&mut self) {
         self.write_copies();
-        let (title, line) = match self.standby.tick() {
-            Some(standby::Told::TookOver(line)) => ("koyomi: 待機から引き継いだ", line),
-            Some(standby::Told::Both(line)) => ("koyomi: 両方で流している", line),
-            None => return,
+        for told in self.standby.tick() {
+            let (title, line) = match told {
+                standby::Told::TookOver(line, runs) => {
+                    let from = self.standby.watched().unwrap_or_default().to_owned();
+                    let taken = self.take_runs(runs, &from);
+                    ("koyomi: 待機から引き継いだ", format!("{line}{taken}"))
+                }
+                standby::Told::Both(line) => ("koyomi: 両方で流している", line),
+                standby::Told::Waiting(line) => ("koyomi: 引き取りを待っている", line),
+                standby::Told::GaveBack(line) => ("koyomi: 戻した", line),
+            };
+            crate::notify::tell(&self.notify, "failed", title, &line);
+            crate::say(&format!("koyomi: {line}"), false);
+        }
+    }
+
+    /// Asks the standby `[primary]` names, and tells when it took the schedules or let them go.
+    fn tick_primary(&mut self) {
+        if let Some((title, line)) = self.primary.tick() {
+            crate::notify::tell(&self.notify, "failed", title, &line);
+            crate::say(&format!("koyomi: {line}"), false);
+        }
+    }
+
+    /// The runs `from` had going when this standby took over: each of a net with
+    /// `takeover = "rerun"` starts again here from the first job that had not ended ok; the rest
+    /// are written down as not taken over, for a person to decide. What to add to the line.
+    fn take_runs(&mut self, runs: Option<Vec<Run>>, from: &str) -> String {
+        let Some(runs) = runs else {
+            return "。向こうで動いていた回は読めていなかった".to_owned();
         };
-        crate::notify::tell(&self.notify, "failed", title, &line);
-        crate::say(&format!("koyomi: {line}"), false);
+        if runs.is_empty() {
+            return String::new();
+        }
+        let today = Local::now().date_naive();
+        let mut again = 0;
+        let mut left = Vec::new();
+        for theirs in &runs {
+            let def = self.defs.iter().find(|d| d.id == theirs.jobnet && d.standing == Standing::Confirmed).cloned();
+            let why = match (koyomi_core::standby::resume(theirs, def.as_ref().and_then(|d| d.net.as_ref())), &def) {
+                (Resume::Rerun, Some(d)) => match self.stopped(d, today) {
+                    Some((_, why)) => why,
+                    None => match self.runner.resume(d, theirs, from) {
+                        Ok(_) => {
+                            again += 1;
+                            continue;
+                        }
+                        Err(e) => e,
+                    },
+                },
+                (Resume::Rerun, None) => "この PC に流せる定義がない".to_owned(),
+                (Resume::Leave(why), _) => why,
+            };
+            left.push(self.runner.left(theirs, def.as_ref(), from, &why));
+        }
+        let mut out = format!("。{from} で動いていた {} 回: 続きから流す {again} 回", runs.len());
+        if !left.is_empty() {
+            out.push_str(&format!("、引き継いでいない {}（koyomi rerun <id> で続きから流せる）", left.join("・")));
+        }
+        out
+    }
+
+    /// `"ha"` of `GET /health`, and with `release` the primary's `POST /standby/release`: with
+    /// `[standby]`, whether it has the schedules and is ready to give them back; with
+    /// `[primary]`, whether it runs them. A release is refused within 30 s of a time of a
+    /// confirmed net, so no time falls between the two PCs while the answer travels.
+    fn handover(&mut self, release: bool) -> Result<String, String> {
+        if self.standby.watched().is_some() {
+            if release {
+                if let Some(near) = self.near_time() {
+                    return Err(format!("時刻が近い（{near}）。少しあとで"));
+                }
+            }
+            return self.standby.handover(release).map(|v| v.to_string());
+        }
+        match self.primary.json() {
+            Some(_) if release => Err("この PC は [primary]。戻すのは待機の PC".to_owned()),
+            Some(v) => Ok(v.to_string()),
+            None => Err("koyomi.toml に [standby] も [primary] もない".to_owned()),
+        }
+    }
+
+    /// A time of a confirmed net within 30 s of now, as `<net> <time>`.
+    fn near_time(&self) -> Option<String> {
+        let now = Utc::now();
+        let gap = chrono::Duration::seconds(30);
+        self.defs.iter().filter(|d| d.standing == Standing::Confirmed).find_map(|d| {
+            let net = d.net.as_ref()?;
+            let cal = d.calendar.as_deref().and_then(|c| self.calendars.get(c));
+            let due = when::due_in(&Local, &net.when, cal, now - gap, now + gap);
+            due.first().map(|(_, planned)| format!("{} {}", d.id, planned.format("%H:%M:%S")))
+        })
     }
 
     /// Writes what the standby copied from the engine it watches, unconfirmed (TODO 87). A
@@ -666,7 +764,7 @@ impl State {
     /// Starts the times that waited for their net's `quiet` hours when the
     /// hours are over, judged again then (the net may be held or running now).
     fn tick_quiet(&mut self) {
-        if self.quieted.is_empty() {
+        if self.quieted.is_empty() || self.primary.asking() {
             return;
         }
         let now = Local::now().naive_local();
@@ -754,6 +852,9 @@ impl State {
         if self.standby.waiting() {
             return Some((RunState::Skipped, "待機中（見張っている PC が流す）".to_owned()));
         }
+        if let Some(why) = self.primary.held() {
+            return Some((RunState::Skipped, why));
+        }
         if self.held.paused {
             return Some((RunState::Held, "スケジュールを止めている（koyomi resume）".to_owned()));
         }
@@ -782,6 +883,10 @@ impl State {
     /// (`events::Events`). What does not start is recorded with why, as a time
     /// is. A file that comes while its net runs waits for the run to end.
     fn tick_events(&mut self) {
+        // A primary still asking its standby: the events wait until it knows.
+        if self.primary.asking() {
+            return;
+        }
         let now = Local::now().naive_local();
         let today = now.date();
         if self.events.take_start() {
@@ -1019,6 +1124,7 @@ impl State {
             .chain(ping)
             .chain(self.http.notes())
             .chain(self.standby.notes())
+            .chain(self.primary.notes())
             .collect();
         Snapshot {
             defs: self.defs.clone(),
@@ -1032,6 +1138,7 @@ impl State {
                 .outage_line()
                 .into_iter()
                 .chain(self.standby.line())
+                .chain(self.primary.caution())
                 .chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS))
                 .collect(),
             calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
@@ -1056,6 +1163,9 @@ impl State {
             out.push_str(&format!("\n{line}"));
         }
         if let Some(line) = self.standby.line() {
+            out.push_str(&format!("\n{line}"));
+        }
+        if let Some(line) = self.primary.line() {
             out.push_str(&format!("\n{line}"));
         }
         if self.held.paused {
@@ -1279,7 +1389,7 @@ impl State {
     }
     /// Starts the times that were moved once their new time comes.
     fn tick_shift(&mut self) {
-        if self.held.shifts.is_empty() || self.held_bad.is_some() {
+        if self.held.shifts.is_empty() || self.held_bad.is_some() || self.primary.asking() {
             return;
         }
         let now = Local::now().naive_local();
@@ -1820,7 +1930,12 @@ impl State {
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
             Request::Standby { give_back: true } => self.standby.give_back(),
-            Request::Standby { give_back: false } => self.standby.status().ok_or_else(|| "koyomi.toml に [standby] がない".to_owned()),
+            Request::Standby { give_back: false } => self
+                .standby
+                .status()
+                .or_else(|| self.primary.line())
+                .ok_or_else(|| "koyomi.toml に [standby] も [primary] もない".to_owned()),
+            Request::Handover { release } => self.handover(*release),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
             Request::VersionText { id, version } => self.version_text(id, version),
@@ -1868,6 +1983,7 @@ fn over_http(request: &Request) -> bool {
             | Request::SkipNext { .. }
             | Request::Show { .. }
             | Request::Propose { .. }
+            | Request::Handover { .. }
     )
 }
 
@@ -1887,6 +2003,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Pause => ("pause", String::new()),
         Request::Resume => ("resume", String::new()),
         Request::Standby { give_back: true } => ("giveback", String::new()),
+        Request::Handover { release: true } => ("handover-release", String::new()),
         Request::Save { id, .. } => ("save", id.clone()),
         Request::Propose { id, .. } => ("propose", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
@@ -2088,6 +2205,7 @@ pub fn run(own_tray: bool) -> i32 {
         state.ping.tick(state.ping_cfg.as_ref(), state.ping_plain_ok);
         state.http.tick(state.http_cfg.as_ref());
         state.tick_standby();
+        state.tick_primary();
         state.tick_wake();
         state.tick_awake();
         state.tick_late();

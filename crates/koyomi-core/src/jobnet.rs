@@ -95,6 +95,22 @@ pub struct Jobnet {
     /// net's notices go to; empty: the places with no name.
     #[serde(default)]
     pub notify_to: Vec<String>,
+    /// `takeover = "rerun"`: when the standby takes over (`[standby]`), a run of this net the
+    /// primary was running starts again there from the jobs that had not passed.
+    #[serde(default)]
+    pub takeover: Takeover,
+}
+
+/// `takeover`: what the standby does with a run of the net the primary was running when it took over.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Takeover {
+    /// Written down as not taken over; a person decides.
+    #[default]
+    Leave,
+    /// Started again on the standby from the jobs that had not passed (it may run twice
+    /// when the primary was only cut off, not down).
+    Rerun,
 }
 
 /// `require`: the conditions of the PC a job waits for (the Task Scheduler's 条件 tab).
@@ -599,6 +615,7 @@ struct RawNet {
     quiet: Field,
     on_quiet: Field,
     notify_to: Field,
+    takeover: Field,
 }
 
 #[derive(Deserialize)]
@@ -722,6 +739,10 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
         _ => OnQuiet::Wait,
     };
     let notify_to = c.names(&raw.notify_to, "notify_to");
+    let takeover = match c.choice(&raw.takeover, "takeover", &["leave", "rerun"]) {
+        Some("rerun") => Takeover::Rerun,
+        _ => Takeover::Leave,
+    };
     c.params = c.params(&raw.params);
     let jobs = c.jobs(&raw.job);
     let when = c.whens(&raw.when);
@@ -746,6 +767,7 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
             quiet,
             on_quiet,
             notify_to,
+            takeover,
         })
     } else {
         c.problems.sort_by_key(|p| p.line);
@@ -2994,6 +3016,18 @@ to = [\"夜間\"]
             problems("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = [\"c\"]\n"),
             ["a.toml の 5 行目: to は kind = \"notify\" にだけ書く"]
         );
+    }
+
+    /// `takeover = "rerun"` is read and written back; not written, the standby leaves the run.
+    #[test]
+    fn a_net_says_whether_the_standby_runs_it_again() {
+        let text = "format = 1\ntakeover = \"rerun\"\n\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n";
+        let n = parse(text).unwrap();
+        assert_eq!(n.takeover, Takeover::Rerun);
+        assert_eq!(crate::write::text(&n), text);
+        assert_eq!(parse("format = 1\n").unwrap().takeover, Takeover::Leave);
+        assert_eq!(parse("format = 1\ntakeover = \"leave\"\n").unwrap().takeover, Takeover::Leave);
+        assert_eq!(problems("format = 1\ntakeover = \"yes\"\n"), ["a.toml の 2 行目: takeover は \"leave\"・\"rerun\" のどれか"]);
     }
 
     const FLOW: &str = r#"format = 1

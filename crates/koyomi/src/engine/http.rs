@@ -8,12 +8,14 @@
 //!   `koyomi run`: 202 and `{"run": "<id>"}`, or 422 and the engine's reason.
 //! - `GET /runs/<id>` is the run as `koyomi status` / `history` know it, with `"over"`.
 //! - Read only, for another PC's window, the Web UI and an HA standby (TODO 80, 81, 87):
-//!   `GET /health` (the engine's status line), `GET /nets` (each definition's id, name,
-//!   standing, hold and the hash of its file), `GET /runs` (today's and the running ones; `?from=&to=` for days)
+//!   `GET /health` (the engine's status line, and `"ha"` with `[standby]` or `[primary]`), `GET /nets` (each definition's id, name,
+//!   standing, hold and the hash of its file), `GET /runs` (today's and the running ones; `?from=&to=` for days, `?running=1` only those not over)
 //!   and `GET /runs/<id>/log?job=<job>` (the tail of a job's log, secrets already `***`).
 //! - `POST /runs/<id>/stop` stops the run's jobs (`koyomi kill`).
 //! - `POST /nets/skip-next` with `{"net", "cancel"?}` skips the net's next scheduled run
 //!   (`koyomi skip-next`), for the `run` role like hold and release.
+//! - `POST /standby/release`, for the `run` role (TODO 96): a primary with `[primary]` takes its
+//!   schedules back from this standby: 200 once it let go, 409 with why not.
 //! - Definitions, for the `edit` role (TODO 83): `GET /nets/text?net=<group>/<name>` is the
 //!   file's text and hash; `POST /nets/propose` with `{"net", "text", "base"?}` writes it as
 //!   the editor's save does, but leaves it unconfirmed: it runs only once this PC's window
@@ -266,6 +268,7 @@ fn within(req: &ito_http::Request, nets: &Nets, ask: impl Fn(&Request) -> Result
 fn narrow(r: &Request, nets: &Nets, ask: &impl Fn(&Request) -> Result<String, String>) -> Result<Result<String, String>, String> {
     Ok(match r {
         Request::Status => ask(r).map(|s| s.lines().next().and_then(|l| l.split(':').next()).unwrap_or_default().to_owned()),
+        Request::Handover { release: false } => ask(r),
         Request::List => ask(r).and_then(|t| Snapshot::parse(&t)).map(|s| {
             Snapshot {
                 defs: s.defs.into_iter().filter(|d| nets.reaches(&d.id)).collect(),
@@ -411,6 +414,7 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("POST", "/nets/skip-next", ..) => skip_next(req, ask),
         ("POST", "/nets/propose", ..) => propose(req, ask),
         ("GET", "/nets/text", ..) => def_text(req, ask),
+        ("POST", "/standby/release", ..) => release_standby(ask),
         ("POST", ..) if act.is_some() => match act.unwrap_or_default() {
             ("stop", id) => stop_run(id, ask),
             ("rerun", id) => rerun(req, id, ask),
@@ -427,24 +431,45 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         (_, "/nets/skip-next", ..) => Response::error(405, "POST で次の回を飛ばす・取り消す"),
         (_, "/nets/propose", ..) => Response::error(405, "POST で定義を出す"),
         (_, "/nets/text", ..) => Response::error(405, "GET で読む"),
+        (_, "/standby/release", ..) => Response::error(405, "POST で引き取る"),
         _ if act.is_some() => Response::error(405, "POST で止める・流し直す・飛ばす"),
         _ => Response::error(
             404,
-            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|skip-next|propose・GET /health だけ",
+            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|skip-next|propose・POST /standby/release・GET /health だけ",
         ),
     }
 }
 
-/// `GET /health`: the engine answers, with its status line. What an HA standby polls.
+/// `GET /health`: the engine answers, with its status line. What an HA standby polls; with
+/// `[standby]` or `[primary]`, `"ha"` says which and whether it has the schedules (TODO 96).
 fn health(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     match ask(&Request::Status) {
-        Ok(line) => Response::ok(serde_json::json!({
-            "ok": true,
-            "version": env!("CARGO_PKG_VERSION"),
-            "proto": proto::PROTO,
-            "status": line.trim(),
-        })),
+        Ok(line) => {
+            let mut out = serde_json::json!({
+                "ok": true,
+                "version": env!("CARGO_PKG_VERSION"),
+                "proto": proto::PROTO,
+                "status": line.trim(),
+            });
+            let ha = ask(&Request::Handover { release: false }).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            if let Some(ha) = ha {
+                out["ha"] = ha;
+            }
+            Response::ok(out)
+        }
         Err(e) => Response::error(503, &e),
+    }
+}
+
+/// `POST /standby/release`: the primary takes its schedules back. 200 once this standby let
+/// go, 409 with why not (not ready yet, or a time is near).
+fn release_standby(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    match ask(&Request::Handover { release: true }).and_then(|t| serde_json::from_str::<serde_json::Value>(&t).map_err(|e| e.to_string())) {
+        Ok(mut v) => {
+            v["released"] = serde_json::Value::Bool(true);
+            Response::ok(v)
+        }
+        Err(e) => Response::error(409, &e),
     }
 }
 
@@ -475,6 +500,7 @@ fn nets(ask: impl Fn(&Request) -> Result<String, String>) -> Response {
 }
 
 /// `GET /runs`: today's and the running ones, or with `from` and `to` (`YYYY-MM-DD`) the days'.
+/// With `running=1`, only the ones not over: what an HA standby reads to take them over.
 fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let r = match (req.query("from"), req.query("to")) {
         (None, None) => Request::Runs,
@@ -483,7 +509,11 @@ fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
     };
     let days = matches!(r, Request::History { .. });
     match ask(&r).and_then(|t| Runs::parse(&t)) {
-        Ok(runs) => Response::ok(serde_json::json!({ "runs": runs.runs.iter().map(run_json).collect::<Vec<_>>() })),
+        Ok(runs) => {
+            let running = req.query("running") == Some("1");
+            let runs: Vec<_> = runs.runs.iter().filter(|r| !running || !r.is_over()).map(run_json).collect();
+            Response::ok(serde_json::json!({ "runs": runs }))
+        }
         Err(e) if days => Response::error(400, &e),
         Err(e) => Response::error(500, &e),
     }
@@ -947,6 +977,47 @@ mod tests {
     }
 
     /// the read-only paths answer from the same door requests as the CLI.
+    #[test]
+    fn the_handshake_goes_through_health_and_release() {
+        let ask = |r: &Request| match r {
+            Request::Status => Ok("動いている\n".to_owned()),
+            Request::Handover { release: false } => Ok(r#"{"role":"standby","active":true,"ready":true}"#.to_owned()),
+            Request::Handover { release: true } => Err("時刻が近い（g/a 09:00:00）。少しあとで".to_owned()),
+            Request::Runs => {
+                let two = runs(&["20261031-090000-01", "20261031-090000-02"]);
+                Ok(two.replacen("ended = \"2026-10-31T09:01:00\"\nstate = \"ok\"", "state = \"running\"", 1))
+            }
+            _ => Err("no".to_owned()),
+        };
+        let h = handle(&req("GET", "/health", ""), ask);
+        assert_eq!((h.status, h.json["ha"]["role"].as_str(), h.json["ha"]["ready"].as_bool()), (200, Some("standby"), Some(true)));
+        let r = handle(&req("POST", "/standby/release", "{}"), ask);
+        assert_eq!((r.status, r.json["error"].as_str()), (409, Some("時刻が近い（g/a 09:00:00）。少しあとで")));
+        assert_eq!(handle(&req("GET", "/standby/release", ""), ask).status, 405);
+        let r = handle(&with_query(req("GET", "/runs", ""), &[("running", "1")]), ask);
+        assert_eq!(
+            r.json["runs"].as_array().map(|a| a.iter().map(|r| r["id"].as_str()).collect::<Vec<_>>()),
+            Some(vec![Some("20261031-090000-01")])
+        );
+        assert_eq!(handle(&req("GET", "/runs", ""), ask).json["runs"].as_array().map(Vec::len), Some(2));
+        let let_go = |r: &Request| match r {
+            Request::Handover { release: true } => Ok(r#"{"role":"standby","active":false}"#.to_owned()),
+            _ => Err("no".to_owned()),
+        };
+        let r = handle(&req("POST", "/standby/release", "{}"), let_go);
+        assert_eq!((r.status, r.json["released"].as_bool(), r.json["active"].as_bool()), (200, Some(true), Some(false)));
+        // Neither [standby] nor [primary]: no "ha".
+        let plain = |r: &Request| match r {
+            Request::Status => Ok("動いている\n".to_owned()),
+            _ => Err("no".to_owned()),
+        };
+        assert!(handle(&req("GET", "/health", ""), plain).json.get("ha").is_none());
+        // A user narrowed to some nets reads "ha" but cannot take the schedules back.
+        let nets = Nets::parse(&["経理/*".to_owned()]).unwrap();
+        assert_eq!(within(&req("GET", "/health", ""), &nets, ask).json["ha"]["role"].as_str(), Some("standby"));
+        assert_eq!(within(&req("POST", "/standby/release", "{}"), &nets, let_go).status, 403);
+    }
+
     #[test]
     fn the_read_paths_answer_from_the_door() {
         let asked = RefCell::new(Vec::new());

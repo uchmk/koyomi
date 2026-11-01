@@ -579,6 +579,41 @@ impl Run {
         Ok(run)
     }
 
+    /// `theirs`, a run the primary `from` was running when this standby took over (HA,
+    /// `takeover = "rerun"`), started again here with `net`: as [`Run::rerun`], the jobs that
+    /// had passed there are carried over and the rest run, a job that was running there from
+    /// its start.
+    pub fn taken_over(id: &str, theirs: &Run, net: &Jobnet, from: &str, now: NaiveDateTime) -> Result<Run, String> {
+        let mut over = theirs.clone();
+        over.ended.get_or_insert(now);
+        let mut run = Run::rerun(id, &over, net, None, now)?;
+        run.file = theirs.file.clone();
+        run.reason = format!("{from} で動いていた {} の続き", theirs.id);
+        Ok(run)
+    }
+
+    /// `theirs`, a run the primary `from` was running when this standby took over, written down
+    /// here as not taken over, for a person to decide: the jobs that had ended keep how they
+    /// ended, the rest are 未実行, and the run is ↷ with `why`.
+    pub fn left_over(id: &str, theirs: &Run, from: &str, why: &str, now: NaiveDateTime) -> Run {
+        let mut run = theirs.clone();
+        run.id = id.to_owned();
+        for j in run.jobs.iter_mut().filter(|j| j.ended.is_none()) {
+            j.reason = match j.state {
+                State::Running | State::RunningError => format!("{from} で動いていた（終わったかは分からない）"),
+                _ => String::new(),
+            };
+            j.state = State::NotRun;
+            j.ended = Some(now);
+        }
+        run.state = State::Missed;
+        run.ended = Some(now);
+        run.reason = format!("{from} で動いていた・引き継いでいない（{} / {why}）", theirs.id);
+        run.lock = None;
+        run.delays.clear();
+        run
+    }
+
     /// Marks a run of the schedule that started after its time (`missed =
     /// "once"`): the reason reads 遅れて実行（2:00 の予定を 8:12 に流しました）.
     pub fn mark_late(&mut self) {
@@ -1410,6 +1445,35 @@ mod tests {
         let r = Run::rerun("r7", &done, &net, Some("d"), now).unwrap();
         assert_eq!(r.ready(), vec!["d"]);
         assert_eq!(r.job("b").unwrap().reason, CARRIED);
+    }
+
+    /// A run the primary was running when the standby took over: started again from what had
+    /// not passed, or written down as not taken over, the jobs that had not ended 未実行.
+    #[test]
+    fn a_run_of_the_primary_is_taken_over_or_left() {
+        let now = at("2026-10-30 10:00:00");
+        let net = diamond_net();
+        let mut theirs = diamond();
+        ended(&mut theirs, "a", 0, "2026-10-30 09:00:01");
+        theirs.start("b", at("2026-10-30 09:00:02"));
+        ended(&mut theirs, "c", 0, "2026-10-30 09:00:03");
+        assert!(!theirs.is_over());
+        let r = Run::taken_over("r2", &theirs, &net, "pc-a", now).unwrap();
+        assert_eq!((r.how, r.state, r.reason.as_str()), (How::Rerun, State::Running, "pc-a で動いていた r1 の続き"));
+        assert_eq!(r.job("a").unwrap().reason, CARRIED);
+        assert_eq!(r.job("c").unwrap().state, State::Ok);
+        assert_eq!(r.ready(), vec!["b"]);
+        assert!(!theirs.is_over(), "theirs is left as it was");
+
+        let l = Run::left_over("r3", &theirs, "pc-a", "takeover = \"rerun\" ではない", now);
+        assert_eq!((l.id.as_str(), l.state, l.ended), ("r3", State::Missed, Some(now)));
+        assert_eq!(l.reason, "pc-a で動いていた・引き継いでいない（r1 / takeover = \"rerun\" ではない）");
+        let b = l.job("b").unwrap();
+        assert_eq!((b.state, b.ended, b.reason.as_str()), (State::NotRun, Some(now), "pc-a で動いていた（終わったかは分からない）"));
+        let d = l.job("d").unwrap();
+        assert_eq!((d.state, d.reason.as_str()), (State::NotRun, ""));
+        assert_eq!(l.job("a").unwrap().state, State::Ok);
+        assert!(l.not_started() && l.is_over());
     }
 
     /// From the jobs after a failed one: it ends as スキップ or 警告 without running, and the next go.

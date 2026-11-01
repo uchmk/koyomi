@@ -1,6 +1,6 @@
 # Checklist
 
-813 checks in TESTING.md, 807 left for a person.
+827 checks in TESTING.md, 821 left for a person.
 
 ## 1. Start
 
@@ -1119,3 +1119,20 @@
 - [ ] **101.10** The editor: drag 別の PC で動かす（SSH） from 基本 → The pane shows 動かす PC・コマンド・ホスト鍵・SSH の秘密鍵・パスワード, 結果の判定, timeout and retry; saving writes `kind = "ssh"` with `on`・`command`・`host_key` (and `key`・`password`・`judge` when set); an `on` without `ssh://` is refused 〔未訳〕
 - [ ] **101.11** Approve a net with an ssh → The confirm box shows 動かす PC, コマンド (lines joined with ⏎) and the host key instead of a script 〔未訳〕
 - [ ] **101.12** A Linux server: `command = "sleep 600"`; run it with an engine that has a console (`cargo run -p koyomi -- engine` on Windows, or the engine on Linux or macOS), and once the log shows it started, 強制終了 it; then the same with the release `koyomi.exe` on Windows, and with `run_as` → With the console: 強制終了 within a few seconds, the reason `強制終了、<server> のコマンドにも止まるよう頼んだ（TERM）`, and `pgrep -f "sleep 600"` on the server finds nothing. The release `koyomi.exe`: 強制終了 after about 10 s with no 頼んだ (the limit in DECISIONS.md). `run_as`: 強制終了 at once with no 頼んだ 〔未訳〕
+
+## 102. Hand back and take over runs (`give_back`, `[primary]`, `takeover = "rerun"`; TODO 96)
+
+- [ ] **102.1** Start B's engine, then A's; `koyomi standby` on both → A: `[primary] b が待機している。この PC で流す`; B: `待機中: a を見張っている…`. `t/clock` runs on A only 〔未訳〕
+- [ ] **102.2** `koyomi check` with `[standby]` and `[primary]` both, `give_back = "sometimes"`, a net with `takeover = "maybe"` → Each is an error (`[standby] と [primary] は一緒に書けない…` for the first) 〔未訳〕
+- [ ] **102.3** Stop B; restart A; `koyomi standby` on A at once, then after 10 s → First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then `koyomi: 待機の PC` `b が答えないので、この PC で流す` and A runs. Start B again 〔未訳〕
+- [ ] **102.4** On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) → After about 10 s B says `koyomi: 待機から引き継いだ` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` 〔未訳〕
+- [ ] **102.5** B's window: the runs of `t/r` and `t/l` → `t/r` runs `two` (`one` shows it ended ok on A, not run again); `t/l` is ↷ with `a で動いていた・引き継いでいない（<A's id> / …）`, `two` 未実行 with `a で動いていた（終わったかは分からない）` 〔未訳〕
+- [ ] **102.6** On B `koyomi rerun <t/l's id>` → `t/l` runs from `two` on B 〔未訳〕
+- [ ] **102.7** Start A again (same console) → A says `koyomi: 待機の PC` `b が引き継いでいる。返されるまで…`; `t/clock` does not run on A; B says `koyomi: 引き取りを待っている`; after about 10 s B says `koyomi: 戻した` (`a が引き取りに来たので戻した。また見張る`) and A `b から戻った。この PC で流す` 〔未訳〕
+- [ ] **102.8** B's `standby.toml` in its state folder; `koyomi ops` on B → One line each for the takeover and the hand-back; ops has `handover-release` 〔未訳〕
+- [ ] **102.9** Repeat 102.4 and 102.7 with `koyomi run t/l` started on B just before A comes back → The run on B goes on to the end after the hand-back; A runs the schedules 〔未訳〕
+- [ ] **102.10** Make `t/clock`'s next time 20 s after you start A again in 102.7 → B answers 409; A's `koyomi standby` shows `[primary] b: 時刻が近い（t/clock HH:MM:SS）。少しあとで`; it is handed back on a later ask, and `t/clock` runs once (on one of them) 〔未訳〕
+- [ ] **102.11** `give_back = "manual"` on B (restart B); repeat 102.4, then start A → A waits; B's `koyomi standby` says `…戻すのは koyomi standby giveback`; `koyomi standby giveback` on B says `a が引き取りを待っているので、次に聞いてきたら戻す`, and within 5 s A runs. `koyomi ops` on B has `giveback` 〔未訳〕
+- [ ] **102.12** Take `[primary]` out of A; with `give_back = "auto"` repeat 102.4, then start A → A runs at once; B says `koyomi: 両方で流している` (`…a が 2 回続けて答えたらこちらは止める`) and after about 10 s `koyomi: 戻した` 〔未訳〕
+- [ ] **102.13** Put `[primary]` back; on B give `a` `nets = ["t/*"]`; repeat 102.4, then start A → A stays waiting; its cautions show `[primary] b: 引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）`. Take `nets` out: A takes them back 〔未訳〕
+- [ ] **102.14** Clean up → Stop both engines (only the two started here), `koyomi secret delete t96-a` and `t96-b`, remove `%TEMP%\koyomi-t96` 〔未訳〕

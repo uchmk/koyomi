@@ -13,7 +13,7 @@ use koyomi_core::scan::Def;
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 33;
+pub const PROTO: u32 = 34;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -119,6 +119,12 @@ pub enum Request {
     /// schedules back to the PC it watches and watch again.
     Standby {
         give_back: bool,
+    },
+    /// The HA handshake (TODO 96): `"ha"` of `GET /health` (JSON: a standby says whether it has
+    /// the schedules and may give them back, a primary whether it runs them); with `release`, a
+    /// primary's `POST /standby/release` taking them back from this standby.
+    Handover {
+        release: bool,
     },
     /// `request` came over HTTP from `by` (`[[http.user]]`'s name, or `default` for `[http]`'s
     /// token): written down with who did it. Only what the HTTP paths ask for goes through.

@@ -177,7 +177,7 @@
 - [x] 93. C9 共有のロックと数のロック（S〜M）: 今の `lock` は名前ごとに 1 本だけ。読むだけのネットが一緒に流れる共有のロックと、「同時に 3 本まで」の数のロックを足す。Control-M の Lock（Shared/Exclusive）と Resource Pool、Airflow の pool にあたる。（2026-11-01。`lock = { name = "販売DB", shared = true }` と koyomi.toml の `[locks]` `"API枠" = 3`。待ち合わせはせず、入れないときは断る・🔒 止めたにして、理由に名前と持ち方を出す。判定は koyomi-core の `lock::admit`）
 - [x] 94. H12 ジョブネット・フォルダーごとのロール（M）: `[[http.user]]` に `nets = ["経理/*"]`。今の view・run・edit は全部のネットにかかる。JP1 の資源グループ・Rundeck の ACL にあたる。（2026-11-01 に入れた: `nets` の外のネット・実行は無いものと同じ。形の外の propose と全部のネットにかかるものは 403。この PC の窓と CLI は変わらない）
 - [x] 95. H9 koyomi の無い PC でコマンドを流す（M）: SSH で別の PC のコマンドを流すジョブの部品（WinRM は後で）。Rundeck のノードにあたる。ito に無いので crate-request で頼む。（2026-11-01。`kind = "ssh"` の `on = "ssh://…"` と `command`。`koyomi ssh run` が ito-sftp の `exec` でつなぎ、出力をログに流して相手の終わりのコードで判じる。つながらない・シグナルは 255 と日本語の理由。止めても相手のコマンドが止まるかは相手しだい。WinRM は後で）（2026-11-01 追記: ito 0.187.0 の柔らかい止めで、止めるときは先に頼み、相手のコマンドに TERM を送ってから 10 秒で終わらせる。`run_as` と Windows の配る版（コンソールが無い）ではまだ届かない。印はサーバー）
-- [ ] 96. H16 HA の仕上げ（L）: 1 台目が戻ったら自動で返す形を選べるようにする（今は人が `koyomi standby giveback`）。1 台目で動いていた回を引き継ぐ。DECISIONS の「戻すのは人」を決め直す。
+- [x] 96. H16 HA の仕上げ（L）: 1 台目が戻ったら自動で返す形を選べるようにする（今は人が `koyomi standby giveback`）。1 台目で動いていた回を引き継ぐ。DECISIONS の「戻すのは人」を決め直す。（2026-11-01 に入れた: `[standby] give_back = "auto"`、1 台目の `[primary]` と `/health` の `"ha"`・`POST /standby/release` で受け渡す。ネットの `takeover = "rerun"` で続きから流し、ほかは引き継いでいない回として残す。どれも書かなければ前のまま）
 
 ## デザイン（画面の見本との差）
 

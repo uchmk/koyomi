@@ -82,6 +82,8 @@ usage: koyomi [--version | --help | env]
                                      where it is used: nets by calendar, child nets, nets that wait for or follow it, jobs that run it
        koyomi pause | resume         stop the whole schedule / start it again (runs by hand still go)
        koyomi standby [giveback]     with [standby]: watching the other PC or taken over; giveback hands the schedules back
+                                     (give_back = auto does it once the other PC answers again; with [primary] there,
+                                     it takes them back itself). With [primary]: whether the standby has them
        koyomi calendar <name> [--month YYYY-MM]
                                      the month as calendars/<name>.toml counts it (this month when none)
        koyomi report [YYYY-MM] [--csv <file>]

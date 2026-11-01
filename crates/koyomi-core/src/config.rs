@@ -4,7 +4,8 @@
 //! address the engine calls while it is alive, `[http]`, where it
 //! listens for other programs (on this PC, or with `lan` on the network over
 //! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
-//! this one stands by for (HA), and `[locks]`, how many nets may hold a `lock` at once.
+//! this one stands by for (HA), `[primary]`, which of them stands by for this one, and
+//! `[locks]`, how many nets may hold a `lock` at once.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -34,52 +35,103 @@ pub struct Config {
     pub remote: Vec<Remote>,
     /// `[standby]`: stand by for one `[[remote]]`; run the schedules here only once it stops answering.
     pub standby: Option<Standby>,
+    /// `[primary]`: the `[[remote]]` that stands by for this PC; ask it before running the schedules.
+    pub primary: Option<Primary>,
     /// `[locks]`: `"API枠" = 3`, how many nets may hold that `lock` exclusively at once.
     /// A name not listed has 1. Kept as written so [`Config::parse`] can say what is wrong in Japanese.
     pub locks: toml::Table,
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
-/// it does not answer, take over its schedules (`koyomi standby giveback` hands them back).
+/// it does not answer, take over its schedules (`koyomi standby giveback` hands them back, or with
+/// `give_back = "auto"` the standby itself once the primary has answered `misses` polls in a row).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Standby {
     pub watch: String,
     /// As a length (`20s`). From 5 seconds to 10 minutes.
-    #[serde(default = "Standby::every_default")]
+    #[serde(default = "every_default")]
     pub every: String,
     /// From 1 to 20.
-    #[serde(default = "Standby::misses_default")]
+    #[serde(default = "misses_default")]
+    pub misses: u32,
+    /// Who hands the schedules back once the primary answers again.
+    #[serde(default)]
+    pub give_back: GiveBack,
+}
+
+/// `[standby] give_back`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GiveBack {
+    /// A person: `koyomi standby giveback`.
+    #[default]
+    Manual,
+    /// The standby, once the primary has answered `misses` polls in a row.
+    Auto,
+}
+
+/// `[primary]`: the `[[remote]]` named `standby` stands by for this PC (its `[standby]` watches
+/// this one). Before the schedules run here, this one asks it whether it has taken over, and while
+/// it has, waits for it to hand them back instead of running them twice. It asks every `every`;
+/// after `misses` asks in a row it does not answer, the schedules run here.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Primary {
+    pub standby: String,
+    #[serde(default = "every_default")]
+    pub every: String,
+    #[serde(default = "misses_default")]
     pub misses: u32,
 }
 
+fn every_default() -> String {
+    format!("{}s", crate::standby::INTERVAL.as_secs())
+}
+
+fn misses_default() -> u32 {
+    crate::standby::MISSES
+}
+
+fn every_secs(every: &str) -> u64 {
+    crate::duration::parse(every).unwrap_or(crate::standby::INTERVAL.as_secs())
+}
+
+/// `[section]`'s `key` names a `[[remote]]`, `every` is 5 s to 10 min and `misses` 1 to 20.
+fn check_poll(section: &str, key: &str, name: &str, every: &str, misses: u32, remotes: &[Remote]) -> Result<(), String> {
+    let name = name.trim();
+    if !remotes.iter().any(|r| r.name.trim() == name) {
+        return Err(format!("[{section}] の {key} {name:?} は [[remote]] の name で書く"));
+    }
+    let secs = crate::duration::parse(every).map_err(|e| format!("[{section}] の every: {e}"))?;
+    if !(5..=600).contains(&secs) {
+        return Err(format!("[{section}] の every は 5s から 10m まで"));
+    }
+    if !(1..=20).contains(&misses) {
+        return Err(format!("[{section}] の misses は 1 から 20 まで"));
+    }
+    Ok(())
+}
+
 impl Standby {
-    fn every_default() -> String {
-        format!("{}s", crate::standby::INTERVAL.as_secs())
-    }
-
-    fn misses_default() -> u32 {
-        crate::standby::MISSES
-    }
-
     /// The seconds between polls; [`Config::parse`] has checked it reads.
     pub fn every_secs(&self) -> u64 {
-        crate::duration::parse(&self.every).unwrap_or(crate::standby::INTERVAL.as_secs())
+        every_secs(&self.every)
     }
 
     fn check(&self, remotes: &[Remote]) -> Result<(), String> {
-        let watch = self.watch.trim();
-        if !remotes.iter().any(|r| r.name.trim() == watch) {
-            return Err(format!("[standby] の watch {watch:?} は [[remote]] の name で書く"));
-        }
-        let secs = crate::duration::parse(&self.every).map_err(|e| format!("[standby] の every: {e}"))?;
-        if !(5..=600).contains(&secs) {
-            return Err("[standby] の every は 5s から 10m まで".to_owned());
-        }
-        if !(1..=20).contains(&self.misses) {
-            return Err("[standby] の misses は 1 から 20 まで".to_owned());
-        }
-        Ok(())
+        check_poll("standby", "watch", &self.watch, &self.every, self.misses, remotes)
+    }
+}
+
+impl Primary {
+    /// The seconds between asks; [`Config::parse`] has checked it reads.
+    pub fn every_secs(&self) -> u64 {
+        every_secs(&self.every)
+    }
+
+    fn check(&self, remotes: &[Remote]) -> Result<(), String> {
+        check_poll("primary", "standby", &self.standby, &self.every, self.misses, remotes)
     }
 }
 
@@ -263,6 +315,7 @@ impl Default for Config {
             http: None,
             remote: Vec::new(),
             standby: None,
+            primary: None,
             locks: toml::Table::new(),
         }
     }
@@ -294,6 +347,12 @@ impl Config {
         }
         if let Some(s) = &c.standby {
             s.check(&c.remote)?;
+        }
+        if let Some(p) = &c.primary {
+            if c.standby.is_some() {
+                return Err("[standby] と [primary] は一緒に書けない（待つ側か、待たれる側のどちらか）".to_owned());
+            }
+            p.check(&c.remote)?;
         }
         for (name, n) in &c.locks {
             if !crate::calendar::valid_name(name) {
@@ -563,9 +622,48 @@ watch = \"pc1\"
 mises = 3
 "
             ),
+            format!(
+                "{remote}[standby]
+watch = \"pc1\"
+give_back = \"yes\"
+"
+            ),
         ] {
             assert!(Config::parse(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// give_back is manual unless written; [primary] names the remote that stands by, never with [standby].
+    #[test]
+    fn a_primary_names_its_standby() {
+        let fp = "AB:".repeat(31) + "CD";
+        let remote = format!(
+            "[[remote]]
+name = \"pc2\"
+url = \"https://pc2:8790\"
+fingerprint = \"{fp}\"
+token = \"secret:pc2\"
+"
+        );
+        let s = Config::parse(&format!("{remote}[standby]\nwatch = \"pc2\"\n")).unwrap().standby.unwrap();
+        assert_eq!(s.give_back, GiveBack::Manual);
+        let s = Config::parse(&format!("{remote}[standby]\nwatch = \"pc2\"\ngive_back = \"auto\"\n")).unwrap().standby.unwrap();
+        assert_eq!(s.give_back, GiveBack::Auto);
+        let p = Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\n")).unwrap().primary.unwrap();
+        assert_eq!((p.standby.as_str(), p.every_secs(), p.misses), ("pc2", 20, 3));
+        assert_eq!(
+            Config::parse(&format!("{remote}[primary]\nstandby = \"pc9\"\n")).unwrap_err(),
+            "[primary] の standby \"pc9\" は [[remote]] の name で書く"
+        );
+        assert_eq!(
+            Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\nmisses = 30\n")).unwrap_err(),
+            "[primary] の misses は 1 から 20 まで"
+        );
+        assert_eq!(
+            Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\n[standby]\nwatch = \"pc2\"\n")).unwrap_err(),
+            "[standby] と [primary] は一緒に書けない（待つ側か、待たれる側のどちらか）"
+        );
+        assert!(Config::parse("").unwrap().primary.is_none());
     }
 
     #[test]

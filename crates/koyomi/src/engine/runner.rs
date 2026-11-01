@@ -501,6 +501,49 @@ impl Runner {
         self.launch(run, &text)
     }
 
+    /// Starts `theirs`, a run the primary `from` had going when this standby took over, again
+    /// here with `def` from the first job that had not ended ok ([`Run::taken_over`]), with the
+    /// values it was given.
+    pub fn resume(&mut self, def: &Def, theirs: &Run, from: &str) -> Result<String, String> {
+        let net = def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?;
+        let date: NaiveDate = theirs.date.parse().map_err(|_| format!("{}: 業務日が読めない", theirs.id))?;
+        let net = self.expand(&def.id, net, date, &theirs.params)?;
+        self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
+        let now = Local::now().naive_local();
+        let id = self.new_id(now);
+        let mut run = Run::taken_over(&id, theirs, &net, from, now)?;
+        run.lock = net.lock.clone();
+        run.lock_shared = net.lock_shared;
+        run.priority = net.slot_priority();
+        run.require = net.require;
+        run.params = theirs.params.clone();
+        self.launch(run, &def.text)
+    }
+
+    /// Writes `theirs` down here as a run `from` had going that this standby did not take over,
+    /// over at once with `why` ([`Run::left_over`]), beside the definition here when there is
+    /// one, so `koyomi rerun` can start it from where it was. Its new id.
+    pub fn left(&mut self, theirs: &Run, def: Option<&Def>, from: &str, why: &str) -> String {
+        let now = Local::now().naive_local();
+        let id = self.new_id(now);
+        let run = Run::left_over(&id, theirs, from, why, now);
+        if let Some(d) = def {
+            let dir = self.run_dir(&id);
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(dir.join("definition.toml"), &d.text);
+            if let Some(kept) = Some(&run.params).filter(|p| !p.is_empty()).and_then(|p| toml::to_string(p).ok()) {
+                let _ = std::fs::write(dir.join(PARAMS), kept);
+            }
+        }
+        self.record(&run, history::run_start(&run));
+        for j in run.jobs.iter().filter(|j| j.ended.is_some()) {
+            self.record(&run, history::job_end(&run, j));
+        }
+        self.record(&run, history::run_end(&run));
+        self.runs.push(run);
+        id
+    }
+
     /// The run `id`: one kept here, or one read back from the history of the day in its id.
     pub fn previous(&self, id: &str) -> Result<Run, String> {
         if let Some(r) = self.runs.iter().find(|r| r.id == id) {
@@ -1722,6 +1765,41 @@ mod tests {
         let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
         assert_eq!(wait_over(&mut r, &id).state, State::Ok);
         assert_eq!(r.log_tail(&id, "a").unwrap().trim(), "日本");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_standby_resumes_the_primarys_run_from_where_it_was_or_writes_it_down() {
+        let dir = scratch("resume");
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
+        let d = def("net", &text);
+        // What the standby read from the primary: a over, b still going.
+        let mut theirs = {
+            let mut a = Runner::new(&dir.join("a"), Config::default());
+            let id = a.start(&d, Local::now().date_naive(), How::Schedule, None).unwrap();
+            wait_over(&mut a, &id)
+        };
+        let b = theirs.jobs.iter_mut().find(|j| j.id == "b").unwrap();
+        b.state = State::Running;
+        b.ended = None;
+        theirs.state = State::Running;
+        theirs.ended = None;
+        let mut r = Runner::new(&dir.join("b"), Config::default());
+        let again = r.resume(&d, &theirs, "pc-a").unwrap();
+        let run = wait_over(&mut r, &again);
+        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::CARRIED));
+        assert!(!r.log_path(&again, "a").exists(), "a ended ok there and must not run again");
+        assert!(r.log_path(&again, "b").exists());
+        assert!(run.reason.contains("pc-a で動いていた"), "{}", run.reason);
+        // Not taken over: written down, over at once, and a rerun goes on from where it was.
+        let left = r.left(&theirs, Some(&d), "pc-a", "takeover = \"rerun\" ではない");
+        let run = r.run(&left).unwrap().clone();
+        assert_eq!((run.state, run.job("b").unwrap().state), (State::Missed, State::NotRun));
+        assert!(run.reason.contains("引き継いでいない"), "{}", run.reason);
+        let rerun = r.rerun(&left, None, None).unwrap();
+        let run = wait_over(&mut r, &rerun);
+        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::CARRIED));
+        assert!(!r.log_path(&rerun, "a").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
