@@ -193,6 +193,12 @@
 - [ ] 100. H9 WinRM で Windows の PC にコマンドを流す（M）: 95 の ssh の部品の Windows 版。ito に部品が無いので `crate-request` から。
 - [ ] 101. H12 ネットごとに違うロール（M）: 今は 1 人のロールがどのネットにも同じに効く（`nets` は見える範囲だけ）。JP1 の資源グループのように「経理は run、基盤は view」と分ける。
 
+サンプルのネット（`jobnets/サンプル/`）を作って試して見つけたこと（2026-11-01）。
+
+- [ ] 102. イベント ログのきっかけが koyomi 自身の記録で流れる（S）: koyomi は回の終わりを Application に出どころ `koyomi` で書く（正常 1000・警告 1001・異常 2000 …）。`[[when]] eventlog = "Application"` で `ids` がこれと重なり `source` を書かないと、自分の回の終わりでまた流れ、止まらなくなる。`source` を書かないときは出どころ `koyomi` を外すか、`koyomi check` で言う。（サンプル「時刻の決め方」は `source = "Application Error"` で避けた）
+- [ ] 103. PowerShell のジョブのログに CLIXML が混じる（S）: `shell = "powershell"` のログの頭に `#< CLIXML` と「モジュールを初めて使用するための準備しています」の進み具合の記録が `! ` の行で出る。スクリプトの前に `$ProgressPreference = 'SilentlyContinue'` を付ける（ダウンロードの部品は済み）。
+- [ ] 104. `koyomi history` の理由が複数行のとき行が崩れる（S）: 理由（スキップのわけに入ったイベントの文など）の改行をそのまま出すので、別の回の行に見える。表では改行を空白にして 1 行にする。
+
 ## デザイン（画面の見本との差）
 
 見本は「koyomi 画面の見本」。上から順に進める。D14 は D1〜D13 のあとに `--keys` の画面で比べる。
@@ -274,6 +280,7 @@
 - [x] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
 - [x] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。項目ごとに節を足した（1〜17）。
 - [x] `icon.rs` に本当のアイコンを描く。暗いタイルの上の暦のページ（cyan の帯・6 つの日・金色の今日）。`build.rs` が同じファイルで `koyomi.exe` の絵も作る。
+- [ ] 題の帯のロゴ: `main.rs` で自前に描いている（`LOGO_PX`・`logo` の欄）。ito v0.193.0 の `ito_titlebar::brand(ui, rect, name, logo)` が同じ見た目なので、次に ito の rev を上げるときに置き換える（ito-ec から、2026-11-01）。
 - [x] リリースの workflow は kura か yagura のものを写す。`scripts/lanes.sh sync` が ito の雛形の `release.yml` を書いていた（`lanes.conf` の `workflows=`）。写す必要はない。
 
 ## 持ち主に聞くこと
