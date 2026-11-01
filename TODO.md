@@ -201,7 +201,7 @@
 
 ito に頼んで待っているもの（2026-11-01）。
 
-- [ ] 105. Tailscale の相手を token なしで通す（M、選んだときだけ）: Tailscale は前提にしない（取引先には求めない。token・指紋・`host_key` はどの経路でも動くまま）。身内の PC の間の本人確認（AD の代わり）として、同じ持ち主の PC どうしなら、tailnet の中では token と指紋を PC ごとに配らずに済むようにする。ito-http が tailscaled の whois で `who` を埋める口を uchmk/ito#135 で頼んだ（ito-ec の問いに「要る、急がない」と答え、持ち主が依頼した）。届いたら、`[[http.user]]` にログイン名（タグの端末はタグ）を書けるようにして、ロール・`nets`・`roles` はそのまま効かせる。窓の `[[remote]]`（80）と HA の待機（87）から tailnet の名前で呼ぶ形は、届いた形を見て決める。届くまで待ち。
+- [x] 105. Tailscale の相手を token なしで通す（M、選んだときだけ）: Tailscale は前提にしない（取引先には求めない。token・指紋・`host_key` はどの経路でも動くまま）。身内の PC の間の本人確認（AD の代わり）として、同じ持ち主の PC どうしなら、tailnet の中では token と指紋を PC ごとに配らずに済むようにする。ito-http が tailscaled の whois で `who` を埋める口を uchmk/ito#135 で頼んだ（ito-ec の問いに「要る、急がない」と答え、持ち主が依頼した）。届いたら、`[[http.user]]` にログイン名（タグの端末はタグ）を書けるようにして、ロール・`nets`・`roles` はそのまま効かせる。窓の `[[remote]]`（80）と HA の待機（87）から tailnet の名前で呼ぶ形は、届いた形を見て決める。届くまで待ち。（2026-11-01: ito v0.202.0 の `Config::tailnet`。`[http] tailnet = <ポート>` と `[[http.user]] tailscale = "ログイン名" | "tag:…"`。その人は token なしで、ロール・`nets`・`roles` はそのまま。`[[remote]]` と HA の待機は token と指紋のまま（ito-http の `Client` が https だけ）。tailscaled が落ちていると `[http]` 全体が開かないのは uchmk/ito に頼み、v0.203.0 で直った（`tailnet_error`）。rev を上げたら画面に出す。TESTING.md の 108）
 
 ## デザイン（画面の見本との差）
 

@@ -203,6 +203,11 @@ pub struct Http {
     /// `[[http.user]]`: one token per person, each with a role.
     #[serde(default)]
     pub user: Vec<HttpUser>,
+    /// A second port, on this PC's Tailscale addresses only (plain HTTP; WireGuard encrypts):
+    /// there the `[[http.user]]` with `tailscale` are let in by who Tailscale says is calling,
+    /// with no token (TODO 105). Opt-in; tokens work there too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailnet: Option<u16>,
 }
 
 /// `[[http.user]]`: a person who calls over HTTP, with the role their token gets.
@@ -213,8 +218,13 @@ pub struct HttpUser {
     pub name: String,
     /// `view`, `run` or `edit`.
     pub role: String,
-    /// `secret:<name>`.
+    /// `secret:<name>`; may be left out when `tailscale` is set.
+    #[serde(default)]
     pub token: String,
+    /// Their Tailscale login name (`sato@example.com`), or a tag (`tag:koyomi-ha`) for a node
+    /// with no person: on `[http] tailnet` they need no token (TODO 105).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tailscale: Option<String>,
     /// The nets they reach, as `<group>/<name>` patterns (`経理/*`, TODO 94); none: every net.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub nets: Option<Vec<String>>,
@@ -246,9 +256,14 @@ impl HttpUser {
         }
     }
 
-    /// The name the token is kept under.
+    /// The name the token is kept under; empty when they come only over the tailnet.
     pub fn secret(&self) -> &str {
         self.token.trim().strip_prefix("secret:").map(str::trim).unwrap_or_default()
+    }
+
+    /// Their Tailscale login or tag; [`Config::parse`] has checked it reads.
+    pub fn tailscale(&self) -> Option<&str> {
+        self.tailscale.as_deref().map(str::trim).filter(|t| !t.is_empty())
     }
 }
 
@@ -307,7 +322,15 @@ impl Http {
         if self.secret().is_empty() && (!self.token.trim().is_empty() || self.user.is_empty()) {
             return Err("[http] の token は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".to_owned());
         }
-        let mut names = std::collections::BTreeSet::new();
+        if let Some(t) = self.tailnet {
+            if t == 0 || t == self.port {
+                return Err("[http] の tailnet は port と別のポート（1 から 65535）".to_owned());
+            }
+            if !self.user.iter().any(|u| u.tailscale.is_some()) {
+                return Err("[http] の tailnet で通す人がいない（[[http.user]] に tailscale = \"<ログイン名>\" を書く）".to_owned());
+            }
+        }
+        let (mut names, mut tailscales) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
         for u in &self.user {
             let name = u.name.trim();
             if name.is_empty() || name.contains(char::is_whitespace) || name == "default" {
@@ -317,8 +340,28 @@ impl Http {
                 return Err(format!("[[http.user]] の name {name} が 2 つある"));
             }
             crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
-            if u.secret().is_empty() {
+            if u.secret().is_empty() && (!u.token.trim().is_empty() || u.tailscale.is_none()) {
                 return Err(format!("[[http.user]] {name} の token は secret:<名前> で書く"));
+            }
+            if let Some(t) = &u.tailscale {
+                let t = t.trim();
+                let reads = match t.strip_prefix("tag:") {
+                    Some(tag) => !tag.is_empty(),
+                    None => t.contains('@') && !t.starts_with('@'),
+                };
+                if !reads || t.contains(char::is_whitespace) {
+                    return Err(format!(
+                        "[[http.user]] {name} の tailscale は Tailscale のログイン名（sato@example.com）かタグ（tag:koyomi-ha）で書く: {t}"
+                    ));
+                }
+                if self.tailnet.is_none() {
+                    return Err(format!(
+                        "[[http.user]] {name} の tailscale は [http] の tailnet（tailnet で待ち受けるポート）と一緒に書く"
+                    ));
+                }
+                if !tailscales.insert(t.to_lowercase()) {
+                    return Err(format!("[[http.user]] の tailscale {t} が 2 つある"));
+                }
             }
             if let Some(p) = &u.nets {
                 crate::role::Nets::parse(p).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
@@ -615,6 +658,65 @@ evry = \"5m\"
         let e = Config::parse(&format!("{head}roles = {{ \"経理/*\" = \"admin\" }}\n")).unwrap_err();
         assert!(e.contains("[[http.user]] sato の roles の 経理/* の role は"), "{e}");
         assert!(Config::parse(&format!("{head}roles = {{}}\n")).unwrap_err().contains("空にしない"));
+    }
+
+    /// `[http] tailnet` and a person's `tailscale` go together; such a person needs no token.
+    #[test]
+    fn a_tailscale_login_or_tag_stands_in_for_the_token_on_the_tailnet() {
+        let user = |name: &str, more: &str| format!("[[http.user]]\nname = \"{name}\"\nrole = \"run\"\n{more}");
+        let ok = format!(
+            "[http]\nport = 8790\ntailnet = 8791\n{}{}{}",
+            user("sato", "tailscale = \"Sato@Example.com\"\n"),
+            user("ha", "tailscale = \"tag:koyomi-ha\"\ntoken = \"secret:ha\"\n"),
+            user("ito", "token = \"secret:ito\"\n")
+        );
+        let h = Config::parse(&ok).unwrap().http.unwrap();
+        assert_eq!(h.tailnet, Some(8791));
+        assert_eq!((h.user[0].secret(), h.user[0].tailscale()), ("", Some("Sato@Example.com")));
+        assert_eq!((h.user[1].secret(), h.user[1].tailscale()), ("ha", Some("tag:koyomi-ha")));
+        assert_eq!(h.user[2].tailscale(), None);
+        let plain = Config::parse("[http]\nport = 8790\ntoken = \"secret:t\"\n").unwrap().http.unwrap();
+        assert_eq!(plain.tailnet, None);
+        for (bad, why) in [
+            (
+                format!("[http]\nport = 8790\n{}", user("sato", "tailscale = \"sato@example.com\"\n")),
+                "tailnet（tailnet で待ち受けるポート）と一緒に",
+            ),
+            (format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("ito", "token = \"secret:ito\"\n")), "tailnet で通す人がいない"),
+            (format!("[http]\nport = 8790\ntailnet = 8790\n{}", user("sato", "tailscale = \"sato@example.com\"\n")), "port と別のポート"),
+            (format!("[http]\nport = 8790\ntailnet = 0\n{}", user("sato", "tailscale = \"sato@example.com\"\n")), "port と別のポート"),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato\"\n")),
+                "ログイン名（sato@example.com）かタグ",
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"tag:\"\n")),
+                "ログイン名（sato@example.com）かタグ",
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato @example.com\"\n")),
+                "ログイン名（sato@example.com）かタグ",
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato@example.com\"\ntoken = \"plain\"\n")),
+                "token は secret:",
+            ),
+            (
+                format!(
+                    "[http]\nport = 8790\ntailnet = 8791\n{}{}",
+                    user("sato", "tailscale = \"sato@example.com\"\n"),
+                    user("kato", "tailscale = \"SATO@example.com\"\n")
+                ),
+                "tailscale SATO@example.com が 2 つある",
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}{}", user("sato", "tailscale = \"sato@example.com\"\n"), user("ito", "")),
+                "ito の token は secret:",
+            ),
+        ] {
+            let e = Config::parse(&bad).unwrap_err();
+            assert!(e.contains(why), "{bad}: {e}");
+        }
     }
 
     /// a remote needs an https address, a SHA-256 fingerprint and the token as a secret.

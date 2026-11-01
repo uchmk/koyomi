@@ -1496,3 +1496,18 @@ A Windows PC you can reach whose WinRM already has an HTTPS listener on 5986 and
 | 107.10 | With Negotiate on in that PC's WinRM (`winrm get winrm/config/service/auth`; the default), add `auth = "ntlm"` to 107.2's job and run it; then `on = 'winrm://<DOMAIN>\<user>@<pc>'` with a domain account's secret; then a wrong password | ✓ both times with the same lines as 107.2; then ✕ 255 with `<pc>: ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは…）` (no word of Basic) |
 | 107.11 | `koyomi check` with `auth = "kerberos"`, `auth = "NTLM"`, and `auth = "ntlm"` on an `ssh` | Each is refused: `auth は "basic"・"ntlm" のどれか` twice, then `auth は kind = "winrm" にだけ書く` |
 | 107.12 | The editor: a winrm's pane; pick NTLM, save; reopen it and pick Basic, save; then approve | The shelf and the canvas show the Windows PC mark; 認証 shows Basic and NTLM, each with its own note; saving writes `auth = "ntlm"`, then no `auth` line; the confirm box shows 認証: NTLM (or Basic) |
+
+## 108. Let Tailscale peers in without a token (`[http] tailnet`; TODO 105)
+
+Two of your PCs on one tailnet with Tailscale running: this PC (the engine), whose MagicDNS name is `<pc>` (`<pc>.<tailnet>.ts.net`) and tailnet address `<ip>` (`tailscale ip -4`), and another PC. `<login>` is your Tailscale login name (`tailscale status` shows it). Start from `[http]` `port = 8790`, `tailnet = 8791`, and a `[[http.user]]` `name = "sato"`, `role = "view"`, `tailscale = "<login>"`, no `token`.
+
+| # | Do | Expect |
+|---|---|---|
+| 108.1 | `koyomi check koyomi.toml` with, one at a time: `tailnet = 8790`; no user with `tailscale`; `tailscale = "sato"`; `tailscale = "tag:"`; `tailscale` but no `tailnet`; the same login on two users (one in capitals) | Each is refused with its line in Japanese (`[http] の tailnet は port と別のポート…`, `…tailnet で通す人がいない…`, `…ログイン名（sato@example.com）かタグ（tag:koyomi-ha）で書く…` twice, `…[http] の tailnet…と一緒に書く`, `…tailscale … が 2 つある`); the starting koyomi.toml says 問題なし |
+| 108.2 | Start the engine | Its log says `koyomi: HTTP: 127.0.0.1:8790 で待ち受けている。tailnet の :8791 でも（Tailscale の相手は token なし）` |
+| 108.3 | From the other PC: `curl http://<pc>:8791/me`; then `curl http://<pc>:8790/me` | The first is 200 with `"name":"sato"` and the view role, and the engine logs `http: GET /me 200 …ms（sato、Tailscale）`; the second cannot connect (8790 is this PC only) |
+| 108.4 | On the other PC, open `http://<pc>:8791/` in a browser | The Web UI opens without asking for a token, as sato with view: the lists show, there are no run or stop buttons |
+| 108.5 | Set `role = "run"` and restart the engine; on the other PC `curl -X POST http://<pc>:8791/runs -H "Content-Type: application/json" -d "{\"net\":\"<a net>\"}"`; then the same with `-H "X-Ito-Csrf: 1"`; then 今すぐ流す in the Web UI | 403 `send X-Ito-Csrf: 1`; then the run starts; the Web UI's button works too; the manual-run record names sato |
+| 108.6 | `curl -H "Host: example.com" http://<ip>:8791/me`; then `curl http://<ip>:8791/me` | 403 `host not allowed`; then 200 (its own address is a good Host) |
+| 108.7 | Change `tailscale` to another login, restart, `curl http://<pc>:8791/me`; then add `token = "secret:sato"` and send that token as `Authorization: Bearer …` | 401; then 200 as sato (a token works on the tailnet port too) |
+| 108.8 | On a PC tagged `tag:koyomi-ha` (`tailscale up --advertise-tags=tag:koyomi-ha`), with `[[http.user]]` `name = "ha"`, `tailscale = "tag:koyomi-ha"`; `curl http://<pc>:8791/me` from it; then the same from a PC whose tags are other ones but whose login is `<login>` | 200 as ha; then 401 (a tagged PC is judged by its tags, not the login) |

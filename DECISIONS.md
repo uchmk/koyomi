@@ -809,12 +809,16 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
     - 身内の PC の間の本人確認（AD の代わり）には、選んだときだけ使ってよい（持ち主の答え: 「AD の代わりとして使う分には、身内だけのものなので、問題ないか」）。取引先との経路は koyomi の HTTP を通らないので、関わらない。
     - Windows へのサインインの代わりにはならない。`kind = "winrm"` は今までどおり相手の Windows のアカウントとパスワード（Basic・NTLM）で入る。
     - 本人かは tailnet に入るアカウント（その ID の出どころ）が決める。乗っ取られれば koyomi にも入れるので、そのアカウントの 2 段階認証と、ロールを要る分だけにすることを勧める。
-  - Tailscale の相手（105、2026-11-01 に ito-ec の問いに答えた。uchmk/ito#135 待ち）: ito-http が tailscaled の whois で `who` を埋めれば、token なしで通す。ロール・`nets`・`roles` は今の `[[http.user]]` のまま効かせる。頼んだ条件:
+  - Tailscale の相手（105、2026-11-01 に ito-ec の問いに答えた。uchmk/ito#135 で届き、入れた）: ito-http が tailscaled の whois で `who` を埋め、token なしで通す。ロール・`nets`・`roles` は今の `[[http.user]]` のまま効かせる。頼んだ条件（どれも ito-http が守る）:
     - 使うかどうかは設定で選ぶ。
     - token なしで通すのは、tailnet のアドレスで待つ口に来たものだけ。LAN の TLS の口とは分ける。
     - whois に失敗したら通さない。token は併用で残す。
     - ブラウザーは自動で入れてしまうので、変える要求はクッキーと同じく見出しを見る。`Host` も確かめる。
     - `tailscale serve` のヘッダーは使わない。同じ PC の別のプロセスでも偽れるため。
+  - 入れた形（105）: `[http] tailnet = <ポート>`（`port` と別。tailnet のアドレスだけで待つ平文の HTTP）と、`[[http.user]]` の `tailscale = "sato@example.com"`（ログイン名。大文字と小文字は区別しない）か `"tag:koyomi-ha"`（タグの付いた端末はタグだけで見る）。
+    - その人の `token` は書かなくてよい。書けば、その口でも LAN の TLS の口でも token で入れる。名前が同じなので、ロール・`nets`・`roles`・操作の記録は token のときと同じ。
+    - `tailnet` を書いて `tailscale` の人がいない・`tailscale` を書いて `tailnet` がないのは、設定の誤り（黙って誰も通さない・通らない形にしない）。
+    - 窓の `[[remote]]` と HA の待機は、今までどおり token と指紋で呼ぶ。ito-http の呼ぶ側（`Client`）が https だけで、tailnet の平文の口を呼べないため。要るようになったら ito に頼む。
 - **HA（87）:** 2 台で、片方が流し、もう片方が待つ（共有のディスクは使わない）。
   - 待つ側は `koyomi.toml` の `[standby]` に、見張る相手（`[[remote]]` の `name`）・間隔（初めは 20 秒）・何回続けて答えなければ引き継ぐか（初めは 3 回）を書く。
   - 待つ間は、相手から定義を写して（`GET` で読む）、自分の窓で「初回の確認」を通しておく。確認していない定義は、引き継いでも動かさない。

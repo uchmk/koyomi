@@ -139,11 +139,15 @@ impl Http {
 
 fn listening(cfg: Option<&config::Http>, s: &Server) -> String {
     let port = s.port();
+    let tailnet = match s.tailnet_port() {
+        Some(p) => format!("。tailnet の :{p} でも（Tailscale の相手は token なし）"),
+        None => String::new(),
+    };
     if let Some(fp) = s.fingerprint() {
-        return format!("HTTP: LAN の :{port} で TLS で待ち受けている（指紋 {}）", ito_http::tls::format(&fp));
+        return format!("HTTP: LAN の :{port} で TLS で待ち受けている（指紋 {}）{tailnet}", ito_http::tls::format(&fp));
     }
     let v6 = if cfg.is_some_and(|c| c.ipv6) { format!("・[::1]:{port}") } else { String::new() };
-    format!("HTTP: 127.0.0.1:{port}{v6} で待ち受けている")
+    format!("HTTP: 127.0.0.1:{port}{v6} で待ち受けている{tailnet}")
 }
 
 /// Where the LAN listener's certificate and key are kept: `app_dir`'s `tls`, beside the
@@ -183,11 +187,22 @@ fn access(cfg: &config::Http) -> BTreeMap<String, Access> {
     cfg.user.iter().map(|u| (u.name.trim().to_owned(), u.access())).filter(|(_, a)| a.narrowed()).collect()
 }
 
+/// The tailnet listener (TODO 105): each `[[http.user]]`'s Tailscale login or tag is let in
+/// as that person, so their role, `nets` and `roles` hold as with a token.
+fn tailnet(cfg: &config::Http, port: u16) -> ito_http::Tailnet {
+    cfg.user.iter().fold(ito_http::Tailnet::new(port), |t, u| match u.tailscale() {
+        Some(tag) if tag.starts_with("tag:") => t.tag(tag, u.name.trim()),
+        Some(login) => t.login(login, u.name.trim()),
+        None => t,
+    })
+}
+
 fn start(cfg: &config::Http) -> Result<Server, String> {
     let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { token(cfg.secret())? });
-    for u in &cfg.user {
+    for u in cfg.user.iter().filter(|u| !u.secret().is_empty()) {
         c = c.token_named(u.name.trim(), token(u.secret())?);
     }
+    c.tailnet = cfg.tailnet.map(|port| tailnet(cfg, port));
     for path in PAGES.iter().map(|(p, ..)| *p).chain([THEME_CSS]) {
         c = c.public_path(path);
     }
@@ -199,6 +214,10 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
         format!("LAN :{}", cfg.port)
     } else {
         format!("127.0.0.1:{}", cfg.port)
+    };
+    let at = match cfg.tailnet {
+        Some(port) => format!("{at}・tailnet :{port}"),
+        None => at,
     };
     let (roles, access) = (roles(cfg), access(cfg));
     let serve = move |req: ito_http::Request| {
@@ -414,7 +433,11 @@ fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Re
 }
 
 fn log(l: &ito_http::LogLine) {
-    crate::say(&format!("http: {} {} {} {}ms", l.method, l.path, l.status, l.millis), false);
+    let by = match (l.via, &l.who) {
+        (ito_http::Via::Tailscale, Some(who)) => format!("（{who}、Tailscale）"),
+        _ => String::new(),
+    };
+    crate::say(&format!("http: {} {} {} {}ms{by}", l.method, l.path, l.status, l.millis), false);
 }
 
 /// What `POST /runs` takes.
@@ -918,6 +941,33 @@ mod tests {
         let all = handle(&req("GET", "/nets", ""), ask);
         assert_eq!((all.json["nets"].as_array().map(Vec::len), all.json["nets"][0].get("role")), (Some(2), None));
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "人事/new", "text": "x"}"#), ask).status, 200);
+    }
+
+    /// On the tailnet a login or a tag is the person who wrote it, so their role and `nets` hold.
+    #[test]
+    fn a_tailscale_login_or_tag_is_let_in_as_its_person() {
+        use ito_http::tailnet::Identity;
+        let cfg = config::Config::parse(
+            "[http]\nport = 8790\ntailnet = 8791\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntailscale = \"sato@example.com\"\nnets = [\"経理/*\"]\n[[http.user]]\nname = \"ha\"\nrole = \"run\"\ntailscale = \"tag:koyomi-ha\"\ntoken = \"secret:ha\"\n[[http.user]]\nname = \"ito\"\nrole = \"edit\"\ntoken = \"secret:i\"\n",
+        )
+        .unwrap();
+        let http = cfg.http.as_ref().unwrap();
+        let t = tailnet(http, 8791);
+        assert_eq!((t.port, t.logins.len(), t.tags.len()), (8791, 1, 1));
+        let id = |login: Option<&str>, tags: &[&str]| Identity {
+            login: login.map(str::to_owned),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            node: "pc.tail1234.ts.net".into(),
+        };
+        assert_eq!(t.who(&id(Some("SATO@example.com"), &[])).as_deref(), Some("sato"));
+        assert_eq!(t.who(&id(None, &["tag:koyomi-ha"])).as_deref(), Some("ha"));
+        // A tagged node is judged by its tags, an unknown login is nobody.
+        assert_eq!(t.who(&id(Some("sato@example.com"), &["tag:other"])), None);
+        assert_eq!(t.who(&id(Some("ito@example.com"), &[])), None);
+        // The names are the ones the roles and `nets` are kept under.
+        let (known, narrowed) = (roles(http), access(http));
+        assert_eq!((known["sato"], known["ha"], known.get("default")), (Role::View, Role::Run, None));
+        assert!(narrowed["sato"].sees("経理/a") && !narrowed["sato"].sees("人事/b"));
     }
 
     /// only the users with `nets` or `roles` are narrowed, and `/me` says to what.
