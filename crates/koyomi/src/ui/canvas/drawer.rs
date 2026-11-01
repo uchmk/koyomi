@@ -1,4 +1,4 @@
-//! The pane at the right of the editor: the fields of the double-clicked part, or of the net, as a form in
+//! The pane at the right of the editor: the fields of the chosen part, or of the net, as a form in
 //! sections. Each field says whether it must be filled in (a red `*`) or may stay empty (`(任意)`), and turns red
 //! while it does not read.
 

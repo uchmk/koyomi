@@ -1,6 +1,6 @@
 //! The editor: the parts of a net as stations on a canvas, the lines between
-//! them, a shelf of parts to drag in, a pane of fields for the part that was
-//! double-clicked (or for the net itself), and undo over all of it.
+//! them, a shelf of parts to drag in, a pane of fields for the chosen part
+//! (or for the net itself), and undo over all of it.
 //!
 //! The canvas owns a copy of the net and every change goes through a method
 //! here, so the keys, the mouse and the palette all do the same thing and the
@@ -787,8 +787,7 @@ impl Editor {
         let run = if part == Part::Job { vec!["cmd.exe".into(), "/c".into(), "echo hello".into()] } else { Vec::new() };
         let after = after.filter(|a| self.has(a)).map(|a| vec![Line::ok(a)]).unwrap_or_default();
         self.net.jobs.push(Job { id: id.clone(), run, after, pos, part, ..Default::default() });
-        self.selected = BTreeSet::from([id.clone()]);
-        self.cursor = Some(id.clone());
+        self.choose(id.clone());
         self.touched();
         id
     }
@@ -895,6 +894,9 @@ impl Editor {
             self.net.jobs.push(n);
         }
         self.cursor = added.iter().next().cloned();
+        if let Some(id) = self.cursor.clone() {
+            self.follow(&id);
+        }
         self.selected = added;
         self.touched();
     }
@@ -976,13 +978,36 @@ impl Editor {
         self.cursor.as_deref().and_then(|id| self.index(id)).map(|i| &self.net.jobs[i])
     }
 
-    /// Opens the fields of `id`.
+    /// Opens the fields of `id`: it is chosen, and the pane unfolds.
     pub fn open_part(&mut self, id: &str) {
+        if self.has(id) {
+            self.choose(id.into());
+            self.fold = false;
+        }
+    }
+
+    /// `id` alone is chosen and is the cursor; the pane shows its fields.
+    fn choose(&mut self, id: String) {
+        self.follow(&id);
+        self.selected = BTreeSet::from([id.clone()]);
+        self.cursor = Some(id);
+    }
+
+    /// The pane shows the fields of `id`, folded or open as it was. The fields of the part already there stay as
+    /// they are, with what is being typed in them.
+    fn follow(&mut self, id: &str) {
+        if matches!(&self.pane, Some(Pane::Part(p, _)) if p == id) {
+            return;
+        }
         if let Some(i) = self.index(id) {
             self.pane = Some(Pane::Part(id.into(), Box::new(Fields::of(&self.net.jobs[i]))));
-            self.fold = false;
-            self.cursor = Some(id.into());
-            self.selected = BTreeSet::from([id.to_owned()]);
+        }
+    }
+
+    /// Nothing is chosen any more: the pane shows the net's fields instead of a part's.
+    fn follow_net(&mut self) {
+        if matches!(self.pane, Some(Pane::Part(..))) {
+            self.pane = Some(Pane::Net(Box::new(NetFields::of(&self.net))));
         }
     }
 
@@ -1489,6 +1514,7 @@ impl Editor {
                         }
                         self.selected.insert(id.clone());
                     }
+                    self.follow(&id);
                     self.cursor = Some(id);
                     self.drag = Drag::Parts { moved: false };
                 } else if shift {
@@ -1569,13 +1595,15 @@ impl Editor {
                         if !self.selected.remove(&id) {
                             self.selected.insert(id.clone());
                         }
+                        self.follow(&id);
                         self.cursor = Some(id);
                     } else if !matches!(self.drag, Drag::Parts { moved: true }) {
-                        self.selected = BTreeSet::from([id.clone()]);
-                        self.cursor = Some(id);
+                        // A click chooses the part, and the pane shows its fields.
+                        self.choose(id);
                     }
                 } else if !shift && !command {
                     self.clear_target();
+                    self.follow_net();
                     self.connect = None;
                 }
             }
@@ -1603,6 +1631,7 @@ impl Editor {
                     if !self.selected.contains(&id) {
                         self.selected = BTreeSet::from([id.clone()]);
                     }
+                    self.follow(&id);
                     self.cursor = Some(id.clone());
                     Some(Menu::Part { job: id, at: p })
                 } else if let Some((i, k)) = self.hit_line(&at, p) {
@@ -1923,10 +1952,7 @@ impl Editor {
                     if let Some(id) = self.step(at, dx, dy) {
                         match &mut self.connect {
                             Some(target) => *target = Some(id),
-                            None => {
-                                self.cursor = Some(id.clone());
-                                self.selected = BTreeSet::from([id]);
-                            }
+                            None => self.choose(id),
                         }
                     }
                 }
@@ -2170,6 +2196,60 @@ run = [\"x\"]
         assert_eq!(e.net.jobs[0].pos, Some((0.0, 0.0)));
         assert_eq!(e.net.jobs[1].pos, Some((layout::STEP_ALONG, 0.0)));
         assert!(e.text().contains("pos = ["));
+    }
+
+    /// One frame of the canvas alone, filling an 800×600 screen from its top left.
+    fn canvas_frame(ctx: &egui::Context, e: &mut Editor, events: Vec<egui::Event>) {
+        let t = crate::i18n::table("ja").0;
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(800.0, 600.0));
+        let input = egui::RawInput { screen_rect: Some(screen), events, ..Default::default() };
+        let mut out = ctx.run_ui(input, |ui| drop(e.canvas(ui, &t, false)));
+        out.textures_delta.clear();
+    }
+
+    /// A click at `pos`, then long enough for the next click not to make a double click.
+    fn canvas_click(ctx: &egui::Context, e: &mut Editor, pos: Pos2) {
+        let button =
+            |pressed| egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed, modifiers: Default::default() };
+        canvas_frame(ctx, e, vec![egui::Event::PointerMoved(pos)]);
+        canvas_frame(ctx, e, vec![button(true)]);
+        canvas_frame(ctx, e, vec![button(false)]);
+        for _ in 0..40 {
+            canvas_frame(ctx, e, Vec::new());
+        }
+    }
+
+    #[test]
+    fn a_click_on_a_part_shows_its_fields_in_the_pane() {
+        let ctx = egui::Context::default();
+        let mut e = two();
+        e.fold = true;
+        canvas_frame(&ctx, &mut e, Vec::new());
+        let at = |e: &Editor, i: usize| e.to_screen(Pos2::ZERO, e.positions()[i], false);
+        let b = at(&e, 1);
+        canvas_click(&ctx, &mut e, b);
+        assert!(matches!(&e.pane, Some(Pane::Part(p, _)) if p == "b"), "{:?}", e.pane);
+        assert_eq!((e.cursor.as_deref(), e.selected.len()), (Some("b"), 1));
+        assert!(e.fold, "a click leaves the pane folded");
+        // What is being typed in the pane stays while the same part is clicked again.
+        if let Some(Pane::Part(_, f)) = &mut e.pane {
+            f.timeout = "soon".into();
+        }
+        canvas_click(&ctx, &mut e, b);
+        assert!(matches!(&e.pane, Some(Pane::Part(_, f)) if f.timeout == "soon"));
+        let a = at(&e, 0);
+        canvas_click(&ctx, &mut e, a);
+        assert!(matches!(&e.pane, Some(Pane::Part(p, f)) if p == "a" && f.run == "x"));
+        // A click on nothing: nothing is chosen, and the pane shows the net's fields.
+        canvas_click(&ctx, &mut e, Pos2::new(20.0, 580.0));
+        assert!(e.cursor.is_none() && e.selected.is_empty());
+        assert!(matches!(e.pane, Some(Pane::Net(_))));
+        // A new part shows its fields too; opening one unfolds the pane.
+        let id = e.add(Part::Job, Some("b"), None);
+        assert!(matches!(&e.pane, Some(Pane::Part(p, _)) if *p == id));
+        e.open_part("a");
+        assert!(matches!(&e.pane, Some(Pane::Part(p, _)) if p == "a"));
+        assert!(!e.fold);
     }
 
     #[test]

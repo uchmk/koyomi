@@ -1638,7 +1638,9 @@ impl Browser {
                 ui.add_space(-ui.spacing().item_spacing.y);
             }
             if self.editor.is_some() {
-                page().show(ui, |ui| self.editor_view(ui, t));
+                // The editor's fields pane meets the window's right and bottom edges, as the inspector does;
+                // its bars and canvas keep their own room.
+                egui::Frame::new().inner_margin(egui::Margin { top: 12, ..Default::default() }).show(ui, |ui| self.editor_view(ui, t));
             } else if self.gantt {
                 // The picked row's net at the right, folded to a strip when not wanted.
                 self.inspector_pane(ui, t);
