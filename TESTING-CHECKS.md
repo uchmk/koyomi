@@ -1,6 +1,6 @@
 # Checklist
 
-889 checks in TESTING.md, 883 left for a person.
+898 checks in TESTING.md, 892 left for a person.
 
 ## 1. Start
 
@@ -1210,3 +1210,15 @@
 - [ ] **106.7** Write `work_dir = "batch"`; `koyomi check koyomi.toml` → Refused: `work_dir は "definition"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\batch'）: batch` 〔未訳〕
 - [ ] **106.8** A net with `[[when]]` `every = "month"`, `day = 31`, `at = ["21:00"]`; `koyomi check` it → `注意: [[when]] の day = 31 は 31 日のない月（2・4・6・9・11 月）には流れない。月末に流すなら day = "last"`, then `問題なし`; exit 0 〔未訳〕
 - [ ] **106.9** The same with `day = 30`, `day = 29` and `day = "last"` → `（2 月）`; `（うるう年でない 2 月）`; no word 〔未訳〕
+
+## 107. Run a command on another Windows PC (`kind = "winrm"`; TODO 100)
+
+- [ ] **107.1** `koyomi winrm cert <pc>`, then `koyomi winrm cert winrm://<you>@<pc>:5986`; then `koyomi winrm cert <pc>:2` → `cert = "AB:CD:…"` (32 pairs), the same both times; then `koyomi: <pc>:2: つながらない（…5986）: …` and exit 1 〔未訳〕
+- [ ] **107.2** `kind = "winrm"`, `on = "winrm://<you>@<pc>"`, `command = "echo こんにちは & ping -n 4 127.0.0.1 & echo done"`, that `cert`, `password = "secret:winrm"`; run it and watch its log → The lines come as they are printed, not all at the end; こんにちは is not garbled; ✓; the password is nowhere in the log 〔未訳〕
+- [ ] **107.3** `command = "echo oops 1>&2 & exit 3"`; then add `judge = { warn = "3" }` → ✕ with exit code 3 and `! oops` in the log; with the judge, ⚠ 警告 〔未訳〕
+- [ ] **107.4** A wrong `cert`; then `on = "winrm://<you>@<pc>:2"`; then `password = "secret:nope"` after `koyomi secret set nope` with a wrong password; also with `retry = { count = 1, wait = "1m" }` → ✕ each time with exit code 255 and the why in Japanese as the reason: `<pc>: 証明書が cert と違う（相手が出したのは …）`, `<pc>: つながらない…`, `<pc>: ユーザーかパスワードを断られた（…Basic…）`; the retry tries once more 〔未訳〕
+- [ ] **107.5** `env = { DAY = "{date}" }` and `command = "echo %DAY%"` → Today's date 〔未訳〕
+- [ ] **107.6** `command = "ping -n 120 127.0.0.1"` with `timeout = "10s"`; then without the timeout, 強制終了 it; then the same with the release `koyomi.exe` engine → 打ち切り, then 強制終了, each within about 10 s of the ask, the reason ending `<pc>: 止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）`; on `<pc>`, Task Manager shows no `PING.EXE` left 〔未訳〕
+- [ ] **107.7** `koyomi check` with `on = "<pc>"`, `on = "winrm://<pc>"`, `on = "winrm://<you>@<pc>/wsman"`, no `cert`, `cert = "AB:CD"`, no `password`, `password = "plain"`, `host_key` or `key` on a winrm, `cert` on an ssh, `encoding` on a winrm → Each is refused with the line and why in Japanese; the missing `cert` names `koyomi winrm cert` 〔未訳〕
+- [ ] **107.8** The editor: drag 別の Windows で動かす（WinRM） from 基本 → The pane shows 動かす PC・コマンド・証明書の指紋・パスワード (all required), 結果の判定, timeout and retry; a malformed 証明書の指紋 is marked; saving writes `kind = "winrm"` with `on`・`command`・`cert`・`password` (and `judge` when set) 〔未訳〕
+- [ ] **107.9** Approve a net with a winrm → The confirm box shows 動かす PC, コマンド (lines joined with ⏎), 証明書の指紋 and パスワード as `secret:winrm` (the name, not the value) instead of a script 〔未訳〕

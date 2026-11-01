@@ -47,6 +47,8 @@ ito-http = { git = "https://github.com/uchmk/ito", rev = "38e337d20855d27c1439bc
 ito-mail = { git = "https://github.com/uchmk/ito", rev = "38e337d20855d27c1439bc1c017be8e87bb7d76f" }
 # `send` and `fetch` over SFTP (`koyomi sftp run`), and `koyomi sftp hostkey`.
 ito-sftp = { git = "https://github.com/uchmk/ito", rev = "38e337d20855d27c1439bc1c017be8e87bb7d76f" }
+# `kind = "winrm"` (`koyomi winrm run`), and `koyomi winrm cert`.
+ito-winrm = { git = "https://github.com/uchmk/ito", rev = "38e337d20855d27c1439bc1c017be8e87bb7d76f" }
 # System notification, sound, webhook.
 ito-notify = { git = "https://github.com/uchmk/ito", rev = "38e337d20855d27c1439bc1c017be8e87bb7d76f" }
 # The system log line a monitoring tool watches (Event Viewer / syslog).

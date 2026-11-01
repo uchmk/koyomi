@@ -51,6 +51,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "fetch" => M::Download,
         "http" => M::Globe,
         "ssh" => M::Server,
+        "winrm" => M::Link,
         _ => return None,
     })
 }
@@ -58,7 +59,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
 /// The heading of the shelf's group a part is under; the shelf lists the parts group by group.
 fn part_group(key: &str) -> &'static str {
     match key {
-        "job" | "loop" | "jobnet" | "ssh" => "canvas.group_basic",
+        "job" | "loop" | "jobnet" | "ssh" | "winrm" => "canvas.group_basic",
         "branch" | "join" => "canvas.group_flow",
         "time" | "file" | "approval" => "canvas.group_wait",
         "notify" | "http" => "canvas.group_tell",
@@ -179,9 +180,11 @@ pub struct Fields {
     pub content_type: String,
     pub headers: String,
     pub expect: String,
-    /// An `ssh`'s PC (`ssh://…`) and its command, as typed.
+    /// An `ssh`'s or a `winrm`'s PC (`ssh://…`, `winrm://…`) and its command, as typed.
     pub on: String,
     pub command: String,
+    /// A `winrm`'s certificate fingerprint.
+    pub cert: String,
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
@@ -272,6 +275,12 @@ impl Fields {
                     f.command = command.clone();
                     f.key = key.clone().unwrap_or_default();
                     f.host_key = host_key.clone().unwrap_or_default();
+                    f.password = password.clone().unwrap_or_default();
+                }
+                Chore::Winrm { on, command, cert, password } => {
+                    f.on = on.clone();
+                    f.command = command.clone();
+                    f.cert = cert.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
                 }
             },
@@ -398,12 +407,18 @@ impl Fields {
                         host_key: opt(&self.host_key),
                         password: opt(&self.password),
                     },
+                    Chore::Winrm { .. } => Chore::Winrm {
+                        on: self.on.trim().into(),
+                        command: self.command.clone(),
+                        cert: opt(&self.cert),
+                        password: opt(&self.password),
+                    },
                 };
                 chore.check()?;
                 for p in chore.paths() {
                     koyomi_core::template::check(p)?;
                 }
-                if let Chore::Ssh { .. } = chore {
+                if chore.far() {
                     out.judge = self.judge()?;
                 }
                 out.part = Part::Chore(chore);
@@ -562,12 +577,13 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order, group by group (see [`part_group`]).
-pub fn shelf() -> [Part; 17] {
+pub fn shelf() -> [Part; 18] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2), max: None },
         Part::Jobnet { use_: String::new() },
         Part::Chore(Chore::blank("ssh").unwrap()),
+        Part::Chore(Chore::blank("winrm").unwrap()),
         Part::Branch,
         Part::Join { wait: Wait::All },
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
@@ -2475,6 +2491,29 @@ X-Day: 1"
         assert!(e.net.jobs[1].judge.is_none());
         fields.warn = "x".into();
         assert!(e.apply_fields(&h, &fields).is_err());
+    }
+
+    #[test]
+    fn a_winrm_from_the_shelf_takes_its_pc_command_certificate_password_and_judge() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let blank = shelf().into_iter().find(|p| p.key() == "winrm").unwrap();
+        let h = e.add(blank, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        fields.on = " winrm://ops@app01 ".into();
+        fields.command = "backup.cmd {date}".into();
+        fields.password = "secret:app01".into();
+        // The certificate is what keeps the password from going to the wrong PC.
+        assert!(e.apply_fields(&h, &fields).is_err());
+        fields.cert = ["AB"; 32].join(":");
+        fields.warn = "1".into();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let j = &e.net.jobs[1];
+        let Part::Chore(Chore::Winrm { on, command, cert, password }) = &j.part else { panic!() };
+        assert_eq!((on.as_str(), command.as_str()), ("winrm://ops@app01", "backup.cmd {date}"));
+        assert!(cert.is_some() && password.as_deref() == Some("secret:app01"));
+        assert_eq!(j.judge.as_ref().map(|jd| jd.warn.len()), Some(1));
+        let again = Fields::of(j);
+        assert_eq!((again.on.as_str(), again.cert.as_str()), ("winrm://ops@app01", fields.cert.as_str()));
     }
 
     #[test]

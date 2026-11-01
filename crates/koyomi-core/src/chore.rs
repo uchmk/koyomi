@@ -1,11 +1,12 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
 //! files over SFTP or to and from a shared folder, call a web API, run a
-//! command on another PC over SSH. Each is written in the file as its own
-//! `kind` and runs as a PowerShell script the engine writes when the run
-//! starts, so it has the job's slot, log, `timeout` and `retry`. Over SFTP
-//! the script runs `koyomi sftp run`; an `ssh` runs `koyomi ssh run` itself,
-//! without PowerShell. Each reads what to do from the environment.
+//! command on another PC over SSH or on a Windows PC over WinRM. Each is
+//! written in the file as its own `kind` and runs as a PowerShell script the
+//! engine writes when the run starts, so it has the job's slot, log, `timeout`
+//! and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh` runs
+//! `koyomi ssh run` itself, without PowerShell, and a `winrm` `koyomi winrm
+//! run`. Each reads what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -95,10 +96,23 @@ pub enum Chore {
         #[serde(default)]
         password: Option<String>,
     },
+    /// 別の Windows で動かす（WinRM）: `command`, a `cmd.exe` line as it is written,
+    /// on `on` (`winrm://user@host[:port]`) over WinRM on HTTPS (5986), logged in
+    /// as the user with `password` (Basic). `cert` pins the server's certificate
+    /// (its SHA-256, `koyomi winrm cert`). Its output and exit code go as an
+    /// `ssh`'s do.
+    Winrm {
+        on: String,
+        command: String,
+        #[serde(default)]
+        cert: Option<String>,
+        #[serde(default)]
+        password: Option<String>,
+    },
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
-pub const KINDS: [&str; 8] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh"];
+pub const KINDS: [&str; 9] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh", "winrm"];
 
 /// The methods `kind = "http"` takes.
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
@@ -114,14 +128,17 @@ const NO_ANSWER: i32 = 2;
 /// The exit code of a `send` or `fetch` that found no file: 警告.
 pub const NOTHING: i32 = 3;
 
-/// The exit code of an `ssh` that got no exit code from the far side (no
-/// connection, no login, a signal, a lost connection); why is in the file
+/// The exit code of an `ssh` or `winrm` that got no exit code from the far side
+/// (no connection, no login, a signal, a lost connection); why is in the file
 /// `KOYOMI_REASON` names.
 pub const NO_EXIT: i32 = 255;
 
-/// The longest `command` of an `ssh` (characters): it reaches `koyomi ssh run` in
-/// an environment variable.
+/// The longest `command` of an `ssh` or `winrm` (characters): it reaches `koyomi
+/// ssh run` or `koyomi winrm run` in an environment variable.
 pub const COMMAND_MAX: usize = 8000;
+
+/// The port of `winrm://` when none is written: WinRM over HTTPS.
+pub const WINRM_PORT: u16 = 5986;
 
 impl Chore {
     /// The `kind` as written, and the key of its word.
@@ -135,7 +152,14 @@ impl Chore {
             Chore::Fetch { .. } => "fetch",
             Chore::Http { .. } => "http",
             Chore::Ssh { .. } => "ssh",
+            Chore::Winrm { .. } => "winrm",
         }
+    }
+
+    /// Whether it runs a command on another PC (`ssh`, `winrm`): koyomi runs it
+    /// itself, not a script, and it keeps a job's `judge` and `env`.
+    pub fn far(&self) -> bool {
+        matches!(self, Chore::Ssh { .. } | Chore::Winrm { .. })
     }
 
     /// A new, empty one of `kind` (for the shelf).
@@ -156,6 +180,7 @@ impl Chore {
                 expect: Vec::new(),
             },
             "ssh" => Chore::Ssh { on: String::new(), command: String::new(), key: None, host_key: None, password: None },
+            "winrm" => Chore::Winrm { on: String::new(), command: String::new(), cert: None, password: None },
             _ => return None,
         })
     }
@@ -192,6 +217,13 @@ impl Chore {
                 }
                 v
             }
+            Chore::Winrm { on, command, cert, .. } => {
+                let mut v = vec![("on", on), ("command", command)];
+                if let Some(c) = cert {
+                    v.push(("cert", c));
+                }
+                v
+            }
         }
     }
 
@@ -205,13 +237,15 @@ impl Chore {
             }
             Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
             Chore::Ssh { on, command, key, host_key, .. } => [on, command].into_iter().chain(key).chain(host_key).collect(),
+            Chore::Winrm { on, command, cert, .. } => [on, command].into_iter().chain(cert).collect(),
         }
     }
 
     /// Why it may not run as it stands: a path that is empty, a drive's root
     /// for `delete` and `empty`, a zip that does not end in `.zip`, an `sftp://`
     /// that cannot be read or is on the wrong side, an `ssh` without its host,
-    /// command or host key.
+    /// command or host key, a `winrm` without its user, host, command, certificate
+    /// or password.
     pub fn check(&self) -> Result<(), String> {
         let need = |name: &str, p: &str| if p.trim().is_empty() { Err(format!("{name} が空")) } else { Ok(()) };
         match self {
@@ -294,21 +328,44 @@ impl Chore {
                 if ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
                     return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"));
                 }
-                if command.trim().is_empty() {
-                    return Err("command が空（相手の PC で動かすコマンドを書く）".into());
-                }
-                if command.chars().count() > COMMAND_MAX {
-                    return Err(format!("command は {COMMAND_MAX} 文字まで"));
-                }
+                far_command(command)?;
                 login("ssh://", true, key, host_key, password)?;
+            }
+            Chore::Winrm { on, command, cert, password } => {
+                if on.trim().is_empty() {
+                    return Err("on が空（動かす PC を winrm://ユーザー@ホスト[:ポート] で書く）".into());
+                }
+                if winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
+                    return Err(format!("on は winrm://ユーザー@ホスト[:ポート] で書く: {on}"));
+                }
+                far_command(command)?;
+                match cert.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                    None => {
+                        return Err("winrm:// には cert が要る（相手の証明書の指紋 AB:CD:…。koyomi winrm cert <ホスト> で調べる）".into());
+                    }
+                    Some(c) if c.starts_with('{') => {}
+                    Some(c) => cert_ok(c)?,
+                }
+                match password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                    None => {
+                        return Err(
+                            "winrm:// には password が要る（secret:<名前> で書き、値は koyomi secret set <名前> で OS の資格情報に置く）"
+                                .into(),
+                        );
+                    }
+                    Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => {
+                        return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                    }
+                    Some(_) => {}
+                }
             }
         }
         Ok(())
     }
 
     /// The PowerShell script that does it, and how its exit code is judged.
-    /// The paths are already filled in. An `ssh` has none: [`fill`] runs
-    /// `koyomi ssh run` straight.
+    /// The paths are already filled in. An `ssh` or `winrm` has none: [`fill`]
+    /// runs `koyomi ssh run` or `koyomi winrm run` straight.
     pub fn script(&self) -> (String, Option<Judge>) {
         match self {
             Chore::Delete { path, pattern, keep_days } => {
@@ -374,7 +431,7 @@ impl Chore {
                 (http(url, method, body, content_type, headers, expect), None)
             }
             // Not a script (fill()); judged by the job's own `judge`.
-            Chore::Ssh { .. } => (String::new(), None),
+            Chore::Ssh { .. } | Chore::Winrm { .. } => (String::new(), None),
         }
     }
 
@@ -382,7 +439,8 @@ impl Chore {
     /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`;
     /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
     /// (the password as `secret:<name>`, read when the job starts); an `ssh` as
-    /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`).
+    /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
+    /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`).
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
@@ -406,6 +464,16 @@ impl Chore {
                 for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_SSH_{name}"), x.to_owned()));
+                    }
+                }
+                v
+            }
+            Chore::Winrm { on, command, cert, password } => {
+                let mut v =
+                    vec![("KOYOMI_WINRM_ON".to_owned(), on.trim().to_owned()), ("KOYOMI_WINRM_COMMAND".to_owned(), command.clone())];
+                for (name, value) in [("CERT", cert), ("PASSWORD", password)] {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        v.push((format!("KOYOMI_WINRM_{name}"), x.to_owned()));
                     }
                 }
                 v
@@ -484,17 +552,20 @@ fn http(
 /// An `ssh` runs `exe` (koyomi itself) as `exe ssh run`, not through PowerShell:
 /// the engine's ask to stop reaches it straight, and PowerShell's debugger does
 /// not take the ask and write into the log. It keeps its own `judge`, and the
-/// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`.
+/// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`. A `winrm` the
+/// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`.
 pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
             c.check().map_err(|e| format!("{}: {e}", j.id))?;
-            if let Chore::Ssh { .. } = c {
+            if c.far() {
+                let op = c.key();
                 (j.shell, j.script) = (None, None);
-                j.run = [exe, "ssh", "run"].map(str::to_owned).to_vec();
+                j.run = [exe, op, "run"].map(str::to_owned).to_vec();
                 // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
-                let names = j.env.keys().filter(|k| !k.starts_with("KOYOMI_SSH_")).map(String::as_str).collect::<Vec<_>>().join(",");
-                j.env.insert("KOYOMI_SSH_ENV".to_owned(), names);
+                let prefix = format!("KOYOMI_{}_", op.to_ascii_uppercase());
+                let names = j.env.keys().filter(|k| !k.starts_with(&prefix)).map(String::as_str).collect::<Vec<_>>().join(",");
+                j.env.insert(format!("{prefix}ENV"), names);
             } else {
                 let (script, judge) = c.script();
                 (j.shell, j.script, j.judge) = (Some("powershell".to_owned()), Some(script), judge);
@@ -580,6 +651,42 @@ pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
         _ => Ok(far),
     });
     Some(read.map_err(|e| format!("{e}: {t}")))
+}
+
+/// `s` read as a `winrm://user@host[:port]` address (no path: `path` is `.`, no
+/// port: [`WINRM_PORT`]); `None` when it does not start with `winrm://`. The user
+/// is needed: a password is for someone. It may be `DOMAIN\user` or `.\user`.
+pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
+    let t = s.trim();
+    let rest = t.get(..8).filter(|p| p.eq_ignore_ascii_case("winrm://")).map(|_| &t[8..])?;
+    let read = read_sftp(rest, "winrm://").and_then(|far| match rest.split_once('/') {
+        Some((_, p)) if !p.is_empty() => Err("winrm:// にパスは書かない（winrm://ユーザー@ホスト[:ポート]）".into()),
+        _ if far.user.is_none() => Err("winrm:// にはユーザーが要る（winrm://ユーザー@ホスト[:ポート]）".into()),
+        _ => Ok(far),
+    });
+    Some(read.map_err(|e| format!("{e}: {t}")))
+}
+
+/// The command of an `ssh` or `winrm`: something, and not past [`COMMAND_MAX`].
+fn far_command(command: &str) -> Result<(), String> {
+    if command.trim().is_empty() {
+        return Err("command が空（相手の PC で動かすコマンドを書く）".into());
+    }
+    if command.chars().count() > COMMAND_MAX {
+        return Err(format!("command は {COMMAND_MAX} 文字まで"));
+    }
+    Ok(())
+}
+
+/// A certificate's SHA-256 as `koyomi winrm cert` prints it: 32 bytes in hex,
+/// `AB:CD:…` (the colons and the case as you like).
+pub fn cert_ok(c: &str) -> Result<(), String> {
+    let hex: String = c.chars().filter(|x| *x != ':' && !x.is_whitespace()).collect();
+    if hex.len() == 64 && hex.chars().all(|x| x.is_ascii_hexdigit()) {
+        Ok(())
+    } else {
+        Err(format!("cert は AB:CD:… の形（SHA-256 の 32 バイトを 16 進で）で書く（koyomi winrm cert <ホスト> が出すもの）: {c}"))
+    }
 }
 
 fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
@@ -882,6 +989,80 @@ mod tests {
         // Filled again, the far side is still asked for the job's own env only.
         fill(&mut net, "koyomi").unwrap();
         assert_eq!(net.jobs[0].env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
+    }
+
+    const CERT: &str = "3F:2A:91:0C:5B:77:E4:18:A0:6D:C2:9F:41:B8:0E:D3:57:6A:FC:21:94:8B:3E:70:CD:12:65:A9:F0:4E:B7:83";
+
+    #[test]
+    fn a_winrm_address_has_a_user_and_a_host_and_no_path() {
+        let a = winrm("winrm://ops@app01.example.com:5985").unwrap().unwrap();
+        assert_eq!((a.user.as_deref(), a.host.as_str(), a.port), (Some("ops"), "app01.example.com", Some(5985)));
+        let b = winrm(" WinRM://CORP\\ops@app01/ ").unwrap().unwrap();
+        assert_eq!((b.user.as_deref(), b.host.as_str(), b.port), (Some("CORP\\ops"), "app01", None));
+        assert_eq!(winrm("winrm://.\\ops@10.0.0.5").unwrap().unwrap().user.as_deref(), Some(".\\ops"));
+        assert_eq!(winrm("winrm://{param:who}@h").unwrap().unwrap().user.as_deref(), Some("{param:who}"));
+        assert!(winrm("ssh://u@h").is_none());
+        assert!(winrm("h").is_none());
+        assert!(winrm("winrm://h").unwrap().unwrap_err().contains("ユーザーが要る"));
+        assert!(winrm("winrm://u@h/wsman").unwrap().unwrap_err().contains("パスは書かない"));
+        for bad in ["winrm://", "winrm://@h", "winrm://u@h:0", "winrm://u@h:x", "winrm://u@-h", "winrm://u@a b", "winrm://u@h&calc"] {
+            assert!(winrm(bad).unwrap().is_err(), "{bad}");
+        }
+    }
+
+    fn windows(on: &str, command: &str, cert: Option<&str>, password: Option<&str>) -> Chore {
+        Chore::Winrm { on: on.into(), command: command.into(), cert: cert.map(Into::into), password: password.map(Into::into) }
+    }
+
+    #[test]
+    fn a_winrm_needs_its_user_host_command_certificate_and_password() {
+        let ok = |on: &str, command: &str| windows(on, command, Some(CERT), Some("secret:ops")).check();
+        assert_eq!(ok("winrm://ops@h", "ipconfig /all"), Ok(()));
+        assert_eq!(ok("{param:pc}", "ipconfig"), Ok(()));
+        assert!(ok("", "ipconfig").unwrap_err().contains("on が空"));
+        assert!(ok("ops@h", "ipconfig").unwrap_err().contains("winrm://ユーザー@ホスト[:ポート] で書く"));
+        assert!(ok("ssh://ops@h", "ipconfig").unwrap_err().contains("winrm://"));
+        assert!(ok("winrm://h", "ipconfig").unwrap_err().contains("ユーザーが要る"));
+        assert!(ok("winrm://ops@h", " \r\n").unwrap_err().contains("command が空"));
+        assert!(ok("winrm://ops@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err().contains("8000 文字まで"));
+        let login = |cert: Option<&str>, password: Option<&str>| windows("winrm://ops@h", "x", cert, password).check();
+        assert!(login(None, Some("secret:ops")).unwrap_err().contains("koyomi winrm cert"));
+        assert!(login(Some("3F:2A"), Some("secret:ops")).unwrap_err().contains("AB:CD:…"));
+        assert!(login(Some(&"zz".repeat(32)), Some("secret:ops")).unwrap_err().contains("AB:CD:…"));
+        // Colons, spaces and case as one likes, or a param.
+        assert_eq!(login(Some(&CERT.replace(':', "").to_lowercase()), Some("secret:ops")), Ok(()));
+        assert_eq!(login(Some(&CERT.replace(':', " ")), Some("secret:ops")), Ok(()));
+        assert_eq!(login(Some("{param:cert}"), Some("secret:ops")), Ok(()));
+        assert!(login(Some(CERT), None).unwrap_err().contains("password が要る"));
+        assert!(login(Some(CERT), Some(" ")).unwrap_err().contains("password が要る"));
+        assert!(login(Some(CERT), Some("hunter2")).unwrap_err().contains("secret:<名前>"));
+        assert!(login(Some(CERT), Some("secret: ")).unwrap_err().contains("secret:<名前>"));
+    }
+
+    #[test]
+    fn a_winrm_leaves_the_work_to_koyomi_and_keeps_its_judge_and_env() {
+        let w = windows(" winrm://ops@app01 ", "  dir \"C:\\a b\" & exit /b 3\r\n", Some(CERT), Some(" secret:ops "));
+        assert_eq!(w.script(), (String::new(), None));
+        assert!(w.far() && !Chore::blank("http").unwrap().far());
+        let env = w.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_WINRM_ON"), Some("winrm://ops@app01"));
+        // The command as it is written, spaces and all.
+        assert_eq!(get("KOYOMI_WINRM_COMMAND"), Some("  dir \"C:\\a b\" & exit /b 3\r\n"));
+        assert_eq!(get("KOYOMI_WINRM_CERT"), Some(CERT));
+        assert_eq!(get("KOYOMI_WINRM_PASSWORD"), Some("secret:ops"));
+        let mut net = crate::jobnet::parse(&format!(
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"winrm\"\non = 'winrm://ops@app01'\ncommand = 'backup.cmd'\ncert = \"{CERT}\"\npassword = \"secret:ops\"\njudge = {{ warn = \"1\" }}\nenv = {{ DAY = \"1\" }}\n"
+        ))
+        .unwrap();
+        fill(&mut net, "C:\\koyomi\\koyomi.exe").unwrap();
+        let r = &net.jobs[0];
+        assert_eq!((r.shell.as_deref(), r.script.as_deref()), (None, None));
+        assert_eq!(r.run, ["C:\\koyomi\\koyomi.exe", "winrm", "run"]);
+        assert_eq!(r.judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
+        assert_eq!(r.env.get("KOYOMI_WINRM_ENV").map(String::as_str), Some("DAY"));
+        fill(&mut net, "koyomi").unwrap();
+        assert_eq!(net.jobs[0].env.get("KOYOMI_WINRM_ENV").map(String::as_str), Some("DAY"));
     }
 
     fn http(method: &str, body: Option<&str>, headers: &[(&str, &str)], expect: &[u16]) -> Chore {

@@ -37,6 +37,7 @@ mod sheet;
 mod show;
 mod ssh;
 mod ui;
+mod winrm;
 
 use std::path::PathBuf;
 

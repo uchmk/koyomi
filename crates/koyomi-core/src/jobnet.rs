@@ -686,6 +686,7 @@ struct RawJob {
     into: Field,
     key: Field,
     host_key: Field,
+    cert: Field,
     password: Field,
     on: Field,
     command: Field,
@@ -991,7 +992,7 @@ impl Checker<'_> {
                 "kind",
                 &[
                     "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
-                    "send", "fetch", "http", "ssh",
+                    "send", "fetch", "http", "ssh", "winrm",
                 ],
             )
             .unwrap_or("job");
@@ -1011,11 +1012,16 @@ impl Checker<'_> {
         if !["send", "fetch", "ssh"].contains(&kind) {
             self.only(&j.key, "key", "\"send\"・\"fetch\"・\"ssh\"");
             self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
-            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"");
         }
-        if kind != "ssh" {
-            self.only(&j.on, "on", "\"ssh\"");
-            self.only(&j.command, "command", "\"ssh\"");
+        if !["send", "fetch", "ssh", "winrm"].contains(&kind) {
+            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"・\"winrm\"");
+        }
+        if kind != "ssh" && kind != "winrm" {
+            self.only(&j.on, "on", "\"ssh\" か \"winrm\"");
+            self.only(&j.command, "command", "\"ssh\" か \"winrm\"");
+        }
+        if kind != "winrm" {
+            self.only(&j.cert, "cert", "\"winrm\"");
         }
         if kind != "http" {
             for (field, name) in [
@@ -1144,7 +1150,7 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" => Part::Chore(self.chore(j, kind, start)),
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" | "winrm" => Part::Chore(self.chore(j, kind, start)),
             _ => Part::Job,
         }
     }
@@ -1187,7 +1193,7 @@ impl Checker<'_> {
             "copy" => Chore::Copy { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into"), pattern },
             "send" | "fetch" | "ssh" => {
                 let (from, into) = match kind {
-                    "ssh" => (self.ssh_on(j, start), self.ssh_command(j, start)),
+                    "ssh" => (self.far_on(j, kind, start), self.far_command(j, kind, start)),
                     _ => (path_of(self, &j.from, "from"), path_of(self, &j.into, "into")),
                 };
                 let key = self.string(&j.key, "key").filter(|k| !k.trim().is_empty());
@@ -1207,6 +1213,17 @@ impl Checker<'_> {
                     _ => Chore::Ssh { on: from, command: into, key, host_key, password },
                 }
             }
+            "winrm" => {
+                let (on, command) = (self.far_on(j, kind, start), self.far_command(j, kind, start));
+                let cert = self.string(&j.cert, "cert").map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
+                if let (Some(v), Some(f)) = (&cert, &j.cert) {
+                    if let Err(e) = self.template(v) {
+                        self.add(f.span().start, format!("cert: {e}"));
+                    }
+                }
+                let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
+                Chore::Winrm { on, command, cert, password }
+            }
             "http" => self.http(j, start),
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
@@ -1219,25 +1236,32 @@ impl Checker<'_> {
         chore
     }
 
-    /// `kind = "ssh"`'s `on`: the PC, `ssh://[user@]host[:port]` (a template).
-    fn ssh_on(&mut self, j: &RawJob, start: usize) -> String {
+    /// `kind = "ssh"`'s or `"winrm"`'s `on`: the PC, `ssh://[user@]host[:port]` or
+    /// `winrm://user@host[:port]` (a template).
+    fn far_on(&mut self, j: &RawJob, kind: &str, start: usize) -> String {
+        let (example, form) = match kind {
+            "winrm" => ("winrm://ops@server", "winrm://ユーザー@ホスト[:ポート]"),
+            _ => ("ssh://user@server", "ssh://[ユーザー@]ホスト[:ポート]"),
+        };
         let Some(f) = &j.on else {
-            self.add(start, "kind = \"ssh\" には on が要る（動かす PC。例: on = \"ssh://user@server\"）");
+            self.add(start, format!("kind = \"{kind}\" には on が要る（動かす PC。例: on = \"{example}\"）"));
             return String::new();
         };
         let s = self.string(&j.on, "on").unwrap_or_default();
         if s.trim().is_empty() {
-            self.add(f.span().start, "on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] で書く）");
+            self.add(f.span().start, format!("on が空（動かす PC を {form} で書く）"));
         } else if let Err(e) = self.template(&s) {
             self.add(f.span().start, format!("on: {e}"));
         }
         s
     }
 
-    /// `kind = "ssh"`'s `command`: what runs on that PC, as it is written (a template).
-    fn ssh_command(&mut self, j: &RawJob, start: usize) -> String {
+    /// `kind = "ssh"`'s or `"winrm"`'s `command`: what runs on that PC, as it is
+    /// written (a template).
+    fn far_command(&mut self, j: &RawJob, kind: &str, start: usize) -> String {
         let Some(f) = &j.command else {
-            self.add(start, "kind = \"ssh\" には command が要る（相手の PC で動かすコマンド。例: command = \"df -h\"）");
+            let example = if kind == "winrm" { "ipconfig /all" } else { "df -h" };
+            self.add(start, format!("kind = \"{kind}\" には command が要る（相手の PC で動かすコマンド。例: command = \"{example}\"）"));
             return String::new();
         };
         let s = self.string(&j.command, "command").unwrap_or_default();
@@ -2284,13 +2308,17 @@ impl Checker<'_> {
                 let judge = self.judge(&j.judge);
                 (run, shell, script, dir, retry, judge)
             } else {
-                // An `ssh` is judged by the far command's exit code, as a job is.
-                let ssh = matches!(part, Part::Chore(Chore::Ssh { .. }));
+                // An `ssh` or `winrm` is judged by the far command's exit code, as a job is.
+                let ssh = matches!(&part, Part::Chore(c) if c.far());
                 for (field, name) in
                     [(&j.run, "run"), (&j.shell, "shell"), (&j.script, "script"), (&j.dir, "dir"), (&j.retry, "retry"), (&j.judge, "judge")]
                 {
                     if !(name == "retry" && matches!(part, Part::Chore(_)) || name == "judge" && ssh) {
-                        self.only(field, name, if name == "judge" { "\"job\"・\"loop\"・\"ssh\"" } else { "\"job\" か \"loop\"" });
+                        self.only(
+                            field,
+                            name,
+                            if name == "judge" { "\"job\"・\"loop\"・\"ssh\"・\"winrm\"" } else { "\"job\" か \"loop\"" },
+                        );
                     }
                 }
                 let retry = if matches!(part, Part::Chore(_)) { self.retry(&j.retry) } else { None };
@@ -2307,12 +2335,13 @@ impl Checker<'_> {
             let (env, encoding) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
                 let encoding = self.choice(&j.encoding, "encoding", &["auto", "sjis", "utf8"]).and_then(Encoding::of).unwrap_or_default();
                 (self.env(&j.env), encoding)
-            } else if matches!(part, Part::Chore(Chore::Ssh { .. })) {
-                // Asked of the far side (its sshd_config's AcceptEnv); its output is read as it comes.
+            } else if matches!(&part, Part::Chore(c) if c.far()) {
+                // Asked of the far side (an sshd_config's AcceptEnv; WinRM's shell takes
+                // them all); its output is read as it comes.
                 self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (self.env(&j.env), Encoding::Auto)
             } else {
-                self.only(&j.env, "env", "\"job\"・\"loop\"・\"ssh\"");
+                self.only(&j.env, "env", "\"job\"・\"loop\"・\"ssh\"・\"winrm\"");
                 self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
@@ -3270,9 +3299,63 @@ after = [{ job = \"way\", code = \"else\" }]
         .map(|p| p.in_file("a.toml"))
         .collect::<Vec<_>>()
         .join("\n");
-        assert!(other.contains("on は kind = \"ssh\" にだけ書く"), "{other}");
-        assert!(other.contains("command は kind = \"ssh\" にだけ書く"), "{other}");
-        assert!(other.contains("judge は kind = \"job\"・\"loop\"・\"ssh\" にだけ書く"), "{other}");
+        assert!(other.contains("on は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
+        assert!(other.contains("command は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
+        assert!(other.contains("judge は kind = \"job\"・\"loop\"・\"ssh\"・\"winrm\" にだけ書く"), "{other}");
+    }
+
+    /// `kind = "winrm"` takes its PC with a user, its command as written, the
+    /// certificate and a `secret:` password, and a job's `judge` and `env`.
+    #[test]
+    fn a_winrm_reads_with_its_command_certificate_judge_and_env() {
+        let parse_winrm = |extra: &str| {
+            parse(&format!(
+                "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"w\"\nkind = \"winrm\"\n{extra}after = [\"a\"]\n"
+            ))
+            .map(|n| n.jobs[1].clone())
+            .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>().join("\n"))
+        };
+        let cert = "3F:2A:91:0C:5B:77:E4:18:A0:6D:C2:9F:41:B8:0E:D3:57:6A:FC:21:94:8B:3E:70:CD:12:65:A9:F0:4E:B7:83";
+        let login = format!("cert = \"{cert}\"\npassword = \"secret:ops\"\n");
+        let j = parse_winrm(&format!(
+            "on = 'winrm://CORP\\ops@app01:5986'\ncommand = 'backup.cmd {{date}} \"a b\"'\n{login}judge = {{ warn = \"1\" }}\nenv = {{ DAY = \"{{date}}\" }}\nretry = {{ count = 1, wait = \"1m\" }}\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            j.part,
+            Part::Chore(Chore::Winrm {
+                on: "winrm://CORP\\ops@app01:5986".into(),
+                command: "backup.cmd {date} \"a b\"".into(),
+                cert: Some(cert.into()),
+                password: Some("secret:ops".into()),
+            })
+        );
+        assert_eq!(j.judge.unwrap().warn, vec![Range { from: 1, to: 1 }]);
+        assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
+        assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
+        let bad = |extra: &str| parse_winrm(extra).unwrap_err();
+        assert!(bad(&format!("command = 'x'\n{login}"))
+            .contains("kind = \"winrm\" には on が要る（動かす PC。例: on = \"winrm://ops@server\"）"));
+        assert!(bad(&format!("on = 'winrm://u@h'\n{login}")).contains("kind = \"winrm\" には command が要る"));
+        assert!(bad(&format!("on = ''\ncommand = 'x'\n{login}")).contains("winrm://ユーザー@ホスト[:ポート]"));
+        assert!(bad(&format!("on = 'winrm://h'\ncommand = 'x'\n{login}")).contains("ユーザーが要る"));
+        assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\npassword = 'secret:ops'\n").contains("winrm:// には cert が要る"));
+        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\ncert = \"{cert}\"\n")).contains("winrm:// には password が要る"));
+        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}host_key = 'SHA256:x'\n"))
+            .contains("host_key は kind = \"send\"・\"fetch\"・\"ssh\" にだけ書く"));
+        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}key = 'C:\\k'\n")).contains("key は kind"));
+        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}encoding = 'utf8'\n")).contains("encoding"));
+        assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\ncert = '{date+1q}'\npassword = 'secret:ops'\n")
+            .contains("cert: {date+1q}: 単位が読めない"));
+        let other = parse(&format!(
+            "format = 1\n[[job]]\nid = \"s\"\nkind = \"ssh\"\non = 'ssh://h'\ncommand = 'y'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\ncert = \"{cert}\"\n"
+        ))
+        .unwrap_err()
+        .iter()
+        .map(|p| p.in_file("a.toml"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(other.contains("cert は kind = \"winrm\" にだけ書く"), "{other}");
     }
 
     #[test]
@@ -3372,7 +3455,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

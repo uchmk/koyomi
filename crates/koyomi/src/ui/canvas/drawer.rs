@@ -305,7 +305,7 @@ impl Editor {
             Part::Chore(chore) => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| chore_rows(ui, form, chore, f));
                 changed |= fieldset(ui, look, t.tr("canvas.sec_retry"), "", |ui| retry_rows(ui, form, f));
-                if let Chore::Ssh { .. } = chore {
+                if chore.far() {
                     changed |= fieldset(ui, look, t.tr("canvas.sec_judge"), form.words.optional, |ui| judge_rows(ui, form, f));
                 }
                 changed |= fieldset(ui, look, t.tr("canvas.sec_account"), "", |ui| account_rows(ui, form, f));
@@ -513,6 +513,13 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.host_key", req, false, &mut f.host_key, |i| i.mono());
             changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+        }
+        Chore::Winrm { .. } => {
+            changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Link));
+            changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
+            let bad = !f.cert.trim().is_empty() && koyomi_core::chore::cert_ok(f.cert.trim()).is_err();
+            changed |= form.line(ui, "field.cert", req, bad, &mut f.cert, |i| i.mono());
+            changed |= form.line(ui, "field.winrm_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
         }
         Chore::Http { .. } => {
             changed |= form.line(ui, "field.url", req, false, &mut f.url, |i| i.mono().mark(M::Globe));

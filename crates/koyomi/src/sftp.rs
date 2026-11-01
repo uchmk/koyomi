@@ -151,13 +151,7 @@ pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_s
     let auth = if let Some(k) = env_var(&prefix, "KEY") {
         ito_sftp::Auth::Key { path: PathBuf::from(k), passphrase: None }
     } else if let Some(p) = env_var(&prefix, "PASSWORD") {
-        let p = match p.strip_prefix("secret:") {
-            Some(name) => ito_secret::get("koyomi", name.trim())
-                .map_err(|e| format!("秘密を読めない: {name}: {e}"))?
-                .ok_or_else(|| format!("秘密がない: {name}（koyomi secret set {name}）"))?,
-            None => p,
-        };
-        ito_sftp::Auth::Password(p)
+        ito_sftp::Auth::Password(password(p)?)
     } else {
         let ssh = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".ssh")).ok_or("USERPROFILE がない")?;
         let key = ["id_ed25519", "id_ecdsa"]
@@ -172,4 +166,14 @@ pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_s
         t.port = p;
     }
     Ok(t)
+}
+
+/// A job's `password`: read from the OS credential store when it is `secret:<name>`.
+pub(crate) fn password(p: String) -> Result<String, String> {
+    match p.strip_prefix("secret:") {
+        Some(name) => ito_secret::get("koyomi", name.trim())
+            .map_err(|e| format!("秘密を読めない: {name}: {e}"))?
+            .ok_or_else(|| format!("秘密がない: {name}（koyomi secret set {name}）")),
+        None => Ok(p),
+    }
 }

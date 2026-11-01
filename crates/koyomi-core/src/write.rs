@@ -377,6 +377,13 @@ fn job(j: &Job, out: &mut String) {
                     push(out, "on", &q(on));
                     push(out, "command", &q(command));
                 }
+                Chore::Winrm { on, command, cert, .. } => {
+                    push(out, "on", &q(on));
+                    push(out, "command", &q(command));
+                    if let Some(c) = cert {
+                        push(out, "cert", &q(c));
+                    }
+                }
             }
             if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } | Chore::Ssh { key: Some(k), .. } = c {
                 push(out, "key", &q(k));
@@ -385,7 +392,10 @@ fn job(j: &Job, out: &mut String) {
             {
                 push(out, "host_key", &q(h));
             }
-            if let Chore::Send { password: Some(p), .. } | Chore::Fetch { password: Some(p), .. } | Chore::Ssh { password: Some(p), .. } = c
+            if let Chore::Send { password: Some(p), .. }
+            | Chore::Fetch { password: Some(p), .. }
+            | Chore::Ssh { password: Some(p), .. }
+            | Chore::Winrm { password: Some(p), .. } = c
             {
                 push(out, "password", &q(p));
             }

@@ -695,9 +695,22 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - 同じ日に、`ssh` のジョブは PowerShell を通さず、エンジンが `koyomi.exe ssh run` をじかに動かすようにした（`fill` が `run` に入れる。環境変数・出力の行・終わりのコード・`KOYOMI_REASON` は前と同じ）。前は頼むと PowerShell 5.1 がデバッガーに入り、「Entering debug mode…」「[DBG]: PS …>>」の行がジョブのログに出ていた。`koyomi run --dry` にはスクリプトでなく `koyomi.exe ssh run` が出る。
   - つないでいる途中の止めは 2026-11-01 に直った（ito 0.190.0）: 前は ito-sftp の `exec` が止める旗を見るのは、相手がコマンドを受け付けてから（`run_command` の出力を待つ輪の中）だけで、つなぐ・鍵を交わす・ログインする間（それぞれ `connect_timeout` の 15 秒まで）と、チャンネルを開いて env と exec の返事を待つ間に止めると、10 秒待ってから終わらせていた。0.190.0 の `exec` はどの段でも 100 ms ごとに旗を見て、すぐ返す。exec を送る前ならそれを送らずに閉じ（相手では何も始まらない）、送ったあとなら今までどおり TERM を送る。koyomi にはどちらだったかが分からないので、✕ の理由はどちらでも本当の「強制終了、web01: 止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）」にした（前は「web01 のコマンドにも止まるよう頼んだ（TERM）」）。
   - 残る限り: `run_as` の `ssh` のジョブは、上のとおり頼めないのですぐ終わらせる。send・fetch（`koyomi sftp run`）には止める旗をまだ渡していない（ito-sftp の `Session::connect` は旗を取らない）ので、今までどおり頼まずにすぐ終わらせる。
-- WinRM（PowerShell Remoting）は後に回す。Windows の相手にも OpenSSH が標準で入ること、WinRM は認証（Kerberos・NTLM）とライブラリの手間が大きいことから。要るときに別に決める。
+- WinRM（PowerShell Remoting）は後に回す。Windows の相手にも OpenSSH が標準で入ること、WinRM は認証（Kerberos・NTLM）とライブラリの手間が大きいことから。要るときに別に決める。（2026-11-01: 下の「別の Windows でコマンドを動かす部品」で `kind = "winrm"` にした）
 - 部品の棚では「基本」の組に置く。印は初めは ito の Link（ito にサーバーの印が無かった）で、ito 0.187.0 から Server。
 - エンジンとの約束の版を 33 に上げた（定義の形が増えたので、古い窓は新しいエンジンの答えを読めない）。
+
+## 別の Windows でコマンドを動かす部品（TODO 100、H9、2026-11-01 に持ち主と決めた）
+
+- `ssh` の Windows 版として別の種類 `kind = "winrm"` にする（`ssh` に `on = "winrm://…"` を足すのでなく）。書くものが違う（ホスト鍵と SSH の鍵でなく、証明書の指紋とパスワード）ので、`koyomi check` とエディターが種類ごとに要るものを言える。つなぐのは ito の ito-winrm（uchmk/ito#132 で頼んだ、純 Rust で WS-Management を話すもの）。
+- `on = "winrm://ユーザー@ホスト[:ポート]"`。ユーザーは要る（`CORP\ops`・`.\ops` も書ける）、パスは書かない、ポートの既定は 5986。
+- HTTPS（5986）だけにする。HTTP（5985）は既定では NTLM・Kerberos のメッセージの暗号化が要り、Basic では平文でパスワードを送ることになるので、受けない。
+- `cert = "AB:CD:…"`（相手の証明書の SHA-256 の指紋）は必ず要る。WinRM の HTTPS は自分で作った証明書のことが多く、CA で確かめられないので、`ssh` の `host_key` と同じく指紋で固定する。違えばパスワードを送る前に止める。`koyomi winrm cert <ホスト>[:<ポート>]`（`winrm://…` でもよい）が書く行を出す。
+- `password = "secret:<名前>"` は必ず要る（鍵は無い）。値は `koyomi secret set <名前>` で OS の資格情報に置き、定義には名前だけを書く。
+- 認証は初めは Basic だけ（持ち主の答え: 「Basic で先に作って、Kerberos を追加してもらって」）。Basic で入れるのは相手の PC のローカル アカウントだけで、相手の WinRM で `winrm set winrm/config/service/auth @{Basic="true"}` が要る。断られたときの理由にこの 2 つを書く。NTLM・Kerberos・Negotiate は uchmk/ito#134 で頼んだ（NTLM は持ち主が足した）。届いたら `auth = "ntlm"` などを足し、書かなければ Basic のままにする。
+- 動かし方は `ssh` と同じ: 回を始めるときにふつうのジョブにし、エンジンが `koyomi.exe winrm run` をじかに動かして `KOYOMI_WINRM_{ON,COMMAND,CERT,PASSWORD,ENV}` で渡す。出力・`! ` の標準エラー・コードページ・終わりのコード・255 と `KOYOMI_REASON`・`judge`・`env`（WinRM のシェルの環境変数として渡すので、`ssh` の `AcceptEnv` のような断りは無い）・`timeout`・`retry` は `ssh` と同じ。`encoding` は書けない。
+- 止めるも `ssh` と同じく先に頼んで 10 秒待つ（猶予の名前を `FAR_GRACE` にした）。ito-winrm は 200 ms ごとに旗を見て、コマンドを送る前なら何も始めずに返し、送ったあとなら新しいつながりで相手のコマンドに終わりを頼み（10 秒まで）、シェルを消す（10 秒まで）。ふつうは 2 秒もかからない。✕ の理由は「強制終了、app01: 止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）」。`run_as` では `ssh` と同じく頼めないのですぐ終わらせる。
+- 部品の棚では「基本」の組の `ssh` の次に置く。印は ito の Link（棚の印は部品ごとに違うものにする。Windows の PC の印は ito に頼む）。
+- エンジンとの約束の版を 36 に上げた（定義の形が増えたので）。
 
 ## 別のアカウントで動かす（TODO 79、H8、2026-10-31 に持ち主と決めた）
 

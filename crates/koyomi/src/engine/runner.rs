@@ -34,7 +34,6 @@ use std::time::{Duration, Instant, SystemTime};
 use chrono::{Local, NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::Chore;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
@@ -1136,12 +1135,14 @@ struct JobSpec {
     cap: u64,
 }
 
-/// How long an `ssh` job asked to stop has before it is killed. `koyomi ssh run` sends
-/// TERM to the far command and closes the channel, which ito-sftp gives 2 s; 10 s
-/// leaves room for a slow link while a kill or a `timeout` still ends it soon.
-const SSH_GRACE: Duration = Duration::from_secs(10);
+/// How long an `ssh` or `winrm` job asked to stop has before it is killed. `koyomi ssh
+/// run` sends TERM to the far command and closes the channel, which ito-sftp gives 2 s;
+/// `koyomi winrm run` connects anew to ask the far command to end and to delete its
+/// shell, which takes a moment on a sound link. 10 s leaves room for a slow link while
+/// a kill or a `timeout` still ends it soon.
+const FAR_GRACE: Duration = Duration::from_secs(10);
 
-/// How long a stop waits after asking `part` before it kills: [`SSH_GRACE`] for an
+/// How long a stop waits after asking `part` before it kills: [`FAR_GRACE`] for an
 /// `ssh` job, which can pass the ask on to the far side. Anything else is killed at
 /// once, as before: a script or program that does not watch for the ask would only
 /// make a kill slower. Under `run_as` nothing can be asked: `ito_proc` gives another
@@ -1150,7 +1151,7 @@ const SSH_GRACE: Duration = Duration::from_secs(10);
 /// far command is left to end by itself.
 fn grace(part: &Part) -> Duration {
     match part {
-        Part::Chore(Chore::Ssh { .. }) => SSH_GRACE,
+        Part::Chore(c) if c.far() => FAR_GRACE,
         _ => Duration::ZERO,
     }
 }
@@ -1695,6 +1696,7 @@ fn attempt(
 mod tests {
     use super::*;
     use koyomi_core::approved::hash;
+    use koyomi_core::chore::Chore;
     use koyomi_core::scan::Standing;
     use std::time::{Duration, Instant};
 
@@ -2137,9 +2139,10 @@ id = \"a\"
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An `ssh` job is asked to stop and given time to pass the ask on; anything else is killed at once.
+    /// An `ssh` or `winrm` job is asked to stop and given time to pass the ask on; anything
+    /// else is killed at once.
     #[test]
-    fn only_an_ssh_job_gets_a_grace_before_the_kill() {
+    fn only_an_ssh_or_winrm_job_gets_a_grace_before_the_kill() {
         let ssh = Part::Chore(Chore::Ssh {
             on: "ssh://ops@web01".into(),
             command: "sleep 600".into(),
@@ -2149,6 +2152,8 @@ id = \"a\"
         });
         // More than the 2 s ito-sftp gives the far command's TERM and close.
         assert!(grace(&ssh) > Duration::from_secs(2));
+        let winrm = Part::Chore(Chore::Winrm { on: "winrm://ops@app01".into(), command: "x".into(), cert: None, password: None });
+        assert_eq!(grace(&winrm), grace(&ssh));
         assert_eq!(grace(&Part::Job), Duration::ZERO);
         assert_eq!(grace(&Part::Chore(Chore::Zip { from: "a".into(), into: "b.zip".into() })), Duration::ZERO);
     }

@@ -2823,6 +2823,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-winrm"
+version = "0.195.0"
+source = "git+https://github.com/uchmk/ito?rev=38e337d20855d27c1439bc1c017be8e87bb7d76f#38e337d20855d27c1439bc1c017be8e87bb7d76f"
+dependencies = [
+ "base64 0.22.1",
+ "getrandom 0.4.3",
+ "rustls",
+ "sha2 0.11.1",
+ "webpki-roots",
+]
+
+[[package]]
 name = "ito-zip"
 version = "0.195.0"
 source = "git+https://github.com/uchmk/ito?rev=38e337d20855d27c1439bc1c017be8e87bb7d76f#38e337d20855d27c1439bc1c017be8e87bb7d76f"
@@ -3000,6 +3012,7 @@ dependencies = [
  "ito-tray",
  "ito-watch",
  "ito-winres",
+ "ito-winrm",
  "koyomi-core",
  "serde",
  "serde_json",

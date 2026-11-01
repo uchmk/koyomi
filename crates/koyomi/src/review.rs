@@ -249,6 +249,15 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             }
             v
         }
+        Chore::Winrm { on, command, cert, password } => {
+            let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
+            for (name, value) in [("cert", cert), ("password", password)] {
+                if let Some(x) = value {
+                    v.push(line(name, x));
+                }
+            }
+            v
+        }
         Chore::Http { url, method, body, content_type, headers, expect } => {
             let mut v = vec![line("url", &format!("{method} {url}"))];
             if let Some(b) = body {

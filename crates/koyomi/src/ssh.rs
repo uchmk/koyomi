@@ -24,7 +24,7 @@ const LINE_MAX: usize = 64 * 1024;
 
 pub fn cmd(args: &[String]) -> i32 {
     match args {
-        [op] if op == "run" => run(),
+        [op] if op == "run" => run(exec),
         _ => {
             crate::say("koyomi: ssh takes run (what an ssh job does); the host key: koyomi sftp hostkey <host>[:<port>]", true);
             2
@@ -36,7 +36,9 @@ fn var(name: &str) -> Option<String> {
     crate::sftp::env_var("KOYOMI_SSH_", name)
 }
 
-fn run() -> i32 {
+/// Runs `exec` (an `ssh`'s or a `winrm`'s) and ends as [the module](self) says:
+/// its exit code, or [`NO_EXIT`] with why.
+pub(crate) fn run(exec: impl FnOnce(&AtomicBool) -> Result<i32, String>) -> i32 {
     // First of all, before connecting: the handler and the watcher of the stop
     // event are what turn the engine's ask into the flag.
     let stop = ito_proc::stop_requested();
@@ -63,7 +65,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let command = std::env::var("KOYOMI_SSH_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or("command がない")?;
     let host_key = var("HOST_KEY").ok_or("host_key がない（koyomi sftp hostkey <ホスト> で調べる）")?;
     let target = crate::sftp::target(&far, host_key, "ssh")?;
-    let opts = ito_sftp::ExecOptions { env: forwarded(), timeout: None };
+    let opts = ito_sftp::ExecOptions { env: forwarded("KOYOMI_SSH_ENV"), timeout: None };
     let (mut out, mut err) = (Vec::new(), Vec::new());
     let result = ito_sftp::exec(&target, &command, &opts, stop, &mut |stream, bytes| {
         let (buf, stderr) = match stream {
@@ -108,16 +110,16 @@ fn outcome(status: Option<u32>, signal: Option<String>) -> Result<i32, String> {
     }
 }
 
-/// The names in `KOYOMI_SSH_ENV` (the job's own `env`) with their values here, to
-/// ask the far side for.
-fn forwarded() -> Vec<(String, String)> {
-    let names = std::env::var("KOYOMI_SSH_ENV").unwrap_or_default();
+/// The names in `list` (`KOYOMI_SSH_ENV`: the job's own `env`) with their values
+/// here, to ask the far side for.
+pub(crate) fn forwarded(list: &str) -> Vec<(String, String)> {
+    let names = std::env::var(list).unwrap_or_default();
     names.split(',').map(str::trim).filter(|n| !n.is_empty()).filter_map(|n| Some((n.to_owned(), std::env::var(n).ok()?))).collect()
 }
 
 /// A far line to the job's log: standard error after `! `, as the engine writes a
 /// job's own.
-fn say(line: &str, stderr: bool) {
+pub(crate) fn say(line: &str, stderr: bool) {
     match stderr {
         true => crate::say(&format!("! {line}"), false),
         false => crate::say(line, false),
@@ -125,7 +127,7 @@ fn say(line: &str, stderr: bool) {
 }
 
 /// `bytes` added to what waits in `buf`, and the lines that are whole now.
-fn cut(buf: &mut Vec<u8>, bytes: &[u8]) -> Vec<String> {
+pub(crate) fn cut(buf: &mut Vec<u8>, bytes: &[u8]) -> Vec<String> {
     buf.extend_from_slice(bytes);
     let mut lines = Vec::new();
     while let Some(end) = buf.iter().position(|&b| b == b'\n') {
@@ -140,7 +142,7 @@ fn cut(buf: &mut Vec<u8>, bytes: &[u8]) -> Vec<String> {
 
 /// One line as text: UTF-8, or else the Windows code page (a Japanese Windows's
 /// `cmd` writes CP932); without its line end.
-fn text(line: &[u8]) -> String {
+pub(crate) fn text(line: &[u8]) -> String {
     let line = line.strip_suffix(b"\n").unwrap_or(line);
     let line = line.strip_suffix(b"\r").unwrap_or(line);
     ito_proc::Encoding::Auto.decode(line)
