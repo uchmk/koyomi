@@ -236,6 +236,9 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 18.13 | `koyomi history --from <the first of those days>` | Those days' runs are listed again (read from the zip), oldest first, before today's |
 | 18.14 | Make the month's zip read-only, then change `keep_days` so that another day of that month goes | That day stays in `logs/` and `history/`; `engine status` says `消せなかった 1 件: …YYYY-MM.zip: …`; once the zip is writable again, the next sweep puts the day in and removes it |
 | 18.15 | Put a copy of a zip as `archive/2025-01.zip` and write `archive_days = 30` | At the sweep it goes and `engine status` says `古い zip 1 個を消した`; the zips of the months of the last 30 days stay |
+| 18.16 | Under "Records", turn on 消す前に archive/ にしまう, then off | `archive = true`, then `archive = false`, is written at the top of `koyomi.toml`; the comments and the line order stay; searching the settings for `archive` shows the General page |
+| 18.17 | With it on, shorten the days so that some go (as 18.3) | The box says the n days go into archive/ at the next sweep and can be read with koyomi archive, not that they cannot be brought back; with it off the box says as in 18.3 |
+| 18.18 | `koyomi log <run> <job>` for a run whose day is only in `archive/` (18.10), with the engine running and then stopped | Both times the job's whole log, read from the zip; for a run in neither `logs/` nor `archive/`, the same error as before |
 
 ## 19. Retry
 
@@ -709,10 +712,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 53.2 | Run it without `--dry` | The days run one after another, each started after the last ended |
 | 53.3 | Make one day fail, then run the range | It stops at that day with a non-zero exit |
 | 53.4 | `--date 2026-05-03..2026-05-01` | Refused: the range ends before it starts |
-| 53.5 | For a net that runs daily, with runs on some days of the last week and one of them ended 異常: `koyomi run <net> --date <a week ago>..<today> --only missing --dry` | Each day is listed: 流す for the days with no run (実行の記録がない, or only a 時刻を過ぎた/スキップ record), 流さない with the run's state and id for the others; nothing starts |
+| 53.5 | For a net that runs daily, with runs on some days of the last week and one of them ended 異常: `koyomi run <net> --date <a week ago>..<today> --only missing --dry` | Each day is listed: 流す for the days with no run (実行の記録がない, or only a 時刻を過ぎた/保留/未確認で止めた record), 流さない with the record's state and id for a day whose last record is a スキップ and for the others; nothing starts |
 | 53.6 | The same with `--only failed --dry` | The day that ended 異常 is now 流す too; a day off the net's calendar is 流さない 予定のない日 |
 | 53.7 | Run `--only failed` without `--dry` | One line says how many days run and which, then only those days run in turn; with none to run it says 流す日はない and exits 0 |
 | 53.8 | `koyomi run <net> --only missing` (no range) | Refused: `--only` goes with `--date A..B` |
+| 53.9 | With `keep_days = 7`, `koyomi run <net> --date <30 days ago>..<today> --only missing --dry` | The days older than 7 days with no record are 流さない 記録が残っていない（keep_days より前）, and one line says 記録が残っていない日は流さない。範囲の日を全部流すなら --only を外す; with `archive = true` and those days in `archive/`, their runs are read from the zip and the days are listed as in 53.5 |
+| 53.10 | On a standby PC (`[standby]`, not taken over): `koyomi run <net> --date A..B --only missing` | Refused: 待機中の PC では --only を使えない（流しているのは <primary> で、実行の記録もそちらにある）。<primary> で流す; nothing starts. After it has taken over, it picks the days as in 53.5 |
 
 ## 54. 平均の所要時間と終了の予想
 

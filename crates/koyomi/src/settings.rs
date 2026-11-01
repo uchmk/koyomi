@@ -47,9 +47,11 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (GENERAL, "[window]"),
         (GENERAL, t.tr("settings.records")),
         (GENERAL, t.tr("settings.keep_days")),
+        (GENERAL, t.tr("settings.archive")),
         (GENERAL, t.tr("settings.concurrency")),
         (GENERAL, t.tr("settings.log_max")),
         (GENERAL, "keep_days"),
+        (GENERAL, "archive"),
         (GENERAL, "concurrency"),
         (GENERAL, "log_max_mb"),
         (GENERAL, "koyomi.toml"),
@@ -122,6 +124,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     // The Records section: the days picked, and the numbers typed (as typed).
     let (config, config_warn, limit_drafts) = (&prefs.config, &prefs.config_warn, &mut prefs.limit_drafts);
     let mut keep_pick: Option<u32> = None;
+    let mut archive_pick: Option<bool> = None;
     let mut limit_typed: Vec<(&'static str, String)> = Vec::new();
     let mut day_words: Vec<(u32, String)> = KEEP_DAYS.iter().map(|d| (*d, table.trf("settings.days", &[&d.to_string()]))).collect();
     if !KEEP_DAYS.contains(&config.keep_days) {
@@ -158,6 +161,11 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 keep_pick = ito_prefs::keyed_row(ui, l, "keep_days", &label, &note, |ui| {
                     ito_prefs::select(ui, "keep_days", config.keep_days, &day_opts)
                 });
+                ito_prefs::sep(ui, l);
+                let (label, note) = (tr("settings.archive"), tr("settings.archive_note"));
+                if ito_prefs::keyed_row(ui, l, "archive", &label, &note, |ui| ito_prefs::switch(ui, l, config.archive)) {
+                    archive_pick = Some(!config.archive);
+                }
                 ito_prefs::sep(ui, l);
                 let (label, note) = (tr("settings.concurrency"), tr("settings.concurrency_note"));
                 let now = config.concurrency.to_string();
@@ -270,6 +278,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             limit_edits.push(("keep_days", d.to_string()));
         }
     }
+    if let Some(on) = archive_pick {
+        limit_edits.push(("archive", on.to_string()));
+    }
     app.prefs.limits_edit(limit_edits, &no_folder);
     if let Some((what, n)) = test {
         crate::notify::test(&n, what, &tr("notify.test_title"), &tr("notify.test_body"));
@@ -337,7 +348,9 @@ fn keep_ask(ui: &mut Ui, app: &mut App, no_folder: &str) {
     let now = app.prefs.config.keep_days;
     let title = t.tr("settings.keep_ask_title").to_owned();
     let rows = [(t.tr("settings.keep_days").to_owned(), t.trf("settings.keep_ask_change", &[&now.to_string(), &new.to_string()]))];
-    let body = [if lost == 0 { t.tr("settings.keep_ask_none").to_owned() } else { t.trf("settings.keep_ask_body", &[&lost.to_string()]) }];
+    // With archive on, the days are put into archive/, not gone for good.
+    let body_key = if app.prefs.config.archive { "settings.keep_ask_body_archive" } else { "settings.keep_ask_body" };
+    let body = [if lost == 0 { t.tr("settings.keep_ask_none").to_owned() } else { t.trf(body_key, &[&lost.to_string()]) }];
     let buttons = [t.tr("settings.keep_ask_yes").to_owned(), t.tr("confirm.no").to_owned()];
     let q = ito_confirm::Question {
         title: &title,

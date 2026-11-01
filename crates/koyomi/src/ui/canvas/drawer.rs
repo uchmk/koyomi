@@ -508,7 +508,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
         }
         Chore::Ssh { .. } => {
-            changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Link));
+            changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Server));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             changed |= form.line(ui, "field.host_key", req, false, &mut f.host_key, |i| i.mono());
             changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());

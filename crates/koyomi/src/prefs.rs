@@ -469,9 +469,9 @@ impl Prefs {
         });
     }
 
-    /// Write `edits` (koyomi.toml's top-level numbers, `keep_days`,
-    /// `concurrency` and `log_max_mb`, as TOML) on a thread, then read the
-    /// file again. One already as the file has it is not written.
+    /// Write `edits` (koyomi.toml's top-level keys, `keep_days`,
+    /// `concurrency`, `log_max_mb` and `archive`, as TOML) on a thread, then
+    /// read the file again. One already as the file has it is not written.
     pub fn limits_edit(&self, edits: Vec<(&'static str, String)>, no_folder: &str) {
         let c = &self.config;
         let edits: Vec<(&str, String)> = edits
@@ -480,6 +480,7 @@ impl Prefs {
                 "keep_days" => *v != c.keep_days.to_string(),
                 "concurrency" => *v != c.concurrency.to_string(),
                 "log_max_mb" => *v != c.log_max_mb.to_string(),
+                "archive" => *v != c.archive.to_string(),
                 _ => true,
             })
             .collect();

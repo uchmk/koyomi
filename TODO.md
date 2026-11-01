@@ -172,12 +172,14 @@
 
 7 周目（持ち主の指示で 2026-11-01 に項目にした）。`COMPETITORS.md` の表 3 で、競合に比べて足りないところ。上から順に作る。
 
-- [x] 91. C11 期間の後追い（S）: `koyomi run <net> --date A..B` に、流れていない日・失敗した日だけを選んで流す形を足す（今は範囲の日を全部流す）。Airflow の Backfill にあたる。（2026-11-01。`--only missing|failed`。業務日で見て、予定のない日は外す。`--dry` で日ごとに流すかとそのわけを出す。PROTO は変えず CLI で選ぶ）
-- [x] 92. P9 古い履歴をしまう（S〜M）: `keep_days` で消す前に、履歴とログを圧縮したファイルに移し、あとで読めるようにする。Control-M の Workload Archiving（最長 7 年）にあたる。（2026-11-01 済: koyomi.toml の `archive = true` で `archive/YYYY-MM.zip`（ito-zip）に入れてから消す。`archive_days` で古い zip を消す。`koyomi archive [list]`・`show <日>`・`log <run> <job>`、`koyomi history` も zip から読む。窓と設定の画面からはまだ読めない・切り替えられない）
-- [x] 93. C9 共有のロックと数のロック（S〜M）: 今の `lock` は名前ごとに 1 本だけ。読むだけのネットが一緒に流れる共有のロックと、「同時に 3 本まで」の数のロックを足す。Control-M の Lock（Shared/Exclusive）と Resource Pool、Airflow の pool にあたる。（2026-11-01。`lock = { name = "販売DB", shared = true }` と koyomi.toml の `[locks]` `"API枠" = 3`。待ち合わせはせず、入れないときは断る・🔒 止めたにして、理由に名前と持ち方を出す。判定は koyomi-core の `lock::admit`）
+- [x] 91. C11 期間の後追い（S）: `koyomi run <net> --date A..B` に、流れていない日・失敗した日だけを選んで流す形を足す（今は範囲の日を全部流す）。Airflow の Backfill にあたる。（2026-11-01。`--only missing|failed`。業務日で見て、予定のない日は外す。`--dry` で日ごとに流すかとそのわけを出す。PROTO は変えず CLI で選ぶ。2026-11-01 追記: 最後の記録がスキップの日と、keep_days より前で記録の残っていない日は選ばない（archive/ も読む）。待機中の PC では断る）
+- [x] 92. P9 古い履歴をしまう（S〜M）: `keep_days` で消す前に、履歴とログを圧縮したファイルに移し、あとで読めるようにする。Control-M の Workload Archiving（最長 7 年）にあたる。（2026-11-01 済: koyomi.toml の `archive = true` で `archive/YYYY-MM.zip`（ito-zip）に入れてから消す。`archive_days` で古い zip を消す。`koyomi archive [list]`・`show <日>`・`log <run> <job>`、`koyomi history` も zip から読む。窓と設定の画面からはまだ読めない・切り替えられない。2026-11-01 追記: 設定の画面の「記録」で切り替えられ、残す日数を短くする箱はしまうと言う。`koyomi log` も zip から読む。窓からはまだ読めない）
+- [x] 93. C9 共有のロックと数のロック（S〜M）: 今の `lock` は名前ごとに 1 本だけ。読むだけのネットが一緒に流れる共有のロックと、「同時に 3 本まで」の数のロックを足す。Control-M の Lock（Shared/Exclusive）と Resource Pool、Airflow の pool にあたる。（2026-11-01。`lock = { name = "販売DB", shared = true }` と koyomi.toml の `[locks]` `"API枠" = 3`。待ち合わせはせず、入れないときは断る・🔒 止めたにして、理由に名前と持ち方を出す。判定は koyomi-core の `lock::admit`。2026-11-01 追記: 待ち合わせの列は持たないと DECISIONS の A10 に書いた）
 - [x] 94. H12 ジョブネット・フォルダーごとのロール（M）: `[[http.user]]` に `nets = ["経理/*"]`。今の view・run・edit は全部のネットにかかる。JP1 の資源グループ・Rundeck の ACL にあたる。（2026-11-01 に入れた: `nets` の外のネット・実行は無いものと同じ。形の外の propose と全部のネットにかかるものは 403。この PC の窓と CLI は変わらない）
 - [x] 95. H9 koyomi の無い PC でコマンドを流す（M）: SSH で別の PC のコマンドを流すジョブの部品（WinRM は後で）。Rundeck のノードにあたる。ito に無いので crate-request で頼む。（2026-11-01。`kind = "ssh"` の `on = "ssh://…"` と `command`。`koyomi ssh run` が ito-sftp の `exec` でつなぎ、出力をログに流して相手の終わりのコードで判じる。つながらない・シグナルは 255 と日本語の理由。止めても相手のコマンドが止まるかは相手しだい。WinRM は後で）（2026-11-01 追記: ito 0.187.0 の柔らかい止めで、止めるときは先に頼み、相手のコマンドに TERM を送ってから 10 秒で終わらせる。`run_as` と Windows の配る版（コンソールが無い）ではまだ届かない。印はサーバー）（2026-11-01 追記: ito 0.189.0 で配る版にも頼みが届く（名前付きのイベント）。ssh のジョブは PowerShell を通さず `koyomi ssh run` をじかに動かすので、止めたときにデバッガーの行がログに出ない。まだ届かないのは `run_as` と、つなぐ・ログインする間（ito-sftp）だけ）
 - [x] 96. H16 HA の仕上げ（L）: 1 台目が戻ったら自動で返す形を選べるようにする（今は人が `koyomi standby giveback`）。1 台目で動いていた回を引き継ぐ。DECISIONS の「戻すのは人」を決め直す。（2026-11-01 に入れた: `[standby] give_back = "auto"`、1 台目の `[primary]` と `/health` の `"ha"`・`POST /standby/release` で受け渡す。ネットの `takeover = "rerun"` で続きから流し、ほかは引き継いでいない回として残す。どれも書かなければ前のまま）
+- [ ] 窓の実行一覧・ログの欄で、archive/ にしまった日も読めるようにする（今は koyomi history・log・archive だけ）
+- [ ] 窓に HA の状態（1 台目・待機・引き継ぎ中・戻した時刻）を出す（Web UI は 81）
 
 ## デザイン（画面の見本との差）
 

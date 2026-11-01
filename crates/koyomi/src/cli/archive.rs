@@ -113,13 +113,8 @@ fn show(day: NaiveDate) -> i32 {
 
 /// One job's whole log from the archive.
 fn log(run: &str, job: &str) -> i32 {
-    let state = match state() {
-        Ok(s) => s,
-        Err(e) => return fail(&e),
-    };
-    match retain::archived_log(&state, run, job) {
-        Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes).into_owned();
+    match log_text(run, job) {
+        Ok(text) => {
             if super::toml() {
                 emit(&toml::to_string(&Log { run: run.to_owned(), job: job.to_owned(), text }).unwrap_or_default());
             } else {
@@ -129,6 +124,13 @@ fn log(run: &str, job: &str) -> i32 {
         }
         Err(e) => fail(&e),
     }
+}
+
+/// One job's whole log as `archive/` keeps it (`koyomi archive log`, and `koyomi log` once the
+/// sweep has taken it out of `logs/`).
+pub(super) fn log_text(run: &str, job: &str) -> Result<String, String> {
+    let bytes = retain::archived_log(&state()?, run, job)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 /// For `koyomi history`: the runs of the days from `from` to `to` that the engine had none of
@@ -177,5 +179,7 @@ mod tests {
     fn the_usage_and_the_commands_know_archive() {
         assert!(super::super::COMMANDS.contains(&"archive"));
         assert!(super::super::USAGE.contains("koyomi archive show <YYYY-MM-DD>"));
+        assert!(super::super::USAGE
+            .contains("koyomi log <run> <job>        the tail of one job's log (gone from logs/: the whole of it from archive/)"));
     }
 }

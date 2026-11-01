@@ -38,10 +38,11 @@ usage: koyomi [--version | --help | env]
        koyomi run <group/name> [--from <job>] [--date YYYY-MM-DD[..YYYY-MM-DD] [--only missing|failed]] [--set name=value]... [--dry] [--wait]
                                      start the net now (--from: at that job, the ones before it skipped;
                                      --date: for that business day, or each day of A..B in turn; --only: of A..B, only the days the net
-                                     has no run for (missing), or those and the days whose last run failed (failed), days off its
-                                     schedule left out; --dry: start nothing, print each job's command with the dates written out,
-                                     or with --only each day and why it runs or not; --set: a value for the net's [params];
-                                     --wait: stay until it ends)
+                                     has no run for (missing), or those and the days whose last run failed (failed); left out are
+                                     the days off its schedule, those whose last record is a skip, and those older than keep_days
+                                     with no record left (archive/ is read too); refused on a standby that has not taken over;
+                                     --dry: start nothing, print each job's command with the dates written out, or with --only
+                                     each day and why it runs or not; --set: a value for the net's [params]; --wait: stay until it ends)
        koyomi rerun <run> [--from <job> | --next <job> [--warn]] [--wait]
                                      run it again: what passed is carried over, the rest runs (--from: that job and after it too;
                                      --next: the jobs after it, the job itself ends as skipped, or as warn with --warn)
@@ -53,7 +54,7 @@ usage: koyomi [--version | --help | env]
                                      --status: ok, warn, error, timeout, killed, running, running_error,
                                      waiting, held, skipped, missed, locked or not_run; --csv: one row per run;
                                      the days that went into archive/ are read from there)
-       koyomi log <run> <job>        the tail of one job's log
+       koyomi log <run> <job>        the tail of one job's log (gone from logs/: the whole of it from archive/)
        koyomi archive [list]         the month zips that archive = true in koyomi.toml keeps in archive/,
                                      and the days of history and logs each holds
        koyomi archive show <YYYY-MM-DD>  that day's runs as archive/ keeps them
@@ -964,6 +965,9 @@ fn run_cmd(args: &[String]) -> i32 {
     if only.is_some() && !date.as_deref().is_some_and(|d| d.contains("..")) {
         return usage("--only goes with --date A..B");
     }
+    if let Some(why) = only.and_then(|_| standby_refusal()) {
+        return fail(&why);
+    }
     if let Some(range) = date.as_deref().filter(|d| d.contains("..")) {
         let mut days = match day_range(range) {
             Ok(d) => d,
@@ -1031,7 +1035,7 @@ fn pick_days(id: &str, days: &[NaiveDate], only: Only, dry: bool) -> Result<Vec<
     let Some(&first) = days.first() else { return Ok(Vec::new()) };
     let runs = runs_since(first)?;
     let planned = planned_days(id, days)?;
-    let seen = koyomi_core::backfill::look(&runs, id, days, planned.as_ref());
+    let seen = koyomi_core::backfill::look(&runs, id, days, planned.as_ref(), kept_from());
     let picked: Vec<NaiveDate> = seen.iter().filter(|(_, d)| d.picked(only)).map(|(d, _)| *d).collect();
     let t = table();
     if dry {
@@ -1044,7 +1048,24 @@ fn pick_days(id: &str, days: &[NaiveDate], only: Only, dry: bool) -> Result<Vec<
         let list: Vec<String> = picked.iter().map(NaiveDate::to_string).collect();
         out(&format!("{} 日のうち {} 日を流す: {}", days.len(), picked.len(), list.join(", ")), false);
     }
+    if seen.iter().any(|(_, d)| matches!(d, koyomi_core::backfill::Day::Gone)) {
+        out("記録が残っていない日は流さない。範囲の日を全部流すなら --only を外す", false);
+    }
     Ok(picked)
+}
+
+/// The oldest day history keeps (koyomi.toml's `keep_days`); `None` when koyomi.toml cannot be read.
+fn kept_from() -> Option<NaiveDate> {
+    let config = koyomi_core::config::Config::load(&engine::Paths::find().ok()?.config).ok()?;
+    Some(koyomi_core::retain::cutoff(chrono::Local::now().date_naive(), config.keep_days))
+}
+
+/// Why `--only` is refused here: the engine is a standby that has not taken over (it says where
+/// it stands as the `"ha"` of `GET /health`). `None` on any other PC.
+fn standby_refusal() -> Option<String> {
+    let ha: serde_json::Value = serde_json::from_str(&client::call(&Request::Handover { release: false }).ok()?).ok()?;
+    let watch = ha["watch"].as_str().filter(|_| ha["role"] == "standby");
+    koyomi_core::backfill::refused_on_standby(watch, ha["active"].as_bool().unwrap_or(false))
 }
 
 /// One day of `run --only --dry`: whether it runs, and why.
@@ -1054,7 +1075,8 @@ fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfil
     let why = match day {
         Day::NotPlanned => "予定のない日".to_owned(),
         Day::Nothing => "実行の記録がない".to_owned(),
-        Day::NotStarted(r) | Day::Ran(r) => {
+        Day::Gone => "記録が残っていない（keep_days より前）".to_owned(),
+        Day::NotStarted(r) | Day::Skipped(r) | Day::Ran(r) => {
             let reason = if r.reason.is_empty() { String::new() } else { format!("  {}", r.reason) };
             format!("{}  {}{reason}", show::tag(t, r.state), r.id)
         }
@@ -1063,7 +1085,8 @@ fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfil
 }
 
 /// The runs whose business day may fall from `first` on: the ones that started from then (or
-/// today, if that is earlier) to today, a year at a time, and the ones still going.
+/// today, if that is earlier) to today, a year at a time, the ones still going, and those of the
+/// days the sweep put into `archive/`.
 fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
     let today = chrono::Local::now().date_naive();
     let mut from = first.min(today);
@@ -1078,7 +1101,9 @@ fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
     for r in runs()? {
         by_id.insert(r.id.clone(), r);
     }
-    Ok(by_id.into_values().collect())
+    let mut all: Vec<Run> = by_id.into_values().collect();
+    all.extend(archive::runs_between(first.min(today), today, &all));
+    Ok(all)
 }
 
 /// The days of `days` the net's times fall on (its calendar and quiet hours counted), or none to
@@ -1307,18 +1332,21 @@ fn report(args: &[String]) -> i32 {
 
 fn log(args: &[String]) -> i32 {
     let [run, job] = args else { return usage("log takes a run and a job") };
-    match client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
-        Ok(text) => {
-            if toml() {
-                let log = Log { run: run.clone(), job: job.clone(), text };
-                emit(&toml::to_string(&log).unwrap_or_default());
-            } else {
-                out(text.trim_end_matches('\n'), false);
-            }
-            0
-        }
-        Err(e) => fail(&e),
+    // Gone from logs/ (or no engine to ask): the sweep may have put it into archive/.
+    let text = match client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
+        Ok(text) => text,
+        Err(e) => match archive::log_text(run, job) {
+            Ok(text) => text,
+            Err(_) => return fail(&e),
+        },
+    };
+    if toml() {
+        let log = Log { run: run.clone(), job: job.clone(), text };
+        emit(&toml::to_string(&log).unwrap_or_default());
+    } else {
+        out(text.trim_end_matches('\n'), false);
     }
+    0
 }
 
 /// `koyomi compare <run-a> <run-b>`: the two runs, their jobs side by side and the logs' difference.
