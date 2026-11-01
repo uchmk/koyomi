@@ -1432,6 +1432,19 @@ fn out_path(log: &std::path::Path, job: &str) -> PathBuf {
     log.with_file_name(format!("{job}.out.toml"))
 }
 
+/// The file a job's `KOYOMI_REASON` names: one per pass, as passes may run side by side.
+fn reason_path(log: &std::path::Path, job: &str, index: Option<u32>) -> PathBuf {
+    let pass = index.map(|i| format!(".{i}")).unwrap_or_default();
+    log.with_file_name(format!("{job}{pass}.reason"))
+}
+
+/// What a job left in its `KOYOMI_REASON` file, taken away; `None` when it left nothing.
+fn left_reason(path: &std::path::Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    let _ = std::fs::remove_file(path);
+    Some(text.trim().to_owned()).filter(|t| !t.is_empty())
+}
+
 /// What the other jobs of a run wrote to their `KOYOMI_OUT`, as one TOML text
 /// with a table per job (`[extract]` then `rows = 3`). A file that is not TOML
 /// is left out. `log` is the job's own log path, which names the run's folder.
@@ -1477,10 +1490,15 @@ fn attempt(
         let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
     }
     cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
-    // An SFTP `send` or `fetch` runs `koyomi sftp run` (chore.rs).
+    // An SFTP `send` or `fetch` runs `koyomi sftp run`, an `ssh` `koyomi ssh run` (chore.rs).
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("KOYOMI_EXE", exe);
     }
+    // Where `koyomi ssh run` leaves why its command has no exit code (no connection,
+    // a signal, a lost connection): the job's ✕ reason.
+    let reason = reason_path(&job.log, &job.id, job.index);
+    let _ = std::fs::remove_file(&reason);
+    cmd.env("KOYOMI_REASON", &reason);
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
@@ -1521,6 +1539,7 @@ fn attempt(
     if let Some(t) = timer {
         let _ = t.join();
     }
+    let left = left_reason(&reason);
     match result {
         Ok(lines) if lines.stopped() => {
             if why.load(Ordering::SeqCst) == WHY_TIMEOUT {
@@ -1534,6 +1553,10 @@ fn attempt(
         }
         Ok(lines) => {
             let code = lines.status.and_then(|s| s.code()).unwrap_or(-1);
+            // The job has said why in the log already (`! …`).
+            if let Some(why) = left {
+                return (Outcome::Failed, why);
+            }
             if let Some(line) = bad_line {
                 let _ = writeln!(file, "! 出力が error_output に合った");
                 return (Outcome::Failed, format!("出力に異常の行があった: {}", line.trim()));
@@ -2220,6 +2243,39 @@ judge = {{ ok_file = '{ok_file}.none' }}
         assert!(back.join("a.csv").exists() && back.join("b.csv").exists());
         assert!(log("s").contains("sent: "), "{}", log("s"));
         assert!(log("none").contains("no file to fetch"), "{}", log("none"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_reason_left_in_koyomi_reason_is_the_jobs() {
+        // What `koyomi ssh run` does when the far command has no exit code.
+        let dir = scratch("reason");
+        let cmd = if cfg!(windows) {
+            r#"run = ["cmd.exe", "/c", "echo no link>%KOYOMI_REASON%& exit 255"]"#
+        } else {
+            r#"run = ["sh", "-c", "echo no link > \"$KOYOMI_REASON\"; exit 255"]"#
+        };
+        let d = def("net", &format!("format = 1\n[[job]]\nid = \"a\"\n{cmd}\n"));
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let a = run.job("a").unwrap();
+        assert_eq!(a.state, State::Error, "{}", r.log_tail(&id, "a").unwrap_or_default());
+        assert!(a.reason.contains("no link"), "{}", a.reason);
+        // Taken away once read.
+        fn reasons(dir: &std::path::Path, found: &mut Vec<PathBuf>) {
+            for e in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    reasons(&p, found);
+                } else if p.extension().is_some_and(|x| x == "reason") {
+                    found.push(p);
+                }
+            }
+        }
+        let mut left = Vec::new();
+        reasons(&dir, &mut left);
+        assert!(left.is_empty(), "{left:?}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

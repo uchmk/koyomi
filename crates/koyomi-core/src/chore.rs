@@ -1,10 +1,11 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
-//! files over SFTP or to and from a shared folder, call a web API. Each is
-//! written in the file as its own `kind` and runs as a PowerShell script the
-//! engine writes when the run starts, so it has the job's slot, log,
-//! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`, which
-//! reads what to do from the environment.
+//! files over SFTP or to and from a shared folder, call a web API, run a
+//! command on another PC over SSH. Each is written in the file as its own
+//! `kind` and runs as a PowerShell script the engine writes when the run
+//! starts, so it has the job's slot, log, `timeout` and `retry`. Over SFTP
+//! the script runs `koyomi sftp run`, over SSH `koyomi ssh run`; each reads
+//! what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -81,10 +82,23 @@ pub enum Chore {
         #[serde(default)]
         expect: Vec<u16>,
     },
+    /// 別の PC で動かす: `command`, as it is written, on `on`
+    /// (`ssh://[user@]host[:port]`) over SSH. Its output reaches the job's log as it
+    /// comes, and its exit code is judged as a job's (`judge`).
+    Ssh {
+        on: String,
+        command: String,
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        host_key: Option<String>,
+        #[serde(default)]
+        password: Option<String>,
+    },
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
-pub const KINDS: [&str; 7] = ["delete", "zip", "copy", "empty", "send", "fetch", "http"];
+pub const KINDS: [&str; 8] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh"];
 
 /// The methods `kind = "http"` takes.
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
@@ -100,6 +114,15 @@ const NO_ANSWER: i32 = 2;
 /// The exit code of a `send` or `fetch` that found no file: 警告.
 pub const NOTHING: i32 = 3;
 
+/// The exit code of an `ssh` that got no exit code from the far side (no
+/// connection, no login, a signal, a lost connection); why is in the file
+/// `KOYOMI_REASON` names.
+pub const NO_EXIT: i32 = 255;
+
+/// The longest `command` of an `ssh` (characters): it reaches `koyomi ssh run` in
+/// an environment variable.
+pub const COMMAND_MAX: usize = 8000;
+
 impl Chore {
     /// The `kind` as written, and the key of its word.
     pub fn key(&self) -> &'static str {
@@ -111,6 +134,7 @@ impl Chore {
             Chore::Send { .. } => "send",
             Chore::Fetch { .. } => "fetch",
             Chore::Http { .. } => "http",
+            Chore::Ssh { .. } => "ssh",
         }
     }
 
@@ -131,6 +155,7 @@ impl Chore {
                 headers: BTreeMap::new(),
                 expect: Vec::new(),
             },
+            "ssh" => Chore::Ssh { on: String::new(), command: String::new(), key: None, host_key: None, password: None },
             _ => return None,
         })
     }
@@ -157,6 +182,16 @@ impl Chore {
                 }
                 v
             }
+            Chore::Ssh { on, command, key, host_key, .. } => {
+                let mut v = vec![("on", on), ("command", command)];
+                if let Some(k) = key {
+                    v.push(("key", k));
+                }
+                if let Some(h) = host_key {
+                    v.push(("host_key", h));
+                }
+                v
+            }
         }
     }
 
@@ -169,12 +204,14 @@ impl Chore {
                 [from, into].into_iter().chain(key).chain(host_key).collect()
             }
             Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
+            Chore::Ssh { on, command, key, host_key, .. } => [on, command].into_iter().chain(key).chain(host_key).collect(),
         }
     }
 
     /// Why it may not run as it stands: a path that is empty, a drive's root
     /// for `delete` and `empty`, a zip that does not end in `.zip`, an `sftp://`
-    /// that cannot be read or is on the wrong side.
+    /// that cannot be read or is on the wrong side, an `ssh` without its host,
+    /// command or host key.
     pub fn check(&self) -> Result<(), String> {
         let need = |name: &str, p: &str| if p.trim().is_empty() { Err(format!("{name} が空")) } else { Ok(()) };
         match self {
@@ -207,7 +244,7 @@ impl Chore {
                     return Err("send の from はこのマシンのファイル（sftp:// は into に書く）".into());
                 }
                 let far = sftp(into).transpose()?;
-                login(far.as_ref(), key, host_key, password)?;
+                login("sftp://", far.is_some(), key, host_key, password)?;
             }
             Chore::Fetch { from, into, key, host_key, password } => {
                 need("from", from)?;
@@ -221,7 +258,7 @@ impl Chore {
                         return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
                     }
                 }
-                login(far.as_ref(), key, host_key, password)?;
+                login("sftp://", far.is_some(), key, host_key, password)?;
             }
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 need("url", url)?;
@@ -248,6 +285,22 @@ impl Chore {
                 if let Some(c) = expect.iter().find(|c| !(100..=599).contains(*c)) {
                     return Err(format!("expect は 100〜599 の状態コード: {c}"));
                 }
+            }
+            Chore::Ssh { on, command, key, host_key, password } => {
+                if on.trim().is_empty() {
+                    return Err("on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] で書く）".into());
+                }
+                // An `on` that starts with `{param:…}` is told once it is filled in.
+                if ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
+                    return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"));
+                }
+                if command.trim().is_empty() {
+                    return Err("command が空（相手の PC で動かすコマンドを書く）".into());
+                }
+                if command.chars().count() > COMMAND_MAX {
+                    return Err(format!("command は {COMMAND_MAX} 文字まで"));
+                }
+                login("ssh://", true, key, host_key, password)?;
             }
         }
         Ok(())
@@ -319,13 +372,16 @@ impl Chore {
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 (http(url, method, body, content_type, headers, expect), None)
             }
+            // Judged by the job's own `judge`, which fill() leaves as it is.
+            Chore::Ssh { .. } => (SSH_SCRIPT.to_owned(), None),
         }
     }
 
     /// The environment the script reads, beside the job's own: an `http` header's
     /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`;
     /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
-    /// (the password as `secret:<name>`, read when the job starts).
+    /// (the password as `secret:<name>`, read when the job starts); an `ssh` as
+    /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`).
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
@@ -340,6 +396,15 @@ impl Chore {
                 for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_SFTP_{name}"), x.to_owned()));
+                    }
+                }
+                v
+            }
+            Chore::Ssh { on, command, key, host_key, password } => {
+                let mut v = vec![("KOYOMI_SSH_ON".to_owned(), on.trim().to_owned()), ("KOYOMI_SSH_COMMAND".to_owned(), command.clone())];
+                for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        v.push((format!("KOYOMI_SSH_{name}"), x.to_owned()));
                     }
                 }
                 v
@@ -415,6 +480,8 @@ fn http(
 
 /// Gives each chore of `net` (its paths filled in) the script that does it, so it
 /// runs as a PowerShell job; a root or an empty path after the filling stops the run.
+/// An `ssh` keeps its own `judge`, and the names of its own `env` go to the far
+/// side as `KOYOMI_SSH_ENV`.
 pub fn fill(net: &mut Jobnet) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
@@ -422,7 +489,13 @@ pub fn fill(net: &mut Jobnet) -> Result<(), String> {
             let (script, judge) = c.script();
             j.shell = Some("powershell".to_owned());
             j.script = Some(script);
-            j.judge = judge;
+            if let Chore::Ssh { .. } = c {
+                // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
+                let names = j.env.keys().filter(|k| !k.starts_with("KOYOMI_SSH_")).map(String::as_str).collect::<Vec<_>>().join(",");
+                j.env.insert("KOYOMI_SSH_ENV".to_owned(), names);
+            } else {
+                j.judge = judge;
+            }
             j.env.extend(c.env());
             j.run.clear();
         }
@@ -475,6 +548,10 @@ fn not_root(path: &str) -> Result<(), String> {
 const SFTP_SCRIPT: &str =
     "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n& $env:KOYOMI_EXE sftp run | ForEach-Object { $_ }\nexit $LASTEXITCODE\n";
 
+/// What an `ssh` runs, as [`SFTP_SCRIPT`]; its exit code is the far command's.
+const SSH_SCRIPT: &str =
+    "[Console]::OutputEncoding = [Text.Encoding]::UTF8\n& $env:KOYOMI_EXE ssh run | ForEach-Object { $_ }\nexit $LASTEXITCODE\n";
+
 /// Where an `sftp://[user@]host[:port]/path` points.
 #[derive(Debug, PartialEq, Eq)]
 pub struct Sftp {
@@ -491,10 +568,22 @@ pub struct Sftp {
 pub fn sftp(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..7).filter(|p| p.eq_ignore_ascii_case("sftp://")).map(|_| &t[7..])?;
-    Some(read_sftp(rest).map_err(|e| format!("{e}: {t}")))
+    Some(read_sftp(rest, "sftp://").map_err(|e| format!("{e}: {t}")))
 }
 
-fn read_sftp(rest: &str) -> Result<Sftp, String> {
+/// `s` read as an `ssh://[user@]host[:port]` address (no path: `path` is `.`); `None`
+/// when it does not start with `ssh://`.
+pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
+    let t = s.trim();
+    let rest = t.get(..6).filter(|p| p.eq_ignore_ascii_case("ssh://")).map(|_| &t[6..])?;
+    let read = read_sftp(rest, "ssh://").and_then(|far| match rest.split_once('/') {
+        Some((_, p)) if !p.is_empty() => Err("ssh:// にパスは書かない（ssh://[ユーザー@]ホスト[:ポート]）".into()),
+        _ => Ok(far),
+    });
+    Some(read.map_err(|e| format!("{e}: {t}")))
+}
+
+fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
     let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
     // A `:` inside `{param:…}` is not a port.
     let (dest, port) = match auth.rsplit_once(':') {
@@ -509,7 +598,7 @@ fn read_sftp(rest: &str) -> Result<Sftp, String> {
         None => (None, dest),
     };
     if host.is_empty() || user == Some("") {
-        return Err("sftp:// には [ユーザー@]ホスト が要る".into());
+        return Err(format!("{scheme} には [ユーザー@]ホスト が要る"));
     }
     if host.starts_with('-') || dest.chars().any(|c| c.is_whitespace() || "\"'`;&|<>".contains(c)) {
         return Err("ユーザーとホストに使えない文字がある".into());
@@ -525,19 +614,21 @@ fn read_sftp(rest: &str) -> Result<Sftp, String> {
     Ok(Sftp { user: user.map(str::to_owned), host: host.to_owned(), port, path })
 }
 
-/// How an SFTP `send` or `fetch` logs in, against `far` (its `sftp://` side, if any):
-/// `host_key` is needed there, `password` is a `secret:`, and `key` and `password` go
-/// one at a time. Without `sftp://`, none of them is written.
-fn login(far: Option<&Sftp>, key: &Option<String>, host_key: &Option<String>, password: &Option<String>) -> Result<(), String> {
+/// How an SFTP `send` or `fetch`, or an `ssh`, logs in when there is a `far` side
+/// (`scheme`): `host_key` is needed, `password` is a `secret:`, and `key` and
+/// `password` go one at a time. Without a far side, none of them is written.
+fn login(scheme: &str, far: bool, key: &Option<String>, host_key: &Option<String>, password: &Option<String>) -> Result<(), String> {
     let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
-    if far.is_none() {
+    if !far {
         if let Some((name, _)) = [("key", key), ("host_key", host_key), ("password", password)].into_iter().find(|(_, v)| set(v)) {
-            return Err(format!("{name} は sftp:// の相手にだけ書く"));
+            return Err(format!("{name} は {scheme} の相手にだけ書く"));
         }
         return Ok(());
     }
     match host_key.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
-        None => return Err("sftp:// には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）".into()),
+        None => {
+            return Err(format!("{scheme} には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）"));
+        }
         // `{param:…}` is told once it is filled in.
         Some(h) if h.starts_with('{') => {}
         Some(h) => host_key_ok(h)?,
@@ -707,6 +798,93 @@ mod tests {
         assert!(!script.contains("sftp"), "{script}");
         assert!(judge.is_some());
         assert!(share.env().is_empty());
+    }
+
+    #[test]
+    fn an_ssh_address_has_a_host_and_no_path() {
+        let a = ssh("ssh://ops@db1.example.com:2222").unwrap().unwrap();
+        assert_eq!((a.user.as_deref(), a.host.as_str(), a.port), (Some("ops"), "db1.example.com", Some(2222)));
+        let b = ssh(" SSH://db1/ ").unwrap().unwrap();
+        assert_eq!((b.user, b.host.as_str(), b.port), (None, "db1", None));
+        assert_eq!(ssh("ssh://{param:who}@h").unwrap().unwrap().user.as_deref(), Some("{param:who}"));
+        assert!(ssh("sftp://h").is_none());
+        assert!(ssh("h").is_none());
+        assert!(ssh("ssh://h/tmp").unwrap().unwrap_err().contains("パスは書かない"));
+        for bad in ["ssh://", "ssh://@h", "ssh://h:0", "ssh://h:x", "ssh://-oProxyCommand=x", "ssh://a b", "ssh://h;calc"] {
+            assert!(ssh(bad).unwrap().is_err(), "{bad}");
+        }
+    }
+
+    fn remote(on: &str, command: &str, key: Option<&str>, host_key: Option<&str>, password: Option<&str>) -> Chore {
+        Chore::Ssh {
+            on: on.into(),
+            command: command.into(),
+            key: key.map(Into::into),
+            host_key: host_key.map(Into::into),
+            password: password.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn an_ssh_needs_its_host_command_and_host_key() {
+        let ok = |on: &str, command: &str| remote(on, command, None, Some(HK), None).check();
+        assert_eq!(ok("ssh://u@h", "df -h"), Ok(()));
+        assert_eq!(ok("{param:pc}", "df -h"), Ok(()));
+        assert!(ok("", "df -h").unwrap_err().contains("on が空"));
+        assert!(ok("u@h", "df -h").unwrap_err().contains("ssh://[ユーザー@]ホスト[:ポート] で書く"));
+        assert!(ok("sftp://u@h/in", "df -h").unwrap_err().contains("ssh://"));
+        assert!(ok("ssh://h/x", "df -h").unwrap_err().contains("パスは書かない"));
+        assert!(ok("ssh://u@h", " \n").unwrap_err().contains("command が空"));
+        assert_eq!(ok("ssh://u@h", &"x".repeat(COMMAND_MAX)), Ok(()));
+        assert!(ok("ssh://u@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err().contains("8000 文字まで"));
+        let login =
+            |key: Option<&str>, host_key: Option<&str>, password: Option<&str>| remote("ssh://u@h", "x", key, host_key, password).check();
+        assert!(login(None, None, None).unwrap_err().contains("ssh:// には host_key が要る"));
+        assert!(login(None, Some("47DEQpj8"), None).unwrap_err().contains("SHA256:"));
+        assert_eq!(login(None, Some(HK), Some("secret:ops")), Ok(()));
+        assert!(login(None, Some(HK), Some("hunter2")).unwrap_err().contains("secret:<名前>"));
+        assert!(login(Some("C:\\keys\\id"), Some(HK), Some("secret:ops")).unwrap_err().contains("どちらか一方"));
+    }
+
+    #[test]
+    fn an_ssh_script_leaves_the_work_to_koyomi_and_keeps_the_command_out_of_it() {
+        let s = remote("ssh://ops@db1:2222 ", " backup.sh 'it''s' ; echo $HOME\n", Some("C:\\keys\\id"), Some(HK), None);
+        let (script, judge) = s.script();
+        assert!(script.contains("& $env:KOYOMI_EXE ssh run | ForEach-Object"), "{script}");
+        assert!(script.ends_with("exit $LASTEXITCODE\n"), "{script}");
+        assert!(!script.contains("db1") && !script.contains("backup"), "{script}");
+        assert!(judge.is_none());
+        let env = s.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_SSH_ON"), Some("ssh://ops@db1:2222"));
+        // The command as it is written, spaces and all.
+        assert_eq!(get("KOYOMI_SSH_COMMAND"), Some(" backup.sh 'it''s' ; echo $HOME\n"));
+        assert_eq!(get("KOYOMI_SSH_KEY"), Some("C:\\keys\\id"));
+        assert_eq!(get("KOYOMI_SSH_HOST_KEY"), Some(HK));
+        assert_eq!(get("KOYOMI_SSH_PASSWORD"), None);
+        assert!(remote("ssh://h", "x", None, Some(HK), Some("secret:ops"))
+            .env()
+            .contains(&("KOYOMI_SSH_PASSWORD".to_owned(), "secret:ops".to_owned())));
+    }
+
+    #[test]
+    fn fill_keeps_an_ssh_judge_and_names_its_env_for_the_far_side() {
+        let mut net = crate::jobnet::parse(&format!(
+            "format = 1\n[[job]]\nid = \"r\"\nkind = \"ssh\"\non = \"ssh://ops@db1\"\ncommand = \"backup.sh\"\nhost_key = \"{HK}\"\njudge = {{ warn = \"1\" }}\nenv = {{ DAY = \"1\", WHO = \"me\" }}\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'D:\\out'\ninto = 'E:\\in'\nafter = [\"r\"]\n"
+        ))
+        .unwrap();
+        fill(&mut net).unwrap();
+        let r = &net.jobs[0];
+        assert_eq!(r.shell.as_deref(), Some("powershell"));
+        assert!(r.script.as_deref().unwrap().contains("ssh run"));
+        assert_eq!(r.judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
+        assert_eq!(r.env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
+        assert_eq!(r.env.get("KOYOMI_SSH_COMMAND").map(String::as_str), Some("backup.sh"));
+        // A copy is still judged as robocopy is.
+        assert!(net.jobs[1].judge.is_some());
+        // Filled again, the far side is still asked for the job's own env only.
+        fill(&mut net).unwrap();
+        assert_eq!(net.jobs[0].env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
     }
 
     fn http(method: &str, body: Option<&str>, headers: &[(&str, &str)], expect: &[u16]) -> Chore {

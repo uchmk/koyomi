@@ -1,5 +1,6 @@
 //! `koyomi sftp`: an SFTP `send` or `fetch` job's work (`run`, which reads what to do
-//! from the `KOYOMI_SFTP_*` the engine sets), and the host key to pin (`hostkey`).
+//! from the `KOYOMI_SFTP_*` the engine sets), and the host key to pin (`hostkey`), for
+//! an `ssh` job too.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -15,16 +16,20 @@ pub fn cmd(args: &[String]) -> i32 {
         [op, at] if op == "hostkey" => hostkey(at),
         [op] if op == "run" => run(),
         _ => {
-            crate::say("koyomi: sftp takes hostkey <host>[:<port>], or run (what a send or fetch job does)", true);
+            crate::say(
+                "koyomi: sftp takes hostkey <host>[:<port>] (for send, fetch and ssh), or run (what a send or fetch job does)",
+                true,
+            );
             2
         }
     }
 }
 
-/// `koyomi sftp hostkey <host>[:<port>]` (or an `sftp://` address): the line to put in the job.
+/// `koyomi sftp hostkey <host>[:<port>]` (or an `sftp://` or `ssh://` address): the line
+/// to put in the job.
 fn hostkey(at: &str) -> i32 {
-    let addr = if chore::sftp(at).is_some() { at.to_owned() } else { format!("sftp://{at}") };
-    let far = match chore::sftp(&addr).unwrap_or_else(|| Err(format!("ホストを読めない: {at}"))) {
+    let addr = if chore::sftp(at).or_else(|| chore::ssh(at)).is_some() { at.to_owned() } else { format!("sftp://{at}") };
+    let far = match chore::sftp(&addr).or_else(|| chore::ssh(&addr)).unwrap_or_else(|| Err(format!("ホストを読めない: {at}"))) {
         Ok(f) => f,
         Err(e) => {
             crate::say(&format!("koyomi: {e}"), true);
@@ -44,7 +49,12 @@ fn hostkey(at: &str) -> i32 {
 }
 
 fn var(name: &str) -> Option<String> {
-    std::env::var(format!("KOYOMI_SFTP_{name}")).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
+    env_var("KOYOMI_SFTP_", name)
+}
+
+/// The environment variable `<prefix><name>`, trimmed; `None` when it is empty.
+pub(crate) fn env_var(prefix: &str, name: &str) -> Option<String> {
+    std::env::var(format!("{prefix}{name}")).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
 }
 
 /// What a `send` or `fetch` job runs. Prints each file moved; exits 0 when done,
@@ -72,7 +82,7 @@ fn transfer() -> Result<usize, String> {
     };
     let far = chore::sftp(if send { &into } else { &from }).ok_or("sftp:// の相手がない")??;
     let host_key = var("HOST_KEY").ok_or("host_key がない")?;
-    let session = ito_sftp::Session::connect(&target(&far, host_key)?).map_err(|e| format!("{}: {e}", far.host))?;
+    let session = ito_sftp::Session::connect(&target(&far, host_key, "sftp")?).map_err(|e| format!("{}: {e}", far.host))?;
     let never = AtomicBool::new(false);
     let opts = ito_sftp::Options { overwrite: true };
     if send {
@@ -127,15 +137,20 @@ fn sendable(from: &Path) -> Option<PathBuf> {
     (ito_sftp::has_wildcard(&name) || from.is_file()).then(|| from.to_path_buf())
 }
 
-/// Who logs in and how: the address's user or this account's name; `key`, the
-/// password (read from the OS credential store when it is still `secret:<name>`), or
-/// this account's own key in `~/.ssh`.
-fn target(far: &Sftp, host_key: String) -> Result<ito_sftp::Target, String> {
-    let user =
-        far.user.clone().or_else(|| std::env::var("USERNAME").ok()).ok_or("ユーザーがわからない（sftp://ユーザー@ホスト と書く）")?;
-    let auth = if let Some(k) = var("KEY") {
+/// Who logs in and how, for `scheme` (`sftp`, or `ssh`, whose `KOYOMI_SSH_*` are read):
+/// the address's user or this account's name; `key`, the password (read from the OS
+/// credential store when it is still `secret:<name>`), or this account's own key in
+/// `~/.ssh`.
+pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_sftp::Target, String> {
+    let prefix = format!("KOYOMI_{}_", scheme.to_ascii_uppercase());
+    let user = far
+        .user
+        .clone()
+        .or_else(|| std::env::var("USERNAME").ok())
+        .ok_or_else(|| format!("ユーザーがわからない（{scheme}://ユーザー@ホスト と書く）"))?;
+    let auth = if let Some(k) = env_var(&prefix, "KEY") {
         ito_sftp::Auth::Key { path: PathBuf::from(k), passphrase: None }
-    } else if let Some(p) = var("PASSWORD") {
+    } else if let Some(p) = env_var(&prefix, "PASSWORD") {
         let p = match p.strip_prefix("secret:") {
             Some(name) => ito_secret::get("koyomi", name.trim())
                 .map_err(|e| format!("秘密を読めない: {name}: {e}"))?

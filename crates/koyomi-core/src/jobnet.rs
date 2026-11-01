@@ -670,6 +670,8 @@ struct RawJob {
     key: Field,
     host_key: Field,
     password: Field,
+    on: Field,
+    command: Field,
     url: Field,
     method: Field,
     body: Field,
@@ -967,7 +969,7 @@ impl Checker<'_> {
                 "kind",
                 &[
                     "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
-                    "send", "fetch", "http",
+                    "send", "fetch", "http", "ssh",
                 ],
             )
             .unwrap_or("job");
@@ -984,10 +986,14 @@ impl Checker<'_> {
             self.only(&j.from, "from", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
             self.only(&j.into, "into", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
         }
-        if kind != "send" && kind != "fetch" {
-            self.only(&j.key, "key", "\"send\" か \"fetch\"");
-            self.only(&j.host_key, "host_key", "\"send\" か \"fetch\"");
-            self.only(&j.password, "password", "\"send\" か \"fetch\"");
+        if !["send", "fetch", "ssh"].contains(&kind) {
+            self.only(&j.key, "key", "\"send\"・\"fetch\"・\"ssh\"");
+            self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
+            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"");
+        }
+        if kind != "ssh" {
+            self.only(&j.on, "on", "\"ssh\"");
+            self.only(&j.command, "command", "\"ssh\"");
         }
         if kind != "http" {
             for (field, name) in [
@@ -1116,7 +1122,7 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" => Part::Chore(self.chore(j, kind, start)),
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" => Part::Chore(self.chore(j, kind, start)),
             _ => Part::Job,
         }
     }
@@ -1157,9 +1163,11 @@ impl Checker<'_> {
             }
             "zip" => Chore::Zip { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into") },
             "copy" => Chore::Copy { from: path_of(self, &j.from, "from"), into: path_of(self, &j.into, "into"), pattern },
-            "send" | "fetch" => {
-                let from = path_of(self, &j.from, "from");
-                let into = path_of(self, &j.into, "into");
+            "send" | "fetch" | "ssh" => {
+                let (from, into) = match kind {
+                    "ssh" => (self.ssh_on(j, start), self.ssh_command(j, start)),
+                    _ => (path_of(self, &j.from, "from"), path_of(self, &j.into, "into")),
+                };
                 let key = self.string(&j.key, "key").filter(|k| !k.trim().is_empty());
                 let host_key = self.string(&j.host_key, "host_key").map(|h| h.trim().to_owned()).filter(|h| !h.is_empty());
                 for (value, field, name) in [(&key, &j.key, "key"), (&host_key, &j.host_key, "host_key")] {
@@ -1171,10 +1179,10 @@ impl Checker<'_> {
                 }
                 // A `secret:` name, not a template: nothing in it is filled in.
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
-                if kind == "send" {
-                    Chore::Send { from, into, key, host_key, password }
-                } else {
-                    Chore::Fetch { from, into, key, host_key, password }
+                match kind {
+                    "send" => Chore::Send { from, into, key, host_key, password },
+                    "fetch" => Chore::Fetch { from, into, key, host_key, password },
+                    _ => Chore::Ssh { on: from, command: into, key, host_key, password },
                 }
             }
             "http" => self.http(j, start),
@@ -1187,6 +1195,36 @@ impl Checker<'_> {
             }
         }
         chore
+    }
+
+    /// `kind = "ssh"`'s `on`: the PC, `ssh://[user@]host[:port]` (a template).
+    fn ssh_on(&mut self, j: &RawJob, start: usize) -> String {
+        let Some(f) = &j.on else {
+            self.add(start, "kind = \"ssh\" には on が要る（動かす PC。例: on = \"ssh://user@server\"）");
+            return String::new();
+        };
+        let s = self.string(&j.on, "on").unwrap_or_default();
+        if s.trim().is_empty() {
+            self.add(f.span().start, "on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] で書く）");
+        } else if let Err(e) = self.template(&s) {
+            self.add(f.span().start, format!("on: {e}"));
+        }
+        s
+    }
+
+    /// `kind = "ssh"`'s `command`: what runs on that PC, as it is written (a template).
+    fn ssh_command(&mut self, j: &RawJob, start: usize) -> String {
+        let Some(f) = &j.command else {
+            self.add(start, "kind = \"ssh\" には command が要る（相手の PC で動かすコマンド。例: command = \"df -h\"）");
+            return String::new();
+        };
+        let s = self.string(&j.command, "command").unwrap_or_default();
+        if s.trim().is_empty() {
+            self.add(f.span().start, "command が空（相手の PC で動かすコマンドを書く）");
+        } else if let Err(e) = self.template(&s) {
+            self.add(f.span().start, format!("command: {e}"));
+        }
+        s
     }
 
     /// `kind = "http"`'s fields: `url` (a template) and the rest of the call.
@@ -2224,15 +2262,18 @@ impl Checker<'_> {
                 let judge = self.judge(&j.judge);
                 (run, shell, script, dir, retry, judge)
             } else {
+                // An `ssh` is judged by the far command's exit code, as a job is.
+                let ssh = matches!(part, Part::Chore(Chore::Ssh { .. }));
                 for (field, name) in
                     [(&j.run, "run"), (&j.shell, "shell"), (&j.script, "script"), (&j.dir, "dir"), (&j.retry, "retry"), (&j.judge, "judge")]
                 {
-                    if !(name == "retry" && matches!(part, Part::Chore(_))) {
-                        self.only(field, name, "\"job\" か \"loop\"");
+                    if !(name == "retry" && matches!(part, Part::Chore(_)) || name == "judge" && ssh) {
+                        self.only(field, name, if name == "judge" { "\"job\"・\"loop\"・\"ssh\"" } else { "\"job\" か \"loop\"" });
                     }
                 }
                 let retry = if matches!(part, Part::Chore(_)) { self.retry(&j.retry) } else { None };
-                (Vec::new(), None, None, None, retry, None)
+                let judge = if ssh { self.judge(&j.judge) } else { None };
+                (Vec::new(), None, None, None, retry, judge)
             };
             for (text, name) in
                 run.iter().map(|t| (t, "run")).chain(script.iter().map(|t| (t, "script"))).chain(dir.iter().map(|t| (t, "dir")))
@@ -2244,8 +2285,12 @@ impl Checker<'_> {
             let (env, encoding) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
                 let encoding = self.choice(&j.encoding, "encoding", &["auto", "sjis", "utf8"]).and_then(Encoding::of).unwrap_or_default();
                 (self.env(&j.env), encoding)
+            } else if matches!(part, Part::Chore(Chore::Ssh { .. })) {
+                // Asked of the far side (its sshd_config's AcceptEnv); its output is read as it comes.
+                self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
+                (self.env(&j.env), Encoding::Auto)
             } else {
-                self.only(&j.env, "env", "\"job\" か \"loop\"");
+                self.only(&j.env, "env", "\"job\"・\"loop\"・\"ssh\"");
                 self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
@@ -3118,6 +3163,60 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nurl = 'https://x'\n").contains("url は kind = \"http\" にだけ書く"));
     }
 
+    /// `kind = "ssh"` takes its PC, its command as written, the login of send and
+    /// fetch, and a job's `judge` and `env`.
+    #[test]
+    fn an_ssh_reads_with_its_command_judge_and_env() {
+        let parse_ssh = |extra: &str| {
+            parse(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"p\"\nkind = \"ssh\"\n{extra}after = [\"a\"]\n"))
+                .map(|n| n.jobs[1].clone())
+                .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>().join("\n"))
+        };
+        let hk = "host_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n";
+        let j = parse_ssh(&format!(
+            "on = \"ssh://ops@db1:2222\"\ncommand = \"\"\"\nbackup.sh --day {{date}} \"a b\"\"\"\"\n{hk}judge = {{ warn = \"1\", error_output = \"FATAL\" }}\nenv = {{ DAY = \"{{date}}\" }}\nretry = {{ count = 1, wait = \"1m\" }}\n"
+        ))
+        .unwrap();
+        assert_eq!(
+            j.part,
+            Part::Chore(Chore::Ssh {
+                on: "ssh://ops@db1:2222".into(),
+                command: "backup.sh --day {date} \"a b\"".into(),
+                key: None,
+                host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+                password: None,
+            })
+        );
+        let judge = j.judge.unwrap();
+        assert_eq!((judge.warn, judge.error_output.as_deref()), (vec![Range { from: 1, to: 1 }], Some("FATAL")));
+        assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
+        assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
+        let bad = |extra: &str| parse_ssh(extra).unwrap_err();
+        assert!(bad(&format!("command = 'df -h'\n{hk}")).contains("kind = \"ssh\" には on が要る"));
+        assert!(bad(&format!("on = 'ssh://h'\n{hk}")).contains("kind = \"ssh\" には command が要る"));
+        assert!(bad(&format!("on = ''\ncommand = 'x'\n{hk}")).contains("on が空"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = ' '\n{hk}")).contains("command が空"));
+        assert!(bad("on = 'ssh://h'\ncommand = 'x'\n").contains("ssh:// には host_key が要る"));
+        assert!(bad("on = 'ssh://h'\ncommand = 'x'\nhost_key = 'abc'\n").contains("SHA256:"));
+        assert!(bad(&format!("on = 'h'\ncommand = 'x'\n{hk}")).contains("ssh://[ユーザー@]ホスト[:ポート]"));
+        assert!(bad(&format!("on = 'ssh://h/tmp'\ncommand = 'x'\n{hk}")).contains("パスは書かない"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}password = 'hunter2'\n")).contains("secret:<名前>"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}run = ['y']\n")).contains("run"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}encoding = 'utf8'\n")).contains("encoding"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x {{date+1q}}'\n{hk}")).contains("command: {date+1q}: 単位が読めない"));
+        let other = parse(
+            "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\non = 'ssh://h'\ncommand = 'y'\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\njudge = { warn = \"1\" }\nafter = [\"a\"]\n",
+        )
+        .unwrap_err()
+        .iter()
+        .map(|p| p.in_file("a.toml"))
+        .collect::<Vec<_>>()
+        .join("\n");
+        assert!(other.contains("on は kind = \"ssh\" にだけ書く"), "{other}");
+        assert!(other.contains("command は kind = \"ssh\" にだけ書く"), "{other}");
+        assert!(other.contains("judge は kind = \"job\"・\"loop\"・\"ssh\" にだけ書く"), "{other}");
+    }
+
     #[test]
     fn each_kind_of_part_reads() {
         let net = |kind: &str, extra: &str| {
@@ -3215,7 +3314,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

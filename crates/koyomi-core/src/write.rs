@@ -370,14 +370,20 @@ fn job(j: &Job, out: &mut String) {
                         push(out, "expect", &format!("[{}]", expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ")));
                     }
                 }
+                Chore::Ssh { on, command, .. } => {
+                    push(out, "on", &q(on));
+                    push(out, "command", &q(command));
+                }
             }
-            if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } = c {
+            if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } | Chore::Ssh { key: Some(k), .. } = c {
                 push(out, "key", &q(k));
             }
-            if let Chore::Send { host_key: Some(h), .. } | Chore::Fetch { host_key: Some(h), .. } = c {
+            if let Chore::Send { host_key: Some(h), .. } | Chore::Fetch { host_key: Some(h), .. } | Chore::Ssh { host_key: Some(h), .. } = c
+            {
                 push(out, "host_key", &q(h));
             }
-            if let Chore::Send { password: Some(p), .. } | Chore::Fetch { password: Some(p), .. } = c {
+            if let Chore::Send { password: Some(p), .. } | Chore::Fetch { password: Some(p), .. } | Chore::Ssh { password: Some(p), .. } = c
+            {
                 push(out, "password", &q(p));
             }
             if let Chore::Delete { pattern: Some(p), .. } | Chore::Copy { pattern: Some(p), .. } = c {

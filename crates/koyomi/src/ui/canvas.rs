@@ -50,6 +50,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "send" => M::Upload,
         "fetch" => M::Download,
         "http" => M::Globe,
+        "ssh" => M::Link,
         _ => return None,
     })
 }
@@ -57,7 +58,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
 /// The heading of the shelf's group a part is under; the shelf lists the parts group by group.
 fn part_group(key: &str) -> &'static str {
     match key {
-        "job" | "loop" | "jobnet" => "canvas.group_basic",
+        "job" | "loop" | "jobnet" | "ssh" => "canvas.group_basic",
         "branch" | "join" => "canvas.group_flow",
         "time" | "file" | "approval" => "canvas.group_wait",
         "notify" | "http" => "canvas.group_tell",
@@ -178,6 +179,9 @@ pub struct Fields {
     pub content_type: String,
     pub headers: String,
     pub expect: String,
+    /// An `ssh`'s PC (`ssh://…`) and its command, as typed.
+    pub on: String,
+    pub command: String,
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
@@ -263,6 +267,13 @@ impl Fields {
                     );
                     f.expect = expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
                 }
+                Chore::Ssh { on, command, key, host_key, password } => {
+                    f.on = on.clone();
+                    f.command = command.clone();
+                    f.key = key.clone().unwrap_or_default();
+                    f.host_key = host_key.clone().unwrap_or_default();
+                    f.password = password.clone().unwrap_or_default();
+                }
             },
             _ => {}
         }
@@ -330,27 +341,7 @@ impl Fields {
                 out.script = if self.script.trim().is_empty() { None } else { Some(self.script.clone()) };
                 out.encoding = self.encoding;
                 out.run_as = self.run_as()?;
-                let ranges = |s: &str| -> Result<Vec<_>, String> {
-                    if s.trim().is_empty() {
-                        Ok(Vec::new())
-                    } else {
-                        jobnet::ranges(s)
-                    }
-                };
-                let (warn, error) = (ranges(&self.warn)?, ranges(&self.error)?);
-                let error_output = opt(&self.error_output);
-                if let Some(p) = &error_output {
-                    ito_match::Matcher::new(p).map_err(|e| format!("error_output が正規表現として読めない: {e}"))?;
-                }
-                let ok_file = opt(&self.ok_file);
-                if let Some(Err(e)) = ok_file.as_deref().map(koyomi_core::template::check) {
-                    return Err(format!("ok_file: {e}"));
-                }
-                out.judge = if warn.is_empty() && error.is_empty() && error_output.is_none() && ok_file.is_none() {
-                    None
-                } else {
-                    Some(Judge { warn, error, error_output, ok_file })
-                };
+                out.judge = self.judge()?;
             }
             Part::Join { .. } => out.part = Part::Join { wait: self.wait },
             Part::Time { .. } => {
@@ -400,10 +391,20 @@ impl Fields {
                         password: opt(&self.password),
                     },
                     Chore::Http { .. } => self.http()?,
+                    Chore::Ssh { .. } => Chore::Ssh {
+                        on: self.on.trim().into(),
+                        command: self.command.clone(),
+                        key: opt(&self.key),
+                        host_key: opt(&self.host_key),
+                        password: opt(&self.password),
+                    },
                 };
                 chore.check()?;
                 for p in chore.paths() {
                     koyomi_core::template::check(p)?;
+                }
+                if let Chore::Ssh { .. } = chore {
+                    out.judge = self.judge()?;
                 }
                 out.part = Part::Chore(chore);
                 out.run_as = self.run_as()?;
@@ -430,6 +431,31 @@ impl Fields {
             }
             _ => Ok(Some(RunAs { user: user.into(), secret: secret.into() })),
         }
+    }
+
+    /// The `judge` the fields say: none when they are all empty.
+    fn judge(&self) -> Result<Option<Judge>, String> {
+        let ranges = |s: &str| -> Result<Vec<_>, String> {
+            if s.trim().is_empty() {
+                Ok(Vec::new())
+            } else {
+                jobnet::ranges(s)
+            }
+        };
+        let (warn, error) = (ranges(&self.warn)?, ranges(&self.error)?);
+        let error_output = opt(&self.error_output);
+        if let Some(p) = &error_output {
+            ito_match::Matcher::new(p).map_err(|e| format!("error_output が正規表現として読めない: {e}"))?;
+        }
+        let ok_file = opt(&self.ok_file);
+        if let Some(Err(e)) = ok_file.as_deref().map(koyomi_core::template::check) {
+            return Err(format!("ok_file: {e}"));
+        }
+        Ok(if warn.is_empty() && error.is_empty() && error_output.is_none() && ok_file.is_none() {
+            None
+        } else {
+            Some(Judge { warn, error, error_output, ok_file })
+        })
     }
 
     /// The `http` the fields say.
@@ -536,11 +562,12 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order, group by group (see [`part_group`]).
-pub fn shelf() -> [Part; 16] {
+pub fn shelf() -> [Part; 17] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2), max: None },
         Part::Jobnet { use_: String::new() },
+        Part::Chore(Chore::blank("ssh").unwrap()),
         Part::Branch,
         Part::Join { wait: Wait::All },
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
@@ -2342,6 +2369,31 @@ X-Day: 1"
         assert!(e.apply_fields(&h, &fields).is_err());
         fields.expect.clear();
         fields.method = "GET".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
+    }
+
+    #[test]
+    fn an_ssh_from_the_shelf_takes_its_pc_command_and_judge() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let blank = shelf().into_iter().find(|p| p.key() == "ssh").unwrap();
+        let h = e.add(blank, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        fields.on = " ssh://ops@db1 ".into();
+        fields.command = "backup.sh --day {date}".into();
+        fields.host_key = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into();
+        fields.warn = "1".into();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let j = &e.net.jobs[1];
+        let Part::Chore(Chore::Ssh { on, command, host_key, .. }) = &j.part else { panic!() };
+        assert_eq!((on.as_str(), command.as_str()), ("ssh://ops@db1", "backup.sh --day {date}"));
+        assert!(host_key.is_some());
+        assert_eq!(j.judge.as_ref().map(|jd| jd.warn.len()), Some(1));
+        let again = Fields::of(j);
+        assert_eq!((again.on.as_str(), again.warn.as_str()), ("ssh://ops@db1", "1"));
+        fields.warn.clear();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        assert!(e.net.jobs[1].judge.is_none());
+        fields.warn = "x".into();
         assert!(e.apply_fields(&h, &fields).is_err());
     }
 

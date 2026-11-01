@@ -124,7 +124,8 @@ usage: koyomi [--version | --help | env]
        koyomi service [install|uninstall|start|stop|status]  run the engine as a Windows service under your own account, so nets run without anyone signed in (install and uninstall need an administrator; what the engine says goes to engine.log)
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
-       koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send or fetch job takes (host_key = SHA256:…)
+       koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send, fetch or ssh job takes (host_key = SHA256:…)
+       koyomi ssh run                what an ssh job runs (kind = ssh): its command on the PC in on = ssh://…
        koyomi http fingerprint       this PC's certificate fingerprint for [http] lan = true, to write in another PC's [[remote]]
        koyomi remote [list]          the other PCs' engines in [[remote]] of koyomi.toml, and whether each answers
        koyomi remote peek <url>      the fingerprint https://<PC>:<port> shows, to compare with koyomi http fingerprint there
@@ -152,7 +153,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 46] = [
+const COMMANDS: [&str; 47] = [
     "check",
     "list",
     "show",
@@ -196,6 +197,7 @@ const COMMANDS: [&str; 46] = [
     "startup",
     "secret",
     "sftp",
+    "ssh",
     "http",
     "remote",
     "mcp",
@@ -268,6 +270,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
         "sftp" => crate::sftp::cmd(rest),
+        "ssh" => crate::ssh::cmd(rest),
         "http" => crate::remote::http_cmd(rest),
         "remote" => crate::remote::cmd(rest),
         "mcp" => crate::mcp::run(),

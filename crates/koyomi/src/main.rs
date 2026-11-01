@@ -35,6 +35,7 @@ mod settings;
 mod sftp;
 mod sheet;
 mod show;
+mod ssh;
 mod ui;
 
 use std::path::PathBuf;
