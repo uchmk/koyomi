@@ -503,17 +503,24 @@ impl Prefs {
         });
     }
 
-    /// Open common.toml (made empty first when there is none) with what the
-    /// OS opens it with, on a thread.
-    pub fn open_common(&self, no_folder: &str) {
+    /// Open a settings file of the base (`common_path`, `config_path`), made
+    /// empty first when there is none, with what the OS opens it with, on a
+    /// thread. An empty file reads as the defaults, as no file does.
+    pub fn open_file(&self, file: fn(&Path) -> PathBuf, no_folder: &str) {
         let (tx, wake) = (self.tx.clone(), self.wake.clone());
         let Some(base) = self.base.clone() else {
             Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
             return;
         };
         std::thread::spawn(move || {
-            let path = common_path(&base);
-            let made = if path.exists() { Ok(()) } else { write_atomic(&path, "") };
+            let path = file(&base);
+            let made = if path.exists() {
+                Ok(())
+            } else {
+                path.parent()
+                    .map_or(Ok(()), |d| std::fs::create_dir_all(d).map_err(|e| e.to_string()))
+                    .and_then(|()| write_atomic(&path, ""))
+            };
             if let Err(e) = made.and_then(|()| open_path(&path)) {
                 Self::send_back(&tx, &wake, Reload::Failed(e));
             }

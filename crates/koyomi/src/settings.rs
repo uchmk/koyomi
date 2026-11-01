@@ -142,7 +142,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let startup_problem = app.startup_problem.clone();
     let state_dir = ito_common::state_dir("koyomi");
     let (common, themes, base) = (&prefs.common, &prefs.themes, prefs.base.as_deref());
-    let out = ito_prefs::show(ui, ito_theme::colors(), &mut prefs.state, &nav, keys, |ui, page, l| match page {
+    // koyomi.toml's button above common.toml's: the engine's settings are a file of their own.
+    let extras = ito_prefs::Extras { files: &[CONFIG_FILE], ..Default::default() };
+    let out = ito_prefs::show_with(ui, ito_theme::colors(), &mut prefs.state, &nav, keys, extras, |ui, page, l| match page {
         GENERAL => {
             section(ui, l, &tr("settings.display"), |ui| {
                 let now = common.language.as_deref().unwrap_or("auto");
@@ -327,8 +329,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     if out.close {
         app.settings_open = false;
     }
-    if out.open_file {
-        app.prefs.open_common(&no_folder);
+    match out.open_file {
+        Some(0) => app.prefs.open_file(ito_common::common_path, &no_folder),
+        Some(_) => app.prefs.open_file(crate::prefs::config_path, &no_folder),
+        None => {}
     }
     // Gone to another page: the keys stop being taken for this one.
     if app.prefs.state.page != KEYS {
@@ -338,6 +342,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     app.prefs.keymap_edit(key_edits, &no_folder);
     app.prefs.common_change(asked, &no_folder);
 }
+
+/// koyomi's own settings file, opened from the foot of the settings' list.
+const CONFIG_FILE: &str = "koyomi.toml";
 
 /// The choices for `keep_days`, as DECISIONS.md has them: no "never".
 pub const KEEP_DAYS: [u32; 5] = [30, 60, 90, 180, 365];

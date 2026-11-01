@@ -280,8 +280,8 @@
 - [x] 字体（日本語が出る字体を `egui` に足す）。手本は minato の `fonts.rs`。
 - [x] `TESTING.md` に確認の行を足し、`cargo run --example make-testcheck` で `TESTING-CHECKS.md` を作る。項目ごとに節を足した（1〜17）。
 - [x] `icon.rs` に本当のアイコンを描く。暗いタイルの上の暦のページ（cyan の帯・6 つの日・金色の今日）。`build.rs` が同じファイルで `koyomi.exe` の絵も作る。
-- [ ] 題の帯のロゴ: `main.rs` で自前に描いている（`LOGO_PX`・`logo` の欄）。ito v0.193.0 の `ito_titlebar::brand(ui, rect, name, logo)` が同じ見た目なので、次に ito の rev を上げるときに置き換える（ito-ec から、2026-11-01）。
-- [ ] ito v0.194.0 の設定の画面: `Extras { files: &["koyomi.toml"], .. }` が足された。上げるとき、`Out::open_file` が `Option<usize>` になり、欄ごとの `Extras { … }` に `files: &[]` が要る（ito-ec から、2026-11-01）。
+- [x] 題の帯のロゴ: `main.rs` で自前に描いている（`LOGO_PX`・`logo` の欄）。ito v0.193.0 の `ito_titlebar::brand(ui, rect, name, logo)` が同じ見た目なので、次に ito の rev を上げるときに置き換える（ito-ec から、2026-11-01）。 → ito v0.194.1 で置き換えた（`LOGO_PX`・`logo` の欄を消した、2026-11-01）。
+- [x] ito v0.194.0 の設定の画面: `Extras { files: &["koyomi.toml"], .. }` が足された。上げるとき、`Out::open_file` が `Option<usize>` になり、欄ごとの `Extras { … }` に `files: &[]` が要る（ito-ec から、2026-11-01）。 → 設定の左下に「開く: koyomi.toml」を足した（`Prefs::open_file`、2026-11-01）。
 - [x] リリースの workflow は kura か yagura のものを写す。`scripts/lanes.sh sync` が ito の雛形の `release.yml` を書いていた（`lanes.conf` の `workflows=`）。写す必要はない。
 
 ## 持ち主に聞くこと

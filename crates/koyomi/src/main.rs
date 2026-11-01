@@ -47,8 +47,6 @@ use ito_keyscript::{Do, Runner, Step};
 
 /// The window's icon, in pixels square.
 const ICON_PX: u32 = 128;
-/// The title bar logo is drawn at 16 px from a 32 px image (sharp on 2x screens).
-const LOGO_PX: u32 = 32;
 
 const REPO: &str = "https://github.com/uchmk/koyomi";
 
@@ -110,8 +108,6 @@ struct App {
     /// The list under the bell is open, and where the bell was last drawn.
     bell_open: bool,
     bell_at: egui::Rect,
-    /// The logo for the title bar, made once from `icon::pixels`.
-    logo: Option<egui::TextureHandle>,
     /// The command palette while it is open (Ctrl+Shift+P, or the bar's box).
     palette: Option<ito_palette::View>,
     browser: ui::Browser,
@@ -204,7 +200,6 @@ impl App {
             next_notice: 0,
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
-            logo: None,
             palette: None,
             // A script plays on a window that keeps no state of its own.
             browser: ui::Browser::start(&cc.egui_ctx, if script.is_some() { None } else { ito_common::state_dir("koyomi") }),
@@ -544,28 +539,11 @@ impl App {
             },
         };
         let name = self.table.tr("app.title").to_string();
-        let logo = self
-            .logo
-            .get_or_insert_with(|| {
-                let px = LOGO_PX as usize;
-                let image = egui::ColorImage::from_rgba_unmultiplied([px, px], &icon::pixels(LOGO_PX));
-                ctx.load_texture("koyomi-logo", image, egui::TextureOptions::LINEAR)
-            })
-            .id();
         let out = ito_titlebar::show(
             ui,
             &spec,
-            |ui, rect| {
-                // The logo, then the name (as tsumugi's title bar).
-                let at = egui::Rect::from_center_size(egui::pos2(rect.left() + 20.0, rect.center().y), egui::vec2(16.0, 16.0));
-                let uv = egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0));
-                ui.painter().image(logo, at, uv, egui::Color32::WHITE);
-                let galley = ui.painter().layout_no_wrap(name, egui::FontId::proportional(13.0), ito_theme::colors().fg);
-                let x = at.right() + 8.0;
-                let right = x + galley.size().x;
-                ui.painter().galley(egui::pos2(x, rect.center().y - galley.size().y / 2.0), galley, egui::Color32::WHITE);
-                right
-            },
+            // The logo, then the name (as the other uchmk apps' title bars).
+            |ui, rect| ito_titlebar::brand(ui, rect, &name, icon::pixels),
             |_, _| {},
         );
         if let Some(r) = out.bell_rect {

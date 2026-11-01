@@ -1,6 +1,6 @@
 # Checklist
 
-879 checks in TESTING.md, 873 left for a person.
+880 checks in TESTING.md, 874 left for a person.
 
 ## 1. Start
 
@@ -136,7 +136,8 @@
 
 ## 15. Settings (Ctrl+,)
 
-- [ ] **15.1** Press Ctrl+, → The settings cover the tree: General, Theme, Keys, Advanced, About down the left; the foot of the nav opens `common.toml` 〔未訳〕
+- [ ] **15.1** Press Ctrl+, → The settings cover the tree: General, Theme, Keys, Advanced, About down the left; the foot of the nav opens `common.toml`, with `koyomi.toml` above it 〔未訳〕
+- [ ] **15.1a** At the foot of the settings' list, press 「開く: koyomi.toml」, then 「開く: common.toml」; then Tab from the page to the foot → Each opens its own file in the OS's editor (a missing `koyomi.toml` is made empty first and the engine reads it as the defaults); Tab comes to koyomi.toml, then common.toml; the list above is shorter by the second button, not hidden under it 〔未訳〕
 - [ ] **15.2** Press Esc, or ← at the top → The tree is back as it was (the selected net still selected) 〔未訳〕
 - [ ] **15.3** General: pick 日本語 → The window turns Japanese at once; `common.toml` has `language = "ja"` within 2 seconds; minato or kura at the same desk follow 〔未訳〕
 - [ ] **15.4** General: pick 125 % → The window scales; `scale = 1.25` is in `common.toml`; Ctrl+0 puts it back and the file follows 〔未訳〕
