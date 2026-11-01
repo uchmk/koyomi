@@ -216,22 +216,42 @@ fn dashed(painter: &egui::Painter, rect: Rect, stroke: Stroke) {
     painter.extend(egui::Shape::dashed_line(&pts, stroke, 3.0, 2.0));
 }
 
-/// The key under the chart's title: a small swatch and a word for each state the bars show.
-pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table) {
+/// The key under the chart's title: a small swatch and a word for each state the bars of today show
+/// (`states`, in the order of the states), and the dashed one of a start still to come when `planned`.
+pub fn legend(ui: &mut egui::Ui, t: &ito_i18n::Table, states: &[State], planned: bool) {
     let c = ito_theme::colors();
-    // Laid left to right, each swatch in the room before its word.
-    for state in [State::Error, State::Ok, State::Running, State::Held] {
-        ui.add_space(14.0);
+    let word_of = |state: State| {
         let word = super::show::tag(t, state);
-        let word = word.trim_start_matches(|ch: char| !ch.is_whitespace()).trim();
+        word.trim_start_matches(|ch: char| !ch.is_whitespace()).trim().to_owned()
+    };
+    // Laid left to right, each swatch in the room before its word.
+    let mut key = |word: &str| {
+        ui.add_space(14.0);
         let r = ui.label(egui::RichText::new(word).small().color(c.dim));
-        let at = Pos2::new(r.rect.left() - 12.0, r.rect.center().y - 4.0);
-        let swatch = Rect::from_min_size(at, Vec2::splat(8.0));
-        if state == State::Held {
-            ui.painter().rect_filled(swatch, 2.0, c.wait_bg());
-            ui.painter().rect_stroke(swatch, 2.0, Stroke::new(1.0, graph::colour(&c, state)), egui::StrokeKind::Inside);
-        } else {
-            ui.painter().rect_filled(swatch, 2.0, graph::colour(&c, state));
+        Rect::from_min_size(Pos2::new(r.rect.left() - 12.0, r.rect.center().y - 4.0), Vec2::splat(8.0))
+    };
+    let mut keys: Vec<(Rect, Option<State>)> = Vec::new();
+    for state in State::ALL.into_iter().filter(|s| states.contains(s)) {
+        keys.push((key(&word_of(state)), Some(state)));
+    }
+    if planned {
+        keys.push((key(t.tr("run.gantt_planned")), None));
+    }
+    let painter = ui.painter();
+    for (swatch, state) in keys {
+        match state {
+            Some(State::Held) => {
+                painter.rect_filled(swatch, 2.0, c.wait_bg());
+                painter.rect_stroke(swatch, 2.0, Stroke::new(1.0, graph::colour(&c, State::Held)), egui::StrokeKind::Inside);
+            }
+            Some(state) => {
+                painter.rect_filled(swatch, 2.0, graph::colour(&c, state));
+            }
+            None => {
+                let waiting = graph::colour(&c, State::Waiting);
+                painter.rect_filled(swatch, 2.0, ito_theme::mix(c.side, waiting, 0.15));
+                dashed(painter, swatch, Stroke::new(1.0, waiting));
+            }
         }
     }
 }

@@ -190,6 +190,12 @@ struct Kept {
     /// `false` once the inspector at the right of 今日 was folded.
     #[serde(default)]
     inspector: Option<bool>,
+    /// `false` once the pane at the right of 履歴 was folded.
+    #[serde(default)]
+    history_pane: Option<bool>,
+    /// `false` once the pane at the right of the calendar was folded.
+    #[serde(default)]
+    calendar_pane: Option<bool>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -335,6 +341,10 @@ pub struct Browser {
     today_net: Option<String>,
     /// The inspector at the right of 今日 is open (not folded to its strip).
     inspector: bool,
+    /// The pane at the right of 履歴 is open (not folded to its strip).
+    hist_pane: bool,
+    /// The pane at the right of the calendar is open (not folded to its strip).
+    cal_pane: bool,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
     today_sort: Option<(usize, bool)>,
     /// The jobs table's sort on the net page, as `today_sort`.
@@ -429,6 +439,7 @@ impl Browser {
         let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
         let vertical = kept.flow.as_deref() == Some("vertical");
         let inspector = kept.inspector != Some(false);
+        let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
         let flow = path.map(|p| kept::Writer::new(p, true));
         let far = far::Far::start(&io.1);
         Browser {
@@ -479,6 +490,8 @@ impl Browser {
             today_kind: None,
             today_net: None,
             inspector,
+            hist_pane,
+            cal_pane,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -773,11 +786,16 @@ impl Browser {
         self.save_kept();
     }
 
-    /// Writes the picture's flow and the inspector's fold to `state.toml`.
+    /// Writes the picture's flow and the right panes' folds to `state.toml`.
     fn save_kept(&self) {
         if let Some(w) = &self.flow {
             let flow = Some(if self.vertical { "vertical" } else { "horizontal" }.to_owned());
-            w.save_toml(&Kept { flow, inspector: Some(self.inspector) });
+            w.save_toml(&Kept {
+                flow,
+                inspector: Some(self.inspector),
+                history_pane: Some(self.hist_pane),
+                calendar_pane: Some(self.cal_pane),
+            });
         }
     }
 
@@ -2026,7 +2044,7 @@ impl Browser {
         let count = |k: TodayKind| rows.iter().filter(|r| r.kinds.contains(&k)).count();
         let mut parts = vec![(TodayKind::Unhandled, t.tr("today.unhandled").to_owned(), graph::colour(&c, State::Error))];
         parts.extend(
-            State::ALL.into_iter().filter(|s| *s != State::NotRun).map(|s| (TodayKind::Is(s), show::tag(t, s), graph::colour(&c, s))),
+            State::ALL.into_iter().filter(|s| *s != State::NotRun).map(|s| (TodayKind::Is(s), show::tag(t, s), graph::mark_colour(&c, s))),
         );
         let mut kind = self.today_kind;
         ui.horizontal_wrapped(|ui| {
@@ -2034,10 +2052,13 @@ impl Browser {
             let look = ito_prefs::Look { c, q: "" };
             for (k, label, colour) in &parts {
                 let n = count(*k);
-                let text = format!("{label} {n}");
                 let on = kind == Some(*k);
-                let colour = if n == 0 && !on { c.dim } else { *colour };
-                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(colour).on(on))
+                // Only what today has: a state with no run is no chip (the one in use stays, to turn it off).
+                if n == 0 && !on {
+                    continue;
+                }
+                let text = format!("{label} {n}");
+                let r = ito_prefs::tag(ui, look, ito_prefs::Tag::new(&text).color(*colour).on(on))
                     .on_hover_text(t.tr(if on { "today.filter_off" } else { "today.filter_on" }))
                     .on_hover_cursor(egui::CursorIcon::PointingHand);
                 ito_a11y::say(&r, Role::Button, &text);
@@ -2384,7 +2405,13 @@ impl Browser {
                     let r = ui.label(egui::RichText::new(t.tr("run.gantt")).strong().color(c.fg));
                     ito_a11y::say(&r, Role::Heading, t.tr("run.gantt"));
                     ui.label(egui::RichText::new(t.tr("run.gantt_note")).small().color(c.dim));
-                    gantt::legend(ui, t);
+                    let mut shown: Vec<State> = Vec::new();
+                    for run in &runs {
+                        if !shown.contains(&run.state) {
+                            shown.push(run.state);
+                        }
+                    }
+                    gantt::legend(ui, t, &shown, !planned.is_empty());
                 });
                 ui.add_space(6.0);
                 egui::ScrollArea::both().id_salt("gantt").auto_shrink(false).show(ui, |ui| {
@@ -2499,10 +2526,18 @@ impl Browser {
         if self.hist.is_none() {
             return;
         }
+        // The pane at the right is always there, as on 今日 and the calendar: the run picked, else a
+        // word on how to pick one.
         let mut edge = ui.max_rect().right();
-        if self.run_sel.is_some() {
+        if !self.hist_pane {
+            if folded_pane(ui, "history_run_strip", t.tr("run.history_pane"), t.tr("inspect.open")) {
+                self.hist_pane = true;
+                self.save_kept();
+            }
+        } else {
             let wide = ui.available_width();
-            let mut close = false;
+            let (mut close, mut fold) = (false, false);
+            let picked = self.selected_run().is_some();
             let pane = egui::Panel::right("history_run")
                 .resizable(true)
                 .default_size(460.0_f32.min(wide * 0.4))
@@ -2510,17 +2545,39 @@ impl Browser {
                 .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::same(12)))
                 .show(ui, |ui| {
                     one_size(ui.style_mut());
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
-                        let r = ui.add(egui::Button::new("✕").frame(false)).on_hover_text(t.tr("run.history_close"));
-                        ito_a11y::say(&r, Role::Button, t.tr("run.history_close"));
-                        close = r.clicked();
+                    // The panel keeps the size its content took, so fill it.
+                    ui.set_min_height(ui.available_height());
+                    // The head: what the pane is, the fold mark and, with a run picked, ✕ at the right.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            fold = fold_button(ui, true, t.tr("inspect.fold")).clicked();
+                            if picked {
+                                let r = ui.add(egui::Button::new("✕").frame(false)).on_hover_text(t.tr("run.history_close"));
+                                ito_a11y::say(&r, Role::Button, t.tr("run.history_close"));
+                                close = r.clicked();
+                            }
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let r = ui.label(egui::RichText::new(t.tr("run.history_pane")).strong().color(c.dim));
+                                ito_a11y::say(&r, Role::Heading, t.tr("run.history_pane"));
+                            });
+                        });
                     });
+                    ui.add_space(8.0);
+                    if !picked {
+                        let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.history_pick")).color(c.dim)).wrap());
+                        ito_a11y::say(&r, Role::Label, t.tr("run.history_pick"));
+                        return;
+                    }
                     egui::ScrollArea::vertical().id_salt("history_run_scroll").auto_shrink(false).show(ui, |ui| self.run_view(ui, t));
                 });
             edge = edge.min(pane.response.rect.left());
             if close {
                 self.run_sel = None;
                 self.job_sel = None;
+            }
+            if fold {
+                self.hist_pane = false;
+                self.save_kept();
             }
         }
         page().show(ui, |ui| {
@@ -3094,18 +3151,10 @@ impl Browser {
     fn inspector_pane(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         if !self.inspector {
-            egui::Panel::right("inspector_strip")
-                .resizable(false)
-                .exact_size(28.0)
-                .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)))
-                .show(ui, |ui| {
-                    let r = ui.add(egui::Button::new("‹").frame(false)).on_hover_text(t.tr("inspect.open"));
-                    ito_a11y::say(&r, Role::Button, t.tr("inspect.open"));
-                    if r.clicked() {
-                        self.inspector = true;
-                        self.save_kept();
-                    }
-                });
+            if folded_pane(ui, "inspector_strip", t.tr("inspect.title"), t.tr("inspect.open")) {
+                self.inspector = true;
+                self.save_kept();
+            }
             return;
         }
         let wide = ui.available_width();
@@ -3129,9 +3178,7 @@ impl Browser {
         let mut go = None;
         ui.horizontal(|ui| {
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let r = ui.add(egui::Button::new("›").frame(false)).on_hover_text(t.tr("inspect.fold"));
-                ito_a11y::say(&r, Role::Button, t.tr("inspect.fold"));
-                fold = r.clicked();
+                fold = fold_button(ui, true, t.tr("inspect.fold")).clicked();
                 ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
                     let Some(def) = &def else {
                         let r = ui.label(egui::RichText::new(t.tr("inspect.title")).strong().color(c.dim));
@@ -3870,7 +3917,7 @@ impl TodayTable {
         let at = |i: usize| rect.left() + self.cols[i] + Self::PAD;
         let clip =
             |i: usize| egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i) - 4.0, rect.y_range());
-        p.with_clip_rect(clip(0)).text(egui::pos2(at(0), y), egui::Align2::LEFT_CENTER, word, body.clone(), colour);
+        p.with_clip_rect(clip(0)).text(egui::pos2(at(0), y), egui::Align2::LEFT_CENTER, word, body.clone(), graph::mark_colour(c, state));
         let ink = if on { c.strong() } else { c.fg };
         p.with_clip_rect(clip(1)).text(egui::pos2(at(1), y), egui::Align2::LEFT_CENTER, title, body.clone(), ink);
         for (k, cell) in cells.iter().enumerate() {
@@ -3986,6 +4033,57 @@ fn sort_rows(rows: &mut [(usize, Vec<(String, bool)>)], sort: Option<(usize, boo
 /// a pane there meets the window's edges; the page's own content keeps this room instead.
 pub(super) fn page() -> egui::Frame {
     egui::Frame::new().inner_margin(egui::Margin { left: 0, top: 12, right: 8, bottom: 8 })
+}
+
+/// The fold mark of a pane at the right: a small rounded square with a chevron, › to fold the open
+/// pane away to the right, ‹ to open it again. `words` are its tip and what a reader says.
+pub(super) fn fold_button(ui: &mut egui::Ui, open: bool, words: &str) -> egui::Response {
+    let c = ito_theme::colors();
+    let (rect, r) = ui.allocate_exact_size(egui::vec2(22.0, 22.0), egui::Sense::click());
+    let r = r.on_hover_text(words).on_hover_cursor(egui::CursorIcon::PointingHand);
+    ito_a11y::say(&r, Role::Button, words);
+    if ui.is_rect_visible(rect) {
+        let hot = r.hovered() || r.has_focus();
+        let (fill, edge, ink) = if hot { (c.hover(), c.border_strong(), c.fg) } else { (c.raised(), c.border, c.dim) };
+        let p = ui.painter();
+        p.rect(rect, 6.0, fill, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        let m = rect.center();
+        // The chevron points the way the pane goes: right to fold, left to open.
+        let d = if open { 1.0 } else { -1.0 };
+        let pts = vec![m + egui::vec2(-2.5 * d, -4.5), m + egui::vec2(2.5 * d, 0.0), m + egui::vec2(-2.5 * d, 4.5)];
+        p.add(egui::Shape::line(pts, egui::Stroke::new(1.5, ink)));
+    }
+    r
+}
+
+/// A folded pane at the right: a thin strip with the fold mark at its top and the pane's `title`
+/// written down its length. True when the mark was pressed to open the pane again.
+pub(super) fn folded_pane(ui: &mut egui::Ui, id: &str, title: &str, words: &str) -> bool {
+    let c = ito_theme::colors();
+    let mut open = false;
+    egui::Panel::right(id.to_owned())
+        .resizable(false)
+        .exact_size(34.0)
+        .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::symmetric(6, 10)))
+        .show(ui, |ui| {
+            ui.set_min_height(ui.available_height());
+            ui.vertical_centered(|ui| {
+                open = fold_button(ui, false, words).clicked();
+                ui.add_space(10.0);
+                // The title reads top to bottom, turned a quarter to the right.
+                let font = egui::FontId::proportional(ONE_SIZE);
+                let galley = ui.painter().layout_no_wrap(title.to_owned(), font, c.dim);
+                let size = galley.size();
+                let (rect, r) = ui.allocate_exact_size(egui::vec2(size.y, size.x), egui::Sense::click());
+                ito_a11y::say(&r, Role::Label, title);
+                if r.on_hover_cursor(egui::CursorIcon::PointingHand).clicked() {
+                    open = true;
+                }
+                let at = egui::pos2(rect.right(), rect.top());
+                ui.painter().add(egui::epaint::TextShape::new(at, galley, c.dim).with_angle(std::f32::consts::FRAC_PI_2));
+            });
+        });
+    open
 }
 
 /// The tree and the today page read in one size: every text style at [`ONE_SIZE`] (times stay
@@ -4270,6 +4368,8 @@ mod tests {
             today_kind: None,
             today_net: None,
             inspector: true,
+            hist_pane: true,
+            cal_pane: true,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -4532,6 +4632,23 @@ run = [\"x.exe\"]
         for w in ["ジョブネット", "状態"] {
             assert!(row(&s, w).iter().any(|y| (y - search[0]).abs() < 8.0), "{w} beside the filters");
         }
+    }
+
+    /// The pane at the right of 履歴 is there with no run picked, says how to pick one, and folds to
+    /// its strip and opens again.
+    #[test]
+    fn the_history_pane_is_always_there_and_folds() {
+        let mut b = quiet(defs());
+        b.open_history();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let has = |s: &Screen, w: &str| s.nodes.values().any(|n| n.0 == w);
+        assert!(has(&s, "選んだ回"));
+        assert!(has(&s, "表で行を選ぶと、その回のジョブ・ログ・操作がここに出ます。"));
+        s.click("右の欄をたたむ", &mut b);
+        assert!(!b.hist_pane);
+        s.click("右の欄を開く", &mut b);
+        assert!(b.hist_pane);
     }
 
     /// A net's page is split into 図, 実行のタイミング, 設定 and ジョブ, in that order.

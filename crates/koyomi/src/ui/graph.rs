@@ -30,6 +30,16 @@ pub fn colour(c: &ito_theme::Colors, s: State) -> Color32 {
     }
 }
 
+/// The colour of a state's mark and word in lists (the chips, the table, the chart's key): as
+/// [`colour`], but the quiet states get a hue of their own so every mark reads in colour.
+pub fn mark_colour(c: &ito_theme::Colors, s: State) -> Color32 {
+    match s {
+        State::Waiting => c.blue,
+        State::Skipped | State::NotRun => c.magenta,
+        _ => colour(c, s),
+    }
+}
+
 /// The softer colour of a line that a state came through.
 fn line_colour(c: &ito_theme::Colors, s: State) -> Color32 {
     ito_theme::mix(colour(c, s), c.bg, if c.light { 0.55 } else { 0.45 })

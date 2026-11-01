@@ -150,17 +150,41 @@ impl Browser {
         // before the month so the month takes the room that is left.
         let wide = ui.available_width();
         let mut toggle_box = None;
-        egui::Panel::right("calendar_side")
-            .resizable(true)
-            .default_size(340.0_f32.min(wide * 0.4))
-            .size_range(240.0..=(wide * 0.6).max(240.0))
-            .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::same(12)))
-            .show(ui, |ui| {
-                super::one_size(ui.style_mut());
-                egui::ScrollArea::vertical().id_salt("calendar_side_scroll").auto_shrink(false).show(ui, |ui| {
-                    toggle_box = self.side_pane(ui, t, &name, &cal, &days, picked, today);
+        if !self.cal_pane {
+            if super::folded_pane(ui, "calendar_side_strip", &name, t.tr("inspect.open")) {
+                self.cal_pane = true;
+                self.save_kept();
+            }
+        } else {
+            let mut fold = false;
+            egui::Panel::right("calendar_side")
+                .resizable(true)
+                .default_size(340.0_f32.min(wide * 0.4))
+                .size_range(240.0..=(wide * 0.6).max(240.0))
+                .frame(egui::Frame::new().fill(c.side).stroke(egui::Stroke::new(1.0, c.border)).inner_margin(egui::Margin::same(12)))
+                .show(ui, |ui| {
+                    super::one_size(ui.style_mut());
+                    ui.set_min_height(ui.available_height());
+                    // The head: the calendar's name, the fold mark at the right.
+                    ui.horizontal(|ui| {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            fold = super::fold_button(ui, true, t.tr("inspect.fold")).clicked();
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::Center), |ui| {
+                                let r = ui.label(egui::RichText::new(&name).strong());
+                                ito_a11y::say(&r, Role::Heading, &name);
+                            });
+                        });
+                    });
+                    ui.add_space(8.0);
+                    egui::ScrollArea::vertical().id_salt("calendar_side_scroll").auto_shrink(false).show(ui, |ui| {
+                        toggle_box = self.side_pane(ui, t, &name, &cal, &days, picked, today);
+                    });
                 });
-            });
+            if fold {
+                self.cal_pane = false;
+                self.save_kept();
+            }
+        }
         // The month and what goes with it scroll under the pane when the window is short.
         super::page().show(ui, |ui| {
             egui::ScrollArea::vertical().id_salt("calendar_page").auto_shrink(false).show(ui, |ui| {
