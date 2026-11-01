@@ -284,7 +284,7 @@ impl Far {
         ui.horizontal(|ui| {
             ui.heading(t.trf("far.title", &[&pc]));
             let refresh = ito_prefs::IconButton::new(ito_prefs::Mark::Refresh, t.tr("far.refresh"));
-            if ui.add_enabled_ui(self.pending == 0, |ui| refresh.show(ui)).inner.clicked() {
+            if ui.add_enabled(self.pending == 0, |ui: &mut egui::Ui| refresh.show(ui)).clicked() {
                 self.asked = None;
             }
             if self.pending > 0 {
@@ -379,7 +379,7 @@ impl Far {
                 let free = self.asking.is_none();
                 let said = format!("{} {title}", t.tr("run.now"));
                 let now = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.now")).said(&said);
-                if ui.add_enabled_ui(free, |ui| now.show(ui)).inner.clicked() {
+                if ui.add_enabled(free, |ui: &mut egui::Ui| now.show(ui)).clicked() {
                     let values = n.params.iter().map(|(k, d)| (k.clone(), d.clone(), d.clone())).collect();
                     press = Some(Act::Run(n.id.clone(), values));
                 }
@@ -393,7 +393,7 @@ impl Far {
                     for (key, act) in acts {
                         let said = format!("{} {title}", t.tr(key));
                         let button = ito_prefs::IconButton::new(act.mark(), t.tr(key)).said(&said);
-                        if ui.add_enabled_ui(free, |ui| button.show(ui)).inner.clicked() {
+                        if ui.add_enabled(free, |ui: &mut egui::Ui| button.show(ui)).clicked() {
                             press = Some(act);
                         }
                     }
@@ -444,7 +444,7 @@ impl Far {
                 };
                 let said = format!("{} {}", t.tr(key), run.title);
                 let button = ito_prefs::IconButton::new(act.mark(), t.tr(key)).said(&said).tone(tone);
-                if ui.add_enabled_ui(self.asking.is_none(), |ui| button.show(ui)).inner.clicked() {
+                if ui.add_enabled(self.asking.is_none(), |ui: &mut egui::Ui| button.show(ui)).clicked() {
                     press = Some(act);
                 }
                 ui.end_row();

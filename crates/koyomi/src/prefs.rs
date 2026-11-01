@@ -574,6 +574,8 @@ impl Prefs {
                 self.themes[0].colors
             }
         };
+        // `high_contrast = true` draws every theme in its stronger colours, as the Web page does.
+        let colors = if self.common.high_contrast_or_off() { colors.high_contrast() } else { colors };
         if colors != ito_theme::colors() {
             ito_theme::set(colors);
             ctx.set_visuals(colors.visuals());

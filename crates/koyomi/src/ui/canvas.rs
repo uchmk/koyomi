@@ -1314,7 +1314,7 @@ impl Editor {
             ui.horizontal_wrapped(|ui| {
                 let can = self.can_save();
                 let save = IconButton::new(M::Save, t.tr("canvas.save")).tone(Tone::Primary);
-                if ui.add_enabled_ui(can, |ui| save.show(ui)).inner.clicked() {
+                if ui.add_enabled(can, |ui: &mut egui::Ui| save.show(ui)).clicked() {
                     action = self.edit(Cmd::Save);
                 }
                 if IconButton::new(M::Search, t.tr("canvas.check")).show(ui).on_hover_text(t.tr("canvas.check_hint")).clicked() {
@@ -1345,7 +1345,7 @@ impl Editor {
                             Cmd::Redo => !self.redo.is_empty(),
                             _ => true,
                         };
-                        if ui.add_enabled_ui(can, |ui| IconButton::new(mark, t.tr(key)).show(ui)).inner.clicked() {
+                        if ui.add_enabled(can, |ui: &mut egui::Ui| IconButton::new(mark, t.tr(key)).show(ui)).clicked() {
                             self.edit(cmd);
                         }
                     }

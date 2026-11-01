@@ -43,6 +43,19 @@ pub fn row(t: &Table, d: &Def, held: bool) -> String {
 /// [`row`] with the state of the net's latest run today at the end (`月次締め  ✓`), so
 /// the tree says how it went without opening it.
 pub fn row_with(t: &Table, d: &Def, held: bool, last: Option<RunState>) -> String {
+    let (mut out, word) = row_parts(t, d, held);
+    if let Some(w) = word {
+        out.push_str(&format!("  {w}"));
+    }
+    if let Some(l) = last {
+        out.push_str(&format!("  {}", l.mark()));
+    }
+    out
+}
+
+/// [`row`] in two: the mark and the label, and the word after them (`未確認`, `保留`), so the tree
+/// can shorten a long label and keep the word whole.
+pub fn row_parts(t: &Table, d: &Def, held: bool) -> (String, Option<String>) {
     let confirmed = d.standing == Standing::Confirmed;
     // A confirmed net is the usual case, so it carries no mark and no word of its own: the last
     // run's mark at the end is then the only check on the row.
@@ -57,13 +70,7 @@ pub fn row_with(t: &Table, d: &Def, held: bool, last: Option<RunState>) -> Strin
         out.push_str(&format!("{m} "));
     }
     out.push_str(d.label());
-    if let Some(w) = word {
-        out.push_str(&format!("  {w}"));
-    }
-    if let Some(l) = last {
-        out.push_str(&format!("  {}", l.mark()));
-    }
-    out
+    (out, word)
 }
 
 /// The ids of the definitions whose label another one in the same group shares: the tree adds

@@ -1546,7 +1546,7 @@ impl Browser {
                     ito_a11y::say(&r, Role::Label, &head);
                     // Filled with the warn colour of the band: it undoes the pause, in the words' own size.
                     let resume = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.resume")).tone(ito_prefs::Tone::Warn);
-                    let r = ui.add_enabled_ui(!modal, |ui| resume.show(ui)).inner;
+                    let r = ui.add_enabled(!modal, |ui: &mut egui::Ui| resume.show(ui));
                     if r.clicked() {
                         let _ = self.tx.send(Request::Resume);
                     }
@@ -1842,13 +1842,17 @@ impl Browser {
                 continue;
             }
             let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started).map(|r| r.state);
-            let mut text = review::row_with(t, d, snap.held.contains(&d.id), None);
-            if snap.held_jobs.iter().any(|h| h.net == d.id) {
-                text = format!("{text}  {} {}", State::Held.mark(), t.tr("state.job_held"));
-            }
+            // The label (shortened when the tree is narrow), then what to know about it, kept whole at the right.
+            let (mut head, word) = review::row_parts(t, d, snap.held.contains(&d.id));
             if twins.contains(&d.id) {
-                text = review::twin_row(text, d);
+                head = review::twin_row(head, d);
             }
+            let mut tail: Vec<String> = word.into_iter().collect();
+            if snap.held_jobs.iter().any(|h| h.net == d.id) {
+                tail.push(format!("{} {}", State::Held.mark(), t.tr("state.job_held")));
+            }
+            let tail = tail.join("  ");
+            let text = if tail.is_empty() { head.clone() } else { format!("{head}  {tail}") };
             // On the overview (no net open) the row picked there is marked here too.
             let shown = if self.selected.is_none() && !self.gantt && self.cal_sel.is_none() {
                 self.nets_pick.as_deref()
@@ -1856,7 +1860,7 @@ impl Browser {
                 self.selected.as_deref()
             };
             let on = self.run_sel.is_none() && self.hist.is_none() && shown == Some(d.id.as_str());
-            let r = tree_row(ui, &c, on, last, &text);
+            let r = tree_row(ui, &c, on, last, &head, &tail);
             // The mark is a picture; the word for the last run's state is what is said.
             let said = match last {
                 Some(l) => {
@@ -2008,8 +2012,7 @@ impl Browser {
     fn nets_overview(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
-        let r = ui.label(egui::RichText::new(t.tr("nets.heading")).strong().size(15.0));
-        ito_a11y::say(&r, Role::Heading, t.tr("nets.heading"));
+        section_head(ui, t.tr("nets.heading"));
         ui.add_space(4.0);
         if snap.defs.is_empty() {
             ui.label(egui::RichText::new(t.tr("nets.empty")).color(c.dim));
@@ -2089,7 +2092,9 @@ impl Browser {
             one_size(ui.style_mut());
             let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
             let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|r| r.cells.clone()).collect();
-            let widths = TodayTable::fit(ui, &heads, &cells);
+            let mut widths = TodayTable::fit(ui, &heads, &cells);
+            // The net, its group and the note give way (ending in `…`) before the times are cut off.
+            TodayTable::squeeze(&mut widths, ui.available_width(), &[1, 2, 6], 72.0);
             let mut table = TodayTable::with(&c, &widths, ui.available_width());
             if let Some(col) = table.head(ui, &heads, self.nets_sort, t.tr("today.sort")) {
                 self.nets_sort = TodayTable::next_sort(self.nets_sort, col);
@@ -2990,7 +2995,7 @@ impl Browser {
         let held = self.job_held(net, job);
         let label = t.trf(if held { "run.release_job" } else { "run.hold_job" }, &[job]);
         let mark = if held { ito_prefs::Mark::Play } else { ito_prefs::Mark::Pause };
-        let r = ui.add_enabled_ui(!self.blocked(), |ui| ito_prefs::IconButton::new(mark, &label).show(ui)).inner;
+        let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, &label).show(ui));
         if r.clicked() {
             let (id, job) = (net.to_owned(), Some(job.to_owned()));
             let _ = self.tx.send(if held { Request::Release { id, job } } else { Request::Hold { id, job } });
@@ -3078,35 +3083,34 @@ impl Browser {
                     if run.is_over() {
                         let head = format!("{} ▾", t.tr("run.rerun"));
                         let tx = &self.tx;
-                        ui.add_enabled_ui(!self.blocked(), |ui| {
-                            let r = ito_prefs::IconButton::new(ito_prefs::Mark::Rerun, &head).show(ui);
-                            egui::Popup::menu(&r).show(|ui| {
-                                let rest = !run.jobs.iter().all(|j| j.state.passed());
-                                let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
-                                ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
-                                if r.clicked() {
-                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
-                                }
-                                let label = match &picked {
-                                    Some(j) => t.trf("run.rerun_from", &[j]),
-                                    None => t.tr("run.rerun_pick").to_owned(),
-                                };
-                                let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
+                        let button = ito_prefs::IconButton::new(ito_prefs::Mark::Rerun, &head);
+                        let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| button.show(ui));
+                        egui::Popup::menu(&r).show(|ui| {
+                            let rest = !run.jobs.iter().all(|j| j.state.passed());
+                            let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
+                            ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
+                            if r.clicked() {
+                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
+                            }
+                            let label = match &picked {
+                                Some(j) => t.trf("run.rerun_from", &[j]),
+                                None => t.tr("run.rerun_pick").to_owned(),
+                            };
+                            let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
+                            ito_a11y::say(&r, Role::Button, &label);
+                            if r.clicked() {
+                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
+                            }
+                            // From the jobs after the picked one, which ends as スキップ or 警告 without running.
+                            for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
+                                let Some(j) = &picked else { break };
+                                let label = t.trf(key, &[j]);
+                                let r = ui.button(&label);
                                 ito_a11y::say(&r, Role::Button, &label);
                                 if r.clicked() {
-                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
+                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
                                 }
-                                // From the jobs after the picked one, which ends as スキップ or 警告 without running.
-                                for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
-                                    let Some(j) = &picked else { break };
-                                    let label = t.trf(key, &[j]);
-                                    let r = ui.button(&label);
-                                    ito_a11y::say(&r, Role::Button, &label);
-                                    if r.clicked() {
-                                        let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
-                                    }
-                                }
-                            });
+                            }
                         });
                     }
                     // A failure dealt with: it leaves the count in the status bar.
@@ -3206,8 +3210,7 @@ impl Browser {
     fn run_jobs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>, paned: bool) {
         let c = ito_theme::colors();
         if paned {
-            let r = ui.label(egui::RichText::new(t.tr("net.sec_jobs")).strong().size(15.0));
-            ito_a11y::say(&r, Role::Heading, t.tr("net.sec_jobs"));
+            section_head(ui, t.tr("net.sec_jobs"));
         }
         let mut rows: Vec<(usize, Vec<(String, bool)>)> = run
             .jobs
@@ -3253,7 +3256,9 @@ impl Browser {
             one_size(ui.style_mut());
             let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
             let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|(_, r)| r.clone()).collect();
-            let widths = TodayTable::fit(ui, &heads, &cells);
+            let mut widths = TodayTable::fit(ui, &heads, &cells);
+            // The job and the reason give way (ending in `…`) before the times are cut off.
+            TodayTable::squeeze(&mut widths, ui.available_width(), &[0, 7], 72.0);
             let mut table = TodayTable::with(&c, &widths, ui.available_width());
             if let Some(col) = table.head(ui, &heads, self.run_sort, t.tr("today.sort")) {
                 self.run_sort = TodayTable::next_sort(self.run_sort, col);
@@ -3362,8 +3367,7 @@ impl Browser {
                         ito_a11y::say(&r, Role::Heading, t.tr("inspect.title"));
                         return;
                     };
-                    let r = ui.label(egui::RichText::new(def.label()).strong().size(15.0));
-                    ito_a11y::say(&r, Role::Heading, def.label());
+                    section_head(ui, def.label());
                     let open = ito_prefs::IconButton::new(ito_prefs::Mark::ArrowRight, t.tr("canvas.enter")).said(t.tr("today.open_net"));
                     if open.show(ui).clicked() {
                         go = Some(def.id.clone());
@@ -3521,8 +3525,7 @@ impl Browser {
         }
         let section = |ui: &mut egui::Ui, key: &str| {
             ui.add_space(10.0);
-            let r = ui.label(egui::RichText::new(t.tr(key)).strong().size(15.0));
-            ito_a11y::say(&r, Role::Heading, t.tr(key));
+            section_head(ui, t.tr(key));
         };
         if def.net.as_ref().is_some_and(|n| !n.jobs.is_empty()) {
             section(ui, "net.sec_graph");
@@ -3545,7 +3548,7 @@ impl Browser {
             Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
             None => t.tr("confirm.approve").to_owned(),
         };
-        let r = ui.add_enabled_ui(can, |ui| ito_prefs::IconButton::new(ito_prefs::Mark::Check, &label).show(ui)).inner;
+        let r = ui.add_enabled(can, |ui: &mut egui::Ui| ito_prefs::IconButton::new(ito_prefs::Mark::Check, &label).show(ui));
         if let Some(lang) = &self.easy {
             ito_glossary::hover(ui, ui.painter(), r.rect, &crate::glossary::GLOSSARY, "approve", lang, "confirm");
         }
@@ -3558,7 +3561,7 @@ impl Browser {
     /// 編集: the net in the editor.
     fn edit_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
         let edit = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("canvas.edit"));
-        let r = ui.add_enabled_ui(def.net.is_some(), |ui| edit.show(ui)).inner;
+        let r = ui.add_enabled(def.net.is_some(), |ui: &mut egui::Ui| edit.show(ui));
         if r.clicked() {
             self.open_editor(&def.id);
             self.focus = 0;
@@ -3569,7 +3572,7 @@ impl Browser {
     fn run_now_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
         let can = def.standing == Standing::Confirmed && !self.blocked() && !held;
         let run = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.now")).tone(ito_prefs::Tone::Primary);
-        if ui.add_enabled_ui(can, |ui| run.show(ui)).inner.clicked() && can {
+        if ui.add_enabled(can, |ui: &mut egui::Ui| run.show(ui)).clicked() && can {
             self.run_now(def.id.clone(), def.net.as_ref().map(|n| &n.params));
         }
     }
@@ -3577,7 +3580,7 @@ impl Browser {
     /// Holds the net, or releases it: on hold its times are written down as ⏸ and nothing runs.
     fn hold_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, held: bool) {
         let (key, mark) = if held { ("run.release", ito_prefs::Mark::Play) } else { ("run.hold", ito_prefs::Mark::Pause) };
-        let r = ui.add_enabled_ui(!self.blocked(), |ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui)).inner;
+        let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui));
         if r.clicked() {
             let id = def.id.clone();
             let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
@@ -3654,8 +3657,7 @@ impl Browser {
         let c = ito_theme::colors();
         let Some(def) = self.selected_def().cloned() else { return };
         {
-            let r = ui.label(egui::RichText::new(t.tr("net.sec_jobs")).strong().size(15.0));
-            ito_a11y::say(&r, Role::Heading, t.tr("net.sec_jobs"));
+            section_head(ui, t.tr("net.sec_jobs"));
             if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
                 // One row a job, drawn as the today table: what it is, what comes before and after it, what it
                 // runs and where, and the rest of its settings. A click picks the job (as on the graph).
@@ -3709,7 +3711,10 @@ impl Browser {
                     one_size(ui.style_mut());
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
                     let cells: Vec<Vec<(String, bool)>> = rows.iter().map(|(_, r)| r.clone()).collect();
-                    let widths = TodayTable::fit(ui, &heads, &cells);
+                    let mut widths = TodayTable::fit(ui, &heads, &cells);
+                    // The words (name, the jobs before and after, the command, its folder, the rest) end in
+                    // `…` before the table runs off the side; the ID and the kind stay whole.
+                    TodayTable::squeeze(&mut widths, ui.available_width(), &[2, 3, 4, 5, 6, 7], 72.0);
                     let mut table = TodayTable::with(&c, &widths, ui.available_width());
                     if let Some(col) = table.head(ui, &heads, self.net_sort, t.tr("today.sort")) {
                         self.net_sort = TodayTable::next_sort(self.net_sort, col);
@@ -3876,7 +3881,7 @@ impl Browser {
 
 /// A screen's one main button (D13): a mark and words, filled with the theme's accent, greyed when not `enabled`.
 pub(crate) fn primary(ui: &mut egui::Ui, enabled: bool, mark: ito_prefs::Mark, words: &str) -> egui::Response {
-    ui.add_enabled_ui(enabled, |ui| ito_prefs::IconButton::new(mark, words).tone(ito_prefs::Tone::Primary).show(ui)).inner
+    ui.add_enabled(enabled, |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, words).tone(ito_prefs::Tone::Primary).show(ui))
 }
 
 /// A button that does something hard to take back (kill), in the theme's danger tone.
@@ -4069,14 +4074,20 @@ impl TodayTable {
             if r.hovered() {
                 ui.painter().rect_filled(cell, 0.0, self.c.hover());
             }
-            ui.painter().text(
-                egui::pos2(cell.left() + Self::PAD, cell.center().y),
-                egui::Align2::LEFT_CENTER,
-                format!("{h}{arrow}"),
-                font.clone(),
-                ink,
-            );
-            let r = r.on_hover_text(hint).on_hover_cursor(egui::CursorIcon::PointingHand);
+            // A squeezed column's head ends in `…` (the whole of it on hover) rather than running into the next.
+            let g = one_line(ui, &format!("{h}{arrow}"), font.clone(), ink, cell.width() - Self::PAD - 4.0);
+            let cut = g.elided;
+            ui.painter().galley(egui::pos2(cell.left() + Self::PAD, cell.center().y - g.size().y / 2.0), g, ink);
+            let r = r
+                .on_hover_text(if cut {
+                    format!(
+                        "{h}
+{hint}"
+                    )
+                } else {
+                    hint.to_owned()
+                })
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
             let said = match arrow {
                 " ▲" => format!("{h} ▲"),
                 " ▼" => format!("{h} ▼"),
@@ -4176,8 +4187,10 @@ impl TodayTable {
         } else {
             (rect.top() + (Self::ROW - line) / 2.0, egui::Align2::LEFT_TOP)
         };
+        let mut cut = Vec::new();
         for (i, (text, fixed)) in cells.iter().enumerate() {
-            let clip = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i) - 4.0, rect.y_range());
+            let left = rect.left() + self.cols[i] + Self::PAD;
+            let right = rect.left() + self.cell_right(i) - 4.0;
             let ink = match colour {
                 Some(colour) if i < 2 => colour,
                 _ => ink,
@@ -4185,9 +4198,44 @@ impl TodayTable {
             let (text, ink) = if text.is_empty() { ("—", c.dim) } else { (text.as_str(), ink) };
             // The dash is the same in every column, fixed-width or not.
             let font = if *fixed && text != "—" { mono.clone() } else { body.clone() };
-            p.with_clip_rect(clip).text(egui::pos2(rect.left() + self.cols[i] + Self::PAD, y), align, text, font, ink);
+            if lines == 1 {
+                // A column narrowed by [`Self::squeeze`] ends its words in `…`; the whole reads on hover.
+                let g = one_line(ui, text, font, ink, right - left);
+                if g.elided {
+                    cut.push(text);
+                }
+                p.galley(egui::pos2(left, y - g.size().y / 2.0), g, ink);
+            } else {
+                let clip = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=right, rect.y_range());
+                p.with_clip_rect(clip).text(egui::pos2(left, y), align, text, font, ink);
+            }
         }
-        r.on_hover_cursor(egui::CursorIcon::PointingHand)
+        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+        if cut.is_empty() {
+            r
+        } else {
+            r.on_hover_text(cut.join(
+                "
+",
+            ))
+        }
+    }
+
+    /// Narrows the columns in `flex` (words, which can end in `…`) until `widths` fit `room`, each by
+    /// its share of what it has over `min`; the others (clock times) keep theirs. A head that no longer
+    /// fits ends in `…` as well. What still does not fit scrolls sideways.
+    fn squeeze(widths: &mut [f32], room: f32, flex: &[usize], min: f32) {
+        let over = widths.iter().sum::<f32>() - room;
+        let spare: f32 = flex.iter().filter_map(|&i| widths.get(i)).map(|w| (w - min).max(0.0)).sum();
+        if over <= 0.0 || spare <= 0.0 {
+            return;
+        }
+        let k = (over / spare).min(1.0);
+        for &i in flex {
+            if let Some(w) = widths.get_mut(i) {
+                *w -= (*w - min).max(0.0) * k;
+            }
+        }
     }
 
     /// Column widths that fit `heads` and `rows` (each cell's longest line), padded.
@@ -4202,8 +4250,9 @@ impl TodayTable {
             .enumerate()
             .map(|(i, h)| {
                 let cells = rows.iter().filter_map(|r| r.get(i)).map(|(t, fixed)| w(t, if *fixed { &mono } else { &body }));
-                // Room for the sort arrow next to the head.
-                cells.fold(w(&format!("{h} ▼"), &small), f32::max) + 2.0 * Self::PAD + 6.0
+                // Room for the sort arrow next to the head; the pad at the left, and a gap before the next
+                // column's pad (its text then stands 18 points off).
+                cells.fold(w(&format!("{h} ▼"), &small), f32::max) + Self::PAD + 8.0
             })
             .collect()
     }
@@ -4292,6 +4341,7 @@ pub(crate) const ONE_SIZE: f32 = 11.5;
 /// as a small badge at the right.
 fn tree_group(ui: &mut egui::Ui, c: &ito_theme::Colors, text: &str, todo: usize) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+    let mut elided = false;
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         if r.hovered() {
@@ -4306,17 +4356,32 @@ fn tree_group(ui: &mut egui::Ui, c: &ito_theme::Colors, text: &str, todo: usize)
             right -= w;
             ito_prefs::paint_tag(p, ui.ctx(), c, egui::pos2(right, rect.center().y - 8.5), tag, w);
         }
-        let clip = egui::Rect::from_x_y_ranges(rect.left()..=right - 4.0, rect.y_range());
-        p.with_clip_rect(clip).text(egui::pos2(rect.left() + 4.0, rect.center().y), egui::Align2::LEFT_CENTER, text, font, c.strong());
+        let g = one_line(ui, text, font, c.strong(), right - 4.0 - (rect.left() + 4.0));
+        elided = g.elided;
+        p.galley(egui::pos2(rect.left() + 4.0, rect.center().y - g.size().y / 2.0), g, c.strong());
     }
-    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if elided {
+        r.on_hover_text(text)
+    } else {
+        r
+    }
+}
+
+/// One line of text no wider than `room`: what does not fit ends in `…` (the galley says it was cut).
+fn one_line(ui: &egui::Ui, text: &str, font: egui::FontId, ink: egui::Color32, room: f32) -> std::sync::Arc<egui::Galley> {
+    let mut job = egui::text::LayoutJob::single_section(text.to_owned(), egui::TextFormat::simple(font, ink));
+    job.wrap = egui::text::TextWrapping::truncate_at_width(room.max(0.0));
+    ui.painter().layout_job(job)
 }
 
 /// A net's row in the tree, a step in from its group: the mark of its last run today in that run's
-/// colour, then the net. The open one is filled with a stripe at the left; a failed one has a dot
-/// at the right.
-fn tree_row(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, last: Option<State>, text: &str) -> egui::Response {
+/// colour, then the net, and at the right what to know about it (`未確認`, `保留`) kept whole while
+/// a long name ends in `…`. The open one is filled with a stripe at the left; a failed one has a
+/// dot at the right.
+fn tree_row(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, last: Option<State>, text: &str, tail: &str) -> egui::Response {
     let (rect, r) = ui.allocate_exact_size(egui::vec2(ui.available_width(), 24.0), egui::Sense::click());
+    let mut elided = false;
     if ui.is_rect_visible(rect) {
         let p = ui.painter();
         if on {
@@ -4331,15 +4396,30 @@ fn tree_row(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, last: Option<Sta
             p.text(egui::pos2(rect.left() + 24.0, y), egui::Align2::CENTER_CENTER, l.mark(), font.clone(), graph::colour(c, l));
         }
         let failed = last.is_some_and(State::is_error);
-        let right = rect.right() - if failed { 16.0 } else { 4.0 };
+        let mut right = rect.right() - if failed { 16.0 } else { 4.0 };
         if failed {
             p.circle_filled(egui::pos2(rect.right() - 8.0, y), 3.0, c.err);
         }
+        let left = rect.left() + 36.0;
+        if !tail.is_empty() {
+            // The word keeps its place even in a narrow tree; a few letters of the name stay before it.
+            let g = p.layout_no_wrap(tail.to_owned(), font.clone(), c.wait_text());
+            let x = (right - g.size().x).max(left + 48.0);
+            let clip = egui::Rect::from_x_y_ranges(x..=right, rect.y_range());
+            p.with_clip_rect(clip).galley(egui::pos2(x, y - g.size().y / 2.0), g, c.wait_text());
+            right = x - 8.0;
+        }
         let ink = if on { c.strong() } else { c.fg };
-        let clip = egui::Rect::from_x_y_ranges(rect.left()..=right, rect.y_range());
-        p.with_clip_rect(clip).text(egui::pos2(rect.left() + 36.0, y), egui::Align2::LEFT_CENTER, text, font, ink);
+        let g = one_line(ui, text, font, ink, right - left);
+        elided = g.elided;
+        p.galley(egui::pos2(left, y - g.size().y / 2.0), g, ink);
     }
-    r.on_hover_cursor(egui::CursorIcon::PointingHand)
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    if elided {
+        r.on_hover_text(text)
+    } else {
+        r
+    }
 }
 
 /// A page tab as a pill: the open one raised with a border and a dot in the running colour, the
@@ -4425,6 +4505,14 @@ fn plain(e: String) -> Said {
 /// A folder that could not be made, worded when shown.
 fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
     ("port.no_dir", vec![dir.display().to_string(), e.to_string()])
+}
+
+/// A section's heading (15px bold, D12), told to a reader as a heading. It wraps rather than run past
+/// a narrow pane.
+fn section_head(ui: &mut egui::Ui, text: &str) -> egui::Response {
+    let r = ui.add(egui::Label::new(egui::RichText::new(text).strong().size(15.0)).wrap());
+    ito_a11y::say(&r, Role::Heading, text);
+    r
 }
 
 /// A card in the inspector: the panel's colour with a line round it (a job, the next times).
@@ -5597,5 +5685,26 @@ run = [\"x.exe\"]
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn a_wide_table_narrows_its_words_and_keeps_its_times() {
+        // State, net, group, last, time, next, note: 130 over the room.
+        let mut w = vec![100.0, 300.0, 100.0, 120.0, 80.0, 120.0, 130.0];
+        TodayTable::squeeze(&mut w, 820.0, &[1, 2, 6], 72.0);
+        assert!((w.iter().sum::<f32>() - 820.0).abs() < 0.01, "{w:?}");
+        assert_eq!([w[0], w[3], w[4], w[5]], [100.0, 120.0, 80.0, 120.0]);
+        // Each gives by what it has over the floor: the long net the most.
+        assert!(w[1] < 300.0 && w[2] < 100.0 && w[6] < 130.0 && 300.0 - w[1] > 130.0 - w[6], "{w:?}");
+
+        // Never below the floor; what is still over scrolls sideways.
+        let mut w = vec![100.0, 80.0, 72.0, 120.0];
+        TodayTable::squeeze(&mut w, 100.0, &[1, 2], 72.0);
+        assert_eq!(w, [100.0, 72.0, 72.0, 120.0]);
+
+        // A table that fits is left as it is.
+        let mut w = vec![100.0, 200.0];
+        TodayTable::squeeze(&mut w, 400.0, &[1], 72.0);
+        assert_eq!(w, [100.0, 200.0]);
     }
 }

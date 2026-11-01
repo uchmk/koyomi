@@ -250,7 +250,7 @@ impl Browser {
                             }
                             if table_ends {
                                 let button = ito_prefs::IconButton::new(ito_prefs::Mark::Import, t.tr("calendar.table"));
-                                bring = ui.add_enabled_ui(!self.blocked(), |ui| button.show(ui)).inner.clicked();
+                                bring = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| button.show(ui)).clicked();
                             }
                         },
                     );
@@ -334,6 +334,8 @@ impl Browser {
                 // The file itself; then the rules of the week, set in place.
                 let mut rules = None;
                 let mut act = None;
+                // `add_enabled`, not a scope per button: a scope starts each button at the left of its own
+                // little row, so none would wrap and the row would widen the page past the pane.
                 ui.horizontal_wrapped(|ui| {
                     let buttons = [
                         ("calendar.rename", ito_prefs::Mark::Pencil),
@@ -343,7 +345,8 @@ impl Browser {
                     ];
                     let blocked = self.blocked();
                     for (i, (key, mark)) in buttons.into_iter().enumerate() {
-                        if ui.add_enabled_ui(!blocked, |ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui)).inner.clicked() {
+                        let button = ito_prefs::IconButton::new(mark, t.tr(key));
+                        if ui.add_enabled(!blocked, |ui: &mut egui::Ui| button.show(ui)).clicked() {
                             act = Some(i);
                         }
                     }
@@ -969,7 +972,7 @@ impl Browser {
             });
             ui.add_space(8.0);
             let button = ito_prefs::IconButton::new(toggle_mark(day), t.tr(toggle_key(day))).tone(ito_prefs::Tone::Primary);
-            if ui.add_enabled_ui(!self.blocked(), |ui| button.show(ui)).inner.clicked() {
+            if ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| button.show(ui)).clicked() {
                 side.toggle = Some((d, day.clone()));
             }
             ui.add_space(10.0);

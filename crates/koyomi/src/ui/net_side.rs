@@ -5,7 +5,7 @@
 use ito_a11y::Role;
 use koyomi_core::scan::Def;
 
-use super::{card, folded_pane, graph, one_size, review, Browser};
+use super::{card, folded_pane, graph, one_size, review, section_head, Browser};
 use crate::show;
 
 /// How many of today's runs the pane lists.
@@ -70,8 +70,7 @@ impl Browser {
                         ito_a11y::say(&r, Role::Heading, title);
                         return;
                     };
-                    let r = ui.add(egui::Label::new(egui::RichText::new(title).strong().size(15.0)).wrap());
-                    ito_a11y::say(&r, Role::Heading, title);
+                    section_head(ui, title);
                     if !opened {
                         let open =
                             ito_prefs::IconButton::new(ito_prefs::Mark::ArrowRight, t.tr("canvas.enter")).said(t.tr("today.open_net"));

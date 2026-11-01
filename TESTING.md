@@ -1430,3 +1430,15 @@ Setup: a confirmed net `t/n` with one job `cmd /c exit 1`; `[notify]` `system` h
 | 103.6 | Make `t/n` late (`late` after a few seconds, job `cmd /c ping -n 30 127.0.0.1 > nul`) and let it end with exit 1 | Two notifications (遅れ and 異常); neither replaces the other; each opens the same run |
 | 103.7 | Start the engine with `--no-tray` and `koyomi tray`; run `t/n` and click the notification | The window opens on the run (the tray showed the notification) |
 | 103.8 | Kill the engine (`taskkill /f` on the pid you started), start it again, click `エンジンが落ちていた` | Nothing opens |
+
+## 104. Themes and a narrow window (TODO 97)
+
+Setup: a few confirmed nets, one with a long name (`経理/とても長い名前の月次締めのジョブネット`) left unconfirmed and held, one with a long command and work folder. Take the shots with `--keys "<Theme:dark>…<Shot:…>"` as well as by hand.
+
+| # | Do | Expect |
+|---|---|---|
+| 104.1 | With the window open, write `high_contrast = true` in common.toml, in the dark and then the light theme | The window turns to the stronger colours at once (as the Web UI does); removing the line goes back |
+| 104.2 | Narrow the tree at the left until the long name does not fit | The name ends in `…`; `未確認` and `保留` stay whole at the right; hovering the row shows the whole name |
+| 104.3 | Narrow the window until the net list, a run's jobs and the net page's jobs no longer fit | The word columns (name, command, folder, reason) end in `…` and the table stays inside the window; ID, kind and times stay whole; the heads end in `…` too, and hovering a cut cell or head shows all of it |
+| 104.4 | Narrow the window on a calendar page, in the editor with nothing to save, and on the PC list | Each row of buttons wraps to a new line instead of pushing the page off the right side |
+| 104.5 | Look at the headings of the net list, the net page, a run's jobs and the right pane | All the same size and weight; a screen reader reads them as headings |
