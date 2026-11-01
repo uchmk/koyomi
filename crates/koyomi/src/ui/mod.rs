@@ -2142,7 +2142,7 @@ impl Browser {
         let c = ito_theme::colors();
         // One row high: a centred layout would take the whole height and push the view below off the screen.
         let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
-        ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
+        let bar = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
             for (i, (on, key)) in
                 [(today, "tabs.today"), (net, "tabs.net"), (calendar, "tabs.calendar"), (history, "tabs.history")].into_iter().enumerate()
@@ -2164,8 +2164,8 @@ impl Browser {
                 ito_a11y::say(&r, Role::Label, &text);
             });
         });
-        // A hairline under the tabs, as the page's top edge.
-        let y = ui.cursor().top();
+        // A hairline right under the tabs, as the page's top edge; a pane at the right starts on it.
+        let y = bar.response.rect.bottom();
         let x = ui.max_rect().x_range();
         ui.painter().hline(x, y, egui::Stroke::new(1.0, c.border));
         match go {
