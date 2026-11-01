@@ -36,7 +36,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 
 - 多くの PC で流す（H9）。JP1・Control-M はエージェント、Rundeck は SSH・WinRM で、1 か所から多くの PC に流す。
   koyomi は PC ごとに koyomi を入れ、`[[remote]]` で LAN の koyomi どうしをつなぐ。
-- Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi は見た目が作り途中（TODO 81）。
+- Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi の本体は窓で、Web は見る・流す・止める・流し直すまで（定義を直すのは窓）。
 - 長い保管とつながりの広さ。Control-M は Workload Archiving（最長 7 年）と MFT（FTP・SFTP・S3・Azure）、
   Airflow は provider（SFTP・IMAP・HTTP など）で広げる。koyomi の履歴は既定 90 日。
 - 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れる（1 人のロールはどのネットでも同じ）。
@@ -111,7 +111,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H7 | ファイル転送（SFTP など） | ○ SFTP・共有フォルダーへ送る・受ける | △ 標準カスタムジョブ JP1FTP。送受両側に JP1/FTP（別製品）が要る | △ Control-M MFT（add-on）で FTP・SFTP・S3・Azure 等 | ○ Copy file ステップ（OSS）。File Transfer のステップは有償 | △ SFTP・FTP provider の SFTPOperator など（別に入れる） | × FTP/SFTP の部品なし |
 | H8 | ジョブごとに実行のアカウント | ○ `run_as` | ○ ジョブごとの実行ユーザー＋JP1 ユーザー→OS ユーザーのユーザーマッピング | ○ RunAs でジョブ・フォルダごとに OS ユーザーを指定 | ○ ノード属性 username に `${option.x}` でジョブごとに指定 | ○ run_as_user（Unix ユーザーへ sudo -u、passwordless sudo が要る） | ○ タスクごとに実行アカウント（利用者・S4U・SYSTEM・グループ） |
 | H9 | 複数の PC・エージェント | ○ `[[remote]]`（LAN、TLS） | ○ マネージャーから実行エージェント・エージェントグループで実行 | ○ 各ホストに Agent、Host Group で振り分け | ○ SSH・WinRM で複数のノードに実行。Runner もある | △ Celery・Edge・Kubernetes executor（各 provider）。Edge の Windows は PoC | △ schtasks /s・-CimSession で遠隔の PC を 1 台ずつ。集中管理なし |
-| H10 | Web UI | △ 見る・流す・止める・ログ・流し直す。見た目は作り途中（TODO 81） | ○ Web GUI（ジョブポータル／マネジメントポータル）で監視・実行・保留。Web Console 要 | ○ Control-M Web（Planning・Monitoring 等）をブラウザで | ○ ブラウザーの UI が本体 | ○ React の Web UI（API server）。17 言語 | △ Windows Admin Center の Scheduled tasks ツール（別製品・履歴なし） |
+| H10 | Web UI | ○ 今日・履歴・ログを見る、流す・止める・流し直す・飛ばす・保留。見た目は窓の今日の画面と同じ（TODO 81）。定義を直すのは窓 | ○ Web GUI（ジョブポータル／マネジメントポータル）で監視・実行・保留。Web Console 要 | ○ Control-M Web（Planning・Monitoring 等）をブラウザで | ○ ブラウザーの UI が本体 | ○ React の Web UI（API server）。17 言語 | △ Windows Admin Center の Scheduled tasks ツール（別製品・履歴なし） |
 | H11 | REST API・HTTP で起動 | ○ `POST /runs` など | ○ HTTP の API：ユニットの実行登録と実行情報の取得 | ○ Automation API の REST（run/order・run status） | ○ REST API と Webhook（Run Job）。高度な Webhook は有償 | ○ REST API（v2）で DAG run の起動・照会 | × GUI と COM API・PowerShell・schtasks のみ。HTTP の口なし |
 | H12 | 利用者とロール | ○ `[[http.user]]` に view・run・edit。`nets = ["経理/*"]` でネット・グループごとに絞る | ○ 資源グループごとに 5 種のロール（JP1_AJS_Admin〜Guest） | ○ Role で権限。既定ロール 3 つ、API でも設定可 | ○ ACL ポリシーでプロジェクト・ジョブごとの権限 | △ 標準の Simple auth manager は固定 4 ロールで開発用。本番 RBAC は FAB 等の provider | △ ロールなし。タスクごとの DACL で読む・変える・実行を分ける |
 | H13 | メールを受けて起動 | ○ `[[when]] mail`（IMAP） | △ メール受信監視ジョブ。Windows は 32bit 版 Outlook 必須（64bit・365 版不可） | ? メール受信での起動は未発見（Mail は送信の Action のみ） | ? メールでの起動は見当たらず | △ IMAP provider の ImapAttachmentSensor（添付の名前を待つ） | × メールのトリガーなし |
