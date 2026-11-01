@@ -417,11 +417,10 @@ impl WhenEdit {
             let mut hit = false;
             ui.horizontal(|ui| {
                 ui.label(label);
-                let f = ito_prefs::DateField::new(("when", key, i), ito_prefs::DateWords::for_lang(t.tr("app.lang"))).empty_ok();
+                let f =
+                    ito_prefs::DateField::new(("when", key, i), ito_prefs::DateWords::for_lang(t.tr("app.lang"))).name(label).empty_ok();
                 let f = if many { f.multi().width(260.0) } else { f.width(130.0) };
-                let r = f.show(ui, look, s);
-                ito_a11y::say(&r.response, ito_a11y::Role::Label, label);
-                hit = r.changed;
+                hit = f.show(ui, look, s).changed;
             });
             hit
         };
