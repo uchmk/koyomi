@@ -1246,7 +1246,7 @@ impl Editor {
                 if ui.add_enabled_ui(can, |ui| save.show(ui)).inner.clicked() {
                     action = self.edit(Cmd::Save);
                 }
-                if IconButton::new(M::Check, t.tr("canvas.check")).show(ui).on_hover_text(t.tr("canvas.check_hint")).clicked() {
+                if IconButton::new(M::Search, t.tr("canvas.check")).show(ui).on_hover_text(t.tr("canvas.check_hint")).clicked() {
                     let found = self.check(around.defs, calendars);
                     self.result = Some(if found.is_empty() {
                         Ok(t.tr("canvas.check_ok").to_owned())
