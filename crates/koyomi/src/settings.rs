@@ -24,9 +24,10 @@ pub const ABOUT: usize = 5;
 /// The keymap's layers and the words that name them on the Keys page.
 const LAYERS: [(&str, &str); 1] = [("app", "keys.main")];
 
-/// What common.toml means when it names no theme: follow the OS, with
-/// koyomi's own dark and light ones.
-pub const THEMES: (&str, &str, &str) = ("system", "koyomi Dark", "koyomi Light");
+/// What common.toml means when it names no theme: ito's default (`dark`,
+/// tsumugi Dark and tsumugi Light, as the common spec says). koyomi has no
+/// themes of its own, and no older setting to carry over.
+pub const THEMES: Option<(&str, &str, &str)> = None;
 
 /// The rows on each page, for the search.
 fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::Table) -> Vec<(usize, String)> {
@@ -185,7 +186,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             });
         }
         THEME => {
-            let (t, d, li) = common.theme_choice(Some(THEMES));
+            let (t, d, li) = common.theme_choice(THEMES);
             let note = match base {
                 Some(b) => format!("{} {}", tr("settings.theme_note"), themes_dir(b).display()),
                 None => tr("settings.no_folder"),

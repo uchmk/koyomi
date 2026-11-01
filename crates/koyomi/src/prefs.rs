@@ -563,7 +563,7 @@ impl Prefs {
     /// every frame (the OS may have gone light or dark).
     pub fn apply_theme(&mut self, ctx: &egui::Context) {
         let os_light = self.os_light.light_or(ctx.system_theme() == Some(egui::Theme::Light));
-        let (choice, dark, light) = self.common.theme_choice(Some(("system", "koyomi Dark", "koyomi Light")));
+        let (choice, dark, light) = self.common.theme_choice(crate::settings::THEMES);
         let colors = match ito_theme::pick(&self.themes, &choice, &dark, &light, os_light) {
             Ok(t) => {
                 self.theme_err = None;
@@ -641,6 +641,16 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(!text.contains("help") && !text.contains("<C-S-h>"), "{text}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A PC with no theme in common.toml gets a built-in theme and no
+    /// warning under the bell (the warning used to come every frame).
+    #[test]
+    fn no_theme_in_common_toml_is_a_built_in_one_and_no_warning() {
+        let ctx = egui::Context::default();
+        let mut p = Prefs::empty();
+        p.apply_theme(&ctx);
+        assert_eq!(p.theme_err, None);
     }
 
     #[test]

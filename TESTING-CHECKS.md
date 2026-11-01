@@ -144,7 +144,7 @@
 - [ ] **15.6** General: "Start at sign-in" → The switch shows what the OS has; toggled, the registry (Windows) or the autostart folder gets koyomi, and the band about starting at sign-in (TESTING 11) goes away at the next start 〔未訳〕
 - [ ] **15.7** General: "Forget the window's place" → `state_dir("koyomi")\window.toml` is gone; the next start opens at the default size in the middle 〔未訳〕
 - [ ] **15.8** Theme: pick Dark, then Light, then System → The colours change at once, the sample card with it; `theme = "…"` is in `common.toml`; System follows the OS's light/dark 〔未訳〕
-- [ ] **15.9** Theme: edit `common.toml` by hand to `theme = "koyomi Light"` while the window is open → The window turns light within 2 seconds without a restart 〔未訳〕
+- [ ] **15.9** Theme: edit `common.toml` by hand to `theme = "tsumugi Light"` while the window is open → The window turns light within 2 seconds without a restart 〔未訳〕
 - [ ] **15.10** Keys: click Ctrl+Q's key, press Ctrl+W → The row shows Ctrl+W; `<uchmk>\koyomi\keymap.toml` holds only that change; Ctrl+W quits from then on and the palette shows it 〔未訳〕
 - [ ] **15.11** Keys: while the page waits for a key, press F12 and Ctrl+Shift+P → They are taken as the key (no bug form, no palette); Esc gives the page up 〔未訳〕
 - [ ] **15.12** Keys: bind F12 to an action → The row says koyomi reads F12 itself and the binding never runs 〔未訳〕

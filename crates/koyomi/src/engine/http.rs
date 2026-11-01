@@ -251,7 +251,7 @@ fn theme_css(base: Option<&std::path::Path>) -> String {
             common = c;
         }
     }
-    let (choice, dark, light) = common.theme_choice(Some(crate::settings::THEMES));
+    let (choice, dark, light) = common.theme_choice(crate::settings::THEMES);
     let high = common.high_contrast_or_off();
     ito_theme::stylesheet(&themes, &choice, &dark, &light, high).unwrap_or_else(|_| {
         let c = if high { themes[0].colors.high_contrast() } else { themes[0].colors };
