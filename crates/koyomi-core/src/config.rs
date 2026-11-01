@@ -147,12 +147,21 @@ pub struct HttpUser {
     pub role: String,
     /// `secret:<name>`.
     pub token: String,
+    /// The nets they reach, as `<group>/<name>` patterns (`経理/*`, TODO 94); none: every net.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nets: Option<Vec<String>>,
 }
 
 impl HttpUser {
     /// The role; [`Config::parse`] has checked it reads.
     pub fn role(&self) -> crate::role::Role {
         crate::role::Role::parse(self.role.trim()).unwrap_or(crate::role::Role::View)
+    }
+
+    /// The nets they reach; `None`: every net. [`Config::parse`] has checked the patterns read;
+    /// ones that do not reach nothing.
+    pub fn nets(&self) -> Option<crate::role::Nets> {
+        self.nets.as_deref().map(|p| crate::role::Nets::parse(p).unwrap_or_default())
     }
 
     /// The name the token is kept under.
@@ -228,6 +237,9 @@ impl Http {
             crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
             if u.secret().is_empty() {
                 return Err(format!("[[http.user]] {name} の token は secret:<名前> で書く"));
+            }
+            if let Some(p) = &u.nets {
+                crate::role::Nets::parse(p).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
             }
         }
         Ok(())
@@ -435,6 +447,19 @@ evry = \"5m\"
         ] {
             assert!(Config::parse(&bad).is_err(), "{bad}");
         }
+    }
+
+    /// `nets` narrows a person to some nets; without it they reach every net, as before.
+    #[test]
+    fn an_http_user_may_be_narrowed_to_some_nets() {
+        let head = "[http]\nport = 8790\n[[http.user]]\nname = \"sato\"\nrole = \"edit\"\ntoken = \"secret:sato\"\n";
+        let c = Config::parse(&format!("{head}nets = [\"経理/*\", \"共通/日次\"]\n")).unwrap();
+        let n = c.http.unwrap().user[0].nets().unwrap();
+        assert!(n.reaches("経理/月次") && n.reaches("共通/日次") && !n.reaches("共通/週次"));
+        assert_eq!(Config::parse(head).unwrap().http.unwrap().user[0].nets(), None);
+        let e = Config::parse(&format!("{head}nets = [\"経理\"]\n")).unwrap_err();
+        assert!(e.contains("[[http.user]] sato の nets は <グループ>/<名前>"), "{e}");
+        assert!(Config::parse(&format!("{head}nets = []\n")).unwrap_err().contains("空にしない"));
     }
 
     /// a remote needs an https address, a SHA-256 fingerprint and the token as a secret.

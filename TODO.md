@@ -175,7 +175,7 @@
 - [x] 91. C11 期間の後追い（S）: `koyomi run <net> --date A..B` に、流れていない日・失敗した日だけを選んで流す形を足す（今は範囲の日を全部流す）。Airflow の Backfill にあたる。（2026-11-01。`--only missing|failed`。業務日で見て、予定のない日は外す。`--dry` で日ごとに流すかとそのわけを出す。PROTO は変えず CLI で選ぶ）
 - [ ] 92. P9 古い履歴をしまう（S〜M）: `keep_days` で消す前に、履歴とログを圧縮したファイルに移し、あとで読めるようにする。Control-M の Workload Archiving（最長 7 年）にあたる。
 - [x] 93. C9 共有のロックと数のロック（S〜M）: 今の `lock` は名前ごとに 1 本だけ。読むだけのネットが一緒に流れる共有のロックと、「同時に 3 本まで」の数のロックを足す。Control-M の Lock（Shared/Exclusive）と Resource Pool、Airflow の pool にあたる。（2026-11-01。`lock = { name = "販売DB", shared = true }` と koyomi.toml の `[locks]` `"API枠" = 3`。待ち合わせはせず、入れないときは断る・🔒 止めたにして、理由に名前と持ち方を出す。判定は koyomi-core の `lock::admit`）
-- [ ] 94. H12 ジョブネット・フォルダーごとのロール（M）: `[[http.user]]` に `nets = ["経理/*"]`。今の view・run・edit は全部のネットにかかる。JP1 の資源グループ・Rundeck の ACL にあたる。
+- [x] 94. H12 ジョブネット・フォルダーごとのロール（M）: `[[http.user]]` に `nets = ["経理/*"]`。今の view・run・edit は全部のネットにかかる。JP1 の資源グループ・Rundeck の ACL にあたる。（2026-11-01 に入れた: `nets` の外のネット・実行は無いものと同じ。形の外の propose と全部のネットにかかるものは 403。この PC の窓と CLI は変わらない）
 - [ ] 95. H9 koyomi の無い PC でコマンドを流す（M）: SSH で別の PC のコマンドを流すジョブの部品（WinRM は後で）。Rundeck のノードにあたる。ito に無いので crate-request で頼む。
 - [ ] 96. H16 HA の仕上げ（L）: 1 台目が戻ったら自動で返す形を選べるようにする（今は人が `koyomi standby giveback`）。1 台目で動いていた回を引き継ぐ。DECISIONS の「戻すのは人」を決め直す。
 

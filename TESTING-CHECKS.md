@@ -1,6 +1,6 @@
 # Checklist
 
-784 checks in TESTING.md, 778 left for a person.
+795 checks in TESTING.md, 789 left for a person.
 
 ## 1. Start
 
@@ -1084,3 +1084,17 @@
 - [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone 〔未訳〕
 - [ ] **99.9** Start A again; `koyomi standby giveback` on B → B watches again and copies at once (no 5-minute wait) 〔未訳〕
 - [ ] **99.8** A net only on B → Still there after copies 〔未訳〕
+
+## 100. Nets per person over HTTP (`nets`; TODO 94)
+
+- [ ] **100.1** `curl -H "Authorization: Bearer K" http://127.0.0.1:8790/me` → `"nets": ["経理/*"]`; with `S`, `"nets": null` 〔未訳〕
+- [ ] **100.2** `GET /nets` and `GET /runs` with `K` → Only `経理/a` and its runs; with `S`, both nets and all runs as before 〔未訳〕
+- [ ] **100.3** `GET /runs/<人事/b's run>` and `GET /runs/<人事/b's run>/log?job=…` with `K` → 404 both times, as for a run that is not there 〔未訳〕
+- [ ] **100.4** `POST /runs` `{"net":"人事/b"}` with `K`; also `POST /nets/hold` and `/nets/skip-next` with it → 422 `定義がない: 人事/b`; nothing starts or changes; `koyomi ops` has no line for them 〔未訳〕
+- [ ] **100.5** `POST /runs/<人事/b's run>/rerun` and `/stop` with `K` → 422 `実行がない: …`; nothing starts or stops 〔未訳〕
+- [ ] **100.6** `GET "/nets/text?net=人事/b"` with `K`; then `net=経理/a` → 404 `定義がない: 人事/b`; 200 with the text 〔未訳〕
+- [ ] **100.7** `POST /nets/propose` with `K` for a new `人事/new`; then for a new `経理/new` → 403 `nets の外なので出せない: 人事/new（出せるのは 経理/*）`, no file; 200, `経理/new` is 未確認 in the window 〔未訳〕
+- [ ] **100.8** `GET /health` with `K` → `koyomi engine pid N` only (no net names after it); with `S`, the whole line 〔未訳〕
+- [ ] **100.9** Open the Web UI and sign in with `K` → Only `経理/a` and its runs 〔未訳〕
+- [ ] **100.10** `koyomi check` with `nets = []`, `nets = ["経理"]` and `nets = ["*/*/x"]` → Each refused: `[[http.user]] kato の nets を空にしない…`, `… nets は <グループ>/<名前> で書く…` 〔未訳〕
+- [ ] **100.11** This PC's window and `koyomi runs` → Both nets and all runs, as before 〔未訳〕
