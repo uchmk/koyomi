@@ -235,9 +235,18 @@ impl Browser {
                                 if r.clicked() {
                                     self.cal_month = Some(if m == 1 { (y - 1, 12) } else { (y, m - 1) });
                                 }
+                                // A click on the month opens a year and its twelve months, to jump far.
                                 let ym = t.trf("calendar.ym", &[&y.to_string(), &format!("{m:02}")]);
-                                let r = ui.label(egui::RichText::new(ym).heading().strong());
+                                let r = ui
+                                    .add(egui::Label::new(egui::RichText::new(ym).heading().strong()).sense(egui::Sense::click()))
+                                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                                    .on_hover_text(t.tr("calendar.pick_month"));
                                 ito_a11y::say(&r, Role::Heading, &head);
+                                let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
+                                let mut to = (y, m);
+                                if ito_prefs::month_picker(ui, look, "calendar-month", &words, &r, &mut to) {
+                                    self.cal_month = Some(to);
+                                }
                                 let r = ui.add(egui::Button::new(egui::RichText::new("▶").color(c.dim)).frame(false));
                                 ito_a11y::say(&r, Role::Button, t.tr("calendar.next"));
                                 if r.clicked() {

@@ -2602,9 +2602,15 @@ impl Browser {
                         ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
                         let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
                         small(ui, "run.history_from");
-                        ui.add(egui::TextEdit::singleline(&mut h.from).font(egui::TextStyle::Monospace).desired_width(88.0));
-                        ui.label(egui::RichText::new("〜").color(c.dim));
-                        ui.add(egui::TextEdit::singleline(&mut h.to).font(egui::TextStyle::Monospace).desired_width(88.0));
+                        // Typed, or picked on one month grid: the first click the start, the second the end.
+                        let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
+                        let r = ito_prefs::RangeField::new("history", words).width(124.0).show(
+                            ui,
+                            ito_prefs::Look { c, q: "" },
+                            &mut h.from,
+                            &mut h.to,
+                        );
+                        ito_a11y::say(&r.response, Role::Label, t.tr("run.history_from"));
                         // The presets ask at once for the days up to today.
                         let today = chrono::Local::now().date_naive();
                         for (key, back) in [("run.history_today", 0), ("run.history_7", 7), ("run.history_30", 30)] {

@@ -410,6 +410,21 @@ impl WhenEdit {
             });
             hit
         };
+        // A date field: typed, or picked on a month grid; `many` is a comma-separated list where a click
+        // toggles a day. Each `[[when]]` has its own grid.
+        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+        let date = |ui: &mut egui::Ui, label: &str, s: &mut String, key: &str, many: bool| -> bool {
+            let mut hit = false;
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let f = ito_prefs::DateField::new(("when", key, i), ito_prefs::DateWords::for_lang(t.tr("app.lang"))).empty_ok();
+                let f = if many { f.multi().width(260.0) } else { f.width(130.0) };
+                let r = f.show(ui, look, s);
+                ito_a11y::say(&r.response, ito_a11y::Role::Label, label);
+                hit = r.changed;
+            });
+            hit
+        };
         ui.horizontal(|ui| {
             ui.label(t.tr("when.kind"));
             egui::ComboBox::from_id_salt(("when-kind", i)).selected_text(t.tr(&format!("when.kind_{}", self.kind))).show_ui(ui, |ui| {
@@ -468,7 +483,7 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "dates" => {
-                changed |= field(ui, t.tr("when.dates"), &mut self.dates, 200.0);
+                changed |= date(ui, t.tr("when.dates"), &mut self.dates, "dates", true);
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "file" => {
@@ -507,9 +522,9 @@ impl WhenEdit {
             _ => {}
         }
         if !matches!(self.kind.as_str(), "on_start" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
-            changed |= field(ui, t.tr("when.except"), &mut self.except, 200.0);
-            changed |= field(ui, t.tr("when.start"), &mut self.start, 90.0);
-            changed |= field(ui, t.tr("when.end"), &mut self.end, 90.0);
+            changed |= date(ui, t.tr("when.except"), &mut self.except, "except", true);
+            changed |= date(ui, t.tr("when.start"), &mut self.start, "start", false);
+            changed |= date(ui, t.tr("when.end"), &mut self.end, "end", false);
             changed |= field(ui, t.tr("when.wait_for"), &mut self.wait_for, 200.0);
             changed |= field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0);
             ui.horizontal(|ui| {
