@@ -2624,7 +2624,7 @@ impl Browser {
                         let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
                         small(ui, "run.history_net");
                         let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
-                        egui::ComboBox::from_id_salt("history_net").width(150.0).selected_text(net_text).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("history_net").width(110.0).selected_text(net_text).show_ui(ui, |ui| {
                             ui.selectable_value(&mut h.net, String::new(), all);
                             for id in &nets {
                                 ui.selectable_value(&mut h.net, id.clone(), id);
@@ -2635,17 +2635,16 @@ impl Browser {
                             Some(s) => show::tag(t, s),
                             None => all.to_owned(),
                         };
-                        egui::ComboBox::from_id_salt("history_state").width(130.0).selected_text(state_text).show_ui(ui, |ui| {
+                        egui::ComboBox::from_id_salt("history_state").width(100.0).selected_text(state_text).show_ui(ui, |ui| {
                             ui.selectable_value(&mut h.state, None, all);
                             for s in State::ALL {
                                 ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
                             }
                         });
-                        ui.separator();
-                        search |= primary(ui, true, t.tr("run.history_search")).clicked();
-                        let r = ui.button(format!("⤓ {}", t.tr("run.history_csv")));
-                        ito_a11y::say(&r, Role::Button, t.tr("run.history_csv"));
-                        csv = r.clicked();
+                        ui.add_space(4.0);
+                        search |= icon_button(ui, Icon::Search, t.tr("run.history_search"), t.tr("run.history_search")).clicked();
+                        // Only the mark and "CSV" on the button; its tip and its spoken name say the rest.
+                        csv = icon_button(ui, Icon::Download, "CSV", t.tr("run.history_csv")).clicked();
                     });
                 });
             if csv {
@@ -4052,6 +4051,58 @@ pub(super) fn fold_button(ui: &mut egui::Ui, open: bool, words: &str) -> egui::R
         let d = if open { 1.0 } else { -1.0 };
         let pts = vec![m + egui::vec2(-2.5 * d, -4.5), m + egui::vec2(2.5 * d, 0.0), m + egui::vec2(-2.5 * d, 4.5)];
         p.add(egui::Shape::line(pts, egui::Stroke::new(1.5, ink)));
+    }
+    r
+}
+
+/// A mark drawn in front of the words of an [`icon_button`].
+#[derive(Clone, Copy)]
+pub(super) enum Icon {
+    /// A magnifying glass.
+    Search,
+    /// An arrow down onto a tray.
+    Download,
+}
+
+/// A quiet outlined button with a drawn mark before `words`: the raised fill and a thin edge of the
+/// fields beside it, stronger under the pointer or with the keys. `said` is its spoken name and tip.
+pub(super) fn icon_button(ui: &mut egui::Ui, icon: Icon, words: &str, said: &str) -> egui::Response {
+    let c = ito_theme::colors();
+    let font = egui::TextStyle::Body.resolve(ui.style());
+    let galley = ui.painter().layout_no_wrap(words.to_owned(), font, c.fg);
+    let (mark, pad, gap) = (14.0, 10.0, 6.0);
+    let size = egui::vec2(pad + mark + gap + galley.size().x + pad, ui.spacing().interact_size.y.max(26.0));
+    let (rect, r) = ui.allocate_exact_size(size, egui::Sense::click());
+    let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+    let r = if said != words { r.on_hover_text(said) } else { r };
+    ito_a11y::say(&r, Role::Button, said);
+    if ui.is_rect_visible(rect) {
+        let hot = r.hovered() || r.has_focus();
+        let (fill, edge, ink) = if hot { (c.hover(), c.border_strong(), c.fg) } else { (c.raised(), c.border, c.fg) };
+        let p = ui.painter();
+        p.rect(rect, 6.0, fill, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+        let m = egui::pos2(rect.left() + pad + mark / 2.0, rect.center().y);
+        let line = egui::Stroke::new(1.5, if hot { c.fg } else { c.dim });
+        match icon {
+            Icon::Search => {
+                let o = m + egui::vec2(-1.5, -1.5);
+                p.circle_stroke(o, 4.5, line);
+                p.line_segment([o + egui::vec2(3.3, 3.3), o + egui::vec2(7.0, 7.0)], line);
+            }
+            Icon::Download => {
+                p.line_segment([m + egui::vec2(0.0, -6.0), m + egui::vec2(0.0, 2.5)], line);
+                p.add(egui::Shape::line(vec![m + egui::vec2(-3.5, -1.0), m + egui::vec2(0.0, 2.5), m + egui::vec2(3.5, -1.0)], line));
+                p.add(egui::Shape::line(
+                    vec![m + egui::vec2(-6.0, 3.0), m + egui::vec2(-6.0, 6.0), m + egui::vec2(6.0, 6.0), m + egui::vec2(6.0, 3.0)],
+                    line,
+                ));
+            }
+        }
+        let at = egui::pos2(rect.left() + pad + mark + gap, rect.center().y - galley.size().y / 2.0);
+        p.galley(at, galley, ink);
+    }
+    if r.has_focus() {
+        ui.painter().rect_stroke(rect.expand(2.0), 7.0, egui::Stroke::new(1.5, c.run), egui::StrokeKind::Outside);
     }
     r
 }
