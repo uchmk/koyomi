@@ -339,13 +339,11 @@ fn keep_ask(ui: &mut Ui, app: &mut App, no_folder: &str) {
     let rows = [(t.tr("settings.keep_days").to_owned(), t.trf("settings.keep_ask_change", &[&now.to_string(), &new.to_string()]))];
     let body = [if lost == 0 { t.tr("settings.keep_ask_none").to_owned() } else { t.trf("settings.keep_ask_body", &[&lost.to_string()]) }];
     let buttons = [t.tr("settings.keep_ask_yes").to_owned(), t.tr("confirm.no").to_owned()];
-    let hint = t.tr("settings.keep_ask_hint").to_owned();
     let q = ito_confirm::Question {
         title: &title,
         rows: &rows,
         body: &body,
         buttons: &buttons,
-        hint: &hint,
         focus: Some(0),
         primary: Some(0),
         ..Default::default()

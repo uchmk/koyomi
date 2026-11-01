@@ -1058,7 +1058,6 @@ impl Browser {
             rows: &rows,
             body: &body,
             buttons: &buttons,
-            hint: t.tr("confirm.hint"),
             focus: Some(self.focus),
             primary: Some(0),
             danger: true,

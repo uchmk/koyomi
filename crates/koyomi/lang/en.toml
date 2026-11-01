@@ -114,7 +114,6 @@ keep_ask_change = "{0} days → {1} days"
 keep_ask_body = "{0} days of logs and history go at the engine's next sweep (within 5 s). They cannot be brought back."
 keep_ask_none = "No days go right away."
 keep_ask_yes = "Keep fewer"
-keep_ask_hint = "Enter: keep fewer   Esc: cancel"
 
 [standing]
 confirmed = "approved"
@@ -278,7 +277,6 @@ title = "Check what this will run"
 yes = "Approve"
 no = "Cancel"
 approve = "Approve…"
-hint = "Enter: approve  Esc: cancel"
 
 [state]
 ok = "ended ok"
@@ -701,7 +699,6 @@ nothing = "Nothing to write (all the same)"
 more = "… {0} more lines (koyomi import --dry-run shows them all)"
 problems = "{0} problems: not imported"
 pick = "{0} differ from what is there. Choose what to do (the old contents are kept under versions/ when overwritten)"
-hint_pick = "Tab picks, Enter  Esc: cancel"
 exported = "Written: {0} ({1} items; webhook addresses as ***)"
 export_empty = "Nothing to export"
 no_dir = "Cannot create {0}: {1}"
