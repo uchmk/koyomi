@@ -170,7 +170,7 @@
   - 調べたこと（2026-11-01、PC は変えずに）: 消されたのはリアルタイムの振る舞いの監視（DetectionSource 3）で、`target\release` の `koyomi-com.exe` を `%TEMP%\…\svc2\koyomi.com` に写したもの 1 つだけ。同じ版の署名の無い `~\.cargo\bin\koyomi.exe`（Run の `uchmk-koyomi` がこれを指す）は消されていない。`cargo install` では `.com` でなく `koyomi-com.exe` という名前で入る。リリースは出ておらず、ito の雛形のリリースは何にも署名しない（署名を試すには証明書が要る。持ち主が決める）。
   - 確かめたこと（2026-11-01）: TESTING 89.11 のねらい（置いた場所の exe で入れても検出が増えないこと）は、配る版をユーザーのフォルダー（`koyomi.com` の名前のまま）と Program Files に置いて 89.3・89.10 と同じことをして確かめた。どちらも検出なし。
 - [x] Temp に置いたままの koyomi からの `service install` を断る（S、TODO 89 から）: そこは掃除で消えるので、サービスも Run も消えた exe を指すことになる。Defender が反応したのもこの形（Temp の署名の無い exe がサービスを作り Run を書き換えた）。（2026-11-01: `koyomi service install`・`koyomi startup on`・設定の画面のサインイン時の起動は、exe が Temp にあれば断る。`service install` はパスワードを聞く前に断り、`~\.cargo\bin` か Program Files に置いてから回すよう言う。持ち主はテストの間 Temp から入れるので、環境変数 `KOYOMI_ALLOW_TEMP=1` で通す。判定は ito 0.191.0 の `ito_common::in_temp`。Downloads は見ない。外す側（`startup off`・`service uninstall`）はどこからでもできる。DECISIONS「Windows のサービスとして動かす」）
-  - 設定の画面のスイッチは、断ったときは切れたまま戻るだけで、わけを出せない（ito_prefs の `startup_card` に一言を出す所が無い）。要れば ito に頼む。
+  - 設定の画面のスイッチは、断ったときは切れたまま戻るだけで、わけを出せなかった（ito_prefs の `startup_card` に一言を出す所が無かった）。ito に頼み（uchmk/ito#131、2026-11-01、持ち主）、ito 0.192.0 の `startup_card_with` と `startup::apply` で、断ったわけと OS に書けなかったわけをスイッチの下に出すようにした（次に押すと消える）。
 - [x] 88. G5 HTTP を呼ぶ部品（M）: `kind = "http"`、状態コードで判定。API を叩くだけのジョブに curl を書かずに済むように。
 - [x] 90. 日付をカレンダーから選ぶ（M）: 履歴の開始日〜終了日、`[[when]]` の開始日・終了日・日付・除く日を、打つほかにひと月の表を開いて選べるようにする。カレンダーの画面の「2026年11月」を押すと年と月を選ぶ表を開く。2026-11-01 に持ち主が頼んだ。ito に部品が無いので uchmk/ito#118 で頼んだ。（2026-11-01。ito v0.171.0 の `DateField`・`RangeField`・`month_picker` でつないだ）
 

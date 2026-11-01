@@ -1,6 +1,6 @@
 # Checklist
 
-851 checks in TESTING.md, 845 left for a person.
+852 checks in TESTING.md, 846 left for a person.
 
 ## 1. Start
 
@@ -958,7 +958,8 @@
 - [ ] **89.11** Do 89.3 and 89.10 with the koyomi that `cargo install --path crates/koyomi` put in `~\.cargo\bin` (its `koyomi-com.exe`), not a copy in Temp or Downloads; then `Get-MpThreatDetection \| Sort-Object InitialDetectionTime \| Select-Object -Last 3` (TODO 89) → No new detection (a copy in Temp named `koyomi.com` was taken as `Behavior:Win32/Persistence.A!ml`); `koyomi.exe` and `koyomi-com.exe` are still in `~\.cargo\bin` 〔未訳〕
 - [ ] **89.12** Copy `koyomi.com` to a folder under `%TEMP%`; from there, in an elevated terminal: `koyomi service install`; then `koyomi startup on` (not elevated) → Both say the exe is in Temp, to put it in `~\.cargo\bin` or Program Files, and that `KOYOMI_ALLOW_TEMP=1` lets it through; install asks no password; nothing is installed; `koyomi startup` is unchanged 〔未訳〕
 - [ ] **89.13** With `koyomi startup on` set from `~\.cargo\bin`, the same Temp copy with `$env:KOYOMI_ALLOW_TEMP = "1"`: `koyomi service install` (elevated); then `Remove-Item Env:KOYOMI_ALLOW_TEMP` and `koyomi service uninstall` from the Temp copy → Install asks for the password and installs as in 89.3 (this is how tests install from Temp). Uninstall works without the variable and says sign-in still starts only the tray because the exe is in Temp; `koyomi startup on` from `~\.cargo\bin` points it at the engine again 〔未訳〕
-- [ ] **89.14** Run the window from the Temp copy; in settings turn sign-in start on → The switch goes back off; `koyomi startup` still says it is off 〔未訳〕
+- [ ] **89.14** Run the window from the Temp copy; in settings turn sign-in start on → The switch goes back off, and under it, in the error colour, it says the exe is in Temp (with `KOYOMI_ALLOW_TEMP=1`); `koyomi startup` still says it is off 〔未訳〕
+- [ ] **89.15** After 89.14, click the switch again → The Temp line goes away while it asks, then comes back with the switch off 〔未訳〕
 
 ## 90. Reading the engine over HTTP (`GET /health`, `/nets`, `/runs`, `/runs/<id>/log`; for TODO 80, 81, 87)
 

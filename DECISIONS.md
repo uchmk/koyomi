@@ -750,7 +750,7 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
   - サービスのエンジンが言うことは `app_dir` の `engine.log` に時刻付きで足す。1 MB を超えていたら始めるときに `engine.old.log` へ回す。開始の種類は「自動（遅延開始）」（ネットワークが上がってから）。
   - 入れるときに、そのアカウントに「サービスとしてログオン」の権利を与え、サービスの開始・停止をそのアカウントに許す。そのため `start`・`stop` は管理者でなくてよい。
   - 入れたらサインインで起動する設定（`koyomi startup`）は、エンジンの代わりにトレイ（下）を起こすものにする。外したら元に戻す。
-  - Temp に置いた koyomi からは入れない（2026-11-01、持ち主）。掃除で消える exe をサービスと Run が指すことになり、Defender も反応した（TODO 89）。`koyomi service install` はパスワードを聞く前に断り、`~\.cargo\bin` か Program Files に置いて回すよう言う。`koyomi startup on` と設定の画面のサインイン時の起動も同じに断る（スイッチは切れたまま）。サービスを入れ外ししたときに Run を書き直すのも、Temp の exe には向けない（外したときはトレイを起こすままと言い、置いた場所の koyomi で `koyomi startup on` を回すよう言う）。
+  - Temp に置いた koyomi からは入れない（2026-11-01、持ち主）。掃除で消える exe をサービスと Run が指すことになり、Defender も反応した（TODO 89）。`koyomi service install` はパスワードを聞く前に断り、`~\.cargo\bin` か Program Files に置いて回すよう言う。`koyomi startup on` と設定の画面のサインイン時の起動も同じに断る（スイッチは切れたまま戻り、わけをスイッチの下に出す。ito 0.192.0 の `startup_card_with`）。サービスを入れ外ししたときに Run を書き直すのも、Temp の exe には向けない（外したときはトレイを起こすままと言い、置いた場所の koyomi で `koyomi startup on` を回すよう言う）。
     - テストは Temp から入れるので、環境変数 `KOYOMI_ALLOW_TEMP=1` が立っていれば通す。
     - 判定は ito の `ito_common::in_temp`（`temp_dir`・`%TEMP%`・`%TMP%` の下か）。ito-service と `startup::set` は既定では断らないので、koyomi が先に呼ぶ。Downloads は見ない（掃除で消えるとは限らない）。外す側（`startup off`・`service uninstall`）はどこからでもできる。
 - **窓と CLI:** サービスが入っていれば、自分でエンジンを立ち上げない（サービスと 2 つ動かさない）。止まっていれば「サービスが止まっている」と `koyomi service start` を案内する。

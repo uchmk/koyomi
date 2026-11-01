@@ -91,9 +91,12 @@ struct App {
     /// The first-run guide (an empty tree), and whether it has been offered this run.
     guide: ito_guide::Guide,
     guide_offered: bool,
-    /// Starts at sign-in: what the OS says, and the thread asking it.
+    /// Starts at sign-in: what the OS says, why the last click did not
+    /// stay (shown under the switch until the next click), and the thread
+    /// asking it.
     startup: Option<bool>,
-    startup_rx: Option<std::sync::mpsc::Receiver<bool>>,
+    startup_problem: Option<String>,
+    startup_rx: Option<std::sync::mpsc::Receiver<(bool, Option<String>)>>,
     tracker: Option<Tracker>,
     lang: String,
     /// The last scale change, as the line the status bar shows.
@@ -191,6 +194,7 @@ impl App {
             guide: ito_guide::Guide::default(),
             guide_offered: false,
             startup: None,
+            startup_problem: None,
             startup_rx: None,
             tracker: saved.tracker(),
             lang,

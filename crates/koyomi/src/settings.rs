@@ -139,6 +139,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let mut startup_toggled = None;
     let mut advanced = Vec::new();
     let startup_now = app.startup;
+    let startup_problem = app.startup_problem.clone();
     let state_dir = ito_common::state_dir("koyomi");
     let (common, themes, base) = (&prefs.common, &prefs.themes, prefs.base.as_deref());
     let out = ito_prefs::show(ui, ito_theme::colors(), &mut prefs.state, &nav, keys, |ui, page, l| match page {
@@ -153,7 +154,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             let out = ito_prefs::window_card(ui, l, more, &common.window_or_default());
             asked.extend(out.changes);
             forget |= out.forget;
-            startup_toggled = ito_prefs::startup_card(ui, l, more, startup_now);
+            startup_toggled = ito_prefs::startup_card_with(ui, l, more, startup_now, startup_problem.as_deref());
             section(ui, l, &tr("settings.records"), |ui| {
                 if let Some(w) = config_warn {
                     ito_prefs::status(ui, w, l.c.err);
@@ -386,8 +387,9 @@ fn keep_ask(ui: &mut Ui, app: &mut App, no_folder: &str) {
 /// known yet (once the General page is up). The registry and the autostart
 /// folders are read on a thread.
 fn poll_startup(ui: &Ui, app: &mut App) {
-    if let Some(v) = app.startup_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
+    if let Some((v, problem)) = app.startup_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
         app.startup = Some(v);
+        app.startup_problem = problem;
         app.startup_rx = None;
     }
     if app.startup.is_none() && app.startup_rx.is_none() && app.prefs.state.page == GENERAL {
@@ -396,23 +398,25 @@ fn poll_startup(ui: &Ui, app: &mut App) {
 }
 
 /// The switch was clicked: set it on a thread, then read what the OS has.
+/// The last click's reason goes away now.
 fn set_startup(ctx: &egui::Context, app: &mut App, on: bool) {
     app.startup = None;
+    app.startup_problem = None;
     app.startup_rx = Some(startup_task(ctx, Some(on)));
 }
 
-/// Read (and first set, when `set` is given) the sign-in start on a thread.
-fn startup_task(ctx: &egui::Context, set: Option<bool>) -> std::sync::mpsc::Receiver<bool> {
+/// Read (and first set, when `set` is given) the sign-in start on a thread,
+/// with why a set did not take: an exe in Temp is refused (TODO 89), and
+/// a registry or file write can fail.
+fn startup_task(ctx: &egui::Context, set: Option<bool>) -> std::sync::mpsc::Receiver<(bool, Option<String>)> {
     let (tx, rx) = std::sync::mpsc::channel();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        if let (Some(on), Ok(exe)) = (set, std::env::current_exe()) {
-            // An exe in Temp is not written in (TODO 89): the switch reads back off.
-            if !on || crate::cli::refuse_temp(&exe).is_ok() {
-                let _ = ito_common::startup::set("koyomi", &exe, &crate::cli::startup_args(), on);
-            }
-        }
-        let _ = tx.send(ito_common::startup::enabled("koyomi"));
+        let got = match set {
+            Some(on) => ito_common::startup::apply("koyomi", &crate::cli::startup_args(), on, crate::cli::refuse_temp),
+            None => (ito_common::startup::enabled("koyomi"), None),
+        };
+        let _ = tx.send(got);
         ctx.request_repaint();
     });
     rx
