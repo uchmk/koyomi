@@ -959,7 +959,10 @@ fn main() -> eframe::Result {
         .with_icon(std::sync::Arc::new(egui::IconData { rgba: icon::pixels(ICON_PX), width: ICON_PX, height: ICON_PX }));
     // The bar is the app's own (the Mac keeps its traffic lights over it).
     let viewport = ito_titlebar::frameless(viewport);
-    let options = eframe::NativeOptions { viewport: saved.viewport(viewport), ..Default::default() };
+    // GL first on Windows: Vulkan once lost its staging buffer mid-frame and took the app down
+    // (egui-wgpu panicked, then the swapchain panicked again while unwinding). WGPU_BACKEND still wins.
+    let (wgpu_options, _) = ito_gpu::options(None);
+    let options = eframe::NativeOptions { viewport: saved.viewport(viewport), wgpu_options, ..Default::default() };
     eframe::run_native(
         "koyomi",
         options,

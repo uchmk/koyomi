@@ -28,6 +28,8 @@ ito-winres = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463
 ito-common = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124", features = ["clock", "egui"] }
 ito-i18n = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124", features = ["edit"] }
 ito-theme = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124" }
+# Which wgpu backends to draw with: GL first on Windows.
+ito-gpu = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124" }
 # The settings screen: language / clock / theme pages, keys_page, notify_page, update_card.
 ito-prefs = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124" }
 ito-keys = { git = "https://github.com/uchmk/ito", rev = "306793d8e710fe33a463f2d1f6fd2a65925b1124", features = ["egui"] }

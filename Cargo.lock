@@ -2515,6 +2515,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-gpu"
+version = "0.161.0"
+source = "git+https://github.com/uchmk/ito?rev=306793d8e710fe33a463f2d1f6fd2a65925b1124#306793d8e710fe33a463f2d1f6fd2a65925b1124"
+dependencies = [
+ "egui-wgpu",
+]
+
+[[package]]
 name = "ito-guide"
 version = "0.161.0"
 source = "git+https://github.com/uchmk/ito?rev=306793d8e710fe33a463f2d1f6fd2a65925b1124#306793d8e710fe33a463f2d1f6fd2a65925b1124"
@@ -2949,6 +2957,7 @@ dependencies = [
  "ito-export",
  "ito-fonts",
  "ito-glossary",
+ "ito-gpu",
  "ito-guide",
  "ito-help",
  "ito-http",
