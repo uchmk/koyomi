@@ -497,6 +497,13 @@ day_note = "The times approved definitions start, on every calendar"
 toggle_open = "Make this an open day"
 toggle_closed = "Make this a closed day"
 toggle_back = "Put this day back"
+view_month = "Month"
+view_week = "Week"
+prev_week = "Previous week"
+next_week = "Next week"
+week_none = "Nothing starts this week"
+open_net = "Open its net page"
+open_net_hint = "Double-click to open it on the net page"
 
 [canvas]
 new = " (new, unsaved)"

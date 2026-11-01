@@ -30,16 +30,29 @@ pub fn month(defs: &[Def], calendars: &BTreeMap<String, Calendar>, year: i32, m:
         let Some(n) = d.succ_opt() else { break };
         d = n;
     }
-    fill(defs, calendars, days)
+    fill(defs, calendars, days, label)
 }
 
-/// One day with what starts on it, as [`month`] counts it.
-pub fn day(defs: &[Def], calendars: &BTreeMap<String, Calendar>, d: NaiveDate) -> Day {
-    fill(defs, calendars, vec![(d, Vec::new())]).pop().unwrap_or((d, Vec::new()))
+/// One start as the window shows it: when, the name shown, and the definition's id (to open it; two groups can share a name).
+pub type Start = (NaiveDateTime, String, String);
+
+/// `n` days from `first`, each with its approved starts as [`Start`]s, earliest first.
+pub fn days(defs: &[Def], calendars: &BTreeMap<String, Calendar>, first: NaiveDate, n: u32) -> Vec<(NaiveDate, Vec<Start>)> {
+    let days = first.iter_days().take(n as usize).map(|d| (d, Vec::new())).collect();
+    fill(defs, calendars, days, |at, def| (at, def.label().to_owned(), def.id.clone()))
 }
 
-/// The days given, in order and with none missing, with the approved starts on each.
-fn fill(defs: &[Def], calendars: &BTreeMap<String, Calendar>, mut days: Vec<Day>) -> Vec<Day> {
+fn label(at: NaiveDateTime, def: &Def) -> (NaiveDateTime, String) {
+    (at, def.label().to_owned())
+}
+
+/// The days given, in order and with none missing, with the approved starts on each, made into items by `item`.
+fn fill<T: Ord>(
+    defs: &[Def],
+    calendars: &BTreeMap<String, Calendar>,
+    mut days: Vec<(NaiveDate, Vec<T>)>,
+    item: impl Fn(NaiveDateTime, &Def) -> T,
+) -> Vec<(NaiveDate, Vec<T>)> {
     let Some((first, _)) = days.first() else { return days };
     let start = first.and_hms_opt(0, 0, 0).unwrap_or_default() - chrono::Duration::seconds(1);
     let end = days.last().map_or(start, |(d, _)| d.and_hms_opt(23, 59, 59).unwrap_or_default());
@@ -48,7 +61,7 @@ fn fill(defs: &[Def], calendars: &BTreeMap<String, Calendar>, mut days: Vec<Day>
         let cal = def.calendar.as_deref().and_then(|c| calendars.get(c));
         for at in koyomi_core::quiet::starts(&net.quiet, net.on_quiet, when::between_in(&net.when, start, end, cal)) {
             if let Some((_, list)) = days.iter_mut().find(|(d, _)| *d == at.date()) {
-                list.push((at, def.label().to_owned()));
+                list.push(item(at, def));
             }
         }
     }
@@ -187,11 +200,18 @@ run = [\"x\"]
         };
         let defs = [net("yes", Standing::Confirmed), net("no", Standing::Unconfirmed)];
         let d = NaiveDate::from_ymd_opt(2026, 11, 7).unwrap();
-        let one = super::day(&defs, &BTreeMap::new(), d);
-        let times: Vec<String> = one.1.iter().map(|(at, n)| format!("{} {n}", at.format("%H:%M"))).collect();
-        assert_eq!(times, ["02:00 yes", "17:00 yes"]);
+        let one = days(&defs, &BTreeMap::new(), d, 1).pop().unwrap();
         let from_month = month(&defs, &BTreeMap::new(), 2026, 11).into_iter().find(|(x, _)| *x == d).unwrap();
-        assert_eq!(one, from_month);
+        let times: Vec<String> = from_month.1.iter().map(|(at, n)| format!("{} {n}", at.format("%H:%M"))).collect();
+        assert_eq!(times, ["02:00 yes", "17:00 yes"]);
+        let named: Vec<_> = one.1.iter().map(|(at, n, _)| (*at, n.clone())).collect();
+        assert_eq!((one.0, named), from_month);
+        let week = days(&defs, &BTreeMap::new(), d - chrono::Duration::days(3), 7);
+        assert_eq!(week.len(), 7);
+        let (date, starts) = &week[3];
+        assert_eq!(*date, d);
+        let with_ids: Vec<String> = starts.iter().map(|(at, n, id)| format!("{} {n} {id}", at.format("%H:%M"))).collect();
+        assert_eq!(with_ids, ["02:00 yes yes", "17:00 yes yes"]);
     }
 }
 

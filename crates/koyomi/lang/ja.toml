@@ -496,6 +496,13 @@ day_note = "確認済みの定義が全部のカレンダーで動く時刻で�
 toggle_open = "この日を休日出勤にする"
 toggle_closed = "この日を休業にする"
 toggle_back = "この日を元に戻す"
+view_month = "月"
+view_week = "週"
+prev_week = "前の週"
+next_week = "次の週"
+week_none = "この週に始まるものはありません"
+open_net = "ジョブネットのページを開く"
+open_net_hint = "ダブルクリックでジョブネットのページに開く"
 
 [canvas]
 new = "（新規・未保存）"

@@ -196,6 +196,9 @@ struct Kept {
     /// `false` once the pane at the right of the calendar was folded.
     #[serde(default)]
     calendar_pane: Option<bool>,
+    /// `true` once the calendar was switched to its week.
+    #[serde(default)]
+    calendar_week: Option<bool>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -345,6 +348,8 @@ pub struct Browser {
     hist_pane: bool,
     /// The pane at the right of the calendar is open (not folded to its strip).
     cal_pane: bool,
+    /// The calendar shows the week of the picked day rather than its month.
+    cal_week: bool,
     /// The today table's sort: the column and whether it goes down. `None`: still to come, then newest first.
     today_sort: Option<(usize, bool)>,
     /// The jobs table's sort on the net page, as `today_sort`.
@@ -440,6 +445,7 @@ impl Browser {
         let vertical = kept.flow.as_deref() == Some("vertical");
         let inspector = kept.inspector != Some(false);
         let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
+        let cal_week = kept.calendar_week == Some(true);
         let flow = path.map(|p| kept::Writer::new(p, true));
         let far = far::Far::start(&io.1);
         Browser {
@@ -492,6 +498,7 @@ impl Browser {
             inspector,
             hist_pane,
             cal_pane,
+            cal_week,
             today_sort: None,
             net_sort: None,
             run_sort: None,
@@ -795,6 +802,7 @@ impl Browser {
                 inspector: Some(self.inspector),
                 history_pane: Some(self.hist_pane),
                 calendar_pane: Some(self.cal_pane),
+                calendar_week: Some(self.cal_week),
             });
         }
     }
@@ -4361,6 +4369,7 @@ mod tests {
             inspector: true,
             hist_pane: true,
             cal_pane: true,
+            cal_week: false,
             today_sort: None,
             net_sort: None,
             run_sort: None,
