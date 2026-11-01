@@ -29,26 +29,38 @@ const PORT: f32 = RADIUS + 7.0;
 /// How close to a line a click has to be.
 const NEAR: f32 = 6.0;
 
-/// The mark of a part on the shelf, on the canvas and in the legend (`""`: none).
-fn part_mark(key: &str) -> &'static str {
+/// The mark of a part on the shelf, on the canvas and in the legend, drawn by ito so it follows the theme.
+fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
+    use ito_prefs::Mark as M;
+    Some(match key {
+        "job" => M::Terminal,
+        "loop" => M::Refresh,
+        "jobnet" => M::Flow,
+        "branch" => M::Branch,
+        "join" => M::Merge,
+        "time" => M::Clock,
+        "file" => M::File,
+        "notify" => M::Bell,
+        "approval" => M::Person,
+        "delete" => M::Trash,
+        "zip" => M::Archive,
+        "copy" => M::Copy,
+        "empty" => M::Folder,
+        "send" => M::Upload,
+        "fetch" => M::Download,
+        "http" => M::Globe,
+        _ => return None,
+    })
+}
+
+/// The heading of the shelf's group a part is under; the shelf lists the parts group by group.
+fn part_group(key: &str) -> &'static str {
     match key {
-        "job" => "▭",
-        "loop" => "↻",
-        "jobnet" => "▣",
-        "branch" => "◇",
-        "join" => "⊕",
-        "time" => "🕑",
-        "file" => "📄",
-        "notify" => "✉",
-        "approval" => "👤",
-        "delete" => "🗑",
-        "zip" => "🗜",
-        "copy" => "⇉",
-        "empty" => "∅",
-        "send" => "⇪",
-        "fetch" => "⇩",
-        "http" => "🌐",
-        _ => "",
+        "job" | "loop" | "jobnet" => "canvas.group_basic",
+        "branch" | "join" => "canvas.group_flow",
+        "time" | "file" | "approval" => "canvas.group_wait",
+        "notify" | "http" => "canvas.group_tell",
+        _ => "canvas.group_files",
     }
 }
 
@@ -520,7 +532,7 @@ pub struct Editor {
     pub result: Option<Result<String, String>>,
 }
 
-/// The parts of the shelf, in order.
+/// The parts of the shelf, in order, group by group (see [`part_group`]).
 pub fn shelf() -> [Part; 16] {
     [
         Part::Job,
@@ -530,7 +542,6 @@ pub fn shelf() -> [Part; 16] {
         Part::Join { wait: Wait::All },
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
         Part::File { file: String::new(), settle: None },
-        Part::Notify,
         Part::Approval,
         Part::Chore(Chore::blank("delete").unwrap()),
         Part::Chore(Chore::blank("zip").unwrap()),
@@ -538,6 +549,7 @@ pub fn shelf() -> [Part; 16] {
         Part::Chore(Chore::blank("empty").unwrap()),
         Part::Chore(Chore::blank("send").unwrap()),
         Part::Chore(Chore::blank("fetch").unwrap()),
+        Part::Notify,
         Part::Chore(Chore::blank("http").unwrap()),
     ]
 }
@@ -720,16 +732,23 @@ impl Editor {
             .collect()
     }
 
-    /// Adds `part` after `after` (connected by a 正常 line) or at `at`; the new part is the cursor.
+    /// Adds `part` after `after` (connected by a 正常 line) or at `at`; the new part is the cursor. With neither it starts
+    /// a flow of its own: in the first column, under every part there is.
     pub fn add(&mut self, part: Part, after: Option<&str>, at: Option<(f64, f64)>) -> String {
         self.record(None);
         let id = self.fresh_id(prefix(&part));
         let positions = self.positions();
-        let pos = at.or_else(|| {
-            let i = self.index(after?)?;
-            let (x, y) = positions[i];
-            let taken = positions.iter().filter(|(px, _)| (px - x - layout::STEP_ALONG).abs() < 1.0).count();
-            Some((x + layout::STEP_ALONG, y + taken as f64 * layout::STEP_ACROSS))
+        let pos = at.or_else(|| match after.and_then(|a| self.index(a)) {
+            Some(i) => {
+                let (x, y) = positions[i];
+                let taken = positions.iter().filter(|(px, _)| (px - x - layout::STEP_ALONG).abs() < 1.0).count();
+                Some((x + layout::STEP_ALONG, y + taken as f64 * layout::STEP_ACROSS))
+            }
+            None => {
+                let left = positions.iter().map(|p| p.0).reduce(f64::min)?;
+                let low = positions.iter().map(|p| p.1).reduce(f64::max)?;
+                Some((left, low + layout::STEP_ACROSS))
+            }
         });
         let run = if part == Part::Job { vec!["cmd.exe".into(), "/c".into(), "echo hello".into()] } else { Vec::new() };
         let after = after.filter(|a| self.has(a)).map(|a| vec![Line::ok(a)]).unwrap_or_default();
@@ -907,6 +926,17 @@ impl Editor {
 
     pub fn select_all(&mut self) {
         self.selected = self.net.jobs.iter().map(|j| j.id.clone()).collect();
+    }
+
+    /// Nothing chosen and no cursor, so the next part from the shelf (or `a`) starts a flow of its own.
+    pub fn clear_target(&mut self) {
+        self.selected.clear();
+        self.cursor = None;
+    }
+
+    /// The part a click on the shelf adds after, when it is still there.
+    fn target(&self) -> Option<&Job> {
+        self.cursor.as_deref().and_then(|id| self.index(id)).map(|i| &self.net.jobs[i])
     }
 
     /// Opens the fields of `id`.
@@ -1175,7 +1205,14 @@ impl Editor {
         let mine = around.defs.iter().find(|d| d.id == self.id);
         let mut action = None;
         egui::Panel::top("editor-bar").show(ui, |ui| {
-            ui.horizontal_wrapped(|ui| {
+            use ito_prefs::{IconButton, Mark as M, Tone};
+            // The first row says where the editor is and how to leave it; the second holds the tools.
+            ui.horizontal(|ui| {
+                if depth > 0 && IconButton::new(M::ChevronLeft, t.tr("canvas.back")).show(ui).clicked() {
+                    if let Some(a) = self.edit(Cmd::Close) {
+                        action = Some(a);
+                    }
+                }
                 let title = format!(
                     "{} {}{}{}",
                     t.tr("canvas.title"),
@@ -1192,21 +1229,24 @@ impl Editor {
                     ito_a11y::say(&r, Role::Label, badge);
                     r.on_hover_text(t.tr("canvas.unconfirmed_hint"));
                 }
-                if depth > 0 {
-                    let r = ui.button(t.tr("canvas.back"));
-                    ito_a11y::say(&r, Role::Button, t.tr("canvas.back"));
-                    if r.clicked() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if IconButton::new(M::Close, t.tr("canvas.close")).show(ui).clicked() {
                         if let Some(a) = self.edit(Cmd::Close) {
                             action = Some(a);
                         }
                     }
-                }
-                if super::primary(ui, self.can_save(), t.tr("canvas.save")).clicked() {
+                    if IconButton::new(M::Settings, t.tr("canvas.net")).show(ui).clicked() {
+                        self.open_net();
+                    }
+                });
+            });
+            ui.horizontal_wrapped(|ui| {
+                let can = self.can_save();
+                let save = IconButton::new(M::Save, t.tr("canvas.save")).tone(Tone::Primary);
+                if ui.add_enabled_ui(can, |ui| save.show(ui)).inner.clicked() {
                     action = self.edit(Cmd::Save);
                 }
-                let r = ui.button(t.tr("canvas.check"));
-                ito_a11y::say(&r, Role::Button, t.tr("canvas.check"));
-                if r.on_hover_text(t.tr("canvas.check_hint")).clicked() {
+                if IconButton::new(M::Check, t.tr("canvas.check")).show(ui).on_hover_text(t.tr("canvas.check_hint")).clicked() {
                     let found = self.check(around.defs, calendars);
                     self.result = Some(if found.is_empty() {
                         Ok(t.tr("canvas.check_ok").to_owned())
@@ -1222,37 +1262,29 @@ impl Editor {
                         ))
                     });
                 }
-                for (cmd, key) in
-                    [(Cmd::Align, "canvas.align"), (Cmd::Fit, "canvas.fit"), (Cmd::Undo, "canvas.undo"), (Cmd::Redo, "canvas.redo")]
-                {
-                    let can = match cmd {
-                        Cmd::Undo => !self.undo.is_empty(),
-                        Cmd::Redo => !self.redo.is_empty(),
-                        _ => true,
-                    };
-                    let r = ui.add_enabled(can, egui::Button::new(t.tr(key)));
-                    ito_a11y::say(&r, Role::Button, t.tr(key));
-                    if r.clicked() {
-                        self.edit(cmd);
+                ui.separator();
+                let groups: [&[(Cmd, M, &str)]; 2] = [
+                    &[(Cmd::Undo, M::Undo, "canvas.undo"), (Cmd::Redo, M::Redo, "canvas.redo")],
+                    &[(Cmd::Align, M::Arrange, "canvas.align"), (Cmd::Fit, M::Expand, "canvas.fit")],
+                ];
+                for group in groups {
+                    for &(cmd, mark, key) in group {
+                        let can = match cmd {
+                            Cmd::Undo => !self.undo.is_empty(),
+                            Cmd::Redo => !self.redo.is_empty(),
+                            _ => true,
+                        };
+                        if ui.add_enabled_ui(can, |ui| IconButton::new(mark, t.tr(key)).show(ui)).inner.clicked() {
+                            self.edit(cmd);
+                        }
                     }
+                    ui.separator();
                 }
-                let flow = t.tr(if vertical { "run.horizontal" } else { "run.vertical" });
-                let r = ui.button(flow);
-                ito_a11y::say(&r, Role::Button, flow);
-                if r.clicked() {
+                // The way the flow would turn to; the mark is the arrow, so the words carry none.
+                let (flow, mark) =
+                    if vertical { ("canvas.flow_horizontal", M::ArrowRight) } else { ("canvas.flow_vertical", M::ArrowDown) };
+                if IconButton::new(mark, t.tr(flow)).show(ui).clicked() {
                     action = Some(Action::Flow);
-                }
-                let r = ui.button(t.tr("canvas.net"));
-                ito_a11y::say(&r, Role::Button, t.tr("canvas.net"));
-                if r.clicked() {
-                    self.open_net();
-                }
-                let r = ui.button(t.tr("canvas.close"));
-                ito_a11y::say(&r, Role::Button, t.tr("canvas.close"));
-                if r.clicked() {
-                    if let Some(a) = self.edit(Cmd::Close) {
-                        action = Some(a);
-                    }
                 }
             });
             let c = ito_theme::colors();
@@ -1291,27 +1323,69 @@ impl Editor {
                 None => {}
             }
         });
-        egui::Panel::left("shelf").default_size(160.0).size_range(90.0..=320.0).resizable(true).show(ui, |ui| {
-            let r = ui.label(t.tr("canvas.shelf"));
+        egui::Panel::left("shelf").default_size(180.0).size_range(120.0..=320.0).resizable(true).show(ui, |ui| {
+            let c = ito_theme::colors();
+            let r = ui.label(egui::RichText::new(t.tr("canvas.shelf")).strong());
             ito_a11y::say(&r, Role::Heading, t.tr("canvas.shelf"));
-            for part in shelf() {
-                let key = format!("part.{}", part.key());
-                let name = t.tr(&key);
-                let label = match part_mark(part.key()) {
-                    "" => name.to_owned(),
-                    mark => format!("{mark} {name}"),
-                };
-                let r = ui.add(egui::Button::new(&label).sense(Sense::click_and_drag()));
-                ito_a11y::say(&r, Role::Button, &label);
-                if r.drag_started() {
-                    self.drag = Drag::Shelf(part.clone());
-                } else if r.clicked() {
-                    let after = self.cursor.clone();
-                    self.add(part.clone(), after.as_deref(), None);
+            ui.add_space(4.0);
+            // Where a click on a part puts it: after the cursor, or at the start of a flow of its own.
+            let target = self.target().map(|j| j.name.clone().unwrap_or_else(|| j.id.clone()));
+            let mut clear = false;
+            super::card(&c).show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                // The heading row carries the clear button, so the target below has the whole width.
+                ui.horizontal(|ui| {
+                    let r = ui.label(egui::RichText::new(t.tr("canvas.target")).small().color(c.dim));
+                    ito_a11y::say(&r, Role::Heading, t.tr("canvas.target"));
+                    if target.is_some() {
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            clear = ito_prefs::mark_button(ui, ito_prefs::Mark::Close, t.tr("canvas.target_clear"), 18.0).clicked();
+                        });
+                    }
+                });
+                match &target {
+                    Some(name) => {
+                        let text = t.trf("canvas.target_after", &[name]);
+                        let r = ui.label(egui::RichText::new(&text).strong());
+                        ito_a11y::say(&r, Role::Label, &text);
+                    }
+                    None => {
+                        let r = ui.label(egui::RichText::new(t.tr("canvas.target_start")).color(c.dim));
+                        ito_a11y::say(&r, Role::Label, t.tr("canvas.target_start"));
+                    }
                 }
+            });
+            if clear {
+                self.clear_target();
             }
-            ui.add_space(8.0);
-            ui.small(t.tr("canvas.hint"));
+            // How the two ways of adding differ, where the eye is before it reaches the parts.
+            ui.add_space(2.0);
+            for key in ["canvas.hint_drag", "canvas.hint_click"] {
+                let r = ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                ito_a11y::say(&r, Role::Label, t.tr(key));
+            }
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let mut group = "";
+                for part in shelf() {
+                    let head = part_group(part.key());
+                    if head != group {
+                        group = head;
+                        ui.add_space(6.0);
+                        let r = ui.label(egui::RichText::new(t.tr(head)).small().color(c.dim));
+                        ito_a11y::say(&r, Role::Heading, t.tr(head));
+                    }
+                    let key = format!("part.{}", part.key());
+                    let name = t.tr(&key);
+                    let icon = part_icon(part.key()).unwrap_or(ito_prefs::Mark::Terminal);
+                    let r = ito_prefs::IconButton::new(icon, name).wide().drag().show(ui);
+                    if r.drag_started() {
+                        self.drag = Drag::Shelf(part.clone());
+                    } else if r.clicked() {
+                        let after = self.cursor.clone();
+                        self.add(part.clone(), after.as_deref(), None);
+                    }
+                }
+            });
         });
         if self.pane.is_some() {
             egui::Panel::right("fields").default_size(320.0).show(ui, |ui| {
@@ -1729,7 +1803,7 @@ impl Editor {
                         self.cursor = Some(id);
                     }
                 } else if !shift && !command {
-                    self.selected.clear();
+                    self.clear_target();
                     self.connect = None;
                 }
             }
@@ -1834,9 +1908,9 @@ impl Editor {
             };
             let ring = if is_cursor { Stroke::new(3.0, accent) } else { Stroke::new(1.5, c.fg) };
             painter.circle(p, r, fill, ring);
-            let glyph = if j.part.is_job() { "" } else { part_mark(j.part.key()) };
-            if !glyph.is_empty() {
-                painter.text(p, egui::Align2::CENTER_CENTER, glyph, small.clone(), if selected { c.bg } else { c.fg });
+            // A job is the plain circle; every other part shows its mark from the shelf.
+            if let Some(m) = part_icon(j.part.key()).filter(|_| !j.part.is_job()) {
+                ito_prefs::mark(&painter, Rect::from_center_size(p, Vec2::splat(r * 1.1)), m, if selected { c.bg } else { c.fg });
             }
             if bad.contains(j.id.as_str()) {
                 painter.text(p + Vec2::new(r + 2.0, -r - 2.0), egui::Align2::LEFT_BOTTOM, Mark::Error.mark(), small.clone(), c.err);
@@ -1956,13 +2030,28 @@ impl Editor {
             ui.separator();
             let mut seen = BTreeSet::new();
             for part in shelf() {
-                let mark = part_mark(part.key());
-                if part.is_job() || mark.is_empty() || !seen.insert(part.key()) {
+                let Some(m) = part_icon(part.key()).filter(|_| !part.is_job() && seen.insert(part.key())) else {
                     continue;
+                };
+                // One widget of a known width, so the mark and its name wrap together.
+                let key = format!("part.{}", part.key());
+                let text = t.tr(&key);
+                let galley = egui::WidgetText::from(egui::RichText::new(text).small()).into_galley(
+                    ui,
+                    Some(egui::TextWrapMode::Extend),
+                    f32::INFINITY,
+                    egui::TextStyle::Small,
+                );
+                let (side, gap) = (12.0, 3.0);
+                let size = Vec2::new(side + gap + galley.size().x, galley.size().y.max(side));
+                let (rect, r) = ui.allocate_exact_size(size, Sense::hover());
+                if ui.is_rect_visible(rect) {
+                    let p = ui.painter();
+                    let at = Rect::from_center_size(Pos2::new(rect.left() + side / 2.0, rect.center().y), Vec2::splat(side));
+                    ito_prefs::mark(p, at, m, c.dim);
+                    p.galley(Pos2::new(at.right() + gap, rect.center().y - galley.size().y / 2.0), galley, c.fg);
                 }
-                let text = format!("{mark} {}", t.tr(&format!("part.{}", part.key())));
-                let r = ui.label(egui::RichText::new(&text).small());
-                ito_a11y::say(&r, Role::Label, &text);
+                ito_a11y::say(&r, Role::Label, text);
             }
         });
         let now = chrono::Local::now().naive_local();
@@ -2028,7 +2117,7 @@ impl Editor {
             if self.connect.is_some() {
                 self.connect = None;
             } else {
-                self.selected.clear();
+                self.clear_target();
             }
         } else if pressed(ui, Modifiers::NONE, Key::A) {
             let after = self.cursor.clone();
@@ -2138,12 +2227,41 @@ mod tests {
     }
 
     #[test]
-    fn every_part_but_a_job_has_its_own_mark_on_the_canvas() {
+    fn every_part_has_its_own_mark_and_its_group_is_in_one_run() {
+        let mut seen = Vec::new();
         for part in shelf() {
-            let mark = part_mark(part.key());
-            assert!(part.is_job() || !mark.is_empty(), "{}", part.key());
-            assert!(!mark.starts_with('【'));
+            let m = part_icon(part.key()).unwrap_or_else(|| panic!("{} has no mark", part.key()));
+            assert!(!seen.contains(&m), "{} shares its mark", part.key());
+            seen.push(m);
         }
+        // The shelf heads each group once, so its parts come one after another.
+        let mut runs: Vec<_> = shelf().iter().map(|p| part_group(p.key())).collect();
+        runs.dedup();
+        let mut groups = runs.clone();
+        groups.sort();
+        groups.dedup();
+        assert_eq!(runs.len(), groups.len(), "{runs:?}");
+    }
+
+    #[test]
+    fn with_no_target_a_part_starts_a_flow_of_its_own() {
+        let mut e = two();
+        e.selected.insert("b".into());
+        e.cursor = Some("b".into());
+        assert_eq!(e.target().map(|j| j.id.as_str()), Some("b"));
+        // Esc or a click on the empty canvas.
+        e.clear_target();
+        assert!(e.selected.is_empty() && e.target().is_none());
+        let before = e.positions();
+        let after = e.cursor.clone();
+        let id = e.add(Part::Job, after.as_deref(), None);
+        assert!(e.net.jobs[2].after.is_empty(), "not after b");
+        // In the first column, under every part there is, not on top of one.
+        let left = before.iter().map(|p| p.0).fold(f64::INFINITY, f64::min);
+        let low = before.iter().map(|p| p.1).fold(f64::NEG_INFINITY, f64::max);
+        assert_eq!(e.positions()[2], (left, low + layout::STEP_ACROSS));
+        // The new part is the target now, so the next one follows it.
+        assert_eq!(e.target().map(|j| j.id.clone()), Some(id));
     }
 
     #[test]
