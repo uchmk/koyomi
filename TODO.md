@@ -203,6 +203,18 @@ ito に頼んで待っているもの（2026-11-01）。
 
 - [x] 105. Tailscale の相手を token なしで通す（M、選んだときだけ）: Tailscale は前提にしない（取引先には求めない。token・指紋・`host_key` はどの経路でも動くまま）。身内の PC の間の本人確認（AD の代わり）として、同じ持ち主の PC どうしなら、tailnet の中では token と指紋を PC ごとに配らずに済むようにする。ito-http が tailscaled の whois で `who` を埋める口を uchmk/ito#135 で頼んだ（ito-ec の問いに「要る、急がない」と答え、持ち主が依頼した）。届いたら、`[[http.user]]` にログイン名（タグの端末はタグ）を書けるようにして、ロール・`nets`・`roles` はそのまま効かせる。窓の `[[remote]]`（80）と HA の待機（87）から tailnet の名前で呼ぶ形は、届いた形を見て決める。届くまで待ち。（2026-11-01: ito v0.202.0 の `Config::tailnet`。`[http] tailnet = <ポート>` と `[[http.user]] tailscale = "ログイン名" | "tag:…"`。その人は token なしで、ロール・`nets`・`roles` はそのまま。`[[remote]]` と HA の待機は token と指紋のまま（ito-http の `Client` が https だけ）。tailscaled が落ちていると `[http]` 全体が開かないのは uchmk/ito に頼み、v0.203.0 で直った。開けないわけ（`tailnet_error`）は窓の注意と待ち受けの行に出す。TESTING.md の 108）
 
+9 周目（持ち主の指示で 2026-11-02 に項目にした。1 周 3 つまでの決めより、持ち主の「全部」を先にした）。`COMPETITORS.md` の表の外と、まとめの弱いところで、競合に比べて足りないところ。上から順に作る（点の高い順）。
+
+- [ ] 106. 計画停止の日（S〜M）: koyomi.toml の `[[blackout]]`（`from`・`to`・`why`）の間は、どのネットも流さない。窓の今日・カレンダーに止める日と、そのために流れない回を先に出す。今の `quiet` はネットごとで、毎日の時刻しか書けない。停電・PC の入れ替え・年末年始に。Rundeck の有償の Blackout・JP1 のジョブネットごとの実行中止にあたる。影響する回を先に見せるのは Control-M の What-If（模擬だけ）で、全部を止めて影響を一覧するものはどれにも無い（COMPETITORS N1）。
+- [ ] 107. ファイルを添えてメールを送る部品（S〜M）: `kind = "mail"` で `to`・`subject`・`body`・`files`。作った帳票を送るジョブに、スクリプトを書かずに済むように。失敗の知らせ（`notify`）とは別のもの。ito-mail の `compose` と `Attachment` で作り、SMTP で送る口が ito に無ければ `crate-request`。JP1 のメール送信ジョブ（添付は 20 個まで）にあたる。Control-M・Rundeck は知らせに出力やログを付けるだけ（COMPETITORS N2）。
+- [ ] 108. どのネットからも使える共通の値（S）: koyomi.toml の `[vars]` を、どのネットのコマンド・パス・`params` の既定からも `{var:名前}` で読む。共有フォルダーのパスや取引先のホストを 1 か所で直せるように。秘密は今の `secret:` のまま。Control-M の Global・Named Pool の変数・Rundeck の `globals`・Airflow の Variables にあたる（COMPETITORS N3）。
+- [ ] 109. H9 何台かの PC にまとめて流す（M）: ssh・winrm の部品の `on` に、PC の組（koyomi.toml の `[groups]`）も書けるようにする。同時に流す数と、全部が通れば正常か、どれか 1 つで正常かを選ぶ。Control-M の RunOnAllAgentsInGroup・Rundeck の Thread Count にあたる。JP1 のエージェントグループは 1 台へ振り分けるだけ。「どれか 1 つで正常」はどの製品にも無い（COMPETITORS N4）。
+- [ ] 110. 決めた日から新しい定義に切り替える（M）: 直した定義を「2026-12-01 から」と置いておき、その日の最初の回から新しい定義で流す。それまでは今の定義のまま流す。月初・期の初めの切り替えに。承認（未確認）の約束と組む。JP1 のジョブネットリリースにあたる（COMPETITORS N5）。
+- [ ] 111. 定義を別の PC に配る（M）: 窓から `[[remote]]` の PC にネットの定義を送る。受けた PC では未確認で置き、その PC で確かめるまで流さない（87 の写しと同じ）。検証の PC から本番の PC へ。今の `koyomi export`・`import` を窓からつなぐ形。Control-M の Deploy Descriptor・Rundeck の SCM Git とプロジェクトのアーカイブにあたる（COMPETITORS N6）。
+- [ ] 112. PC が空いたら起動する（S）: `[[when]] idle = "10m"`。今は `require` の条件（74）で、空いているときだけ流すことしかできない。サインイン・ロック・ロックの解除で起動するかも同じときに決める。タスク スケジューラのアイドル・ログオン・SessionStateChange のトリガーにあたり、ほかの製品には無い（COMPETITORS N7）。
+- [ ] 113. SQL を流す部品（M〜L）: `kind = "sql"` で SQL Server・PostgreSQL・SQLite に文を流し、件数や結果で判じる。ito に部品が無いので `crate-request` から。Control-M の Databases・Airflow の common.sql・Rundeck の有償の SQL Runner にあたる（COMPETITORS N8）。
+- [ ] 114. クラウドのストレージへ送る・受ける（M）: S3・Azure Blob に `send`・`fetch` できるようにする（78 の続き）。長く残す置き場（92 の archive の写し先）にも使う。ito に部品が無いので `crate-request` から。`DECISIONS.md` の採らないものはクラウドのインスタンスの起動・停止だけで、これは当たらない。Control-M の MFT（add-on）・Rundeck の S3 のステップ・Airflow の amazon・azure の provider にあたる（COMPETITORS N9）。
+
 ## デザイン（画面の見本との差）
 
 見本は「koyomi 画面の見本」。上から順に進める。D14 は D1〜D13 のあとに `--keys` の画面で比べる。

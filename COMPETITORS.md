@@ -2,7 +2,7 @@
 
 公式の文書で確かめたものは事実、そうでなければ「推測」と書く。企画役が更新する。
 
-最後に確かめた日: 2026-11-01。比べたのは JP1/AJS3（Version 13、13-50 まで）・Control-M（SaaS と 9.0.22）・Rundeck（6.2）・Airflow（3.3.2）・Windows のタスク スケジューラ。
+最後に確かめた日: 2026-11-02。比べたのは JP1/AJS3（Version 13、13-50 まで）・Control-M（SaaS と 9.0.22）・Rundeck（6.2）・Airflow（3.3.2）・Windows のタスク スケジューラ。
 cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省いた）。
 
 - 印は ○ ある・△ 一部（有償の追加・別の製品・条件つき）・× 無い（文書にそう書いてある、または製品の外）・? 文書に見当たらない。
@@ -39,6 +39,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 - Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi の本体は窓で、Web は見る・流す・止める・流し直すまで（定義を直すのは窓）。
 - 長い保管とつながりの広さ。Control-M は Workload Archiving（最長 7 年）と MFT（FTP・SFTP・S3・Azure）、
   Airflow は provider（SFTP・IMAP・HTTP など）で広げる。koyomi の履歴は既定 90 日。
+- 表 4（N1〜N9）は、競合にあって koyomi に無いもの（TODO 106〜114）。どれも 1 つか 2 つの製品にしか無いか、別製品・add-on・別に入れる provider。
 - 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れ、`roles` でネット・グループごとに違うロールを持てる（JP1 の 5 つほど細かくはない）。
 
 **差が無くなったところ**
@@ -108,7 +109,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H4 | ログファイルの行・イベントログで起動 | ○ `[[when]] log`・`eventlog` | ○ ログファイル監視ジョブ・Windows イベントログ監視ジョブ（同梱の JP1/Base のトラップ） | ? File Watcher はファイルの有無・サイズのみ。行・イベントログ起動は未発見 | ? Webhook で外から起動はできる。ログ・イベントログの監視は見当たらず | △ AssetWatcher＋BaseEventTrigger（MQ・ファイル）。ログ行・イベントログは trigger を自作 | △ EventTrigger（XPath）でイベントログは可。ログファイルの行は不可 |
 | H5 | 枠が埋まったときの優先度 | ○ `priority = 1..5` | ○ ジョブの実行優先順位、ルートジョブネット優先順位の一時変更、実行多重度 | ○ Priority（Very High〜Very Low / AA〜99）で実行順 | × Quartz の待ちは FIFO。優先度の要望 #1848 は not planned で閉じた | ○ priority_weight（下流の分も足す）で queued の順を決める | △ Priority 0–10 はプロセス・I/O・メモリの優先度。待ち順ではない |
 | H6 | よくある作業の部品（消す・zip・写す・空ける） | ○ 消す・zip・写す・空ける | ? ファイル削除・圧縮・コピーの部品は公式で見つからず | △ MFT の File Transfer job に rm・mkdir・rename・元削除。zip 段は未発見 | △ Copy file だけ。削除・zip の部品は見当たらず。File Transfer は有償 | △ 古いファイルの削除・zip・コピーの専用部品は見当たらず。Bash/Python で書く | × Exec・ComHandler のみ。メール・メッセージの動作は廃止 |
-| H7 | ファイル転送（SFTP など） | ○ SFTP・共有フォルダーへ送る・受ける | △ 標準カスタムジョブ JP1FTP。送受両側に JP1/FTP（別製品）が要る | △ Control-M MFT（add-on）で FTP・SFTP・S3・Azure 等 | ○ Copy file ステップ（OSS）。File Transfer のステップは有償 | △ SFTP・FTP provider の SFTPOperator など（別に入れる） | × FTP/SFTP の部品なし |
+| H7 | ファイル転送（SFTP など） | ○ SFTP・共有フォルダーへ送る・受ける | △ 標準カスタムジョブ JP1FTP。送受両側に JP1/FTP（別製品）が要る | △ Control-M MFT（add-on）で FTP・SFTP・S3・Azure 等 | ○ Copy file ステップ（OSS）。File Transfer のステップは有償 | △ SFTP provider の SFTPOperator（別に入れる）。FTP provider は既定で入る | × FTP/SFTP の部品なし |
 | H8 | ジョブごとに実行のアカウント | ○ `run_as` | ○ ジョブごとの実行ユーザー＋JP1 ユーザー→OS ユーザーのユーザーマッピング | ○ RunAs でジョブ・フォルダごとに OS ユーザーを指定 | ○ ノード属性 username に `${option.x}` でジョブごとに指定 | ○ run_as_user（Unix ユーザーへ sudo -u、passwordless sudo が要る） | ○ タスクごとに実行アカウント（利用者・S4U・SYSTEM・グループ） |
 | H9 | 複数の PC・エージェント | ○ `[[remote]]`（LAN、TLS） | ○ マネージャーから実行エージェント・エージェントグループで実行 | ○ 各ホストに Agent、Host Group で振り分け | ○ SSH・WinRM で複数のノードに実行。Runner もある | △ Celery・Edge・Kubernetes executor（各 provider）。Edge の Windows は PoC | △ schtasks /s・-CimSession で遠隔の PC を 1 台ずつ。集中管理なし |
 | H10 | Web UI | ○ 今日・履歴・ログを見る、流す・止める・流し直す・飛ばす・保留。見た目は窓の今日の画面と同じ（TODO 81）。定義を直すのは窓 | ○ Web GUI（ジョブポータル／マネジメントポータル）で監視・実行・保留。Web Console 要 | ○ Control-M Web（Planning・Monitoring 等）をブラウザで | ○ ブラウザーの UI が本体 | ○ React の Web UI（API server）。17 言語 | △ Windows Admin Center の Scheduled tasks ツール（別製品・履歴なし） |
@@ -131,9 +132,33 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H27 | 定義の版・差分・戻す | ○ `versions/`・差分・戻す | △ ジョブネットリリースで指定日時に定義を切替。差分・版の管理は記載なし | ○ Changes History で版の一覧・JSON 比較・復元（180 日保持） | △ Git の SCM プラグインで版を管理。差分・戻す操作の記述はなし | △ DAG versioning（run ごとに版を記録、Git bundle なら旧版で再実行）。差分・戻すは記載なし | × RegistrationInfo の Version は文字列のみ。履歴・差分・戻しなし |
 | H28 | Excel・CSV への書き出し | ○ CSV・.xlsx | △ ajsshow で書式指定出力。CSV・Excel は別製品（Print Option 等） | ○ Reports を CSV・XLSX・PDF で出力（履歴・定義など） | △ ジョブは YAML/XML/JSON、履歴は API とアーカイブ。CSV は見当たらず | △ UI の CSV 書き出しは記載なし。CLI・REST API（JSON）から自作 | △ schtasks /query /fo CSV でタスク一覧。履歴の CSV は記載なし |
 
+## 4. まだ無い機能
+
+9 周目（TODO 106〜114）。表 1〜表 3 の外で、競合にあって koyomi に無いもの。2026-11-02 に公式の文書で確かめた。
+
+| | 機能 | koyomi | JP1/AJS3 | Control-M | Rundeck | Airflow | タスク スケジューラ |
+|---|---|---|---|---|---|---|---|
+| N1 | 計画停止の日時 | △ ネットごとの `quiet`（毎日の時刻だけ）。全部を止める日は TODO 106 | △ 一時変更の「実行中止」をジョブネットごとに（ルートジョブネットは複数の予定をまとめて）。全部を止める日時の枠・影響する回の表示は見当たらない | △ What-If の Downtime で停止の枠を入れたときの影響を模擬（実際には止めない）。Workload Policy に日時の期間があるが、0 本にできるかは見当たらない | △ 有償の System Calendars の Blackout（日付の範囲・時間帯、全プロジェクトに当てられる、手での実行は止めない）。止まるジョブには印が出るが、影響する回の一覧は見当たらない | ? 計画停止の枠は文書に見当たらず | × 停止の枠なし（推測: API に項目が無い） |
+| N2 | ファイルを添えてメールを送るジョブ | △ 知らせ（`notify`）のメールだけ。添えて送る部品は TODO 107 | ○ メール送信ジョブ。添付は Windows だけで 20 個まで。Outlook 経由（32bit の 2016・2019・2021 のみ、64bit・365 は不可）か SMTP へ直接（SMTPS は不可） | △ If-Action の Mail でジョブの出力を添付（AttachOutput）。任意のファイルを付けて送る job type は見当たらない | △ メールは通知だけで、ログを添付できる。任意のファイルを付けて送るステップは見当たらない | △ smtp provider の EmailOperator の `files` で添付。3.3.2 では smtp provider は既定で入らない（別に入れる） | × メールの動作（添付あり）は Windows 7・2008 R2 までで廃止。代わりに PowerShell の Send-MailMessage を勧める |
+| N3 | どのジョブからも読める共通の値 | △ ネットの中の `params`・`env` だけ。共通の値は TODO 108 | △ マクロ変数は実行登録のときに指定し、配下のユニットで効く。全ジョブで共通の変数は見当たらない | ○ Global（`%%\`、self-hosted の Server の全ジョブ）と Named Pool の変数。ctmvar・Set Variable で書き換え | ○ `project.globals.X` をプロジェクトの全ジョブで `${globals.X}` | ○ Variables（global な key/value、`Variable.get`・`{{ var.value.x }}`） | × 共通の値なし（推測: API に項目が無い） |
+| N4 | 何台かの PC にまとめて流す（同時数・全部かどれか） | × ssh・winrm の `on` は 1 台。TODO 109 | × 実行エージェントグループは 1 台へ振り分けるだけ（優先順位・多重度・使用率）。全台で同時に流す機能は見当たらない | ○ RunOnAllAgentsInGroup（"Run job on all hosts in group"）で、グループの全 Agent に同じジョブ（それぞれ別の Order ID）。同時数の上限・全部かどれかの成功は見当たらない | ○ ノードへ配り、Thread Count で同時数、失敗したら止めるか残りを流すかを選べる。どれか 1 つの成功で正常は見当たらない | △ ホストへ配る機能なし。dynamic task mapping でホストごとに写し（SSH など）を作り、`max_active_tis_per_dag` で上限、後続の trigger rule `all_success`・`one_success` | × `schtasks /s` で 1 台ずつ |
+| N5 | 決めた日時から新しい定義に切り替える | × `versions/` は残すだけ。TODO 110 | ○ ジョブネットリリースで、指定した日時から定義を切り替え | △ When の期間（StartDate・EndDate、ActivePeriod=false で止める）で旧・新を受け渡す。定義の版を日時で切り替える機能は見当たらない | ? 指定した日時からの定義の切り替えは見当たらず | △ 旧の DAG に `end_date`、新の DAG に `start_date` を書いて受け渡す。版を日時で切り替える機能は見当たらない | △ StartBoundary・EndBoundary で 2 つのタスクを受け渡す |
+| N6 | 定義を別の PC・環境に配る | △ `koyomi export`・`import`（取り込んだものは未確認）と、HA の待機への写し。窓から送るのは TODO 111 | △ ajsexport→ajsimport（パッケージング機能用のスクリプトの中だけで使える）、ajsprint→ajsdefine。配る・昇格する仕組みは見当たらない | ○ Workspace を JSON に書き出し、別の環境へ取り込む。Automation API の Deploy Descriptor で Dev・Test・Prod ごとに値を置き換え | ○ プロジェクトのアーカイブで別のインスタンスへ移す（`rd projects archives`）、SCM Git の Export・Import | △ Git の DAG bundle が `tracking_ref`（ブランチ・タグ・SHA）を追う。環境の間の昇格の機能は見当たらない | △ XML へ書き出し、`schtasks /create /xml` で取り込む。ドメインなら GPP の Scheduled Task で配る |
+| N7 | PC が空いたら起動する（サインイン・ロックも） | △ `require` の空いているとき（条件だけ）。起動は TODO 112 | × イベントジョブ 8 種にアイドル・ログオン・ロックなし | ? 公式で見つからず | × サーバーの製品で対象外 | × Linux のサーバー前提で、アイドルなどで起動するものなし | ○ Idle トリガー（Windows 8 以降は 4 分・80%）、ログオン、SessionStateChange（ロック・アンロック・接続・切断） |
+| N8 | SQL を流すジョブ | × TODO 113 | △ 本体のジョブの種類に DB のジョブなし。別製品 JP1/AJS3 for Cloud Service Applications のサンプルに Athena・BigQuery の SQL | ○ Databases のジョブ（SQL Script・Stored Procedure・Embedded Query。Oracle・MSSQL・DB2・PostgreSQL など、JDBC で足せる）。Agent に plug-in を入れる | △ 有償の SQL Runner（node step）。OSS は MongoDB Command Runner だけ | ○ 既定で入る common.sql の SQLExecuteQueryOperator（DB ごとの provider は別に入れる） | × 動作はプログラムの起動だけ |
+| N9 | クラウドのストレージ（S3・Azure Blob）へ送る・受ける | × SFTP・共有フォルダーだけ。TODO 114 | △ 別製品 JP1/AJS3 for Cloud Service Applications のサービス連携ジョブのサンプル（S3・Azure Blob・GCS・OCI の upload・download など、サポート契約者向け） | △ MFT（add-on）の File Transfer ジョブで S3・Azure Storage・GCS など | △ AWS S3 の node step（OSS、Copy・Sync・Move でローカルとの間も）。Azure Blob は見当たらない。File Transfer は file・ftp・sftp・http だけ | △ amazon provider の LocalFilesystemToS3Operator・S3 の operator、microsoft.azure provider の LocalFilesystemToWasbOperator（どちらも別に入れる） | × 動作はプログラムの起動だけ |
+
+表 4 で分かったこと:
+
+- 全部を 1 つの枠で止め、影響する回を一覧するもの（N1）は、どの製品にも見当たらない。影響を先に見せるのは Control-M の What-If だけで、それも模擬。
+- 任意のファイルを添えて送るジョブ（N2）は JP1 だけ。Control-M・Rundeck は通知に出力やログを付けるだけ。
+- 全台で同時に流せる（N4）のは Control-M と Rundeck。JP1 のエージェントグループは 1 台へ振り分けるだけ。「どれか 1 つが通れば正常」はどの製品の文書にも無い（Airflow の `one_success` が近い）。
+- 空いたら・サインイン・ロックで起動（N7）はタスク スケジューラだけ。
+- SQL とクラウドのストレージ（N8・N9）は、JP1 では別製品のサンプル、Control-M では add-on、Airflow でも多くは別に入れる provider。
+
 ## 出どころ
 
-表 1 の行は 2 周目（2026-10-29）に読んだ文書。表 2・表 3 と Control-M は 2026-11-01 に読んだ文書。
+表 1 の行は 2 周目（2026-10-29）に読んだ文書。表 2・表 3 と Control-M は 2026-11-01、表 4（N）は 2026-11-02 に読んだ文書。
 
 - **JP1/AJS3**（日立、Version 13 の日本語のマニュアル）: 頭は `https://itpfdoc.hitachi.co.jp/manuals/3021/`
   - 表 1:
@@ -186,6 +211,16 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
     - H27: `30213L4220/AJSF0085.HTM`
     - H28: `30213L4920/AJSO0131.HTM`
     - 見当たらない（URL なし）: C2・C3・C5・C17・H3・H6・H18・H22・H23
+  - 表 4:
+    - N1: `30213L4220/AJSF0071.HTM`・`30213L4220/AJSF0076.HTM`
+    - N2: `30213L5010/AJSL0008.HTM`・`30213L5010/AJSL0044.HTM`・`30213L5010/AJSL0047.HTM`・`30213L5010/AJSL0018.HTM`・`30213L5010/AJSL0013.HTM`・`30213L5010/AJSL0048.HTM`
+    - N3: `30213L4220/AJSF0061.HTM`
+    - N4: `30213L4420/AJSG0024.HTM`
+    - N5: `30213L4220/AJSF0085.HTM`
+    - N6: `30213L4900/AJSO0109.HTM`（ajsexport）・`30213L4900/AJSO0112.HTM`
+    - N7・N8: `30213L4420/AJSG0014.HTM`（ジョブの種類・イベントジョブの一覧）
+    - N8・N9（別製品 JP1/AJS3 for Cloud Service Applications）: `30213L6120/AJSC0005.HTM`・`30213L6120/AJSC0008.HTM`、
+      `https://www.hitachi.co.jp/Prod/comp/soft1/jp1/product/jp1/ajs/pdf/jp1cs_autom_samplelist.pdf`・`https://www.hitachi.co.jp/Prod/comp/soft1/jp1/hack/automation/0007.html`
 - **Control-M**（BMC。SaaS の文書と、オンプレの 9.0.21・9.0.22 の文書）: 頭は `https://documents.bmc.com/supportu/controlm-saas/en-US/Documentation/`。頭の違うものは全部書く。
   - 表 1〜表 3:
     - P1・P8・C7・C10・C18: `Job_management.htm`
@@ -229,6 +264,16 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
     - H26: `https://documents.bmc.com/supportu/9.0.22/en-US/Documentation/Control-M_full_installation_system_requirements.htm`
     - H27: `https://documents.bmc.com/supportu/9.0.21/en-US/Documentation/Changes_History.htm`
     - 見当たらない（URL なし）: C5・C17・H13・H18
+  - 表 4（9.0.22 と Monthly の API の文書は 403 で読めず、SaaS の文書で見た）:
+    - N1: `Forecast.htm`・`Workload_Policies.htm`
+    - N2・N4・N5: `API_CodeRef_JobProperties.htm`（Mail の AttachOutput・RunOnAllAgentsInGroup・When の StartDate・EndDate・ActivePeriod）
+    - N2・N8: `Job_types.htm`
+    - N3: `Variables.htm`
+    - N4: `Host_Groups.htm`・`https://documents.bmc.com/supportu/9.0.20/help/Main_help/en-US/JefMultiAgent.htm`
+    - N6: `Workspaces.htm`・`API_DeployDescriptor.htm`
+    - N8: `DB_Configuration.htm`
+    - N9: `File_Transfer_Job.htm`・`Add-ons.htm`
+    - 見当たらない（URL なし）: N7
 - **Rundeck**: 頭は `https://docs.rundeck.com/docs/`。「有償版」は PagerDuty Runbook Automation。
   - 表 1:
     - 定義・今すぐ実行・スケジュール・打ち切り・リトライ: `manual/jobs/creating-jobs.html`
@@ -278,6 +323,15 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
     - H27: `manual/projects/scm/git.html`
     - H28: `manual/projects/project-archive.html`
     - 見当たらない（URL なし）: C15
+  - 表 4:
+    - N1: `manual/calendars.html`・`manual/calendars/system-calendars.html`
+    - N2: `manual/notifications/email.html`
+    - N2・N8: `manual/jobs/job-plugins/`（SQL Runner・MongoDB Command Runner）
+    - N3: `manual/jobs/job-variables.html`
+    - N4: `manual/jobs/creating-jobs.html`（Dispatch to Nodes・Thread Count・If a node fails）
+    - N6: `manual/projects/project-archive.html`・`manual/projects/scm/git.html`
+    - N9: `manual/jobs/job-plugins/node-steps/aws-s3.html`・`manual/jobs/job-plugins/workflow-steps/azure.html`・`manual/jobs/job-plugins/workflow-steps/file-transfer.html`
+    - 見当たらない（URL なし）: N5
 - **Apache Airflow 3.3.2**: 頭は `https://airflow.apache.org/docs/apache-airflow/stable/`
   - 表 1:
     - 手動の起動・catchup・再実行（Re-run Tasks の Clear）: `core-concepts/dag-run.html`
@@ -330,6 +384,18 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
     - H27: `administration-and-deployment/dag-bundles.html`
     - H28: `howto/usage-cli.html`
     - 見当たらない（URL なし）: C7・H20
+  - 表 4:
+    - H7・N2・N8・N9（既定で入る provider）: `extra-packages-ref.html`。Preinstalled の印は Web では消えるので、
+      GitHub のタグ 3.3.2 の `airflow-core/docs/extra-packages-ref.rst` で確かめた（印は common.sql・ftp・http・imap・sqlite だけ）
+    - N2: `https://airflow.apache.org/docs/apache-airflow-providers-smtp/stable/_api/airflow/providers/smtp/operators/smtp/index.html`
+    - N3: `core-concepts/variables.html`
+    - N4: `authoring-and-scheduling/dynamic-task-mapping.html`・`core-concepts/dags.html`（trigger rule）
+    - N5: `https://airflow.apache.org/docs/task-sdk/stable/api.html`（DAG の start_date・end_date）
+    - N6: `administration-and-deployment/dag-bundles.html`
+    - N8: `https://airflow.apache.org/docs/apache-airflow-providers-common-sql/stable/operators.html`・`https://airflow.apache.org/docs/apache-airflow-providers-common-sql/stable/supported-database-types.html`
+    - N9: `https://airflow.apache.org/docs/apache-airflow-providers-amazon/stable/transfer/local_to_s3.html`・`https://airflow.apache.org/docs/apache-airflow-providers-amazon/stable/operators/s3/s3.html`・
+      `https://airflow.apache.org/docs/apache-airflow-providers-microsoft-azure/stable/transfer/local_to_wasb.html`
+    - 見当たらない（URL なし）: N1
 - **Windows のタスク スケジューラ**: 頭は `https://learn.microsoft.com/en-us/windows/win32/taskschd/`
   - 表 1:
     - 今すぐ実行・次の予定: `registeredtask`・`registeredtask-getruntimes`
@@ -358,5 +424,13 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
     - H21: `https://learn.microsoft.com/en-us/windows/win32/api/taskschd/nf-taskschd-iregisteredtask-run`
     - H23: `https://learn.microsoft.com/en-us/windows-server/administration/windows-commands/schtasks-create`
     - H27: `taskschedulerschema-version-registrationinfotype-element`
+  - 表 4:
+    - N2: `emailaction`（"This object is no longer supported"、End of client support は Windows 7）・`task-actions`
+    - N4・N6: `https://learn.microsoft.com/en-us/previous-versions/windows/it-pro/windows-server-2008-R2-and-2008/cc725745(v=ws.11)`（schtasks の `/s`・`/create /xml`）
+    - N5: `trigger-endboundary`
+    - N6: `https://learn.microsoft.com/en-us/troubleshoot/windows-server/group-policy/user-gpp-scheduled-task-item-fails-apply`
+    - N7: `trigger-types`・`task-idle-conditions`・`sessionstatechangetrigger-statechange`
+    - N8・N9: `task-actions`（動作はプログラムの起動。メール・メッセージは廃止）
+    - N1・N3 の × は、API（トリガー・動作・設定）にその項目が無いことからの判断（推測）
 - **cron**: cronie の `https://man7.org/linux/man-pages/man5/crontab.5.html`・`https://man7.org/linux/man-pages/man8/cron.8.html`、
   Debian の `https://manpages.debian.org/bookworm/cron/cron.8.en.html`、anacron の `https://man7.org/linux/man-pages/man8/anacron.8.html`
