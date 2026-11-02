@@ -70,6 +70,11 @@ jobs:
         run: cargo test --locked
 
       - name: Build x64
+        # The app's built-in Google OAuth client (ito_oauth::built_in_client!). GitHub masks secrets in the log;
+        # a fork's pull request gets them empty and the build then has no built-in client.
+        env:
+          UCHMK_GOOGLE_CLIENT_ID: ${{ secrets.UCHMK_GOOGLE_CLIENT_ID }}
+          UCHMK_GOOGLE_CLIENT_SECRET: ${{ secrets.UCHMK_GOOGLE_CLIENT_SECRET }}
         run: cargo build --release --locked -p koyomi --target x86_64-pc-windows-msvc
 
       # koyomi.com: a console program, so PowerShell waits for it and the bare
@@ -86,6 +91,11 @@ jobs:
           "koyomi.com: $($lines.Count) lines, $ver"
 
       - name: Build ARM64
+        # The app's built-in Google OAuth client (ito_oauth::built_in_client!). GitHub masks secrets in the log;
+        # a fork's pull request gets them empty and the build then has no built-in client.
+        env:
+          UCHMK_GOOGLE_CLIENT_ID: ${{ secrets.UCHMK_GOOGLE_CLIENT_ID }}
+          UCHMK_GOOGLE_CLIENT_SECRET: ${{ secrets.UCHMK_GOOGLE_CLIENT_SECRET }}
         run: cargo build --release --locked -p koyomi --target aarch64-pc-windows-msvc
 
       # A zip of one folder: koyomi.exe, koyomi.com (the console front, so that a
@@ -223,6 +233,11 @@ jobs:
           key: ${{ matrix.target }}
 
       - name: Build
+        # The app's built-in Google OAuth client (ito_oauth::built_in_client!). GitHub masks secrets in the log;
+        # a fork's pull request gets them empty and the build then has no built-in client.
+        env:
+          UCHMK_GOOGLE_CLIENT_ID: ${{ secrets.UCHMK_GOOGLE_CLIENT_ID }}
+          UCHMK_GOOGLE_CLIENT_SECRET: ${{ secrets.UCHMK_GOOGLE_CLIENT_SECRET }}
         run: cargo build --release --locked -p koyomi --target ${{ matrix.target }}
 
       - name: Pack
