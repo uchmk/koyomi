@@ -125,7 +125,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 11.10 | A net with `[[when]] every = "month" day = "last"` at 02:00 | `koyomi next` lists the last day of each coming month |
 | 11.11 | `calendars/jp.toml` with `holidays = "japan"`; a net with `calendar = "jp"` and `[[when]] every = "week" days = ["mon"] at = ["02:00"]`; `koyomi next <net> --count 12` | The rows skip Japanese holidays that fall on a Monday (no 2026-11-23, no 2027-01-11) |
 | 11.12 | A confirmed net with `[[when]]` exists and `koyomi` is not set to start at sign-in | A band under the title: `時刻で流す定義がありますが、サインイン時に koyomi は起動しません…`; it goes away once the setting is on, or when no confirmed net has `[[when]]` |
-| 11.13 | While 11.6's engine is stopped, write a `[[when]]` whose `at` is in the past of today into an unconfirmed net, then start the engine | The row is `🔒 止めた`, never `↷ 時刻を過ぎた` for a time the engine never knew of |
+| 11.13 | [x] While 11.6's engine is stopped, write a `[[when]]` whose `at` is in the past of today into an unconfirmed net, then start the engine | The row is `🔒 止めた`, never `↷ 時刻を過ぎた` for a time the engine never knew of |
 
 ## 12. The week ahead at approval
 
@@ -135,7 +135,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 12.2 | Approve 12.1, then change it to `every = "minutes" n = 15 from = "00:00" to = "23:59"`; open the box | `7 日で 7 回 → 672 回（+665）`, then 20 rows starting `+ ` with the next quarter hours, then `… 他 645 件`; the 2:00 rows are not listed (they stay) |
 | 12.3 | Approve 12.2, then change it back to daily 2:00 | `7 日で 672 回 → 7 回（-665）` and 20 rows starting `- ` |
 | 12.4 | Approve a daily net, then add `except = ["<a day within the week>"]` | `7 日で 7 回 → 6 回（-1）` and one `- ` row for that day |
-| 12.5 | A net with `calendar = "jp"` on weekdays, approved; change it to `calendar = "none"` across a holiday | The holiday's time appears as a `+ ` row |
+| 12.5 | [x] A net with `calendar = "jp"` on weekdays, approved; change it to a calendar file with no holidays (`holidays = "none"`) across a holiday | The holiday's time appears as a `+ ` row |
 | 12.6 | A new net with no `[[when]]`; open the box | No week lines at all; after approving, remove a `[[when]]` from a net that had one | `7 日で N 回 → 0 回（-N）` with the `- ` rows |
 | 12.7 | Open the box, wait, open it again a minute later | The counts are from the moment the box opens: a time that passed meanwhile is gone from the list |
 
@@ -1002,7 +1002,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 78.1 | Let a net end ✓, then a net that fails (`exit 1`) | Event Viewer → Windows ログ → Application, source `koyomi`: id 1000 (情報) and id 2000 (エラー) with the title and the failed jobs |
-| 78.2 | A net stopped at its `timeout`; one stopped with 強制終了 | id 2001 and id 2002 (エラー) |
+| 78.2 | [x] A net stopped at its `timeout`; one stopped with 強制終了 | id 2001 and id 2002 (エラー) |
 | 78.3 | The failed net runs well on the next start | id 1100 (情報) after the 1000 |
 | 78.4 | A net held with ⏸ | Nothing is written (a person did it) |
 
@@ -1204,7 +1204,7 @@ PC A runs the engine with `[http]` as in §87 plus `lan = true`; PC B calls it. 
 | 92.7 | On B: change one digit of the fingerprint; `koyomi remote status a` | `証明書が koyomi.toml の fingerprint と違う（今見えたのは …）…`; nothing is sent |
 | 92.8 | On B: `koyomi secret set a-token` with a wrong value; or delete it | `token が合わない…`; `token の秘密 a-token がない…` |
 | 92.9 | `koyomi check` koyomi.toml with `url = "http://A:8790"`, a short fingerprint, `token = "T"`, two `[[remote]]` with the same name | Each refused: `url は https://<PC>:<port> で書く…`, `fingerprint は SHA-256…`, `token は secret:<名前> で書く`, `name … が 2 つある` |
-| 92.10 | `koyomi remote status nope`; `koyomi remote frob` | `nope: [[remote]] にない（あるのは a）`; the usage line, exit 2 |
+| 92.10 | [x] `koyomi remote status nope`; `koyomi remote frob` | `nope: [[remote]] にない（あるのは a）`; the usage line, exit 2 |
 
 ## 93. Standby for another PC (`[standby]`, `koyomi standby [giveback]`; TODO 87)
 
@@ -1367,7 +1367,7 @@ As §93, plus on A `[[http.user]]` `b` (`role = "edit"`, `token = "secret:b"`) w
 | 99.3 | Change and confirm `g/a` on A; wait up to 5 minutes | B copies `g/a` again, 未確認, the confirm box shows the change; `koyomi versions g/a` on B keeps the one before |
 | 99.4 | On A, change `g/a` but do not confirm it | B does not copy it |
 | 99.5 | On A make `b`'s role `view`; restart B | B's cautions and `koyomi standby` show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on |
-| 99.6 | A net on A that calls a child net (`kind = "net"`), both new to B | Both land on B in one copy (the child first) |
+| 99.6 | [x] A net on A that calls a child net (`kind = "jobnet"`, `use = "g/child"`), both new to B | Both land on B in one copy (the child first) |
 | 99.7 | Stop A so that B takes over; leave `g/a` unconfirmed on B | B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone |
 | 99.9 | Start A again; `koyomi standby giveback` on B | B watches again and copies at once (no 5-minute wait) |
 | 99.8 | A net only on B | Still there after copies |
@@ -1424,15 +1424,15 @@ Two engines on this PC, A and B, each in its own temp folders, so the real profi
 | 102.2 | `koyomi check` with `[standby]` and `[primary]` both, `give_back = "sometimes"`, a net with `takeover = "maybe"` | Each is an error (`[standby] と [primary] は一緒に書けない…` for the first) |
 | 102.3 | Stop B; restart A; `koyomi standby` on A at once, then after 10 s | First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then `koyomi: 待機の PC` `b が答えないので、この PC で流す` and A runs. Start B again |
 | 102.4 | On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) | After about 10 s B says `koyomi: 待機から引き継いだ` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` |
-| 102.5 | B's window: the runs of `t/r` and `t/l` | `t/r` runs `two` (`one` shows it ended ok on A, not run again); `t/l` is ↷ with `a で動いていた・引き継いでいない（<A's id> / …）`, `two` 未実行 with `a で動いていた（終わったかは分からない）` |
-| 102.6 | On B `koyomi rerun <t/l's id>` | `t/l` runs from `two` on B |
+| 102.5 | [x] B's window: the runs of `t/r` and `t/l` | `t/r` runs `two` (`one` shows it ended ok on A, not run again); `t/l` is ↷ with `a で動いていた・引き継いでいない（<A's id> / …）`, `two` 未実行 with `a で動いていた（終わったかは分からない）` |
+| 102.6 | [x] On B `koyomi rerun <t/l's id>` | `t/l` runs from `two` on B |
 | 102.7 | Start A again (same console) | A says `koyomi: 待機の PC` `b が引き継いでいる。返されるまで…`; `t/clock` does not run on A; B says `koyomi: 引き取りを待っている`; after about 10 s B says `koyomi: 戻した` (`a が引き取りに来たので戻した。また見張る`) and A `b から戻った。この PC で流す` |
 | 102.8 | B's `standby.toml` in its state folder; `koyomi ops` on B | One line each for the takeover and the hand-back; ops has `handover-release` |
 | 102.9 | Repeat 102.4 and 102.7 with `koyomi run t/l` started on B just before A comes back | The run on B goes on to the end after the hand-back; A runs the schedules |
-| 102.10 | Make `t/clock`'s next time 20 s after you start A again in 102.7 | B answers 409; A's `koyomi standby` shows `[primary] b: 時刻が近い（t/clock HH:MM:SS）。少しあとで`; it is handed back on a later ask, and `t/clock` runs once (on one of them) |
-| 102.11 | `give_back = "manual"` on B (restart B); repeat 102.4, then start A | A waits; B's `koyomi standby` says `…戻すのは koyomi standby giveback`; `koyomi standby giveback` on B says `a が引き取りを待っているので、次に聞いてきたら戻す`, and within 5 s A runs. `koyomi ops` on B has `giveback` |
-| 102.12 | Take `[primary]` out of A; with `give_back = "auto"` repeat 102.4, then start A | A runs at once; B says `koyomi: 両方で流している` (`…a が 2 回続けて答えたらこちらは止める`) and after about 10 s `koyomi: 戻した` |
-| 102.13 | Put `[primary]` back; on B give `a` `nets = ["t/*"]`; repeat 102.4, then start A | A stays waiting; its cautions show `[primary] b: 引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）`. Take `nets` out: A takes them back |
+| 102.10 | [x] Make `t/clock`'s next time 20 s after you start A again in 102.7 | B answers 409; A's `koyomi standby` shows `[primary] b: 時刻が近い（t/clock HH:MM:SS）。少しあとで`; it is handed back on a later ask, and `t/clock` runs once (on one of them) |
+| 102.11 | [x] `give_back = "manual"` on B (restart B); repeat 102.4, then start A | A waits; B's `koyomi standby` says `…戻すのは koyomi standby giveback`; `koyomi standby giveback` on B says `a が引き取りを待っているので、次に聞いてきたら戻す`, and within 5 s A runs. `koyomi ops` on B has `giveback` |
+| 102.12 | [x] Take `[primary]` out of A; with `give_back = "auto"` repeat 102.4, then start A | A runs at once; B says `koyomi: 両方で流している` (`…a が 2 回続けて答えたらこちらは止める`) and after about 10 s `koyomi: 戻した` |
+| 102.13 | [x] Put `[primary]` back; on B give `a` `nets = ["t/*"]`; repeat 102.4, then start A | A stays waiting; its cautions show `[primary] b: 引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）`. Take `nets` out: A takes them back |
 | 102.14 | Clean up | Stop both engines (only the two started here), `koyomi secret delete t96-a` and `t96-b`, remove `%TEMP%\koyomi-t96` |
 
 ## 103. A click on a notification opens its run (TODO 99)
