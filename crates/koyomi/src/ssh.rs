@@ -116,13 +116,33 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
     }
     let exit = result.map_err(|e| match e {
         ito_sftp::Error::Stopped => STOPPED.to_owned(),
+        ito_sftp::Error::Connect(m) => format!("接続できません: {}", connect_text(&m)),
         e => e.to_string(),
     })?;
     if !exit.env_refused.is_empty() {
         let names = exit.env_refused.join(", ");
-        out(&format!("env を受け付けなかった: {names}（相手の sshd_config の AcceptEnv）"), true);
+        out(&format!("{}: env を受け付けなかった: {names}（相手の sshd_config の AcceptEnv）", far.host), true);
     }
     outcome(exit.status, exit.signal)
+}
+
+/// A connect failure in one plain Japanese line. ito-sftp passes the library's Debug text for a
+/// refused connection (`Io(Os { code: 10061, kind: ConnectionRefused, .. })`); that is not shown.
+fn connect_text(m: &str) -> String {
+    let has = |k: &str| m.contains(k);
+    if has("ConnectionRefused") || has("10061") || has("os error 111") {
+        "相手が断った（ポートが閉じている、または sshd が動いていない）".to_owned()
+    } else if has("TimedOut") || has("10060") {
+        "時間切れ（相手に届かない）".to_owned()
+    } else if has("Unreachable") || has("10051") || has("10065") {
+        "相手までの道がない（ネットワークを見る）".to_owned()
+    } else if has("NotFound") || has("failed to lookup") || has("11001") {
+        "ホスト名が引けない".to_owned()
+    } else if has("Io(") || has("Os {") || has("kind:") {
+        "つながらなかった（相手のアドレスとポート、sshd を見る）".to_owned()
+    } else {
+        m.to_owned()
+    }
 }
 
 /// The group named in `on` (`group:web`) with `max` and `pass` of the job
@@ -402,6 +422,15 @@ mod tests {
         assert!(fan_of(p, "group:web").unwrap_err().contains("1 から 64"));
         std::env::remove_var(format!("{p}MAX"));
         std::env::remove_var(format!("{p}PASS"));
+    }
+
+    #[test]
+    fn a_refused_connection_is_said_in_plain_japanese() {
+        let debug = "Io(Os { code: 10061, kind: ConnectionRefused, message: \"x\" })";
+        let t = connect_text(debug);
+        assert!(t.contains("断った") && !t.contains("Os {") && !t.contains("Io("), "{t}");
+        assert_eq!(connect_text("時間切れ"), "時間切れ");
+        assert!(connect_text("Io(Weird { kind: Other })").starts_with("つながらなかった"));
     }
 
     #[test]

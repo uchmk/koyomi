@@ -175,6 +175,9 @@ pub enum Outcome {
     Timeout,
     /// It never ran (the executable was not found, or the engine died with it).
     Failed,
+    /// It ended by itself with [`NO_EXIT`](crate::chore::NO_EXIT) and said why (an `ssh`,
+    /// `winrm` or `mail` job that got no exit code): the exit is recorded, the reason is its own.
+    NoExit,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -894,6 +897,13 @@ impl Run {
                     }
                     State::Error
                 }
+                Outcome::NoExit => {
+                    j.exit = Some(crate::chore::NO_EXIT);
+                    if j.reason.is_empty() {
+                        j.reason = "終了コードを受け取れなかった".to_owned();
+                    }
+                    State::Error
+                }
             };
             if matches!(outcome, Outcome::Killed | Outcome::Timeout) && !note.is_empty() {
                 j.reason = format!("{}、{note}", j.reason);
@@ -912,6 +922,14 @@ impl Run {
             self.jobs[i].reason = reason.to_owned();
         }
         self.finish(id, Outcome::Failed, now);
+    }
+
+    /// [`finish`](Run::finish) with [`Outcome::NoExit`] and this reason.
+    pub fn fail_no_exit(&mut self, id: &str, reason: &str, now: NaiveDateTime) {
+        if let Some(i) = self.index(id) {
+            self.jobs[i].reason = reason.to_owned();
+        }
+        self.finish(id, Outcome::NoExit, now);
     }
 
     /// A person stops the whole run: what has not started will not. The jobs that run are

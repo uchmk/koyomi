@@ -4,7 +4,9 @@
 //! no event (a person's `koyomi run` still goes). After `misses` polls in a row that get no
 //! answer, it takes over and runs the times from then on.
 //!
-//! While it watches, each poll also reads the runs going on there (`GET /runs?running=1`). On a
+//! While it watches, the runs going on there (`GET /runs?running=1`) are read every 2 s, apart from
+//! the health poll, and the latest good list is kept (a failed read does not wipe it; one older
+//! than 30 s is not trusted). A run that starts and whose PC dies within the 2 s cannot be known. On a
 //! takeover the engine starts those of a net that says `takeover = "rerun"` here again, from the
 //! jobs that had not passed, and writes the others down as not taken over, for a person.
 //!
@@ -45,6 +47,15 @@ use serde::{Deserialize, Serialize};
 
 /// How often a standby copies the definitions from the engine it watches.
 pub const COPY_EVERY: Duration = Duration::from_secs(300);
+
+/// How often the runs going on there are read while standing by, apart from the health poll
+/// (which may be 5 s or more): a run that starts and then the primary dies must not fall
+/// between two reads.
+const RUNS_EVERY: Duration = Duration::from_secs(2);
+
+/// How old the last good list of runs may be and still be started from. Older than this, the
+/// reads there have been failing for a while and the list may hold runs that ended since.
+const RUNS_STALE: Duration = Duration::from_secs(30);
 
 /// How many handovers `standby.toml` keeps.
 const LOG: usize = 20;
@@ -119,6 +130,12 @@ pub struct Standby {
     seen: Option<Seen>,
     /// The runs going on there at the last poll (`None`: not read then).
     running: Option<Vec<Run>>,
+    /// When `running` was read.
+    running_at: Option<Instant>,
+    runs_tx: mpsc::Sender<Result<Vec<Run>, String>>,
+    runs_rx: mpsc::Receiver<Result<Vec<Run>, String>>,
+    runs_last: Option<Instant>,
+    runs_in_flight: bool,
     /// What the last poll said was wrong.
     note: Option<String>,
     /// Why the last read of the runs there did not go.
@@ -142,6 +159,7 @@ impl Standby {
         let prev: Kept = kept::read(&path).unwrap_or_default();
         let (tx, rx) = mpsc::channel();
         let (copy_tx, copy_rx) = mpsc::channel();
+        let (runs_tx, runs_rx) = mpsc::channel();
         let misses = koyomi_core::standby::MISSES;
         Standby {
             cfg: None,
@@ -157,6 +175,11 @@ impl Standby {
             polled: false,
             seen: None,
             running: None,
+            running_at: None,
+            runs_tx,
+            runs_rx,
+            runs_last: None,
+            runs_in_flight: false,
             note: None,
             runs_note: None,
             missed_why: None,
@@ -186,6 +209,7 @@ impl Standby {
             self.polled = false;
             self.seen = None;
             self.running = None;
+            self.running_at = None;
             self.runs_note = None;
         }
         self.cfg = cfg.cloned();
@@ -211,6 +235,23 @@ impl Standby {
         while let Ok(p) = self.rx.try_recv() {
             self.in_flight = false;
             told.extend(self.take(&remote.name, p));
+        }
+        while let Ok(r) = self.runs_rx.try_recv() {
+            self.runs_in_flight = false;
+            if self.waiting() {
+                self.take_runs(r);
+            }
+        }
+        if self.waiting() && !self.runs_in_flight && self.runs_last.is_none_or(|l| l.elapsed() >= RUNS_EVERY) {
+            self.runs_last = Some(Instant::now());
+            self.runs_in_flight = true;
+            let (tx, remote) = (self.runs_tx.clone(), remote.clone());
+            let spawned = std::thread::Builder::new().name("standby-runs".into()).spawn(move || {
+                let _ = tx.send(runs_poll(&remote));
+            });
+            if spawned.is_err() {
+                self.runs_in_flight = false;
+            }
         }
         if self.in_flight || self.last.is_some_and(|l| l.elapsed() < Duration::from_secs(every)) {
             return told;
@@ -277,21 +318,8 @@ impl Standby {
         let seen = match p {
             Poll::Answered { seen, note, running } => {
                 self.note = note;
-                // Only the latest list is started from: an older one may hold runs that have
-                // ended there since.
-                match running {
-                    Some(Ok(r)) => {
-                        self.running = Some(r);
-                        self.runs_note = None;
-                    }
-                    Some(Err(e)) => {
-                        self.running = None;
-                        self.runs_note = Some(e);
-                    }
-                    None => {
-                        self.running = None;
-                        self.runs_note = None;
-                    }
+                if let Some(r) = running {
+                    self.take_runs(r);
                 }
                 seen
             }
@@ -314,6 +342,12 @@ impl Standby {
                 self.since = Local::now().format("%Y-%m-%d %H:%M").to_string();
                 let why = self.missed_why.clone().unwrap_or_default();
                 self.record(format!("{} {name} から引き継いだ（{why}）", stamp()));
+                // The latest good list is started from, unless it is too old to trust.
+                let stale = self.running_at.is_none_or(|t| t.elapsed() > RUNS_STALE);
+                if stale && self.running.take().is_some() && self.runs_note.is_none() {
+                    self.runs_note = Some("最後に読めた動いている回が古すぎる".to_owned());
+                }
+                self.running_at = None;
                 let unread = self.running.is_none().then(|| self.runs_note.take()).flatten();
                 self.runs_note = None;
                 let back = if auto {
@@ -347,6 +381,21 @@ impl Standby {
                 self.record(format!("{} {name} に戻した（{misses} 回続けて答えた。give_back = \"auto\"）", stamp()));
                 Some(Told::GaveBack(format!("{name} が {misses} 回続けて答えたので、こちらで流すのをやめた。また見張る")))
             }
+        }
+    }
+
+    /// Takes in one read of the runs going on there. The latest good list is the one a takeover
+    /// starts from (an older one may hold runs that ended since). A failed read keeps it: the
+    /// reads fail exactly when the primary is dying, and an empty list there must not be what a
+    /// takeover starts from when a good one was seen a moment before.
+    fn take_runs(&mut self, r: Result<Vec<Run>, String>) {
+        match r {
+            Ok(list) => {
+                self.running = Some(list);
+                self.running_at = Some(Instant::now());
+                self.runs_note = None;
+            }
+            Err(e) => self.runs_note = Some(e),
         }
     }
 
@@ -553,6 +602,17 @@ fn poll(r: &config::Remote, runs: bool) -> Poll {
     }
 }
 
+/// One read of the runs going on there, on its own thread, apart from the health poll.
+fn runs_poll(r: &config::Remote) -> Result<Vec<Run>, String> {
+    let name = r.secret();
+    let token = match ito_secret::get("koyomi", name) {
+        Ok(Some(t)) => t,
+        _ => return Err(format!("動いている回が読めない: token の秘密 {name} がない")),
+    };
+    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| format!("動いている回が読めない: {e}"))?;
+    running_of(&c)
+}
+
 /// What a `/health` reply (its status) or failure says.
 fn judge(got: Result<u16, client::Error>, secret: &str) -> Poll {
     let answered = |note: Option<String>| Poll::Answered { seen: Seen::Running, note, running: None };
@@ -702,11 +762,43 @@ mod tests {
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Ok(runs.clone())) });
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err("動いている回が読めない: x".into())) });
         assert!(s.notes()[0].contains("動いている回が読めない"));
-        match s.take("pc1", Poll::Missed("refused".into())) {
+        // The failed read keeps the good list seen a moment before: it fails as the primary dies.
+        assert_eq!(s.take("pc1", Poll::Missed("refused".into())).map(|t| matches!(t, Told::TookOver(_, Some(r)) if r == runs)), Some(true));
+        // With no good list at all, the line says why.
+        let d2 = dir("runs-none");
+        let mut n = Standby::new(&d2);
+        n.set(Some(&cfg(1)), &[remote()]);
+        n.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err("動いている回が読めない: x".into())) });
+        match n.take("pc1", Poll::Missed("refused".into())) {
             Some(Told::TookOver(line, None)) => assert!(line.contains("動いている回が読めない: x"), "{line}"),
             other => panic!("{other:?}"),
         }
         assert!(s.notes().is_empty());
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// a run that starts after one health poll is caught by the faster read of the runs; the
+    /// reads that fail as the primary dies do not wipe it.
+    #[test]
+    fn a_run_seen_between_polls_survives_the_failing_reads() {
+        let d = dir("runs-fast");
+        let mut s = Standby::new(&d);
+        s.set(Some(&cfg(2)), &[remote()]);
+        s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Ok(Vec::new())) });
+        let runs = vec![a_run("20261101-020000-00")];
+        s.take_runs(Ok(runs.clone()));
+        s.take_runs(Err("動いている回が読めない: reset".into()));
+        assert!(s.take("pc1", Poll::Missed("refused".into())).is_none());
+        s.take_runs(Err("動いている回が読めない: refused".into()));
+        let told = s.take("pc1", Poll::Missed("refused".into()));
+        assert!(matches!(&told, Some(Told::TookOver(_, Some(ref r))) if *r == runs), "{told:?}");
+        // A list that ended there since is replaced by the newer one.
+        let d3 = dir("runs-fast2");
+        let mut e = Standby::new(&d3);
+        e.set(Some(&cfg(1)), &[remote()]);
+        e.take_runs(Ok(runs));
+        e.take_runs(Ok(Vec::new()));
+        assert!(matches!(e.take("pc1", Poll::Missed("x".into())), Some(Told::TookOver(_, Some(r))) if r.is_empty()));
         let _ = std::fs::remove_dir_all(&d);
     }
 

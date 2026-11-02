@@ -824,6 +824,7 @@ impl Runner {
                 _ if done.reason.is_empty() => r.finish(&done.job, done.outcome, now),
                 // A stop's reason says how it went (an `ssh` job's far command was asked too).
                 Outcome::Killed | Outcome::Timeout => r.finish_noted(&done.job, done.outcome, &done.reason, now),
+                Outcome::NoExit => r.fail_no_exit(&done.job, &done.reason, now),
                 _ => r.fail(&done.job, &done.reason, now),
             }
             let r = r.clone();
@@ -1286,7 +1287,7 @@ fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
                 State::Ok => {}
                 _ => warned = warned.or(Some(code)),
             },
-            Outcome::Failed => return done(Outcome::Failed, format!("{of}で異常: {reason}"), retried),
+            Outcome::Failed | Outcome::NoExit => return done(outcome, format!("{of}で異常: {reason}"), retried),
             Outcome::Killed | Outcome::Timeout => return done(outcome, String::new(), retried),
         }
     }
@@ -1373,7 +1374,7 @@ fn side_by_side(
                         None
                     }
                 },
-                Outcome::Failed => Some((Outcome::Failed, format!("{of}で異常: {reason}"))),
+                Outcome::Failed | Outcome::NoExit => Some((outcome, format!("{of}で異常: {reason}"))),
                 Outcome::Killed | Outcome::Timeout => Some((outcome, String::new())),
             };
             if first.is_none() {
@@ -1419,8 +1420,8 @@ fn tries(
     let mut retried = 0;
     loop {
         let (outcome, reason) = attempt(job, command, env, stop, why, file, size);
-        let abnormal =
-            matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) == State::Error) || outcome == Outcome::Failed;
+        let abnormal = matches!(outcome, Outcome::Exited(code) if verdict(job.judge.as_ref(), code) == State::Error)
+            || matches!(outcome, Outcome::Failed | Outcome::NoExit);
         if !abnormal || retried >= count {
             return (outcome, reason, retried);
         }
@@ -1677,7 +1678,7 @@ fn attempt(
             let code = lines.status.and_then(|s| s.code()).unwrap_or(-1);
             // The job has said why in the log already (`! …`).
             if let Some(why) = left {
-                return (Outcome::Failed, why);
+                return (Outcome::NoExit, why);
             }
             if let Some(line) = bad_line {
                 let _ = writeln!(file, "! 出力が error_output に合った");

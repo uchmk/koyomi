@@ -137,6 +137,15 @@ pub fn access_warnings(paths: &Paths, files: &[PathBuf]) -> Vec<String> {
     seen.into_iter().map(|(p, who)| format!("{} は {} が書き換えられる", shown(&p), who)).collect()
 }
 
+/// The warnings in `warnings` that bear on the net in `file`: those about the shared folders and
+/// files, and those about this net's own file, but not those about another net's file.
+pub fn warnings_about(paths: &Paths, warnings: &[String], defs: &[Def], file: &str) -> Vec<String> {
+    let at = |f: &str| shown(&f.split('/').fold(paths.jobnets.clone(), |p, c| p.join(c)));
+    let own = at(file);
+    let others: Vec<String> = defs.iter().filter(|d| d.file != file).map(|d| at(&d.file)).collect();
+    warnings.iter().filter(|w| w.starts_with(&own) || !others.iter().any(|o| w.starts_with(o.as_str()))).cloned().collect()
+}
+
 /// The path without Windows' `\\?\` prefix.
 fn shown(p: &Path) -> String {
     let s = p.display().to_string();
@@ -1520,10 +1529,7 @@ impl State {
     /// The warnings that bear on the net in `file`: those about the shared folders and files, and
     /// those about this net's own file, but not those about another net's file.
     fn warnings_for(&self, file: &str) -> Vec<String> {
-        let at = |f: &str| shown(&f.split('/').fold(self.paths.jobnets.clone(), |p, c| p.join(c)));
-        let own = at(file);
-        let others: Vec<String> = self.defs.iter().filter(|d| d.file != file).map(|d| at(&d.file)).collect();
-        self.warnings.iter().filter(|w| w.starts_with(&own) || !others.iter().any(|o| w.starts_with(o.as_str()))).cloned().collect()
+        warnings_about(&self.paths, &self.warnings, &self.defs, file)
     }
 
     fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
@@ -2923,6 +2929,9 @@ run = [\"x.exe\"]
         let (a, b) = (sha(&s, "経理/甲"), sha(&s, "経理/乙"));
         let e = s.approve("経理/甲", &a).unwrap_err();
         assert!(e.starts_with("承認できない: ") && e.contains("Everyone"), "{e}");
+        // The CLI/window pre-check asks the same question and gives the same answer.
+        assert!(!warnings_about(&paths, &s.warnings, &s.defs, "経理/甲.toml").is_empty());
+        assert!(warnings_about(&paths, &s.warnings, &s.defs, "経理/乙.toml").is_empty());
         assert_eq!(s.approve("経理/乙", &b), Ok("確認した: 経理/乙".to_owned()));
         assert_eq!(standing_of(&s, "経理/乙"), Some(Standing::Confirmed));
         assert_ne!(standing_of(&s, "経理/甲"), Some(Standing::Confirmed));

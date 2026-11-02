@@ -725,11 +725,17 @@ fn approve(args: &[String]) -> i32 {
         Ok(s) => s,
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
-    if !snap.warnings.is_empty() {
-        for w in &snap.warnings {
-            out(&format!("! {w}"), true);
+    if let Some(file) = snap.defs.iter().find(|d| d.id == id).map(|d| d.file.clone()) {
+        let own = match engine::Paths::find() {
+            Ok(paths) => engine::warnings_about(&paths, &snap.warnings, &snap.defs, &file),
+            Err(_) => snap.warnings.clone(),
+        };
+        if !own.is_empty() {
+            for w in &own {
+                out(&format!("! {w}"), true);
+            }
+            return fail("承認できない: 上の警告を直してから（警告がある間は何も確認できない）");
         }
-        return fail("承認できない: 上の警告を直してから（警告がある間は何も確認できない）");
     }
     let def: Def = match client::call(&Request::Show { id: id.clone() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
         Ok(d) => d,

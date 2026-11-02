@@ -895,6 +895,15 @@ impl Browser {
         self.snap.as_ref().is_some_and(|s| !s.warnings.is_empty())
     }
 
+    /// Whether a warning bears on `def` itself (approving it is refused); another net's file does not count.
+    fn blocked_for(&self, def: &Def) -> bool {
+        let Some(s) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) else { return false };
+        match engine::Paths::find() {
+            Ok(paths) => !engine::warnings_about(&paths, &s.warnings, &s.defs, &def.file).is_empty(),
+            Err(_) => true,
+        }
+    }
+
     fn selected_def(&self) -> Option<&Def> {
         let id = self.selected.as_deref()?;
         self.snap.as_ref()?.defs.iter().find(|d| d.id == id)
@@ -3912,7 +3921,7 @@ impl Browser {
 
     /// 確かめる…: opens the box that marks the net 確認済み (only while it is not).
     fn approve_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
-        let can = def.standing == Standing::Unconfirmed && !self.blocked();
+        let can = def.standing == Standing::Unconfirmed && !self.blocked_for(def);
         let label = match &self.easy {
             Some(lang) => format!("{}…", crate::glossary::GLOSSARY.label("approve", lang, true, "")),
             None => t.tr("confirm.approve").to_owned(),
@@ -4149,7 +4158,7 @@ impl Browser {
             return;
         };
         // What was looked at must be what is approved: a change since closes the box.
-        if def.sha256 != ask.sha256 || def.standing != Standing::Unconfirmed || self.blocked() {
+        if def.sha256 != ask.sha256 || def.standing != Standing::Unconfirmed || self.blocked_for(&def) {
             self.asking = None;
             return;
         }

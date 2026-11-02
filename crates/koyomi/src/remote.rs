@@ -150,8 +150,21 @@ fn list() -> Result<String, String> {
 }
 
 fn peek(url: &str) -> Result<String, String> {
-    let fp = client::peek_fingerprint(url, PEEK_WAIT).map_err(|e| format!("{url}: {e}"))?;
+    let fp = client::peek_fingerprint(url, PEEK_WAIT).map_err(|e| format!("{url}: {}", peek_why(&e)))?;
     Ok(format!("fingerprint = \"{fp}\"\n向こうの PC で koyomi http fingerprint が同じものを出すのを確かめてから、[[remote]] に書く"))
+}
+
+/// What `peek` could not do, in Japanese (ito-http's own texts are English).
+fn peek_why(e: &client::Error) -> String {
+    match e {
+        client::Error::Url(s) => format!("アドレスが読めない: {s}（https://ホスト[:ポート] で書く）"),
+        client::Error::Connect(s) => {
+            format!("つながらない（{s}）。向こうのエンジンと [http] の lan = true、ポート、ファイアウォールを見る")
+        }
+        client::Error::Tls(s) => format!("TLS が通らない: {s}"),
+        client::Error::Fingerprint(got) => format!("証明書が信頼したものと違う（{got}）"),
+        client::Error::Bad(s) => format!("答えが読めない: {s}"),
+    }
 }
 
 fn status(r: &Remote) -> Result<String, String> {
@@ -310,6 +323,12 @@ fn sent_line(name: &str, net: &str, same: bool) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn peek_errors_are_japanese() {
+        let t = super::peek_why(&ito_http::client::Error::Connect("os error 10061".into()));
+        assert!(t.starts_with("つながらない") && !t.contains("cannot reach"), "{t}");
+    }
+
     use super::*;
 
     /// the lists say paused, held and running in a line each, and say when there is nothing.
