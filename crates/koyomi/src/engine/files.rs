@@ -1,5 +1,5 @@
 //! Finding the files a `kind = "file"` part and a `[[when]] file` wait for:
-//! a path, or a folder and a name with `*` / `?`.
+//! a path, or a folder and a name with `*` / `?` (ito-sftp's rule, as for SFTP).
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -18,7 +18,7 @@ pub fn find_file(pattern: &str) -> Option<Found> {
 pub fn find_files(pattern: &str) -> Vec<Found> {
     let pat = Path::new(pattern);
     let Some(name) = pat.file_name().map(|n| n.to_string_lossy().into_owned()) else { return Vec::new() };
-    if !name.contains(['*', '?']) {
+    if !ito_sftp::has_wildcard(&name) {
         return match std::fs::metadata(pat).ok().filter(|m| m.is_file()) {
             Some(meta) => vec![(pat.to_path_buf(), meta.len(), meta.modified().ok())],
             None => Vec::new(),
@@ -31,7 +31,7 @@ pub fn find_files(pattern: &str) -> Vec<Found> {
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
             let m = e.metadata().ok()?;
-            (m.is_file() && glob_match(&name, &n)).then(|| (e.path(), m.len(), m.modified().ok()))
+            (m.is_file() && ito_sftp::glob_match(&name, &n, cfg!(windows))).then(|| (e.path(), m.len(), m.modified().ok()))
         })
         .collect();
     hits.sort_by(|a, b| a.0.cmp(&b.0));
@@ -43,49 +43,9 @@ pub fn folder_of(pattern: &str) -> PathBuf {
     Path::new(pattern).parent().filter(|p| !p.as_os_str().is_empty()).map_or_else(|| PathBuf::from("."), Path::to_path_buf)
 }
 
-/// `*` (any run of characters) and `?` (any one character) in `pattern`,
-/// against the whole of `name`; letters' case does not count on Windows.
-pub fn glob_match(pattern: &str, name: &str) -> bool {
-    let fold = |s: &str| if cfg!(windows) { s.to_lowercase() } else { s.to_owned() };
-    let (p, n): (Vec<char>, Vec<char>) = (fold(pattern).chars().collect(), fold(name).chars().collect());
-    let (mut pi, mut ni) = (0, 0);
-    let mut star: Option<(usize, usize)> = None;
-    while ni < n.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == n[ni]) {
-            pi += 1;
-            ni += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = Some((pi, ni));
-            pi += 1;
-        } else if let Some((sp, sn)) = star {
-            pi = sp + 1;
-            ni = sn + 1;
-            star = Some((sp, sn + 1));
-        } else {
-            return false;
-        }
-    }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn glob_match_takes_star_and_question_mark() {
-        assert!(glob_match("*.csv", "sales.csv"));
-        assert!(glob_match("sales-??.csv", "sales-01.csv"));
-        assert!(!glob_match("sales-??.csv", "sales-001.csv"));
-        assert!(glob_match("*", "anything"));
-        assert!(glob_match("a*b*c", "aXXbYYc"));
-        assert!(!glob_match("a*b*c", "aXXbYY"));
-        assert!(!glob_match("*.csv", "sales.txt"));
-        assert_eq!(glob_match("*.CSV", "sales.csv"), cfg!(windows));
-    }
 
     #[test]
     fn find_files_lists_the_matches_by_name_and_a_plain_path_is_one_file() {
@@ -98,6 +58,9 @@ mod tests {
         let pattern = dir.join("*.csv").display().to_string();
         let names: Vec<String> = find_files(&pattern).iter().map(|f| f.0.file_name().unwrap().to_string_lossy().into_owned()).collect();
         assert_eq!(names, ["a.csv", "b.csv"]);
+        // A name's case does not count on Windows.
+        assert_eq!(find_files(&dir.join("*.CSV").display().to_string()).len(), if cfg!(windows) { 2 } else { 0 });
+        assert_eq!(find_files(&dir.join("?.csv").display().to_string()).len(), 2);
         assert_eq!(find_file(&pattern).unwrap().0, dir.join("a.csv"));
         let plain = dir.join("c.txt").display().to_string();
         assert_eq!(find_files(&plain).len(), 1);
