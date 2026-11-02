@@ -43,15 +43,68 @@ fn cert(at: &str) -> i32 {
             return 2;
         }
     };
+    // The connection is tried here first: a refused port must not wait out the time limit
+    // (Windows takes about a second to refuse, longer than the short tries below).
+    if let Err(why) = probe(&host, port) {
+        crate::say(&format!("koyomi: {host}:{port}: {why}"), true);
+        return 1;
+    }
     match ito_winrm::peek_fingerprint(&host, port, Duration::from_secs(15), &AtomicBool::new(false)) {
         Ok(f) => {
             crate::say(&format!("cert = \"{}\"", ito_winrm::fingerprint::format(&f)), false);
             0
         }
         Err(e) => {
-            crate::say(&format!("koyomi: {host}:{port}: {}", reason(&e, WinrmAuth::Basic)), true);
+            let why = match e {
+                ito_winrm::Error::Timeout => format!("時間切れ（15 秒たっても証明書が来なかった。{LISTENER}）"),
+                e => reason(&e, WinrmAuth::Basic),
+            };
+            crate::say(&format!("koyomi: {host}:{port}: {why}"), true);
             1
         }
+    }
+}
+
+const LISTENER: &str = "相手の WinRM の HTTPS のリスナーとファイアウォールのポートを確かめる";
+
+/// Whether `host:port` takes a connection, and if not, why in one line of Japanese.
+fn probe(host: &str, port: u16) -> Result<(), String> {
+    use std::net::ToSocketAddrs;
+    let addrs: Vec<_> =
+        (host, port).to_socket_addrs().map_err(|e| format!("つながらない（ホストが見つからない）: {}", plain(&e.to_string())))?.collect();
+    let mut last = None;
+    for a in &addrs {
+        match std::net::TcpStream::connect_timeout(a, Duration::from_secs(5)) {
+            Ok(_) => return Ok(()),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(match last {
+        None => "つながらない（ホストにアドレスがない）".to_owned(),
+        Some(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
+            format!("つながらない（相手がこのポートで待ち受けていない。{LISTENER}）")
+        }
+        Some(e) if e.kind() == std::io::ErrorKind::TimedOut => format!("時間切れ（5 秒たっても答えがない。{LISTENER}）"),
+        Some(e) => format!("つながらない（{}）", plain(&e.to_string())),
+    })
+}
+
+/// An error text on one line, with a Rust debug dump (`HandlerError(IO(Os { code: …`) turned
+/// into what the OS error code means.
+fn plain(text: &str) -> String {
+    let one = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    if !one.contains("HandlerError") && !one.contains("Os {") {
+        return one;
+    }
+    let code = one.split("code:").nth(1).map(|r| r.trim_start().chars().take_while(char::is_ascii_digit).collect::<String>());
+    match code.as_deref() {
+        Some("10061" | "111") => "相手がこのポートで待ち受けていない".to_owned(),
+        Some("10060" | "110") => "相手から答えがない".to_owned(),
+        Some("10054" | "10053" | "104") => "接続が相手に切られた".to_owned(),
+        Some("10051" | "10065" | "101" | "113") => "相手までの道がない".to_owned(),
+        Some("11001" | "11004") => "ホストが見つからない".to_owned(),
+        Some(c) if !c.is_empty() => format!("OS のエラー {c}"),
+        _ => "接続で失敗した".to_owned(),
     }
 }
 
@@ -144,12 +197,12 @@ fn reason(e: &ito_winrm::Error, auth: WinrmAuth) -> String {
         E::AuthRefused if auth == WinrmAuth::Ntlm => "ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは on に winrm://CORP\\名前@ホスト と書く。相手の WinRM で Negotiate が有効か: winrm get winrm/config/service/auth）".into(),
         E::AuthRefused => "ユーザーかパスワードを断られた（相手の WinRM で Basic が有効か: winrm set winrm/config/service/auth @{Basic=\"true\"}。Basic で入れるのは相手の PC のローカルのアカウントだけ。ドメインのアカウントなら auth = \"ntlm\"）".into(),
         E::Fingerprint(got) => format!("証明書が cert と違う（相手が出したのは {got}。証明書を入れ替えたのなら koyomi winrm cert で確かめて cert を直す）"),
-        E::Connect(e) => format!("つながらない（WinRM の HTTPS のリスナーとファイアウォールの 5986）: {e}"),
-        E::Tls(e) => format!("TLS で失敗した: {e}"),
-        E::Lost(e) => format!("接続が切れた: {e}"),
+        E::Connect(e) => format!("つながらない（WinRM の HTTPS のリスナーとファイアウォールの 5986）: {}", plain(e)),
+        E::Tls(e) => format!("TLS で失敗した: {}", plain(e)),
+        E::Lost(e) => format!("接続が切れた: {}", plain(e)),
         E::Timeout => "時間切れ".into(),
-        E::Fault(e) => format!("相手の WinRM が断った: {e}"),
-        E::Other(e) => e.clone(),
+        E::Fault(e) => format!("相手の WinRM が断った: {}", plain(e)),
+        E::Other(e) => plain(e),
     }
 }
 
@@ -180,5 +233,11 @@ mod tests {
         assert!(basic(&E::Connect("refused".into())).contains("5986"));
         assert!(basic(&E::Stopped).starts_with("止めた"));
         assert_eq!(basic(&E::Other("x".into())), "x");
+        let dump = "HandlerError(IO(Os { code: 10061, kind: ConnectionRefused, message: \"x\" }))";
+        for e in [E::Connect(dump.into()), E::Tls(dump.into()), E::Lost(dump.into()), E::Other(dump.into())] {
+            let r = basic(&e);
+            assert!(!r.contains("HandlerError") && !r.contains("Os {") && !r.contains('\n'), "{r}");
+        }
+        assert!(basic(&E::Connect(dump.into())).contains("待ち受けていない"));
     }
 }

@@ -1880,6 +1880,11 @@ mod tests {
         b.ended = None;
         theirs.state = State::Running;
         theirs.ended = None;
+        // What `GET /runs?running=1` sends is read back as the same run.
+        let mut sent = serde_json::to_value(&theirs).unwrap();
+        sent.as_object_mut().unwrap().insert("over".into(), false.into());
+        let back: koyomi_core::run::Run = serde_json::from_value(sent).unwrap();
+        assert_eq!(back, theirs);
         let mut r = Runner::new(&dir.join("b"), Config::default());
         let again = r.resume(&d, &theirs, "pc-a").unwrap();
         let run = wait_over(&mut r, &again);

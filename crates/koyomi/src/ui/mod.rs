@@ -3995,8 +3995,8 @@ impl Browser {
             return;
         }
         let mut body = review::body(t, &def);
-        let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
-        let week = review::week(t, &def, cal, chrono::Local::now().naive_local());
+        let none = std::collections::BTreeMap::new();
+        let week = review::week_in(t, &def, self.snap.as_ref().map_or(&none, |s| &s.calendars), chrono::Local::now().naive_local());
         if !week.is_empty() {
             body.push(String::new());
             body.extend(week);
@@ -4675,7 +4675,7 @@ fn caution_key(line: &str) -> String {
 fn export_all() -> Result<(String, usize), Said> {
     let paths = engine::Paths::find().map_err(plain)?;
     let src = koyomi_core::bundle::Source::read(&paths.app);
-    let b = koyomi_core::bundle::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() }).map_err(plain)?;
+    let b = crate::notify::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() }).map_err(plain)?;
     if b.is_empty() {
         return Err(("port.export_empty", Vec::new()));
     }

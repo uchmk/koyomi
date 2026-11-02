@@ -128,8 +128,29 @@ pub fn judge(
     running: bool,
     last: bool,
 ) -> Verdict {
+    judge_known(def, planned, late, warnings, bad_config, running, last, true)
+}
+
+/// [`judge`], where `known` says the engine could have known this time when it came: a time
+/// of a net that was written after it (a time added while the engine was stopped) was never
+/// missed, and the net is judged as it stands (an unconfirmed one is 止めた, not 時刻を過ぎた).
+#[allow(clippy::too_many_arguments)]
+pub fn judge_known(
+    def: &Def,
+    planned: NaiveDateTime,
+    late: Duration,
+    warnings: &[String],
+    bad_config: Option<&str>,
+    running: bool,
+    last: bool,
+    known: bool,
+) -> Verdict {
     let (missed, overlap) = def.net.as_ref().map_or((Missed::Skip, Overlap::Skip), |n| (n.missed, n.overlap));
     let passed = late > LATE;
+    if !known && def.standing != Standing::Confirmed {
+        let on_time = judge_known(def, planned, Duration::zero(), warnings, bad_config, running, last, true);
+        return on_time;
+    }
     if passed && !(missed == Missed::Once && last) {
         return Verdict::NotRun(State::Missed, format!("{} に PC が止まっていました", planned.format("%-H:%M")));
     }
@@ -257,6 +278,11 @@ mod tests {
         assert_eq!(w, Verdict::NotRun(State::Locked, "定義の誤りがあり、流さなかった".into()));
         // A time the PC slept through is 時刻を過ぎた whatever else is wrong: that is what happened.
         let w = judge(&def(Standing::Unconfirmed), p, Duration::minutes(5), &["w".to_owned()], None, true, true);
+        assert!(matches!(w, Verdict::NotRun(State::Missed, _)), "{w:?}");
+        // But not a time the engine never knew: one added to an unconfirmed net after it passed.
+        let w = judge_known(&def(Standing::Unconfirmed), p, Duration::minutes(5), none, None, false, true, false);
+        assert_eq!(w, Verdict::NotRun(State::Locked, "未確認のため流さなかった（koyomi approve 経理/月次締め）".into()));
+        let w = judge_known(&def(Standing::Unconfirmed), p, Duration::minutes(5), none, None, false, true, true);
         assert!(matches!(w, Verdict::NotRun(State::Missed, _)), "{w:?}");
     }
 

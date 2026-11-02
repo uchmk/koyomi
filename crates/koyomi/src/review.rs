@@ -425,12 +425,31 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
 /// (every minute, the month's end, a holiday) shows here as a number before
 /// anything runs. Empty when neither version has a `[[when]]`. `cal` is the
 /// calendar the net counts by (both versions are counted by it).
+#[cfg(test)]
 pub fn week(t: &Table, d: &Def, cal: Option<&Calendar>, now: NaiveDateTime) -> Vec<String> {
+    week_with(t, d, cal, cal, now)
+}
+
+/// [`week`] where each version is counted by its own calendar: the new one by the calendar
+/// `d` counts by, the previous one by the calendar its own text names (a holiday a calendar
+/// closed shows as added once the net stops using it). A previous text naming none is counted
+/// by the new calendar, as the group's calendar it may have inherited is not known here.
+pub fn week_in(t: &Table, d: &Def, cals: &std::collections::BTreeMap<String, Calendar>, now: NaiveDateTime) -> Vec<String> {
+    let cal = d.calendar.as_deref().and_then(|c| cals.get(c));
+    let old = d.previous.as_deref().and_then(|text| jobnet::parse(text).ok()).and_then(|n| n.calendar);
+    let old_cal = match old {
+        Some(name) => cals.get(&name),
+        None => cal,
+    };
+    week_with(t, d, cal, old_cal, now)
+}
+
+fn week_with(t: &Table, d: &Def, cal: Option<&Calendar>, old_cal: Option<&Calendar>, now: NaiveDateTime) -> Vec<String> {
     let Some(net) = &d.net else { return Vec::new() };
     let until = now.checked_add_days(Days::new(7)).unwrap_or(now);
     let new = when::between_in(&net.when, now, until, cal);
     let old: Option<Vec<NaiveDateTime>> = d.previous.as_deref().map(|text| match jobnet::parse(text) {
-        Ok(net) => when::between_in(&net.when, now, until, cal),
+        Ok(net) => when::between_in(&net.when, now, until, old_cal),
         Err(_) => Vec::new(),
     });
     let mut out: Vec<String> = net.when.iter().filter_map(|w| crate::show::event_row(t, w)).collect();
@@ -719,6 +738,23 @@ except = [\"2026-11-01\"]",
         let w = week(&table(), &d, Some(&cal), now);
         assert_eq!(w[0], "この先 7 日の予定: 5 回");
         assert_eq!(w[1], "  2026-11-02（月）02:00");
+    }
+
+    /// Switching to a net without the calendar counts each version by its own: the holiday the
+    /// old calendar closed is a time that is added.
+    #[test]
+    fn each_version_of_the_week_is_counted_by_its_own_calendar() {
+        let now = chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap().and_hms_opt(0, 0, 0).unwrap();
+        let jp = Calendar::parse("jp", "format = 1\nclosed = [\"2026-11-03\"]\n").unwrap();
+        let cals = std::collections::BTreeMap::from([("jp".to_owned(), jp)]);
+        let with = DAILY.replace("format = 1\n", "format = 1\ncalendar = \"jp\"\n");
+        let mut store = Store::default();
+        let old = def(&with, &store);
+        store.approve(&old.id, &old.sha256, &old.text);
+        let d = def(DAILY, &store);
+        assert_eq!(d.calendar, None);
+        let w = week_in(&table(), &d, &cals, now);
+        assert!(w.iter().any(|l| l.starts_with("+ 2026-11-03")), "{w:?}");
     }
 
     #[test]

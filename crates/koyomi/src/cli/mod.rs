@@ -702,8 +702,7 @@ fn show_cmd(args: &[String]) -> i32 {
         for l in review::body(&t, &def) {
             out(&l, false);
         }
-        let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-        for l in review::week(&t, &def, cal, chrono::Local::now().naive_local()) {
+        for l in review::week_in(&t, &def, &snap.calendars, chrono::Local::now().naive_local()) {
             out(&l, false);
         }
     }
@@ -749,8 +748,7 @@ fn approve(args: &[String]) -> i32 {
     for l in review::body(&t, &def) {
         say(&l, false);
     }
-    let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-    for l in review::week(&t, &def, cal, chrono::Local::now().naive_local()) {
+    for l in review::week_in(&t, &def, &snap.calendars, chrono::Local::now().naive_local()) {
         say(&l, false);
     }
     let diff = review::diff(&def);
@@ -1693,7 +1691,7 @@ fn export(args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     let src = koyomi_core::bundle::Source::read(&paths.app);
-    let bundle = match koyomi_core::bundle::export(&src, &pick) {
+    let bundle = match crate::notify::export(&src, &pick) {
         Ok(b) => b,
         Err(e) => return fail(&e),
     };

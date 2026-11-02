@@ -314,6 +314,7 @@ impl Standby {
                 self.since = Local::now().format("%Y-%m-%d %H:%M").to_string();
                 let why = self.missed_why.clone().unwrap_or_default();
                 self.record(format!("{} {name} から引き継いだ（{why}）", stamp()));
+                let unread = self.running.is_none().then(|| self.runs_note.take()).flatten();
                 self.runs_note = None;
                 let back = if auto {
                     format!("{name} が {misses} 回続けて答えたら戻す")
@@ -321,6 +322,11 @@ impl Standby {
                     "戻すのは koyomi standby giveback".to_owned()
                 };
                 let line = format!("{name} が答えなくなった（{why}）ので、{} からこの PC で流す。{back}", self.since);
+                // Say why the runs there are not known, instead of only that they were not read.
+                let line = match unread {
+                    Some(n) => format!("{line}（{n}）"),
+                    None => line,
+                };
                 Some(Told::TookOver(line, self.running.take()))
             }
             Step::BothActive => Some(Told::Both(match seen {
@@ -580,7 +586,8 @@ fn seen_of(health: &serde_json::Value) -> Seen {
 /// The runs going on there (`GET /runs?running=1`), for a takeover to start from. A koyomi too
 /// old for `running` answers with all of today's: the ones over are dropped here.
 fn running_of(c: &Client) -> Result<Vec<Run>, String> {
-    let reply = c.get("/runs?running=1").map_err(|e| format!("動いている回が読めない: {e}"))?;
+    // One more try: a reply that fails right after /health must not leave a takeover with no runs.
+    let reply = c.get("/runs?running=1").or_else(|_| c.get("/runs?running=1")).map_err(|e| format!("動いている回が読めない: {e}"))?;
     if reply.status != 200 {
         return Err(format!("動いている回が読めない: /runs が {} を返した", reply.status));
     }
@@ -695,7 +702,10 @@ mod tests {
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Ok(runs.clone())) });
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err("動いている回が読めない: x".into())) });
         assert!(s.notes()[0].contains("動いている回が読めない"));
-        assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(_, None))));
+        match s.take("pc1", Poll::Missed("refused".into())) {
+            Some(Told::TookOver(line, None)) => assert!(line.contains("動いている回が読めない: x"), "{line}"),
+            other => panic!("{other:?}"),
+        }
         assert!(s.notes().is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }

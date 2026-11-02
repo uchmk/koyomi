@@ -39,6 +39,25 @@ fn icon(side: u32) -> Vec<u8> {
     crate::icon::pixels(side)
 }
 
+/// Why the text of a `koyomi.toml` would not pass `koyomi check`: its first problem, on one line.
+pub fn settings_problem(text: &str) -> Option<String> {
+    let first = |s: &str| s.lines().next().unwrap_or_default().trim().to_owned();
+    match Config::parse(text) {
+        Err(e) => Some(first(&e)),
+        Ok(c) => parse(&c).1.first().map(|n| first(n)),
+    }
+}
+
+/// [`koyomi_core::bundle::export`], refusing settings that `koyomi check` would refuse.
+pub fn export(src: &koyomi_core::bundle::Source, pick: &koyomi_core::bundle::Pick) -> Result<koyomi_core::bundle::Bundle, String> {
+    if pick.settings || pick.all {
+        if let Some(e) = src.settings.as_deref().and_then(settings_problem) {
+            return Err(format!("書き出せない: koyomi.toml が正しくない（{e}）"));
+        }
+    }
+    koyomi_core::bundle::export(src, pick)
+}
+
 /// `[notify]` of `config` with koyomi's defaults where nothing is written, and
 /// the lines a person should see (an unknown event, a plain-text address).
 /// The `secret:` addresses are not read back here: see [`NotifyCfg::reveal`].
@@ -66,7 +85,13 @@ pub fn parse(config: &Config) -> (NotifyCfg, Vec<String>) {
     let mut n: NotifyCfg = match toml::Value::Table(config.notify.clone()).try_into() {
         Ok(n) => n,
         Err(e) => {
-            notes.push(format!("{PATH}: [notify]: {}", e.message()));
+            let m = e.message();
+            let what = if m.contains("expected struct HookCfg") {
+                "の webhooks の各項目は表で書く（[[notify.webhooks]] に url = \"…\" など。`secret:<名前>` は url に書く）".to_owned()
+            } else {
+                format!("の書き方が合わない（{m}）")
+            };
+            notes.push(format!("{PATH}: [notify] {what}"));
             NotifyCfg::default()
         }
     };
@@ -494,6 +519,20 @@ pub fn tell_tail(n: &NotifyCfg, open: Option<&Open>, event: &str, title: &str, b
 
 #[cfg(test)]
 mod tests {
+    /// Settings `koyomi check` refuses are refused by export too, in one Japanese line.
+    #[test]
+    fn settings_that_check_refuses_are_a_problem_on_one_line() {
+        assert_eq!(super::settings_problem("keep_days = 30\n"), None);
+        let e = super::settings_problem("[notify]\nwebhooks = [\"secret:x\"]\n").unwrap();
+        assert!(!e.contains('\n') && !e.is_ascii(), "{e}");
+        let e = super::settings_problem("keep_days = 0\n").unwrap();
+        assert_eq!(e, "keep_days は 1 以上");
+        let src = koyomi_core::bundle::Source { settings: Some("[notify]\nwebhooks = [\"secret:x\"]\n".to_owned()), ..Default::default() };
+        let pick = koyomi_core::bundle::Pick { settings: true, ..Default::default() };
+        let e = super::export(&src, &pick).unwrap_err();
+        assert!(e.starts_with("書き出せない: koyomi.toml が正しくない（"), "{e}");
+    }
+
     use super::*;
     use koyomi_core::run::{How, Outcome, State};
 
@@ -585,7 +624,7 @@ mod tests {
         assert_eq!(n.system, Some(vec!["failed".to_owned()]));
         let (_, notes) = read(&cfg("system = \"failed\"\n"));
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].starts_with("koyomi.toml: [notify]:"), "{notes:?}");
+        assert!(notes[0].starts_with("koyomi.toml: [notify] の書き方が合わない（"), "{notes:?}");
     }
 
     #[test]

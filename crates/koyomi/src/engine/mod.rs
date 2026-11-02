@@ -625,7 +625,9 @@ impl State {
             }
             let running = self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over());
             let last = !due[k + 1..].iter().any(|(j, _, _)| j == i);
-            let verdict = schedule::judge(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last);
+            let known = self.knew(&def, *planned);
+            let verdict =
+                schedule::judge_known(&def, *planned, now - *instant, &self.warnings, self.bad_config.as_deref(), running, last, known);
             if let schedule::Verdict::Start { late } | schedule::Verdict::Queue { late } = verdict {
                 match schedule::quiet(&def, *planned, now.with_timezone(&Local).naive_local()) {
                     Some(schedule::Quiet::Skip(why)) => {
@@ -1502,11 +1504,34 @@ impl State {
         Ok(if on { "スケジュールを止めた（koyomi resume で戻す）" } else { "スケジュールを戻した" }.to_owned())
     }
 
-    fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
-        if !self.warnings.is_empty() {
-            return Err(format!("承認できない: {}", self.warnings.join(" / ")));
+    /// Whether the engine could have known the time `planned` of `def`: its file was not written
+    /// after that time. Only a net that is not confirmed is asked (a confirmed one was approved
+    /// as it stands, so its times were known).
+    fn knew(&self, def: &Def, planned: NaiveDateTime) -> bool {
+        if def.standing == Standing::Confirmed {
+            return true;
         }
+        let at = def.file.split('/').fold(self.paths.jobnets.clone(), |p, c| p.join(c));
+        let Ok(modified) = std::fs::metadata(at).and_then(|m| m.modified()) else { return true };
+        let modified: chrono::DateTime<Local> = modified.into();
+        modified.naive_local() <= planned
+    }
+
+    /// The warnings that bear on the net in `file`: those about the shared folders and files, and
+    /// those about this net's own file, but not those about another net's file.
+    fn warnings_for(&self, file: &str) -> Vec<String> {
+        let at = |f: &str| shown(&f.split('/').fold(self.paths.jobnets.clone(), |p, c| p.join(c)));
+        let own = at(file);
+        let others: Vec<String> = self.defs.iter().filter(|d| d.file != file).map(|d| at(&d.file)).collect();
+        self.warnings.iter().filter(|w| w.starts_with(&own) || !others.iter().any(|o| w.starts_with(o.as_str()))).cloned().collect()
+    }
+
+    fn approve(&mut self, id: &str, sha256: &str) -> Result<String, String> {
         let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let own = self.warnings_for(&def.file);
+        if !own.is_empty() {
+            return Err(format!("承認できない: {}", own.join(" / ")));
+        }
         if def.standing == Standing::Invalid {
             return Err(format!("定義の誤りがあり、承認できない: {}", def.file));
         }
@@ -1775,7 +1800,13 @@ impl State {
             return Err("取り込めない: ファイルに何も入っていない".to_owned());
         }
         let current = bundle::Source::read(&self.paths.app);
-        let p = bundle::plan(&b, &current, on_conflict);
+        let mut p = bundle::plan(&b, &current, on_conflict);
+        // The settings must pass what `koyomi check` passes, or nothing is written.
+        for item in p.items.iter_mut().filter(|i| i.kind == bundle::Kind::Settings && i.problems.is_empty()) {
+            if let Some(e) = crate::notify::settings_problem(&item.new) {
+                item.problems.push(format!("koyomi.toml が正しくない: {e}"));
+            }
+        }
         let mut lines = Vec::new();
         for item in &p.items {
             lines.push(item.line());
@@ -2852,6 +2883,49 @@ run = [\"x.exe\"]
         assert_eq!(s.snapshot().skips.len(), 2);
         assert!(s.skip_next("経理/夜", true).is_ok());
         assert!(s.held.skips.is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// An import of settings that `koyomi check` refuses writes nothing, even on overwrite.
+    #[test]
+    fn import_refuses_settings_that_check_refuses() {
+        let paths = temp_paths("import-bad");
+        let mut s = State::new(paths.clone());
+        let bad = "format = 1\n\n[settings]\nkeep_days = 30\n\n[settings.notify]\nwebhooks = [\"secret:x\"]\n";
+        let before = std::fs::read_to_string(&paths.config).ok();
+        for (dry, over) in [(true, None), (false, Some("overwrite")), (false, None)] {
+            let r = s.import(bad, dry, over).unwrap();
+            let plan = proto::Plan::parse(&r).unwrap();
+            assert!(plan.problems > 0 && !plan.applied, "{r}");
+            assert!(plan.lines.iter().any(|l| l.contains("問題: koyomi.toml が正しくない")), "{r}");
+        }
+        assert_eq!(std::fs::read_to_string(&paths.config).ok(), before, "nothing written");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// A warning about one net's file stops that net from being approved, not the others.
+    #[test]
+    fn approve_refuses_only_the_net_with_a_warning() {
+        let paths = temp_paths("approve-own");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1
+name = \"n\"
+
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        s.propose("経理/甲", net, None).unwrap();
+        s.propose("経理/乙", net, None).unwrap();
+        let bad = shown(&paths.jobnets.join("経理").join("甲.toml"));
+        s.warnings = vec![format!("{bad} は Everyone が書き換えられる")];
+        let sha = |s: &State, id: &str| s.defs.iter().find(|d| d.id == id).unwrap().sha256.clone();
+        let (a, b) = (sha(&s, "経理/甲"), sha(&s, "経理/乙"));
+        let e = s.approve("経理/甲", &a).unwrap_err();
+        assert!(e.starts_with("承認できない: ") && e.contains("Everyone"), "{e}");
+        assert_eq!(s.approve("経理/乙", &b), Ok("確認した: 経理/乙".to_owned()));
+        assert_eq!(standing_of(&s, "経理/乙"), Some(Standing::Confirmed));
+        assert_ne!(standing_of(&s, "経理/甲"), Some(Standing::Confirmed));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

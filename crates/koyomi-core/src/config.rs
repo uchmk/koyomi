@@ -498,6 +498,9 @@ impl Config {
                 format!("{line}知らない欄 {f}")
             } else if let Some(f) = m.strip_prefix("missing field `").and_then(|r| r.split('`').next()) {
                 format!("{line}欄 {f} が無い")
+            } else if let Some(v) = m.strip_prefix("unknown variant `").and_then(|r| r.split('`').next()) {
+                let ok: Vec<&str> = m.split('`').skip(3).step_by(2).collect();
+                format!("{line}値 {v:?} は書けない（書けるのは {}）", ok.join(" / "))
             } else if m.starts_with("invalid type") || m.starts_with("invalid value") {
                 format!("{line}値の型か範囲が合わない（{m}）")
             } else {
@@ -747,6 +750,20 @@ to = \"2026-11-15 06:00\"
             let e = Config::parse(&format!("work_dir = '{bad}'\n")).unwrap_err();
             assert!(e.starts_with("work_dir は \"definition\"（定義のあるフォルダー）か絶対パスで書く"), "{bad}: {e}");
         }
+    }
+
+    /// A value that is not one of the allowed words is said in Japanese, with its line.
+    #[test]
+    fn an_unknown_word_is_japanese_with_a_line() {
+        let e = Config::parse(
+            "[standby]
+name = \"x\"
+give_back = \"sometimes\"
+",
+        )
+        .unwrap_err();
+        assert!(e.contains("3 行目") && e.contains("\"sometimes\"") && e.contains("manual / auto"), "{e}");
+        assert!(!e.is_ascii() && !e.contains("unknown variant"), "{e}");
     }
 
     /// `[locks]` gives a lock name more than one place; a name not listed has one.
