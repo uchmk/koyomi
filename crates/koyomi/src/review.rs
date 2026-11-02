@@ -6,7 +6,7 @@ use ito_a11y::State;
 use ito_diff::Item;
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::Chore;
+use koyomi_core::chore::{self, Chore, Pass};
 use koyomi_core::jobnet::{self, Part, Wait};
 use koyomi_core::run::State as RunState;
 use koyomi_core::scan::{Def, Standing};
@@ -216,6 +216,15 @@ fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
 /// What a chore works on, one line each.
 fn chore(t: &Table, c: &Chore) -> Vec<String> {
     let line = |key: &str, v: &str| format!("  {}: {v}", t.tr(&format!("review.{key}")));
+    // A group's PCs are koyomi.toml's, the machine's own; how many run at once and when
+    // the job passes are part of what is approved.
+    let fan = |on: &str, max: Option<u32>, pass: Pass| {
+        if chore::group(on).is_none() && max.is_none() && pass == Pass::All {
+            return Vec::new();
+        }
+        let how = t.tr(if pass == Pass::All { "review.pass_all" } else { "review.pass_any" });
+        vec![line("group_max", &max.unwrap_or(1).to_string()), line("pass", how)]
+    };
     match c {
         Chore::Delete { path, pattern, keep_days } => vec![
             line("path", path),
@@ -240,17 +249,19 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             }
             v
         }
-        Chore::Ssh { on, command, key, host_key, password } => {
+        Chore::Ssh { on, command, key, host_key, password, max, pass } => {
             let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
             for (name, value) in [("key", key), ("host_key", host_key), ("password", password)] {
                 if let Some(x) = value {
                     v.push(line(name, x));
                 }
             }
+            v.extend(fan(on, *max, *pass));
             v
         }
-        Chore::Winrm { on, command, cert, password, auth } => {
+        Chore::Winrm { on, command, cert, password, auth, max, pass } => {
             let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
+            v.extend(fan(on, *max, *pass));
             if let Some(c) = cert {
                 v.push(line("cert", c));
             }

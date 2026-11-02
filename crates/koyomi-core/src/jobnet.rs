@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::chore::{Chore, WinrmAuth};
+use crate::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
@@ -688,6 +688,7 @@ struct RawJob {
     host_key: Field,
     cert: Field,
     auth: Field,
+    pass: Field,
     password: Field,
     on: Field,
     command: Field,
@@ -844,6 +845,19 @@ impl Checker<'_> {
     fn add(&mut self, offset: usize, message: impl Into<String>) {
         let line = line_of(self.text, offset);
         self.problems.push(Problem { line, message: message.into() });
+    }
+
+    /// `max` and `pass` of an `ssh` or a `winrm`, for `on = "group:…"`.
+    fn fan(&mut self, j: &RawJob) -> (Option<u32>, Pass) {
+        let max = j.max.as_ref().and_then(|f| match f.get_ref().as_integer() {
+            Some(n) if (1..=GROUP_MAX as i64).contains(&n) => Some(n as u32),
+            _ => {
+                self.add(f.span().start, format!("max は 1 から {GROUP_MAX} までの整数で書く（組の PC をいくつ同時に動かすか）"));
+                None
+            }
+        });
+        let pass = self.choice(&j.pass, "pass", &Pass::ALL.map(Pass::key)).and_then(Pass::of).unwrap_or_default();
+        (max, pass)
     }
 
     /// A field that is one of `choices` when written: `missed = "once"`.
@@ -1026,6 +1040,7 @@ impl Checker<'_> {
         if kind != "ssh" && kind != "winrm" {
             self.only(&j.on, "on", "\"ssh\" か \"winrm\"");
             self.only(&j.command, "command", "\"ssh\" か \"winrm\"");
+            self.only(&j.pass, "pass", "\"ssh\" か \"winrm\"");
         }
         if kind != "winrm" {
             self.only(&j.cert, "cert", "\"winrm\"");
@@ -1061,7 +1076,9 @@ impl Checker<'_> {
         }
         if kind != "loop" {
             self.only(&j.count, "count", "\"loop\"");
-            self.only(&j.max, "max", "\"loop\"");
+        }
+        if !["loop", "ssh", "winrm"].contains(&kind) {
+            self.only(&j.max, "max", "\"loop\"・\"ssh\"・\"winrm\"");
         }
         if kind != "jobnet" {
             self.only(&j.use_, "use", "\"jobnet\"");
@@ -1223,7 +1240,10 @@ impl Checker<'_> {
                 match kind {
                     "send" => Chore::Send { from, into, key, host_key, password },
                     "fetch" => Chore::Fetch { from, into, key, host_key, password },
-                    _ => Chore::Ssh { on: from, command: into, key, host_key, password },
+                    _ => {
+                        let (max, pass) = self.fan(j);
+                        Chore::Ssh { on: from, command: into, key, host_key, password, max, pass }
+                    }
                 }
             }
             "winrm" => {
@@ -1236,7 +1256,8 @@ impl Checker<'_> {
                 }
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
                 let auth = self.choice(&j.auth, "auth", &WinrmAuth::ALL.map(WinrmAuth::key)).and_then(WinrmAuth::of).unwrap_or_default();
-                Chore::Winrm { on, command, cert, password, auth }
+                let (max, pass) = self.fan(j);
+                Chore::Winrm { on, command, cert, password, auth, max, pass }
             }
             "http" => self.http(j, start),
             // Its own fields, checked once they all read.
@@ -3377,6 +3398,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 key: None,
                 host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
                 password: None,
+                max: None,
+                pass: Pass::All,
             })
         );
         let judge = j.judge.unwrap();
@@ -3396,6 +3419,13 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}run = ['y']\n")).contains("run"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}encoding = 'utf8'\n")).contains("encoding"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x {{date+1q}}'\n{hk}")).contains("command: {date+1q}: 単位が読めない"));
+        // A group of PCs in koyomi.toml: how many at once and when it passes.
+        let fan = parse_ssh("on = 'group:web'\ncommand = 'uptime'\nmax = 4\npass = 'any'\n").unwrap();
+        assert!(matches!(fan.part, Part::Chore(Chore::Ssh { max: Some(4), pass: Pass::Any, .. })));
+        assert!(bad("on = 'group:web'\ncommand = 'x'\nmax = 0\n").contains("max は 1 から 64 までの整数"));
+        assert!(bad("on = 'group:web'\ncommand = 'x'\nmax = 'all'\n").contains("max は 1 から 64 までの整数"));
+        assert!(bad("on = 'group:web'\ncommand = 'x'\npass = 'some'\n").contains("pass は \"all\"・\"any\" のどれか"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}max = 2\n")).contains("max は on が PC の組（group:名前）のときだけ書く"));
         let other = parse(
             "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\non = 'ssh://h'\ncommand = 'y'\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\njudge = { warn = \"1\" }\nafter = [\"a\"]\n",
         )
@@ -3406,6 +3436,14 @@ after = [{ job = \"way\", code = \"else\" }]
         .join("\n");
         assert!(other.contains("on は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
         assert!(other.contains("command は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
+        let copy = parse("format = 1\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\nmax = 2\npass = 'any'\n")
+            .unwrap_err()
+            .iter()
+            .map(|p| p.in_file("a.toml"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(copy.contains("max は kind = \"loop\"・\"ssh\"・\"winrm\" にだけ書く"), "{copy}");
+        assert!(copy.contains("pass は kind = \"ssh\" か \"winrm\" にだけ書く"), "{copy}");
         assert!(other.contains("judge は kind = \"job\"・\"loop\"・\"ssh\"・\"winrm\" にだけ書く"), "{other}");
     }
 
@@ -3434,10 +3472,15 @@ after = [{ job = \"way\", code = \"else\" }]
                 cert: Some(cert.into()),
                 password: Some("secret:ops".into()),
                 auth: WinrmAuth::Basic,
+                max: None,
+                pass: Pass::All,
             })
         );
         let ntlm = parse_winrm(&format!("on = 'winrm://CORP\\ops@app01'\ncommand = 'x'\n{login}auth = \"ntlm\"\n")).unwrap();
         assert!(matches!(ntlm.part, Part::Chore(Chore::Winrm { auth: WinrmAuth::Ntlm, .. })));
+        // A group's PCs may each have their own certificate in koyomi.toml.
+        let fan = parse_winrm("on = 'group:app'\ncommand = 'x'\npassword = 'secret:ops'\nmax = 2\n").unwrap();
+        assert!(matches!(fan.part, Part::Chore(Chore::Winrm { max: Some(2), pass: Pass::All, cert: None, .. })));
         assert_eq!(j.judge.unwrap().warn, vec![Range { from: 1, to: 1 }]);
         assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
         assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
@@ -3580,7 +3623,10 @@ after = [{ job = \"way\", code = \"else\" }]
             net("loop", "count = 3\nmax = 17\nrun = [\"x\"]\n"),
             Err(vec!["a.toml の 9 行目: max は 1 から 16 までの整数で書く（いくつの回を並べて動かすか）".to_owned()])
         );
-        assert_eq!(net("job", "max = 2\nrun = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: max は kind = \"loop\" にだけ書く".to_owned()]));
+        assert_eq!(
+            net("job", "max = 2\nrun = [\"x\"]\n"),
+            Err(vec!["a.toml の 8 行目: max は kind = \"loop\"・\"ssh\"・\"winrm\" にだけ書く".to_owned()])
+        );
         assert_eq!(
             net("loop", "run = [\"x\"]\n"),
             Err(

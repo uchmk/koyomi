@@ -8,7 +8,7 @@
 
 use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
-use crate::chore::{Chore, WinrmAuth};
+use crate::chore::{Chore, Pass, WinrmAuth};
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Takeover, Wait};
 use crate::quiet::OnQuiet;
@@ -418,6 +418,14 @@ fn job(j: &Job, out: &mut String) {
             {
                 push(out, "password", &q(p));
             }
+            if let Chore::Ssh { max, pass, .. } | Chore::Winrm { max, pass, .. } = c {
+                if let Some(m) = max {
+                    push(out, "max", &m.to_string());
+                }
+                if *pass != Pass::All {
+                    push(out, "pass", &q(pass.key()));
+                }
+            }
             if let Chore::Delete { pattern: Some(p), .. } | Chore::Copy { pattern: Some(p), .. } = c {
                 push(out, "match", &q(p));
             }
@@ -674,6 +682,15 @@ judge = { warn = "1" }
 after = ["em"]
 
 [[job]]
+id = "fan"
+kind = "ssh"
+on = "group:web"
+command = "systemctl restart app"
+max = 4
+pass = "any"
+after = ["win"]
+
+[[job]]
 id = "ml"
 kind = "mail"
 to = ["ops@example.com", "経理 <keiri@example.co.jp>"]
@@ -685,7 +702,7 @@ body = """
 files = ['D:\out\売上.csv', 'D:\out\logs\*.log']
 via = "社内"
 retry = { count = 2, wait = "5m" }
-after = ["win"]
+after = ["fan"]
 "#;
 
     #[test]

@@ -1580,3 +1580,22 @@ A confirmed net `基盤/共有` with `[params]` `into = '{var:share}\in'` and a 
 | 111.5 | `koyomi check koyomi.toml` with, one at a time, in `[vars]`: `"共有" = 'x'`; `n = 3`; `a = '{var:share}'`; `a = '{param:into}'`; `a = '{date-1q}'` | Each is refused in Japanese: `[vars] の名前に使えない: 共有（英数字と _ だけ…）`, `[vars] の n は文字列で書く…`, `[vars] の a に {param:…}・{var:…} は書けない…` (twice), `[vars] の a: {date-1q}: …` |
 | 111.6 | In the net, `run = ["cmd", "/c", "echo", "{var:}"]`; then `into = '{var:共有}'` | The editor and `koyomi check` refuse each with its line: `{var:}: 名前がない（…）`, `params into: {var:共有}: [vars] の名前は英数字と _ だけ` |
 | 111.7 | A `kind = "ssh"` with `on = "{var:pc}"` and `[vars]` `pc = "<a PC you reach over ssh>"`; a `kind = "http"` with `url = "{var:api}/health"` | Both pass `koyomi check` and run against the values in `[vars]` |
+
+## 112. Run on a group of PCs (`on = "group:…"`; TODO 109)
+
+Two PCs you reach over ssh (WSL, a Linux VM, the Proxmox host…), called pc1 and pc2 here, each with `koyomi sftp hostkey <host>` noted. In koyomi.toml: `[groups]` `web = ["ssh://ops@pc1", { on = "ssh://ops@pc2", host_key = "<pc2's>" }]`. A confirmed net with a job `fan`: `kind = "ssh"`, `on = "group:web"`, `command = "hostname; sleep 5"`, `host_key = "<pc1's>"`.
+
+| # | Do | Expect |
+|---|---|---|
+| 112.1 | `koyomi check <the net's file>`; run the net | 問題なし. The log of `fan`: `組 web の 2 台で動かす（同時に 1 台まで。ジョブはいちばん悪い PC に合わせて終わる）`, `[pc1] <pc1's name>`, `[pc1] 終了コード 0`, then the same for pc2, about 10 s in all; ✓ |
+| 112.2 | Add `max = 2`; run | Both start together (about 5 s in all), each line marked `[pc1]` or `[pc2]`; ✓ |
+| 112.3 | `command = "test $(hostname) = <pc1's name>"`; run; then add `pass = "any"` and run | The first ends ✗ with code 1 (pc2's); the second ✓ with 0 (pc1's) |
+| 112.4 | Add a PC that does not answer to the group (`"ssh://ops@10.255.255.1"`) with `pass = "all"`; run; then with `pass = "any"` | ✗ with `3 台のうち 1 台が終了コードなしで終わった: 10.255.255.1: …`; with `any`, ✓, and `! [10.255.255.1] …` in the log |
+| 112.5 | `max = 1`, `command = "sleep 60"`; run and stop it while pc1 runs | pc1's command is asked to stop (TERM); `! [pc2] 止めたので始めなかった` and `! [10.255.255.1] 止めたので始めなかった`; the job ends stopped |
+| 112.6 | Take `host_key` off the job; `koyomi check`; run | `注意: fan: 組 web の ssh://ops@pc1, ssh://ops@10.255.255.1 に host_key がなく、ジョブにもない（流すと止まる）`; in the run, `! [pc1] host_key がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く…）` and pc2 still runs |
+| 112.7 | `on = "group:db"`; `koyomi check`; run. Then a `kind = "winrm"` job with `on = "group:web"` | `注意: fan: 組 db が koyomi.toml の [groups] にない（流すと止まる）` and the run stops with it; the winrm one with `組 web の PC は ssh:// で書いてある（kind = "winrm" の on には winrm:// の PC の組を書く）` |
+| 112.8 | `koyomi check koyomi.toml` with, one at a time, in `[groups]`: `web = 'ssh://h'`; `web = ['ssh://h', 'winrm://u@h2']`; `"web-1" = ['ssh://h']`; `web = ['ssh://h', 'SSH://h']` | Each is refused in Japanese: `[groups] の web は PC の配列で書く…`, `…ssh:// と winrm:// が混ざっている…`, `[groups] の名前に使えない: web-1…`, `…同じ PC が 2 つある: SSH://h` |
+| 112.9 | In the editor, the `fan` job: set 動かす PC to `ssh://ops@pc1`, then back to `group:web` | On one PC the host key is required and there is no max; on the group the host key is optional, and `max（組の PC をいくつ同時に動かすか…）` and 正常とするのは (全部の PC が正常 / どれか 1 台が正常) show, with the note on `[groups]` under them |
+| 112.10 | In the editor, max `65`, then save; then max `2` and どれか 1 台が正常, and save | `65` is red and saving says `max は 1 から 64 までの数で書く: "65"`; the second saves `max = 2` and `pass = "any"` |
+| 112.11 | Open the net's approval | It shows `同時に動かす PC の数: 2` and `正常とするのは: どれか 1 台が正常のとき`; the change to `pass` left the net to be confirmed again |
+| 112.12 | Windows PCs with WinRM over HTTPS: `[groups]` `app = [{ on = "winrm://ops@app01", cert = "<its>" }, { on = "winrm://ops@app02", cert = "<its>" }]`, a `kind = "winrm"` job with `on = "group:app"`, `command = "hostname"`, `password = "secret:<name>"`, `max = 2` | Both run, each line marked `[app01]` or `[app02]`; ✓ |

@@ -13,7 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, WinrmAuth};
+use koyomi_core::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
@@ -163,7 +163,8 @@ pub struct Fields {
     pub days: String,
     pub file: String,
     pub settle: String,
-    /// A loop's `count` and `max`; its `file` is [`Fields::file`].
+    /// A loop's `count` and `max`; its `file` is [`Fields::file`]. `max` is also how
+    /// many PCs of a group an `ssh` or a `winrm` runs at once.
     pub count: String,
     pub max: String,
     pub use_: String,
@@ -189,6 +190,8 @@ pub struct Fields {
     /// A `winrm`'s certificate fingerprint and how it logs in.
     pub cert: String,
     pub auth: WinrmAuth,
+    /// When an `ssh`'s or a `winrm`'s group of PCs passes.
+    pub pass: Pass,
     /// A `mail`'s addresses and files, one a line; its text is [`Fields::body`].
     pub mail_to: String,
     pub mail_cc: String,
@@ -281,19 +284,23 @@ impl Fields {
                     );
                     f.expect = expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
                 }
-                Chore::Ssh { on, command, key, host_key, password } => {
+                Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                     f.on = on.clone();
                     f.command = command.clone();
                     f.key = key.clone().unwrap_or_default();
                     f.host_key = host_key.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
+                    f.max = max.map(|n| n.to_string()).unwrap_or_default();
+                    f.pass = *pass;
                 }
-                Chore::Winrm { on, command, cert, password, auth } => {
+                Chore::Winrm { on, command, cert, password, auth, max, pass } => {
                     f.on = on.clone();
                     f.command = command.clone();
                     f.cert = cert.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
                     f.auth = *auth;
+                    f.max = max.map(|n| n.to_string()).unwrap_or_default();
+                    f.pass = *pass;
                 }
                 Chore::Mail { to, cc, subject, body, files, via } => {
                     f.mail_to = to.join("\n");
@@ -426,6 +433,8 @@ impl Fields {
                         key: opt(&self.key),
                         host_key: opt(&self.host_key),
                         password: opt(&self.password),
+                        max: self.group_max()?,
+                        pass: self.pass,
                     },
                     Chore::Winrm { .. } => Chore::Winrm {
                         on: self.on.trim().into(),
@@ -433,6 +442,8 @@ impl Fields {
                         cert: opt(&self.cert),
                         password: opt(&self.password),
                         auth: self.auth,
+                        max: self.group_max()?,
+                        pass: self.pass,
                     },
                     Chore::Mail { .. } => Chore::Mail {
                         to: lines(&self.mail_to),
@@ -502,6 +513,19 @@ impl Fields {
         } else {
             Some(Judge { warn, error, error_output, ok_file })
         })
+    }
+
+    /// How many PCs of a group an `ssh` or a `winrm` runs at once; empty: one.
+    fn group_max(&self) -> Result<Option<u32>, String> {
+        match self.max.trim() {
+            "" => Ok(None),
+            n => n
+                .parse::<u32>()
+                .ok()
+                .filter(|c| (1..=GROUP_MAX as u32).contains(c))
+                .map(Some)
+                .ok_or_else(|| format!("max は 1 から {GROUP_MAX} までの数で書く: \"{n}\"")),
+        }
     }
 
     /// The `http` the fields say.
@@ -2562,6 +2586,24 @@ X-Day: 1"
         assert!(e.net.jobs[1].judge.is_none());
         fields.warn = "x".into();
         assert!(e.apply_fields(&h, &fields).is_err());
+        // A group of PCs: each may have its host key in koyomi.toml, so the job's is not needed.
+        fields.warn.clear();
+        fields.on = "group:web".into();
+        fields.host_key.clear();
+        fields.max = "4".into();
+        fields.pass = Pass::Any;
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let Part::Chore(Chore::Ssh { max, pass, host_key, .. }) = &e.net.jobs[1].part else { panic!() };
+        assert_eq!((*max, *pass, host_key.is_none()), (Some(4), Pass::Any, true));
+        let again = Fields::of(&e.net.jobs[1]);
+        assert_eq!((again.max.as_str(), again.pass), ("4", Pass::Any));
+        fields.max = "65".into();
+        assert!(e.apply_fields(&h, &fields).unwrap_err().contains("max は 1 から 64 までの数で書く"));
+        // One PC runs alone: no max.
+        fields.on = "ssh://ops@db1".into();
+        fields.max = "2".into();
+        fields.host_key = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
     }
 
     #[test]
@@ -2579,7 +2621,7 @@ X-Day: 1"
         fields.warn = "1".into();
         assert_eq!(e.apply_fields(&h, &fields), Ok(()));
         let j = &e.net.jobs[1];
-        let Part::Chore(Chore::Winrm { on, command, cert, password, auth }) = &j.part else { panic!() };
+        let Part::Chore(Chore::Winrm { on, command, cert, password, auth, .. }) = &j.part else { panic!() };
         assert_eq!((on.as_str(), command.as_str()), ("winrm://ops@app01", "backup.cmd {date}"));
         assert!(cert.is_some() && password.as_deref() == Some("secret:app01"));
         assert_eq!(*auth, WinrmAuth::Basic);

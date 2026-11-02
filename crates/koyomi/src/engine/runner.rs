@@ -2150,6 +2150,8 @@ id = \"a\"
             key: None,
             host_key: None,
             password: None,
+            max: None,
+            pass: Default::default(),
         });
         // More than the 2 s ito-sftp gives the far command's TERM and close.
         assert!(grace(&ssh) > Duration::from_secs(2));
@@ -2159,6 +2161,8 @@ id = \"a\"
             cert: None,
             password: None,
             auth: Default::default(),
+            max: None,
+            pass: Default::default(),
         });
         assert_eq!(grace(&winrm), grace(&ssh));
         assert_eq!(grace(&Part::Job), Duration::ZERO);

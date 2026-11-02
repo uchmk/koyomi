@@ -11,7 +11,7 @@ use ito_prefs::{
     fieldset, form_label, mark_button, seg_named, tag, CodeBox, FormWords, IconButton, InputField, Look, Mark as M, Need, Tag, Tone,
 };
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, WinrmAuth};
+use koyomi_core::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
 use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
@@ -426,6 +426,16 @@ fn loop_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     changed
 }
 
+/// An `ssh`'s or a `winrm`'s group of PCs (`on = "group:…"`): how many at once, and when it passes.
+fn group_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
+    let n = f.max.trim();
+    let bad = !n.is_empty() && !n.parse::<usize>().is_ok_and(|n| (1..=GROUP_MAX).contains(&n));
+    let mut changed = form.line(ui, "field.group_max", Need::Optional, bad, &mut f.max, |i| i.width(140.0));
+    let options = Pass::ALL.map(|p| (p, form.t.tr(if p == Pass::All { "field.pass_all" } else { "field.pass_any" })));
+    changed |= form.choice(ui, "field.pass", &mut f.pass, &options, form.t.tr("field.group_note"));
+    changed
+}
+
 /// What the job runs: `run`, or a shell and its script; where, and how its output is read.
 fn run_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let t = form.t;
@@ -511,17 +521,23 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
         }
         Chore::Ssh { .. } => {
+            // A group's PCs may each have their host key in koyomi.toml.
+            let group = koyomi_core::chore::group(&f.on).is_some();
             changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Server));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
-            changed |= form.line(ui, "field.host_key", req, false, &mut f.host_key, |i| i.mono());
+            changed |= form.line(ui, "field.host_key", if group { opt } else { req }, false, &mut f.host_key, |i| i.mono());
             changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            if group {
+                changed |= group_rows(ui, form, f);
+            }
         }
         Chore::Winrm { .. } => {
+            let group = koyomi_core::chore::group(&f.on).is_some();
             changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Desktop));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             let bad = !f.cert.trim().is_empty() && koyomi_core::chore::cert_ok(f.cert.trim()).is_err();
-            changed |= form.line(ui, "field.cert", req, bad, &mut f.cert, |i| i.mono());
+            changed |= form.line(ui, "field.cert", if group { opt } else { req }, bad, &mut f.cert, |i| i.mono());
             changed |= form.line(ui, "field.winrm_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
             let options = WinrmAuth::ALL.map(|a| (a, a.name()));
             let note = form.t.tr(match f.auth {
@@ -529,6 +545,9 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
                 WinrmAuth::Ntlm => "field.winrm_auth_ntlm",
             });
             changed |= form.choice(ui, "field.winrm_auth", &mut f.auth, &options, note);
+            if group {
+                changed |= group_rows(ui, form, f);
+            }
         }
         Chore::Http { .. } => {
             changed |= form.line(ui, "field.url", req, false, &mut f.url, |i| i.mono().mark(M::Globe));

@@ -4,7 +4,8 @@
 //! its output on line by line as it comes (the far standard error after `! `) and
 //! ends with the far command's exit code; without one, with [`NO_EXIT`] and why in
 //! the file `KOYOMI_REASON` names. The certificate to pin comes from `koyomi winrm
-//! cert`.
+//! cert`. `on = "group:app"` runs it on each PC of a group of koyomi.toml as an
+//! `ssh` does (`crate::ssh::group`), each PC with its own `cert` or else the job's.
 //!
 //! The engine stops it as it does an `ssh` (see `ssh.rs`). ito-winrm looks at the
 //! flag at every step: before the command is sent nothing starts there; after, the
@@ -13,7 +14,7 @@
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use koyomi_core::chore::{self, WinrmAuth, WINRM_PORT};
+use koyomi_core::chore::{self, Sftp, WinrmAuth, WINRM_PORT};
 
 use crate::ssh::{cut, say, text};
 
@@ -70,41 +71,69 @@ fn place(at: &str) -> Result<(String, u16), String> {
 /// to end.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let on = var("ON").ok_or("KOYOMI_WINRM_ON がない（koyomi winrm run は kind = \"winrm\" のジョブが動かす）")?;
-    let far = chore::winrm(&on).ok_or_else(|| format!("on は winrm://ユーザー@ホスト[:ポート] で書く: {on}"))??;
-    let user = far.user.clone().ok_or("winrm:// にはユーザーが要る")?;
     // As it is written: not trimmed.
     let command = std::env::var("KOYOMI_WINRM_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or("command がない")?;
-    let cert = var("CERT").ok_or("cert がない（koyomi winrm cert <ホスト> で調べる）")?;
-    let pin = ito_winrm::fingerprint::parse(&cert).ok_or_else(|| format!("cert が読めない（AB:CD:… の形）: {cert}"))?;
+    let cert = var("CERT");
+    let (group_name, max, pass) = crate::ssh::fan_of("KOYOMI_WINRM_", &on)?;
+    // Read once, before a group's PCs start.
     let password = crate::sftp::password(var("PASSWORD").ok_or("password がない（secret:<名前> で書く）")?)?;
     let auth = match var("AUTH") {
         None => WinrmAuth::Basic,
         Some(a) => WinrmAuth::of(&a).ok_or_else(|| format!("auth は \"basic\" か \"ntlm\": {a}"))?,
     };
-    let mut target = ito_winrm::Target::https(&far.host, &user, &password, Some(pin)).with_auth(match auth {
+    if let Some(name) = group_name {
+        let members = crate::ssh::members(name, "winrm")?;
+        return crate::ssh::group(name, &members, max, pass, stop, &say, |m, out| {
+            let far = chore::winrm(&m.on).ok_or_else(|| format!("winrm:// の PC ではない: {}", m.on))??;
+            let cert =
+                m.cert.as_deref().or(cert.as_deref()).ok_or(
+                    "cert がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く。koyomi winrm cert <ホスト> で調べる）",
+                )?;
+            one(&far, cert, &password, auth, &command, stop, out)
+        });
+    }
+    let far = chore::winrm(&on).ok_or_else(|| format!("on は winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く: {on}"))??;
+    let cert = cert.ok_or("cert がない（koyomi winrm cert <ホスト> で調べる）")?;
+    one(&far, &cert, &password, auth, &command, stop, &say).map_err(|e| format!("{}: {e}", far.host))
+}
+
+/// Runs `command` on `far`, its lines to `out`: its exit code, or why there is
+/// none (without the host, which the caller adds).
+fn one(
+    far: &Sftp,
+    cert: &str,
+    password: &str,
+    auth: WinrmAuth,
+    command: &str,
+    stop: &AtomicBool,
+    out: &dyn Fn(&str, bool),
+) -> Result<i32, String> {
+    let user = far.user.clone().ok_or("winrm:// にはユーザーが要る")?;
+    let pin = ito_winrm::fingerprint::parse(cert).ok_or_else(|| format!("cert が読めない（AB:CD:… の形）: {cert}"))?;
+    let mut target = ito_winrm::Target::https(&far.host, &user, password, Some(pin)).with_auth(match auth {
         WinrmAuth::Basic => ito_winrm::Auth::Basic,
         WinrmAuth::Ntlm => ito_winrm::Auth::Ntlm,
     });
     target.port = far.port.unwrap_or(WINRM_PORT);
     let opts = ito_winrm::ExecOptions { env: crate::ssh::forwarded("KOYOMI_WINRM_ENV"), timeout: None };
-    let (mut out, mut err) = (Vec::new(), Vec::new());
-    let result = ito_winrm::exec(&target, &command, &opts, stop, &mut |stream, bytes| {
+    let (mut o, mut e) = (Vec::new(), Vec::new());
+    let result = ito_winrm::exec(&target, command, &opts, stop, &mut |stream, bytes| {
         let (buf, stderr) = match stream {
-            ito_winrm::Stream::Stdout => (&mut out, false),
-            ito_winrm::Stream::Stderr => (&mut err, true),
+            ito_winrm::Stream::Stdout => (&mut o, false),
+            ito_winrm::Stream::Stderr => (&mut e, true),
         };
         for line in cut(buf, bytes) {
-            say(&line, stderr);
+            out(&line, stderr);
         }
     });
-    for (buf, stderr) in [(out, false), (err, true)] {
+    for (buf, stderr) in [(o, false), (e, true)] {
         if !buf.is_empty() {
-            say(&text(&buf), stderr);
+            out(&text(&buf), stderr);
         }
     }
-    let exit = result.map_err(|e| format!("{}: {}", far.host, reason(&e, auth)))?;
+    let exit = result.map_err(|e| reason(&e, auth))?;
     // A Windows code such as 0xC0000005 goes through as the same bits.
-    exit.status.map(|code| code as i32).ok_or_else(|| format!("{}: 終了コードを受け取れなかった", far.host))
+    exit.status.map(|code| code as i32).ok_or_else(|| "終了コードを受け取れなかった".to_owned())
 }
 
 /// Why it failed, as the job's ✕ reason: what to look at on which side.

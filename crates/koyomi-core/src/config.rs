@@ -6,8 +6,9 @@
 //! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
 //! this one stands by for (HA), `[primary]`, which of them stands by for this one, and
 //! `[locks]`, how many nets may hold a `lock` at once, and `work_dir`, where a job without
-//! `dir` runs, `[[blackout]]`, the planned stops in which nothing starts by itself, and
-//! `[vars]`, the values every net reads as `{var:name}`.
+//! `dir` runs, `[[blackout]]`, the planned stops in which nothing starts by itself,
+//! `[vars]`, the values every net reads as `{var:name}`, and `[groups]`, the PCs an
+//! `ssh` or a `winrm` with `on = "group:name"` runs on.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -60,6 +61,88 @@ pub struct Config {
     /// [`Config::parse`] can say what is wrong in Japanese; [`Config::vars`] gives the values.
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub vars: toml::Table,
+    /// `[groups]`: `web = ["ssh://ops@web1", { on = "ssh://ops@web2", host_key = "SHA256:…" }]`,
+    /// the PCs an `ssh` or a `winrm` with `on = "group:web"` runs on. Kept as written so
+    /// [`Config::parse`] can say what is wrong in Japanese; [`Config::members`] gives them.
+    #[serde(skip_serializing_if = "toml::Table::is_empty")]
+    pub groups: toml::Table,
+}
+
+/// One PC of a `[groups]` group: its address, and its own host key (ssh) or
+/// certificate (winrm) when it has one; else the job's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Member {
+    pub on: String,
+    pub host_key: Option<String>,
+    pub cert: Option<String>,
+}
+
+/// The group `name` of `[groups]` as written in `v`: what its PCs are reached by
+/// (`"ssh"` or `"winrm"`, the same for each) and the PCs.
+fn group_of(name: &str, v: &toml::Value) -> Result<(&'static str, Vec<Member>), String> {
+    let example = format!("例: {name} = [\"ssh://ops@web1\", \"ssh://ops@web2\"]");
+    let list = match v.as_array() {
+        Some(l) if !l.is_empty() => l,
+        _ => return Err(format!("[groups] の {name} は PC の配列で書く（{example}）")),
+    };
+    if list.len() > crate::chore::GROUP_MAX {
+        return Err(format!("[groups] の {name} は {} 台まで", crate::chore::GROUP_MAX));
+    }
+    let mut scheme = None;
+    let mut members: Vec<Member> = Vec::new();
+    for item in list {
+        let (on, host_key, cert) = match item {
+            toml::Value::String(on) => (on.as_str(), None, None),
+            toml::Value::Table(t) => {
+                if let Some(k) = t.keys().find(|k| !["on", "host_key", "cert"].contains(&k.as_str())) {
+                    return Err(format!("[groups] の {name} の PC に {k} は書けない（on・host_key・cert だけ）"));
+                }
+                let text = |key: &str| match t.get(key) {
+                    None => Ok(None),
+                    Some(toml::Value::String(x)) => Ok(Some(x.trim())),
+                    Some(_) => Err(format!("[groups] の {name} の {key} は文字列で書く")),
+                };
+                let Some(on) = text("on")? else {
+                    return Err(format!("[groups] の {name} の PC に on が要る（{{ on = \"ssh://ops@web1\", host_key = \"SHA256:…\" }}）"));
+                };
+                (on, text("host_key")?.filter(|x| !x.is_empty()), text("cert")?.filter(|x| !x.is_empty()))
+            }
+            _ => return Err(format!("[groups] の {name} は PC の配列で書く（{example}）")),
+        };
+        let on = on.trim();
+        if [Some(on), host_key, cert].into_iter().flatten().any(|x| x.contains('{')) {
+            return Err(format!("[groups] の {name} に {{…}} は書けない: {on}"));
+        }
+        let this = match (crate::chore::ssh(on), crate::chore::winrm(on)) {
+            (Some(r), _) => r.map(|_| "ssh"),
+            (_, Some(r)) => r.map(|_| "winrm"),
+            _ => Err(format!("PC は ssh://[ユーザー@]ホスト[:ポート] か winrm://ユーザー@ホスト[:ポート] で書く: {on}")),
+        }
+        .map_err(|e| format!("[groups] の {name}: {e}"))?;
+        match scheme {
+            Some(s) if s != this => {
+                return Err(format!("[groups] の {name} に ssh:// と winrm:// が混ざっている（1 つの組はどちらかだけ）"))
+            }
+            _ => scheme = Some(this),
+        }
+        if let Some(h) = host_key {
+            if this != "ssh" {
+                return Err(format!("[groups] の {name}: host_key は ssh:// の PC にだけ書く: {on}"));
+            }
+            crate::chore::host_key_ok(h).map_err(|e| format!("[groups] の {name}: {e}"))?;
+        }
+        if let Some(c) = cert {
+            if this != "winrm" {
+                return Err(format!("[groups] の {name}: cert は winrm:// の PC にだけ書く: {on}"));
+            }
+            crate::chore::cert_ok(c).map_err(|e| format!("[groups] の {name}: {e}"))?;
+        }
+        if members.iter().any(|m| m.on.eq_ignore_ascii_case(on)) {
+            return Err(format!("[groups] の {name} に同じ PC が 2 つある: {on}"));
+        }
+        members.push(Member { on: on.to_owned(), host_key: host_key.map(str::to_owned), cert: cert.map(str::to_owned) });
+    }
+    Ok((scheme.unwrap_or("ssh"), members))
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
@@ -400,6 +483,7 @@ impl Default for Config {
             work_dir: None,
             blackout: Vec::new(),
             vars: toml::Table::new(),
+            groups: toml::Table::new(),
         }
     }
 }
@@ -479,7 +563,26 @@ impl Config {
             }
             crate::template::check(s).map_err(|e| format!("[vars] の {name}: {e}"))?;
         }
+        for (name, v) in &c.groups {
+            if !crate::jobnet::plain_name(name) {
+                return Err(format!("[groups] の名前に使えない: {name}（英数字と _ だけ。on = \"group:{name}\" で読むので）"));
+            }
+            group_of(name, v)?;
+        }
         Ok(c)
+    }
+
+    /// The PCs of the `[groups]` group `name`, for an `ssh` or a `winrm` (`kind`) with
+    /// `on = "group:name"`.
+    pub fn members(&self, name: &str, kind: &str) -> Result<Vec<Member>, String> {
+        let Some(v) = self.groups.get(name) else {
+            return Err(format!("組 {name} が koyomi.toml の [groups] にない"));
+        };
+        let (scheme, members) = group_of(name, v)?;
+        if scheme != kind {
+            return Err(format!("組 {name} の PC は {scheme}:// で書いてある（kind = \"{kind}\" の on には {kind}:// の PC の組を書く）"));
+        }
+        Ok(members)
     }
 
     /// `[vars]`' values, for `{var:…}` ([`Config::parse`] has seen that each is a string).
@@ -541,6 +644,49 @@ archive_days = 365
         assert!(Config::parse("keep_days = 0\n").is_err());
         assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    /// `[groups]`: arrays of PCs reached the same way, each a string or a table with its own key.
+    #[test]
+    fn groups_read_their_pcs_and_are_checked() {
+        let hk = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        let cert = "3F:2A:91:0C:5B:77:E4:18:A0:6D:C2:9F:41:B8:0E:D3:57:6A:FC:21:94:8B:3E:70:CD:12:65:A9:F0:4E:B7:83";
+        let c = Config::parse(&format!(
+            "[groups]\nweb = [\"ssh://ops@web1\", {{ on = \" ssh://ops@web2:2222 \", host_key = \"{hk}\" }}]\napp = [{{ on = 'winrm://CORP\\ops@app01', cert = \"{cert}\" }}]\n"
+        ))
+        .unwrap();
+        let web = c.members("web", "ssh").unwrap();
+        assert_eq!(
+            web,
+            [
+                Member { on: "ssh://ops@web1".into(), host_key: None, cert: None },
+                Member { on: "ssh://ops@web2:2222".into(), host_key: Some(hk.into()), cert: None },
+            ]
+        );
+        assert_eq!(c.members("app", "winrm").unwrap()[0].cert.as_deref(), Some(cert));
+        assert!(c.members("db", "ssh").unwrap_err().contains("組 db が koyomi.toml の [groups] にない"));
+        assert!(c.members("web", "winrm").unwrap_err().contains("組 web の PC は ssh:// で書いてある"));
+        assert!(c.members("app", "ssh").unwrap_err().contains("winrm://"));
+        let bad = |t: &str| Config::parse(&format!("[groups]\n{t}\n")).unwrap_err();
+        assert!(bad("\"web-1\" = ['ssh://h']").contains("[groups] の名前に使えない: web-1"));
+        assert!(bad("web = 'ssh://h'").contains("[groups] の web は PC の配列で書く"));
+        assert!(bad("web = []").contains("PC の配列で書く"));
+        assert!(bad("web = [3]").contains("PC の配列で書く"));
+        assert!(bad("web = ['h1']").contains("ssh://[ユーザー@]ホスト[:ポート] か winrm://"));
+        assert!(bad("web = ['ssh://h/tmp']").contains("パスは書かない"));
+        assert!(bad("web = ['winrm://h']").contains("ユーザーが要る"));
+        assert!(bad("web = ['ssh://h', 'winrm://u@h2']").contains("混ざっている"));
+        assert!(bad("web = ['ssh://h', ' SSH://h ']").contains("同じ PC が 2 つある"));
+        assert!(bad("web = ['{var:h}']").contains("{…} は書けない"));
+        assert!(bad("web = [{ host_key = 'x' }]").contains("on が要る"));
+        assert!(bad("web = [{ on = 'ssh://h', user = 'x' }]").contains("user は書けない"));
+        assert!(bad("web = [{ on = 'ssh://h', host_key = 'abc' }]").contains("SHA256:"));
+        assert!(bad("web = [{ on = 'ssh://h', cert = 'AB' }]").contains("cert は winrm:// の PC にだけ"));
+        assert!(bad("web = [{ on = 'winrm://u@h', host_key = 'x' }]").contains("host_key は ssh:// の PC にだけ"));
+        assert!(bad("web = [{ on = 'winrm://u@h', cert = 'AB' }]").contains("AB:CD:…"));
+        let many = (0..=crate::chore::GROUP_MAX).map(|i| format!("'ssh://h{i}'")).collect::<Vec<_>>().join(", ");
+        assert!(bad(&format!("web = [{many}]")).contains("64 台まで"));
+        assert!(Config::default().groups.is_empty());
     }
 
     /// `[vars]`: strings with plain names, which may hold the day's tokens but no other `{…:…}`.

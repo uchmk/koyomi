@@ -476,12 +476,48 @@ fn check(args: &[String]) -> i32 {
             for v in koyomi_core::template::vars_of(net).into_iter().filter(|v| !vars.contains_key(v)) {
                 out(&format!("{name}: 注意: {{var:{v}}} が koyomi.toml の [vars] にない（流すと止まる）"), true);
             }
+            // An `ssh` or a `winrm` on a group: the group must be there, and each PC needs a key.
+            for w in group_warnings(&config, net) {
+                out(&format!("{name}: 注意: {w}（流すと止まる）"), true);
+            }
         }
     }
     if !bad {
         out(&format!("{name}: 問題なし"), false);
     }
     i32::from(bad)
+}
+
+/// What an `ssh` or a `winrm` with `on = "group:…"` would stop on, by koyomi.toml:
+/// a group it does not have, or PCs with no host key (certificate) where the job has
+/// none either.
+fn group_warnings(config: &koyomi_core::config::Config, net: &koyomi_core::jobnet::Jobnet) -> Vec<String> {
+    use koyomi_core::chore::{self, Chore};
+    use koyomi_core::jobnet::Part;
+    let mut out = Vec::new();
+    for j in &net.jobs {
+        let (kind, key, on, own) = match &j.part {
+            Part::Chore(Chore::Ssh { on, host_key, .. }) => ("ssh", "host_key", on, host_key.is_some()),
+            Part::Chore(Chore::Winrm { on, cert, .. }) => ("winrm", "cert", on, cert.is_some()),
+            _ => continue,
+        };
+        let Some(name) = chore::group(on) else { continue };
+        match config.members(name, kind) {
+            Err(e) => out.push(format!("{}: {e}", j.id)),
+            Ok(_) if own => {}
+            Ok(members) => {
+                let bare: Vec<&str> = members
+                    .iter()
+                    .filter(|m| if kind == "ssh" { m.host_key.is_none() } else { m.cert.is_none() })
+                    .map(|m| m.on.as_str())
+                    .collect();
+                if !bare.is_empty() {
+                    out.push(format!("{}: 組 {name} の {} に {key} がなく、ジョブにもない", j.id, bare.join(", ")));
+                }
+            }
+        }
+    }
+    out
 }
 
 /// `koyomi check calendars/<name>.toml`: the file reads, and how long its holiday table lasts.
@@ -1936,6 +1972,30 @@ mod tests {
         assert!(e.contains("Temp") && e.contains("Program Files") && e.contains(super::ALLOW_TEMP));
         assert_eq!(super::temp_words(exe, true, true), Ok(()));
         assert_eq!(super::temp_words(exe, false, false), Ok(()));
+    }
+
+    /// `check` tells what a group of PCs would stop on before it runs.
+    #[test]
+    fn a_missing_group_or_a_pc_without_a_key_is_told() {
+        let hk = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        let config = koyomi_core::config::Config::parse(&format!(
+            "[groups]\nweb = ['ssh://ops@web1', {{ on = 'ssh://ops@web2', host_key = '{hk}' }}]\napp = ['winrm://ops@app01']\n"
+        ))
+        .unwrap();
+        let ssh = |id: &str, on: &str, more: &str| format!("[[job]]\nid = '{id}'\nkind = 'ssh'\non = '{on}'\ncommand = 'x'\n{more}");
+        let net = koyomi_core::jobnet::parse(&format!(
+            "format = 1\n{}{}{}{}[[job]]\nid = 'e'\nkind = 'winrm'\non = 'group:web'\ncommand = 'x'\npassword = 'secret:p'\n",
+            ssh("a", "group:web", ""),
+            ssh("b", "group:db", ""),
+            ssh("c", "group:web", &format!("host_key = '{hk}'\n")),
+            ssh("d", "ssh://ops@web9", &format!("host_key = '{hk}'\n")),
+        ))
+        .unwrap();
+        let w = super::group_warnings(&config, &net);
+        assert_eq!(w.len(), 3, "{w:?}");
+        assert_eq!(w[0], "a: 組 web の ssh://ops@web1 に host_key がなく、ジョブにもない");
+        assert!(w[1].starts_with("b: 組 db が koyomi.toml の [groups] にない"), "{}", w[1]);
+        assert!(w[2].starts_with("e: 組 web の PC は ssh:// で書いてある"), "{}", w[2]);
     }
 
     #[test]

@@ -86,7 +86,10 @@ pub enum Chore {
     },
     /// 別の PC で動かす: `command`, as it is written, on `on`
     /// (`ssh://[user@]host[:port]`) over SSH. Its output reaches the job's log as it
-    /// comes, and its exit code is judged as a job's (`judge`).
+    /// comes, and its exit code is judged as a job's (`judge`). `on` may name a
+    /// group of PCs instead (`group:web`, koyomi.toml's `[groups]`): the command
+    /// runs on each, `max` at a time, and `pass` says whether every one must end
+    /// with 0 or one is enough.
     Ssh {
         on: String,
         command: String,
@@ -96,12 +99,17 @@ pub enum Chore {
         host_key: Option<String>,
         #[serde(default)]
         password: Option<String>,
+        /// On a group: how many of its PCs run at once; one at a time when not written.
+        #[serde(default)]
+        max: Option<u32>,
+        #[serde(default)]
+        pass: Pass,
     },
     /// 別の Windows で動かす（WinRM）: `command`, a `cmd.exe` line as it is written,
     /// on `on` (`winrm://user@host[:port]`) over WinRM on HTTPS (5986), logged in
     /// as the user with `password` the way `auth` says. `cert` pins the server's
     /// certificate (its SHA-256, `koyomi winrm cert`). Its output and exit code go
-    /// as an `ssh`'s do.
+    /// as an `ssh`'s do, and `on` may name a group of PCs as an `ssh`'s may.
     Winrm {
         on: String,
         command: String,
@@ -111,6 +119,10 @@ pub enum Chore {
         password: Option<String>,
         #[serde(default)]
         auth: WinrmAuth,
+        #[serde(default)]
+        max: Option<u32>,
+        #[serde(default)]
+        pass: Pass,
     },
     /// メールを送る: `subject` and `body` (plain text) to `to` and `cc`, with the
     /// files `files` (each a path, or a folder and a name with `*` / `?`) attached,
@@ -167,6 +179,71 @@ impl WinrmAuth {
     pub fn of(s: &str) -> Option<WinrmAuth> {
         WinrmAuth::ALL.into_iter().find(|a| a.key() == s)
     }
+}
+
+/// When an `ssh` or a `winrm` on a group of PCs (`on = "group:web"`) ends 正常:
+/// `pass`. Either way the command runs on every PC of the group.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Pass {
+    /// Every PC's command ended with 0.
+    #[default]
+    All,
+    /// One PC's did.
+    Any,
+}
+
+impl Pass {
+    /// Each, in the order of the editor's choice.
+    pub const ALL: [Pass; 2] = [Pass::All, Pass::Any];
+
+    /// As written in `pass`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Pass::All => "all",
+            Pass::Any => "any",
+        }
+    }
+
+    /// The one written as `s`.
+    pub fn of(s: &str) -> Option<Pass> {
+        Pass::ALL.into_iter().find(|p| p.key() == s)
+    }
+}
+
+/// What `on` starts with when it names a group of PCs in koyomi.toml's `[groups]`.
+pub const GROUP: &str = "group:";
+
+/// The most PCs in one group, and so the most an `ssh` or a `winrm` runs at once.
+pub const GROUP_MAX: usize = 64;
+
+/// The group `on` names (`group:web` → `web`), or `None` when it is one PC.
+pub fn group(on: &str) -> Option<&str> {
+    let t = on.trim();
+    t.get(..GROUP.len()).filter(|p| p.eq_ignore_ascii_case(GROUP)).map(|_| t[GROUP.len()..].trim())
+}
+
+/// Whether `on` names a group (its name checked); `max` and `pass` go only with
+/// one. An `on` that starts with `{…}` is told once it is filled in.
+fn fan(on: &str, max: Option<u32>, pass: Pass) -> Result<bool, String> {
+    let group = match group(on) {
+        Some("") => return Err("on の group: のあとに組の名前を書く（koyomi.toml の [groups] の名前。例: on = \"group:web\"）".into()),
+        Some(name) if crate::jobnet::plain_name(name) => true,
+        Some(name) => return Err(format!("組の名前は英数字と _ だけ: {name}")),
+        None => false,
+    };
+    if max.is_some_and(|m| !(1..=GROUP_MAX as u32).contains(&m)) {
+        return Err(format!("max は 1 から {GROUP_MAX} までの数で書く（組の PC をいくつ同時に動かすか）"));
+    }
+    if !group && !on.trim().starts_with('{') {
+        if max.is_some() {
+            return Err("max は on が PC の組（group:名前）のときだけ書く".into());
+        }
+        if pass != Pass::All {
+            return Err("pass は on が PC の組（group:名前）のときだけ書く".into());
+        }
+    }
+    Ok(group)
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
@@ -251,8 +328,24 @@ impl Chore {
                 headers: BTreeMap::new(),
                 expect: Vec::new(),
             },
-            "ssh" => Chore::Ssh { on: String::new(), command: String::new(), key: None, host_key: None, password: None },
-            "winrm" => Chore::Winrm { on: String::new(), command: String::new(), cert: None, password: None, auth: WinrmAuth::Basic },
+            "ssh" => Chore::Ssh {
+                on: String::new(),
+                command: String::new(),
+                key: None,
+                host_key: None,
+                password: None,
+                max: None,
+                pass: Pass::All,
+            },
+            "winrm" => Chore::Winrm {
+                on: String::new(),
+                command: String::new(),
+                cert: None,
+                password: None,
+                auth: WinrmAuth::Basic,
+                max: None,
+                pass: Pass::All,
+            },
             "mail" => Chore::Mail { to: Vec::new(), cc: Vec::new(), subject: String::new(), body: None, files: Vec::new(), via: None },
             _ => return None,
         })
@@ -362,7 +455,7 @@ impl Chore {
                     return Err("send の from はこのマシンのファイル（sftp:// は into に書く）".into());
                 }
                 let far = sftp(into).transpose()?;
-                login("sftp://", far.is_some(), key, host_key, password)?;
+                login("sftp://", far.is_some(), true, key, host_key, password)?;
             }
             Chore::Fetch { from, into, key, host_key, password } => {
                 need("from", from)?;
@@ -376,7 +469,7 @@ impl Chore {
                         return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
                     }
                 }
-                login("sftp://", far.is_some(), key, host_key, password)?;
+                login("sftp://", far.is_some(), true, key, host_key, password)?;
             }
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 need("url", url)?;
@@ -404,26 +497,31 @@ impl Chore {
                     return Err(format!("expect は 100〜599 の状態コード: {c}"));
                 }
             }
-            Chore::Ssh { on, command, key, host_key, password } => {
+            Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                 if on.trim().is_empty() {
-                    return Err("on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] で書く）".into());
+                    return Err("on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く）".into());
                 }
+                let group = fan(on, *max, *pass)?;
                 // An `on` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
-                if ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"));
+                if !group && ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
+                    return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く: {on}"));
                 }
                 far_command(command)?;
-                login("ssh://", true, key, host_key, password)?;
+                // A group's PCs may each have their own host key in `[groups]`.
+                login("ssh://", true, !group, key, host_key, password)?;
             }
-            Chore::Winrm { on, command, cert, password, .. } => {
+            Chore::Winrm { on, command, cert, password, max, pass, .. } => {
                 if on.trim().is_empty() {
-                    return Err("on が空（動かす PC を winrm://ユーザー@ホスト[:ポート] で書く）".into());
+                    return Err("on が空（動かす PC を winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く）".into());
                 }
-                if winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(format!("on は winrm://ユーザー@ホスト[:ポート] で書く: {on}"));
+                let group = fan(on, *max, *pass)?;
+                if !group && winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
+                    return Err(format!("on は winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く: {on}"));
                 }
                 far_command(command)?;
                 match cert.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+                    // Each PC of a group may have its own in `[groups]`.
+                    None if group => {}
                     None => {
                         return Err("winrm:// には cert が要る（相手の証明書の指紋 AB:CD:…。koyomi winrm cert <ホスト> で調べる）".into());
                     }
@@ -568,16 +666,17 @@ impl Chore {
                 }
                 v
             }
-            Chore::Ssh { on, command, key, host_key, password } => {
+            Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                 let mut v = vec![("KOYOMI_SSH_ON".to_owned(), on.trim().to_owned()), ("KOYOMI_SSH_COMMAND".to_owned(), command.clone())];
                 for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_SSH_{name}"), x.to_owned()));
                     }
                 }
+                v.extend(fan_env("KOYOMI_SSH_", *max, *pass));
                 v
             }
-            Chore::Winrm { on, command, cert, password, auth } => {
+            Chore::Winrm { on, command, cert, password, auth, max, pass } => {
                 let mut v = vec![
                     ("KOYOMI_WINRM_ON".to_owned(), on.trim().to_owned()),
                     ("KOYOMI_WINRM_COMMAND".to_owned(), command.clone()),
@@ -588,6 +687,7 @@ impl Chore {
                         v.push((format!("KOYOMI_WINRM_{name}"), x.to_owned()));
                     }
                 }
+                v.extend(fan_env("KOYOMI_WINRM_", *max, *pass));
                 v
             }
             Chore::Mail { to, cc, subject, body, files, via } => {
@@ -826,6 +926,19 @@ pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
     Some(read.map_err(|e| format!("{e}: {t}")))
 }
 
+/// `max` and `pass` of an `ssh` or `winrm` for `koyomi ssh run` or `koyomi winrm
+/// run`, as `<prefix>MAX` and `<prefix>PASS`, when they are written.
+fn fan_env(prefix: &str, max: Option<u32>, pass: Pass) -> Vec<(String, String)> {
+    let mut v = Vec::new();
+    if let Some(m) = max {
+        v.push((format!("{prefix}MAX"), m.to_string()));
+    }
+    if pass != Pass::All {
+        v.push((format!("{prefix}PASS"), pass.key().to_owned()));
+    }
+    v
+}
+
 /// The command of an `ssh` or `winrm`: something, and not past [`COMMAND_MAX`].
 fn far_command(command: &str) -> Result<(), String> {
     if command.trim().is_empty() {
@@ -882,7 +995,14 @@ fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
 /// How an SFTP `send` or `fetch`, or an `ssh`, logs in when there is a `far` side
 /// (`scheme`): `host_key` is needed, `password` is a `secret:`, and `key` and
 /// `password` go one at a time. Without a far side, none of them is written.
-fn login(scheme: &str, far: bool, key: &Option<String>, host_key: &Option<String>, password: &Option<String>) -> Result<(), String> {
+fn login(
+    scheme: &str,
+    far: bool,
+    need_host_key: bool,
+    key: &Option<String>,
+    host_key: &Option<String>,
+    password: &Option<String>,
+) -> Result<(), String> {
     let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
     if !far {
         if let Some((name, _)) = [("key", key), ("host_key", host_key), ("password", password)].into_iter().find(|(_, v)| set(v)) {
@@ -891,6 +1011,7 @@ fn login(scheme: &str, far: bool, key: &Option<String>, host_key: &Option<String
         return Ok(());
     }
     match host_key.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
+        None if !need_host_key => {}
         None => {
             return Err(format!("{scheme} には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）"));
         }
@@ -1087,6 +1208,8 @@ mod tests {
             key: key.map(Into::into),
             host_key: host_key.map(Into::into),
             password: password.map(Into::into),
+            max: None,
+            pass: Pass::All,
         }
     }
 
@@ -1097,7 +1220,7 @@ mod tests {
         assert_eq!(ok("{param:pc}", "df -h"), Ok(()));
         assert_eq!(ok("{var:pc}", "df -h"), Ok(()));
         assert!(ok("", "df -h").unwrap_err().contains("on が空"));
-        assert!(ok("u@h", "df -h").unwrap_err().contains("ssh://[ユーザー@]ホスト[:ポート] で書く"));
+        assert!(ok("u@h", "df -h").unwrap_err().contains("ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く"));
         assert!(ok("sftp://u@h/in", "df -h").unwrap_err().contains("ssh://"));
         assert!(ok("ssh://h/x", "df -h").unwrap_err().contains("パスは書かない"));
         assert!(ok("ssh://u@h", " \n").unwrap_err().contains("command が空"));
@@ -1127,6 +1250,57 @@ mod tests {
         assert!(remote("ssh://h", "x", None, Some(HK), Some("secret:ops"))
             .env()
             .contains(&("KOYOMI_SSH_PASSWORD".to_owned(), "secret:ops".to_owned())));
+    }
+
+    #[test]
+    fn an_ssh_or_winrm_on_a_group_says_how_many_at_once_and_when_it_passes() {
+        assert_eq!(group(" group:web "), Some("web"));
+        assert_eq!(group("GROUP: web"), Some("web"));
+        assert_eq!(group("ssh://web"), None);
+        assert_eq!(group("grou"), None);
+        let fanned = |on: &str, host_key: Option<&str>, max: Option<u32>, pass: Pass| {
+            let Chore::Ssh { on: o, command, key, password, .. } = remote(on, "uptime", None, host_key, None) else { unreachable!() };
+            Chore::Ssh { on: o, command, key, host_key: host_key.map(Into::into), password, max, pass }
+        };
+        // Each PC's host key may be in [groups], so the job need not have one.
+        assert_eq!(fanned("group:web", None, None, Pass::All).check(), Ok(()));
+        assert_eq!(fanned("group:web", Some(HK), Some(4), Pass::Any).check(), Ok(()));
+        assert!(fanned("group:web", Some("47DEQ"), None, Pass::All).check().unwrap_err().contains("SHA256:"));
+        assert!(fanned("group:", None, None, Pass::All).check().unwrap_err().contains("組の名前を書く"));
+        assert!(fanned("group:web-1", None, None, Pass::All).check().unwrap_err().contains("英数字と _ だけ"));
+        assert!(fanned("group:web", None, Some(0), Pass::All).check().unwrap_err().contains("1 から 64 まで"));
+        assert!(fanned("group:web", None, Some(65), Pass::All).check().unwrap_err().contains("1 から 64 まで"));
+        // max and pass go with a group only; a param is told once it is filled in.
+        assert!(fanned("ssh://h", Some(HK), Some(2), Pass::All).check().unwrap_err().contains("max は on が PC の組"));
+        assert!(fanned("ssh://h", Some(HK), None, Pass::Any).check().unwrap_err().contains("pass は on が PC の組"));
+        assert_eq!(fanned("{var:pcs}", Some(HK), Some(2), Pass::Any).check(), Ok(()));
+        let env = fanned("group:web", None, Some(3), Pass::Any).env();
+        assert!(env.contains(&("KOYOMI_SSH_ON".to_owned(), "group:web".to_owned())));
+        assert!(env.contains(&("KOYOMI_SSH_MAX".to_owned(), "3".to_owned())));
+        assert!(env.contains(&("KOYOMI_SSH_PASS".to_owned(), "any".to_owned())));
+        let env = fanned("group:web", None, None, Pass::All).env();
+        assert!(!env.iter().any(|(k, _)| k == "KOYOMI_SSH_MAX" || k == "KOYOMI_SSH_PASS"));
+        // A winrm's PCs may each have their own certificate; a password is still needed.
+        let w = |cert: Option<&str>, password: Option<&str>, max: Option<u32>, pass: Pass| {
+            let Chore::Winrm { command, auth, .. } = windows("group:app", "ipconfig", cert, password) else { unreachable!() };
+            Chore::Winrm {
+                on: "group:app".into(),
+                command,
+                cert: cert.map(Into::into),
+                password: password.map(Into::into),
+                auth,
+                max,
+                pass,
+            }
+        };
+        assert_eq!(w(None, Some("secret:ops"), Some(8), Pass::Any).check(), Ok(()));
+        assert!(w(None, None, None, Pass::All).check().unwrap_err().contains("password が要る"));
+        assert!(w(Some("3F:2A"), Some("secret:ops"), None, Pass::All).check().unwrap_err().contains("AB:CD:…"));
+        let env = w(None, Some("secret:ops"), Some(8), Pass::Any).env();
+        assert!(env.contains(&("KOYOMI_WINRM_MAX".to_owned(), "8".to_owned())));
+        assert!(env.contains(&("KOYOMI_WINRM_PASS".to_owned(), "any".to_owned())));
+        assert!(windows("winrm://ops@h", "x", Some(CERT), Some("secret:ops")).env().iter().all(|(k, _)| k != "KOYOMI_WINRM_MAX"));
+        assert_eq!(Pass::ALL.map(|p| Pass::of(p.key())), [Some(Pass::All), Some(Pass::Any)]);
     }
 
     #[test]
@@ -1177,6 +1351,8 @@ mod tests {
             cert: cert.map(Into::into),
             password: password.map(Into::into),
             auth: WinrmAuth::Basic,
+            max: None,
+            pass: Pass::All,
         }
     }
 
@@ -1186,7 +1362,7 @@ mod tests {
         assert_eq!(ok("winrm://ops@h", "ipconfig /all"), Ok(()));
         assert_eq!(ok("{param:pc}", "ipconfig"), Ok(()));
         assert!(ok("", "ipconfig").unwrap_err().contains("on が空"));
-        assert!(ok("ops@h", "ipconfig").unwrap_err().contains("winrm://ユーザー@ホスト[:ポート] で書く"));
+        assert!(ok("ops@h", "ipconfig").unwrap_err().contains("winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く"));
         assert!(ok("ssh://ops@h", "ipconfig").unwrap_err().contains("winrm://"));
         assert!(ok("winrm://h", "ipconfig").unwrap_err().contains("ユーザーが要る"));
         assert!(ok("winrm://ops@h", " \r\n").unwrap_err().contains("command が空"));
@@ -1218,8 +1394,8 @@ mod tests {
         assert_eq!(get("KOYOMI_WINRM_CERT"), Some(CERT));
         assert_eq!(get("KOYOMI_WINRM_PASSWORD"), Some("secret:ops"));
         assert_eq!(get("KOYOMI_WINRM_AUTH"), Some("basic"));
-        let Chore::Winrm { on, command, cert, password, .. } = w.clone() else { unreachable!() };
-        let ntlm = Chore::Winrm { on, command, cert, password, auth: WinrmAuth::Ntlm };
+        let Chore::Winrm { on, command, cert, password, max, pass, .. } = w.clone() else { unreachable!() };
+        let ntlm = Chore::Winrm { on, command, cert, password, auth: WinrmAuth::Ntlm, max, pass };
         assert!(ntlm.env().contains(&("KOYOMI_WINRM_AUTH".to_owned(), "ntlm".to_owned())));
         assert_eq!(WinrmAuth::ALL.map(|a| WinrmAuth::of(a.key())), [Some(WinrmAuth::Basic), Some(WinrmAuth::Ntlm)]);
         assert_eq!(WinrmAuth::of("NTLM"), None);
