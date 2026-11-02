@@ -1222,7 +1222,7 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 93.7 | [x] On B: `koyomi standby giveback`; again | `a に戻した。また見張る`, back to 93.1; the second says `引き継いでいない（a を見張っている）`; `koyomi ops` shows `giveback` |
 | 93.8 | [x] On B: change one digit of `a`'s fingerprint; stop A | A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) |
 | 93.9 | [x] `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` | Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` |
-| 93.10 | Remove `[standby]` from B's koyomi.toml | B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] も [primary] もない` |
+| 93.10 | [x] Remove `[standby]` from B's koyomi.toml | B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] も [primary] もない` |
 
 ## 94. People and roles over HTTP (`[[http.user]]`; TODO 83)
 
