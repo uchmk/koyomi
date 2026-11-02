@@ -712,7 +712,7 @@ fn approve(args: &[String]) -> i32 {
         for w in &snap.warnings {
             out(&format!("! {w}"), true);
         }
-        return fail("承認できない: 他のユーザーが書き換えられる場所がある");
+        return fail("承認できない: 上の警告を直してから（警告がある間は何も確認できない）");
     }
     let def: Def = match client::call(&Request::Show { id: id.clone() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
         Ok(d) => d,

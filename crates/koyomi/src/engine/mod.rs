@@ -381,7 +381,13 @@ impl State {
             let tail = notify::tail(&self.words, &r, |job| self.runner.log_tail(&r.id, job).ok());
             let places = notify::to(&self.notify, self.notify_to(&r.jobnet));
             notify::tell_tail(&places, notify::open(&self.words, &r.id, notify::Kind::End).as_ref(), event, &title, &body, &tail);
-            let (level, id) = crate::eventlog::of(r.state);
+            // A run that failed because a job was cut off or killed says so (2001 / 2002), not the plain 2000.
+            let said = if r.state.is_error() {
+                [RunState::Timeout, RunState::Killed].into_iter().find(|s| r.jobs.iter().any(|j| j.state == *s)).unwrap_or(r.state)
+            } else {
+                r.state
+            };
+            let (level, id) = crate::eventlog::of(said);
             crate::eventlog::write(level, id, &title, &body);
             // An abnormal end told earlier is told to be over.
             if let Some(prev) = notify::recovered_from(self.runner.runs(), &r) {
