@@ -5,10 +5,10 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use ito_i18n::Table;
 use koyomi_core::duration;
-use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
+use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When};
 
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
-pub const KINDS: [&str; 15] = [
+pub const KINDS: [&str; 16] = [
     "day",
     "week",
     "month",
@@ -23,6 +23,7 @@ pub const KINDS: [&str; 15] = [
     "mail",
     "on_start",
     "idle",
+    "session",
     "after_jobnet",
 ];
 
@@ -68,6 +69,8 @@ pub struct WhenEdit {
     pub subject: String,
     /// `idle`: how long the PC is left alone (`10m`).
     pub idle: String,
+    /// `session`: the sign-in, sign-out, lock or unlock that starts the net.
+    pub session: Session,
     pub jobnet: String,
     pub on: AfterOn,
     pub except: String,
@@ -110,6 +113,7 @@ impl Default for WhenEdit {
             sender: String::new(),
             subject: String::new(),
             idle: "10m".into(),
+            session: Session::Lock,
             jobnet: String::new(),
             on: AfterOn::Ok,
             except: String::new(),
@@ -259,6 +263,10 @@ impl WhenEdit {
                 e.kind = "idle".into();
                 e.idle = duration::text(*idle);
             }
+            Kind::Session { session } => {
+                e.kind = "session".into();
+                e.session = *session;
+            }
             Kind::AfterJobnet { jobnet, on } => {
                 e.kind = "after_jobnet".into();
                 e.jobnet = jobnet.clone();
@@ -391,6 +399,7 @@ impl WhenEdit {
                 }
                 Kind::Idle { idle }
             }
+            "session" => Kind::Session { session: self.session },
             "after_jobnet" => {
                 if !koyomi_core::jobnet::is_id(self.jobnet.trim()) {
                     return Err(format!("after_jobnet は \"グループ/名前\": \"{}\"", self.jobnet.trim()));
@@ -550,9 +559,20 @@ impl WhenEdit {
                 });
             }
             "idle" => changed |= field(ui, t.tr("when.idle"), &mut self.idle, 70.0),
+            "session" => {
+                ui.horizontal(|ui| {
+                    ui.label(t.tr("when.session"));
+                    let words = Session::ALL.map(|s| t.tr(&format!("when.session_{}", s.name())).to_owned());
+                    let choices: Vec<(Session, &str)> = Session::ALL.into_iter().zip(words.iter().map(String::as_str)).collect();
+                    if let Some(s) = ito_prefs::select(ui, &format!("when-session-{i}"), self.session, &choices) {
+                        self.session = s;
+                        changed = true;
+                    }
+                });
+            }
             _ => {}
         }
-        if !matches!(self.kind.as_str(), "on_start" | "idle" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
+        if !matches!(self.kind.as_str(), "on_start" | "idle" | "session" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
             changed |= date(ui, t.tr("when.except"), &mut self.except, "except", true);
             changed |= date(ui, t.tr("when.start"), &mut self.start, "start", false);
             changed |= date(ui, t.tr("when.end"), &mut self.end, "end", false);
@@ -604,10 +624,11 @@ mod tests {
             [[when]]\nmail = \"imaps://me@example.com@imap.example.com/INBOX\"\npassword = \"secret:mail\"\nsender = \"billing@\"\nsubject = \"請求\"\n\
             [[when]]\non_start = true\n\
             [[when]]\nidle = \"15m\"\n\
+            [[when]]\nsession = \"lock\"\n\
             [[when]]\nafter_jobnet = \"経理/集計\"\non = \"error\"\n\
             [[job]]\nid = \"a\"\nrun = [\"x\"]\n";
         let net = koyomi_core::jobnet::parse(text).unwrap();
-        assert_eq!(net.when.len(), 18);
+        assert_eq!(net.when.len(), 19);
         for w in &net.when {
             let e = WhenEdit::from_when(w);
             assert_eq!(e.to_when().as_ref(), Ok(w), "{e:?}");

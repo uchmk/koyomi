@@ -164,6 +164,8 @@ pub enum How {
     Mail,
     /// The PC was left alone (`[[when]] idle = …`).
     Idle,
+    /// Someone signed in or out, or locked or unlocked the screen (`[[when]] session = …`).
+    Session,
 }
 
 /// How a job ended, as the engine saw it.

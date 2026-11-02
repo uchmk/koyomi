@@ -102,6 +102,7 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
         }
         when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
         when::Kind::Idle { idle } => Some(t.trf("run.event_idle", &[&koyomi_core::duration::text(*idle)])),
+        when::Kind::Session { session } => Some(t.tr(&format!("run.event_{}", session.name())).to_owned()),
         when::Kind::AfterJobnet { jobnet, on } => {
             Some(t.trf("run.event_after", &[jobnet.as_str(), t.tr(&format!("run.after_{}", on.name()))]))
         }

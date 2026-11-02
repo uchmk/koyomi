@@ -1,6 +1,6 @@
 # Checklist
 
-1051 checks in TESTING.md, 1045 left for a person.
+1062 checks in TESTING.md, 1056 left for a person.
 
 ## 1. Start
 
@@ -1353,7 +1353,7 @@
 - [ ] **115.4** `koyomi engine stop`; in cmd, `timeout /t 90 > nul & koyomi engine start`, and leave the PC alone at once for four minutes; then use it and leave it alone for a minute → Nothing starts while the PC stays alone after the engine started; one run once it has been used and left alone again 〔未訳〕
 - [ ] **115.5** Make the job `cmd /c ping -n 300 127.0.0.1 > nul`; leave the PC alone; use it and leave it alone again while that run is going → A ⊘ スキップ row `PC が 1 分 使われなかったが、前の回がまだ動いているので流さない`; nothing starts after the first run ends 〔未訳〕
 - [ ] **115.6** Add `calendar` with today closed (or hold the net) and leave the PC alone → ⊘ スキップ `PC が 1 分 使われなかったが、休業日なので流さない（on_closed = "run" で流せる）` (⏸ 保留 for the held net); not run afterwards 〔未訳〕
-- [ ] **115.7** Run the engine as the service (§89) with the same net → The window's 注意 says `保守/空き: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない`; nothing starts however long the PC is left alone. Back to `koyomi engine start`: the warning goes 〔未訳〕
+- [ ] **115.7** Run the engine as the service (§89) with the same net; sign in at the PC's own screen (not a remote desktop) → No warning in the window's 注意; the net runs as in 115.1–115.3 (the service reads the time of the console's session). If Windows does not keep that time on this PC, the 注意 says `保守/空き: PC が空いたかが分からない（画面の無い PC・画面に誰もサインインしていないとき・Windows がこの PC の使われない時間を教えないとき）ので、idle の [[when]] では流れない` and nothing starts; the same while nobody is signed in at the screen (see 119.6) 〔未訳〕
 - [ ] **115.8** [x] `koyomi check` with `idle = "30s"`, with `idle = "10"`, with `idle = "10m"` and `on_closed = "next"` → `idle は 1m 以上（それより短いと、手を止めるたびに流れる）`; the `30m・1h30m・90s のように書く` error; `idle では on_closed は "skip" か "run"` 〔未訳〕
 - [ ] **115.9** The editor: add a `[[when]]` of PC が空いたら → One field 使われない時間（例: 10m） with `10m`; except / start / end / on_closed are not shown; saving writes `idle = "10m"`; `30s` is refused with the same words as 115.8 〔未訳〕
 - [ ] **115.10** [x] `koyomi next 保守/空き`; approve it after a change → The row `PC が 1m 使われなかったとき` comes first, with no time; the confirm box shows the same 〔未訳〕
@@ -1408,3 +1408,17 @@
 - [ ] **118.9** `koyomi history --files`; then `--files --toml`; then `--files --csv D:\koyomi-test\files.csv`; then `koyomi history --files <a net that moves nothing>` → One line per file: run, net, job, `<name>  <n> バイト  sha256 <hex>  ✔ 相手と合っていた` (or `✖ 相手と違っていた` for 118.8's); the TOML is `[[file]]` tables with `run`, `jobnet`, `job`, `ended`, `name`, `bytes`, `sha256`, `matched`; the CSV's header is `実行,ジョブネット,ジョブ,終了,ファイル,バイト,SHA-256,照合` and Excel opens it; the last says `送受したファイルはありません` 〔未訳〕
 - [ ] **118.10** Open 118.3's run in the window's 履歴, then the job's detail → A `送受したファイル` row for each file with its bytes, its hash and `✔ 相手と合っていた`; a run of a job without `verify` shows the files with no hash and no mark 〔未訳〕
 - [ ] **118.11** The editor: open a 「ファイルを送る」, set 届いた中身を確かめる to `sha256`, then 読み戻す, with 送り先 a shared folder, then `sftp://…`, then `s3://…`; save → The note under the choice changes with each (このマシンで比べ…, 相手で sha256sum…, 読み戻して比べる…, S3 が SHA-256 のチェックサムで…); the approve box has a `確かめ方: readback` line; the file has `verify = "readback"`; しない removes the line 〔未訳〕
+
+## 119. Start on a sign-in, a sign-out, a lock or an unlock (`[[when]] session`; TODO 115)
+
+- [ ] **119.1** Win+L; wait ten seconds; sign back in → 保守/ロック ran once and 保守/解除 ran once; `koyomi history` gives the reasons `画面をロックした` and `画面のロックを解いた`, and each run's detail in the window says the same 〔未訳〕
+- [ ] **119.2** Make 保守/ロック's job `cmd /c ping -n 120 127.0.0.1 > nul`; lock, sign back in, and lock again within two minutes → One run; a ⊘ スキップ row `画面をロックしたが、前の回がまだ動いているので流さない`; nothing starts after the first run ends 〔未訳〕
+- [ ] **119.3** Add 保守/入る with `session = "sign_in"` and 保守/出る with `session = "sign_out"`; approve them (the engine as you) → The window's 注意 says `保守/入る: サインインはサービスのエンジンにしか見えない（このエンジンはサインインの後に始まる）ので、session = "sign_in" では流れない。サインインのたびに流すなら on_start = true` and `保守/出る: サインアウトはサービスのエンジンにしか見えない（このエンジンはサインアウトで止まる）ので、session = "sign_out" では流れない`; no warning for 保守/ロック or 保守/解除 〔未訳〕
+- [ ] **119.4** Run the engine as the service (§89); repeat 119.1 → The same two runs; no 注意 for any of the four nets 〔未訳〕
+- [ ] **119.5** The service: sign out, then sign back in; then sign in as the second account (切り替え, or Win+L → 他のユーザー) and sign it out → 保守/出る ran for each sign-out and 保守/入る for each sign-in, the second account's too (the reasons `サインアウトした` and `サインインした`); a lock of the second account starts 保守/ロック as well 〔未訳〕
+- [ ] **119.6** The service with §115's 保守/空き (`idle = "1m"`) and a net 保守/静か with `require = ["idle:5m"]`; run 保守/静か now while you use the PC, then leave the PC alone; then sign out as the next column says → 保守/空き runs after a minute; 保守/静か waits with `PC が 5 分使われなくなるのを待っています（require = "idle"）` while you use the PC and starts once it has been left alone five minutes. Then sign out, stay signed out three minutes and sign back in: 保守/空き did not run while nobody was signed in at the screen (no run from then in `koyomi history`); it runs again once you have used the PC and left it alone a minute 〔未訳〕
+- [ ] **119.7** [x] `koyomi check` with `session = "logon"`; with `session = "lock"` and `at = ["02:00"]`; with `session = "unlock"` and `on_closed = "prev"` → `session は "sign_in"・"sign_out"・"lock"・"unlock" のどれか`; `at は session では使わない`; `session では on_closed は "skip" か "run"` 〔未訳〕
+- [ ] **119.8** The editor: add a `[[when]]` of サインイン・ロック; choose each of できごと's four → One choice できごと (サインイン・サインアウト・ロック・ロックの解除), set to ロック at first; except / start / end / on_closed are not shown; saving writes `session = "lock"` (or the one chosen) 〔未訳〕
+- [ ] **119.9** [x] `koyomi next 保守/ロック`; approve it after a change → The row `画面をロックしたとき` comes first, with no time; the confirm box shows the same 〔未訳〕
+- [ ] **119.10** In taskschd.msc, make a task `\koyomi-test\ロック` with the trigger ワークステーション ロック時 (任意のユーザー) and the action `cmd.exe /c echo hi`; `schtasks /query /xml /tn "\koyomi-test\ロック" > l.xml`; `koyomi import l.xml --dry-run`; then the same with 特定のユーザー and ワークステーション ロック解除時 → The plan has `session = "lock"`; the second has `session = "unlock"` and the note `<user> に限ったトリガーだが、session = "unlock" はサービスのエンジンではどのユーザーのでも流れる`; a trigger of リモート接続時 is refused with `…は取り込めない（ロックとロックの解除だけ）`; then delete the task 〔未訳〕
+- [ ] **119.11** `koyomi history --csv runs.csv` after 119.1 → The runs' きっかけ is `サインイン・ロック` 〔未訳〕

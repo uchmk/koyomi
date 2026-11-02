@@ -251,6 +251,7 @@ fn when(w: &When, out: &mut String) {
         }
         Kind::OnStart => push(out, "on_start", "true"),
         Kind::Idle { idle } => push(out, "idle", &q(&duration::text(*idle))),
+        Kind::Session { session } => push(out, "session", &q(session.name())),
         Kind::AfterJobnet { jobnet, on } => {
             push(out, "after_jobnet", &q(jobnet));
             if *on != AfterOn::Ok {
@@ -598,6 +599,9 @@ on_closed = "skip"
 
 [[when]]
 on_start = true
+
+[[when]]
+session = "unlock"
 
 [[when]]
 after_jobnet = "経理/売上取込"

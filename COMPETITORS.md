@@ -33,7 +33,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
   - 外への生存の合図（H18）は、どれにも専用のものが見当たらない（Rundeck・Airflow は代わりの方法がある）。
   - 全部のネットを止める枠と、そのために流れない回を先に見せること（N1）。枠は Rundeck の有償の Blackout にあるが、影響する回の一覧はどれにも無い。
   - 何台かの PC に流して「どれか 1 つが通れば正常」（N4）は、どの製品の文書にも無い（Airflow の `one_success` が近い）。
-  - PC が空いたら起動（N7）は、ほかにはタスク スケジューラだけ。
+  - PC が空いたら・サインイン・ロックで起動（N7）は、ほかにはタスク スケジューラだけ。
 
 **koyomi が弱いところ**
 
@@ -44,7 +44,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 - つながりの広さ。Control-M は MFT（FTP・SFTP・S3・Azure）、Airflow は provider（SFTP・IMAP・HTTP など）で広げる。
   koyomi が送る・受けるのは SFTP・共有フォルダー・S3（と S3 互換）までで、FTP・Azure Blob は無い。
   古い履歴は `archive = true` で月ごとの zip にしまえる（TODO 92。Control-M の Workload Archiving にあたる）。
-- 表 4 の残り: サインイン・ロックで起動（N7。TODO 115 は ito 待ち）と Azure Blob（N9）。
+- 表 4 の残り: Azure Blob（N9）。
 - 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れ、`roles` でネット・グループごとに違うロールを持てる（JP1 の 5 つほど細かくはない）。
 
 **差が無くなったところ**
@@ -142,7 +142,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 ## 4. 9 周目で足した機能
 
 9 周目（TODO 106〜114）。表 1〜表 3 の外で、競合にあって koyomi に無かったもの。2026-11-02 に公式の文書で確かめ、同じ日に入れた。
-残りは N7 のサインイン・ロック（TODO 115、ito 待ち）と N9 の Azure Blob。
+残りは N9 の Azure Blob。N7 のサインイン・ロックは TODO 115 で入れた。
 
 | | 機能 | koyomi | JP1/AJS3 | Control-M | Rundeck | Airflow | タスク スケジューラ |
 |---|---|---|---|---|---|---|---|
@@ -152,7 +152,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | N4 | 何台かの PC にまとめて流す（同時数・全部かどれか） | ○ ssh・winrm の `on = "group:web"` で koyomi.toml の `[groups]` の PC に。同時数は `max`、全部で正常か どれか 1 つで正常かは `pass = "all" \| "any"`（TODO 109 で入れた） | × 実行エージェントグループは 1 台へ振り分けるだけ（優先順位・多重度・使用率）。全台で同時に流す機能は見当たらない | ○ RunOnAllAgentsInGroup（"Run job on all hosts in group"）で、グループの全 Agent に同じジョブ（それぞれ別の Order ID）。同時数の上限・全部かどれかの成功は見当たらない | ○ ノードへ配り、Thread Count で同時数、失敗したら止めるか残りを流すかを選べる。どれか 1 つの成功で正常は見当たらない | △ ホストへ配る機能なし。dynamic task mapping でホストごとに写し（SSH など）を作り、`max_active_tis_per_dag` で上限、後続の trigger rule `all_success`・`one_success` | × `schtasks /s` で 1 台ずつ |
 | N5 | 決めた日時から新しい定義に切り替える | ○ エディターの「この日から使う」か `koyomi stage … --from YYYY-MM-DD` で置き、その日の最初の回から新しい定義で流す。置くときに差分を見せて確認する（TODO 110 で入れた） | ○ ジョブネットリリースで、指定した日時から定義を切り替え | △ When の期間（StartDate・EndDate、ActivePeriod=false で止める）で旧・新を受け渡す。定義の版を日時で切り替える機能は見当たらない | ? 指定した日時からの定義の切り替えは見当たらず | △ 旧の DAG に `end_date`、新の DAG に `start_date` を書いて受け渡す。版を日時で切り替える機能は見当たらない | △ StartBoundary・EndBoundary で 2 つのタスクを受け渡す |
 | N6 | 定義を別の PC・環境に配る | ○ 窓の「別の PC に送る」か `koyomi remote send` で `[[remote]]` の PC へ、差分を見せて送る（向こうでは未確認で置かれ、向こうで確認するまで流れない）。`export`・`import` と HA の待機への写しも（TODO 111 で入れた） | △ ajsexport→ajsimport（パッケージング機能用のスクリプトの中だけで使える）、ajsprint→ajsdefine。配る・昇格する仕組みは見当たらない | ○ Workspace を JSON に書き出し、別の環境へ取り込む。Automation API の Deploy Descriptor で Dev・Test・Prod ごとに値を置き換え | ○ プロジェクトのアーカイブで別のインスタンスへ移す（`rd projects archives`）、SCM Git の Export・Import | △ Git の DAG bundle が `tracking_ref`（ブランチ・タグ・SHA）を追う。環境の間の昇格の機能は見当たらない | △ XML へ書き出し、`schtasks /create /xml` で取り込む。ドメインなら GPP の Scheduled Task で配る |
-| N7 | PC が空いたら起動する（サインイン・ロックも） | △ `[[when]] idle = "10m"` で空いたら起動（TODO 112 で入れた）。サービスのエンジンからは空いたかが見えない。サインイン・ロックは TODO 115（ito 待ち） | × イベントジョブ 8 種にアイドル・ログオン・ロックなし | ? 公式で見つからず | × サーバーの製品で対象外 | × Linux のサーバー前提で、アイドルなどで起動するものなし | ○ Idle トリガー（Windows 8 以降は 4 分・80%）、ログオン、SessionStateChange（ロック・アンロック・接続・切断） |
+| N7 | PC が空いたら起動する（サインイン・ロックも） | ○ `[[when]] idle = "10m"` で空いたら起動（TODO 112。サービスのエンジンでも）。`session = "sign_in"`・`"sign_out"`・`"lock"`・`"unlock"` でサインイン・サインアウト・ロック・ロックの解除（TODO 115。サインイン・サインアウトはサービスのエンジンで。リモートの接続・切断は無い） | × イベントジョブ 8 種にアイドル・ログオン・ロックなし | ? 公式で見つからず | × サーバーの製品で対象外 | × Linux のサーバー前提で、アイドルなどで起動するものなし | ○ Idle トリガー（Windows 8 以降は 4 分・80%）、ログオン、SessionStateChange（ロック・アンロック・接続・切断） |
 | N8 | SQL を流すジョブ | ○ `kind = "sql"`（SQL Server・PostgreSQL・SQLite。TODO 113 で入れた） | △ 本体のジョブの種類に DB のジョブなし。別製品 JP1/AJS3 for Cloud Service Applications のサンプルに Athena・BigQuery の SQL | ○ Databases のジョブ（SQL Script・Stored Procedure・Embedded Query。Oracle・MSSQL・DB2・PostgreSQL など、JDBC で足せる）。Agent に plug-in を入れる | △ 有償の SQL Runner（node step）。OSS は MongoDB Command Runner だけ | ○ 既定で入る common.sql の SQLExecuteQueryOperator（DB ごとの provider は別に入れる） | × 動作はプログラムの起動だけ |
 | N9 | クラウドのストレージ（S3・Azure Blob）へ送る・受ける | △ `send`・`fetch` の `s3://` で S3 と S3 互換（MinIO など）へ（TODO 114 で入れた）。Azure Blob はまだ | △ 別製品 JP1/AJS3 for Cloud Service Applications のサービス連携ジョブのサンプル（S3・Azure Blob・GCS・OCI の upload・download など、サポート契約者向け） | △ MFT（add-on）の File Transfer ジョブで S3・Azure Storage・GCS など | △ AWS S3 の node step（OSS、Copy・Sync・Move でローカルとの間も）。Azure Blob は見当たらない。File Transfer は file・ftp・sftp・http だけ | △ amazon provider の LocalFilesystemToS3Operator・S3 の operator、microsoft.azure provider の LocalFilesystemToWasbOperator（どちらも別に入れる） | × 動作はプログラムの起動だけ |
 

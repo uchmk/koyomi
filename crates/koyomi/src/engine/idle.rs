@@ -7,8 +7,10 @@
 //! under its length, so a start or a reload of the engine while the PC is
 //! already left alone does not start the net a second time in that stretch.
 //!
-//! Where the time cannot be known (the engine run as the service, which sees
-//! no one's keys; a PC with no screen) nothing starts, and that is said in the
+//! The service runs apart from the person at the screen, so it reads their time
+//! through ito-power's `user_idle_for` (the console session's). Where the time
+//! cannot be known (a PC with no screen, nobody signed in there, or Windows not
+//! keeping that time for the session) nothing starts, and that is said in the
 //! warnings.
 
 use std::sync::atomic::Ordering;
@@ -23,10 +25,11 @@ use super::logs::Hit;
 const POLL: Duration = Duration::from_secs(5);
 
 /// How long the PC has gone without a key or the mouse; `None` when that cannot be known.
-/// The service runs apart from the signed-in person, so it does not see their keys.
+/// The service runs apart from the signed-in person, so it asks for the time of the PC's own
+/// screen; Windows keeps that only for some sessions, and says nothing for the others.
 pub fn idle_now() -> Option<Duration> {
     if crate::service::RUNNING.load(Ordering::Relaxed) {
-        return None;
+        return ito_power::user_idle_for();
     }
     ito_power::idle_for()
 }
@@ -118,7 +121,7 @@ impl Idle {
         ids.into_iter()
             .map(|id| {
                 format!(
-                    "{id}: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない"
+                    "{id}: PC が空いたかが分からない（画面の無い PC・画面に誰もサインインしていないとき・Windows がこの PC の使われない時間を教えないとき）ので、idle の [[when]] では流れない"
                 )
             })
             .collect()
@@ -222,7 +225,7 @@ mod tests {
         assert!(idle.step(None).is_empty());
         assert_eq!(
             idle.problems(),
-            ["g/a: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない"]
+            ["g/a: PC が空いたかが分からない（画面の無い PC・画面に誰もサインインしていないとき・Windows がこの PC の使われない時間を教えないとき）ので、idle の [[when]] では流れない"]
         );
         assert!(idle.step(HOUR).is_empty());
         assert!(idle.problems().is_empty());

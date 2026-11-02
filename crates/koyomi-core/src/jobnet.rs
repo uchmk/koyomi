@@ -14,7 +14,7 @@ use toml::Spanned;
 use crate::chore::{Chore, Pass, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
-use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
+use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When};
 
 /// The `format` this version reads.
 pub const FORMAT: i64 = 1;
@@ -653,6 +653,7 @@ struct RawWhen {
     on_start: Field,
     after_jobnet: Field,
     idle: Field,
+    session: Field,
     on: Field,
     wait_for: Field,
     wait_until: Field,
@@ -1838,10 +1839,12 @@ impl Checker<'_> {
                 "after_jobnet"
             } else if w.idle.is_some() {
                 "idle"
+            } else if w.session.is_some() {
+                "session"
             } else {
                 self.add(
                     head,
-                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る",
+                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る",
                 );
                 continue;
             };
@@ -1852,6 +1855,7 @@ impl Checker<'_> {
                 "mail" => &["mail", "password", "sender", "subject"],
                 "on_start" => &["on_start"],
                 "idle" => &["idle"],
+                "session" => &["session"],
                 "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at", "wait_for", "wait_until"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days", "wait_for", "wait_until"],
@@ -1890,6 +1894,7 @@ impl Checker<'_> {
                 (&w.on_start, "on_start"),
                 (&w.after_jobnet, "after_jobnet"),
                 (&w.idle, "idle"),
+                (&w.session, "session"),
                 (&w.on, "on"),
                 (&w.wait_for, "wait_for"),
                 (&w.wait_until, "wait_until"),
@@ -1908,7 +1913,7 @@ impl Checker<'_> {
                 _ => None,
             };
             // An event has no day to move to: it runs on its day or not at all.
-            if matches!(kind, "file" | "log" | "eventlog" | "mail" | "on_start" | "idle")
+            if matches!(kind, "file" | "log" | "eventlog" | "mail" | "on_start" | "idle" | "session")
                 && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next))
             {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
@@ -1916,6 +1921,7 @@ impl Checker<'_> {
                     "log" | "eventlog" => "log / eventlog",
                     "mail" => "mail",
                     "idle" => "idle",
+                    "session" => "session",
                     _ => "file / on_start",
                 };
                 self.add(pos, format!("{what} では on_closed は \"skip\" か \"run\""));
@@ -1983,6 +1989,10 @@ impl Checker<'_> {
                     Some(s) => Some(Kind::Idle { idle: s }),
                     None => None,
                 },
+                "session" => {
+                    let names = Session::ALL.map(Session::name);
+                    self.choice(&w.session, "session", &names).and_then(Session::from_name).map(|session| Kind::Session { session })
+                }
                 "day" => self.at(&w.at, head).map(|at| Kind::Day { at }),
                 "minutes" | "hours" => {
                     let n = self.n(&w.n, head);
@@ -4064,7 +4074,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
         assert_eq!(
             p("at = [\"02:00\"]"),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
         );
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
@@ -4157,7 +4167,7 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(
             p("on = \"ok\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
         );
     }
 
@@ -4197,9 +4207,20 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("idle = 10"), ["a.toml の 3 行目: idle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]);
         assert_eq!(p("idle = \"10m\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は idle では使わない"]);
         assert_eq!(p("idle = \"10m\"\non_closed = \"next\""), ["a.toml の 4 行目: idle では on_closed は \"skip\" か \"run\""]);
+        for (text, session) in
+            [("sign_in", Session::SignIn), ("sign_out", Session::SignOut), ("lock", Session::Lock), ("unlock", Session::Unlock)]
+        {
+            let net = parse(&format!("format = 1\n[[when]]\nsession = \"{text}\"\n")).unwrap();
+            assert_eq!(net.when[0].kind, Kind::Session { session });
+            assert!(net.when[0].is_event());
+        }
+        assert_eq!(p("session = \"logon\""), ["a.toml の 3 行目: session は \"sign_in\"・\"sign_out\"・\"lock\"・\"unlock\" のどれか"]);
+        assert_eq!(p("session = \"lock\"\nidle = \"10m\""), ["a.toml の 3 行目: session は idle では使わない"]);
+        assert_eq!(p("session = \"lock\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は session では使わない"]);
+        assert_eq!(p("session = \"unlock\"\non_closed = \"prev\""), ["a.toml の 4 行目: session では on_closed は \"skip\" か \"run\""]);
         assert_eq!(
             p("settle = \"10s\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
         );
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
@@ -4233,7 +4254,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は 1 つのファイルのパス（* / ? は使えない）"]);
         assert_eq!(
             p("contains = \"E\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
         );
         assert_eq!(p("eventlog = \"System\""), ["a.toml の 2 行目: eventlog には ids か source が要る（例: ids = [4625]）"]);
         assert_eq!(

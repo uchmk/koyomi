@@ -46,6 +46,7 @@ mod primary;
 mod retain;
 mod runner;
 mod schedule;
+mod session;
 mod standby;
 mod tray;
 
@@ -208,6 +209,8 @@ struct State {
     mails: mails::Mails,
     /// `[[when]] idle`: the PC left alone.
     idle: idle::Idle,
+    /// `[[when]] session`: a sign-in, a sign-out, a lock or an unlock.
+    sessions: session::Sessions,
     /// The sweep of logs and history older than `keep_days`.
     retain: Retain,
     /// The daily backup of the settings folder.
@@ -312,6 +315,7 @@ impl State {
             logs: logs::Logs::new(),
             mails: mails::Mails::new(),
             idle: idle::Idle::new(),
+            sessions: session::Sessions::new(),
             retain,
             backup,
             alive,
@@ -1027,7 +1031,8 @@ impl State {
             }
             self.events.fired(&a.def_id, &a.pattern, &a.path);
         }
-        let hits: Vec<logs::Hit> = self.logs.due().into_iter().chain(self.mails.due()).chain(self.idle.due()).collect();
+        let hits: Vec<logs::Hit> =
+            self.logs.due().into_iter().chain(self.mails.due()).chain(self.idle.due()).chain(self.sessions.due()).collect();
         for hit in hits {
             let Some(def) = self.defs.iter().find(|d| d.id == hit.def_id).cloned() else { continue };
             let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| w.kind == hit.kind)).cloned() else { continue };
@@ -1036,15 +1041,17 @@ impl State {
                 Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog} に記録された"),
                 Kind::Mail { mail, .. } => format!("{mail} にメールが来た"),
                 Kind::Idle { idle: secs } => format!("PC が {} 使われなかった", idle::span_text(*secs)),
+                Kind::Session { session } => session::what(*session).to_owned(),
                 _ => continue,
             };
             let how = match &hit.kind {
                 Kind::Mail { .. } => How::Mail,
                 Kind::Idle { .. } => How::Idle,
+                Kind::Session { .. } => How::Session,
                 _ => How::Log,
             };
             let more = if hit.count > 1 { format!("（ほか {} 件）", hit.count - 1) } else { String::new() };
-            // The PC left alone has no line to keep.
+            // The PC left alone and a lock have no line to keep.
             let tail = if hit.first.is_empty() { more } else { format!(": {}{more}", hit.first) };
             let reason = format!("{what}{tail}");
             if let Some(why) = self.off_day(&def, &w, today, &what) {
@@ -1055,7 +1062,7 @@ impl State {
                 self.runner.not_run(&def, now, state, &why);
                 continue;
             }
-            // A line, a mail or the PC left alone is not kept as a file is: one that comes while the net runs is told of, not run later.
+            // A line, a mail, the PC left alone or a lock is not kept as a file is: one that comes while the net runs is told of, not run later.
             if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("{what}が、前の回がまだ動いているので流さない{tail}"));
                 continue;
@@ -1195,6 +1202,7 @@ impl State {
         self.logs.set_rules(&self.defs);
         self.mails.set_rules(&self.defs);
         self.idle.set_rules(&self.defs);
+        self.sessions.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
@@ -1222,6 +1230,7 @@ impl State {
         warnings.extend(self.logs.problems());
         warnings.extend(self.mails.problems());
         warnings.extend(self.idle.problems());
+        warnings.extend(self.sessions.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
         let notes = self
             .notify_notes

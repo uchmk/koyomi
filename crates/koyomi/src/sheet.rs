@@ -77,6 +77,7 @@ fn how(h: How) -> &'static str {
         How::Log => "how_log",
         How::Mail => "how_mail",
         How::Idle => "how_idle",
+        How::Session => "how_session",
     }
 }
 

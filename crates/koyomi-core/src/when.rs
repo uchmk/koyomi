@@ -118,6 +118,10 @@ pub enum Kind {
     /// seconds. Once each time it is left alone: it starts again only after
     /// someone has used the PC.
     Idle { idle: u64 },
+    /// `session = "lock"`: when someone signs in or out, or locks or unlocks the
+    /// screen (an event). The service engine sees every user's; the engine a user
+    /// started sees only its own user's lock and unlock.
+    Session { session: Session },
     /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
     /// so (an event). The run takes the business day of the run it follows.
     AfterJobnet {
@@ -140,8 +144,40 @@ impl Kind {
                 | Kind::Mail { .. }
                 | Kind::OnStart
                 | Kind::Idle { .. }
+                | Kind::Session { .. }
                 | Kind::AfterJobnet { .. }
         )
+    }
+}
+
+/// What a `session` net starts on: `session = "sign_in"`, `"sign_out"`, `"lock"`
+/// or `"unlock"`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Session {
+    SignIn,
+    SignOut,
+    Lock,
+    Unlock,
+}
+
+impl Session {
+    /// Every one, in the order the editor offers them.
+    pub const ALL: [Session; 4] = [Session::SignIn, Session::SignOut, Session::Lock, Session::Unlock];
+
+    /// `session` as it is written.
+    pub fn name(self) -> &'static str {
+        match self {
+            Session::SignIn => "sign_in",
+            Session::SignOut => "sign_out",
+            Session::Lock => "lock",
+            Session::Unlock => "unlock",
+        }
+    }
+
+    /// The one written so, if any.
+    pub fn from_name(s: &str) -> Option<Session> {
+        Session::ALL.into_iter().find(|x| x.name() == s)
     }
 }
 
@@ -275,6 +311,7 @@ impl When {
             | Kind::Mail { .. }
             | Kind::OnStart
             | Kind::Idle { .. }
+            | Kind::Session { .. }
             | Kind::AfterJobnet { .. } => Vec::new(),
         }
     }
@@ -783,7 +820,8 @@ mod tests {
         let log = When { kind: Kind::Log { log: "D:\\app\\a.log".to_owned(), contains: "ERROR".to_owned() }, ..file.clone() };
         let eventlog = When { kind: Kind::EventLog { eventlog: "Security".to_owned(), ids: vec![4625], source: None }, ..file.clone() };
         let idle = When { kind: Kind::Idle { idle: 600 }, ..file.clone() };
-        for w in [&file, &start, &log, &eventlog, &idle] {
+        let lock = When { kind: Kind::Session { session: Session::Lock }, ..file.clone() };
+        for w in [&file, &start, &log, &eventlog, &idle, &lock] {
             assert!(w.is_event());
             assert_eq!(w.next_after(dt("2026-11-30 00:00")), None);
             assert!(w.times_on(d("2026-11-30")).is_empty());
@@ -793,6 +831,15 @@ mod tests {
         }
         assert!(toml::to_string(&BTreeMap::from([("w", file)])).unwrap().contains("every = \"file\""));
         assert!(next_times(&[start], dt("2026-11-30 00:00"), 3).is_empty());
+        assert!(toml::to_string(&BTreeMap::from([("w", lock)])).unwrap().contains("session = \"lock\""));
+    }
+
+    #[test]
+    fn a_session_event_reads_back_from_its_name() {
+        for s in Session::ALL {
+            assert_eq!(Session::from_name(s.name()), Some(s));
+        }
+        assert_eq!(Session::from_name("logon"), None);
     }
 
     /// UTC−5, an hour ahead between 2026-03-08 02:00 and 2026-11-01 02:00 on

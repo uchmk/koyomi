@@ -16,7 +16,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 42;
+pub const PROTO: u32 = 43;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 

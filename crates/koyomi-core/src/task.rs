@@ -10,7 +10,7 @@ use roxmltree::{Document, Node};
 
 use crate::bundle::{Bundle, Net};
 use crate::jobnet::{Job, Jobnet, Line, Missed};
-use crate::when::{Kind, MonthRule, When};
+use crate::when::{Kind, MonthRule, Session, When};
 use crate::write;
 
 /// The group a task at the root of the scheduler goes into.
@@ -173,7 +173,28 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
             vec![Kind::Idle { idle }]
         }
         "CalendarTrigger" => calendar(t, at, &mut notes)?,
-        other => return Err(format!("<{other}> のトリガーは取り込めない（時刻・日・週・月・起動時・ログオン時・アイドル時だけ）")),
+        "SessionStateChangeTrigger" => {
+            let session = match text_of(t, "StateChange").as_deref() {
+                Some("SessionLock") => Session::Lock,
+                Some("SessionUnlock") => Session::Unlock,
+                other => {
+                    let what = other.unwrap_or_default();
+                    return Err(format!("<SessionStateChangeTrigger> の「{what}」は取り込めない（ロックとロックの解除だけ）"));
+                }
+            };
+            if let Some(user) = text_of(t, "UserId").filter(|u| !u.trim().is_empty()) {
+                notes.push(format!(
+                    "{user} に限ったトリガーだが、session = \"{}\" はサービスのエンジンではどのユーザーのでも流れる",
+                    session.name()
+                ));
+            }
+            vec![Kind::Session { session }]
+        }
+        other => {
+            return Err(format!(
+                "<{other}> のトリガーは取り込めない（時刻・日・週・月・起動時・ログオン時・アイドル時・ロック時・ロック解除時だけ）"
+            ));
+        }
     };
     // A repetition turns each day's time into a run of times within the day.
     let kinds = match repetition(t, at, &mut notes) {
@@ -578,6 +599,32 @@ mod tests {
         // With no idle setting, it waits 10 minutes.
         let (_, net, _) = convert(&xml.replace(settings, "")).unwrap();
         assert_eq!(net.when[0].kind, Kind::Idle { idle: 600 });
+    }
+
+    #[test]
+    fn a_lock_or_unlock_trigger_is_a_session_when() {
+        let xml = |change: &str, user: &str| {
+            format!(
+                r#"<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers>
+    <SessionStateChangeTrigger><Enabled>true</Enabled><StateChange>{change}</StateChange>{user}</SessionStateChangeTrigger>
+    <TimeTrigger><StartBoundary>2026-11-30T21:00:00</StartBoundary></TimeTrigger>
+  </Triggers>
+  <Actions><Exec><Command>run.exe</Command></Exec></Actions>
+</Task>"#
+            )
+        };
+        let (_, net, notes) = convert(&xml("SessionLock", "")).unwrap();
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock });
+        assert!(notes.is_empty(), "{notes:?}");
+        let (_, net, notes) = convert(&xml("SessionUnlock", "<UserId>PC\\taro</UserId>")).unwrap();
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Unlock });
+        assert!(notes.iter().any(|n| n.contains("PC\\taro") && n.contains("session = \"unlock\"")), "{notes:?}");
+        // A remote connection has no kind here: the trigger is left out with a note, the rest comes over.
+        let (_, net, notes) = convert(&xml("RemoteConnect", "")).unwrap();
+        assert_eq!(net.when.len(), 1);
+        assert!(matches!(net.when[0].kind, Kind::Once { .. }));
+        assert!(notes.iter().any(|n| n.contains("「RemoteConnect」は取り込めない")), "{notes:?}");
     }
 
     #[test]
