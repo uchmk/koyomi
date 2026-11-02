@@ -1811,7 +1811,8 @@ impl Editor {
         if resp.double_clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
                 match self.hit_part(&at, p) {
-                    Some(i) => {
+                    // `at` is from the start of the frame; a job removed since then leaves it longer.
+                    Some(i) if i < self.net.jobs.len() => {
                         let id = self.net.jobs[i].id.clone();
                         if let Part::Jobnet { use_ } = &self.net.jobs[i].part {
                             if jobnet::is_id(use_) {
@@ -1820,7 +1821,7 @@ impl Editor {
                         }
                         self.open_part(&id);
                     }
-                    None => self.open_net(),
+                    _ => self.open_net(),
                 }
             }
         }
