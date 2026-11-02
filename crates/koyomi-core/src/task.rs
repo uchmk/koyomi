@@ -182,13 +182,20 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
                     return Err(format!("<SessionStateChangeTrigger> の「{what}」は取り込めない（ロックとロックの解除だけ）"));
                 }
             };
-            if let Some(user) = text_of(t, "UserId").filter(|u| !u.trim().is_empty()) {
-                notes.push(format!(
-                    "{user} に限ったトリガーだが、session = \"{}\" はサービスのエンジンではどのユーザーのでも流れる",
-                    session.name()
-                ));
-            }
-            vec![Kind::Session { session }]
+            // The person the trigger is for, as `user`; a SID or `user@domain` is
+            // not a name the engine is told, so that one only gets a note.
+            let user = match text_of(t, "UserId").map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()) {
+                Some(u) if crate::when::valid_session_user(&u) && !u.to_ascii_uppercase().starts_with("S-1-") => Some(u),
+                Some(u) => {
+                    notes.push(format!(
+                        "{u} に限ったトリガーだが、この書き方は読めないので、session = \"{}\" はどのユーザーのでも流れる（user = 'PC\\名前' を書き足す）",
+                        session.name()
+                    ));
+                    None
+                }
+                None => None,
+            };
+            vec![Kind::Session { session, user }]
         }
         other => {
             return Err(format!(
@@ -615,11 +622,18 @@ mod tests {
             )
         };
         let (_, net, notes) = convert(&xml("SessionLock", "")).unwrap();
-        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock });
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock, user: None });
         assert!(notes.is_empty(), "{notes:?}");
+        // The person the trigger is for comes over as `user`.
         let (_, net, notes) = convert(&xml("SessionUnlock", "<UserId>PC\\taro</UserId>")).unwrap();
-        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Unlock });
-        assert!(notes.iter().any(|n| n.contains("PC\\taro") && n.contains("session = \"unlock\"")), "{notes:?}");
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Unlock, user: Some("PC\\taro".to_owned()) });
+        assert!(notes.is_empty(), "{notes:?}");
+        // A SID or a `user@domain` cannot be compared: anyone's, with a note.
+        for id in ["S-1-5-21-1004336348-1177238915-682003330-1001", "taro@corp.example"] {
+            let (_, net, notes) = convert(&xml("SessionLock", &format!("<UserId>{id}</UserId>"))).unwrap();
+            assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock, user: None });
+            assert!(notes.iter().any(|n| n.contains(id) && n.contains("session = \"lock\"")), "{notes:?}");
+        }
         // A remote connection has no kind here: the trigger is left out with a note, the rest comes over.
         let (_, net, notes) = convert(&xml("RemoteConnect", "")).unwrap();
         assert_eq!(net.when.len(), 1);

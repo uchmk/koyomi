@@ -1043,7 +1043,7 @@ impl State {
                 Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog} に記録された"),
                 Kind::Mail { mail, .. } => format!("{mail} にメールが来た"),
                 Kind::Idle { idle: secs } => format!("PC が {} 使われなかった", idle::span_text(*secs)),
-                Kind::Session { session } => session::what(*session).to_owned(),
+                Kind::Session { session, .. } => session::what(*session, &hit.first),
                 _ => continue,
             };
             let how = match &hit.kind {
@@ -1053,8 +1053,9 @@ impl State {
                 _ => How::Log,
             };
             let more = if hit.count > 1 { format!("（ほか {} 件）", hit.count - 1) } else { String::new() };
-            // The PC left alone and a lock have no line to keep.
-            let tail = if hit.first.is_empty() { more } else { format!(": {}{more}", hit.first) };
+            // The PC left alone has no line to keep; whose lock it was is said in `what`.
+            let first = if matches!(hit.kind, Kind::Session { .. }) { "" } else { hit.first.as_str() };
+            let tail = if first.is_empty() { more } else { format!(": {first}{more}") };
             let reason = format!("{what}{tail}");
             if let Some(why) = self.off_day(&def, &w, today, &what) {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}{tail}"));

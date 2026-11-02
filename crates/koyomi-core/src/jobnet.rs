@@ -654,6 +654,7 @@ struct RawWhen {
     after_jobnet: Field,
     idle: Field,
     session: Field,
+    user: Field,
     on: Field,
     wait_for: Field,
     wait_until: Field,
@@ -1855,7 +1856,7 @@ impl Checker<'_> {
                 "mail" => &["mail", "password", "sender", "subject"],
                 "on_start" => &["on_start"],
                 "idle" => &["idle"],
-                "session" => &["session"],
+                "session" => &["session", "user"],
                 "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at", "wait_for", "wait_until"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days", "wait_for", "wait_until"],
@@ -1895,6 +1896,7 @@ impl Checker<'_> {
                 (&w.after_jobnet, "after_jobnet"),
                 (&w.idle, "idle"),
                 (&w.session, "session"),
+                (&w.user, "user"),
                 (&w.on, "on"),
                 (&w.wait_for, "wait_for"),
                 (&w.wait_until, "wait_until"),
@@ -1991,7 +1993,12 @@ impl Checker<'_> {
                 },
                 "session" => {
                     let names = Session::ALL.map(Session::name);
-                    self.choice(&w.session, "session", &names).and_then(Session::from_name).map(|session| Kind::Session { session })
+                    let session = self.choice(&w.session, "session", &names).and_then(Session::from_name);
+                    let user = self.session_user(&w.user);
+                    match (session, user) {
+                        (Some(session), Some(user)) => Some(Kind::Session { session, user }),
+                        _ => None,
+                    }
                 }
                 "day" => self.at(&w.at, head).map(|at| Kind::Day { at }),
                 "minutes" | "hours" => {
@@ -2189,6 +2196,18 @@ impl Checker<'_> {
             return None;
         }
         Some(Kind::Mail { mail, secret: secret?, sender, subject })
+    }
+
+    /// `user` of a `session` start: `Some(None)` when not written (anyone's),
+    /// `Some(Some(name))` for an account name, `None` when it is wrong (said).
+    fn session_user(&mut self, field: &Field) -> Option<Option<String>> {
+        let Some(f) = field else { return Some(None) };
+        let s = self.string(field, "user")?;
+        if when::valid_session_user(&s) {
+            return Some(Some(s));
+        }
+        self.add(f.span().start, "user は 'PC\\taro'・'CORP\\taro'・\"taro\" のように書く（@ や空白は書かない）");
+        None
     }
 
     /// `sender` / `subject` of a `mail` start: text, not empty.
@@ -4211,9 +4230,19 @@ after = [{ job = \"way\", code = \"else\" }]
             [("sign_in", Session::SignIn), ("sign_out", Session::SignOut), ("lock", Session::Lock), ("unlock", Session::Unlock)]
         {
             let net = parse(&format!("format = 1\n[[when]]\nsession = \"{text}\"\n")).unwrap();
-            assert_eq!(net.when[0].kind, Kind::Session { session });
+            assert_eq!(net.when[0].kind, Kind::Session { session, user: None });
             assert!(net.when[0].is_event());
         }
+        let net = parse("format = 1\n[[when]]\nsession = \"lock\"\nuser = 'PC\\taro'\n").unwrap();
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock, user: Some("PC\\taro".to_owned()) });
+        let net = parse("format = 1\n[[when]]\nsession = \"sign_in\"\nuser = \"taro\"\n").unwrap();
+        assert_eq!(net.when[0].kind, Kind::Session { session: Session::SignIn, user: Some("taro".to_owned()) });
+        let wrong = ["a.toml の 4 行目: user は 'PC\\taro'・'CORP\\taro'・\"taro\" のように書く（@ や空白は書かない）"];
+        assert_eq!(p("session = \"lock\"\nuser = \"taro@corp.example\""), wrong);
+        assert_eq!(p("session = \"lock\"\nuser = \"\""), wrong);
+        assert_eq!(p("session = \"lock\"\nuser = 'PC\\'"), wrong);
+        assert_eq!(p("session = \"lock\"\nuser = 1"), ["a.toml の 4 行目: user は文字列で書く"]);
+        assert_eq!(p("idle = \"10m\"\nuser = \"taro\""), ["a.toml の 4 行目: user は idle では使わない"]);
         assert_eq!(p("session = \"logon\""), ["a.toml の 3 行目: session は \"sign_in\"・\"sign_out\"・\"lock\"・\"unlock\" のどれか"]);
         assert_eq!(p("session = \"lock\"\nidle = \"10m\""), ["a.toml の 3 行目: session は idle では使わない"]);
         assert_eq!(p("session = \"lock\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は session では使わない"]);

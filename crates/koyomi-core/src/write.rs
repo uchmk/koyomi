@@ -251,7 +251,12 @@ fn when(w: &When, out: &mut String) {
         }
         Kind::OnStart => push(out, "on_start", "true"),
         Kind::Idle { idle } => push(out, "idle", &q(&duration::text(*idle))),
-        Kind::Session { session } => push(out, "session", &q(session.name())),
+        Kind::Session { session, user } => {
+            push(out, "session", &q(session.name()));
+            if let Some(u) = user {
+                push(out, "user", &q(u));
+            }
+        }
         Kind::AfterJobnet { jobnet, on } => {
             push(out, "after_jobnet", &q(jobnet));
             if *on != AfterOn::Ok {
@@ -602,6 +607,10 @@ on_start = true
 
 [[when]]
 session = "unlock"
+
+[[when]]
+session = "lock"
+user = "PC\\taro"
 
 [[when]]
 after_jobnet = "経理/売上取込"

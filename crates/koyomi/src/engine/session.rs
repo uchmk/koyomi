@@ -1,14 +1,17 @@
-//! Starts on a sign-in, a sign-out, a lock or an unlock: `[[when]] session = "lock"`.
+//! Starts on a sign-in, a sign-out, a lock or an unlock: `[[when]] session = "lock"`,
+//! and with `user = 'PC\taro'` only on that person's.
 //!
-//! ito-power's `on_session` calls back on a thread of its own; the events wait in a
-//! list until the engine's next tick takes them, and each net whose `session` matches
-//! starts once a tick (with how many more came in the reason). The watch is made only
-//! while a confirmed net has a `session` when, and dropped when none has.
+//! ito-power's `on_session_with` calls back on a thread of its own with whose session
+//! it was; the events wait in a list until the engine's next tick takes them, and each
+//! net whose `session` (and `user`) matches starts once a tick, with who it was and how
+//! many more came in the reason. The watch is made only while a confirmed net has a
+//! `session` when, and dropped when none has.
 //!
-//! The service engine sees the events of every session but the services' own, and is
-//! not told whose they were: anyone's lock starts the net. The engine a person started
-//! sees only its own session, so mostly the lock and the unlock: it starts after the
-//! sign-in and seldom lives through the sign-out. Both are said in the warnings there.
+//! The service engine sees the events of every session but the services' own: without
+//! `user`, anyone's lock starts the net. The engine a person started sees only its own
+//! session, so mostly the lock and the unlock: it starts after the sign-in and seldom
+//! lives through the sign-out, and a `user` that is someone else never comes. All three
+//! are said in the warnings there.
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
@@ -31,22 +34,39 @@ fn session_of(e: SessionEvent) -> Session {
     }
 }
 
-/// What the reason of a run says happened.
-pub fn what(s: Session) -> &'static str {
-    match s {
+/// What the reason of a run says happened, and who did it when that is known.
+pub fn what(s: Session, who: &str) -> String {
+    let did = match s {
         Session::SignIn => "サインインした",
         Session::SignOut => "サインアウトした",
         Session::Lock => "画面をロックした",
         Session::Unlock => "画面のロックを解いた",
+    };
+    if who.is_empty() {
+        did.to_owned()
+    } else {
+        format!("{who} が{did}")
     }
 }
 
+/// One confirmed net's `session` when.
+#[derive(Debug, Clone, PartialEq)]
+struct Rule {
+    id: String,
+    session: Session,
+    /// `None`: anyone's.
+    user: Option<String>,
+}
+
+/// An event and whose session it was (`None` when Windows did not say).
+type Event = (Session, Option<String>);
+
 pub struct Sessions {
-    /// The confirmed nets' `session` whens: the net and the event, each pair once.
-    rules: Vec<(String, Session)>,
+    /// The confirmed nets' `session` whens, each once.
+    rules: Vec<Rule>,
     /// `None` while no net wants it; an error stays until the next reload tries again.
     watch: Option<Result<SessionWatch, WhyNot>>,
-    seen: Arc<Mutex<Vec<Session>>>,
+    seen: Arc<Mutex<Vec<Event>>>,
 }
 
 impl Sessions {
@@ -63,17 +83,17 @@ impl Sessions {
             self.take();
         } else if !matches!(self.watch, Some(Ok(_))) {
             let seen = Arc::clone(&self.seen);
-            self.watch = Some(ito_power::on_session(move |e| {
+            self.watch = Some(ito_power::on_session_with(move |e, info| {
                 if let Ok(mut s) = seen.lock() {
                     if s.len() < KEEP {
-                        s.push(session_of(e));
+                        s.push((session_of(e), info.user.clone()));
                     }
                 }
             }));
         }
     }
 
-    fn take(&self) -> Vec<Session> {
+    fn take(&self) -> Vec<Event> {
         self.seen.lock().map(|mut s| std::mem::take(&mut *s)).unwrap_or_default()
     }
 
@@ -91,17 +111,27 @@ impl Sessions {
             Some(Err(e)) => Some(e),
             _ => None,
         };
-        problems(&self.rules, failed, crate::service::RUNNING.load(Ordering::Relaxed))
+        problems(&self.rules, failed, crate::service::RUNNING.load(Ordering::Relaxed), &me())
     }
 }
 
-fn wanted(defs: &[Def]) -> Vec<(String, Session)> {
-    let mut out: Vec<(String, Session)> = Vec::new();
+/// The account this engine runs as, `DOMAIN\name` (`PC\name` for a local one).
+fn me() -> String {
+    let name = std::env::var("USERNAME").unwrap_or_default();
+    match std::env::var("USERDOMAIN") {
+        Ok(d) if !d.is_empty() && !name.is_empty() => format!("{d}\\{name}"),
+        _ => name,
+    }
+}
+
+fn wanted(defs: &[Def]) -> Vec<Rule> {
+    let mut out: Vec<Rule> = Vec::new();
     for d in defs.iter().filter(|d| d.standing == Standing::Confirmed) {
         for w in d.net.iter().flat_map(|n| &n.when) {
-            if let Kind::Session { session } = w.kind {
-                if !out.iter().any(|(id, s)| *id == d.id && *s == session) {
-                    out.push((d.id.clone(), session));
+            if let Kind::Session { session, user } = &w.kind {
+                let rule = Rule { id: d.id.clone(), session: *session, user: user.clone() };
+                if !out.contains(&rule) {
+                    out.push(rule);
                 }
             }
         }
@@ -109,25 +139,42 @@ fn wanted(defs: &[Def]) -> Vec<(String, Session)> {
     out
 }
 
-/// One hit for each rule an event matched, `count` the times it did.
-fn step(rules: &[(String, Session)], events: &[Session]) -> Vec<Hit> {
+/// Whether an event by `who` is one a rule for `want` takes. An event whose user is
+/// not known is taken only by a rule for anyone.
+fn by(want: Option<&str>, who: Option<&str>) -> bool {
+    match (want, who) {
+        (None, _) => true,
+        (Some(w), Some(u)) => ito_power::same_user(w, u),
+        (Some(_), None) => false,
+    }
+}
+
+/// One hit for each rule an event matched, `count` the times it did and `first` whose
+/// the first one was.
+fn step(rules: &[Rule], events: &[Event]) -> Vec<Hit> {
     rules
         .iter()
-        .filter_map(|(id, s)| {
-            let count = events.iter().filter(|e| *e == s).count();
-            (count > 0).then(|| Hit { def_id: id.clone(), kind: Kind::Session { session: *s }, count, first: String::new() })
+        .filter_map(|r| {
+            let mut hits = events.iter().filter(|(s, who)| *s == r.session && by(r.user.as_deref(), who.as_deref()));
+            let (_, first) = hits.next()?;
+            Some(Hit {
+                def_id: r.id.clone(),
+                kind: Kind::Session { session: r.session, user: r.user.clone() },
+                count: 1 + hits.count(),
+                first: first.clone().unwrap_or_default(),
+            })
         })
         .collect()
 }
 
-fn problems(rules: &[(String, Session)], failed: Option<&WhyNot>, service: bool) -> Vec<String> {
+fn problems(rules: &[Rule], failed: Option<&WhyNot>, service: bool, me: &str) -> Vec<String> {
     if let Some(e) = failed {
         let why = match e {
             WhyNot::Unsupported => "この OS では見えない".to_owned(),
             WhyNot::Failed(n) => format!("見張りを始められなかった（{n}）"),
             other => other.to_string(),
         };
-        let mut ids: Vec<&str> = rules.iter().map(|(id, _)| id.as_str()).collect();
+        let mut ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         ids.dedup();
         return ids
             .into_iter()
@@ -139,14 +186,20 @@ fn problems(rules: &[(String, Session)], failed: Option<&WhyNot>, service: bool)
     }
     rules
         .iter()
-        .filter_map(|(id, s)| match s {
-            Session::SignIn => Some(format!(
-                "{id}: サインインはサービスのエンジンにしか見えない（このエンジンはサインインの後に始まる）ので、session = \"sign_in\" では流れない。サインインのたびに流すなら on_start = true"
-            )),
-            Session::SignOut => Some(format!(
-                "{id}: サインアウトはサービスのエンジンにしか見えない（このエンジンはサインアウトで止まる）ので、session = \"sign_out\" では流れない"
-            )),
-            Session::Lock | Session::Unlock => None,
+        .filter_map(|r| {
+            let id = &r.id;
+            match (r.session, r.user.as_deref()) {
+                (Session::SignIn, _) => Some(format!(
+                    "{id}: サインインはサービスのエンジンにしか見えない（このエンジンはサインインの後に始まる）ので、session = \"sign_in\" では流れない。サインインのたびに流すなら on_start = true"
+                )),
+                (Session::SignOut, _) => Some(format!(
+                    "{id}: サインアウトはサービスのエンジンにしか見えない（このエンジンはサインアウトで止まる）ので、session = \"sign_out\" では流れない"
+                )),
+                (Session::Lock | Session::Unlock, Some(u)) if !me.is_empty() && !ito_power::same_user(u, me) => Some(format!(
+                    "{id}: このエンジンには {me} のセッションしか見えないので、user = '{u}' のロック・解除では流れない。サービスのエンジンで動かす"
+                )),
+                (Session::Lock | Session::Unlock, _) => None,
+            }
         })
         .collect()
 }
@@ -177,6 +230,14 @@ mod tests {
         format!("format = 1\n[[when]]\nsession = \"{s}\"\n")
     }
 
+    fn rule(id: &str, session: Session, user: Option<&str>) -> Rule {
+        Rule { id: id.to_owned(), session, user: user.map(str::to_owned) }
+    }
+
+    fn ev(session: Session, who: Option<&str>) -> Event {
+        (session, who.map(str::to_owned))
+    }
+
     #[test]
     fn each_net_starts_once_a_tick_on_its_own_event() {
         let both = "format = 1\n[[when]]\nsession = \"lock\"\n[[when]]\nsession = \"unlock\"\n[[when]]\nsession = \"lock\"\n";
@@ -185,14 +246,40 @@ mod tests {
             def("g/b", &when("unlock"), Standing::Confirmed),
             def("g/c", &when("lock"), Standing::Unconfirmed),
         ]);
-        assert_eq!(rules, [("g/a".to_owned(), Session::Lock), ("g/a".to_owned(), Session::Unlock), ("g/b".to_owned(), Session::Unlock)]);
-        let hits = step(&rules, &[Session::Lock, Session::Lock, Session::SignIn]);
+        assert_eq!(rules, [rule("g/a", Session::Lock, None), rule("g/a", Session::Unlock, None), rule("g/b", Session::Unlock, None)]);
+        let hits = step(&rules, &[ev(Session::Lock, Some("PC\\taro")), ev(Session::Lock, None), ev(Session::SignIn, None)]);
         assert_eq!(hits.len(), 1);
-        assert_eq!((hits[0].def_id.as_str(), &hits[0].kind, hits[0].count), ("g/a", &Kind::Session { session: Session::Lock }, 2));
-        assert_eq!(hits[0].first, "");
-        let hits = step(&rules, &[Session::Unlock]);
+        assert_eq!(
+            (hits[0].def_id.as_str(), &hits[0].kind, hits[0].count),
+            ("g/a", &Kind::Session { session: Session::Lock, user: None }, 2)
+        );
+        assert_eq!(hits[0].first, "PC\\taro");
+        let hits = step(&rules, &[ev(Session::Unlock, None)]);
         assert_eq!(hits.iter().map(|h| h.def_id.as_str()).collect::<Vec<_>>(), ["g/a", "g/b"]);
+        assert_eq!(hits[0].first, "");
         assert!(step(&rules, &[]).is_empty());
+    }
+
+    #[test]
+    fn a_net_with_a_user_starts_only_on_that_persons_events() {
+        let text = "format = 1\n[[when]]\nsession = \"lock\"\nuser = 'PC\\taro'\n[[when]]\nsession = \"lock\"\nuser = 'PC\\taro'\n[[when]]\nsession = \"lock\"\nuser = \"hanako\"\n";
+        let rules = wanted(&[def("g/a", text, Standing::Confirmed)]);
+        assert_eq!(rules, [rule("g/a", Session::Lock, Some("PC\\taro")), rule("g/a", Session::Lock, Some("hanako"))]);
+        // Someone else's lock, a lock whose user is not known, and an unlock start nothing.
+        assert!(
+            step(&rules, &[ev(Session::Lock, Some("PC\\jiro")), ev(Session::Lock, None), ev(Session::Unlock, Some("PC\\taro"))]).is_empty()
+        );
+        // The name is read the way Windows reads it: any case, and any domain for `hanako`.
+        let hits = step(
+            &rules,
+            &[ev(Session::Lock, Some("pc\\TARO")), ev(Session::Lock, Some("CORP\\Hanako")), ev(Session::Lock, Some("OTHER\\taro"))],
+        );
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            (&hits[0].kind, hits[0].count, hits[0].first.as_str()),
+            (&Kind::Session { session: Session::Lock, user: Some("PC\\taro".to_owned()) }, 1, "pc\\TARO")
+        );
+        assert_eq!((hits[1].count, hits[1].first.as_str()), (1, "CORP\\Hanako"));
     }
 
     #[test]
@@ -201,30 +288,48 @@ mod tests {
         assert_eq!(session_of(SessionEvent::SignOut), Session::SignOut);
         assert_eq!(session_of(SessionEvent::Lock), Session::Lock);
         assert_eq!(session_of(SessionEvent::Unlock), Session::Unlock);
-        assert_eq!(what(Session::Lock), "画面をロックした");
+        assert_eq!(what(Session::Lock, ""), "画面をロックした");
+        assert_eq!(what(Session::SignIn, "PC\\taro"), "PC\\taro がサインインした");
     }
 
     #[test]
     fn sign_in_and_out_are_said_outside_the_service() {
-        let rules = vec![("g/a".to_owned(), Session::SignIn), ("g/b".to_owned(), Session::SignOut), ("g/c".to_owned(), Session::Lock)];
-        let p = problems(&rules, None, false);
+        let rules =
+            vec![rule("g/a", Session::SignIn, None), rule("g/b", Session::SignOut, Some("PC\\taro")), rule("g/c", Session::Lock, None)];
+        let p = problems(&rules, None, false, "PC\\taro");
         assert_eq!(p.len(), 2);
         assert!(p[0].starts_with("g/a: サインインはサービスのエンジンにしか見えない") && p[0].ends_with("on_start = true"), "{p:?}");
         assert!(p[1].starts_with("g/b: サインアウトはサービスのエンジンにしか見えない"), "{p:?}");
-        assert!(problems(&rules, None, true).is_empty());
+        assert!(problems(&rules, None, true, "PC\\taro").is_empty());
+    }
+
+    #[test]
+    fn someone_elses_lock_is_said_outside_the_service() {
+        let rules = vec![
+            rule("g/a", Session::Lock, Some("PC\\hanako")),
+            rule("g/b", Session::Unlock, Some("taro")),
+            rule("g/c", Session::Lock, Some("pc\\TARO")),
+            rule("g/d", Session::Unlock, None),
+        ];
+        assert_eq!(
+            problems(&rules, None, false, "PC\\taro"),
+            ["g/a: このエンジンには PC\\taro のセッションしか見えないので、user = 'PC\\hanako' のロック・解除では流れない。サービスのエンジンで動かす"]
+        );
+        assert!(problems(&rules, None, true, "PC\\taro").is_empty());
+        assert!(problems(&rules, None, false, "").is_empty());
     }
 
     #[test]
     fn a_watch_that_cannot_start_is_said_once_a_net() {
-        let rules = vec![("g/a".to_owned(), Session::Lock), ("g/a".to_owned(), Session::Unlock), ("g/b".to_owned(), Session::SignIn)];
+        let rules = vec![rule("g/a", Session::Lock, None), rule("g/a", Session::Unlock, None), rule("g/b", Session::SignIn, None)];
         assert_eq!(
-            problems(&rules, Some(&WhyNot::Unsupported), true),
+            problems(&rules, Some(&WhyNot::Unsupported), true, "PC\\taro"),
             [
                 "g/a: サインイン・ロックが分からない（この OS では見えない）ので、session の [[when]] では流れない",
                 "g/b: サインイン・ロックが分からない（この OS では見えない）ので、session の [[when]] では流れない",
             ]
         );
-        assert!(problems(&rules, Some(&WhyNot::Failed(5)), false)[0].contains("見張りを始められなかった（5）"));
+        assert!(problems(&rules, Some(&WhyNot::Failed(5)), false, "PC\\taro")[0].contains("見張りを始められなかった（5）"));
     }
 
     #[test]

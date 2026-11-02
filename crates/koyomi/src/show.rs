@@ -102,7 +102,14 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
         }
         when::Kind::OnStart => Some(t.tr("run.event_start").to_owned()),
         when::Kind::Idle { idle } => Some(t.trf("run.event_idle", &[&koyomi_core::duration::text(*idle)])),
-        when::Kind::Session { session } => Some(t.tr(&format!("run.event_{}", session.name())).to_owned()),
+        when::Kind::Session { session, user } => {
+            let key = format!("run.event_{}", session.name());
+            let what = t.tr(&key);
+            Some(match user {
+                Some(u) => t.trf("run.event_user", &[what, u.as_str()]),
+                None => what.to_owned(),
+            })
+        }
         when::Kind::AfterJobnet { jobnet, on } => {
             Some(t.trf("run.event_after", &[jobnet.as_str(), t.tr(&format!("run.after_{}", on.name()))]))
         }
@@ -441,6 +448,20 @@ error low",
         assert_eq!(get("run.command").as_deref(), Some("powershell: Get-Date"));
         let env = get("run.env").unwrap();
         assert!(env.contains("DB_PASS=***") && env.contains("MODE=full") && !env.contains("secret:db"), "{env}");
+    }
+
+    #[test]
+    fn a_session_event_names_its_user() {
+        let whens = koyomi_core::jobnet::parse(
+            "format = 1\n[[when]]\nsession = \"lock\"\n[[when]]\nsession = \"unlock\"\nuser = 'PC\\taro'\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n",
+        )
+        .unwrap()
+        .when;
+        let (ja, _) = crate::i18n::table("ja");
+        let (en, _) = crate::i18n::table("en");
+        assert_eq!(event_row(&ja, &whens[0]).as_deref(), Some("画面をロックしたとき"));
+        assert_eq!(event_row(&ja, &whens[1]).as_deref(), Some("画面のロックを解いたとき（PC\\taro だけ）"));
+        assert_eq!(event_row(&en, &whens[1]).as_deref(), Some("When the screen is unlocked (PC\\taro only)"));
     }
 
     #[test]

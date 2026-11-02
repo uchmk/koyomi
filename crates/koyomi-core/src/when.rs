@@ -118,10 +118,16 @@ pub enum Kind {
     /// seconds. Once each time it is left alone: it starts again only after
     /// someone has used the PC.
     Idle { idle: u64 },
-    /// `session = "lock"`: when someone signs in or out, or locks or unlocks the
-    /// screen (an event). The service engine sees every user's; the engine a user
-    /// started sees only its own user's lock and unlock.
-    Session { session: Session },
+    /// `session = "lock"`, `user = 'PC\taro'`: when someone signs in or out, or
+    /// locks or unlocks the screen (an event). The service engine sees every
+    /// user's; the engine a user started sees only its own user's lock and
+    /// unlock. `user`: only that person's (`taro` or `.\taro` on any
+    /// domain, case-insensitively); none: anyone's.
+    Session {
+        session: Session,
+        #[serde(default)]
+        user: Option<String>,
+    },
     /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
     /// so (an event). The run takes the business day of the run it follows.
     AfterJobnet {
@@ -179,6 +185,15 @@ impl Session {
     pub fn from_name(s: &str) -> Option<Session> {
         Session::ALL.into_iter().find(|x| x.name() == s)
     }
+}
+
+/// A `user` a `session` start can name: `PC\taro`, `.\taro`, `CORP\taro` or
+/// `taro`, with nothing Windows does not put in an account name (no `@`,
+/// space, quote or control character).
+pub fn valid_session_user(s: &str) -> bool {
+    let (domain, name) = s.split_once('\\').unwrap_or(("-", s));
+    let bad = |t: &str| t.chars().any(|c| c.is_whitespace() || c.is_control() || "\"/[]:;|=,+*?<>@\\".contains(c));
+    !name.is_empty() && !domain.is_empty() && !bad(name) && !bad(domain)
 }
 
 /// Which end of the run before lets an `after_jobnet` net start: `on = "ok"`
@@ -820,8 +835,9 @@ mod tests {
         let log = When { kind: Kind::Log { log: "D:\\app\\a.log".to_owned(), contains: "ERROR".to_owned() }, ..file.clone() };
         let eventlog = When { kind: Kind::EventLog { eventlog: "Security".to_owned(), ids: vec![4625], source: None }, ..file.clone() };
         let idle = When { kind: Kind::Idle { idle: 600 }, ..file.clone() };
-        let lock = When { kind: Kind::Session { session: Session::Lock }, ..file.clone() };
-        for w in [&file, &start, &log, &eventlog, &idle, &lock] {
+        let lock = When { kind: Kind::Session { session: Session::Lock, user: None }, ..file.clone() };
+        let taro = When { kind: Kind::Session { session: Session::SignIn, user: Some("PC\\taro".to_owned()) }, ..file.clone() };
+        for w in [&file, &start, &log, &eventlog, &idle, &lock, &taro] {
             assert!(w.is_event());
             assert_eq!(w.next_after(dt("2026-11-30 00:00")), None);
             assert!(w.times_on(d("2026-11-30")).is_empty());
@@ -832,6 +848,17 @@ mod tests {
         assert!(toml::to_string(&BTreeMap::from([("w", file)])).unwrap().contains("every = \"file\""));
         assert!(next_times(&[start], dt("2026-11-30 00:00"), 3).is_empty());
         assert!(toml::to_string(&BTreeMap::from([("w", lock)])).unwrap().contains("session = \"lock\""));
+        assert!(toml::to_string(&BTreeMap::from([("w", taro)])).unwrap().contains("user = "));
+    }
+
+    #[test]
+    fn a_session_user_is_an_account_name() {
+        for ok in ["PC\\taro", ".\\taro", "CORP\\taro", "taro", "太郎", "taro.y", "taro-01", "DESKTOP-1AB2C3D\\yuu06"] {
+            assert!(valid_session_user(ok), "{ok}");
+        }
+        for bad in ["", "\\taro", "PC\\", "PC\\a\\b", "taro@corp.example", "ta ro", "PC\\ta\"ro", "a\tb"] {
+            assert!(!valid_session_user(bad), "{bad}");
+        }
     }
 
     #[test]

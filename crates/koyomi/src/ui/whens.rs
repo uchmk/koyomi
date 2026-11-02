@@ -71,6 +71,8 @@ pub struct WhenEdit {
     pub idle: String,
     /// `session`: the sign-in, sign-out, lock or unlock that starts the net.
     pub session: Session,
+    /// `user`: only that person's session (`PC\taro`); empty: anyone's.
+    pub user: String,
     pub jobnet: String,
     pub on: AfterOn,
     pub except: String,
@@ -114,6 +116,7 @@ impl Default for WhenEdit {
             subject: String::new(),
             idle: "10m".into(),
             session: Session::Lock,
+            user: String::new(),
             jobnet: String::new(),
             on: AfterOn::Ok,
             except: String::new(),
@@ -263,9 +266,10 @@ impl WhenEdit {
                 e.kind = "idle".into();
                 e.idle = duration::text(*idle);
             }
-            Kind::Session { session } => {
+            Kind::Session { session, user } => {
                 e.kind = "session".into();
                 e.session = *session;
+                e.user = user.clone().unwrap_or_default();
             }
             Kind::AfterJobnet { jobnet, on } => {
                 e.kind = "after_jobnet".into();
@@ -399,7 +403,13 @@ impl WhenEdit {
                 }
                 Kind::Idle { idle }
             }
-            "session" => Kind::Session { session: self.session },
+            "session" => {
+                let user = Some(self.user.trim().to_owned()).filter(|u| !u.is_empty());
+                if let Some(u) = user.as_deref().filter(|u| !koyomi_core::when::valid_session_user(u)) {
+                    return Err(format!("user は PC\\taro・CORP\\taro・taro のように書く（@ や空白は書かない）: \"{u}\""));
+                }
+                Kind::Session { session: self.session, user }
+            }
             "after_jobnet" => {
                 if !koyomi_core::jobnet::is_id(self.jobnet.trim()) {
                     return Err(format!("after_jobnet は \"グループ/名前\": \"{}\"", self.jobnet.trim()));
@@ -569,6 +579,7 @@ impl WhenEdit {
                         changed = true;
                     }
                 });
+                changed |= field(ui, t.tr("when.user"), &mut self.user, 160.0);
             }
             _ => {}
         }
@@ -625,10 +636,11 @@ mod tests {
             [[when]]\non_start = true\n\
             [[when]]\nidle = \"15m\"\n\
             [[when]]\nsession = \"lock\"\n\
+            [[when]]\nsession = \"unlock\"\nuser = 'PC\\taro'\n\
             [[when]]\nafter_jobnet = \"経理/集計\"\non = \"error\"\n\
             [[job]]\nid = \"a\"\nrun = [\"x\"]\n";
         let net = koyomi_core::jobnet::parse(text).unwrap();
-        assert_eq!(net.when.len(), 19);
+        assert_eq!(net.when.len(), 20);
         for w in &net.when {
             let e = WhenEdit::from_when(w);
             assert_eq!(e.to_when().as_ref(), Ok(w), "{e:?}");
@@ -652,6 +664,11 @@ mod tests {
         assert!(e.to_when().is_err());
         e.jobnet = "経理/集計".into();
         assert!(e.to_when().is_ok());
+        let mut e = WhenEdit::new("session");
+        e.user = "taro@corp.example".into();
+        assert!(e.to_when().unwrap_err().contains("user"));
+        e.user = " PC\\taro ".into();
+        assert_eq!(e.to_when().unwrap().kind, Kind::Session { session: Session::Lock, user: Some("PC\\taro".into()) });
         let mut e = WhenEdit::new("day");
         e.start = "2026/04/01".into();
         assert!(e.to_when().unwrap_err().contains("2026-04-01"));

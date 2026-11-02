@@ -1,6 +1,6 @@
 # Checklist
 
-1063 checks in TESTING.md, 1057 left for a person.
+1071 checks in TESTING.md, 1065 left for a person.
 
 ## 1. Start
 
@@ -1412,14 +1412,25 @@
 
 ## 119. Start on a sign-in, a sign-out, a lock or an unlock (`[[when]] session`; TODO 115)
 
-- [ ] **119.1** Win+L; wait ten seconds; sign back in → 保守/ロック ran once and 保守/解除 ran once; `koyomi history` gives the reasons `画面をロックした` and `画面のロックを解いた`, and each run's detail in the window says the same 〔未訳〕
-- [ ] **119.2** Make 保守/ロック's job `cmd /c ping -n 120 127.0.0.1 > nul`; lock, sign back in, and lock again within two minutes → One run; a ⊘ スキップ row `画面をロックしたが、前の回がまだ動いているので流さない`; nothing starts after the first run ends 〔未訳〕
+- [ ] **119.1** Win+L; wait ten seconds; sign back in → 保守/ロック ran once and 保守/解除 ran once; `koyomi history` gives the reasons `<you> が画面をロックした` and `<you> が画面のロックを解いた` (`<you>` your account as `PC\name`), and each run's detail in the window says the same 〔未訳〕
+- [ ] **119.2** Make 保守/ロック's job `cmd /c ping -n 120 127.0.0.1 > nul`; lock, sign back in, and lock again within two minutes → One run; a ⊘ スキップ row `<you> が画面をロックしたが、前の回がまだ動いているので流さない`; nothing starts after the first run ends 〔未訳〕
 - [ ] **119.3** Add 保守/入る with `session = "sign_in"` and 保守/出る with `session = "sign_out"`; approve them (the engine as you) → The window's 注意 says `保守/入る: サインインはサービスのエンジンにしか見えない（このエンジンはサインインの後に始まる）ので、session = "sign_in" では流れない。サインインのたびに流すなら on_start = true` and `保守/出る: サインアウトはサービスのエンジンにしか見えない（このエンジンはサインアウトで止まる）ので、session = "sign_out" では流れない`; no warning for 保守/ロック or 保守/解除 〔未訳〕
 - [ ] **119.4** Run the engine as the service (§89); repeat 119.1 → The same two runs; no 注意 for any of the four nets 〔未訳〕
-- [ ] **119.5** The service: sign out, then sign back in; then sign in as the second account (切り替え, or Win+L → 他のユーザー) and sign it out → 保守/出る ran for each sign-out and 保守/入る for each sign-in, the second account's too (the reasons `サインアウトした` and `サインインした`); a lock of the second account starts 保守/ロック as well 〔未訳〕
+- [ ] **119.5** The service: sign out, then sign back in; then sign in as the second account (切り替え, or Win+L → 他のユーザー) and sign it out → 保守/出る ran for each sign-out and 保守/入る for each sign-in, the second account's too (the reasons `<account> がサインアウトした` and `<account> がサインインした`, each naming whose it was); a lock of the second account starts 保守/ロック as well 〔未訳〕
 - [ ] **119.6** The service with §115's 保守/空き (`idle = "1m"`) and a net 保守/静か with `require = ["idle:5m"]`; run 保守/静か now while you use the PC, then leave the PC alone; then sign out as the next column says → 保守/空き runs after a minute; 保守/静か waits with `PC が 5 分使われなくなるのを待っています（require = "idle"）` while you use the PC and starts once it has been left alone five minutes. Then sign out, stay signed out three minutes and sign back in: 保守/空き did not run while nobody was signed in at the screen (no run from then in `koyomi history`); it runs again once you have used the PC and left it alone a minute 〔未訳〕
 - [ ] **119.7** [x] `koyomi check` with `session = "logon"`; with `session = "lock"` and `at = ["02:00"]`; with `session = "unlock"` and `on_closed = "prev"` → `session は "sign_in"・"sign_out"・"lock"・"unlock" のどれか`; `at は session では使わない`; `session では on_closed は "skip" か "run"` 〔未訳〕
 - [ ] **119.8** The editor: add a `[[when]]` of サインイン・ロック; choose each of できごと's four → One choice できごと (サインイン・サインアウト・ロック・ロックの解除), set to ロック at first; except / start / end / on_closed are not shown; saving writes `session = "lock"` (or the one chosen) 〔未訳〕
 - [ ] **119.9** [x] `koyomi next 保守/ロック`; approve it after a change → The row `画面をロックしたとき` comes first, with no time; the confirm box shows the same 〔未訳〕
-- [ ] **119.10** In taskschd.msc, make a task `\koyomi-test\ロック` with the trigger ワークステーション ロック時 (任意のユーザー) and the action `cmd.exe /c echo hi`; `schtasks /query /xml /tn "\koyomi-test\ロック" > l.xml`; `koyomi import l.xml --dry-run`; then the same with 特定のユーザー and ワークステーション ロック解除時 → The plan has `session = "lock"`; the second has `session = "unlock"` and the note `<user> に限ったトリガーだが、session = "unlock" はサービスのエンジンではどのユーザーのでも流れる`; a trigger of リモート接続時 is refused with `…は取り込めない（ロックとロックの解除だけ）`; then delete the task 〔未訳〕
+- [ ] **119.10** In taskschd.msc, make a task `\koyomi-test\ロック` with the trigger ワークステーション ロック時 (任意のユーザー) and the action `cmd.exe /c echo hi`; `schtasks /query /xml /tn "\koyomi-test\ロック" > l.xml`; `koyomi import l.xml --dry-run`; then the same with 特定のユーザー and ワークステーション ロック解除時 → The plan has `session = "lock"`; the second has `session = "unlock"` and `user = '<user>'` with no note (§120.8); a trigger of リモート接続時 is refused with `…は取り込めない（ロックとロックの解除だけ）`; then delete the task 〔未訳〕
 - [ ] **119.11** `koyomi history --csv runs.csv` after 119.1 → The runs' きっかけ is `サインイン・ロック` 〔未訳〕
+
+## 120. Only one person's sign-in or lock (`[[when]] session` with `user`; TODO 117)
+
+- [ ] **120.1** The engine as you (`koyomi engine start`) → The window's 注意 says `保守/他人: このエンジンには <you> のセッションしか見えないので、user = '<other>' のロック・解除では流れない。サービスのエンジンで動かす`; none for 保守/ロック 〔未訳〕
+- [ ] **120.2** Win+L; wait ten seconds; sign back in → 保守/ロック ran once with the reason `<you> が画面をロックした`; 保守/他人 did not run 〔未訳〕
+- [ ] **120.3** The service (§89): lock yours and sign back in; then sign in as the second account, lock it and sign back in → 保守/ロック ran for your lock only and 保守/他人 for the second account's only, its reason `<other> が画面をロックした`; no 注意 for either 〔未訳〕
+- [ ] **120.4** The service: make 保守/ロック's `user` your name alone in other case (`"TARO"` for `PC\taro`); lock and sign back in → 保守/ロック runs (the name is read in any case, on any domain) 〔未訳〕
+- [ ] **120.5** [x] `koyomi check` with `user = "taro@corp.example"`; with `user = ""`; with `idle = "10m"` and `user = "taro"` → `user は 'PC\taro'・'CORP\taro'・"taro" のように書く（@ や空白は書かない）` for the first two; `user は idle では使わない` 〔未訳〕
+- [ ] **120.6** The editor: a `[[when]]` of サインイン・ロック; type `PC\taro` in ユーザー and save; then type `taro@x` → The field reads ユーザー（PC\taro。空ならだれでも）; saving writes `user = 'PC\taro'`; empty writes no `user`; `taro@x` is refused with `user は PC\taro・CORP\taro・taro のように書く（@ や空白は書かない）: "taro@x"` 〔未訳〕
+- [ ] **120.7** `koyomi next 保守/他人`; approve it after a change → The row `画面をロックしたとき（<other> だけ）`; the confirm box shows the same 〔未訳〕
+- [ ] **120.8** §119.10's task with 特定のユーザー (ワークステーション ロック解除時); `koyomi import l.xml --dry-run` → The plan has `session = "unlock"` and `user = '<user>'`, no note; a UserId given as a SID (`S-1-5-21-…`) leaves `user` out with the note `… に限ったトリガーだが、この書き方は読めないので、session = "unlock" はどのユーザーのでも流れる（user = 'PC\名前' を書き足す）` 〔未訳〕
