@@ -611,7 +611,8 @@ fn release_standby(ask: impl Fn(&Request) -> Result<String, String>) -> Response
 /// fetches only what changed (TODO 87). Not the text: that is `GET /nets/text`, for `edit`.
 /// With them, as the window's 今日 counts them: `today`, the starts still to come today, and
 /// `next`, the next one (none for a net not approved or on hold), `then`, the one after the last
-/// of `today` (each start's 次の回); and `skips`, the times `koyomi skip-next` skips that have not come.
+/// of `today` (each start's 次の回); `jobs`, each job's `id`, `name` and whether it is `held`
+/// (`POST /nets/hold` with `job`); and `skips`, the times `koyomi skip-next` skips that have not come.
 /// For a caller with a role per net, `role`: theirs on that net (`role_of`, TODO 101).
 fn nets(ask: impl Fn(&Request) -> Result<String, String>, role_of: impl Fn(&str) -> Option<Role>) -> Response {
     match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
@@ -640,6 +641,11 @@ fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime, role_of: impl Fn(&str) -
                 "standing": d.standing,
                 "sha256": d.sha256,
                 "held": snap.held.contains(&d.id),
+                "jobs": d.net.as_ref().map(|n| n.jobs.iter().map(|j| serde_json::json!({
+                    "id": j.id,
+                    "name": j.name,
+                    "held": snap.held_jobs.iter().any(|h| h.net == d.id && h.job == j.id),
+                })).collect::<Vec<_>>()).unwrap_or_default(),
                 "params": d.net.as_ref().map(|n| n.params.clone()).unwrap_or_default(),
                 "today": starts,
                 "next": snap.next_start(d, now),
@@ -1389,6 +1395,7 @@ mod tests {
         let snap = Snapshot {
             defs: vec![def("g/a"), def("g/b")],
             held: vec!["g/b".into()],
+            held_jobs: vec![koyomi_core::held::HeldJob { net: "g/a".into(), job: "a".into() }],
             skips: vec![
                 koyomi_core::held::Skip { id: "g/a".into(), at: at("2026-10-31 18:00") },
                 koyomi_core::held::Skip { id: "g/a".into(), at: at("2026-10-31 06:00") },
@@ -1400,6 +1407,9 @@ mod tests {
         assert_eq!(a["today"], serde_json::json!(["2026-10-31T12:00:00", "2026-10-31T18:00:00"]));
         assert_eq!((a["next"].as_str(), a["then"].as_str()), (Some("2026-10-31T12:00:00"), Some("2026-11-01T00:00:00")));
         assert_eq!(a["skips"], serde_json::json!(["2026-10-31T18:00:00"]));
+        // The jobs, and which of them is held on its own (not the net).
+        assert_eq!(a["jobs"], serde_json::json!([{ "id": "a", "name": null, "held": true }]));
+        assert_eq!(v["nets"][1]["jobs"][0]["held"].as_bool(), Some(false));
         let b = &v["nets"][1];
         assert_eq!((b["held"].as_bool(), b["today"].as_array().map(Vec::len), b["next"].is_null()), (Some(true), Some(0), true));
     }

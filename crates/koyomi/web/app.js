@@ -157,7 +157,8 @@ function ask(text, { yes = "はい", no = "やめる", danger = false, fields = 
 async function act(what, fn) {
   try {
     const said = await fn();
-    say(said || what);
+    // Only a string is a message; the reply object of a plain `call()` is not (it would read `[object Object]`).
+    say((typeof said === "string" && said) || what);
     await refresh();
   } catch (e) {
     say(e.message, true);
@@ -480,6 +481,11 @@ function drawRun(r) {
     if (canOn(r.jobnet, "run") && !r.over && NOT_STARTED.includes(j.state)) {
       acts.append(button("スキップ", () => skipJob(r, j), "small", { data: { key: `s:${j.id}` } }));
     }
+    // Hold the job itself (every run of the net waits there), as the window's button does.
+    const own = (netOf(r.jobnet)?.jobs || []).find((x) => x.id === j.id);
+    if (own && canOn(r.jobnet, "run")) {
+      acts.append(button(own.held ? "保留を解く" : "保留", () => holdJob(netOf(r.jobnet), own, !own.held), "small", { data: { key: `h:${j.id}` } }));
+    }
     const on = view.log && view.log.job === j.id;
     const cls = [on ? "on" : "", j.reason ? "has-why" : ""].filter(Boolean).join(" ") || null;
     tbody.append(el("tr", { class: cls }, el("td", {}, stateTag(j.state)), name, timeCell(hms(j.started)), timeCell(hms(j.ended)), timeCell(j.exit == null ? "" : String(j.exit)), acts));
@@ -552,6 +558,15 @@ function drawNet(n) {
     body.append(el("h3", { text: "飛ばす回" }));
     body.append(el("ul", { class: "list" }, ...n.skips.map((t) => el("li", {}, stateTag("skipped", el("span", { class: "mono", text: ` ${nextWords(t)}` }))))));
   }
+  if ((n.jobs || []).length) {
+    body.append(el("h3", { text: "ジョブ" }));
+    body.append(el("ul", { class: "list" }, ...n.jobs.map((j) => {
+      const li = el("li", {}, el("span", { class: "name", text: j.name || j.id }));
+      if (j.held) li.append(el("span", { class: "flag", title: "保留", text: " ⏸" }));
+      if (canOn(n.id, "run")) li.append(" ", button(j.held ? "保留を解く" : "保留", () => holdJob(n, j, !j.held), "small", { data: { key: `h:${j.id}` } }));
+      return li;
+    })));
+  }
   const runs = view.runs.filter((r) => r.jobnet === n.id).sort((a, b) => (a.started < b.started ? 1 : -1));
   body.append(el("h3", { text: view.tab === "history" ? "この日の回" : "今日の回" }));
   if (!runs.length) body.append(el("p", { class: "dim", text: "ありません" }));
@@ -616,6 +631,15 @@ async function hold(n, on) {
   const text = on ? `${n.name} を保留にしますか？時刻が来ても流れません` : `${n.name} の保留を解きますか？`;
   if (!(await ask(text, { yes: on ? "ジョブネットを保留" : "ジョブネットの保留を解く" }))) return;
   await act(on ? `${n.name} を保留にしました` : `${n.name} の保留を解きました`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id }));
+}
+
+async function holdJob(n, j, on) {
+  const name = j.name || j.id;
+  const text = on
+    ? `${name} を保留にしますか？${n.name} のどの回も、ここに来たら待ちます`
+    : `${name} の保留を解きますか？`;
+  if (!(await ask(text, { yes: on ? `${name} を保留` : `${name} の保留を解く` }))) return;
+  await act(on ? `${name} を保留にしました` : `${name} の保留を解きました`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id, job: j.id }));
 }
 
 async function skipNext(n, cancel) {
