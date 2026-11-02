@@ -1495,7 +1495,7 @@ impl Editor {
                         None
                     } else {
                         // The first of next month: where a switch most often falls.
-                        let today = chrono::Local::now().date_naive();
+                        let today = ito_common::now::now_local().date_naive();
                         let first = chrono::Datelike::with_day(&today, 1).and_then(|d| d.checked_add_months(chrono::Months::new(1)));
                         Some(first.map(ito_prefs::format_date).unwrap_or_default())
                     };
@@ -1529,7 +1529,7 @@ impl Editor {
             if let Some(mut day) = self.stage.clone() {
                 let (mut go, mut cancel) = (false, false);
                 ui.horizontal_wrapped(|ui| {
-                    let today = chrono::Local::now().date_naive();
+                    let today = ito_common::now::now_local().date_naive();
                     let label = t.tr("canvas.stage_from");
                     ui.label(label);
                     let d = ito_prefs::DateField::new(("stage", &self.id), ito_prefs::DateWords::for_lang(t.tr("app.lang")))
@@ -2055,7 +2055,7 @@ impl Editor {
                 ito_a11y::say(&r, Role::Label, text);
             }
         });
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let starts = self.starts(now, STRIP_DAYS, cal);
         ui.horizontal(|ui| {
             let head = t.trf("canvas.strip", &[&STRIP_DAYS.to_string()]);

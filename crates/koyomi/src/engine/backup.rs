@@ -11,7 +11,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use ito_common::kept;
 use koyomi_core::bundle::{export, Pick, Source};
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ impl Backup {
     /// Starts today's backup when it has not been, and takes in the answer of
     /// the one running. The line to tell on the console, when one ended.
     pub fn tick(&mut self) -> Option<String> {
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         if self.rx.is_none() && self.done_for != Some(today) {
             self.done_for = Some(today);
             let (tx, rx) = mpsc::channel();
@@ -84,7 +84,12 @@ impl Backup {
         }
         let got = self.rx.as_ref().and_then(|rx| rx.try_recv().ok())?;
         self.rx = None;
-        self.last = Kept { at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(), file: got.file, count: got.count, errors: got.errors };
+        self.last = Kept {
+            at: ito_common::now::now_local().format("%Y-%m-%d %H:%M:%S").to_string(),
+            file: got.file,
+            count: got.count,
+            errors: got.errors,
+        };
         self.writer.save_toml(&self.last);
         Some(self.line())
     }
@@ -179,7 +184,7 @@ mod tests {
         b.done_for = None;
         let line = wait(&mut b);
         assert!(line.contains("1 件"), "{line}");
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let file = state.join("backups").join(format!("{}.toml", today.format("%Y-%m-%d")));
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("[[jobnet]]") && text.contains("経理/月次"), "{text}");

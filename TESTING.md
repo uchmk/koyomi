@@ -96,9 +96,9 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 |---|---|---|
 | 10.1 | With no `[notify]` in `koyomi.toml`, run a net whose job exits 1, from the window | A system notification `✕ 異常終了  <net>` with the failed job's line and the run id; no sound |
 | 10.2 | The same net started with `koyomi run` and with `koyomi run --wait` | The same notification, worded the same |
-| 10.3 | Run a net that ends `✓ 正常終了` | No system notification, no sound |
-| 10.4 | `[notify]` with `system = ["done", "failed"]`, run a net that ends well | A system notification `✓ 正常終了  <net>` |
-| 10.5 | `[notify]` with `sound = ["failed"]`, a failing net | The alert sound with the notification; without that line, none |
+| 10.3 | [x] Run a net that ends `✓ 正常終了` | No system notification, no sound |
+| 10.4 | [x] `[notify]` with `system = ["done", "failed"]`, run a net that ends well | A system notification `✓ 正常終了  <net>` |
+| 10.5 | [x] `[notify]` with `sound = ["failed"]`, a failing net | The alert sound with the notification; without that line, none |
 | 10.6 | A failing net, then the bell | The bell counts 1 unread; the row is `✕ 異常終了  <net>` with the failed job under it; clicking it shows that run in the detail |
 | 10.7 | A net that ends well, then the bell | Nothing new under the bell |
 | 10.8 | [x] `[notify]` with `webhook = "https://ntfy.sh/<topic>"` (plain text), start the engine | `koyomi list` prints `注意: koyomi.toml: [notify] の webhook のアドレスが平文で書かれている…`; the bell has the same line once; a failing net sends nothing to the topic |
@@ -107,7 +107,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 10.11 | [x] `webhook = "secret:nothing"` (no such credential) | `koyomi list` prints a note that it does not read; nothing is sent; runs still start |
 | 10.12 | [x] `koyomi check koyomi.toml` with `system = ["failed", "exploded"]` | A line naming `exploded`, exit code 1; with a clean file, `koyomi.toml: 問題なし` and exit code 0 |
 | 10.13 | [x] Edit `[notify]` while the engine runs | Within about 5 s `koyomi list` reflects the change; no restart |
-| 10.14 | With the default `[notify]`, `koyomi run <net> --wait` a failing net four times in a row on the same engine | Four `✕ 異常終了` notifications; `koyomi engine status` shows the same pid afterwards (the engine did not crash) |
+| 10.14 | [x] With the default `[notify]`, `koyomi run <net> --wait` a failing net four times in a row on the same engine | Four `✕ 異常終了` notifications; `koyomi engine status` shows the same pid afterwards (the engine did not crash) |
 
 ## 11. Schedule
 
@@ -329,8 +329,8 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 | 24.6 | `business_day = 5` in a net without `calendar` and no `_group.toml` naming one; `koyomi check <file>` and `koyomi list` | `calendar が要る（business_day・shift・on_closed を使うとき）`; `koyomi list` shows `✖ <name>  定義の誤り` (not ✕ 無効) and the net does not run |
 | 24.7 | Write `jobnets/経理/_group.toml` with `format = 1` and `calendar = "会社"`; a net of 経理 without `calendar`; `koyomi check` the net and the window's detail | The net counts by 会社 (its 次の 10 回 skip the weekend); `koyomi check jobnets/経理/_group.toml` says `_group.toml: 問題なし`; write `x = 1` into `_group.toml`: every net of 経理 shows `✖ … 定義の誤り` with `_group.toml: 知らない欄 x` |
 | 24.8 | `calendar = "工場"` (no file), then write `calendars/工場.toml` with `holidays = 1` | `fk.toml: カレンダーがない: calendars/工場.toml` (the net's file name first), then for the bad file `注意: calendars/工場.toml: TOML の書き方が違う: …` in `koyomi list` and `koyomi check` (`koyomi show` says `が読めない（…）`); the window's band 「カレンダーの注意」 shows it too; nothing else stops. The engine rescans calendars every 10-15 s, so wait before looking at the window |
-| 24.9 | The system date at 2027-10-15 (fewer than 90 days left; `KOYOMI_DATE` is only passed to jobs and does not move the clock), `koyomi list`, the window, `koyomi check <a net on 会社>` (`koyomi check calendars/会社.toml` prints it only when the calendar has a table: 問題なし otherwise) | The band and the `注意:` line read `祝日の表は 2027-12-31 までの分です（あと 77 日）`; `koyomi check` prints the same line and exits 0 |
-| 24.10 | The system date at 2028-01-05 (`KOYOMI_DATE` does not move the clock), a net on 会社 with `every = "day"`, `at` a minute away; `koyomi check calendars/会社.toml`, `koyomi next`, wait for the time | The band reads `祝日の表が古い（2027-12-31 まで）。それより後の日は流さない`; `koyomi check` prints it and exits 1; `koyomi next` marks each row `祝日の表が古い`; when the time comes, 今日 has a 🔒 run with the reason `祝日の表が古い（2027-12-31 まで）`, no job ran, and a notification was sent (BLOCKED: the system clock cannot be set to 2028 here) |
+| 24.9 | [x] The system date at 2027-10-15 (fewer than 90 days left; `KOYOMI_DATE` is only passed to jobs and does not move the clock), `koyomi list`, the window, `koyomi check <a net on 会社>` (`koyomi check calendars/会社.toml` prints it only when the calendar has a table: 問題なし otherwise) | The band and the `注意:` line read `祝日の表は 2027-12-31 までの分です（あと 77 日）`; `koyomi check` prints the same line and exits 0 |
+| 24.10 | [x] The system date at 2028-01-05 (`KOYOMI_DATE` does not move the clock), a net on 会社 with `every = "day"`, `at` a minute away; `koyomi check calendars/会社.toml`, `koyomi next`, wait for the time | The band reads `祝日の表が古い（2027-12-31 まで）。それより後の日は流さない`; `koyomi check` prints it and exits 1; `koyomi next` marks each row `祝日の表が古い`; when the time comes, 今日 has a 🔒 run with the reason `祝日の表が古い（2027-12-31 まで）`, no job ran, and a notification was sent (verified with the fake clock, `UCHMK_FAKE_CLOCK`) |
 | 24.11 | In the window, pick 会社 under カレンダー; use ◀ ▶; double-click a Saturday, a holiday, a weekday, and each again | The head reads `会社 ◀ 2026年11月 ▶ 営業日 19 日`; the weekly-off boxes run 日 to 土; the month table starts on Sunday, one framed cell per day: days off sit on a darker fill, holidays in the gold accent, closed days in magenta, `open` days in the done colour, each named day's name under its date in the cell (cut to 3 characters and … when longer; the full name on hover), today outlined in blue; a legend of those colours under it, then the names list; the double-clicks write `calendars/会社.toml` (`open = [...]` / `closed = [...]` appear and go), the engine reads it again and the table follows within a few seconds; `<file> に書きました` under the month |
 | 24.11b | In 会社's month, look before clicking; click 11/7 (a Saturday), then a weekday, then a day of another month after ▶; right-click a weekday and choose この日を休業にする; on a picked day press the box's button; Tab to a day and press Enter | Beside the month a box shows today first: `この日に動くもの（<月>/<日> <曜>・営業日 <n>）` (n counts the business days of the month up to it), each approved net's start that day as `HH:MM  <name>` (nets on any calendar), or 「この日に始まるものはありません」; a click moves the box and the outline (white; today stays blue, thicker when picked) to that day and writes nothing; a day off shows its name or 休み in the head; the menu item and the box's button (この日を休日出勤にする / この日を休業にする / この日を元に戻す) toggle the day as a double-click does; Enter on a day only picks it |
 | 24.11a | Pick 会社 under カレンダー, go to a month with approved nets on it, press 「この月の予定を印刷…」 | `書き出し中…` at once (the window does not stop), then `印刷に回した（PDF は <state>\exports\plan-<年>-<月>.pdf）` or, where the OS cannot send it, the PDF opens and `PDF を開いた（印刷はそこから）: …`; the PDF matches `koyomi plan <年>-<月> --pdf` for that month |
@@ -846,7 +846,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 65.1 | A job `run = ["cmd.exe", "/c", "(for /l %i in (1,1,15) do @echo line %i) & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
+| 65.1 | [x] A job `run = ["cmd.exe", "/c", "(for /l %i in (1,1,15) do @echo line %i) & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
 | 65.2 | With a webhook on for `failed` (e.g. ntfy), the same run | The message ends with `<job> のログの末尾` and `line 6` … `line 15` |
 | 65.3 | A job with `env = { PW = "secret:db" }` that echoes `%PW%` and exits 1 | Both the notification and the webhook show `***`, not the secret |
 | 65.4 | A run that ends 正常, or a job that fails before writing anything | The notice is as before, with no log lines |
@@ -932,7 +932,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 72.2 | A calendar with `holidays = "japan"`; the window's calendar page for a year in the file | The holidays and their names are the file's |
 | 72.3 | Edit the file so its last line is `2028/1/1,元日` (save as UTF-8); wait a few seconds | The band's "祝日の表は … まで" goes away or moves to 2028-12-31; `koyomi check calendars/<name>.toml` says no caution |
 | 72.4 | Write a line `x,y` in the middle of the file | The window's band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x` (`koyomi check` on a calendar file prints it as `syukujitsu.csv: N 行目: 日付が読めない: x`, no `calendars/`); nets run on the built-in rules |
-| 72.5 | Remove the file (with today near the end of 2027) | The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on |
+| 72.5 | [x] Remove the file (with today near the end of 2027) | The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on |
 | 72.6 | `koyomi export -o out.zip --calendars` with the file in `calendars/` | The bundle has the calendars' `.toml` but not `syukujitsu.csv` |
 
 ## 73. CSV の書き出し
@@ -1617,9 +1617,9 @@ A confirmed net, 経理/締め here, with a job `a` that runs `cmd /c echo old`.
 | 113.9 | [x] `koyomi stage 経理/締め --cancel` | `<day> から使う定義をやめた: 経理/締め（今の定義のまま流す）`; the tree and the detail no longer show it; a second `--cancel` says `経理/締め に次の定義は置いていない` and exits 1 |
 | 113.10 | [x] `koyomi stage 経理/締め <desktop>\next.toml --from <tomorrow>` and answer `n`; again with `y` | The change is shown, then `経理/締め: 置かなかった` (exit 1); with `y`, `<tomorrow> から使う定義を置いた: …` |
 | 113.11 | [x] `koyomi stage 経理/締め <the net's own file> --from <tomorrow>`; `--from <today>`; `--from 12/1`; a file with `format = [` | `今の定義と同じ中身: 経理/締め`; `<today> は今日か過ぎた日。今日から使うなら、ふつうに保存する`; `日付は YYYY-MM-DD で書く: 12/1`; `置けない: …` with the fault in the file. None is staged |
-| 113.12 | Leave the engine up over midnight into the staged day (or stop it, set the PC's date to that day, start it) | At 0:00 `経理/締め を <day> からの定義にした` (a notice 定義を切り替えた, where notices go); the net's file is the next one, the net is ✓ confirmed, the old one is in its versions, and the net runs `echo new`; nothing is staged any more |
-| 113.13 | Stage again; in the state folder's `next.toml`, change the text by hand; switch as in 113.12 | The box in 113.6 says 置いたあとで手で直された（その日は未確認で入る）; after the switch the net is ▲ unconfirmed (…未確認。確かめるまで流さない) and does not run till approved |
-| 113.14 | Stage again; break the text in `next.toml` (`format = [`); switch as in 113.12 | A notice 定義を切り替えられなかった; a caution `経理/締め を <day> からの定義に切り替えられなかった（今までの定義のまま）: …`; the net runs `echo old`. Fix or drop it (`--cancel`) and the caution goes |
+| 113.12 | [x] Leave the engine up over midnight into the staged day (or stop it, set the PC's date to that day, start it) | At 0:00 `経理/締め を <day> からの定義にした` (a notice 定義を切り替えた, where notices go); the net's file is the next one, the net is ✓ confirmed, the old one is in its versions, and the net runs `echo new`; nothing is staged any more |
+| 113.13 | [x] Stage again; in the state folder's `next.toml`, change the text by hand; switch as in 113.12 | The box in 113.6 says 置いたあとで手で直された（その日は未確認で入る）; after the switch the net is ▲ unconfirmed (…未確認。確かめるまで流さない) and does not run till approved |
+| 113.14 | [x] Stage again; break the text in `next.toml` (`format = [`); switch as in 113.12 | A notice 定義を切り替えられなかった; a caution `経理/締め を <day> からの定義に切り替えられなかった（今までの定義のまま）: …`; the net runs `echo old`. Fix or drop it (`--cancel`) and the caution goes |
 | 113.15 | [x] Break `next.toml` itself (`next = [[`) | A warning names `next.toml`; `koyomi stage` and 置く… are refused and the file is left as it was |
 | 113.16 | [x] Stage a net, then rename it (and a net that uses it) in the window; then delete it | The staged definition follows the new name (and the user's `use =` points at it); after the delete nothing is staged for it |
 

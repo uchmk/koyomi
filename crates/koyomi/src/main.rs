@@ -884,7 +884,7 @@ fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<Option<Vec<u8>>
 fn say(text: &str, err: bool) {
     if let Some(log) = LOG.get() {
         use std::io::Write;
-        let stamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S");
+        let stamp = ito_common::now::now_local().format("%Y-%m-%d %H:%M:%S");
         let mut f = log.lock().unwrap_or_else(|e| e.into_inner());
         let _ = writeln!(f, "{stamp} {text}");
         return;

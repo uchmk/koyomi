@@ -180,7 +180,7 @@ impl Browser {
             };
             return;
         };
-        let today = chrono::Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
         let days = show::month_days(&cal, y, m);
         // The day whose starts show in the pane: the one picked, or today in this month.
@@ -551,7 +551,7 @@ impl Browser {
                 ui.add(egui::Label::new(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text())).wrap());
             }
             let power = Some(show::Sleep::of(&snap.power, net.wake));
-            let now = chrono::Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(cal), now, 10, power.as_ref(), &snap.blackouts) {
                 ui.label(egui::RichText::new(row).monospace().small());
             }
@@ -1474,7 +1474,7 @@ fn delete_file(t: &ito_i18n::Table, name: &str) -> Result<String, String> {
     let failed = |e: &str| t.trf("calendar.delete_failed", &[&file, e]);
     let path = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join(&file);
     let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join(name);
-    let kept = keep_and_delete(&path, &dir, &chrono::Local::now().format("%Y%m%d-%H%M%S").to_string()).map_err(|e| failed(&e))?;
+    let kept = keep_and_delete(&path, &dir, &ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string()).map_err(|e| failed(&e))?;
     Ok(t.trf("calendar.deleted", &[&file, &kept.display().to_string()]))
 }
 
@@ -1510,7 +1510,7 @@ fn import_table(t: &ito_i18n::Table, path: &str) -> Result<String, String> {
     }
     let dest = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join("calendars").join(TABLE_FILE);
     let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join("syukujitsu");
-    let stamp = chrono::Local::now().format("%Y%m%d-%H%M%S").to_string();
+    let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
     let (from, to) = bring_table(std::path::Path::new(path), &dest, &dir, &stamp).map_err(|e| failed(&e))?;
     Ok(t.trf("calendar.table_done", &[&format!("calendars/{TABLE_FILE}"), &from.to_string(), &to.to_string()]))
 }

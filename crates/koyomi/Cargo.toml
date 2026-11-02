@@ -22,6 +22,11 @@ test = true
 [build-dependencies]
 ito-winres = { git = "https://github.com/uchmk/ito", rev = "ee0ff62503185d643304c4f6e4a097eb97670237" }
 
+[features]
+# Test builds only: the clock, the tray and the notifications take their
+# input from files (UCHMK_FAKE_CLOCK, ITO_TRAY_STATE/KEYS, ITO_NOTIFY_SINK). Never shipped.
+test-hooks = ["ito-common/fake-clock", "ito-tray/test-hook", "ito-notify/test-sink"]
+
 [dependencies]
 # Every ito crate at the same rev. scripts/ito-first.py says which crates an
 # app must have and which it must not replace; what ito lacks, ask ito for.

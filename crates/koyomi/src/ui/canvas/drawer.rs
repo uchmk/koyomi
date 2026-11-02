@@ -404,7 +404,7 @@ impl Editor {
         fieldset(ui, look, &head, "", |ui| {
             let cal = self.net.calendar.as_ref().and_then(|n| calendars.get(n));
             let sleep = show::Sleep::of(power, self.net.wake);
-            let now = chrono::Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             for row in show::next_rows(t, &self.net.when, (&self.net.quiet, self.net.on_quiet), cal, now, 10, Some(&sleep), stops) {
                 let r = ui.label(RichText::new(&row).monospace());
                 ito_a11y::say(&r, Role::Label, &row);

@@ -456,7 +456,7 @@ impl State {
             return;
         }
         self.late_look = Some(Instant::now());
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let going: Vec<String> = self.runner.runs().iter().filter(|r| !r.is_over()).map(|r| r.jobnet.clone()).collect();
         for id in going {
             if !self.usual.contains_key(&id) {
@@ -522,7 +522,7 @@ impl State {
 
     /// What the tray shows now.
     fn tray_look(&self) -> tray::Look {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, &self.blackouts, now, false) };
         tray::look(&self.words, &self.runner.today(), self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
     }
@@ -545,7 +545,7 @@ impl State {
 
     fn tick_awake(&mut self) {
         let busy = self.runner.busy();
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let waking = self.wake.as_ref().is_some_and(|w| w.set.is_ok() && w.waking(now));
         if (busy > 0 || waking) && self.awake.is_none() {
             let why = if busy > 0 { "koyomi: ジョブを実行中" } else { "koyomi: ジョブネットの時刻を待っている" };
@@ -564,7 +564,7 @@ impl State {
         }
         self.power_look = Some(Instant::now());
         self.sleep_after = ito_power::sleep_after();
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let next = if self.held.paused { None } else { next_wake(&self.defs, &self.calendars, &self.held, &self.blackouts, now) };
         let Some((start, id)) = next else {
             self.wake = None;
@@ -598,7 +598,7 @@ impl State {
     /// Starts what `[[when]]` says is due since the last look, and records
     /// each time that did not start with why (`schedule::judge`).
     fn tick_schedule(&mut self) {
-        let now = Utc::now();
+        let now = ito_common::now::now();
         let Some(checked) = self.schedule.look(now) else { return };
         // Standing by, or a primary whose standby has them: the other PC runs these times.
         // Nothing is written for them here, and after a handover only the times from then on run.
@@ -704,13 +704,13 @@ impl State {
         if runs.is_empty() {
             return String::new();
         }
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let mut again = 0;
         let mut left = Vec::new();
         for theirs in &runs {
             let def = self.defs.iter().find(|d| d.id == theirs.jobnet && d.standing == Standing::Confirmed).cloned();
             let why = match (koyomi_core::standby::resume(theirs, def.as_ref().and_then(|d| d.net.as_ref())), &def) {
-                (Resume::Rerun, Some(d)) => match self.stopped(d, today, Local::now().naive_local()) {
+                (Resume::Rerun, Some(d)) => match self.stopped(d, today, ito_common::now::now_local().naive_local()) {
                     Some((_, why)) => why,
                     None => match self.runner.resume(d, theirs, from) {
                         Ok(_) => {
@@ -754,7 +754,7 @@ impl State {
 
     /// A time of a confirmed net within 30 s of now, as `<net> <time>`.
     fn near_time(&self) -> Option<String> {
-        let now = Utc::now();
+        let now = ito_common::now::now();
         let gap = chrono::Duration::seconds(30);
         self.defs.iter().filter(|d| d.standing == Standing::Confirmed).find_map(|d| {
             let net = d.net.as_ref()?;
@@ -823,7 +823,7 @@ impl State {
         if self.quieted.is_empty() || self.primary.asking() {
             return;
         }
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         for q in std::mem::take(&mut self.quieted) {
             if now < q.until {
                 self.quieted.push(q);
@@ -876,7 +876,7 @@ impl State {
         if self.waiting.is_empty() {
             return;
         }
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         for w in std::mem::take(&mut self.waiting) {
             let day = w.planned.date();
             if wait_over(self.runner.runs(), &w.for_net, day) {
@@ -902,7 +902,7 @@ impl State {
     /// the schedule is paused, or the net is held. Each is written down (⏸ for the
     /// two by hand), so nothing is lost in silence.
     fn stopped(&self, def: &Def, day: NaiveDate, at: NaiveDateTime) -> Option<(RunState, String)> {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         if let Some(b) = koyomi_core::blackout::find(&self.blackouts, at).or_else(|| koyomi_core::blackout::find(&self.blackouts, now)) {
             return Some((RunState::Skipped, b.reason()));
         }
@@ -950,7 +950,7 @@ impl State {
         if self.primary.asking() {
             return;
         }
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let today = now.date();
         if self.events.take_start() {
             for def in self.defs.clone() {
@@ -1066,7 +1066,7 @@ impl State {
     /// recorded as ⊘ スキップ and told of, so a person runs it by hand if it
     /// is wanted. A net still running from before does not start again.
     fn tick_after(&mut self, over: &[Run]) {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         for prev in over {
             for (def, w) in followers(&self.defs, prev) {
                 let date = NaiveDate::parse_from_str(&prev.date, "%Y-%m-%d").unwrap_or(now.date());
@@ -1172,7 +1172,7 @@ impl State {
         );
         // Files there before the watch began are not run: they may be old, and
         // a restart must not run them again. The record says they were there.
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         for (id, pattern, n) in self.events.set_rules(&self.defs) {
             if let Some(def) = self.defs.iter().find(|d| d.id == id).cloned() {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("見張り始めたときに既に {n} 個あった（{pattern}）: 流さない"));
@@ -1234,10 +1234,10 @@ impl State {
                 .into_iter()
                 .chain(self.standby.line())
                 .chain(self.primary.caution())
-                .chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS))
+                .chain(self.calendars.cautions(ito_common::now::now_local().date_naive(), CAUTION_DAYS))
                 .chain(self.staged_failed.values().cloned())
                 .collect(),
-            calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
+            calendar_cautions: self.calendars.cautions_by_calendar(ito_common::now::now_local().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
             power: self.power(),
             blackouts: self.blackouts.clone(),
@@ -1338,7 +1338,7 @@ impl State {
         let def = self.startable(id)?.clone();
         let date = match date {
             Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
-            None => Local::now().date_naive(),
+            None => ito_common::now::now_local().date_naive(),
         };
         if dry {
             return self.runner.dry(&def, date, set);
@@ -1453,7 +1453,7 @@ impl State {
         if to <= from {
             return Err("ずらす先は、元の時刻より後にする".to_owned());
         }
-        if to <= Local::now().naive_local() {
+        if to <= ito_common::now::now_local().naive_local() {
             return Err("ずらす先が過ぎている".to_owned());
         }
         self.held.shift(id, from, to);
@@ -1478,9 +1478,10 @@ impl State {
         }
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         let held = &self.held;
-        let at =
-            koyomi_core::held::next_open(&net.when, cal, Local::now().naive_local(), |t| held.is_skipped(id, t) || held.is_shifted(id, t))
-                .ok_or_else(|| format!("{id} にこの先の時刻がない（koyomi next {id} で見る）"))?;
+        let at = koyomi_core::held::next_open(&net.when, cal, ito_common::now::now_local().naive_local(), |t| {
+            held.is_skipped(id, t) || held.is_shifted(id, t)
+        })
+        .ok_or_else(|| format!("{id} にこの先の時刻がない（koyomi next {id} で見る）"))?;
         self.held.skip(id, at);
         self.save_held()?;
         Ok(format!("{} の {} を飛ばす（定義は変えない。戻すのは koyomi skip-next {} --cancel）", id, at.format("%Y-%m-%d %H:%M"), id))
@@ -1490,7 +1491,7 @@ impl State {
         if self.held.shifts.is_empty() || self.held_bad.is_some() || self.primary.asking() {
             return;
         }
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let due: Vec<_> = self.held.shifts.iter().filter(|s| s.to <= now).cloned().collect();
         if due.is_empty() {
             return;
@@ -1637,7 +1638,7 @@ impl State {
     /// See [`Request::Stage`].
     fn stage(&mut self, id: &str, text: &str, from: &str) -> Result<String, String> {
         let from = NaiveDate::parse_from_str(from, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {from}"))?;
-        self.stage_on(id, text, from, Local::now().date_naive())
+        self.stage_on(id, text, from, ito_common::now::now_local().date_naive())
     }
 
     /// Stages `text` to take over `id` on `from`, approved now, when `today` is before it.
@@ -1705,7 +1706,7 @@ impl State {
         if self.staged.next.is_empty() || self.staged_bad.is_some() {
             return;
         }
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         if let Some((day, at)) = self.staged_look {
             if day == today && (self.staged_failed.is_empty() || at.elapsed() < NEXT_RETRY) {
                 return;
@@ -1787,7 +1788,7 @@ impl State {
     fn keep_version_in(&self, path: &Path, dir: &Path) -> Result<(), String> {
         let Ok(old) = std::fs::read(path) else { return Ok(()) };
         std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
-        let stamp = Local::now().format("%Y%m%d-%H%M%S").to_string();
+        let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
         let mut version = stamp.clone();
         let mut n = 1;
         while dir.join(format!("{version}.toml")).exists() {
@@ -2710,7 +2711,7 @@ run = [\"x\"]
             previous: None,
             calendar: None,
         };
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut prev = Run::new("p1", "経理/売上取込", "売上取込", "2026-10-29", How::Rerun, &net, now);
         prev.state = RunState::Error;
         let f = followers(std::slice::from_ref(&def), &prev);
@@ -2738,7 +2739,7 @@ run = [\"x\"]
 ",
         )
         .unwrap();
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let day: NaiveDate = "2026-10-29".parse().unwrap();
         let mut r = Run::new("p1", "経理/売上取込", "売上取込", "2026-10-29", How::Schedule, &net, now);
         r.state = RunState::Running;

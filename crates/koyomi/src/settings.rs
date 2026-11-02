@@ -275,7 +275,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         let now = app.prefs.config.keep_days;
         if d < now {
             // Shorter: the box first, with what would go.
-            let today = chrono::Local::now().date_naive();
+            let today = ito_common::now::now_local().date_naive();
             let lost = state_dir.as_deref().map_or(0, |s| koyomi_core::retain::days_lost(s, today, now, d));
             app.keep_ask = Some((d, lost));
         } else {

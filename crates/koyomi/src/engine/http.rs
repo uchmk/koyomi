@@ -646,7 +646,7 @@ fn release_standby(ask: impl Fn(&Request) -> Result<String, String>) -> Response
 /// For a caller with a role per net, `role`: theirs on that net (`role_of`, TODO 101).
 fn nets(ask: impl Fn(&Request) -> Result<String, String>, role_of: impl Fn(&str) -> Option<Role>) -> Response {
     match ask(&Request::List).and_then(|t| Snapshot::parse(&t)) {
-        Ok(snap) => Response::ok(nets_at(&snap, chrono::Local::now().naive_local(), role_of)),
+        Ok(snap) => Response::ok(nets_at(&snap, ito_common::now::now_local().naive_local(), role_of)),
         Err(e) => Response::error(500, &e),
     }
 }

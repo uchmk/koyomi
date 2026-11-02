@@ -318,7 +318,7 @@ mod tests {
             when: Vec::new(),
             ..Default::default()
         };
-        Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, chrono::Local::now().naive_local())
+        Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net, ito_common::now::now_local().naive_local())
     }
 
     #[test]

@@ -469,7 +469,7 @@ fn check(args: &[String]) -> i32 {
             Vec::new()
         };
         let exts: Vec<&str> = exts.iter().map(String::as_str).collect();
-        let today = chrono::Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let config = paths.as_ref().and_then(|p| koyomi_core::config::Config::load(&p.config).ok());
         // Where a job without `dir` runs: `work_dir = "definition"` is this file's own folder.
         let folder = std::path::absolute(path).ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf));
@@ -555,7 +555,7 @@ fn check_calendar(name: &str, text: &str, path: &std::path::Path) -> i32 {
             Err(e) => out(&format!("{TABLE_FILE}: {e}"), true),
         }
     }
-    let today = chrono::Local::now().date_naive();
+    let today = ito_common::now::now_local().date_naive();
     let mut bad = false;
     if let Some(until) = cal.until() {
         if let Some(line) = koyomi_core::calendar::caution(until, today, engine::CAUTION_DAYS) {
@@ -712,7 +712,7 @@ fn show_cmd(args: &[String]) -> i32 {
         for l in review::body(&t, &def) {
             out(&l, false);
         }
-        for l in review::week_in(&t, &def, &snap.calendars, chrono::Local::now().naive_local()) {
+        for l in review::week_in(&t, &def, &snap.calendars, ito_common::now::now_local().naive_local()) {
             out(&l, false);
         }
     }
@@ -764,7 +764,7 @@ fn approve(args: &[String]) -> i32 {
     for l in review::body(&t, &def) {
         say(&l, false);
     }
-    for l in review::week_in(&t, &def, &snap.calendars, chrono::Local::now().naive_local()) {
+    for l in review::week_in(&t, &def, &snap.calendars, ito_common::now::now_local().naive_local()) {
         say(&l, false);
     }
     let diff = review::diff(&def);
@@ -821,7 +821,7 @@ fn next(args: &[String]) -> i32 {
         return fail(&format!("{}: 定義の誤り", def.file));
     };
     let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-    let now = chrono::Local::now().naive_local();
+    let now = ito_common::now::now_local().naive_local();
     let unconfirmed = def.standing != Standing::Confirmed;
     if toml() {
         let mut next: Vec<NextRow> =
@@ -938,7 +938,7 @@ fn plan(args: &[String]) -> i32 {
         Ok(s) => s,
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
-    let today = chrono::Local::now().date_naive();
+    let today = ito_common::now::now_local().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
     let mut days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
     let t = table();
@@ -1022,7 +1022,7 @@ fn calendar(args: &[String]) -> i32 {
         }
         return fail(&t.trf("calendar.missing", &[&name]));
     };
-    let today = chrono::Local::now().date_naive();
+    let today = ito_common::now::now_local().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
     if toml() {
         let days = show::month_days(cal, y, m);
@@ -1176,7 +1176,7 @@ fn pick_days(id: &str, days: &[NaiveDate], only: Only, dry: bool) -> Result<Vec<
 /// The oldest day history keeps (koyomi.toml's `keep_days`); `None` when koyomi.toml cannot be read.
 fn kept_from() -> Option<NaiveDate> {
     let config = koyomi_core::config::Config::load(&engine::Paths::find().ok()?.config).ok()?;
-    Some(koyomi_core::retain::cutoff(chrono::Local::now().date_naive(), config.keep_days))
+    Some(koyomi_core::retain::cutoff(ito_common::now::now_local().date_naive(), config.keep_days))
 }
 
 /// Why `--only` is refused here: the engine is a standby that has not taken over (it says where
@@ -1207,7 +1207,7 @@ fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfil
 /// today, if that is earlier) to today, a year at a time (the engine reads the days the sweep put
 /// into `archive/` from there), and the ones still going.
 fn runs_since(first: NaiveDate) -> Result<Vec<Run>, String> {
-    let today = chrono::Local::now().date_naive();
+    let today = ito_common::now::now_local().date_naive();
     let mut from = first.min(today);
     let mut by_id = BTreeMap::new();
     while from <= today {
@@ -1306,11 +1306,11 @@ fn status(args: &[String]) -> i32 {
     }
     // The last 30 days tell how long each running net usually takes.
     let past = {
-        let to = chrono::Local::now().date_naive();
+        let to = ito_common::now::now_local().date_naive();
         let reply = client::call(&Request::History { from: (to - chrono::Duration::days(30)).to_string(), to: to.to_string() });
         reply.and_then(|s| Runs::parse(&s)).map(|r| r.runs).unwrap_or_default()
     };
-    let now = chrono::Local::now().naive_local();
+    let now = ito_common::now::now_local().naive_local();
     for r in &rs {
         out(&show::run_line(&t, r), false);
         if let Some(avg) = koyomi_core::run::average_duration(&past, &r.jobnet, 10) {
@@ -1377,7 +1377,7 @@ fn history(args: &[String]) -> i32 {
             _ => return usage("history takes --from, --to, --status, --csv and one group/name"),
         }
     }
-    let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let to = to.unwrap_or_else(|| ito_common::now::now_local().date_naive());
     let from = from.unwrap_or(to - chrono::Duration::days(7));
     // The engine reads the days the sweep put into archive/ from there.
     let reply = client::call(&Request::History { from: from.to_string(), to: to.to_string() });
@@ -1420,7 +1420,7 @@ fn report(args: &[String]) -> i32 {
         }
     }
     let first = month.unwrap_or_else(|| {
-        let today = chrono::Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         today.with_day(1).unwrap_or(today)
     });
     let last = (first + chrono::Duration::days(31)).with_day(1).map_or(first, |n| n - chrono::Duration::days(1));
@@ -1850,7 +1850,7 @@ fn shift(args: &[String]) -> i32 {
         if t.contains(' ') {
             t.to_owned()
         } else {
-            format!("{} {t}", chrono::Local::now().format("%Y-%m-%d"))
+            format!("{} {t}", ito_common::now::now_local().format("%Y-%m-%d"))
         }
     };
     match args {
@@ -1900,7 +1900,7 @@ fn ops(args: &[String]) -> i32 {
             _ => return usage("ops takes --from and --to"),
         }
     }
-    let to = to.unwrap_or_else(|| chrono::Local::now().date_naive());
+    let to = to.unwrap_or_else(|| ito_common::now::now_local().date_naive());
     let from = from.unwrap_or(to);
     match client::call(&Request::Ops { from: from.to_string(), to: to.to_string() }) {
         Ok(text) if text.is_empty() => {

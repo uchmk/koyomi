@@ -641,7 +641,7 @@ impl Browser {
 
     /// Asks the engine for the last 30 days once a day.
     fn ask_past(&mut self) {
-        let today = chrono::Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         if self.past_asked != Some(today) && self.past_failed.is_none_or(|at| at.elapsed() > Duration::from_secs(60)) {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
@@ -818,7 +818,7 @@ impl Browser {
             return (Some(word.to_owned()), running, None);
         };
         let word = snap.paused.then(|| t.tr("status.paused").to_owned());
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let next = snap
             .defs
             .iter()
@@ -1679,7 +1679,7 @@ impl Browser {
         }
         // A planned stop going on, or one to begin within the week: its time comes and nothing starts.
         let stop_line = self.snap.as_ref().and_then(|s| {
-            let now = chrono::Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             let b = koyomi_core::blackout::near(&s.blackouts, now, 7)?;
             let why = show::stop_why(t, b);
             Some(if b.contains(now) {
@@ -2178,7 +2178,7 @@ impl Browser {
             ui.label(egui::RichText::new(t.tr("nets.empty")).color(c.dim));
             return;
         }
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let when = |at: chrono::NaiveDateTime| at.format("%m-%d %H:%M").to_string();
         let twins = review::twins(&snap.defs);
         struct Row {
@@ -2286,7 +2286,7 @@ impl Browser {
     fn today_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut coming: Vec<(chrono::NaiveDateTime, String, String, Option<String>, State)> = Vec::new();
         for (d, at) in snap.starts_today(now) {
             let wake = d.net.as_ref().is_some_and(|n| n.wake);
@@ -2509,7 +2509,7 @@ impl Browser {
             }
             // The day the chart is about, at the right end.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let day = chrono::Local::now().date_naive();
+                let day = ito_common::now::now_local().date_naive();
                 let wd = ["weekday.mon", "weekday.tue", "weekday.wed", "weekday.thu", "weekday.fri", "weekday.sat", "weekday.sun"]
                     [chrono::Datelike::weekday(&day).num_days_from_monday() as usize];
                 let text = format!("{}({})", day.format("%Y-%m-%d"), t.tr(wd));
@@ -2657,7 +2657,7 @@ impl Browser {
             return;
         }
         let c = ito_theme::colors();
-        let rows = self.skip_rows(chrono::Local::now().naive_local());
+        let rows = self.skip_rows(ito_common::now::now_local().naive_local());
         let mut send = None;
         let mut close = key.is_some();
         egui::Window::new(t.tr("skipnext.title"))
@@ -2936,7 +2936,7 @@ impl Browser {
     /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let planned = self.planned_today(now);
         if self.runs.is_empty() && planned.is_empty() {
             return;
@@ -3067,7 +3067,7 @@ impl Browser {
 
     /// Opens 履歴 on the last 7 days and asks the engine for them.
     pub fn open_history(&mut self) {
-        let h = History::week(chrono::Local::now().date_naive());
+        let h = History::week(ito_common::now::now_local().date_naive());
         let _ = self.tx.send(h.request());
         self.hist = Some(h);
         self.gantt = false;
@@ -3165,7 +3165,7 @@ impl Browser {
                             .width(124.0)
                             .show(ui, ito_prefs::Look { c, q: "" }, &mut h.from, &mut h.to);
                         // The presets ask at once for the days up to today.
-                        let today = chrono::Local::now().date_naive();
+                        let today = ito_common::now::now_local().date_naive();
                         let from = |back: i64| (today - chrono::Duration::days(back)).to_string();
                         let now = [0, 7, 30].into_iter().find(|b| h.from == from(*b) && h.to == today.to_string());
                         let options =
@@ -3969,7 +3969,7 @@ impl Browser {
     fn net_graph(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, salt: &str) {
         let c = ito_theme::colors();
         if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
-            let now = chrono::Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             let mut preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
             // A held job shows ⏸ on its station.
             let mut any_held = false;
@@ -4017,7 +4017,7 @@ impl Browser {
                 let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
                 let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
                 let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
-                let now = chrono::Local::now().naive_local();
+                let now = ito_common::now::now_local().naive_local();
                 let rows = show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, now, 10, power.as_ref(), stops);
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
@@ -4164,7 +4164,7 @@ impl Browser {
         }
         let mut body = review::body(t, &def);
         let none = std::collections::BTreeMap::new();
-        let week = review::week_in(t, &def, self.snap.as_ref().map_or(&none, |s| &s.calendars), chrono::Local::now().naive_local());
+        let week = review::week_in(t, &def, self.snap.as_ref().map_or(&none, |s| &s.calendars), ito_common::now::now_local().naive_local());
         if !week.is_empty() {
             body.push(String::new());
             body.extend(week);
@@ -4849,7 +4849,7 @@ fn export_all() -> Result<(String, usize), Said> {
     }
     let dir = paths.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
-    let path = dir.join(format!("{}.toml", chrono::Local::now().format("%Y%m%d-%H%M%S")));
+    let path = dir.join(format!("{}.toml", ito_common::now::now_local().format("%Y%m%d-%H%M%S")));
     ito_common::write_atomic(&path, b.to_toml()).map_err(plain)?;
     Ok((path.display().to_string(), b.len()))
 }
@@ -4858,7 +4858,7 @@ fn export_all() -> Result<(String, usize), Said> {
 fn export_csv(what: &str, table: &ito_table::Table) -> Result<String, Said> {
     let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
-    let path = dir.join(format!("{what}-{}.csv", chrono::Local::now().format("%Y%m%d-%H%M%S"))).display().to_string();
+    let path = dir.join(format!("{what}-{}.csv", ito_common::now::now_local().format("%Y%m%d-%H%M%S"))).display().to_string();
     crate::sheet::write(&path, table).map_err(plain)?;
     Ok(path)
 }
@@ -5493,7 +5493,7 @@ run = [\"x.exe\"]
             ..Default::default()
         };
         let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
         run.finish("a", Outcome::Exited(0), now);
@@ -5524,7 +5524,7 @@ run = [\"x.exe\"]
             ..Default::default()
         };
         let net = Jobnet { name: None, jobs: vec![job("a", &[]), job("b", &["a"])], when: Vec::new(), ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
         run.finish("a", Outcome::Exited(0), now);
@@ -5604,7 +5604,7 @@ run = [\"x.exe\"]
             when: Vec::new(),
             ..Default::default()
         };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
         let (tx, rx_req) = mpsc::channel();
@@ -5763,7 +5763,7 @@ run = [\"x.exe\"]
             when: Vec::new(),
             ..Default::default()
         };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
         let (tx, rx_req) = mpsc::channel();
@@ -5823,7 +5823,7 @@ run = [\"x.exe\"]
         use koyomi_core::jobnet::{Job, Jobnet};
         use koyomi_core::run::{How, State};
         let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.state = State::Held;
         run.ended = Some(now);
@@ -5858,7 +5858,7 @@ run = [\"x.exe\"]
         use koyomi_core::jobnet::{Job, Jobnet};
         use koyomi_core::run::How;
         let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut b = quiet(defs());
         b.runs = vec![Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now)];
         b.gantt = true;
@@ -5880,7 +5880,7 @@ run = [\"x.exe\"]
         use koyomi_core::jobnet::{Job, Jobnet};
         use koyomi_core::run::{How, State};
         let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.state = State::Error;
         run.jobs[0].state = State::Error;
@@ -5906,7 +5906,7 @@ run = [\"x.exe\"]
     /// comes back to 今日 with the same row picked, and then goes away.
     #[test]
     fn a_waiting_row_opens_its_net_and_back_returns_to_it() {
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         if now.time() >= chrono::NaiveTime::from_hms_opt(23, 58, 0).unwrap() {
             // The day's last start is past: no row waits.
             return;
@@ -5977,7 +5977,7 @@ run = [\"x.exe\"]
         use koyomi_core::jobnet::{Job, Jobnet};
         use koyomi_core::run::{How, State};
         let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
-        let now = chrono::Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.state = State::Error;
         run.ended = Some(now);

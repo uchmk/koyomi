@@ -205,7 +205,7 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
             start: if kind.is_event() || matches!(kind, Kind::Once { .. }) {
                 None
             } else {
-                today.filter(|d| *d > chrono::Local::now().date_naive())
+                today.filter(|d| *d > ito_common::now::now_local().date_naive())
             },
             end: end.map(|e| e.date()),
             kind,

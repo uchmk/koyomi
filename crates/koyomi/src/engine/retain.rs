@@ -7,7 +7,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
-use chrono::{Local, NaiveDate};
+use chrono::NaiveDate;
 use ito_common::kept;
 use koyomi_core::retain::{cutoff, sweep, Archive, Swept};
 use serde::{Deserialize, Serialize};
@@ -75,7 +75,7 @@ impl Retain {
     /// was for, and takes in the answer of the one running. The line to
     /// tell on the console, when a sweep ended.
     pub fn tick(&mut self, set: Settings) -> Option<String> {
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         if self.rx.is_none() && self.swept_for != Some((today, set)) {
             self.swept_for = Some((today, set));
             let (tx, rx) = mpsc::channel();
@@ -92,7 +92,7 @@ impl Retain {
         self.rx = None;
         let (set, out) = got;
         self.last = Kept {
-            at: Local::now().format("%Y-%m-%d %H:%M:%S").to_string(),
+            at: ito_common::now::now_local().format("%Y-%m-%d %H:%M:%S").to_string(),
             keep_days: set.keep_days,
             logs: out.logs,
             history: out.history,

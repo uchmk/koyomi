@@ -6,7 +6,7 @@
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use chrono::{Local, NaiveDateTime};
+use chrono::NaiveDateTime;
 use ito_common::kept;
 use serde::{Deserialize, Serialize};
 
@@ -41,7 +41,7 @@ impl Alive {
     pub fn new(state_dir: &Path) -> Alive {
         let path = state_dir.join("alive.toml");
         let prev: Kept = kept::read(&path).unwrap_or_default();
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut a = Alive { writer: kept::Writer::new(path, true), last_beat: Instant::now(), outage: outage(&prev, now) };
         a.write(false);
         a
@@ -57,14 +57,14 @@ impl Alive {
 
     /// The last write, marked clean: the engine was stopped, not lost.
     pub fn stopped(&mut self) {
-        let kept = Kept { at: Local::now().format(FORMAT).to_string(), clean: true };
+        let kept = Kept { at: ito_common::now::now_local().format(FORMAT).to_string(), clean: true };
         if let Ok(text) = toml::to_string(&kept) {
             let _ = self.writer.save_now(text);
         }
     }
 
     fn write(&mut self, clean: bool) {
-        self.writer.save_toml(&Kept { at: Local::now().format(FORMAT).to_string(), clean });
+        self.writer.save_toml(&Kept { at: ito_common::now::now_local().format(FORMAT).to_string(), clean });
     }
 }
 

@@ -37,7 +37,6 @@ use std::path::Path;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use chrono::Local;
 use ito_common::kept;
 use ito_http::client::{self, Client};
 use koyomi_core::config;
@@ -339,7 +338,7 @@ impl Standby {
         match self.watch.poll(seen) {
             Step::Stay => None,
             Step::TakeOver => {
-                self.since = Local::now().format("%Y-%m-%d %H:%M").to_string();
+                self.since = ito_common::now::now_local().format("%Y-%m-%d %H:%M").to_string();
                 let why = self.missed_why.clone().unwrap_or_default();
                 self.record(format!("{} {name} から引き継いだ（{why}）", stamp()));
                 // The latest good list is started from, unless it is too old to trust.
@@ -523,7 +522,7 @@ fn refusal(name: &str, r: Refusal) -> String {
 }
 
 fn stamp() -> String {
-    Local::now().format("%Y-%m-%d %H:%M:%S").to_string()
+    ito_common::now::now_local().format("%Y-%m-%d %H:%M:%S").to_string()
 }
 
 /// When it last handed the schedules back, from the handovers written down: `YYYY-MM-DD HH:MM`.

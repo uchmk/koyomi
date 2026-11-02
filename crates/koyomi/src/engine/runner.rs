@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use std::sync::{mpsc, Arc};
 use std::time::{Duration, Instant, SystemTime};
 
-use chrono::{Local, NaiveDate, NaiveDateTime};
+use chrono::{NaiveDate, NaiveDateTime};
 use ito_common::kept;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
@@ -259,7 +259,7 @@ impl Runner {
             held: Held::default(),
             jobnets: None,
         };
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         for day in [today - chrono::Days::new(1), today] {
             let file = history::path(&r.history, day);
             let loaded = Day::load(&file).unwrap_or_default();
@@ -267,7 +267,7 @@ impl Runner {
             r.days.insert(day, (loaded, kept::Writer::new(file, true)));
             r.runs.extend(runs);
         }
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let mut closed = Vec::new();
         for run in &mut r.runs {
             if !run.is_over() {
@@ -297,7 +297,7 @@ impl Runner {
     /// longer held goes on in the same run.
     pub fn set_held(&mut self, held: &Held) {
         self.held = Held { jobs: held.jobs.clone(), ..Held::default() };
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         for r in self.runs.iter_mut().filter(|r| !r.is_over()) {
             let net = r.jobnet.clone();
             r.unhold(|j| !self.held.is_job_held(&net, j), now);
@@ -323,7 +323,7 @@ impl Runner {
             .position(|w| w.run == run && w.job == job && matches!(w.due, Due::Person))
             .ok_or_else(|| format!("{run} の {job}: 確認を待っていない"))?;
         self.waits.remove(i);
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let (state, reason) = if yes { (State::Ok, "承認された") } else { (State::Error, "却下された") };
         if let Some(r) = self.end_part(run, job, state, reason, None, now) {
             self.ended(r);
@@ -431,7 +431,7 @@ impl Runner {
 
     /// The runs the day's list shows: started today, or not over yet.
     pub fn today(&self) -> Vec<Run> {
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         self.runs.iter().filter(|r| r.started.date() == today || !r.is_over()).cloned().collect()
     }
 
@@ -477,7 +477,7 @@ impl Runner {
     ) -> Result<Run, String> {
         let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
         self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let date = date.format("%Y-%m-%d").to_string();
         let mut run = match from {
@@ -514,7 +514,7 @@ impl Runner {
         // The values a person gave the first time go again (`params.toml` beside the definition).
         let set: BTreeMap<String, String> = kept::read(&self.run_dir(previous).join(PARAMS)).unwrap_or_default();
         let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?, &set)?;
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let mut run = match (from, next) {
             (Some(job), Some(mark)) => Run::rerun_after(&id, &prev, &net, job, mark, now)?,
@@ -537,7 +537,7 @@ impl Runner {
         let date: NaiveDate = theirs.date.parse().map_err(|_| format!("{}: 業務日が読めない", theirs.id))?;
         let net = self.expand(&def.id, net, date, &theirs.params)?;
         self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let mut run = Run::taken_over(&id, theirs, &net, from, now)?;
         run.lock = net.lock.clone();
@@ -552,7 +552,7 @@ impl Runner {
     /// over at once with `why` ([`Run::left_over`]), beside the definition here when there is
     /// one, so `koyomi rerun` can start it from where it was. Its new id.
     pub fn left(&mut self, theirs: &Run, def: Option<&Def>, from: &str, why: &str) -> String {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let run = Run::left_over(&id, theirs, from, why, now);
         if let Some(d) = def {
@@ -641,7 +641,7 @@ impl Runner {
         if self.queue.iter().any(|q| q.def.id == def.id) {
             self.not_run(def, planned, State::Skipped, "前の回がまだ動いていました（その次の回が待っています）");
         } else if self.runs.iter().any(|r| r.jobnet == def.id && !r.is_over()) {
-            self.queue.push(Queued { def: def.clone(), planned, late, since: Local::now().naive_local() });
+            self.queue.push(Queued { def: def.clone(), planned, late, since: ito_common::now::now_local().naive_local() });
         } else {
             self.go(def, planned, late);
         }
@@ -689,7 +689,7 @@ impl Runner {
     }
     /// A person skips `job` of `run` before it starts: it ends ⊘, and the jobs after it go on.
     pub fn skip(&mut self, run: &str, job: &str) -> Result<String, String> {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| format!("実行がない: {run}"))?;
         if r.is_over() {
             return Err(format!("{run}: もう終わっている"));
@@ -720,7 +720,7 @@ impl Runner {
     /// nobody has to ask why nothing happened. `reason` is shown with it.
     pub fn not_run(&mut self, def: &Def, planned: NaiveDateTime, state: State, reason: &str) -> Option<String> {
         let net = def.net.as_ref()?;
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let run = Run::not_run(&id, &def.id, def.label(), &planned.format("%Y-%m-%d").to_string(), planned, state, reason, net, now);
         self.record(&run, history::run_start(&run));
@@ -773,7 +773,7 @@ impl Runner {
 
     /// Stops one job, or every job of the run; the ones not started will not start.
     pub fn kill(&mut self, run: &str, job: Option<&str>) -> Result<String, String> {
-        let now = Local::now().naive_local();
+        let now = ito_common::now::now_local().naive_local();
         let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| format!("実行がない: {run}"))?;
         if r.is_over() {
             return Err(format!("{run}: もう終わっている"));
@@ -817,7 +817,7 @@ impl Runner {
         let mut over: Vec<Run> = Vec::new();
         while let Ok(done) = self.rx.try_recv() {
             self.active.retain(|a| !(a.run == done.run && a.job == done.job));
-            let now = Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             let Some(r) = self.runs.iter_mut().find(|r| r.id == done.run) else { continue };
             r.retried(&done.job, done.retried);
             match done.outcome {
@@ -838,7 +838,7 @@ impl Runner {
         // The parts that wait: a time that came, a file that is there, or a wait that ran out.
         let mut i = 0;
         while i < self.waits.len() {
-            let now = Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             let w = &mut self.waits[i];
             let still = self.runs.iter().find(|r| r.id == w.run).and_then(|r| r.job(&w.job)).is_some_and(|j| j.state == State::Running);
             if !still {
@@ -910,7 +910,7 @@ impl Runner {
         }
         let mut over = Vec::new();
         for (run_id, job_id, width) in starts {
-            let now = Local::now().naive_local();
+            let now = ito_common::now::now_local().naive_local();
             let Some(j) = self.runs.iter().find(|r| r.id == run_id).and_then(|r| r.job(&job_id)) else { continue };
             let (part, timeout) = (j.part.clone(), j.timeout);
             match part {
@@ -1050,7 +1050,7 @@ impl Runner {
 
     /// Writes down a thing a person did by hand, in the file of today.
     pub fn record_op(&mut self, op: &str, target: &str, detail: &str, by: &str) {
-        let at = Local::now().naive_local();
+        let at = ito_common::now::now_local().naive_local();
         let day = at.date();
         let (d, w) = self.days.entry(day).or_insert_with(|| {
             let file = history::path(&self.history, day);
@@ -1762,7 +1762,7 @@ mod tests {
         );
         let child = koyomi_core::jobnet::parse(&format!("format = 1\n[[job]]\nid = \"x\"\n{pwd}\n")).unwrap();
         let children = BTreeMap::from([("共通/子".to_owned(), Ok(child))]);
-        let day = Local::now().date_naive();
+        let day = ito_common::now::now_local().date_naive();
         let at = |seen: &str, id: &str| {
             seen.lines().find(|l| l.starts_with(&format!("{id}: "))).and_then(|l| l.rsplit_once(" @ ")).map(|(_, d)| d.to_owned())
         };
@@ -1824,8 +1824,8 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
-        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("動いている間は"));
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("動いている間は"));
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let (a, b) = (run.job("a").unwrap(), run.job("b").unwrap());
@@ -1840,7 +1840,7 @@ mod tests {
         );
         assert!(r.run_dir(&id).join("definition.toml").exists());
         r.flush();
-        let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
+        let day = Day::load(&history::path(&dir.join("history"), ito_common::now::now_local().date_naive())).unwrap();
         let back = day.runs();
         assert_eq!(back.len(), 1);
         assert_eq!(back[0].state, State::Ok);
@@ -1848,7 +1848,7 @@ mod tests {
         // A second runner finds the finished run, and starts the net again.
         let mut r2 = Runner::new(&dir, Config::default());
         assert_eq!(r2.today().len(), 1);
-        assert!(r2.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
+        assert!(r2.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).is_ok());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1862,7 +1862,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"cmd.exe\", \"/c\", \"type\", '{file}']\nencoding = \"sjis\"\n");
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert_eq!(wait_over(&mut r, &id).state, State::Ok);
         assert_eq!(r.log_tail(&id, "a").unwrap().trim(), "日本");
         let _ = std::fs::remove_dir_all(&dir);
@@ -1876,7 +1876,7 @@ mod tests {
         // What the standby read from the primary: a over, b still going.
         let mut theirs = {
             let mut a = Runner::new(&dir.join("a"), Config::default());
-            let id = a.start(&d, Local::now().date_naive(), How::Schedule, None).unwrap();
+            let id = a.start(&d, ito_common::now::now_local().date_naive(), How::Schedule, None).unwrap();
             wait_over(&mut a, &id)
         };
         let b = theirs.jobs.iter_mut().find(|j| j.id == "b").unwrap();
@@ -1914,7 +1914,7 @@ mod tests {
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), fail_cmd());
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let first = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let first = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert!(r.rerun(&first, None, None).unwrap_err().contains("まだ終わっていない"));
         assert_eq!(wait_over(&mut r, &first).state, State::Error);
         let second = r.rerun(&first, None, None).unwrap();
@@ -1981,7 +1981,7 @@ id = \"side\"
         let mut held = Held::default();
         held.hold_job(&d.id, "b");
         r.set_held(&held);
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let until = Instant::now() + Duration::from_secs(20);
         while r.run(&id).unwrap().job("b").unwrap().state != State::Held || r.run(&id).unwrap().job("side").unwrap().ended.is_none() {
             assert!(Instant::now() < until, "b was not held");
@@ -2015,7 +2015,7 @@ id = \"side\"
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert!(r.skip(&id, "a").unwrap_err().contains("もう動いている"));
         assert!(r.skip(&id, "x").unwrap_err().contains("ジョブがない: x"));
         assert!(r.skip("20200101-000000-00", "a").unwrap_err().contains("実行がない"));
@@ -2023,7 +2023,7 @@ id = \"side\"
         let b = r.run(&id).unwrap().job("b").unwrap().clone();
         assert_eq!((b.state, b.reason.as_str()), (State::Skipped, koyomi_core::run::SKIPPED));
         // A time that waits for this net is taken out of the queue when asked.
-        let planned = Local::now().naive_local();
+        let planned = ito_common::now::now_local().naive_local();
         r.queue(&d, planned, false);
         assert_eq!(r.queued().len(), 1);
         assert_eq!(r.unqueue(Some("other")).len(), 0);
@@ -2048,7 +2048,7 @@ id = \"side\"
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("one"), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start_manual(&d, Local::now().date_naive(), Some("b"), &BTreeMap::new()).unwrap();
+        let id = r.start_manual(&d, ito_common::now::now_local().date_naive(), Some("b"), &BTreeMap::new()).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         assert_eq!(run.job("a").unwrap().state, State::Skipped);
@@ -2057,7 +2057,10 @@ id = \"side\"
         r.flush();
         let back = Runner::new(&dir, Config::default());
         assert_eq!(back.run(&id).unwrap().job("a").unwrap().state, State::Skipped);
-        assert!(r.start_manual(&d, Local::now().date_naive(), Some("x"), &BTreeMap::new()).unwrap_err().contains("ジョブがない: x"));
+        assert!(r
+            .start_manual(&d, ito_common::now::now_local().date_naive(), Some("x"), &BTreeMap::new())
+            .unwrap_err()
+            .contains("ジョブがない: x"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2067,7 +2070,7 @@ id = \"side\"
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", fail_cmd(), echo("two"));
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
         assert_eq!(run.job("a").unwrap().state, State::Error);
@@ -2082,7 +2085,7 @@ id = \"side\"
         let dir = scratch("missing");
         let d = def("net", "format = 1\n[[job]]\nid = \"a\"\nrun = [\"koyomi-no-such-program-xyz\"]\n");
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
         assert!(run.job("a").unwrap().reason.contains("起動できない"), "{}", run.job("a").unwrap().reason);
@@ -2096,7 +2099,7 @@ id = \"side\"
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{sleep}\n[[job]]\nid = \"b\"\n{sleep}\n[[job]]\nid = \"c\"\n{sleep}\n");
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = r.run(&id).unwrap();
         assert_eq!(run.running(), 2);
         assert_eq!(r.busy(), 2);
@@ -2122,7 +2125,7 @@ id = \"a\"
             )
         };
         let mut r = Runner::new(&dir, Config { concurrency: 1, ..Config::default() });
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let first = r.start(&def("first", &net("")), today, How::Manual, None).unwrap();
         let low = r
             .start(
@@ -2205,7 +2208,7 @@ id = \"a\"
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{long}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{long}\n");
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
         let asked = Instant::now();
         r.kill(&id, None).unwrap();
@@ -2239,7 +2242,7 @@ id = \"a\"
             ),
         );
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert_eq!(r.busy(), 1);
         let asked = Instant::now();
         r.stop_all(Duration::from_secs(5));
@@ -2258,7 +2261,7 @@ id = \"a\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let started = Instant::now();
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert!(started.elapsed() < Duration::from_secs(10), "the timeout did not stop the job");
         assert_eq!(run.state, State::Error);
@@ -2269,7 +2272,7 @@ id = \"a\"
         assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えた）\n"));
         // A job that ends in time is not touched by its timer.
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\ntimeout = \"1h\"\n", echo("quick"));
-        let id = r.start(&def("quick", &text), Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&def("quick", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let _ = std::fs::remove_dir_all(&dir);
@@ -2295,7 +2298,7 @@ id = \"a\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let started = Instant::now();
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert!(started.elapsed() >= Duration::from_secs(1), "the wait was not waited");
         assert_eq!(run.state, State::Ok, "{:?}", run.job("a"));
@@ -2307,11 +2310,11 @@ id = \"a\"
         assert!(!log.contains("(2/2)"), "{log}");
         // The count is in the history too.
         r.flush();
-        let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
+        let day = Day::load(&history::path(&dir.join("history"), ito_common::now::now_local().date_naive())).unwrap();
         assert_eq!(day.runs()[0].job("a").unwrap().retried, 1);
         // Still failing after every time: an error that says how many times.
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 2, wait = \"1s\" }}\n", fail_cmd());
-        let id = r.start(&def("always", &text), Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&def("always", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
         let a = run.job("a").unwrap();
@@ -2333,7 +2336,7 @@ id = \"a\"
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Warn, "{:?}", run.job("a"));
         let a = run.job("a").unwrap();
@@ -2348,7 +2351,7 @@ id = \"a\"
         let dir = scratch("judge-extra");
         let run_of = |r: &mut Runner, text: &str| {
             let d = def("net", text);
-            let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+            let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
             wait_over(r, &id)
         };
         let mut r = Runner::new(&dir, Config::default());
@@ -2410,7 +2413,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let text = "format = 1\n[[job]]\nid = \"a\"\nshell = \"powershell\"\nscript = '''\nWrite-Output \"hi `\"there`\"\"\nexit 4'''\njudge = { warn = \"4\" }\n";
         let d = def("net", text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         let a = run.job("a").unwrap();
         assert_eq!((a.state, a.exit), (State::Warn, Some(4)), "{a:?}");
@@ -2433,7 +2436,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let text = "format = 1\n[[job]]\nid = \"a\"\nshell = \"powershell\"\nscript = '''\nWrite-Warning 'careful'\nGet-Item 'C:\\nope\\nope'\nexit 0'''\njudge = { error_output = \"^Get-Item\" }\n";
         let d = def("net", text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         let a = run.job("a").unwrap();
         assert_eq!(a.state, State::Error, "{a:?}");
@@ -2474,7 +2477,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         for j in ["d", "e", "c"] {
             let job = run.job(j).unwrap();
@@ -2514,7 +2517,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         let log = |j: &str| r.log_tail(&id, j).unwrap_or_default();
         for (j, state) in [("s", State::Ok), ("f", State::Ok), ("none", State::Warn)] {
@@ -2538,7 +2541,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         };
         let d = def("net", &format!("format = 1\n[[job]]\nid = \"a\"\n{cmd}\n"));
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         let a = run.job("a").unwrap();
         assert_eq!(a.state, State::Error, "{}", r.log_tail(&id, "a").unwrap_or_default());
@@ -2566,7 +2569,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\nretry = {{ count = 1, wait = \"30s\" }}\n", fail_cmd());
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         // Until the process has failed and the wait begun.
         let until = Instant::now() + Duration::from_secs(10);
         while Instant::now() < until && !r.log_tail(&id, "a").map(|l| l.contains("やり直し")).unwrap_or(false) {
@@ -2589,8 +2592,8 @@ judge = {{ ok_file = '{ok_file}.none' }}
     fn a_run_the_last_engine_left_is_closed_as_an_error() {
         let dir = scratch("abandon");
         let hist = dir.join("history");
-        let today = Local::now().date_naive();
-        let now = Local::now().naive_local();
+        let today = ito_common::now::now_local().date_naive();
+        let now = ito_common::now::now_local().naive_local();
         let net = koyomi_core::jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n").unwrap();
         let mut run = Run::new("20260101-000000-00", "g/net", "net", "2026-01-01", How::Manual, &net, now);
         let mut day = Day::default();
@@ -2702,9 +2705,9 @@ id = \"a\"
         assert_eq!(over[0].id, id);
         assert!(r.take_over().is_empty());
         // The net is free to start: a time that passed holds nothing.
-        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).is_ok());
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).is_ok());
         r.flush();
-        let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
+        let day = Day::load(&history::path(&dir.join("history"), ito_common::now::now_local().date_naive())).unwrap();
         let back = day.runs();
         let kept = back.iter().find(|x| x.id == id).expect("in the day's history");
         assert_eq!(kept.state, State::Missed);
@@ -2781,7 +2784,7 @@ id = \"a\"
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let t = run.job("t").unwrap();
@@ -2806,7 +2809,7 @@ id = \"a\"
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         wait_running(&mut r, &id, "f");
         let f = r.run(&id).unwrap().job("f").unwrap().clone();
         assert!(f.reason.ends_with("を待っています"), "{:?}", f.reason);
@@ -2882,7 +2885,7 @@ after = [\"none\"]
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         // Once per matching file, by name, each with its index and path.
         let files = r.log_tail(&id, "files").unwrap();
@@ -2928,7 +2931,7 @@ after = [\"none\"]
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
         let began = Instant::now();
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         // The loop holds both slots, so the other job waits for one.
         let run = r.run(&id).unwrap();
         assert_eq!(r.busy(), 1);
@@ -2964,7 +2967,7 @@ after = [\"none\"]
         };
         let d = def("net", &format!("format = 1\n[[job]]\nid = \"bad\"\nkind = \"loop\"\ncount = 5\nmax = 2\n{fail_first}\n"));
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         let bad = run.job("bad").unwrap();
         assert_eq!(bad.state, State::Error);
@@ -2975,7 +2978,7 @@ after = [\"none\"]
         assert!(!log.contains("▶ 3/5"), "{log}");
         // A kill stops both running passes at once.
         let d = def("long", &format!("format = 1\n[[job]]\nid = \"a\"\nkind = \"loop\"\ncount = 2\nmax = 2\n{}\n", sleep(30)));
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         std::thread::sleep(Duration::from_millis(300));
         let asked = Instant::now();
         r.kill(&id, None).unwrap();
@@ -2994,7 +2997,7 @@ after = [\"none\"]
         let show = if cfg!(windows) { echo("%KOYOMI_FILE%") } else { "run = [\"sh\", \"-c\", \"echo $KOYOMI_FILE\"]".to_owned() };
         let d = def("net", &format!("format = 1\n[[when]]\nfile = 'D:\\\\in\\\\*.csv'\n[[job]]\nid = \"b\"\n{show}\n"));
         let mut r = Runner::new(&dir, Config::default());
-        let today = Local::now().date_naive();
+        let today = ito_common::now::now_local().date_naive();
         let id = r.start_event(&d, today, How::File, "D:\\in\\Sales.csv が来た", Some("D:\\in\\Sales.csv".to_owned())).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!((run.how, run.state, run.reason.as_str()), (How::File, State::Ok, "D:\\in\\Sales.csv が来た"));
@@ -3033,7 +3036,7 @@ after = [\"ok\"]
             ),
         );
         let mut r = Runner::new(&dir, Config::default());
-        let day = Local::now().date_naive();
+        let day = ito_common::now::now_local().date_naive();
         let id = r.start(&d, day, How::Manual, None).unwrap();
         r.tick();
         assert_eq!(r.take_asks(), vec![(id.clone(), "ok".to_owned())]);
@@ -3077,7 +3080,7 @@ id = \"a\"
             ),
         );
         let mut r = Runner::new(&dir, Config::default());
-        let day = Local::now().date_naive();
+        let day = ito_common::now::now_local().date_naive();
         let ida = r.start(&a, day, How::Manual, None).unwrap();
         let err = r.start(&b, day, How::Manual, None).unwrap_err();
         assert!(err.contains("排他") && err.contains("db"), "{err}");
@@ -3111,7 +3114,7 @@ id = \"a\"
         let shared = "{ name = \"db\", shared = true }";
         let (r1, r2, w) = (net("r1", shared), net("r2", shared), net("w", "\"db\""));
         let mut r = Runner::new(&dir, Config::default());
-        let day = Local::now().date_naive();
+        let day = ito_common::now::now_local().date_naive();
         let id1 = r.start(&r1, day, How::Manual, None).unwrap();
         let id2 = r.start(&r2, day, How::Manual, None).unwrap();
         assert!(r.runs.iter().find(|x| x.id == id2).is_some_and(|x| x.lock_shared));
@@ -3157,7 +3160,7 @@ after = [\"a\"]
             ),
         );
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let seen = r.log_tail(&id, "b").unwrap();
@@ -3306,7 +3309,7 @@ id = \"b\"
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         wait_running(&mut r, &id, "t");
         assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
         assert!(r.kill(&id, Some("t")).unwrap().contains("止めた"));
@@ -3330,11 +3333,11 @@ id = \"b\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         // Not known yet: the start is refused, not run half.
-        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("子ジョブネットがない"));
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("子ジョブネットがない"));
         r.set_children(BTreeMap::from([("g/child".to_owned(), Err("子ジョブネット g/child が未確認".to_owned()))]));
-        assert!(r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap_err().contains("未確認"));
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("未確認"));
         r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));
-        let id = r.start(&d, Local::now().date_naive(), How::Manual, None).unwrap();
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let ids: Vec<&str> = run.jobs.iter().map(|j| j.id.as_str()).collect();

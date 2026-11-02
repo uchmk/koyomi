@@ -52,7 +52,7 @@ impl Schedule {
     /// Reads `schedule.toml` from `state_dir`; without one, starts from now.
     pub fn new(state_dir: &Path) -> Schedule {
         let path = state_dir.join("schedule.toml");
-        let now = Utc::now();
+        let now = ito_common::now::now();
         let kept: Kept = kept::read(&path).unwrap_or_default();
         let checked = DateTime::parse_from_rfc3339(&kept.checked).map(|d| d.to_utc()).unwrap_or(now);
         Schedule { checked, writer: kept::Writer::new(path, true), written: now, looked: None }
@@ -315,9 +315,9 @@ mod tests {
     #[test]
     fn the_last_look_is_kept_across_a_restart_and_a_fresh_start_is_now() {
         let dir = scratch("kept");
-        let before = Utc::now();
+        let before = ito_common::now::now();
         let mut s = Schedule::new(&dir);
-        assert!(s.checked() >= before && s.checked() <= Utc::now());
+        assert!(s.checked() >= before && s.checked() <= ito_common::now::now());
         let looked = DateTime::parse_from_rfc3339("2026-10-28T17:00:00Z").unwrap().to_utc();
         s.looked(looked, true);
         s.flush();
@@ -332,9 +332,9 @@ mod tests {
     fn a_clock_set_back_a_little_waits_for_the_time_to_pass_again() {
         let dir = scratch("back-a-little");
         let mut s = Schedule::new(&dir);
-        let before = Utc::now() + Duration::hours(1);
+        let before = ito_common::now::now() + Duration::hours(1);
         s.looked(before, false);
-        assert!(s.look(Utc::now()).is_none());
+        assert!(s.look(ito_common::now::now()).is_none());
         assert_eq!(s.checked(), before);
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -343,9 +343,9 @@ mod tests {
     fn a_clock_set_back_starts_over_from_now() {
         let dir = scratch("back");
         let mut s = Schedule::new(&dir);
-        let later = Utc::now() + Duration::days(2);
+        let later = ito_common::now::now() + Duration::days(2);
         s.looked(later, false);
-        let now = Utc::now();
+        let now = ito_common::now::now();
         assert_eq!(s.look(now), Some(now));
         assert!(s.look(now).is_none(), "a second look within the second does nothing");
         let _ = std::fs::remove_dir_all(&dir);
