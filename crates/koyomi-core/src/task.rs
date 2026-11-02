@@ -70,9 +70,12 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
         note(&mut notes, "実行するユーザーは取り込まない（koyomi のエンジンを動かすユーザーで流れる）".to_owned());
     }
 
+    // An idle trigger starts once the PC has been left alone as long as the task's idle setting says.
+    let idle =
+        settings.and_then(|s| path_text(s, &["IdleSettings", "Duration"])).and_then(|d| duration(&d)).filter(|&s| s >= 60).unwrap_or(600);
     if let Some(triggers) = child(task, "Triggers") {
         for t in triggers.children().filter(Node::is_element) {
-            match trigger(t) {
+            match trigger(t, idle) {
                 Ok((whens, more)) => {
                     net.when.extend(whens);
                     for m in more {
@@ -145,7 +148,7 @@ fn id_of(uri: &str) -> (String, String) {
 
 /// One trigger as `[[when]]`s and the notes on what of it did not come over;
 /// a trigger that is off is an `Err` with the note.
-fn trigger(t: Node) -> Result<(Vec<When>, Vec<String>), String> {
+fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
     let kind = t.tag_name().name();
     if text_of(t, "Enabled").is_some_and(|e| e == "false") {
         return Err(format!("無効のトリガー（<{kind}>）は取り込まない"));
@@ -165,8 +168,12 @@ fn trigger(t: Node) -> Result<(Vec<When>, Vec<String>), String> {
             }
             vec![Kind::OnStart]
         }
+        "IdleTrigger" => {
+            notes.push(format!("アイドル時のトリガーは idle = \"{}\"（PC がその間使われなかったとき）にした", crate::duration::text(idle)));
+            vec![Kind::Idle { idle }]
+        }
         "CalendarTrigger" => calendar(t, at, &mut notes)?,
-        other => return Err(format!("<{other}> のトリガーは取り込めない（時刻・日・週・月・起動時・ログオン時だけ）")),
+        other => return Err(format!("<{other}> のトリガーは取り込めない（時刻・日・週・月・起動時・ログオン時・アイドル時だけ）")),
     };
     // A repetition turns each day's time into a run of times within the day.
     let kinds = match repetition(t, at, &mut notes) {
@@ -552,6 +559,25 @@ mod tests {
         assert!(notes.iter().any(|n| n.contains("第 Last 週")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("何日かおき")), "{notes:?}");
         assert!(notes.iter().any(|n| n.contains("ShowMessage")), "{notes:?}");
+    }
+
+    #[test]
+    fn an_idle_trigger_starts_when_the_pc_is_left_alone() {
+        let settings = "<Settings><IdleSettings><Duration>PT15M</Duration></IdleSettings></Settings>";
+        let xml = format!(
+            r#"<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
+  <Triggers><IdleTrigger/></Triggers>
+  {settings}
+  <Actions><Exec><Command>run.exe</Command></Exec></Actions>
+</Task>"#
+        );
+        let (_, net, notes) = convert(&xml).unwrap();
+        assert_eq!(net.when.iter().map(|w| &w.kind).collect::<Vec<_>>(), [&Kind::Idle { idle: 900 }]);
+        assert!(net.when[0].start.is_none());
+        assert!(notes.iter().any(|n| n.contains("idle = \"15m\"")), "{notes:?}");
+        // With no idle setting, it waits 10 minutes.
+        let (_, net, _) = convert(&xml.replace(settings, "")).unwrap();
+        assert_eq!(net.when[0].kind, Kind::Idle { idle: 600 });
     }
 
     #[test]

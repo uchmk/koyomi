@@ -1643,3 +1643,22 @@ Two PCs: this one (検証) and `B` (本番) with `[http] lan = true` and a `[[ht
 | 114.12 | Stop B's engine (or point `url` at a PC that is off); send | 本番 から … を読んでいます… then the reason it could not connect, in one line; no box. While it reads, やめる stops waiting |
 | 114.13 | `koyomi remote send 本番 経理/締め` with a change, answer `n`; again with `y` | The change (`- 向こうの今 / + この PC`) is shown, then `経理/締め: 送らなかった` (exit 1); with `y`, `本番 に送った: 経理/締め（向こうでは未確認。本番 の窓で確認するまで流れない）` |
 | 114.14 | `koyomi remote send 本番 経理/締め` with no change; `koyomi remote send 本番 経理/新規2` for a net B lacks; `koyomi remote send nope 経理/締め` | `本番 の 経理/締め はこの PC と同じ中身（送らなかった）`; `本番 には 経理/新規2 がない。新しく置く:` and the whole file; `nope: [[remote]] にない（あるのは 本番）` |
+
+## 115. Start when the PC is left alone (`[[when]] idle`; TODO 112)
+
+The engine runs as you (`koyomi engine start` or at sign-in, not the service). A net 保守/空き with `[[when]] idle = "1m"` and one job that runs `cmd /c echo idle`; approve it. Leave the keyboard and the mouse alone where the steps say so (a remote desktop counts as use on that PC).
+
+| # | Do | Expect |
+|---|---|---|
+| 115.1 | Use the PC, then leave it alone for a little over a minute | One run starts; `koyomi history` gives the reason `PC が 1 分 使われなかった`, and the run's detail in the window says the same |
+| 115.2 | Keep leaving it alone for five more minutes | No second run |
+| 115.3 | Move the mouse, then leave the PC alone for a minute again | One more run |
+| 115.4 | `koyomi engine stop`; in cmd, `timeout /t 90 > nul & koyomi engine start`, and leave the PC alone at once for four minutes; then use it and leave it alone for a minute | Nothing starts while the PC stays alone after the engine started; one run once it has been used and left alone again |
+| 115.5 | Make the job `cmd /c ping -n 300 127.0.0.1 > nul`; leave the PC alone; use it and leave it alone again while that run is going | A ⊘ スキップ row `PC が 1 分 使われなかったが、前の回がまだ動いているので流さない`; nothing starts after the first run ends |
+| 115.6 | Add `calendar` with today closed (or hold the net) and leave the PC alone | ⊘ スキップ `PC が 1 分 使われなかったが、休業日なので流さない（on_closed = "run" で流せる）` (⏸ 保留 for the held net); not run afterwards |
+| 115.7 | Run the engine as the service (§89) with the same net | The window's 注意 says `保守/空き: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない`; nothing starts however long the PC is left alone. Back to `koyomi engine start`: the warning goes |
+| 115.8 | `koyomi check` with `idle = "30s"`, with `idle = "10"`, with `idle = "10m"` and `on_closed = "next"` | `idle は 1m 以上（それより短いと、手を止めるたびに流れる）`; the `30m・1h30m・90s のように書く` error; `idle では on_closed は "skip" か "run"` |
+| 115.9 | The editor: add a `[[when]]` of PC が空いたら | One field 使われない時間（例: 10m） with `10m`; except / start / end / on_closed are not shown; saving writes `idle = "10m"`; `30s` is refused with the same words as 115.8 |
+| 115.10 | `koyomi next 保守/空き`; approve it after a change | The row `PC が 1m 使われなかったとき` comes first, with no time; the confirm box shows the same |
+| 115.11 | `schtasks /create /tn "\koyomi-test\空き" /tr "cmd.exe /c echo hi" /sc onidle /i 15 /f`, `schtasks /query /xml /tn "\koyomi-test\空き" > i.xml`, `koyomi import i.xml --dry-run` | The plan has `idle = "15m"` and the note `アイドル時のトリガーは idle = "15m"（PC がその間使われなかったとき）にした`; then `schtasks /delete /tn "\koyomi-test\空き" /f` |
+| 115.12 | `koyomi history --csv runs.csv` after 115.1 | The run's きっかけ is `PC が空いた` |

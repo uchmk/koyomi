@@ -114,6 +114,10 @@ pub enum Kind {
     },
     /// `on_start = true`: when the engine starts (the PC's start or sign-in).
     OnStart,
+    /// `idle = "10m"`: when the PC has been left alone that long (an event), in
+    /// seconds. Once each time it is left alone: it starts again only after
+    /// someone has used the PC.
+    Idle { idle: u64 },
     /// `after_jobnet = "経理/売上取込"`, `on = "ok"`: when a run of that net ends
     /// so (an event). The run takes the business day of the run it follows.
     AfterJobnet {
@@ -124,13 +128,19 @@ pub enum Kind {
 }
 
 impl Kind {
-    /// An event (a file arriving, the engine's start, another net's end), not a
-    /// time: it has no next time, and runs when it happens on a day
+    /// An event (a file arriving, the engine's start, the PC left alone, another
+    /// net's end), not a time: it has no next time, and runs when it happens on a day
     /// `start` / `end` / `except` allow.
     pub fn is_event(&self) -> bool {
         matches!(
             self,
-            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::Mail { .. } | Kind::OnStart | Kind::AfterJobnet { .. }
+            Kind::File { .. }
+                | Kind::Log { .. }
+                | Kind::EventLog { .. }
+                | Kind::Mail { .. }
+                | Kind::OnStart
+                | Kind::Idle { .. }
+                | Kind::AfterJobnet { .. }
         )
     }
 }
@@ -259,9 +269,13 @@ impl When {
             Kind::Month { rule, at } => on(rule.matches_in(date, cal), at),
             Kind::Year { month, day, at } => on(date.month() == *month && date.day() == *day, at),
             Kind::Dates { dates, at } => on(dates.contains(&date), at),
-            Kind::File { .. } | Kind::Log { .. } | Kind::EventLog { .. } | Kind::Mail { .. } | Kind::OnStart | Kind::AfterJobnet { .. } => {
-                Vec::new()
-            }
+            Kind::File { .. }
+            | Kind::Log { .. }
+            | Kind::EventLog { .. }
+            | Kind::Mail { .. }
+            | Kind::OnStart
+            | Kind::Idle { .. }
+            | Kind::AfterJobnet { .. } => Vec::new(),
         }
     }
 
@@ -768,7 +782,8 @@ mod tests {
         let start = When { kind: Kind::OnStart, ..file.clone() };
         let log = When { kind: Kind::Log { log: "D:\\app\\a.log".to_owned(), contains: "ERROR".to_owned() }, ..file.clone() };
         let eventlog = When { kind: Kind::EventLog { eventlog: "Security".to_owned(), ids: vec![4625], source: None }, ..file.clone() };
-        for w in [&file, &start, &log, &eventlog] {
+        let idle = When { kind: Kind::Idle { idle: 600 }, ..file.clone() };
+        for w in [&file, &start, &log, &eventlog, &idle] {
             assert!(w.is_event());
             assert_eq!(w.next_after(dt("2026-11-30 00:00")), None);
             assert!(w.times_on(d("2026-11-30")).is_empty());

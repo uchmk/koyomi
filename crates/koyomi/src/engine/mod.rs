@@ -38,6 +38,7 @@ mod backup;
 mod events;
 pub(crate) mod files;
 pub mod http;
+mod idle;
 mod logs;
 mod mails;
 mod ping;
@@ -205,6 +206,8 @@ struct State {
     logs: logs::Logs,
     /// `[[when]] mail`: mail coming to a mailbox.
     mails: mails::Mails,
+    /// `[[when]] idle`: the PC left alone.
+    idle: idle::Idle,
     /// The sweep of logs and history older than `keep_days`.
     retain: Retain,
     /// The daily backup of the settings folder.
@@ -306,6 +309,7 @@ impl State {
             events: events::Events::new(),
             logs: logs::Logs::new(),
             mails: mails::Mails::new(),
+            idle: idle::Idle::new(),
             retain,
             backup,
             alive,
@@ -937,8 +941,10 @@ impl State {
 
     /// Starts what an event says: the nets with `on_start = true` once, when
     /// the engine starts; a net with `file = …` for each file that has come
-    /// (`events::Events`). What does not start is recorded with why, as a time
-    /// is. A file that comes while its net runs waits for the run to end.
+    /// (`events::Events`); a net with `log`, `eventlog`, `mail` or `idle` when
+    /// that comes (`logs`, `mails`, `idle`). What does not start is recorded
+    /// with why, as a time is. A file that comes while its net runs waits for
+    /// the run to end; the others are recorded as not run.
     fn tick_events(&mut self) {
         // A primary still asking its standby: the events wait until it knows.
         if self.primary.asking() {
@@ -1007,7 +1013,7 @@ impl State {
             }
             self.events.fired(&a.def_id, &a.pattern, &a.path);
         }
-        let hits: Vec<logs::Hit> = self.logs.due().into_iter().chain(self.mails.due()).collect();
+        let hits: Vec<logs::Hit> = self.logs.due().into_iter().chain(self.mails.due()).chain(self.idle.due()).collect();
         for hit in hits {
             let Some(def) = self.defs.iter().find(|d| d.id == hit.def_id).cloned() else { continue };
             let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| w.kind == hit.kind)).cloned() else { continue };
@@ -1015,27 +1021,29 @@ impl State {
                 Kind::Log { log, .. } => format!("{log} に行が書かれた"),
                 Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog} に記録された"),
                 Kind::Mail { mail, .. } => format!("{mail} にメールが来た"),
+                Kind::Idle { idle: secs } => format!("PC が {} 使われなかった", idle::span_text(*secs)),
                 _ => continue,
             };
-            let how = if matches!(hit.kind, Kind::Mail { .. }) { How::Mail } else { How::Log };
+            let how = match &hit.kind {
+                Kind::Mail { .. } => How::Mail,
+                Kind::Idle { .. } => How::Idle,
+                _ => How::Log,
+            };
             let more = if hit.count > 1 { format!("（ほか {} 件）", hit.count - 1) } else { String::new() };
-            let reason = format!("{what}: {}{more}", hit.first);
+            // The PC left alone has no line to keep.
+            let tail = if hit.first.is_empty() { more } else { format!(": {}{more}", hit.first) };
+            let reason = format!("{what}{tail}");
             if let Some(why) = self.off_day(&def, &w, today, &what) {
-                self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}: {}{more}", hit.first));
+                self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}{tail}"));
                 continue;
             }
             if let Some((state, why)) = self.stopped(&def, today, now) {
                 self.runner.not_run(&def, now, state, &why);
                 continue;
             }
-            // A line (or mail) is not kept as a file is: one that comes while the net runs is told of, not run later.
+            // A line, a mail or the PC left alone is not kept as a file is: one that comes while the net runs is told of, not run later.
             if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
-                self.runner.not_run(
-                    &def,
-                    now,
-                    RunState::Skipped,
-                    &format!("{what}が、前の回がまだ動いているので流さない: {}{more}", hit.first),
-                );
+                self.runner.not_run(&def, now, RunState::Skipped, &format!("{what}が、前の回がまだ動いているので流さない{tail}"));
                 continue;
             }
             match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
@@ -1172,6 +1180,7 @@ impl State {
         }
         self.logs.set_rules(&self.defs);
         self.mails.set_rules(&self.defs);
+        self.idle.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
@@ -1198,6 +1207,7 @@ impl State {
         warnings.extend(self.bad_config.clone());
         warnings.extend(self.logs.problems());
         warnings.extend(self.mails.problems());
+        warnings.extend(self.idle.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
         let notes = self
             .notify_notes

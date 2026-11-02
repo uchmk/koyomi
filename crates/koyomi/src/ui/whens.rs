@@ -8,8 +8,23 @@ use koyomi_core::duration;
 use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
 
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
-pub const KINDS: [&str; 14] =
-    ["day", "week", "month", "year", "minutes", "hours", "once", "dates", "file", "log", "eventlog", "mail", "on_start", "after_jobnet"];
+pub const KINDS: [&str; 15] = [
+    "day",
+    "week",
+    "month",
+    "year",
+    "minutes",
+    "hours",
+    "once",
+    "dates",
+    "file",
+    "log",
+    "eventlog",
+    "mail",
+    "on_start",
+    "idle",
+    "after_jobnet",
+];
 
 /// The rules of `every = "month"`.
 pub const RULES: [&str; 4] = ["day", "last", "nth", "business_day"];
@@ -51,6 +66,8 @@ pub struct WhenEdit {
     pub password: String,
     pub sender: String,
     pub subject: String,
+    /// `idle`: how long the PC is left alone (`10m`).
+    pub idle: String,
     pub jobnet: String,
     pub on: AfterOn,
     pub except: String,
@@ -92,6 +109,7 @@ impl Default for WhenEdit {
             password: String::new(),
             sender: String::new(),
             subject: String::new(),
+            idle: "10m".into(),
             jobnet: String::new(),
             on: AfterOn::Ok,
             except: String::new(),
@@ -237,6 +255,10 @@ impl WhenEdit {
                 e.subject = subject.clone().unwrap_or_default();
             }
             Kind::OnStart => e.kind = "on_start".into(),
+            Kind::Idle { idle } => {
+                e.kind = "idle".into();
+                e.idle = duration::text(*idle);
+            }
             Kind::AfterJobnet { jobnet, on } => {
                 e.kind = "after_jobnet".into();
                 e.jobnet = jobnet.clone();
@@ -362,6 +384,13 @@ impl WhenEdit {
                 Kind::Mail { mail: self.mail.trim().into(), secret, sender, subject }
             }
             "on_start" => Kind::OnStart,
+            "idle" => {
+                let idle = duration::parse(&self.idle).map_err(|e| format!("idle {e}"))?;
+                if idle < 60 {
+                    return Err("idle は 1m 以上（それより短いと、手を止めるたびに流れる）".into());
+                }
+                Kind::Idle { idle }
+            }
             "after_jobnet" => {
                 if !koyomi_core::jobnet::is_id(self.jobnet.trim()) {
                     return Err(format!("after_jobnet は \"グループ/名前\": \"{}\"", self.jobnet.trim()));
@@ -520,9 +549,10 @@ impl WhenEdit {
                     }
                 });
             }
+            "idle" => changed |= field(ui, t.tr("when.idle"), &mut self.idle, 70.0),
             _ => {}
         }
-        if !matches!(self.kind.as_str(), "on_start" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
+        if !matches!(self.kind.as_str(), "on_start" | "idle" | "after_jobnet" | "file" | "log" | "eventlog" | "mail") {
             changed |= date(ui, t.tr("when.except"), &mut self.except, "except", true);
             changed |= date(ui, t.tr("when.start"), &mut self.start, "start", false);
             changed |= date(ui, t.tr("when.end"), &mut self.end, "end", false);
@@ -573,10 +603,11 @@ mod tests {
             [[when]]\neventlog = \"Application\"\nsource = \"MyApp\"\n\
             [[when]]\nmail = \"imaps://me@example.com@imap.example.com/INBOX\"\npassword = \"secret:mail\"\nsender = \"billing@\"\nsubject = \"請求\"\n\
             [[when]]\non_start = true\n\
+            [[when]]\nidle = \"15m\"\n\
             [[when]]\nafter_jobnet = \"経理/集計\"\non = \"error\"\n\
             [[job]]\nid = \"a\"\nrun = [\"x\"]\n";
         let net = koyomi_core::jobnet::parse(text).unwrap();
-        assert_eq!(net.when.len(), 17);
+        assert_eq!(net.when.len(), 18);
         for w in &net.when {
             let e = WhenEdit::from_when(w);
             assert_eq!(e.to_when().as_ref(), Ok(w), "{e:?}");

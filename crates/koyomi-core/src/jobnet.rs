@@ -652,6 +652,7 @@ struct RawWhen {
     subject: Field,
     on_start: Field,
     after_jobnet: Field,
+    idle: Field,
     on: Field,
     wait_for: Field,
     wait_until: Field,
@@ -1741,10 +1742,12 @@ impl Checker<'_> {
                 "on_start"
             } else if w.after_jobnet.is_some() {
                 "after_jobnet"
+            } else if w.idle.is_some() {
+                "idle"
             } else {
                 self.add(
                     head,
-                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る",
+                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る",
                 );
                 continue;
             };
@@ -1754,6 +1757,7 @@ impl Checker<'_> {
                 "eventlog" => &["eventlog", "ids", "source"],
                 "mail" => &["mail", "password", "sender", "subject"],
                 "on_start" => &["on_start"],
+                "idle" => &["idle"],
                 "after_jobnet" => &["after_jobnet", "on"],
                 "day" => &["every", "at", "wait_for", "wait_until"],
                 "minutes" | "hours" => &["every", "n", "from", "to", "days", "wait_for", "wait_until"],
@@ -1791,6 +1795,7 @@ impl Checker<'_> {
                 (&w.subject, "subject"),
                 (&w.on_start, "on_start"),
                 (&w.after_jobnet, "after_jobnet"),
+                (&w.idle, "idle"),
                 (&w.on, "on"),
                 (&w.wait_for, "wait_for"),
                 (&w.wait_until, "wait_until"),
@@ -1809,13 +1814,14 @@ impl Checker<'_> {
                 _ => None,
             };
             // An event has no day to move to: it runs on its day or not at all.
-            if matches!(kind, "file" | "log" | "eventlog" | "mail" | "on_start")
+            if matches!(kind, "file" | "log" | "eventlog" | "mail" | "on_start" | "idle")
                 && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next))
             {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
                 let what = match kind {
                     "log" | "eventlog" => "log / eventlog",
                     "mail" => "mail",
+                    "idle" => "idle",
                     _ => "file / on_start",
                 };
                 self.add(pos, format!("{what} では on_closed は \"skip\" か \"run\""));
@@ -1873,6 +1879,15 @@ impl Checker<'_> {
                         self.add(pos, "on_start は true だけ（使わないなら [[when]] ごと消す）");
                         None
                     }
+                },
+                "idle" => match self.duration_of(&w.idle, "idle") {
+                    Some(s) if s < 60 => {
+                        let pos = w.idle.as_ref().map_or(head, |f| f.span().start);
+                        self.add(pos, "idle は 1m 以上（それより短いと、手を止めるたびに流れる）");
+                        None
+                    }
+                    Some(s) => Some(Kind::Idle { idle: s }),
+                    None => None,
                 },
                 "day" => self.at(&w.at, head).map(|at| Kind::Day { at }),
                 "minutes" | "hours" => {
@@ -3855,7 +3870,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
         assert_eq!(
             p("at = [\"02:00\"]"),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
         );
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
@@ -3948,7 +3963,7 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(
             p("on = \"ok\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
         );
     }
 
@@ -3981,9 +3996,16 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(p("on_start = false"), ["a.toml の 3 行目: on_start は true だけ（使わないなら [[when]] ごと消す）"]);
         assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
+        let net = parse("format = 1\n[[when]]\nidle = \"10m\"\n").unwrap();
+        assert_eq!(net.when[0].kind, Kind::Idle { idle: 600 });
+        assert!(net.when[0].is_event());
+        assert_eq!(p("idle = \"30s\""), ["a.toml の 3 行目: idle は 1m 以上（それより短いと、手を止めるたびに流れる）"]);
+        assert_eq!(p("idle = 10"), ["a.toml の 3 行目: idle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]);
+        assert_eq!(p("idle = \"10m\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は idle では使わない"]);
+        assert_eq!(p("idle = \"10m\"\non_closed = \"next\""), ["a.toml の 4 行目: idle では on_closed は \"skip\" か \"run\""]);
         assert_eq!(
             p("settle = \"10s\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
         );
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
@@ -4017,7 +4039,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は 1 つのファイルのパス（* / ? は使えない）"]);
         assert_eq!(
             p("contains = \"E\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet が要る"]
+            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle が要る"]
         );
         assert_eq!(p("eventlog = \"System\""), ["a.toml の 2 行目: eventlog には ids か source が要る（例: ids = [4625]）"]);
         assert_eq!(

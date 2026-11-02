@@ -107,7 +107,7 @@ fn unmet(req: &koyomi_core::jobnet::Require) -> Option<String> {
     if cfg!(test) || req.is_empty() {
         return None;
     }
-    unmet_by(req, ito_power::on_ac(), ito_power::network_up(), ito_power::idle_for())
+    unmet_by(req, ito_power::on_ac(), ito_power::network_up(), super::idle::idle_now())
 }
 
 /// [`unmet`] for the PC's state as given; a state that is `None` cannot be known and counts as met.

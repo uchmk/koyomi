@@ -6,6 +6,7 @@
 //! A service has no screen, so what the engine says goes to `app_dir`'s `engine.log`.
 
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ito_ipc::door::ask;
@@ -19,6 +20,10 @@ const STOP_WAIT: Duration = Duration::from_secs(60);
 const START_WAIT: Duration = Duration::from_secs(30);
 /// `engine.log` is set aside as `engine.old.log` when the service starts and it is bigger than this.
 const LOG_KEEP: u64 = 1024 * 1024;
+
+/// Set while the engine runs as the service. The service runs apart from the
+/// signed-in person, so how long they have left the PC alone is not seen there.
+pub static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// The service's name: one per person on the PC, like the engine's door.
 pub fn name() -> String {
@@ -210,6 +215,7 @@ fn run() -> i32 {
                 std::thread::sleep(Duration::from_millis(200));
             }
         });
+        RUNNING.store(true, Ordering::Relaxed);
         crate::engine::run(false)
     });
     match res {

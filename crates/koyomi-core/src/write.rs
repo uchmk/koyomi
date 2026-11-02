@@ -250,6 +250,7 @@ fn when(w: &When, out: &mut String) {
             }
         }
         Kind::OnStart => push(out, "on_start", "true"),
+        Kind::Idle { idle } => push(out, "idle", &q(&duration::text(*idle))),
         Kind::AfterJobnet { jobnet, on } => {
             push(out, "after_jobnet", &q(jobnet));
             if *on != AfterOn::Ok {

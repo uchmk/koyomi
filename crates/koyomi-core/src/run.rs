@@ -162,6 +162,8 @@ pub enum How {
     Log,
     /// A mail came to a mailbox (`[[when]] mail = …`).
     Mail,
+    /// The PC was left alone (`[[when]] idle = …`).
+    Idle,
 }
 
 /// How a job ended, as the engine saw it.
