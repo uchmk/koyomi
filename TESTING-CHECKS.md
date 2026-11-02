@@ -326,7 +326,7 @@
 - [ ] **26.10** `koyomi hold` the net (or `koyomi pause`), then copy a file in → No run; a ⏸ 保留 row with the reason, as for a time; `koyomi release` / `resume` does not run it afterwards (the file counts as recorded) 〔未訳〕
 - [ ] **26.11** A net with `[[when]] on_start = true`; `koyomi approve`; `koyomi engine stop` and start the engine again (or sign in again) → A run starts once; `koyomi show` says `起動`（`起動したとき`）; the engine's running on does not start it again 〔未訳〕
 - [ ] **26.12** The same net, unapproved, when the engine starts; and with a calendar on a closed day → 🔒 `未確認のため流さなかった（koyomi approve …）`; ⊘ スキップ `起動したが、休業日なので流さない（on_closed = "run" で流せる）` 〔未訳〕
-- [ ] **26.13** `koyomi next` and the net's 予定 in the window for a net with both events and `every = "day"` → The rows `ファイルが来たとき: D:\受信\*.csv（10 秒 変わらなくなってから）` and `PC の起動・サインインのとき（エンジンの起動）` come first, then the times; `koyomi review` of it shows the same two rows under 今週 〔未訳〕
+- [ ] **26.13** `koyomi next` and the net's 予定 in the window for a net with both events and `every = "day"` → The rows `ファイルが来たとき: D:\受信\*.csv（10s 変わらなくなってから）` and `PC の起動・サインインのとき（エンジンの起動）` come first, then the times; `koyomi review` of it shows the same two rows under 今週 〔未訳〕
 - [ ] **26.14** `koyomi check` a `[[when]]` with `file = 'in\*.csv'`, with `file = 'D:\*\a.csv'`, with `file = …` and `on_closed = "prev"`, and with `on_start = false` → `file は絶対パスで書く（例: …）`; `file の * / ? はファイル名の部分だけ（フォルダーには使えない）`; `file / on_start では on_closed は "skip" か "run"`; `on_start は true だけ（使わないなら [[when]] ごと消す）` 〔未訳〕
 
 ## 27. Links between jobnets (`[[when]] after_jobnet = …` + `on`)
