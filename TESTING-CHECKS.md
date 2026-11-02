@@ -359,13 +359,13 @@
 - [ ] **28.10** [x] `koyomi list --help`, `koyomi history -h`, `koyomi --toml list --help`, `koyomi pause --help` → Only that command's lines of the usage under `usage:`, then `every command takes --help …` (exit 0); `pause --help` prints the `pause \| resume` line 〔未訳〕
 - [x] **28.11** [x] `koyomi list --group 経理`; `koyomi list --group nothing`; `koyomi list --toml --group 経理` → Only that group's nets in the tree (the warnings and notes still above); `koyomi: グループがない: nothing` (exit 1); the snapshot with only those defs 〔未訳〕
 - [x] **28.12** `koyomi show g/a` (confirmed, unconfirmed, held, and ✗ 誤り) → The file and its standing (`⏸ ジョブネットを保留` when held, `未確認`, `定義の誤り` with the problem line under it), then what `approve` shows (the jobs, the times, the next week) without the question or the diff; a ✗ net prints its problems and nothing under them; exit 0 〔未訳〕
-- [ ] **28.13** The window: click the 履歴 tab → The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (`2026-10-29  ✓ 正常終了  売上取込  09:00:00  09:00:12  12 s`, coloured by state); the count above; the tree's and 今日's picks are off 〔未訳〕
-- [ ] **28.14** Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 → The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay 〔未訳〕
+- [ ] **28.13** The window: click the 履歴 tab → The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (columns 状態 / ジョブネット / 日付 / 開始 / 終了; the duration is cut off at the default window width; coloured by state), the quick ranges 今日 / 過去7日 / 過去30日, 成績 and CSV 出力; the count above; the tree's and 今日's picks are off 〔未訳〕
+- [ ] **28.14** [x] Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 → The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay 〔未訳〕
 - [ ] **28.15** Pick a net in ジョブネット, then a state in 状態 → The rows narrow at once (no 検索 needed); the count follows; `該当する実行はありません` when nothing matches 〔未訳〕
-- [ ] **28.16** Click a row in 履歴 → Under the rows: the run's picture, its jobs' logs on click, 再実行 and the rest as under 今日; the row stays marked 〔未訳〕
-- [ ] **28.17** While 履歴 is open: click a net in the tree, a run in the 今日 table, or a calendar; then the 履歴 tab again → Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed 〔未訳〕
+- [ ] **28.16** [x] Click a row in 履歴 → Under the rows: the run's picture, its jobs' logs on click, 再実行 and the rest as under 今日; the row stays marked 〔未訳〕
+- [ ] **28.17** [x] While 履歴 is open: click a net in the tree, a run in the 今日 table, or a calendar; then the 履歴 tab again → Each closes 履歴 and shows its own detail; 履歴 opens again on the last 7 days with nothing narrowed 〔未訳〕
 - [ ] **28.18** Narrator / NVDA over 履歴 → The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) 〔未訳〕
-- [ ] **28.19** `koyomi --keys` report with 履歴 open → A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) 〔未訳〕
+- [ ] **28.19** [x] `koyomi --keys` report with 履歴 open → A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) 〔未訳〕
 - [ ] **28.20** A job whose reason has line breaks (a `[[when]] eventlog` net started by an event whose message has several lines, e.g. from PowerShell `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "line 1$([char]10)line 2"`); `koyomi history`, `koyomi show <net>` and `koyomi run <net> --date <a week ago>..<today> --only missing --dry` → Each run and job is one row: the reason's line breaks read as spaces. `koyomi show <run> <job>`'s 理由 keeps them (BLOCKED: `eventcreate` needs administrator) 〔未訳〕
 
 ## 29. Editor (`ui/canvas.rs`, `koyomi new` / `versions` / `restore`)
@@ -389,7 +389,7 @@
 - [ ] **29.17** With unsaved changes: ← , the tree, a run in the 今日 table, 履歴, or the palette's 閉じる → A box: 変更を捨てて閉じますか; 捨てて閉じる leaves, やめる (the default, Escape) stays 〔未訳〕
 - [ ] **29.18** Without changes: ← → The editor closes at once and the picture is back 〔未訳〕
 - [ ] **29.19** Double-click a child jobnet part (or select it and Enter) → Its net opens in the editor on top; ← comes back to the parent (asking first when the child has changes) 〔未訳〕
-- [ ] **29.20** Ctrl+P while editing → The palette lists 保存 / 整列 / 横と縦 / 元に戻す / やり直す / 閉じる above the usual commands; they are gone when the editor is closed 〔未訳〕
+- [ ] **29.20** Ctrl+Shift+P while editing → The palette lists 編集: 保存 / 整列 / 全体を見る / 流れの向きを変える / 元に戻す / やり直す / 閉じる above the usual commands; they are gone when the editor is closed 〔未訳〕
 - [ ] **29.21** [x] `koyomi new 経理/新規` → `jobnets/経理/新規.toml` from the template (one job, no `[[when]]`), the net appears unconfirmed; `new` on an existing file refuses 〔未訳〕
 - [ ] **29.22** [x] `koyomi versions 経理/新規`; `koyomi restore 経理/新規 <time>` → The versions newest first; restore writes that version back (today's text becomes a version too) and the net is unconfirmed until `approve`. After a delete, `koyomi versions` prints only the version id; an edit made outside koyomi creates no version 〔未訳〕
 - [ ] **29.23** Narrator / NVDA over the editor → The toolbar buttons, the shelf's parts, the pane's fields and the box buttons are read 〔未訳〕
@@ -422,15 +422,15 @@
 
 - [ ] **31.1** Start `koyomi` with no definitions → The tree shows `＋ 新しいジョブネット` above `定義がありません…`; the message names the button 〔未訳〕
 - [ ] **31.2** Press `＋ 新しいジョブネット` → The 新しいジョブネット box opens in the middle with グループ and 名前; the keyboard is in 名前; the window behind takes no clicks 〔未訳〕
-- [ ] **31.3** Press 作る with a field empty; then type `a/b`, `..`, `a:b` or `締め.` as the name → `グループと名前を入れてください` and `/ \ : * ? " < > \| と、末尾の . は使えません` in red; the box stays open 〔未訳〕
-- [ ] **31.4** Type a group and a name a net already has (try other upper/lower case) → `もうあります: <group/name>`; the box stays open 〔未訳〕
-- [ ] **31.5** Type `テスト` and `新規1`, Enter → The box closes; the editor opens titled `編集 テスト/新規1（新規・未保存） *` with one job `初のジョブ`; no file is written yet 〔未訳〕
-- [ ] **31.6** Edit the job, Ctrl+S → `jobnets/テスト/新規1.toml` is written; the title loses `（新規・未保存）` and `*`; the tree shows the net under テスト as confirmed, not `未確認` 〔未訳〕
+- [ ] **31.3** [x] Press 作る with a field empty; then type `a/b`, `..`, `a:b` or `締め.` as the name → `グループと名前を入れてください` and `/ \ : * ? " < > \| と、末尾の . は使えません` in red; the box stays open 〔未訳〕
+- [ ] **31.4** [x] Type a group and a name a net already has (try other upper/lower case) → `もうあります: <group/name>`; the box stays open 〔未訳〕
+- [ ] **31.5** [x] Type `テスト` and `新規1`, Enter → The box closes; the editor opens titled `編集 テスト/新規1（新規・未保存） *` with one job `最初のジョブ`; no file is written yet 〔未訳〕
+- [ ] **31.6** [x] Edit the job, Ctrl+S → `jobnets/テスト/新規1.toml` is written; the title loses `（新規・未保存）` and `*`; the tree shows the net under テスト as confirmed, not `未確認` 〔未訳〕
 - [ ] **31.7** Right-click a group heading in the tree → このグループに新しいジョブネット → The box opens with グループ filled in; the グループ list (今あるグループ) picks another one 〔未訳〕
 - [ ] **31.8** Ctrl+N, and palette → 新しいジョブネット… (the hint says Ctrl+N) → Both open the box; Ctrl+N does nothing while the editor is open; Tab moves between the fields, Esc closes the box 〔未訳〕
-- [ ] **31.9** Open the box while the editor has unsaved changes, fill it, Enter → `編集中の変更を保存するか閉じてから作ってください`; nothing is lost 〔未訳〕
-- [ ] **31.10** Make `テスト/新規2`, then before saving write `jobnets/テスト/新規2.toml` by hand, then Ctrl+S → `もうある（ほかで作られた）: テスト/新規2。閉じて、別の名前で作り直す`; the hand-written file is unchanged; no overwrite button 〔未訳〕
-- [ ] **31.11** Make a net and press 閉じる without saving → The discard question comes first, with the keyboard on やめる (Enter keeps the editor); Tab, then Enter on 捨てて閉じる leaves no file 〔未訳〕
+- [ ] **31.9** [x] Open the box while the editor has unsaved changes, fill it, Enter → `編集中の変更を保存するか閉じてから作ってください`; nothing is lost 〔未訳〕
+- [ ] **31.10** [x] Make `テスト/新規2`, then before saving write `jobnets/テスト/新規2.toml` by hand, then Ctrl+S → `もうある（ほかで作られた）: テスト/新規2。閉じて、別の名前で作り直す`; the hand-written file is unchanged; no overwrite button 〔未訳〕
+- [ ] **31.11** [x] Make a net and press 閉じる without saving → The discard question comes first, with the keyboard on やめる (Enter keeps the editor); Tab, then Enter on 捨てて閉じる leaves no file 〔未訳〕
 - [ ] **31.12** [x] `koyomi --keys "<Wait:2500><C-n><Wait:400>shime<Enter><Wait:300><State:b><S-Tab>keiri<Enter><Wait:500><State:c><Quit>"` → `b.txt` has `make: /shime (グループと名前を入れてください)`; `c.txt` has `editor: keiri/shime dirty=true parts=1 … new=true` (with no nets yet; once a group exists, its list sits between the two fields, so press `<S-Tab>` twice) 〔未訳〕
 - [ ] **31.13** Narrator / NVDA over the box → The fields are read as グループ and 名前, the buttons by their labels; the error is read as text 〔未訳〕
 
@@ -1031,7 +1031,7 @@
 - [ ] **95.4** [x] Look at 今日 with nets that start later today and runs that ended, failed and run now → As the window's 今日: a ○ 待ち row for each start still to come (予定 and 次の回), then the runs newest first (開始・終了・時間, `…` while running); rows tinted by state; a chip per state that has rows (`✕ 異常終了 1` …) 〔未訳〕
 - [ ] **95.5** [x] Press a chip; press it again → Only that state's rows; then all again 〔未訳〕
 - [ ] **95.6** [x] Click a run row → The pane at the right: its state, `id · date · times · time taken`, the reason, and its jobs with state, times and exit code 〔未訳〕
-- [ ] **95.7** ログ on a job of it → The log tail under the jobs, secrets as `***`; while the run goes it follows 〔未訳〕
+- [ ] **95.7** [x] ログ on a job of it → The log tail under the jobs, secrets as `***`; while the run goes it follows 〔未訳〕
 - [ ] **95.8** [x] Click a 待ち row, or a net in the tree → The pane shows the net: its id, 次の回, 今日の予定 and today's runs of it (a click opens the run) 〔未訳〕
 - [ ] **95.9** [x] Reload the page → Still signed in (the cookie); refreshes every 5 s; the picked row and the focus stay through a refresh 〔未訳〕
 - [ ] **95.10** [x] 履歴, then pick a day → That day's runs; no 次の回 column; 今日 comes back to today's 〔未訳〕
@@ -1042,7 +1042,7 @@
 - [ ] **95.15** [x] Pick a running run, 強制終了 → The question starts on やめる; with 強制終了する its jobs stop (■ 強制終了); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
 - [ ] **95.16** [x] `curl -i http://127.0.0.1:8790/` → 200 with `Content-Security-Policy` (`script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 〔未訳〕
 - [ ] **95.17** [x] With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) → Refused; nothing starts 〔未訳〕
-- [ ] **95.18** Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
+- [ ] **95.18** [x] Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
 - [ ] **95.19** With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) → The same page; the cookie is `Secure` 〔未訳〕
 - [ ] **95.20** [x] Pause the schedule (`koyomi engine pause`); stop the engine → スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays 〔未訳〕
 - [ ] **95.21** With `[standby]` (or `[primary]`) on the engine; then §102's take-over and give-back → The header says which PC runs the schedules in the window's words and colours (40.5, 40.6): `待機中: … を見張っている` amber, `… から引き継いで流している（YYYY-MM-DD HH:MM から）` green, `… が待機している` grey; after a give-back the standby's chip ends `（YYYY-MM-DD HH:MM に戻した）` 〔未訳〕
@@ -1056,15 +1056,15 @@
 - [ ] **95.29** [x] As `I`, open a net a → b → c; look at the pane's 「ジョブ」 list; press 「保留」 beside b, then 「b を保留」 in the question; look at the tree → The list has a, b, c, each with 「保留」; `b を保留にしました`; b shows ⏸ and its button reads 「保留を解く」; the tree row of the net has **no** ⏸ (only b is held) and 今すぐ流す is still lit; `koyomi ops` shows `hold <group/name> b （HTTP: <user>）` 〔未訳〕
 - [ ] **95.30** [x] After 95.29, press 今すぐ流す and open the run → a runs and ends ✔; b waits as ⏸ 保留 and c is 待ち; the run does not end; each job row has 「保留」 or 「保留を解く」 (b reads 「保留を解く」), also on a (already over) 〔未訳〕
 - [ ] **95.31** [x] In that run, press 「保留を解く」 on b, then 「b の保留を解く」 in the question → `b の保留を解きました`; b and c run and the run ends ✔ (no new run appears); the ⏸ is gone from the net's 「ジョブ」 list; `koyomi ops` shows `release <group/name> b （HTTP: <user>）` 〔未訳〕
-- [ ] **95.32** (`held.toml` and `koyomi list` after a restart checked 2026-11-02; the window and the Web UI after it not yet) Hold b from the Web UI (95.29); in a shell `koyomi list`; open the window; `koyomi engine stop`, then `koyomi list` → `koyomi list` and the window (as 23.13) show b held; the hold is still on after the restart (`held.toml` has `[[jobs]]` with `net` and `job = "b"`); the Web UI shows b ⏸ again 〔未訳〕
+- [ ] **95.32** (`held.toml`, `koyomi list` and the Web UI after a restart checked 2026-11-02; the window after it not yet) Hold b from the Web UI (95.29); in a shell `koyomi list`; open the window; `koyomi engine stop`, then `koyomi list` → `koyomi list` and the window (as 23.13) show b held; the hold is still on after the restart (`held.toml` has `[[jobs]]` with `net` and `job = "b"`); the Web UI shows b ⏸ again 〔未訳〕
 - [ ] **95.33** [x] Hold b with `koyomi hold <group/name> b`; wait for the Web UI's refresh (5 s); then release b in the Web UI; `koyomi release <group/name> b` again → The pane shows b ⏸ with 「保留を解く」 without a reload; releasing works; the second release prints `保留していない: <group/name> の b` 〔未訳〕
 - [ ] **95.34** [x] As a `view` user (no `run` role on the net), open the net and a run → No 「保留」 / 「保留を解く」 button on the jobs, in the pane or in the run (⏸ still shows in the pane's 「ジョブ」 list, not in the run's table); with a `roles` entry giving `run` on another net only, this net has no buttons while the other has them; with the token of a `run` user the buttons are there 〔未訳〕
 - [ ] **95.35** [x] Press 「保留」 on b, then 「やめる」 in the question → Nothing is held; no toast; `koyomi ops` has no new line 〔未訳〕
-- [ ] **95.36** A net with a job that calls a child jobnet (`use`), and one with a branch/part job → Only the net's own jobs are listed (not the child's inside jobs, no job id with `/`); holding the calling job holds the child as 23.14 and the child's jobs show no ⏸ of their own in the tree or the pane 〔未訳〕
+- [ ] **95.36** [x] A net with a job that calls a child jobnet (`use`), and one with a branch/part job → Only the net's own jobs are listed (not the child's inside jobs, no job id with `/`); holding the calling job holds the child as 23.14 and the child's jobs show no ⏸ of their own in the tree or the pane 〔未訳〕
 - [ ] **95.37** [x] `curl -X POST /nets/hold -d '{"net":"<group/name>","job":"b"}'` as a `view` user, and as an `edit` user whose `nets` leaves the net out; then as a `run` user for a job id that is not in the net and for a job already held → `view`/outside `nets`: 403 and nothing is held; unknown job: 422 `<net> にジョブがない: x`; already held: 422 `もう保留している…`; `release` of a job not held: 422 `保留していない…`; in the page the same text shows as a red toast (e.g. a stale page pressing 「保留」 on a job held from the shell) 〔未訳〕
 - [ ] **95.38** [x] `GET /nets` with a held job, an unnamed job and a job with `name` set, as `run` and as `view` → Each net has `jobs: [{id, name, held}]` (`name` is null when unset; `held` true only for the held one); the net's own `held` stays false; the `view` user gets the same list. A job with `name` set shows that name in the list and the question (`<name> を保留にしますか？<net> のどの回も、ここに来たら待ちます`; buttons `<name> を保留` / `<name> の保留を解く`), while `koyomi ops` shows the job id 〔未訳〕
-- [ ] **95.39** Hold the net (ジョブネットを保留) and job b together; release the net only; release b → Releasing the net leaves b held (⏸ on b, a run waits there); releasing b lets runs go; each toast names what was released 〔未訳〕
-- [ ] **95.40** Hold a job, then 「再実行 ▾」 a run of that net from a job before it; hold a job of a run that is already over and start a new run → The rerun waits at the held job as 23.11 does; the over run's row shows 「保留を解く」 for it and the new run waits there 〔未訳〕
+- [ ] **95.39** [x] Hold the net (ジョブネットを保留) and job b together; release the net only; release b → Releasing the net leaves b held (⏸ on b, a run waits there); releasing b lets runs go; each toast names what was released 〔未訳〕
+- [ ] **95.40** [x] Hold a job, then 「再実行 ▾」 a run of that net from a job before it; hold a job of a run that is already over and start a new run → The rerun waits at the held job as 23.11 does; the over run's row shows 「保留を解く」 for it and the new run waits there 〔未訳〕
 
 ## 96. Another PC in the window (the PC list; TODO 80)
 
