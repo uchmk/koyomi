@@ -39,7 +39,14 @@ pub struct Look {
     pub busy: usize,
     /// Runs of today that failed and are not marked 対応済み: 未対応を見る (N) is offered while there are.
     pub errors: usize,
+    /// The newest of those, up to `LISTED`: `(run id, menu label)`.
+    pub fails: Vec<(String, String)>,
+    /// How many more there are than `fails` lists.
+    pub more: usize,
 }
+
+/// Failed runs the menu lists by name; the rest are "ほか N 件…".
+const LISTED: usize = 5;
 
 /// What a click or a menu choice asks the engine to do.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -83,7 +90,9 @@ impl Tray {
         if old.as_ref().map(|o| &o.tip) != Some(&look.tip) {
             self.tray.set_tip(&look.tip);
         }
-        if old.as_ref().map(|o| (&o.tip, o.paused, o.busy > 0, o.errors)) != Some((&look.tip, look.paused, look.busy > 0, look.errors)) {
+        if old.as_ref().map(|o| (&o.tip, o.paused, o.busy > 0, o.errors, &o.fails, o.more))
+            != Some((&look.tip, look.paused, look.busy > 0, look.errors, &look.fails, look.more))
+        {
             self.tray.set_menu(menu(t, &look, self.apart));
         }
         self.shown = Some(look);
@@ -98,7 +107,8 @@ impl Tray {
                 Event::Menu(id) => match id.as_str() {
                     "open" => front(Show::Front),
                     "today" => front(Show::Today),
-                    "failed" => front(Show::Failed),
+                    "failed" | "more" => front(Show::Failed),
+                    other if other.starts_with("run:") => front(Show::Run(other["run:".len()..].to_owned())),
                     "skipnext" => front(Show::SkipNext),
                     "pause" => out.push(Want::Pause(true)),
                     "resume" => out.push(Want::Pause(false)),
@@ -132,18 +142,15 @@ pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
         enabled: look.errors > 0,
         checked: false,
     };
-    vec![
-        head,
-        Item::Separator,
-        Item::entry("open", t.tr("tray.open")),
-        Item::entry("today", t.tr("tray.today")),
-        failed,
-        Item::Separator,
-        Item::entry("skipnext", t.tr("tray.skip_next")),
-        pause,
-        Item::Separator,
-        quit,
-    ]
+    let mut items = vec![head, Item::Separator, Item::entry("open", t.tr("tray.open")), Item::entry("today", t.tr("tray.today")), failed];
+    for (id, label) in &look.fails {
+        items.push(Item::entry(&format!("run:{id}"), label));
+    }
+    if look.more > 0 {
+        items.push(Item::entry("more", &t.trf("tray.more", &[&look.more.to_string()])));
+    }
+    items.extend([Item::Separator, Item::entry("skipnext", t.tr("tray.skip_next")), pause, Item::Separator, quit]);
+    items
 }
 
 /// The look of today's runs: every run that ended 異常 and is not marked 対応済み (`acked`, the run ids
@@ -159,6 +166,11 @@ pub fn look(t: &ito_i18n::Table, runs: &[Run], acked: &BTreeSet<String>, paused:
         }
     }
     let errors = runs.iter().filter(|r| r.is_over() && r.state.is_error() && !acked.contains(&r.id)).count();
+    let mut failed: Vec<&Run> = runs.iter().filter(|r| r.is_over() && r.state.is_error() && !acked.contains(&r.id)).collect();
+    failed.sort_by_key(|a| std::cmp::Reverse(a.started));
+    let fails: Vec<(String, String)> =
+        failed.iter().take(LISTED).map(|r| (r.id.clone(), format!("✕ {} {}", r.title, r.started.format("%H:%M")))).collect();
+    let more = errors.saturating_sub(fails.len());
     let warns = last.values().filter(|r| r.state == RunState::Warn).count();
     let running = runs.iter().filter(|r| !r.is_over()).count();
     let state = if errors > 0 {
@@ -187,7 +199,7 @@ pub fn look(t: &ito_i18n::Table, runs: &[Run], acked: &BTreeSet<String>, paused:
     if parts.is_empty() {
         parts.push(t.tr("tray.quiet").to_owned());
     }
-    Look { state, tip: format!("koyomi: {}", parts.join(t.tr("tray.sep"))), paused, busy, errors }
+    Look { state, tip: format!("koyomi: {}", parts.join(t.tr("tray.sep"))), paused, busy, errors, fails, more }
 }
 
 /// `koyomi tray`: the exit code is 0 when closed from the menu, 1 when another
@@ -255,8 +267,18 @@ fn apart_look(t: &ito_i18n::Table, view: Option<&TrayView>) -> Look {
             paused: v.paused,
             busy: v.busy,
             errors: v.errors,
+            fails: v.fails.iter().map(|f| (f.id.clone(), f.label.clone())).collect(),
+            more: v.more,
         },
-        None => Look { state: State::Disabled, tip: format!("koyomi: {}", t.tr("tray.no_engine")), paused: false, busy: 0, errors: 0 },
+        None => Look {
+            state: State::Disabled,
+            tip: format!("koyomi: {}", t.tr("tray.no_engine")),
+            paused: false,
+            busy: 0,
+            errors: 0,
+            fails: Vec::new(),
+            more: 0,
+        },
     }
 }
 
@@ -404,6 +426,24 @@ mod tests {
         let items = menu(&t, &look(&t, &failed, &BTreeSet::new(), false, 0, None), false);
         let Some(Item::Entry { label, enabled, .. }) = items.get(4) else { panic!("no failed entry") };
         assert_eq!((label.as_str(), *enabled), ("未対応を見る (2)", true));
+    }
+
+    /// The menu lists the newest unhandled failures by name (at most five), then "ほか N 件…".
+    #[test]
+    fn the_menu_lists_the_failed_runs() {
+        let t = ja();
+        let runs: Vec<Run> = (0..7).map(|i| run(&format!("g/n{i}"), at(8 + i, 0), RunState::Error)).collect();
+        let acked: BTreeSet<String> = ["g/n6-1400".to_owned()].into();
+        let l = look(&t, &runs, &acked, false, 0, None);
+        assert_eq!((l.errors, l.fails.len(), l.more), (6, 5, 1));
+        assert_eq!(l.fails[0], ("g/n5-1300".to_owned(), "✕ g/n5 13:00".to_owned()));
+        let items = menu(&t, &l, false);
+        let ids: Vec<&str> = items.iter().filter_map(|i| if let Item::Entry { id, .. } = i { Some(id.as_str()) } else { None }).collect();
+        assert_eq!(&ids[3..10], ["failed", "run:g/n5-1300", "run:g/n4-1200", "run:g/n3-1100", "run:g/n2-1000", "run:g/n1-0900", "more"]);
+        let Some(Item::Entry { label, .. }) = items.iter().find(|i| matches!(i, Item::Entry { id, .. } if id == "more")) else { panic!() };
+        assert_eq!(label, "ほか 1 件…");
+        // Nothing failed: no list.
+        assert!(look(&t, &[], &BTreeSet::new(), false, 0, None).fails.is_empty());
     }
 
     /// `koyomi tray`'s menu closes only itself, so it is never greyed, and says so.

@@ -442,6 +442,13 @@ pub struct Note {
     pub tag: String,
 }
 
+/// One failed run the tray menu lists.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrayFail {
+    pub id: String,
+    pub label: String,
+}
+
 /// What `Tray` answers: the tray's badge, tip and menu as the engine works them out.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct TrayView {
@@ -455,9 +462,15 @@ pub struct TrayView {
     /// Job processes running.
     #[serde(default)]
     pub busy: usize,
-    /// Nets whose last run of today failed (未対応を見る).
+    /// Runs of today that failed and are not marked 対応済み (未対応を見る).
     #[serde(default)]
     pub errors: usize,
+    /// The newest of those, listed in the menu.
+    #[serde(default, rename = "fail")]
+    pub fails: Vec<TrayFail>,
+    /// How many more failed runs there are than `fails` lists.
+    #[serde(default)]
+    pub more: usize,
     /// The engine has its own tray (it was not started with `--no-tray`):
     /// `koyomi tray` would only be a second icon.
     #[serde(default)]
@@ -526,6 +539,9 @@ mod tests {
             badge: "error".into(),
             tip: "koyomi: 異常 1".into(),
             busy: 2,
+            errors: 2,
+            fails: vec![TrayFail { id: "r1".into(), label: "✕ a/b 09:00".into() }],
+            more: 1,
             notes: vec![
                 Note { seq: 8, event: "failed".into(), title: "t".into(), body: "b\nc".into(), tag: String::new() },
                 Note { seq: 9, event: "failed".into(), title: "u".into(), body: "d".into(), tag: "20261030-090000-01.l".into() },

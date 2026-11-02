@@ -555,6 +555,8 @@ impl State {
             paused: look.paused,
             busy: look.busy,
             errors: look.errors,
+            fails: look.fails.into_iter().map(|(id, label)| proto::TrayFail { id, label }).collect(),
+            more: look.more,
             own: !notify::handed_to_tray(),
             notes,
             last,

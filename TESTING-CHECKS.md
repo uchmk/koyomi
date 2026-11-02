@@ -1,6 +1,6 @@
 # Checklist
 
-1062 checks in TESTING.md, 1056 left for a person.
+1063 checks in TESTING.md, 1057 left for a person.
 
 ## 1. Start
 
@@ -683,6 +683,7 @@
 - [ ] **63.6** Right-click → 今日の一覧 → The window comes forward with ガント in the detail (unless a net is open in the editor) 〔未訳〕
 - [ ] **63.6a** Right-click with nothing failed today; then run two nets that fail, mark one run 対応済み in the window, close the window, right-click → 未対応を見る (2); do it again after marking the other → 未対応を見る (0) is greyed at first; after the failures it reads 未対応を見る (2) and the window comes forward on the newest failed run not marked 対応済み (its picture and log in the detail); with every one marked it opens ガント instead. With a net open in the editor the window only comes forward. `koyomi tray` (with `engine --no-tray`) shows the same item and count 〔未訳〕
 - [ ] **63.6b** Right-click → 次の 1 回だけスキップ… → The window comes forward with the 次の 1 回だけスキップ box: each approved net on a schedule with its next time. 飛ばす fills 飛ばす回 with that time and moves 次の回 to the one after; 戻す clears it; Esc or 閉じる closes the box. A held or unapproved net is not listed. With a net open in the editor the window only comes forward 〔未訳〕
+- [ ] **63.6c** Run six nets that fail, then right-click → Under 未対応を見る (6) the menu lists the five newest as `✕ <net title> HH:MM`, then `ほか 1 件…`. Choosing a `✕` line brings the window forward on that run (its picture and log in the detail); `ほか 1 件…` does what 未対応を見る does. Mark a run 対応済み and it leaves the list within a few seconds. `koyomi tray` (with `engine --no-tray`) lists the same 〔未訳〕
 - [ ] **63.7** Right-click → スケジュールを止める → The badge turns grey –, the tip reads `スケジュールを止めている`, the window's band says the schedule is paused; the menu now reads スケジュールを戻す 〔未訳〕
 - [ ] **63.8** Right-click while a job runs → 終了（ジョブ 1 件が実行中） is greyed 〔未訳〕
 - [ ] **63.9** Right-click → 終了（エンジンを止める） with nothing running → The icon goes away; `koyomi engine status` says the engine is not running 〔未訳〕
