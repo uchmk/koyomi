@@ -53,8 +53,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "ssh" => M::Server,
         "winrm" => M::Desktop,
         "mail" => M::Mail,
-        // Until ito-prefs has a database's mark (uchmk/ito#142).
-        "sql" => M::Code,
+        "sql" => M::Database,
         _ => return None,
     })
 }
