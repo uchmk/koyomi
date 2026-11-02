@@ -1549,3 +1549,20 @@ A confirmed net `基盤/毎時` with `[[when]]` `every = "hour"`, `at = [":00", 
 | 109.10 | `koyomi plan <YYYY-MM>`, then with `--csv <file>` and `--pdf <file>`; then カレンダー's この月の予定を印刷… | Each start on the two days ends with `  ⊘ 計画停止（年末年始）`; the others are as before |
 | 109.11 | Remove `why` | The marks read `⊘ 計画停止（理由なし）` and the record's reason `計画停止（<from>〜<to>）` |
 | 109.12 | Turn on a screen reader (NVDA) and move over the band, a skipped 今日 row and a calendar chip in the stop | Each is read with the stop and its why |
+
+## 110. Send a mail with files (`kind = "mail"`; TODO 107)
+
+A `[[notify.mails]]` in koyomi.toml that can send (for example Gmail: `host = "smtp.gmail.com"`, `port = 465`, `user`, `password = "secret:gmail"` with an app password set by `koyomi secret set gmail`, `from`), and a mailbox `<you>` you can read. Two small files `D:\out\a.csv` and `D:\out\b.csv`, and a folder `D:\out\big` with a file over 18 MB.
+
+| # | Do | Expect |
+|---|---|---|
+| 110.1 | A net with a job `kind = "mail"`, `to = ["<you>"]`, `subject = "売上の集計 {date}"`, `body = "添付のとおり。\n{date} の分です。"`, `files = ['D:\out\*.csv']`; approve and run it, then open the mail | ✓; the job's log has `attached: D:\out\a.csv (… bytes)`, the same for b.csv, and `mailed: <you> (… bytes, through smtp.gmail.com)`; the mail's subject and body have today's date, the Japanese is not garbled, and a.csv and b.csv are attached with their names; nothing in the log shows the password |
+| 110.2 | Add `cc = ["名前 <another address>"]` and a second `[[notify.mails]]` with `name = "ops"`; `via = "ops"` | Both get it; the log's `through` is ops's host |
+| 110.3 | `files = ['D:\out\none.csv']`; then `files = ['D:\out\big\*']` | ✕ with exit code 255 and the reason `添付するファイルがない: D:\out\none.csv`, then `添付するファイルが大きすぎる（合わせて … MB。18 MB まで）`; no mail arrives |
+| 110.4 | `via = "経理"` (no such place); then remove every `[[notify.mails]]`; then put the place back and `koyomi secret delete <its password's secret name>` (e.g. `gmail` for `password = "secret:gmail"`) | ✕ 255 each time: `[[notify.mails]] に name = "経理" がない（あるのは ops）`, `koyomi.toml に [[notify.mails]] がない（…）`, `…パスワードを資格情報ストアから読めない（secret:gmail。…）`; `koyomi check <the net's file>` warns `注意: <job>: …` for the first two before it runs |
+| 110.5 | A wrong app password | ✕ 255, the reason `smtp.gmail.com: 送れなかった: …` in Japanese, no password in it |
+| 110.6 | `koyomi check` with, one at a time: no `to`; `to = ["ops"]`; `to = ["a@x, b@x"]`; `subject = ""`; no `subject`; `files = [""]`; 21 files; `cc` on a `kind = "http"`; `run_as` on the mail; `method` on the mail | Each is refused with its line and why in Japanese (`to が空…` or `…to が要る`, `…アドレスとして読めない…（1 つに 1 人）`, `subject が空…`, `files に空のものがある`, `files は 20 個まで`, `cc は kind = "mail" にだけ書く`, `run_as は kind = …（"mail" のほか）にだけ書く`, `method は kind = "http" にだけ書く`) |
+| 110.7 | `subject = "secret:gmail"`; `body = "secret:gmail"` | The mail's subject and body are the words `secret:gmail`, not the password |
+| 110.8 | The editor: drag メールを送る from 知らせる・呼ぶ | It shows the mail mark; the pane has 送り先 (required), CC, 件名 (required), 本文, 添付するファイル, 送るのに使う設定, timeout and retry, and no 別のアカウントで動かす and no 結果の判定; an address that is not one is marked red; two addresses on two lines and an empty line between save as `to = ["…", "…"]` |
+| 110.9 | Approve a net with a mail | The confirm box shows 送り先, CC, 件名, 本文 (lines joined with ⏎), each 添付, and 送るのに使う設定 (`最初の [[notify.mails]]` without `via`), instead of a script |
+| 110.10 | `koyomi mail`; `koyomi mail run` in a console | `koyomi: mail takes run (what a mail job does)` and exit 2; then exit 255 with `KOYOMI_MAIL_TO がない（…）` |

@@ -308,7 +308,10 @@ impl Editor {
                 if chore.far() {
                     changed |= fieldset(ui, look, t.tr("canvas.sec_judge"), form.words.optional, |ui| judge_rows(ui, form, f));
                 }
-                changed |= fieldset(ui, look, t.tr("canvas.sec_account"), "", |ui| account_rows(ui, form, f));
+                // A `mail` is sent as koyomi's own account, with its settings.
+                if !matches!(chore, Chore::Mail { .. }) {
+                    changed |= fieldset(ui, look, t.tr("canvas.sec_account"), "", |ui| account_rows(ui, form, f));
+                }
             }
             Part::Branch | Part::Notify | Part::Approval => {}
         }
@@ -534,6 +537,17 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.code(ui, "field.headers", opt, false, &mut f.headers, (2, ""));
             changed |= form.line(ui, "field.content_type", opt, false, &mut f.content_type, |i| i.mono());
             changed |= form.line(ui, "field.expect", opt, false, &mut f.expect, |i| i.mono().hint("200"));
+        }
+        Chore::Mail { .. } => {
+            // An address that is not one, unless it is still a `{…}` to fill.
+            let bad = |list: &str| list.lines().map(str::trim).any(|a| !a.is_empty() && koyomi_core::chore::mail_address(a).is_err());
+            let (to_bad, cc_bad) = (bad(&f.mail_to), bad(&f.mail_cc));
+            changed |= form.code(ui, "field.mail_to", req, to_bad, &mut f.mail_to, (2, ""));
+            changed |= form.code(ui, "field.mail_cc", opt, cc_bad, &mut f.mail_cc, (1, ""));
+            changed |= form.line(ui, "field.subject", req, false, &mut f.subject, |i| i.hint("売上の集計 {date}"));
+            changed |= form.code(ui, "field.mail_body", opt, false, &mut f.body, (4, ""));
+            changed |= form.code(ui, "field.files", opt, false, &mut f.files, (2, ""));
+            changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
         }
     }
     changed

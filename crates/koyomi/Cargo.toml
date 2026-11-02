@@ -43,7 +43,8 @@ ito-secret = { git = "https://github.com/uchmk/ito", rev = "3c5bcd88c509483fa34c
 ito-service = { git = "https://github.com/uchmk/ito", rev = "3c5bcd88c509483fa34cfae38eed46aa3f2f23b6" }
 # `[http]`: the loopback listener that starts nets and reads runs (POST /runs, GET /runs/<id>).
 ito-http = { git = "https://github.com/uchmk/ito", rev = "3c5bcd88c509483fa34cfae38eed46aa3f2f23b6", features = ["tls"] }
-# `[[when]] mail`: read-only IMAP look at new mail (TODO 84).
+# `[[when]] mail`: read-only IMAP look at new mail (TODO 84); a `kind = "mail"`
+# job's message, attachments and all (`koyomi mail run`, TODO 107).
 ito-mail = { git = "https://github.com/uchmk/ito", rev = "3c5bcd88c509483fa34cfae38eed46aa3f2f23b6" }
 # `send` and `fetch` over SFTP (`koyomi sftp run`), and `koyomi sftp hostkey`.
 ito-sftp = { git = "https://github.com/uchmk/ito", rev = "3c5bcd88c509483fa34cfae38eed46aa3f2f23b6" }

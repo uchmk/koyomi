@@ -52,6 +52,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "http" => M::Globe,
         "ssh" => M::Server,
         "winrm" => M::Desktop,
+        "mail" => M::Mail,
         _ => return None,
     })
 }
@@ -62,7 +63,7 @@ fn part_group(key: &str) -> &'static str {
         "job" | "loop" | "jobnet" | "ssh" | "winrm" => "canvas.group_basic",
         "branch" | "join" => "canvas.group_flow",
         "time" | "file" | "approval" => "canvas.group_wait",
-        "notify" | "http" => "canvas.group_tell",
+        "notify" | "http" | "mail" => "canvas.group_tell",
         _ => "canvas.group_files",
     }
 }
@@ -188,6 +189,13 @@ pub struct Fields {
     /// A `winrm`'s certificate fingerprint and how it logs in.
     pub cert: String,
     pub auth: WinrmAuth,
+    /// A `mail`'s addresses and files, one a line; its text is [`Fields::body`].
+    pub mail_to: String,
+    pub mail_cc: String,
+    pub subject: String,
+    pub files: String,
+    /// The `[[notify.mails]]` place it goes through; empty: the first.
+    pub via: String,
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
@@ -286,6 +294,14 @@ impl Fields {
                     f.cert = cert.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
                     f.auth = *auth;
+                }
+                Chore::Mail { to, cc, subject, body, files, via } => {
+                    f.mail_to = to.join("\n");
+                    f.mail_cc = cc.join("\n");
+                    f.subject = subject.clone();
+                    f.body = body.clone().unwrap_or_default();
+                    f.files = files.join("\n");
+                    f.via = via.clone().unwrap_or_default();
                 }
             },
             _ => {}
@@ -418,6 +434,14 @@ impl Fields {
                         password: opt(&self.password),
                         auth: self.auth,
                     },
+                    Chore::Mail { .. } => Chore::Mail {
+                        to: lines(&self.mail_to),
+                        cc: lines(&self.mail_cc),
+                        subject: self.subject.trim().into(),
+                        body: if self.body.trim().is_empty() { None } else { Some(self.body.clone()) },
+                        files: lines(&self.files),
+                        via: opt(&self.via),
+                    },
                 };
                 chore.check()?;
                 for p in chore.paths() {
@@ -426,8 +450,10 @@ impl Fields {
                 if chore.far() {
                     out.judge = self.judge()?;
                 }
+                // A `mail` is sent as koyomi's own account, with its settings.
+                let own = matches!(chore, Chore::Mail { .. });
                 out.part = Part::Chore(chore);
-                out.run_as = self.run_as()?;
+                out.run_as = if own { None } else { self.run_as()? };
                 out.timeout = opt_secs(&self.timeout)?;
                 out.retry = retry()?;
             }
@@ -514,6 +540,11 @@ fn opt(s: &str) -> Option<String> {
     }
 }
 
+/// A list written one a line, without the empty lines.
+fn lines(s: &str) -> Vec<String> {
+    s.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect()
+}
+
 /// The fields of the net itself.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NetFields {
@@ -582,7 +613,7 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order, group by group (see [`part_group`]).
-pub fn shelf() -> [Part; 18] {
+pub fn shelf() -> [Part; 19] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2), max: None },
@@ -602,6 +633,7 @@ pub fn shelf() -> [Part; 18] {
         Part::Chore(Chore::blank("fetch").unwrap()),
         Part::Notify,
         Part::Chore(Chore::blank("http").unwrap()),
+        Part::Chore(Chore::blank("mail").unwrap()),
     ]
 }
 
@@ -2470,6 +2502,40 @@ X-Day: 1"
         assert!(e.apply_fields(&h, &fields).is_err());
         fields.expect.clear();
         fields.method = "GET".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
+    }
+
+    #[test]
+    fn a_mail_from_the_shelf_takes_its_lists_a_line_each_and_no_account() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let blank = shelf().into_iter().find(|p| p.key() == "mail").unwrap();
+        let h = e.add(blank, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        fields.mail_to = "ops@example.com\n\n 経理 <keiri@example.com> \n".into();
+        fields.mail_cc = "boss@example.com".into();
+        fields.subject = " 売上の集計 {date} ".into();
+        fields.body = "添付のとおり。\n".into();
+        fields.files = "D:\\out\\売上.csv\nD:\\out\\*.log".into();
+        fields.via = " ops ".into();
+        // Another account would read its own settings: a mail goes as koyomi's.
+        (fields.run_as_user, fields.run_as_secret) = ("other".into(), "secret:other".into());
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let j = &e.net.jobs[1];
+        assert_eq!(j.run_as, None);
+        let Part::Chore(Chore::Mail { to, cc, subject, body, files, via }) = &j.part else { panic!() };
+        assert_eq!(to, &["ops@example.com", "経理 <keiri@example.com>"]);
+        assert_eq!(cc, &["boss@example.com"]);
+        assert_eq!(subject, "売上の集計 {date}");
+        assert_eq!(body.as_deref(), Some("添付のとおり。\n"));
+        assert_eq!(files.len(), 2);
+        assert_eq!(via.as_deref(), Some("ops"));
+        let again = Fields::of(j);
+        assert_eq!(again.mail_to, "ops@example.com\n経理 <keiri@example.com>");
+        assert_eq!((again.via.as_str(), again.files.lines().count()), ("ops", 2));
+        fields.mail_to = "ops".into();
+        assert!(e.apply_fields(&h, &fields).unwrap_err().contains("アドレス"));
+        fields.mail_to = "ops@example.com".into();
+        fields.subject.clear();
         assert!(e.apply_fields(&h, &fields).is_err());
     }
 

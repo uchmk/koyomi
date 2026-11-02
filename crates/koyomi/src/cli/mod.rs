@@ -131,6 +131,7 @@ usage: koyomi [--version | --help | env]
        koyomi ssh run                what an ssh job runs (kind = ssh): its command on the PC in on = ssh://…
        koyomi winrm cert <host>[:<port>]  the certificate a Windows PC shows for WinRM over HTTPS, as the line a winrm job takes (cert = AB:CD:…)
        koyomi winrm run              what a winrm job runs (kind = winrm): its command on the Windows PC in on = winrm://…
+       koyomi mail run               what a mail job runs (kind = mail): its mail, through a [[notify.mails]] place
        koyomi http fingerprint       this PC's certificate fingerprint for [http] lan = true, to write in another PC's [[remote]]
        koyomi remote [list]          the other PCs' engines in [[remote]] of koyomi.toml, and whether each answers
        koyomi remote peek <url>      the fingerprint https://<PC>:<port> shows, to compare with koyomi http fingerprint there
@@ -178,7 +179,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 48] = [
+const COMMANDS: [&str; 49] = [
     "check",
     "list",
     "show",
@@ -224,6 +225,7 @@ const COMMANDS: [&str; 48] = [
     "sftp",
     "ssh",
     "winrm",
+    "mail",
     "http",
     "remote",
     "mcp",
@@ -298,6 +300,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "sftp" => crate::sftp::cmd(rest),
         "ssh" => crate::ssh::cmd(rest),
         "winrm" => crate::winrm::cmd(rest),
+        "mail" => crate::mail::cmd(rest),
         "http" => crate::remote::http_cmd(rest),
         "remote" => crate::remote::cmd(rest),
         "mcp" => crate::mcp::run(),
@@ -459,9 +462,14 @@ fn check(args: &[String]) -> i32 {
         }
         // The places it names, in `koyomi.toml`: a name none has is told to no webhook and no mail.
         if let Some(config) = config {
-            let unknown = crate::notify::unknown(&crate::notify::read(&config).0, net);
+            let (n, _) = crate::notify::read(&config);
+            let unknown = crate::notify::unknown(&n, net);
             if !unknown.is_empty() {
                 out(&format!("{name}: 注意: koyomi.toml の [notify] にその名前の通知先がない: {}", unknown.join(", ")), true);
+            }
+            // A `mail` job's place to send through: one it would not find fails when it runs.
+            for w in crate::mail::unknown(&n.mail_places, net) {
+                out(&format!("{name}: 注意: {w}"), true);
             }
         }
     }

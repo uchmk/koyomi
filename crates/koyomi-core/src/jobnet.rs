@@ -697,6 +697,10 @@ struct RawJob {
     content_type: Field,
     headers: Field,
     expect: Field,
+    cc: Field,
+    subject: Field,
+    files: Field,
+    via: Field,
     shell: Field,
     script: Field,
     timeout: Field,
@@ -993,7 +997,7 @@ impl Checker<'_> {
                 "kind",
                 &[
                     "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
-                    "send", "fetch", "http", "ssh", "winrm",
+                    "send", "fetch", "http", "ssh", "winrm", "mail",
                 ],
             )
             .unwrap_or("job");
@@ -1026,15 +1030,18 @@ impl Checker<'_> {
             self.only(&j.auth, "auth", "\"winrm\"");
         }
         if kind != "http" {
-            for (field, name) in [
-                (&j.url, "url"),
-                (&j.method, "method"),
-                (&j.body, "body"),
-                (&j.content_type, "content_type"),
-                (&j.headers, "headers"),
-                (&j.expect, "expect"),
-            ] {
+            for (field, name) in
+                [(&j.url, "url"), (&j.method, "method"), (&j.content_type, "content_type"), (&j.headers, "headers"), (&j.expect, "expect")]
+            {
                 self.only(field, name, "\"http\"");
+            }
+        }
+        if kind != "http" && kind != "mail" {
+            self.only(&j.body, "body", "\"http\" か \"mail\"");
+        }
+        if kind != "mail" {
+            for (field, name) in [(&j.cc, "cc"), (&j.subject, "subject"), (&j.files, "files"), (&j.via, "via")] {
+                self.only(field, name, "\"mail\"");
             }
         }
         if kind != "join" {
@@ -1152,7 +1159,9 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" | "winrm" => Part::Chore(self.chore(j, kind, start)),
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" | "winrm" | "mail" => {
+                Part::Chore(self.chore(j, kind, start))
+            }
             _ => Part::Job,
         }
     }
@@ -1228,6 +1237,8 @@ impl Checker<'_> {
                 Chore::Winrm { on, command, cert, password, auth }
             }
             "http" => self.http(j, start),
+            // Its own fields, checked once they all read.
+            "mail" => return self.mail_job(j, start),
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
         // A missing field is already told; what is left is a root or a zip's name.
@@ -1274,6 +1285,81 @@ impl Checker<'_> {
             self.add(f.span().start, format!("command: {e}"));
         }
         s
+    }
+
+    /// `kind = "mail"`'s fields: the addresses `to` and `cc`, `subject`, `body` and
+    /// `files` (each a template), and `via`, the `[[notify.mails]]` place it goes
+    /// through. [`Chore::check`] once they all read.
+    fn mail_job(&mut self, j: &RawJob, start: usize) -> Chore {
+        let before = self.problems.len();
+        let to = match &j.to {
+            None => {
+                self.add(start, "kind = \"mail\" には to が要る（送り先のアドレスの配列。例: to = [\"ops@example.com\"]）");
+                Vec::new()
+            }
+            Some(_) => self.texts(&j.to, "to", "to = [\"ops@example.com\"]"),
+        };
+        let cc = self.texts(&j.cc, "cc", "cc = [\"boss@example.com\"]");
+        let subject = match &j.subject {
+            None => {
+                self.add(start, "kind = \"mail\" には subject が要る（件名。例: subject = \"売上の集計 {date}\"）");
+                String::new()
+            }
+            Some(f) => {
+                let s = self.string(&j.subject, "subject").unwrap_or_default();
+                if s.trim().is_empty() {
+                    self.add(f.span().start, "subject が空（メールの件名を書く）");
+                } else if let Err(e) = self.template(&s) {
+                    self.add(f.span().start, format!("subject: {e}"));
+                }
+                s
+            }
+        };
+        let body = self.string(&j.body, "body");
+        if let (Some(b), Some(f)) = (&body, &j.body) {
+            if let Err(e) = self.template(b) {
+                self.add(f.span().start, format!("body: {e}"));
+            }
+        }
+        let files = self.texts(&j.files, "files", "files = ['D:\\out\\売上.csv']");
+        let via = self.string(&j.via, "via").map(|v| v.trim().to_owned());
+        if let (Some(""), Some(f)) = (via.as_deref(), &j.via) {
+            self.add(f.span().start, "via が空（[[notify.mails]] の name を書く。書かなければ最初のもの）");
+        }
+        let chore = Chore::Mail { to, cc, subject, body, files, via: via.filter(|v| !v.is_empty()) };
+        if self.problems.len() == before {
+            if let Err(e) = chore.check() {
+                self.add(start, e);
+            }
+        }
+        chore
+    }
+
+    /// An array of texts, none empty, each a template: a `mail`'s `to`, `cc`, `files`.
+    fn texts(&mut self, field: &Field, name: &str, example: &str) -> Vec<String> {
+        let Some(f) = field.as_ref() else { return Vec::new() };
+        let at = f.span().start;
+        let shape = format!("{name} は空でない文字列の配列で書く（例: {example}）");
+        let Some(list) = f.get_ref().as_array() else {
+            self.add(at, shape);
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for v in list {
+            match v.as_str().map(str::trim) {
+                Some(s) if !s.is_empty() => {
+                    if let Err(e) = self.template(s) {
+                        self.add(at, format!("{name}: {e}"));
+                    }
+                    out.push(s.to_owned());
+                }
+                _ => {
+                    self.add(at, shape);
+                    return Vec::new();
+                }
+            }
+        }
+        out
     }
 
     /// `kind = "http"`'s fields: `url` (a template) and the rest of the call.
@@ -2348,10 +2434,12 @@ impl Checker<'_> {
                 self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
-            let run_as = if part.runs_process() {
+            // A `mail` reads the settings and the password of this account.
+            let mail = matches!(&part, Part::Chore(Chore::Mail { .. }));
+            let run_as = if part.runs_process() && !mail {
                 self.run_as(&j.run_as)
             } else {
-                self.only(&j.run_as, "run_as", "\"job\"・\"loop\"・作業の部品");
+                self.only(&j.run_as, "run_as", "\"job\"・\"loop\"・作業の部品（\"mail\" のほか）");
                 None
             };
             let timeout = if part.runs_process() || matches!(part, Part::File { .. }) {
@@ -2367,10 +2455,13 @@ impl Checker<'_> {
             let name = self.string(&j.name, "name");
             let note = self.string(&j.note, "note");
             let pos = self.pos(&j.pos);
+            // A `mail`'s `to` is its addresses, in its part.
             let to = if part == Part::Notify {
                 self.names(&j.to, "to")
             } else {
-                self.only(&j.to, "to", "\"notify\"");
+                if !mail {
+                    self.only(&j.to, "to", "\"notify\" か \"mail\"");
+                }
                 Vec::new()
             };
             jobs.push(Job { id, name, note, run, dir, after, pos, part, timeout, retry, shell, script, judge, env, encoding, to, run_as });
@@ -3070,7 +3161,7 @@ to = [\"夜間\"]
         assert_eq!(problems("format = 1\nnotify_to = [\"a\", \"a\"]\n"), ["a.toml の 2 行目: notify_to: 同じ名前が 2 つある: a"]);
         assert_eq!(
             problems("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = [\"c\"]\n"),
-            ["a.toml の 5 行目: to は kind = \"notify\" にだけ書く"]
+            ["a.toml の 5 行目: to は kind = \"notify\" か \"mail\" にだけ書く"]
         );
     }
 
@@ -3371,6 +3462,65 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(other.iter().any(|p| p.in_file("a.toml").contains("auth は kind = \"winrm\" にだけ書く")), "{other:?}");
     }
 
+    /// `kind = "mail"` takes its addresses, subject, body, files and place, and
+    /// the `retry` and `timeout` of a part; not a `run_as`, `env` or `judge`.
+    #[test]
+    fn a_mail_reads_with_its_addresses_subject_body_and_files() {
+        let parse_mail = |extra: &str| {
+            parse(&format!(
+                "format = 1\n[params]\nwho = \"ops@x\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"m\"\nkind = \"mail\"\n{extra}after = [\"a\"]\n"
+            ))
+            .map(|n| n.jobs[1].clone())
+            .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>().join("\n"))
+        };
+        let j = parse_mail(
+            "to = [' ops@example.com ', '{param:who}']\ncc = ['経理 <keiri@x>']\nsubject = '集計 {date}'\nbody = \"\"\"\n本文\n\"\"\"\nfiles = ['D:\\out\\*.csv']\nvia = ' 社内 '\nretry = { count = 2, wait = \"1m\" }\ntimeout = \"5m\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            j.part,
+            Part::Chore(Chore::Mail {
+                to: vec!["ops@example.com".into(), "{param:who}".into()],
+                cc: vec!["経理 <keiri@x>".into()],
+                subject: "集計 {date}".into(),
+                body: Some("本文\n".into()),
+                files: vec!["D:\\out\\*.csv".into()],
+                via: Some("社内".into()),
+            })
+        );
+        assert!(j.to.is_empty());
+        assert_eq!(j.retry, Some(Retry { count: 2, wait: 60 }));
+        let bad = |extra: &str| parse_mail(extra).unwrap_err();
+        assert!(bad("subject = 's'\n").contains("kind = \"mail\" には to が要る"));
+        assert!(bad("to = ['a@x']\n").contains("kind = \"mail\" には subject が要る"));
+        assert!(bad("to = 'a@x'\nsubject = 's'\n").contains("to は空でない文字列の配列で書く"));
+        assert!(bad("to = ['a@x', '']\nsubject = 's'\n").contains("to は空でない文字列の配列で書く"));
+        assert!(bad("to = []\nsubject = 's'\n").contains("to が空"));
+        assert!(bad("to = ['a@x, b@x']\nsubject = 's'\n").contains("アドレスとして読めない: a@x, b@x"));
+        assert!(bad("to = ['a@x']\ncc = ['nobody']\nsubject = 's'\n").contains("アドレスとして読めない: nobody"));
+        assert!(bad("to = ['a@x']\nsubject = ' '\n").contains("subject が空"));
+        assert!(bad("to = ['a@x']\nsubject = '{date+1q}'\n").contains("subject: {date+1q}: 単位が読めない"));
+        assert!(bad("to = ['a@x']\nsubject = 's'\nfiles = [1]\n").contains("files は空でない文字列の配列で書く"));
+        assert!(bad("to = ['a@x']\nsubject = 's'\nvia = ''\n").contains("via が空"));
+        assert!(bad("to = ['{param:nobody}']\nsubject = 's'\n").contains("nobody"));
+        for (extra, name) in [("run_as = 'ops'\n", "run_as"), ("env = { A = 'b' }\n", "env"), ("judge = { warn = '1' }\n", "judge")] {
+            assert!(bad(&format!("to = ['a@x']\nsubject = 's'\n{extra}")).contains(name), "{extra}");
+        }
+        let other = |kind: &str, extra: &str| {
+            parse(&format!("format = 1\n[[job]]\nid = \"j\"\n{kind}{extra}"))
+                .unwrap_err()
+                .iter()
+                .map(|p| p.in_file("a.toml"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for field in ["cc = ['a@x']", "subject = 's'", "files = ['a']", "via = 'x'"] {
+            let name = field.split(' ').next().unwrap();
+            assert!(other("run = [\"x\"]\n", &format!("{field}\n")).contains(&format!("{name} は kind = \"mail\" にだけ書く")), "{field}");
+        }
+        assert!(other("run = [\"x\"]\n", "body = 'x'\n").contains("body は kind = \"http\" か \"mail\" にだけ書く"));
+    }
+
     #[test]
     fn each_kind_of_part_reads() {
         let net = |kind: &str, extra: &str| {
@@ -3468,7 +3618,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\"・\"mail\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

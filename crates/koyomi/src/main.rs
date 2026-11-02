@@ -22,6 +22,7 @@ mod help;
 mod i18n;
 mod icon;
 mod keymap;
+mod mail;
 mod mcp;
 mod notify;
 mod plan;

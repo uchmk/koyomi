@@ -36,7 +36,7 @@ use crate::proto::{self, Request, Runs, Snapshot, Versions};
 mod alive;
 mod backup;
 mod events;
-mod files;
+pub(crate) mod files;
 pub mod http;
 mod logs;
 mod mails;

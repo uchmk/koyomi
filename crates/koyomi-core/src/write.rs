@@ -387,6 +387,22 @@ fn job(j: &Job, out: &mut String) {
                         push(out, "auth", &q(auth.key()));
                     }
                 }
+                Chore::Mail { to, cc, subject, body, files, via } => {
+                    push(out, "to", &list(to));
+                    if !cc.is_empty() {
+                        push(out, "cc", &list(cc));
+                    }
+                    push(out, "subject", &q(subject));
+                    if let Some(b) = body {
+                        push(out, "body", &q(b));
+                    }
+                    if !files.is_empty() {
+                        push(out, "files", &list(files));
+                    }
+                    if let Some(v) = via {
+                        push(out, "via", &q(v));
+                    }
+                }
             }
             if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } | Chore::Ssh { key: Some(k), .. } = c {
                 push(out, "key", &q(k));
@@ -656,6 +672,20 @@ auth = "ntlm"
 password = "secret:app01"
 judge = { warn = "1" }
 after = ["em"]
+
+[[job]]
+id = "ml"
+kind = "mail"
+to = ["ops@example.com", "経理 <keiri@example.co.jp>"]
+cc = ["boss@example.com"]
+subject = "売上の集計 {date}"
+body = """
+今日の分です。
+よろしくお願いします。"""
+files = ['D:\out\売上.csv', 'D:\out\logs\*.log']
+via = "社内"
+retry = { count = 2, wait = "5m" }
+after = ["win"]
 "#;
 
     #[test]

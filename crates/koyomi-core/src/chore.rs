@@ -1,12 +1,13 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
 //! files over SFTP or to and from a shared folder, call a web API, run a
-//! command on another PC over SSH or on a Windows PC over WinRM. Each is
-//! written in the file as its own `kind` and runs as a PowerShell script the
-//! engine writes when the run starts, so it has the job's slot, log, `timeout`
-//! and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh` runs
-//! `koyomi ssh run` itself, without PowerShell, and a `winrm` `koyomi winrm
-//! run`. Each reads what to do from the environment.
+//! command on another PC over SSH or on a Windows PC over WinRM, send a mail.
+//! Each is written in the file as its own `kind` and runs as a PowerShell script
+//! the engine writes when the run starts, so it has the job's slot, log,
+//! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh`
+//! runs `koyomi ssh run` itself, without PowerShell, a `winrm` `koyomi winrm
+//! run` and a `mail` `koyomi mail run`. Each reads what to do from the
+//! environment.
 
 use std::collections::BTreeMap;
 
@@ -111,6 +112,22 @@ pub enum Chore {
         #[serde(default)]
         auth: WinrmAuth,
     },
+    /// メールを送る: `subject` and `body` (plain text) to `to` and `cc`, with the
+    /// files `files` (each a path, or a folder and a name with `*` / `?`) attached,
+    /// through the `[[notify.mails]]` place named `via` (the first when none is
+    /// written). koyomi sends it itself (`koyomi mail run`).
+    Mail {
+        to: Vec<String>,
+        #[serde(default)]
+        cc: Vec<String>,
+        subject: String,
+        #[serde(default)]
+        body: Option<String>,
+        #[serde(default)]
+        files: Vec<String>,
+        #[serde(default)]
+        via: Option<String>,
+    },
 }
 
 /// How a `winrm` logs in (`auth`).
@@ -153,7 +170,7 @@ impl WinrmAuth {
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
-pub const KINDS: [&str; 9] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh", "winrm"];
+pub const KINDS: [&str; 10] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh", "winrm", "mail"];
 
 /// The methods `kind = "http"` takes.
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
@@ -181,6 +198,13 @@ pub const COMMAND_MAX: usize = 8000;
 /// The port of `winrm://` when none is written: WinRM over HTTPS.
 pub const WINRM_PORT: u16 = 5986;
 
+/// The most `files` a `mail` names, and the most files they may find.
+pub const FILES_MAX: usize = 20;
+
+/// Put before each text a `mail` gives `koyomi mail run` in the environment, so
+/// a subject or body that starts with `secret:` is not read as a secret.
+pub const MAIL_TEXT: char = '|';
+
 impl Chore {
     /// The `kind` as written, and the key of its word.
     pub fn key(&self) -> &'static str {
@@ -194,6 +218,7 @@ impl Chore {
             Chore::Http { .. } => "http",
             Chore::Ssh { .. } => "ssh",
             Chore::Winrm { .. } => "winrm",
+            Chore::Mail { .. } => "mail",
         }
     }
 
@@ -201,6 +226,12 @@ impl Chore {
     /// itself, not a script, and it keeps a job's `judge` and `env`.
     pub fn far(&self) -> bool {
         matches!(self, Chore::Ssh { .. } | Chore::Winrm { .. })
+    }
+
+    /// Whether koyomi runs it itself as `koyomi <kind> run`, not as a script: an
+    /// `ssh`, a `winrm`, a `mail`.
+    pub fn own(&self) -> bool {
+        self.far() || matches!(self, Chore::Mail { .. })
     }
 
     /// A new, empty one of `kind` (for the shelf).
@@ -222,6 +253,7 @@ impl Chore {
             },
             "ssh" => Chore::Ssh { on: String::new(), command: String::new(), key: None, host_key: None, password: None },
             "winrm" => Chore::Winrm { on: String::new(), command: String::new(), cert: None, password: None, auth: WinrmAuth::Basic },
+            "mail" => Chore::Mail { to: Vec::new(), cc: Vec::new(), subject: String::new(), body: None, files: Vec::new(), via: None },
             _ => return None,
         })
     }
@@ -265,6 +297,14 @@ impl Chore {
                 }
                 v
             }
+            Chore::Mail { to, cc, subject, body, files, .. } => {
+                let mut v = vec![("subject", subject)];
+                v.extend(to.iter_mut().map(|t| ("to", t)));
+                v.extend(cc.iter_mut().map(|c| ("cc", c)));
+                v.extend(body.iter_mut().map(|b| ("body", b)));
+                v.extend(files.iter_mut().map(|f| ("files", f)));
+                v
+            }
         }
     }
 
@@ -279,6 +319,9 @@ impl Chore {
             Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
             Chore::Ssh { on, command, key, host_key, .. } => [on, command].into_iter().chain(key).chain(host_key).collect(),
             Chore::Winrm { on, command, cert, .. } => [on, command].into_iter().chain(cert).collect(),
+            Chore::Mail { to, cc, subject, body, files, .. } => {
+                [subject].into_iter().chain(to).chain(cc).chain(body).chain(files).collect()
+            }
         }
     }
 
@@ -286,7 +329,7 @@ impl Chore {
     /// for `delete` and `empty`, a zip that does not end in `.zip`, an `sftp://`
     /// that cannot be read or is on the wrong side, an `ssh` without its host,
     /// command or host key, a `winrm` without its user, host, command, certificate
-    /// or password.
+    /// or password, a `mail` without a good address or a subject.
     pub fn check(&self) -> Result<(), String> {
         let need = |name: &str, p: &str| if p.trim().is_empty() { Err(format!("{name} が空")) } else { Ok(()) };
         match self {
@@ -400,13 +443,36 @@ impl Chore {
                     Some(_) => {}
                 }
             }
+            Chore::Mail { to, cc, subject, body, files, .. } => {
+                if to.is_empty() {
+                    return Err("to が空（送り先のアドレスを書く。例: to = [\"ops@example.com\"]）".into());
+                }
+                for a in to.iter().chain(cc) {
+                    mail_address(a)?;
+                }
+                if subject.trim().is_empty() {
+                    return Err("subject が空（メールの件名を書く）".into());
+                }
+                if subject.contains(['\r', '\n']) {
+                    return Err("subject に改行は書けない".into());
+                }
+                if body.as_ref().is_some_and(|b| b.chars().count() > BODY_MAX) {
+                    return Err(format!("body は {BODY_MAX} 文字まで"));
+                }
+                if files.len() > FILES_MAX {
+                    return Err(format!("files は {FILES_MAX} 個まで"));
+                }
+                if files.iter().any(|f| f.trim().is_empty()) {
+                    return Err("files に空のものがある".into());
+                }
+            }
         }
         Ok(())
     }
 
     /// The PowerShell script that does it, and how its exit code is judged.
-    /// The paths are already filled in. An `ssh` or `winrm` has none: [`fill`]
-    /// runs `koyomi ssh run` or `koyomi winrm run` straight.
+    /// The paths are already filled in. An `ssh`, `winrm` or `mail` has none:
+    /// [`fill`] runs `koyomi ssh run`, `koyomi winrm run` or `koyomi mail run` straight.
     pub fn script(&self) -> (String, Option<Judge>) {
         match self {
             Chore::Delete { path, pattern, keep_days } => {
@@ -471,8 +537,8 @@ impl Chore {
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 (http(url, method, body, content_type, headers, expect), None)
             }
-            // Not a script (fill()); judged by the job's own `judge`.
-            Chore::Ssh { .. } | Chore::Winrm { .. } => (String::new(), None),
+            // Not a script (fill()); judged by the job's own `judge`, a `mail` as 0 or not.
+            Chore::Ssh { .. } | Chore::Winrm { .. } | Chore::Mail { .. } => (String::new(), None),
         }
     }
 
@@ -482,7 +548,8 @@ impl Chore {
     /// (the password as `secret:<name>`, read when the job starts); an `ssh` as
     /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
     /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`),
-    /// its `auth` always (`basic` when none is written).
+    /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
+    /// for `koyomi mail run`, a list one per line, each after [`MAIL_TEXT`].
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
@@ -523,8 +590,53 @@ impl Chore {
                 }
                 v
             }
+            Chore::Mail { to, cc, subject, body, files, via } => {
+                let text = |s: &str| format!("{MAIL_TEXT}{s}");
+                let lines = |l: &[String]| text(&l.iter().map(|x| x.trim()).collect::<Vec<_>>().join("\n"));
+                let mut v = vec![("KOYOMI_MAIL_TO".to_owned(), lines(to)), ("KOYOMI_MAIL_SUBJECT".to_owned(), text(subject.trim()))];
+                if !cc.is_empty() {
+                    v.push(("KOYOMI_MAIL_CC".to_owned(), lines(cc)));
+                }
+                if let Some(b) = body {
+                    v.push(("KOYOMI_MAIL_BODY".to_owned(), text(b)));
+                }
+                if !files.is_empty() {
+                    v.push(("KOYOMI_MAIL_FILES".to_owned(), lines(files)));
+                }
+                if let Some(x) = via.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    v.push(("KOYOMI_MAIL_VIA".to_owned(), text(x)));
+                }
+                v
+            }
             _ => Vec::new(),
         }
+    }
+}
+
+/// An address of a `mail`'s `to` or `cc`: `ops@example.com` or `名前 <ops@example.com>`,
+/// as ito's mail reads it; one that starts with `{param:…}` is told once it is filled in.
+pub fn mail_address(a: &str) -> Result<(), String> {
+    let t = a.trim();
+    if t.starts_with('{') {
+        return Ok(());
+    }
+    let bare = match (t.rfind('<'), t.ends_with('>')) {
+        (Some(i), true) => Some(t[i + 1..t.len() - 1].trim()),
+        (None, false) => Some(t),
+        _ => None,
+    };
+    let good = |b: &str| {
+        b.split_once('@').is_some_and(|(l, d)| {
+            !l.is_empty()
+                && !d.is_empty()
+                && !d.contains('@')
+                && !b.chars().any(|c| c.is_whitespace() || c.is_control() || "<>\"".contains(c))
+        })
+    };
+    if !t.contains(['\r', '\n', ',', ';']) && bare.is_some_and(good) {
+        Ok(())
+    } else {
+        Err(format!("メールのアドレスとして読めない: {a}（例: ops@example.com か 名前 <ops@example.com>。1 つに 1 人）"))
     }
 }
 
@@ -598,19 +710,21 @@ fn http(
 /// the engine's ask to stop reaches it straight, and PowerShell's debugger does
 /// not take the ask and write into the log. It keeps its own `judge`, and the
 /// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`. A `winrm` the
-/// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`.
+/// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`; a `mail` as `exe mail run`.
 pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
             c.check().map_err(|e| format!("{}: {e}", j.id))?;
-            if c.far() {
+            if c.own() {
                 let op = c.key();
                 (j.shell, j.script) = (None, None);
                 j.run = [exe, op, "run"].map(str::to_owned).to_vec();
-                // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
-                let prefix = format!("KOYOMI_{}_", op.to_ascii_uppercase());
-                let names = j.env.keys().filter(|k| !k.starts_with(&prefix)).map(String::as_str).collect::<Vec<_>>().join(",");
-                j.env.insert(format!("{prefix}ENV"), names);
+                if c.far() {
+                    // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
+                    let prefix = format!("KOYOMI_{}_", op.to_ascii_uppercase());
+                    let names = j.env.keys().filter(|k| !k.starts_with(&prefix)).map(String::as_str).collect::<Vec<_>>().join(",");
+                    j.env.insert(format!("{prefix}ENV"), names);
+                }
             } else {
                 let (script, judge) = c.script();
                 (j.shell, j.script, j.judge) = (Some("powershell".to_owned()), Some(script), judge);
@@ -1180,5 +1294,81 @@ mod tests {
             *content_type = Some("text/plain".into());
         }
         assert!(typed.check().unwrap_err().contains("body を書いたときだけ"));
+    }
+
+    fn mail(to: &[&str], subject: &str, body: Option<&str>, files: &[&str]) -> Chore {
+        Chore::Mail {
+            to: to.iter().map(|t| t.to_string()).collect(),
+            cc: Vec::new(),
+            subject: subject.into(),
+            body: body.map(Into::into),
+            files: files.iter().map(|f| f.to_string()).collect(),
+            via: None,
+        }
+    }
+
+    #[test]
+    fn a_mail_address_is_one_person_as_ito_reads_it() {
+        for good in ["ops@example.com", " 経理 <keiri@example.co.jp> ", "\"Ops Team\" <ops@x>", "{param:who}"] {
+            assert_eq!(mail_address(good), Ok(()), "{good}");
+        }
+        for bad in ["", "ops", "@x", "a@", "a@b@c", "a b@x", "a@x, b@x", "a@x;b@x", "名前 <a@x", "a@x>", "a@x\nBcc: c@x", "<a b@x>"] {
+            assert!(mail_address(bad).unwrap_err().contains("アドレスとして読めない"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_mail_that_cannot_be_sent_as_written_is_refused() {
+        assert_eq!(mail(&["ops@x"], "報告 {date}", Some("本文"), &["D:\\out\\*.csv"]).check(), Ok(()));
+        assert!(mail(&[], "s", None, &[]).check().unwrap_err().contains("to が空"));
+        assert!(mail(&["ops"], "s", None, &[]).check().unwrap_err().contains("アドレス"));
+        assert!(mail(&["ops@x"], " ", None, &[]).check().unwrap_err().contains("subject が空"));
+        assert!(mail(&["ops@x"], "a\r\nBcc: c@x", None, &[]).check().unwrap_err().contains("改行"));
+        assert!(mail(&["ops@x"], "s", Some(&"a".repeat(BODY_MAX + 1)), &[]).check().unwrap_err().contains("文字まで"));
+        assert!(mail(&["ops@x"], "s", None, &["a"; FILES_MAX + 1]).check().unwrap_err().contains("個まで"));
+        assert!(mail(&["ops@x"], "s", None, &["a", " "]).check().unwrap_err().contains("空のもの"));
+        let mut cc = mail(&["ops@x"], "s", None, &[]);
+        if let Chore::Mail { cc, .. } = &mut cc {
+            cc.push("bad".into());
+        }
+        assert!(cc.check().unwrap_err().contains("bad"));
+    }
+
+    #[test]
+    fn a_mail_leaves_the_work_to_koyomi_and_marks_its_texts() {
+        let mut m = mail(&[" ops@x ", "名前 <b@x>"], " secret:x ", Some("本文\n2 行目"), &["D:\\a.csv", "D:\\b\\*.log"]);
+        if let Chore::Mail { cc, via, .. } = &mut m {
+            *cc = vec!["c@x".into()];
+            *via = Some(" ops ".into());
+        }
+        assert_eq!(m.script(), (String::new(), None));
+        assert!(m.own() && !m.far());
+        let env = m.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_MAIL_TO"), Some("|ops@x\n名前 <b@x>"));
+        assert_eq!(get("KOYOMI_MAIL_CC"), Some("|c@x"));
+        // Never read as a secret: it starts with `|`.
+        assert_eq!(get("KOYOMI_MAIL_SUBJECT"), Some("|secret:x"));
+        assert_eq!(get("KOYOMI_MAIL_BODY"), Some("|本文\n2 行目"));
+        assert_eq!(get("KOYOMI_MAIL_FILES"), Some("|D:\\a.csv\nD:\\b\\*.log"));
+        assert_eq!(get("KOYOMI_MAIL_VIA"), Some("|ops"));
+        let bare = mail(&["ops@x"], "s", None, &[]).env();
+        assert_eq!(bare.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["KOYOMI_MAIL_TO", "KOYOMI_MAIL_SUBJECT"]);
+        // Every text is filled in: the subject, each address, the body, each file.
+        assert_eq!(m.paths().len(), 1 + 2 + 1 + 1 + 2);
+    }
+
+    #[test]
+    fn fill_runs_a_mail_as_koyomi_without_a_script() {
+        let mut net = crate::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"m\"\nkind = \"mail\"\nto = [\"ops@x\"]\nsubject = \"done\"\nfiles = ['D:\\out\\a.csv']\n",
+        )
+        .unwrap();
+        fill(&mut net, "C:\\koyomi\\koyomi.exe").unwrap();
+        let m = &net.jobs[0];
+        assert_eq!((m.shell.as_deref(), m.script.as_deref(), m.judge.as_ref()), (None, None, None));
+        assert_eq!(m.run, ["C:\\koyomi\\koyomi.exe", "mail", "run"]);
+        assert_eq!(m.env.get("KOYOMI_MAIL_FILES").map(String::as_str), Some("|D:\\out\\a.csv"));
+        assert!(!m.env.contains_key("KOYOMI_MAIL_ENV"));
     }
 }

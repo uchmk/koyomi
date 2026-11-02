@@ -278,6 +278,22 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             v.push(line("expect", &codes));
             v
         }
+        // Who it goes to and what goes with it are what is approved.
+        Chore::Mail { to, cc, subject, body, files, via } => {
+            let mut v = vec![line("mail_to", &to.join(", "))];
+            if !cc.is_empty() {
+                v.push(line("mail_cc", &cc.join(", ")));
+            }
+            v.push(line("subject", subject));
+            if let Some(b) = body {
+                v.push(line("mail_body", &b.replace('\n', " ⏎ ")));
+            }
+            for f in files {
+                v.push(line("files", f));
+            }
+            v.push(line("via", via.as_deref().unwrap_or(t.tr("review.via_first"))));
+            v
+        }
     }
 }
 
