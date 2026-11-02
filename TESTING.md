@@ -1599,3 +1599,26 @@ Two PCs you reach over ssh (WSL, a Linux VM, the Proxmox host…), called pc1 an
 | 112.10 | In the editor, max `65`, then save; then max `2` and どれか 1 台が正常, and save | `65` is red and saving says `max は 1 から 64 までの数で書く: "65"`; the second saves `max = 2` and `pass = "any"` |
 | 112.11 | Open the net's approval | It shows `同時に動かす PC の数: 2` and `正常とするのは: どれか 1 台が正常のとき`; the change to `pass` left the net to be confirmed again |
 | 112.12 | Windows PCs with WinRM over HTTPS: `[groups]` `app = [{ on = "winrm://ops@app01", cert = "<its>" }, { on = "winrm://ops@app02", cert = "<its>" }]`, a `kind = "winrm"` job with `on = "group:app"`, `command = "hostname"`, `password = "secret:<name>"`, `max = 2` | Both run, each line marked `[app01]` or `[app02]`; ✓ |
+
+## 113. Use a definition from a day (`koyomi stage`; TODO 110)
+
+A confirmed net, 経理/締め here, with a job `a` that runs `cmd /c echo old`. A copy of its file, `next.toml` on the desktop, with `echo new` in its place.
+
+| # | Do | Expect |
+|---|---|---|
+| 113.1 | Open the net in the editor; change `a` to `echo new`; press この日から使う | A row 使い始める日 opens with the first of next month; 保存 is greyed, and its tip says 「この日から使う」を閉じると保存できます |
+| 113.2 | Type today's date; then a later day; then undo the change (Ctrl+Z) and redo it | Today: 明日より後の日を選びます and 置く… is greyed; a later day: 置く… can be pressed; undone: 今の定義と同じです。変えてから置きます, greyed again |
+| 113.3 | Press 置く… (or Enter in the day) | A box 「<day> からこの形にする」 with the file, the day and the change `- echo old` / `+ echo new`; Esc closes it and nothing is staged |
+| 113.4 | Again, and press 承認して置く | `<day> から使う定義を置いた: 経理/締め（それまでは今の定義で流す）`; the editor shows the net as it is (`echo old`), with a button 「<day> から次の定義」 by the title; the tree shows `→M/D` on the net; the detail shows `→ <day> から次の定義に切り替わる` and 次の定義を見る |
+| 113.5 | Run the net now | It runs `echo old` |
+| 113.6 | Press 次の定義を見る | A box with the change, 承認: 承認済み（その日に確認済みで入る）, and 編集に読み込む / 閉じる / 置いた定義をやめる; 閉じる and Esc leave it staged |
+| 113.7 | 編集に読み込む; change `echo new` to `echo newer`; 置く… and 承認して置く | The editor opens on `echo new` with the day row on its day, and Ctrl+Z goes back to `echo old`; once staged again, there is still one next definition, now `echo newer` |
+| 113.8 | `koyomi list`; `koyomi show 経理/締め` | `→ <day> から次の定義: 経理/締め`; in show, `→ <day> から次の定義に切り替わる（koyomi stage 経理/締め --cancel でやめる）` |
+| 113.9 | `koyomi stage 経理/締め --cancel` | `<day> から使う定義をやめた: 経理/締め（今の定義のまま流す）`; the tree and the detail no longer show it; a second `--cancel` says `経理/締め に次の定義は置いていない` and exits 1 |
+| 113.10 | `koyomi stage 経理/締め <desktop>\next.toml --from <tomorrow>` and answer `n`; again with `y` | The change is shown, then `経理/締め: 置かなかった` (exit 1); with `y`, `<tomorrow> から使う定義を置いた: …` |
+| 113.11 | `koyomi stage 経理/締め <the net's own file> --from <tomorrow>`; `--from <today>`; `--from 12/1`; a file with `format = [` | `今の定義と同じ中身: 経理/締め`; `<today> は今日か過ぎた日。今日から使うなら、ふつうに保存する`; `日付は YYYY-MM-DD で書く: 12/1`; `置けない: …` with the fault in the file. None is staged |
+| 113.12 | Leave the engine up over midnight into the staged day (or stop it, set the PC's date to that day, start it) | At 0:00 `経理/締め を <day> からの定義にした` (a notice 定義を切り替えた, where notices go); the net's file is the next one, the net is ✓ confirmed, the old one is in its versions, and the net runs `echo new`; nothing is staged any more |
+| 113.13 | Stage again; in the state folder's `next.toml`, change the text by hand; switch as in 113.12 | The box in 113.6 says 置いたあとで手で直された（その日は未確認で入る）; after the switch the net is ▲ unconfirmed (…未確認。確かめるまで流さない) and does not run till approved |
+| 113.14 | Stage again; break the text in `next.toml` (`format = [`); switch as in 113.12 | A notice 定義を切り替えられなかった; a caution `経理/締め を <day> からの定義に切り替えられなかった（今までの定義のまま）: …`; the net runs `echo old`. Fix or drop it (`--cancel`) and the caution goes |
+| 113.15 | Break `next.toml` itself (`next = [[`) | A warning names `next.toml`; `koyomi stage` and 置く… are refused and the file is left as it was |
+| 113.16 | Stage a net, then rename it (and a net that uses it) in the window; then delete it | The staged definition follows the new name (and the user's `use =` points at it); after the delete nothing is staged for it |

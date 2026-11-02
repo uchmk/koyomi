@@ -38,7 +38,7 @@ const HA_POLL: Duration = Duration::from_secs(30);
 
 enum Msg {
     Starting,
-    Snapshot(Snapshot),
+    Snapshot(Box<Snapshot>),
     Runs(Runs),
     /// The tail of one job's log: run, job, text.
     Log(String, String, String),
@@ -435,6 +435,8 @@ pub struct Browser {
     give: Option<Give>,
     /// The 次の 1 回だけスキップ box the tray opens, while it is up.
     skip_pick: bool,
+    /// The 次の定義 box: the net whose staged definition it shows.
+    staged_box: Option<String>,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
     /// Another PC's engine, when the PC list at the top picks one (TODO 80).
@@ -482,7 +484,7 @@ impl Browser {
                 Err(mpsc::RecvTimeoutError::Disconnected) => return,
             }
             let m = match client::call(&Request::List).and_then(|t| Snapshot::parse(&t)) {
-                Ok(s) => Msg::Snapshot(s),
+                Ok(s) => Msg::Snapshot(Box::new(s)),
                 Err(e) => Msg::Down(e),
             };
             if !send(m) {
@@ -586,6 +588,7 @@ impl Browser {
             cal_deleting: None,
             give: None,
             skip_pick: false,
+            staged_box: None,
             easy: None,
             ha: None,
         }
@@ -633,7 +636,7 @@ impl Browser {
                     let timed =
                         s.defs.iter().any(|d| d.standing == Standing::Confirmed && d.net.as_ref().is_some_and(|n| !n.when.is_empty()));
                     self.autostart_off = timed && !ito_common::startup::enabled("koyomi");
-                    self.snap = Some(s);
+                    self.snap = Some(*s);
                 }
                 Msg::Runs(r) => {
                     let now: BTreeSet<String> = r.runs.iter().filter(|r| r.is_over()).map(|r| r.id.clone()).collect();
@@ -728,6 +731,23 @@ impl Browser {
                         }
                     }
                 }
+                Msg::Answer(Request::Stage { id, .. }, r) => {
+                    // Staged from the editor: it goes back to the net as it is; the button by the title shows the day.
+                    let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
+                    match &mut self.editor {
+                        Some(e) if e.id == id => {
+                            if let (Ok(_), Some(def)) = (&r, &def) {
+                                e.reload(def);
+                            }
+                            e.result = Some(r);
+                        }
+                        _ => self.result = Some(r),
+                    }
+                }
+                Msg::Answer(Request::Unstage { id }, r) => match &mut self.editor {
+                    Some(e) if e.id == id => e.result = Some(r),
+                    _ => self.result = Some(r),
+                },
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -836,7 +856,8 @@ impl Browser {
             || self.cal_deleting.is_some()
             || self.give.is_some()
             || self.skip_pick
-            || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing)
+            || self.staged_box.is_some()
+            || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
     }
 
     fn blocked(&self) -> bool {
@@ -1400,6 +1421,20 @@ impl Browser {
             canvas::Action::Flow => self.set_flow(!self.vertical),
             canvas::Action::Close => self.editor = self.editors.pop(),
             canvas::Action::NewCalendar => self.new_cal_box_for_net(),
+            canvas::Action::Stage(from) => {
+                if let Some(e) = &mut self.editor {
+                    e.result = None;
+                    e.stage_ask = Some(from);
+                    self.focus = 0;
+                }
+            }
+            canvas::Action::Staged => match self.editor.as_ref().map(|e| e.id.clone()) {
+                Some(id) if !self.box_open() => {
+                    self.staged_box = Some(id);
+                    self.focus = 0;
+                }
+                _ => {}
+            },
             canvas::Action::Enter(id) => {
                 let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
                 let opened = def.as_ref().ok_or_else(|| format!("ジョブネットがない: {id}")).and_then(canvas::Editor::open);
@@ -1422,7 +1457,8 @@ impl Browser {
         let power = self.snap.as_ref().map(|s| &s.power).unwrap_or(&no_power);
         let defs = self.snap.as_ref().map(|s| s.defs.as_slice()).unwrap_or(&[]);
         let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
-        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs };
+        let staged = self.snap.as_ref().map(|s| s.staged.as_slice()).unwrap_or(&[]);
+        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -1470,6 +1506,43 @@ impl Browser {
             }
             return;
         }
+        if let Some(from) = e.stage_ask.clone() {
+            let Some(def) = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == e.id)).cloned() else {
+                if let Some(e) = &mut self.editor {
+                    e.stage_ask = None;
+                }
+                return;
+            };
+            let text = e.text();
+            let diff = ito_diff::diff(&def.text, &text, 3);
+            let rows = [(t.tr("review.file").to_owned(), def.file.clone()), (t.tr("canvas.stage_from").to_owned(), from.clone())];
+            let body = [t.tr("canvas.stage_body").to_owned()];
+            let buttons = [t.tr("canvas.stage_yes").to_owned(), t.tr("canvas.cancel").to_owned()];
+            let title = t.trf("canvas.stage_title", &[&from]);
+            let q = ito_confirm::Question {
+                title: &title,
+                rows: &rows,
+                body: &body,
+                diff: &diff,
+                buttons: &buttons,
+                marks: &[Some(ito_prefs::Mark::CalendarCheck), Some(ito_prefs::Mark::Close)],
+                focus: Some(self.focus),
+                primary: Some(0),
+                ..Default::default()
+            };
+            let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+            let Some(e) = &mut self.editor else { return };
+            match answer {
+                Some(0) => {
+                    e.stage_ask = None;
+                    e.result = None;
+                    let _ = self.tx.send(Request::Stage { id: e.id.clone(), text, from });
+                }
+                Some(_) => e.stage_ask = None,
+                None => {}
+            }
+            return;
+        }
         if e.closing {
             let body = [t.tr("canvas.close_body").to_owned()];
             let buttons = [t.tr("canvas.close_yes").to_owned(), t.tr("canvas.close_no").to_owned()];
@@ -1508,6 +1581,7 @@ impl Browser {
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;
         let closing = self.editor.as_ref().is_some_and(|e| e.closing);
+        let asking_stage = self.editor.as_ref().is_some_and(|e| e.stage_ask.is_some());
         if closing && !self.close_asked {
             // The safe button first: Enter on a fresh box does not throw the changes away.
             self.focus = 1;
@@ -1520,11 +1594,15 @@ impl Browser {
             || conflict
             || closing
             || port.is_some()
-            || making;
+            || making
+            || asking_stage
+            || self.staged_box.is_some();
         let buttons = if self.vers.is_some() {
             4
-        } else if conflict {
+        } else if conflict || self.staged_box.is_some() {
             3
+        } else if asking_stage {
+            2
         } else {
             port.map_or(2, |(n, _)| n)
         };
@@ -1724,7 +1802,7 @@ impl Browser {
             self.asking.is_some(),
             self.killing.is_some(),
             self.deleting.is_some(),
-            self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || closing,
+            self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.stage_ask.is_some()) || closing,
             self.vers.is_some(),
             self.port.is_some(),
             self.make.is_some(),
@@ -1732,6 +1810,7 @@ impl Browser {
             self.new_cal.is_some(),
             self.cal_deleting.is_some(),
             self.skip_pick,
+            self.staged_box.is_some(),
         ];
         let first = open.iter().position(|o| *o);
         let key_for = |i: usize| if first == Some(i) { key } else { None };
@@ -1746,6 +1825,7 @@ impl Browser {
         self.confirm_new_cal(&ctx, t, key_for(8));
         self.confirm_cal_delete(&ctx, t, key_for(9));
         self.confirm_skip_next(&ctx, t, key_for(10));
+        self.confirm_staged(&ctx, t, key_for(11));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -1874,6 +1954,15 @@ impl Browser {
             if snap.held_jobs.iter().any(|h| h.net == d.id) {
                 tail.push(format!("{} {}", State::Held.mark(), t.tr("state.job_held")));
             }
+            // A next definition staged for a day: the day, short, and in full to a reader.
+            let staged = snap
+                .staged
+                .iter()
+                .find(|e| e.id == d.id)
+                .map(|e| (format!("→{}", e.from.format("%-m/%-d")), t.trf("staged.note", &[&e.from.to_string()])));
+            if let Some((short, _)) = &staged {
+                tail.push(short.clone());
+            }
             let tail = tail.join("  ");
             let text = if tail.is_empty() { head.clone() } else { format!("{head}  {tail}") };
             // On the overview (no net open) the row picked there is marked here too.
@@ -1895,6 +1984,11 @@ impl Browser {
                         }
                 }
                 None => text,
+            };
+            let said = match &staged {
+                Some((short, long)) if said.contains(short.as_str()) => said.replace(short.as_str(), long),
+                Some((_, long)) => format!("{said}, {long}"),
+                None => said,
             };
             ito_a11y::say(&r, Role::Row, &said);
             if r.clicked() {
@@ -2575,6 +2669,97 @@ impl Browser {
         }
         if close {
             self.skip_pick = false;
+        }
+    }
+
+    /// The 次の定義 box: the change from the net now to what is staged for a day, loaded into the
+    /// editor to change it, or dropped.
+    fn confirm_staged(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(id) = self.staged_box.clone() else { return };
+        let found = self.snap.as_ref().and_then(|s| {
+            let entry = s.staged.iter().find(|e| e.id == id)?.clone();
+            let def = s.defs.iter().find(|d| d.id == id)?.clone();
+            Some((entry, def))
+        });
+        let Some((entry, def)) = found else {
+            self.staged_box = None;
+            return;
+        };
+        let from = entry.from.to_string();
+        let diff = ito_diff::diff(&def.text, &entry.text, 3);
+        let standing = if entry.approved() { t.tr("staged.approved") } else { t.tr("staged.hand") };
+        let rows = [
+            (t.tr("review.file").to_owned(), def.file.clone()),
+            (t.tr("staged.from").to_owned(), from.clone()),
+            (t.tr("staged.standing").to_owned(), standing.to_owned()),
+        ];
+        let body = [t.tr("staged.body").to_owned()];
+        let buttons = [t.tr("staged.edit").to_owned(), t.tr("staged.close").to_owned(), t.tr("staged.cancel").to_owned()];
+        let title = t.trf("staged.title", &[&from]);
+        let q = ito_confirm::Question {
+            title: &title,
+            rows: &rows,
+            body: &body,
+            diff: &diff,
+            buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Pencil), Some(ito_prefs::Mark::Close), Some(ito_prefs::Mark::Trash)],
+            focus: Some(self.focus),
+            primary: Some(0),
+            ..Default::default()
+        };
+        let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+        match answer {
+            Some(0) => self.take_staged(t, &entry),
+            Some(2) => {
+                self.result = None;
+                let _ = self.tx.send(Request::Unstage { id });
+            }
+            _ => {}
+        }
+        if answer.is_some() {
+            self.staged_box = None;
+        }
+    }
+
+    /// 編集に読み込む: the staged text into the editor (opened on the net when it is not), the day
+    /// row open on its day; undo goes back to the net as it is.
+    fn take_staged(&mut self, t: &ito_i18n::Table, entry: &koyomi_core::next::Entry) {
+        let here = self.editor.as_ref().is_some_and(|e| e.id == entry.id);
+        if !here {
+            if self.editor.iter().chain(&self.editors).any(|e| e.dirty) {
+                let busy = Err(t.tr("staged.busy").to_owned());
+                match &mut self.editor {
+                    Some(e) => e.result = Some(busy),
+                    None => self.result = Some(busy),
+                }
+                return;
+            }
+            self.open_editor(&entry.id);
+        }
+        if let Some(e) = self.editor.as_mut().filter(|e| e.id == entry.id) {
+            if let Err(m) = e.take_next(&entry.text, &entry.from.to_string()) {
+                e.result = Some(Err(m));
+            }
+        }
+    }
+
+    /// Under the net's buttons: the day a next definition takes over, and a button to see it.
+    fn staged_note(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str) {
+        let Some(from) = self.snap.as_ref().and_then(|s| s.staged.iter().find(|e| e.id == id)).map(|e| e.from.to_string()) else {
+            return;
+        };
+        let c = ito_theme::colors();
+        let see = ui
+            .horizontal_wrapped(|ui| {
+                let text = format!("→ {}", t.trf("staged.note", &[&from]));
+                let r = ui.label(egui::RichText::new(&text).color(c.dim));
+                ito_a11y::say(&r, Role::Label, &text);
+                ito_prefs::IconButton::new(ito_prefs::Mark::Calendar, t.tr("staged.see")).show(ui).clicked()
+            })
+            .inner;
+        if see && !self.box_open() {
+            self.staged_box = Some(id.to_owned());
+            self.focus = 0;
         }
     }
 
@@ -3431,6 +3616,7 @@ impl Browser {
             let r = ui.label(egui::RichText::new(&text).color(graph::colour(&c, State::Held)));
             ito_a11y::say(&r, Role::Label, &text);
         }
+        self.staged_note(ui, t, &def.id);
         self.show_result(ui);
         let section = |ui: &mut egui::Ui, key: &str| {
             ui.add_space(12.0);
@@ -3540,6 +3726,7 @@ impl Browser {
             let r = ui.label(egui::RichText::new(&text).color(graph::colour(&c, State::Held)));
             ito_a11y::say(&r, Role::Label, &text);
         }
+        self.staged_note(ui, t, &def.id);
         self.show_result(ui);
         ui.add_space(6.0);
         for p in &def.problems {
@@ -4694,6 +4881,7 @@ mod tests {
             cal_deleting: None,
             give: None,
             skip_pick: false,
+            staged_box: None,
             easy: None,
             ha: None,
         }
@@ -5709,6 +5897,67 @@ run = [\"x.exe\"]
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// TODO 110: the editor stages its net for a day; the tree and the detail tell it, and its box
+    /// loads it back into the editor or drops it.
+    #[test]
+    fn the_editor_stages_a_definition_for_a_day() {
+        use canvas::Action;
+        let defs = defs();
+        let id = defs[0].id.clone();
+        let (tx, rx_req) = mpsc::channel();
+        let mut b = quiet(defs);
+        b.tx = tx;
+        b.open_editor(&id);
+        let e = b.editor.as_mut().unwrap();
+        e.add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
+        let text = e.text();
+        e.stage = Some("2099-12-01".into());
+        assert!(!e.can_save(), "with the day row open it is staged, not saved");
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        b.act(Action::Stage("2099-12-01".into()));
+        frame(&ctx, size, Vec::new(), &mut b);
+        assert!(b.box_open(), "asked first");
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        match rx_req.try_recv() {
+            Ok(Request::Stage { id: i, text: x, from }) => {
+                assert_eq!((i.as_str(), x.as_str(), from.as_str()), (id.as_str(), text.as_str(), "2099-12-01"))
+            }
+            other => panic!("not a stage: {other:?}"),
+        }
+        let staged = Request::Stage { id: id.clone(), text: text.clone(), from: "2099-12-01".into() };
+        b.io.0.send(Msg::Answer(staged, Ok("置いた".into()))).unwrap();
+        frame(&ctx, size, Vec::new(), &mut b);
+        let e = b.editor.as_ref().unwrap();
+        assert!(!e.dirty && e.stage.is_none() && e.stage_ask.is_none(), "back to the net as it is");
+        assert_eq!(e.result, Some(Ok("置いた".to_owned())));
+        // The engine tells it back: the tree and the detail show the day, and the box loads it.
+        let from = chrono::NaiveDate::from_ymd_opt(2099, 12, 1).unwrap();
+        let sha256 = koyomi_core::approved::hash(text.as_bytes());
+        b.snap.as_mut().unwrap().staged.push(koyomi_core::next::Entry { id: id.clone(), from, sha256, base: None, text: text.clone() });
+        b.editor = None;
+        b.selected = Some(id.clone());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(says(&s, "2099-12-01 から次の定義に切り替わる"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+        s.click("次の定義を見る", &mut b);
+        assert_eq!(b.staged_box.as_deref(), Some(id.as_str()));
+        s.show(key(egui::Key::Enter), &mut b);
+        assert!(b.staged_box.is_none());
+        let e = b.editor.as_ref().expect("opened on the net");
+        assert!(e.dirty && e.stage.as_deref() == Some("2099-12-01") && e.text() == text, "{}", e.report());
+        // From the editor: the button by the title opens the box, and it drops what was staged.
+        s.settle(&mut b);
+        s.click("2099-12-01 から次の定義", &mut b);
+        assert_eq!(b.staged_box.as_deref(), Some(id.as_str()));
+        b.focus = 2;
+        s.show(key(egui::Key::Enter), &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Unstage { id: i }) if i == id));
+        assert!(b.staged_box.is_none());
     }
 
     #[test]

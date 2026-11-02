@@ -111,6 +111,12 @@ usage: koyomi [--version | --help | env]
                                      read; with --apply they are written so (unconfirmed; the old form is kept as a version)
        koyomi delete <group/name>    take the net away on `y` (kept as a version: restore brings it back);
                                      refused while other nets use it
+       koyomi stage <group/name> <file> --from YYYY-MM-DD
+                                     use <file> as the net from that day's first time on: the change from the
+                                     net now is shown, and `y` approves and keeps it (one per net); until that day
+                                     the net runs as it is
+       koyomi stage <group/name> --cancel
+                                     drop what was staged: the net runs as it is
        koyomi export -o <file> [-n <group/name>]... [--group <group>] [--calendars] [--settings] [--all]
                                      write those definitions (with their group file, calendar and child nets),
                                      the calendars, koyomi.toml (webhook addresses as ***) or everything as one file
@@ -179,7 +185,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 49] = [
+const COMMANDS: [&str; 50] = [
     "check",
     "list",
     "show",
@@ -215,6 +221,7 @@ const COMMANDS: [&str; 49] = [
     "copy",
     "replace",
     "delete",
+    "stage",
     "export",
     "import",
     "engine",
@@ -289,6 +296,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "copy" => copy(rest),
         "replace" => replace(rest),
         "delete" => delete(rest),
+        "stage" => stage(rest),
         "export" => export(rest),
         "import" => import(rest),
         "engine" => engine_cmd(rest),
@@ -651,6 +659,9 @@ fn list(args: &[String]) -> i32 {
     for line in review::tree(&table(), &snap.defs, &snap.held) {
         out(&line, false);
     }
+    for e in snap.staged.iter().filter(|e| group.as_ref().is_none_or(|g| e.id.starts_with(&format!("{g}/")))) {
+        out(&format!("→ {} から次の定義: {}", e.from, e.id), false);
+    }
     0
 }
 
@@ -681,6 +692,9 @@ fn show_cmd(args: &[String]) -> i32 {
         head.push_str(&format!("  {} {}", State::Held.mark(), t.tr("run.hold")));
     }
     out(&head, false);
+    if let Some(e) = snap.staged.iter().find(|e| e.id == def.id) {
+        out(&format!("→ {} から次の定義に切り替わる（koyomi stage {} --cancel でやめる）", e.from, def.id), false);
+    }
     for p in &def.problems {
         out(&p.in_file(&def.file), true);
     }
@@ -1590,6 +1604,57 @@ fn delete(args: &[String]) -> i32 {
         return fail(&format!("{id}: 消さなかった"));
     }
     ask_and_say(&Request::Delete { id })
+}
+
+/// `koyomi stage <group/name> <file> --from YYYY-MM-DD`, or `koyomi stage <group/name> --cancel`.
+fn stage(args: &[String]) -> i32 {
+    let (mut from, mut cancel, mut rest) = (None, false, Vec::new());
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        match a.as_str() {
+            "--from" => match it.next() {
+                Some(d) => from = Some(d.clone()),
+                None => return usage("--from takes a day (YYYY-MM-DD)"),
+            },
+            "--cancel" => cancel = true,
+            _ => rest.push(a.replace('\\', "/")),
+        }
+    }
+    match (rest.as_slice(), from, cancel) {
+        ([id], None, true) => ask_and_say(&Request::Unstage { id: id.clone() }),
+        ([id, file], Some(from), false) => stage_file(id, file, &from),
+        _ => usage("stage takes a group/name, a file and --from YYYY-MM-DD, or a group/name and --cancel"),
+    }
+}
+
+/// The change from the net's file now to `file`, then `y` stages it for `from` (approved).
+fn stage_file(id: &str, file: &str, from: &str) -> i32 {
+    let text = match std::fs::read(file)
+        .map_err(|e| e.to_string())
+        .and_then(|b| String::from_utf8(b).map_err(|_| "UTF-8 の文字として読めない".to_owned()))
+    {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("{file} が読めない: {e}")),
+    };
+    let text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
+    let now: Def = match client::call(&Request::Show { id: id.to_owned() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
+        Ok(d) => d,
+        Err(e) => return fail(&format!("koyomi: {e}")),
+    };
+    if now.text == text {
+        return fail(&format!("今の定義と同じ中身: {id}"));
+    }
+    say(&format!("{id} を {from} からこの形にする（- 今の定義 / + 次の定義）:"), false);
+    for l in review::diff_text(&ito_diff::diff(&now.text, &text, 3)) {
+        say(&l, false);
+    }
+    say("確かめたなら y を入力（承認して置く。それ以外は置かない）:", false);
+    let mut answer = String::new();
+    let _ = std::io::stdin().read_line(&mut answer);
+    if !answer.trim().eq_ignore_ascii_case("y") {
+        return fail(&format!("{id}: 置かなかった"));
+    }
+    ask_and_say(&Request::Stage { id: id.to_owned(), text, from: from.to_owned() })
 }
 
 /// `koyomi export -o <file> …`: reads the settings folder itself (the engine need not be up)

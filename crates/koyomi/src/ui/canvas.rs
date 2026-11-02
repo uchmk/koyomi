@@ -81,6 +81,8 @@ pub struct Around<'a> {
     pub depth: usize,
     /// Every definition: 検査 links the net with them, and the 未確認 badge reads this one's.
     pub defs: &'a [Def],
+    /// The definitions staged for a day: this net's shows as a button by the title.
+    pub staged: &'a [koyomi_core::next::Entry],
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -108,6 +110,10 @@ pub enum Action {
     Enter(String),
     /// Open the 新しいカレンダー box; the calendar made becomes this net's.
     NewCalendar,
+    /// Ask to stage the text from the day (YYYY-MM-DD).
+    Stage(String),
+    /// Open the box of what is staged for this net.
+    Staged,
 }
 
 /// What the mouse is doing between a press and a release.
@@ -634,6 +640,10 @@ pub struct Editor {
     /// Asked to close with changes unsaved.
     pub closing: bool,
     pub result: Option<Result<String, String>>,
+    /// The 使い始める日 row, while open: its text.
+    pub stage: Option<String>,
+    /// Asked to stage from this day (the box over the editor).
+    pub stage_ask: Option<String>,
 }
 
 /// The parts of the shelf, in order, group by group (see [`part_group`]).
@@ -748,6 +758,8 @@ impl Editor {
             conflict: None,
             closing: false,
             result: None,
+            stage: None,
+            stage_ask: None,
         }
     }
 
@@ -756,8 +768,9 @@ impl Editor {
         write::text(&self.net)
     }
 
+    /// Saved now: changed, sound, and not being staged for a day instead.
     pub fn can_save(&self) -> bool {
-        self.dirty && self.problems.is_empty()
+        self.dirty && self.problems.is_empty() && self.stage.is_none()
     }
 
     /// The engine wrote `text`: that is the base now.
@@ -777,6 +790,16 @@ impl Editor {
             e.fold = self.fold;
             *self = e;
         }
+    }
+
+    /// A staged definition loaded to change (undo goes back), the day row open on its day.
+    pub fn take_next(&mut self, text: &str, from: &str) -> Result<(), String> {
+        let net = jobnet::parse(text).map_err(|p| p.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join("\n"))?;
+        self.record(None);
+        self.net = net;
+        self.after_jump(None);
+        self.stage = Some(from.to_owned());
+        Ok(())
     }
 
     /// One line for the tests and the bug report.
@@ -1371,6 +1394,12 @@ impl Editor {
                     ito_a11y::say(&r, Role::Label, badge);
                     r.on_hover_text(t.tr("canvas.unconfirmed_hint"));
                 }
+                if let Some(next) = around.staged.iter().find(|n| n.id == self.id) {
+                    let words = t.trf("canvas.staged", &[&next.from.to_string()]);
+                    if IconButton::new(M::Calendar, &words).show(ui).on_hover_text(t.tr("canvas.staged_hint")).clicked() {
+                        action = Some(Action::Staged);
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     if IconButton::new(M::Close, t.tr("canvas.close")).show(ui).clicked() {
                         if let Some(a) = self.edit(Cmd::Close) {
@@ -1391,7 +1420,11 @@ impl Editor {
             ui.horizontal_wrapped(|ui| {
                 let can = self.can_save();
                 let save = IconButton::new(M::Save, t.tr("canvas.save")).tone(Tone::Primary);
-                if ui.add_enabled(can, |ui: &mut egui::Ui| save.show(ui)).clicked() {
+                let mut r = ui.add_enabled(can, |ui: &mut egui::Ui| save.show(ui));
+                if self.stage.is_some() {
+                    r = r.on_disabled_hover_text(t.tr("canvas.stage_save"));
+                }
+                if r.clicked() {
                     action = self.edit(Cmd::Save);
                 }
                 if IconButton::new(M::Search, t.tr("canvas.check")).show(ui).on_hover_text(t.tr("canvas.check_hint")).clicked() {
@@ -1409,6 +1442,21 @@ impl Editor {
                             )
                         ))
                     });
+                }
+                // A day from which the net as drawn here takes over (it runs as it is till then).
+                let staging = self.stage.is_some();
+                let r = ui
+                    .add_enabled(self.base.is_some(), |ui: &mut egui::Ui| IconButton::new(M::Calendar, t.tr("canvas.stage")).show(ui))
+                    .on_hover_text(t.tr("canvas.stage_hint"));
+                if r.clicked() {
+                    self.stage = if staging {
+                        None
+                    } else {
+                        // The first of next month: where a switch most often falls.
+                        let today = chrono::Local::now().date_naive();
+                        let first = chrono::Datelike::with_day(&today, 1).and_then(|d| d.checked_add_months(chrono::Months::new(1)));
+                        Some(first.map(ito_prefs::format_date).unwrap_or_default())
+                    };
                 }
                 ui.separator();
                 let groups: [&[(Cmd, M, &str)]; 2] = [
@@ -1436,6 +1484,38 @@ impl Editor {
                 }
             });
             let c = ito_theme::colors();
+            if let Some(mut day) = self.stage.clone() {
+                let (mut go, mut cancel) = (false, false);
+                ui.horizontal_wrapped(|ui| {
+                    let today = chrono::Local::now().date_naive();
+                    let label = t.tr("canvas.stage_from");
+                    ui.label(label);
+                    let d = ito_prefs::DateField::new(("stage", &self.id), ito_prefs::DateWords::for_lang(t.tr("app.lang")))
+                        .name(label)
+                        .range(today.succ_opt(), None)
+                        .width(130.0)
+                        .show(ui, ito_prefs::Look { c, q: "" }, &mut day);
+                    let can = d.valid && self.dirty && self.problems.is_empty();
+                    let enter = d.response.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+                    let put = IconButton::new(M::CalendarCheck, t.tr("canvas.stage_go")).tone(Tone::Primary);
+                    go = ui.add_enabled(can, |ui: &mut egui::Ui| put.show(ui)).clicked() || (can && enter);
+                    cancel = IconButton::new(M::Close, t.tr("canvas.cancel")).show(ui).clicked();
+                    if !can {
+                        let why = if !d.valid {
+                            "canvas.stage_bad_day"
+                        } else if !self.dirty {
+                            "canvas.stage_same"
+                        } else {
+                            "canvas.stage_fix"
+                        };
+                        ui.label(egui::RichText::new(t.tr(why)).color(c.dim));
+                    }
+                });
+                self.stage = if cancel { None } else { Some(day.clone()) };
+                if go {
+                    action = Some(Action::Stage(ito_prefs::parse_date(&day).map(ito_prefs::format_date).unwrap_or(day)));
+                }
+            }
             if !self.problems.is_empty() {
                 let head = t.tr("canvas.problems");
                 let r = ui.colored_label(c.err, Mark::Error.marked(head));

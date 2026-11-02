@@ -16,7 +16,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 37;
+pub const PROTO: u32 = 38;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -223,6 +223,20 @@ pub enum Request {
         text: String,
         base_sha256: Option<String>,
     },
+    /// Keep `text` as the definition of `id` from the day `from` (`YYYY-MM-DD`, after today) on
+    /// (TODO 110): approved now, checked as a save is, and kept in `next.toml`. Until that day
+    /// the net runs as it is; at its start the engine writes the text as the net's file (the
+    /// old one under `versions/`) before any time of the day starts. One per net: staging again
+    /// replaces it. Only from this PC's window or command line, like an approval.
+    Stage {
+        id: String,
+        text: String,
+        from: String,
+    },
+    /// Drop what was staged for `id`: the net runs as it is.
+    Unstage {
+        id: String,
+    },
 }
 
 pub fn door() -> Door<Request> {
@@ -291,6 +305,9 @@ pub struct Snapshot {
     /// `[[blackout]]` in `koyomi.toml`: the planned stops, in which no time starts a net.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub blackouts: Vec<Blackout>,
+    /// The definitions staged to take over on a day (`next.toml`), earliest first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub staged: Vec<koyomi_core::next::Entry>,
 }
 
 /// How this PC sleeps and whether the engine can wake it (`wake = true` nets).

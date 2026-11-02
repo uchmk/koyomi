@@ -70,6 +70,8 @@ pub struct Paths {
     pub approved: PathBuf,
     /// `state_dir("koyomi")/held.toml`: what a person stopped by hand.
     pub held: PathBuf,
+    /// `state_dir("koyomi")/next.toml`: the definitions staged to take over on a day (TODO 110).
+    pub next: PathBuf,
 }
 
 impl Paths {
@@ -82,6 +84,7 @@ impl Paths {
             config: app.join("koyomi.toml"),
             approved: state.join("approved.toml"),
             held: state.join("held.toml"),
+            next: state.join("next.toml"),
             app,
             state,
         })
@@ -100,6 +103,12 @@ impl Paths {
     /// What is on hold, or the line that says `held.toml` does not read.
     pub fn held(&self) -> Result<Held, String> {
         Held::load(&self.held).map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで流さない", shown(&self.held)))
+    }
+
+    /// The staged definitions, or the line that says `next.toml` does not read.
+    pub fn staged(&self) -> Result<koyomi_core::next::Store, String> {
+        koyomi_core::next::Store::load(&self.next)
+            .map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで切り替えない", shown(&self.next)))
     }
 }
 
@@ -123,6 +132,7 @@ pub fn access_warnings(paths: &Paths, files: &[PathBuf]) -> Vec<String> {
     check(&paths.jobnets);
     check(&paths.app);
     check(&paths.approved);
+    check(&paths.next);
     files.iter().for_each(|f| check(f));
     seen.into_iter().map(|(p, who)| format!("{} は {} が書き換えられる", shown(&p), who)).collect()
 }
@@ -160,6 +170,15 @@ struct State {
     held: Held,
     /// Why `held.toml` did not read: until it does, nothing starts and nothing is written over it.
     held_bad: Option<String>,
+    /// The definitions staged to take over on a day (`next.toml`).
+    staged: koyomi_core::next::Store,
+    /// Why `next.toml` did not read: until it does, nothing is switched and nothing written over it.
+    staged_bad: Option<String>,
+    /// The day the staged definitions were last looked at, and when: a failed switch is tried
+    /// again every [`NEXT_RETRY`].
+    staged_look: Option<(NaiveDate, Instant)>,
+    /// Why a staged definition that is due did not take over, by net: told once, shown until it does.
+    staged_failed: BTreeMap<String, String>,
     defs: Vec<Def>,
     /// `calendars/*.toml` as last read; the nets count their days by these.
     calendars: Calendars,
@@ -237,6 +256,8 @@ struct State {
 
 /// How often the runs are looked at for being late.
 const LATE_EVERY: Duration = Duration::from_secs(5);
+/// How often a staged definition that could not take over is tried again.
+const NEXT_RETRY: Duration = Duration::from_secs(60);
 /// How many days of history say how long a net usually takes.
 const USUAL_DAYS: u64 = 30;
 
@@ -262,6 +283,10 @@ impl State {
             unreadable: None,
             held: Held::default(),
             held_bad: None,
+            staged: Default::default(),
+            staged_bad: None,
+            staged_look: None,
+            staged_failed: BTreeMap::new(),
             defs: Vec::new(),
             calendars: Calendars::default(),
             warnings: Vec::new(),
@@ -1091,12 +1116,33 @@ impl State {
         self.runner.set_held(&self.held);
     }
 
+    /// Reads `next.toml` again: a person may edit it (a text changed by hand takes over unconfirmed).
+    fn reload_staged(&mut self) {
+        let staged = match self.paths.staged() {
+            Ok(staged) => {
+                self.staged_bad = None;
+                staged
+            }
+            Err(e) => {
+                self.staged_bad = Some(e);
+                Default::default()
+            }
+        };
+        if staged != self.staged {
+            self.staged = staged;
+            self.staged_look = None;
+            let staged = &self.staged;
+            self.staged_failed.retain(|id, _| staged.get(id).is_some());
+        }
+    }
+
     fn rescan(&mut self) {
         if self.unreadable.is_some() {
             self.reload();
         } else {
             self.reload_held();
         }
+        self.reload_staged();
         self.reload_config();
         self.calendars = Calendars::load(&self.paths.calendars);
         self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
@@ -1119,6 +1165,7 @@ impl State {
         self.warnings = access_warnings(&self.paths, &files);
         self.warnings.extend(self.unreadable.clone());
         self.warnings.extend(self.held_bad.clone());
+        self.warnings.extend(self.staged_bad.clone());
     }
 
     /// What a `kind = "jobnet"` part may use: each confirmed net, or why the others cannot be.
@@ -1167,11 +1214,13 @@ impl State {
                 .chain(self.standby.line())
                 .chain(self.primary.caution())
                 .chain(self.calendars.cautions(Local::now().date_naive(), CAUTION_DAYS))
+                .chain(self.staged_failed.values().cloned())
                 .collect(),
             calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
             power: self.power(),
             blackouts: self.blackouts.clone(),
+            staged: self.staged.next.clone(),
         }
     }
 
@@ -1508,16 +1557,7 @@ impl State {
         if !force && now.as_deref() != base_sha256 {
             return Err(format!("ほかで変わっています: {id}"));
         }
-        let shared = group::load(&self.paths.jobnets.join(group).join("_group.toml"));
-        let def = def_of_text(text, group, name, &self.store, shared.as_ref(), &self.calendars);
-        let mut all: Vec<Def> = self.defs.iter().filter(|d| d.id != id).cloned().collect();
-        all.push(def);
-        link(&mut all);
-        let def = all.pop().expect("pushed");
-        if def.standing == Standing::Invalid {
-            let why: Vec<String> = def.problems.iter().map(|p| p.in_file(&def.file)).collect();
-            return Err(format!("保存できない:\n{}", why.join("\n")));
-        }
+        let def = self.checked_def(id, text, "保存できない")?;
         self.keep_version(&path, group, name)?;
         if let Some(dir) = path.parent() {
             std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
@@ -1534,6 +1574,166 @@ impl State {
         }
         self.rescan();
         Ok(())
+    }
+
+    /// `text` as the definition of `id` it would be once written, checked as a file is (with its
+    /// group's `_group.toml` and against the other nets); refused, `doing` first, with an error.
+    fn checked_def(&self, id: &str, text: &str, doing: &str) -> Result<Def, String> {
+        let (group, name) = split_id(id)?;
+        let shared = group::load(&self.paths.jobnets.join(group).join("_group.toml"));
+        let def = def_of_text(text, group, name, &self.store, shared.as_ref(), &self.calendars);
+        let mut all: Vec<Def> = self.defs.iter().filter(|d| d.id != id).cloned().collect();
+        all.push(def);
+        link(&mut all);
+        let def = all.pop().expect("pushed");
+        if def.standing == Standing::Invalid {
+            let why: Vec<String> = def.problems.iter().map(|p| p.in_file(&def.file)).collect();
+            return Err(format!("{doing}:\n{}", why.join("\n")));
+        }
+        Ok(def)
+    }
+
+    /// See [`Request::Stage`].
+    fn stage(&mut self, id: &str, text: &str, from: &str) -> Result<String, String> {
+        let from = NaiveDate::parse_from_str(from, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {from}"))?;
+        self.stage_on(id, text, from, Local::now().date_naive())
+    }
+
+    /// Stages `text` to take over `id` on `from`, approved now, when `today` is before it.
+    fn stage_on(&mut self, id: &str, text: &str, from: NaiveDate, today: NaiveDate) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(format!("置けない: {}", self.warnings.join(" / ")));
+        }
+        if from <= today {
+            return Err(format!("{from} は今日か過ぎた日。今日から使うなら、ふつうに保存する"));
+        }
+        let (group, name) = split_id(id)?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        let live = std::fs::read(&path).map_err(|_| format!("定義がない: {id}（新しいジョブネットは今作って保留にしておく）"))?;
+        if live == text.as_bytes() {
+            return Err(format!("今の定義と同じ中身: {id}"));
+        }
+        self.checked_def(id, text, "置けない")?;
+        let mut staged = self.staged.clone();
+        staged.set(koyomi_core::next::Entry {
+            id: id.to_owned(),
+            from,
+            sha256: approved::hash(text.as_bytes()),
+            base: Some(approved::hash(&live)),
+            text: text.to_owned(),
+        });
+        self.save_staged(&staged)?;
+        self.staged = staged;
+        self.staged_failed.remove(id);
+        self.staged_look = None;
+        Ok(format!("{from} から使う定義を置いた: {id}（それまでは今の定義で流す）"))
+    }
+
+    /// See [`Request::Unstage`].
+    fn unstage(&mut self, id: &str) -> Result<String, String> {
+        if let Some(e) = &self.staged_bad {
+            return Err(e.clone());
+        }
+        let from = self.staged.get(id).map(|e| e.from).ok_or_else(|| format!("{id} に次の定義は置いていない"))?;
+        let mut staged = self.staged.clone();
+        staged.forget(id);
+        self.save_staged(&staged)?;
+        self.staged = staged;
+        self.staged_failed.remove(id);
+        Ok(format!("{from} から使う定義をやめた: {id}（今の定義のまま流す）"))
+    }
+
+    /// `next.toml` can be written: it read.
+    fn staged_writable(&self) -> Result<(), String> {
+        match &self.staged_bad {
+            Some(e) => Err(e.clone()),
+            None => Ok(()),
+        }
+    }
+
+    fn save_staged(&self, staged: &koyomi_core::next::Store) -> Result<(), String> {
+        if let Some(dir) = self.paths.next.parent() {
+            let _ = std::fs::create_dir_all(dir);
+        }
+        ito_common::write_atomic(&self.paths.next, staged.to_toml())
+    }
+
+    /// On a new day (and on the engine's start), the staged definitions due take over before any
+    /// time of the day starts; one that could not is tried again every [`NEXT_RETRY`].
+    fn tick_next(&mut self) {
+        if self.staged.next.is_empty() || self.staged_bad.is_some() {
+            return;
+        }
+        let today = Local::now().date_naive();
+        if let Some((day, at)) = self.staged_look {
+            if day == today && (self.staged_failed.is_empty() || at.elapsed() < NEXT_RETRY) {
+                return;
+            }
+        }
+        self.staged_look = Some((today, Instant::now()));
+        self.switch_staged(today);
+    }
+
+    /// Each staged definition due on `today` takes over ([`State::switch`]), told and written
+    /// down; one that cannot is told once, and stays staged and shown until it does.
+    fn switch_staged(&mut self, today: NaiveDate) {
+        for e in self.staged.due(today) {
+            let to = notify::to(&self.notify, self.notify_to(&e.id));
+            match self.switch(&e) {
+                Ok(line) => {
+                    self.staged_failed.remove(&e.id);
+                    crate::say(&format!("koyomi: {line}"), false);
+                    self.runner.record_op("switch", &e.id, &line, "");
+                    notify::tell(&to, None, "done", "koyomi: 定義を切り替えた", &line);
+                }
+                Err(why) => {
+                    let why = why.lines().collect::<Vec<_>>().join(" ");
+                    let line = format!("{} を {} からの定義に切り替えられなかった（今までの定義のまま）: {why}", e.id, e.from);
+                    if self.staged_failed.get(&e.id) != Some(&line) {
+                        crate::say(&format!("koyomi: {line}"), true);
+                        notify::tell(&to, None, "failed", "koyomi: 定義を切り替えられなかった", &line);
+                        self.staged_failed.insert(e.id.clone(), line);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Writes the staged `e` as its net's file (the file there kept under `versions/` first),
+    /// confirms it when its text is what was approved, and then drops it from `next.toml`.
+    /// What to tell.
+    fn switch(&mut self, e: &koyomi_core::next::Entry) -> Result<String, String> {
+        if !self.warnings.is_empty() {
+            return Err(self.warnings.join(" / "));
+        }
+        let (group, name) = split_id(&e.id)?;
+        let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
+        let live = std::fs::read(&path).map_err(|_| "今の定義のファイルがない".to_owned())?;
+        self.checked_def(&e.id, &e.text, "定義の誤り")?;
+        let changed = e.base.as_deref().is_some_and(|b| b != approved::hash(&live));
+        let approved = e.approved();
+        // The file first: a switch cut short is done again, never lost.
+        self.keep_version(&path, group, name)?;
+        ito_common::write_atomic(&path, &e.text)?;
+        if approved {
+            let mut store = self.store.clone();
+            store.approve(&e.id, &e.sha256, &e.text);
+            ito_common::write_atomic(&self.paths.approved, store.to_toml())?;
+            self.store = store;
+        }
+        let mut staged = self.staged.clone();
+        staged.forget(&e.id);
+        self.save_staged(&staged)?;
+        self.staged = staged;
+        self.rescan();
+        let mut line = format!("{} を {} からの定義にした", e.id, e.from);
+        if !approved {
+            line.push_str("（置いたあとに手で直されていたので未確認。確かめるまで流さない）");
+        }
+        if changed {
+            line.push_str("。置いたあとに今の定義が直されていた（直したものは版に残した）");
+        }
+        Ok(line)
     }
 
     /// Copies the file at `path`, when there is one, to
@@ -1735,6 +1935,7 @@ impl State {
         let to_path = self.free_id(to)?;
         self.not_running(id)?;
         self.held_writable()?;
+        self.staged_writable()?;
         let by = koyomi_core::rename::referrers(&self.defs, id);
         if !by.is_empty() && !fix {
             return Err(self.named_by(id, &by, "--fix でいっしょに直す"));
@@ -1746,11 +1947,15 @@ impl State {
         let own = koyomi_core::rename::retarget(&text, id, to).unwrap_or_else(|_| text.clone());
         let own = koyomi_core::rename::retitle(&own, from_name, to_name);
         let mut others = Vec::new();
+        // The files rewritten, by net: (before, after), for what was staged on them.
+        let mut rewritten = BTreeMap::from([(id.to_owned(), (approved::hash(text.as_bytes()), approved::hash(own.as_bytes())))]);
         for r in &by {
             let (path, old) = self.net_file(r, "名前を変えられない")?;
             let new = koyomi_core::rename::retarget(&old, id, to).map_err(|e| format!("{r} の参照を直せない（{e}）。手で直してから"))?;
+            rewritten.insert(r.clone(), (approved::hash(old.as_bytes()), approved::hash(new.as_bytes())));
             others.push((r.clone(), path, new, confirmed(r)));
         }
+        let staged = self.staged_renamed(id, to, &rewritten);
         let mut next = self.store.clone();
         let was_confirmed = confirmed(id);
         if let Some(dir) = to_path.parent() {
@@ -1781,12 +1986,47 @@ impl State {
         if self.held.carry(id, Some(to)) {
             self.save_held()?;
         }
+        if staged != self.staged {
+            self.save_staged(&staged)?;
+            self.staged = staged;
+            self.staged_failed.remove(id);
+        }
         self.rescan();
         let mut said = format!("名前を変えた: {id} → {to}");
         if !others.is_empty() {
             said.push_str(&format!("（参照も直した: {}）", by.join(", ")));
         }
         Ok(said)
+    }
+
+    /// What is staged once `id` is renamed `to`: its own next definition goes with it under the
+    /// new name, and every staged text that names it names `to` (as far as it can be rewritten).
+    /// A text approved stays approved; a net's file rewritten by the rename (`rewritten`: before
+    /// and after) is not told as changed by hand at the switch.
+    fn staged_renamed(&self, id: &str, to: &str, rewritten: &BTreeMap<String, (String, String)>) -> koyomi_core::next::Store {
+        let (from_name, to_name) = (split_id(id).map(|p| p.1).unwrap_or_default(), split_id(to).map(|p| p.1).unwrap_or_default());
+        let mut out = koyomi_core::next::Store::default();
+        for mut e in self.staged.next.iter().cloned() {
+            let was = e.approved();
+            let mut text = koyomi_core::rename::retarget(&e.text, id, to).unwrap_or_else(|_| e.text.clone());
+            if let Some((before, after)) = rewritten.get(&e.id) {
+                if e.base.as_ref() == Some(before) {
+                    e.base = Some(after.clone());
+                }
+            }
+            if e.id == id {
+                text = koyomi_core::rename::retitle(&text, from_name, to_name);
+                e.id = to.to_owned();
+            }
+            if text != e.text {
+                e.text = text;
+                if was {
+                    e.sha256 = approved::hash(e.text.as_bytes());
+                }
+            }
+            out.set(e);
+        }
+        out
     }
 
     /// Moves every kept version in `from` to `to` (one kept there already stays: same names get `-2`).
@@ -1893,6 +2133,7 @@ impl State {
         let (path, _) = self.net_file(id, "消せない")?;
         self.not_running(id)?;
         self.held_writable()?;
+        self.staged_writable()?;
         let by = koyomi_core::rename::referrers(&self.defs, id);
         if !by.is_empty() {
             return Err(self.named_by(id, &by, "先にそちらを直す"));
@@ -1908,6 +2149,12 @@ impl State {
         if self.held.carry(id, None) {
             self.save_held()?;
         }
+        let mut staged = self.staged.clone();
+        if staged.forget(id) {
+            self.save_staged(&staged)?;
+            self.staged = staged;
+        }
+        self.staged_failed.remove(id);
         self.rescan();
         Ok(format!("消した: {id}（前の形は版に残した。koyomi versions {id} と koyomi restore で戻せる）"))
     }
@@ -1986,6 +2233,8 @@ impl State {
             }
             Request::Tray { since } => Ok(self.tray_view(*since).to_toml()),
             Request::Propose { id, text, base_sha256 } => self.propose(id, text, base_sha256.as_deref()),
+            Request::Stage { id, text, from } => self.stage(id, text, from),
+            Request::Unstage { id } => self.unstage(id),
             Request::Over { .. } => Err("HTTP からはできない".to_owned()),
         }
     }
@@ -2034,6 +2283,8 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::Handover { release: true } => ("handover-release", String::new()),
         Request::Save { id, .. } => ("save", id.clone()),
         Request::Propose { id, .. } => ("propose", id.clone()),
+        Request::Stage { id, from, .. } => ("stage", format!("{id} {from}")),
+        Request::Unstage { id } => ("unstage", id.clone()),
         Request::Restore { id, .. } => ("restore", id.clone()),
         Request::Rename { id, to, .. } => ("rename", format!("{id} {to}")),
         Request::Copy { id, to, .. } => ("copy", format!("{id} {to}")),
@@ -2231,6 +2482,8 @@ pub fn run(own_tray: bool) -> i32 {
             }
         }
         state.runner.tick();
+        // First of all: a definition staged for today takes over before any time of the day starts.
+        state.tick_next();
         // Before the schedule: a time that waited out the quiet hours goes ahead of one due at their end.
         state.tick_quiet();
         state.tick_schedule();
@@ -2465,6 +2718,7 @@ run = [\"x\"]
             config: app.join("koyomi.toml"),
             approved: state.join("approved.toml"),
             held: state.join("held.toml"),
+            next: state.join("next.toml"),
             app,
             state,
         }
@@ -2743,6 +2997,124 @@ run = [\"x.exe\"]
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
+    fn day(text: &str) -> NaiveDate {
+        NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
+    }
+
+    /// TODO 110: a definition staged for a day takes over on it, approved, the old one kept.
+    #[test]
+    fn a_staged_definition_takes_over_on_its_day_and_not_before() {
+        let paths = temp_paths("stage");
+        let mut s = State::new(paths.clone());
+        let now = "format = 1\nname = \"締め\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let next = "format = 1\nname = \"締め\"\n[[job]]\nid = \"a\"\nrun = [\"y.exe\"]\n";
+        let file = paths.jobnets.join("経理/締め.toml");
+        assert!(s.save("経理/締め", now, None, false).is_ok());
+        let today = day("2026-11-02");
+        // Refused: a day not after today, a net not there, the same text, a text with a fault.
+        assert!(s.stage_on("経理/締め", next, today, today).unwrap_err().contains("今日か過ぎた日"));
+        assert!(s.stage_on("経理/無い", next, day("2026-12-01"), today).unwrap_err().contains("定義がない"));
+        assert!(s.stage_on("経理/締め", now, day("2026-12-01"), today).unwrap_err().contains("同じ中身"));
+        let err = s.stage_on("経理/締め", "format = [\n", day("2026-12-01"), today).unwrap_err();
+        assert!(err.starts_with("置けない:"), "{err}");
+        assert!(s.stage("経理/締め", next, "12/1").unwrap_err().contains("YYYY-MM-DD"));
+        assert!(!paths.next.exists());
+        // Staged: kept in next.toml and shown; the net runs as it is.
+        assert!(s.stage_on("経理/締め", next, day("2026-12-01"), today).unwrap().contains("2026-12-01 から使う"));
+        assert_eq!(koyomi_core::next::Store::load(&paths.next).unwrap().get("経理/締め").unwrap().text, next);
+        assert_eq!(s.snapshot().staged.len(), 1);
+        s.switch_staged(day("2026-11-30"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), now);
+        // On the day: written, confirmed, the old one kept, and no longer staged.
+        s.switch_staged(day("2026-12-01"));
+        assert_eq!(std::fs::read_to_string(&file).unwrap(), next);
+        assert_eq!(standing_of(&s, "経理/締め"), Some(Standing::Confirmed));
+        assert!(s.staged.next.is_empty() && s.staged_failed.is_empty());
+        assert!(koyomi_core::next::Store::load(&paths.next).unwrap().next.is_empty());
+        assert_eq!(Versions::parse(&s.versions("経理/締め").unwrap()).unwrap().versions.len(), 1);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// TODO 110: a staged text changed by hand takes over unconfirmed; one with a fault stays
+    /// staged, shown as a caution, until it is fixed or dropped.
+    #[test]
+    fn a_staged_text_edited_by_hand_switches_unconfirmed_and_a_broken_one_waits() {
+        let paths = temp_paths("stage-hand");
+        let mut s = State::new(paths.clone());
+        let net = |run: &str| format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"{run}\"]\n");
+        assert!(s.save("経理/a", &net("a.exe"), None, false).is_ok());
+        assert!(s.save("経理/b", &net("b.exe"), None, false).is_ok());
+        let today = day("2026-11-02");
+        assert!(s.stage_on("経理/a", &net("a2.exe"), day("2026-12-01"), today).is_ok());
+        assert!(s.stage_on("経理/b", &net("b2.exe"), day("2026-12-01"), today).is_ok());
+        // By hand: a's staged text changed, b's broken, and a's file changed after it was staged.
+        let mut st = koyomi_core::next::Store::load(&paths.next).unwrap();
+        st.next[0].text = net("a3.exe");
+        st.next[1].text = "format = [\n".to_owned();
+        std::fs::write(&paths.next, st.to_toml()).unwrap();
+        std::fs::write(paths.jobnets.join("経理/a.toml"), net("a1.exe")).unwrap();
+        s.rescan();
+        assert_eq!(s.staged.get("経理/a").unwrap().text, net("a3.exe"));
+        let a = s.staged.get("経理/a").unwrap().clone();
+        let line = s.switch(&a).unwrap();
+        assert!(line.contains("未確認") && line.contains("直されていた"), "{line}");
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/a.toml")).unwrap(), net("a3.exe"));
+        assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Unconfirmed));
+        s.switch_staged(day("2026-12-01"));
+        assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/b.toml")).unwrap(), net("b.exe"));
+        assert_eq!(standing_of(&s, "経理/b"), Some(Standing::Confirmed));
+        assert!(s.staged.get("経理/b").is_some());
+        let cautions = s.snapshot().cautions;
+        assert!(cautions.iter().any(|c| c.contains("経理/b") && c.contains("切り替えられなかった")), "{cautions:?}");
+        // Dropped: the net runs as it is, and the caution goes.
+        assert!(s.unstage("経理/b").unwrap().contains("やめた"));
+        assert!(s.staged_failed.is_empty() && s.staged.next.is_empty());
+        assert!(s.unstage("経理/b").is_err());
+        // A next.toml that does not read stops every change, and nothing is written over it.
+        std::fs::write(&paths.next, "next = [[").unwrap();
+        s.rescan();
+        assert!(s.warnings.iter().any(|w| w.contains("next.toml")), "{:?}", s.warnings);
+        assert!(s.stage_on("経理/b", &net("b3.exe"), day("2026-12-01"), today).is_err());
+        assert!(s.unstage("経理/b").is_err());
+        assert_eq!(std::fs::read_to_string(&paths.next).unwrap(), "next = [[");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// TODO 110: a rename takes what was staged with it, and points staged texts at the new
+    /// name; a delete drops it.
+    #[test]
+    fn a_rename_carries_what_was_staged_and_a_delete_drops_it() {
+        let paths = temp_paths("stage-rename");
+        let mut s = State::new(paths.clone());
+        let parent = "format = 1\nname = \"親\"\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let child = "format = 1\nname = \"子\"\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/親\"\n";
+        assert!(s.save("経理/親", parent, None, false).is_ok());
+        assert!(s.save("経理/子", child, None, false).is_ok());
+        let today = day("2026-11-02");
+        assert!(s.stage_on("経理/親", &parent.replace("x.exe", "y.exe"), day("2026-12-01"), today).is_ok());
+        assert!(s.stage_on("経理/子", &child.replace("[[job]]", "# 次\n[[job]]"), day("2026-12-01"), today).is_ok());
+        assert!(s.rename("経理/親", "総務/親", true).is_ok());
+        assert!(s.staged.get("経理/親").is_none());
+        assert!(s.staged.get("総務/親").unwrap().approved());
+        let c = s.staged.get("経理/子").unwrap().clone();
+        assert!(c.text.contains("use = \"総務/親\"") && c.approved(), "{}", c.text);
+        assert_eq!(koyomi_core::next::Store::load(&paths.next).unwrap(), s.staged);
+        // The rename's own change to the child's file is not told as a change by hand.
+        let line = s.switch(&c).unwrap();
+        assert!(!line.contains("直されていた") && !line.contains("未確認"), "{line}");
+        assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Confirmed));
+        s.switch_staged(day("2026-12-01"));
+        assert_eq!(standing_of(&s, "総務/親"), Some(Standing::Confirmed));
+        assert!(std::fs::read_to_string(paths.jobnets.join("総務/親.toml")).unwrap().contains("y.exe"));
+        // A delete drops what was staged.
+        let live = std::fs::read_to_string(paths.jobnets.join("経理/子.toml")).unwrap();
+        assert!(s.stage_on("経理/子", &live.replace("# 次\n", ""), day("2027-01-01"), today).is_ok());
+        assert!(s.delete("経理/子").is_ok());
+        assert!(s.staged.next.is_empty());
+        assert!(koyomi_core::next::Store::load(&paths.next).unwrap().next.is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
     #[test]
     fn a_copy_or_rename_retitles_a_net_still_named_by_its_old_file_and_keeps_a_custom_title() {
         let paths = temp_paths("retitle");
@@ -2858,6 +3230,13 @@ run = [\"x.exe\"]
                 wake_for: Some("夜/中".into()),
             },
             blackouts: vec![Blackout { from: "2026-12-29".into(), to: "2027-01-03".into(), why: "年末年始".into() }],
+            staged: vec![koyomi_core::next::Entry {
+                id: "共通/x".into(),
+                from: NaiveDate::from_ymd_opt(2026, 12, 1).unwrap(),
+                sha256: approved::hash(b"format = 1\n"),
+                base: None,
+                text: "format = 1\n".into(),
+            }],
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
