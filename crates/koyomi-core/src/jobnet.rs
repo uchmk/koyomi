@@ -687,6 +687,9 @@ struct RawJob {
     into: Field,
     key: Field,
     host_key: Field,
+    key_id: Field,
+    region: Field,
+    endpoint: Field,
     cert: Field,
     auth: Field,
     pass: Field,
@@ -1040,6 +1043,11 @@ impl Checker<'_> {
             self.only(&j.key, "key", "\"send\"・\"fetch\"・\"ssh\"");
             self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
         }
+        if kind != "send" && kind != "fetch" {
+            for (field, name) in [(&j.key_id, "key_id"), (&j.region, "region"), (&j.endpoint, "endpoint")] {
+                self.only(field, name, "\"send\" か \"fetch\"");
+            }
+        }
         if !["send", "fetch", "ssh", "winrm", "sql"].contains(&kind) {
             self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"・\"winrm\"・\"sql\"");
         }
@@ -1248,9 +1256,20 @@ impl Checker<'_> {
                 }
                 // A `secret:` name, not a template: nothing in it is filled in.
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
+                // As it is or a `secret:` name, as `password`.
+                let key_id = self.string(&j.key_id, "key_id").map(|k| k.trim().to_owned()).filter(|k| !k.is_empty());
+                let region = self.string(&j.region, "region").map(|r| r.trim().to_owned()).filter(|r| !r.is_empty());
+                let endpoint = self.string(&j.endpoint, "endpoint").map(|e| e.trim().to_owned()).filter(|e| !e.is_empty());
+                for (value, field, name) in [(&region, &j.region, "region"), (&endpoint, &j.endpoint, "endpoint")] {
+                    if let (Some(v), Some(f)) = (value, field) {
+                        if let Err(e) = self.template(v) {
+                            self.add(f.span().start, format!("{name}: {e}"));
+                        }
+                    }
+                }
                 match kind {
-                    "send" => Chore::Send { from, into, key, host_key, password },
-                    "fetch" => Chore::Fetch { from, into, key, host_key, password },
+                    "send" => Chore::Send { from, into, key, host_key, password, key_id, region, endpoint },
+                    "fetch" => Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint },
                     _ => {
                         let (max, pass) = self.fan(j);
                         Chore::Ssh { on: from, command: into, key, host_key, password, max, pass }
@@ -3412,6 +3431,9 @@ after = [{ job = \"way\", code = \"else\" }]
                 key: Some("C:\\keys\\partner".into()),
                 host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
                 password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
             }))
         );
         assert_eq!(
@@ -3421,7 +3443,10 @@ after = [{ job = \"way\", code = \"else\" }]
                 into: "D:\\in".into(),
                 key: None,
                 host_key: None,
-                password: None
+                password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
             }))
         );
         assert!(bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n").contains("send の from はこのマシンのファイル"));
@@ -3431,6 +3456,29 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("copy", "from = 'a'\ninto = 'b'\npassword = 'secret:c'\n").contains("password"));
         assert!(bad("send", "from = 'a'\ninto = 'sftp://h/in'\n").contains("host_key が要る"));
         assert!(bad("send", "from = 'a'\n").contains("kind = \"send\" には into が要る"));
+        assert_eq!(
+            net(
+                "fetch",
+                "from = \"s3://logs/daily/*.csv\"\ninto = 'D:\\in'\nkey_id = \"secret:s3-id\"\npassword = \"secret:s3\"\nendpoint = \"http://nas:9000\"\n"
+            )
+            .map(|p| p.0),
+            Ok(Part::Chore(Chore::Fetch {
+                from: "s3://logs/daily/*.csv".into(),
+                into: "D:\\in".into(),
+                key: None,
+                host_key: None,
+                password: Some("secret:s3".into()),
+                key_id: Some("secret:s3-id".into()),
+                region: None,
+                endpoint: Some("http://nas:9000".into()),
+            }))
+        );
+        assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n").contains("key_id が要る"));
+        assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\nkey_id = 'k'\npassword = 'secret:s3'\nregion = '{param:r}'\n")
+            .contains("region: {param:r}: [params] にない"));
+        assert!(bad("ssh", "from = 'h'\ninto = 'ls'\nkey_id = 'k'\n").contains("key_id は kind = \"send\" か \"fetch\" にだけ書く"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nregion = 'us-east-1'\n").contains("region は kind"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nendpoint = 'http://nas:9000'\n").contains("endpoint は kind"));
         assert_eq!(
             net(
                 "http",

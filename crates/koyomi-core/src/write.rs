@@ -430,6 +430,9 @@ fn job(j: &Job, out: &mut String) {
             {
                 push(out, "host_key", &q(h));
             }
+            if let Chore::Send { key_id: Some(k), .. } | Chore::Fetch { key_id: Some(k), .. } = c {
+                push(out, "key_id", &q(k));
+            }
             if let Chore::Send { password: Some(p), .. }
             | Chore::Fetch { password: Some(p), .. }
             | Chore::Ssh { password: Some(p), .. }
@@ -437,6 +440,13 @@ fn job(j: &Job, out: &mut String) {
             | Chore::Sql { password: Some(p), .. } = c
             {
                 push(out, "password", &q(p));
+            }
+            if let Chore::Send { region, endpoint, .. } | Chore::Fetch { region, endpoint, .. } = c {
+                for (name, value) in [("region", region), ("endpoint", endpoint)] {
+                    if let Some(v) = value {
+                        push(out, name, &q(v));
+                    }
+                }
             }
             if let Chore::Ssh { max, pass, .. } | Chore::Winrm { max, pass, .. } = c {
                 if let Some(m) = max {
@@ -738,6 +748,26 @@ tls = "trust"
 password = "secret:db"
 retry = { count = 2, wait = "5m" }
 after = ["ml"]
+
+[[job]]
+id = "up"
+kind = "send"
+from = 'D:\out\*.csv'
+into = "s3://logs/daily/{date}/"
+key_id = "AKIAEXAMPLE"
+password = "secret:s3"
+region = "ap-northeast-1"
+after = ["sq"]
+
+[[job]]
+id = "down"
+kind = "fetch"
+from = "s3://logs/in/*.csv"
+into = 'D:\in'
+key_id = "secret:minio-id"
+password = "secret:minio"
+endpoint = "http://nas:9000"
+after = ["up"]
 "#;
 
     #[test]

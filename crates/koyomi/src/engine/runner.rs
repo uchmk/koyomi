@@ -1150,7 +1150,8 @@ const FAR_GRACE: Duration = Duration::from_secs(10);
 
 /// How long a stop waits after asking `part` before it kills: [`FAR_GRACE`] for an
 /// `ssh` job, which can pass the ask on to the far side, and for a `sql`, which
-/// cancels what the server is running and says so. Anything else is killed at
+/// cancels what the server is running and says so, and for a `send` or `fetch` with
+/// S3, which aborts its upload and drops its `.part`. Anything else is killed at
 /// once, as before: a script or program that does not watch for the ask would only
 /// make a kill slower. Under `run_as` nothing can be asked: `ito_proc` gives another
 /// account's process neither CTRL_BREAK nor the stop event its own children get
@@ -1158,7 +1159,7 @@ const FAR_GRACE: Duration = Duration::from_secs(10);
 /// far command is left to end by itself.
 fn grace(part: &Part) -> Duration {
     match part {
-        Part::Chore(c) if c.far() || matches!(c, koyomi_core::chore::Chore::Sql { .. }) => FAR_GRACE,
+        Part::Chore(c) if c.far() || c.cloud() || matches!(c, koyomi_core::chore::Chore::Sql { .. }) => FAR_GRACE,
         _ => Duration::ZERO,
     }
 }
@@ -1601,7 +1602,8 @@ fn attempt(
         let _ = std::fs::write(&input, gather_outputs(&job.log, &job.id));
     }
     cmd.env("KOYOMI_OUT", &out).env("KOYOMI_IN", &input);
-    // An SFTP `send` or `fetch` runs `koyomi sftp run` from its script (chore.rs).
+    // An SFTP `send` or `fetch` runs `koyomi sftp run` from its script (chore.rs);
+    // one with S3 runs `koyomi cloud run` itself.
     if let Ok(exe) = std::env::current_exe() {
         cmd.env("KOYOMI_EXE", exe);
     }
@@ -2183,6 +2185,17 @@ id = \"a\"
         assert_eq!(grace(&winrm), grace(&ssh));
         assert_eq!(grace(&Part::Job), Duration::ZERO);
         assert_eq!(grace(&Part::Chore(Chore::Zip { from: "a".into(), into: "b.zip".into() })), Duration::ZERO);
+        let s3 = Part::Chore(Chore::Send {
+            from: "D:\\out".into(),
+            into: "s3://logs/in/".into(),
+            key: None,
+            host_key: None,
+            password: Some("secret:s3".into()),
+            key_id: Some("k".into()),
+            region: Some("us-east-1".into()),
+            endpoint: None,
+        });
+        assert_eq!(grace(&s3), grace(&ssh));
     }
 
     #[test]

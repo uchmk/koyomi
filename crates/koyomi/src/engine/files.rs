@@ -1,5 +1,5 @@
 //! Finding the files a `kind = "file"` part and a `[[when]] file` wait for:
-//! a path, or a folder and a name with `*` / `?` (ito-sftp's rule, as for SFTP).
+//! a path, or a folder and a name with `*` / `?` (ito-match's rule, as for SFTP and S3).
 
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
@@ -18,7 +18,7 @@ pub fn find_file(pattern: &str) -> Option<Found> {
 pub fn find_files(pattern: &str) -> Vec<Found> {
     let pat = Path::new(pattern);
     let Some(name) = pat.file_name().map(|n| n.to_string_lossy().into_owned()) else { return Vec::new() };
-    if !ito_sftp::has_wildcard(&name) {
+    if !ito_match::has_wildcard(&name) {
         return match std::fs::metadata(pat).ok().filter(|m| m.is_file()) {
             Some(meta) => vec![(pat.to_path_buf(), meta.len(), meta.modified().ok())],
             None => Vec::new(),
@@ -31,7 +31,7 @@ pub fn find_files(pattern: &str) -> Vec<Found> {
         .filter_map(|e| {
             let n = e.file_name().to_string_lossy().into_owned();
             let m = e.metadata().ok()?;
-            (m.is_file() && ito_sftp::glob_match(&name, &n, cfg!(windows))).then(|| (e.path(), m.len(), m.modified().ok()))
+            (m.is_file() && ito_match::glob_match(&name, &n, cfg!(windows))).then(|| (e.path(), m.len(), m.modified().ok()))
         })
         .collect();
     hits.sort_by(|a, b| a.0.cmp(&b.0));

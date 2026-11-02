@@ -13,6 +13,7 @@
 mod acked;
 mod cli;
 mod client;
+mod cloud;
 mod compare;
 mod engine;
 mod envreport;

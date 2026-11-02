@@ -1,14 +1,14 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
-//! files over SFTP or to and from a shared folder, call a web API, run a
+//! files over SFTP, to and from S3 or a shared folder, call a web API, run a
 //! command on another PC over SSH or on a Windows PC over WinRM, send a mail,
 //! run SQL on a database.
 //! Each is written in the file as its own `kind` and runs as a PowerShell script
 //! the engine writes when the run starts, so it has the job's slot, log,
 //! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh`
 //! runs `koyomi ssh run` itself, without PowerShell, a `winrm` `koyomi winrm
-//! run`, a `mail` `koyomi mail run` and a `sql` `koyomi sql run`. Each reads
-//! what to do from the environment.
+//! run`, a `mail` `koyomi mail run`, a `sql` `koyomi sql run`, and a `send` or
+//! `fetch` with S3 `koyomi cloud run`. Each reads what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -41,7 +41,8 @@ pub enum Chore {
     /// フォルダーを空ける: everything in `path` goes; the folder stays.
     Empty { path: String },
     /// ファイルを送る: the files `from` (a folder or a wildcard here) into the folder
-    /// `into`, either `sftp://[user@]host[:port]/folder` or a folder or share.
+    /// `into`, either `sftp://[user@]host[:port]/folder`, `s3://bucket/folder/` or a
+    /// folder or share.
     Send {
         from: String,
         into: String,
@@ -52,12 +53,25 @@ pub enum Chore {
         /// The server's host key for `sftp://`, as `SHA256:…` (`koyomi sftp hostkey`).
         #[serde(default)]
         host_key: Option<String>,
-        /// `secret:<name>`: log in with the password kept under that name.
+        /// `secret:<name>`: log in with the password kept under that name; for `s3://`,
+        /// the secret access key.
         #[serde(default)]
         password: Option<String>,
+        /// For `s3://`: the access key ID, as it is or `secret:<name>`.
+        #[serde(default)]
+        key_id: Option<String>,
+        /// For `s3://`: the bucket's region (`ap-northeast-1`); with `endpoint`,
+        /// `us-east-1` when it is not written.
+        #[serde(default)]
+        region: Option<String>,
+        /// For `s3://` on an S3-compatible store (MinIO, a NAS …): `http(s)://host[:port]`;
+        /// the bucket then goes in the path.
+        #[serde(default)]
+        endpoint: Option<String>,
     },
-    /// ファイルを受け取る: the files `from`, either `sftp://[user@]host[:port]/folder/*.csv`
-    /// or a folder or share (a wildcard allowed), into the folder `into` here.
+    /// ファイルを受け取る: the files `from`, either `sftp://[user@]host[:port]/folder/*.csv`,
+    /// `s3://bucket/folder/*.csv` or a folder or share (a wildcard allowed), into the
+    /// folder `into` here.
     Fetch {
         from: String,
         into: String,
@@ -67,6 +81,12 @@ pub enum Chore {
         host_key: Option<String>,
         #[serde(default)]
         password: Option<String>,
+        #[serde(default)]
+        key_id: Option<String>,
+        #[serde(default)]
+        region: Option<String>,
+        #[serde(default)]
+        endpoint: Option<String>,
     },
     /// HTTP で呼ぶ: `method` to `url` with `body`, judged by the status code: one of
     /// `expect` (empty: 200–299) is 正常, another is 異常.
@@ -316,6 +336,8 @@ pub const BODY_MAX: usize = 8000;
 const NO_ANSWER: i32 = 2;
 
 /// The exit code of a `send` or `fetch` that found no file: 警告.
+///
+/// `koyomi cloud run` ends with it too.
 pub const NOTHING: i32 = 3;
 
 /// The exit code of an `ssh` or `winrm` that got no exit code from the far side
@@ -369,10 +391,30 @@ impl Chore {
         matches!(self, Chore::Ssh { .. } | Chore::Winrm { .. })
     }
 
-    /// Whether koyomi runs it itself as `koyomi <kind> run`, not as a script: an
-    /// `ssh`, a `winrm`, a `mail`, a `sql`.
+    /// Whether it is a `send` into S3 or a `fetch` from it (`s3://`), which koyomi
+    /// runs itself as `koyomi cloud run`.
+    pub fn cloud(&self) -> bool {
+        match self {
+            Chore::Send { into, .. } => s3(into).is_some(),
+            Chore::Fetch { from, .. } => s3(from).is_some(),
+            _ => false,
+        }
+    }
+
+    /// Whether koyomi runs it itself as `koyomi <op> run`, not as a script: an
+    /// `ssh`, a `winrm`, a `mail`, a `sql`, and a `send` or `fetch` with S3.
     pub fn own(&self) -> bool {
-        self.far() || matches!(self, Chore::Mail { .. } | Chore::Sql { .. })
+        self.far() || self.cloud() || matches!(self, Chore::Mail { .. } | Chore::Sql { .. })
+    }
+
+    /// The `<op>` of `koyomi <op> run` when koyomi runs it itself ([`Chore::own`]):
+    /// its `kind`, or `cloud` for S3.
+    pub fn op(&self) -> &'static str {
+        if self.cloud() {
+            "cloud"
+        } else {
+            self.key()
+        }
     }
 
     /// A new, empty one of `kind` (for the shelf).
@@ -382,8 +424,26 @@ impl Chore {
             "zip" => Chore::Zip { from: String::new(), into: String::new() },
             "copy" => Chore::Copy { from: String::new(), into: String::new(), pattern: None },
             "empty" => Chore::Empty { path: String::new() },
-            "send" => Chore::Send { from: String::new(), into: String::new(), key: None, host_key: None, password: None },
-            "fetch" => Chore::Fetch { from: String::new(), into: String::new(), key: None, host_key: None, password: None },
+            "send" => Chore::Send {
+                from: String::new(),
+                into: String::new(),
+                key: None,
+                host_key: None,
+                password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
+            },
+            "fetch" => Chore::Fetch {
+                from: String::new(),
+                into: String::new(),
+                key: None,
+                host_key: None,
+                password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
+            },
             "http" => Chore::Http {
                 url: String::new(),
                 method: "GET".into(),
@@ -421,7 +481,8 @@ impl Chore {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![("path", path)],
             Chore::Zip { from, into } | Chore::Copy { from, into, .. } => vec![("from", from), ("into", into)],
-            Chore::Send { from, into, key, host_key, .. } | Chore::Fetch { from, into, key, host_key, .. } => {
+            Chore::Send { from, into, key, host_key, region, endpoint, .. }
+            | Chore::Fetch { from, into, key, host_key, region, endpoint, .. } => {
                 let mut v = vec![("from", from), ("into", into)];
                 if let Some(k) = key {
                     v.push(("key", k));
@@ -429,6 +490,8 @@ impl Chore {
                 if let Some(h) = host_key {
                     v.push(("host_key", h));
                 }
+                v.extend(region.iter_mut().map(|r| ("region", r)));
+                v.extend(endpoint.iter_mut().map(|e| ("endpoint", e)));
                 v
             }
             Chore::Http { url, body, .. } => {
@@ -478,8 +541,9 @@ impl Chore {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![path],
             Chore::Zip { from, into } | Chore::Copy { from, into, .. } => vec![from, into],
-            Chore::Send { from, into, key, host_key, .. } | Chore::Fetch { from, into, key, host_key, .. } => {
-                [from, into].into_iter().chain(key).chain(host_key).collect()
+            Chore::Send { from, into, key, host_key, region, endpoint, .. }
+            | Chore::Fetch { from, into, key, host_key, region, endpoint, .. } => {
+                [from, into].into_iter().chain(key).chain(host_key).chain(region).chain(endpoint).collect()
             }
             Chore::Http { url, body, .. } => [url].into_iter().chain(body).collect(),
             Chore::Ssh { on, command, key, host_key, .. } => [on, command].into_iter().chain(key).chain(host_key).collect(),
@@ -522,28 +586,47 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
             }
-            Chore::Send { from, into, key, host_key, password } => {
+            Chore::Send { from, into, key, host_key, password, key_id, region, endpoint } => {
                 need("from", from)?;
                 need("into", into)?;
-                if sftp(from).is_some() {
-                    return Err("send の from はこのマシンのファイル（sftp:// は into に書く）".into());
+                if sftp(from).is_some() || s3(from).is_some() {
+                    return Err("send の from はこのマシンのファイル（sftp://・s3:// は into に書く）".into());
                 }
-                let far = sftp(into).transpose()?;
-                login("sftp://", far.is_some(), true, key, host_key, password)?;
-            }
-            Chore::Fetch { from, into, key, host_key, password } => {
-                need("from", from)?;
-                need("into", into)?;
-                if sftp(into).is_some() {
-                    return Err("fetch の into はこのマシンのフォルダー（sftp:// は from に書く）".into());
-                }
-                let far = sftp(from).transpose()?;
-                if let Some(at) = &far {
-                    if at.path == "." || at.path.ends_with('/') {
-                        return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
+                if let Some(at) = s3(into).transpose()? {
+                    s3_login(key, host_key, password, key_id, region, endpoint)?;
+                    if at.key.contains(['*', '?']) {
+                        return Err(format!("send の into は送り先のフォルダー（s3://バケット/フォルダー/）。* や ? は書かない: {into}"));
                     }
+                } else {
+                    not_s3(key_id, region, endpoint)?;
+                    let far = sftp(into).transpose()?;
+                    login("sftp://", far.is_some(), true, key, host_key, password)?;
                 }
-                login("sftp://", far.is_some(), true, key, host_key, password)?;
+            }
+            Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint } => {
+                need("from", from)?;
+                need("into", into)?;
+                if sftp(into).is_some() || s3(into).is_some() {
+                    return Err("fetch の into はこのマシンのフォルダー（sftp://・s3:// は from に書く）".into());
+                }
+                if let Some(at) = s3(from).transpose()? {
+                    s3_login(key, host_key, password, key_id, region, endpoint)?;
+                    if at.key.is_empty() || at.key.ends_with('/') {
+                        return Err(format!("fetch の from はキーの名前か *.csv のような形まで書く: {from}"));
+                    }
+                    if at.key[..at.key.rfind('/').map_or(0, |i| i + 1)].contains(['*', '?']) {
+                        return Err(format!("* や ? は最後の / のあと（名前）にだけ書ける: {from}"));
+                    }
+                } else {
+                    not_s3(key_id, region, endpoint)?;
+                    let far = sftp(from).transpose()?;
+                    if let Some(at) = &far {
+                        if at.path == "." || at.path.ends_with('/') {
+                            return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
+                        }
+                    }
+                    login("sftp://", far.is_some(), true, key, host_key, password)?;
+                }
             }
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 need("url", url)?;
@@ -750,6 +833,8 @@ impl Chore {
             Chore::Send { from, into, .. } | Chore::Fetch { from, into, .. } => {
                 let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
                 let s = match (self, sftp(from).or_else(|| sftp(into))) {
+                    // Not a script (fill()): only its judge.
+                    _ if self.cloud() => String::new(),
                     // What to do is in the environment (env()): no path or secret is written here.
                     (_, Some(Ok(_))) => SFTP_SCRIPT.to_owned(),
                     (Chore::Send { .. }, _) => shared(from, into, "send", "sent"),
@@ -768,7 +853,8 @@ impl Chore {
     /// The environment the script reads, beside the job's own: an `http` header's
     /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`;
     /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
-    /// (the password as `secret:<name>`, read when the job starts); an `ssh` as
+    /// (the password as `secret:<name>`, read when the job starts); one with S3 as
+    /// `KOYOMI_CLOUD_*` for `koyomi cloud run` (the same); an `ssh` as
     /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
     /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`),
     /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
@@ -778,7 +864,23 @@ impl Chore {
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
-            Chore::Send { from, into, key, host_key, password } | Chore::Fetch { from, into, key, host_key, password }
+            Chore::Send { from, into, password, key_id, region, endpoint, .. }
+            | Chore::Fetch { from, into, password, key_id, region, endpoint, .. }
+                if self.cloud() =>
+            {
+                let mut v = vec![
+                    ("KOYOMI_CLOUD_OP".to_owned(), self.key().to_owned()),
+                    ("KOYOMI_CLOUD_FROM".to_owned(), from.trim().to_owned()),
+                    ("KOYOMI_CLOUD_INTO".to_owned(), into.trim().to_owned()),
+                ];
+                for (name, value) in [("KEY_ID", key_id), ("REGION", region), ("ENDPOINT", endpoint), ("PASSWORD", password)] {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        v.push((format!("KOYOMI_CLOUD_{name}"), x.to_owned()));
+                    }
+                }
+                v
+            }
+            Chore::Send { from, into, key, host_key, password, .. } | Chore::Fetch { from, into, key, host_key, password, .. }
                 if sftp(from).or_else(|| sftp(into)).is_some() =>
             {
                 let mut v = vec![
@@ -954,15 +1056,19 @@ fn http(
 /// not take the ask and write into the log. It keeps its own `judge`, and the
 /// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`. A `winrm` the
 /// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`; a `mail` as `exe mail run`, a
-/// `sql` as `exe sql run`.
+/// `sql` as `exe sql run`, a `send` or `fetch` with S3 as `exe cloud run` (nothing
+/// to send or fetch is a warning, as over SFTP).
 pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
             c.check().map_err(|e| format!("{}: {e}", j.id))?;
             if c.own() {
-                let op = c.key();
+                let op = c.op();
                 (j.shell, j.script) = (None, None);
                 j.run = [exe, op, "run"].map(str::to_owned).to_vec();
+                if c.cloud() {
+                    j.judge = c.script().1;
+                }
                 if c.far() {
                     // Not its own `KOYOMI_SSH_*`, should a net be filled twice.
                     let prefix = format!("KOYOMI_{}_", op.to_ascii_uppercase());
@@ -1085,6 +1191,104 @@ pub enum SqlDb {
 /// `t` after `scheme`, whatever its case; `None` when it does not start with it.
 fn after_scheme<'a>(t: &'a str, scheme: &str) -> Option<&'a str> {
     t.get(..scheme.len()).filter(|p| p.eq_ignore_ascii_case(scheme)).map(|_| &t[scheme.len()..])
+}
+
+/// Where an `s3://bucket/key` points.
+#[derive(Debug, PartialEq, Eq)]
+pub struct S3 {
+    pub bucket: String,
+    /// The key (or a pattern, or a folder ending in `/`) in the bucket, without a
+    /// leading `/`; empty for the bucket's top.
+    pub key: String,
+}
+
+/// `s` read as an `s3://bucket/key` address; `None` when it does not start with
+/// `s3://`. A bucket is 3 to 63 letters, digits, `.`, `-` and `_` (told once a
+/// `{param:…}` in it is filled in).
+pub fn s3(s: &str) -> Option<Result<S3, String>> {
+    let t = s.trim();
+    let rest = after_scheme(t, "s3://")?;
+    let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
+    let good = |b: &str| (3..=63).contains(&b.len()) && b.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
+    let read = if bucket.is_empty() {
+        Err("s3:// にはバケットが要る（s3://バケット/フォルダー/）".to_owned())
+    } else if !bucket.contains('{') && !good(bucket) {
+        Err("バケットの名前は 3〜63 文字の英数字と . - _".to_owned())
+    } else if key.chars().any(char::is_control) {
+        Err("キーに改行などは使えない".to_owned())
+    } else {
+        Ok(S3 { bucket: bucket.to_owned(), key: key.trim_start_matches('/').to_owned() })
+    };
+    Some(read.map_err(|e| format!("{e}: {t}")))
+}
+
+/// How a `send` or `fetch` with S3 logs in: `key_id`, and `password` (the secret
+/// access key) as a `secret:`; `region` unless `endpoint` is written. `key` and
+/// `host_key` are for `sftp://`.
+fn s3_login(
+    key: &Option<String>,
+    host_key: &Option<String>,
+    password: &Option<String>,
+    key_id: &Option<String>,
+    region: &Option<String>,
+    endpoint: &Option<String>,
+) -> Result<(), String> {
+    let val = |v: &Option<String>| v.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned);
+    if let Some((name, _)) = [("key", key), ("host_key", host_key)].into_iter().find(|(_, v)| val(v).is_some()) {
+        return Err(format!("{name} は sftp:// の相手にだけ書く（s3:// は key_id と password）"));
+    }
+    match val(key_id) {
+        None => return Err("s3:// には key_id が要る（アクセス キー ID。secret:<名前> でもよい）".into()),
+        Some(k) if k.strip_prefix("secret:").is_some_and(|n| n.trim().is_empty()) => {
+            return Err("key_id の secret: のあとに名前を書く".into());
+        }
+        Some(k) if !k.starts_with("secret:") && k.chars().any(|c| c.is_whitespace() || c.is_control()) => {
+            return Err(format!("key_id に空白は使えない: {k}"));
+        }
+        Some(_) => {}
+    }
+    match val(password) {
+        None => {
+            return Err(
+                "s3:// には password = \"secret:<名前>\" が要る（シークレット アクセス キー。値は koyomi secret set <名前> で OS の資格情報に置く）"
+                    .into(),
+            );
+        }
+        Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => {
+            return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+        }
+        Some(_) => {}
+    }
+    let (region, endpoint) = (val(region), val(endpoint));
+    match &region {
+        None if endpoint.is_none() => {
+            return Err("s3:// には region が要る（例: region = \"ap-northeast-1\"。MinIO などは endpoint を書く）".into());
+        }
+        // `{param:…}` or `{var:…}` is told once it is filled in.
+        Some(r) if !r.starts_with('{') && !r.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') => {
+            return Err(format!("region は ap-northeast-1 のように書く: {r}"));
+        }
+        _ => {}
+    }
+    if let Some(e) = endpoint.filter(|e| !e.starts_with('{')) {
+        let Some(rest) = after_scheme(&e, "https://").or_else(|| after_scheme(&e, "http://")) else {
+            return Err(format!("endpoint は http:// か https:// で始める: {e}"));
+        };
+        let host = rest.strip_suffix('/').unwrap_or(rest);
+        if host.is_empty() || host.contains(['/', '?', '#', '@']) || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
+            return Err(format!("endpoint はホスト[:ポート]までを書く（例: http://nas:9000）: {e}"));
+        }
+    }
+    Ok(())
+}
+
+/// `key_id`, `region` and `endpoint` go only with `s3://`.
+fn not_s3(key_id: &Option<String>, region: &Option<String>, endpoint: &Option<String>) -> Result<(), String> {
+    let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
+    match [("key_id", key_id), ("region", region), ("endpoint", endpoint)].into_iter().find(|(_, v)| set(v)) {
+        Some((name, _)) => Err(format!("{name} は s3:// の相手にだけ書く")),
+        None => Ok(()),
+    }
 }
 
 /// `s` read as a `sql`'s `db`. A named instance (`host\name`) is not taken: its
@@ -1348,10 +1552,30 @@ mod tests {
     fn send_and_fetch_take_sftp_on_the_far_side_only() {
         let hk = Some(HK.to_owned());
         let send = |from: &str, into: &str, host_key: &Option<String>| {
-            Chore::Send { from: from.into(), into: into.into(), key: None, host_key: host_key.clone(), password: None }.check()
+            Chore::Send {
+                from: from.into(),
+                into: into.into(),
+                key: None,
+                host_key: host_key.clone(),
+                password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
+            }
+            .check()
         };
         let fetch = |from: &str, into: &str, host_key: &Option<String>| {
-            Chore::Fetch { from: from.into(), into: into.into(), key: None, host_key: host_key.clone(), password: None }.check()
+            Chore::Fetch {
+                from: from.into(),
+                into: into.into(),
+                key: None,
+                host_key: host_key.clone(),
+                password: None,
+                key_id: None,
+                region: None,
+                endpoint: None,
+            }
+            .check()
         };
         assert!(send("D:\\out\\*.csv", "sftp://u@h/in", &hk).is_ok());
         assert!(send("D:\\out\\*.csv", "\\\\nas\\share\\in", &None).is_ok());
@@ -1373,6 +1597,9 @@ mod tests {
                 key: key.map(Into::into),
                 host_key: host_key.map(Into::into),
                 password: password.map(Into::into),
+                key_id: None,
+                region: None,
+                endpoint: None,
             }
             .check()
         };
@@ -1397,6 +1624,9 @@ mod tests {
             key: None,
             host_key: Some(HK.into()),
             password: Some("secret:partner".into()),
+            key_id: None,
+            region: None,
+            endpoint: None,
         };
         let (script, judge) = s.script();
         assert!(script.contains("& $env:KOYOMI_EXE sftp run | ForEach-Object"), "{script}");
@@ -1416,15 +1646,153 @@ mod tests {
             key: Some("C:\\keys\\id".into()),
             host_key: Some(HK.into()),
             password: None,
+            key_id: None,
+            region: None,
+            endpoint: None,
         };
         assert!(f.env().contains(&("KOYOMI_SFTP_OP".to_owned(), "fetch".to_owned())));
         assert!(f.env().contains(&("KOYOMI_SFTP_KEY".to_owned(), "C:\\keys\\id".to_owned())));
-        let share = Chore::Send { from: "D:\\out".into(), into: "\\\\nas\\share\\in".into(), key: None, host_key: None, password: None };
+        let share = Chore::Send {
+            from: "D:\\out".into(),
+            into: "\\\\nas\\share\\in".into(),
+            key: None,
+            host_key: None,
+            password: None,
+            key_id: None,
+            region: None,
+            endpoint: None,
+        };
         let (script, judge) = share.script();
         assert!(script.contains("Copy-Item -LiteralPath $x.FullName -Destination $into -Force"), "{script}");
         assert!(!script.contains("sftp"), "{script}");
         assert!(judge.is_some());
         assert!(share.env().is_empty());
+        assert!(!share.own() && !share.cloud());
+    }
+
+    fn cloud_send(into: &str, key_id: Option<&str>, password: Option<&str>, region: Option<&str>, endpoint: Option<&str>) -> Chore {
+        Chore::Send {
+            from: "D:\\out\\*.csv".into(),
+            into: into.into(),
+            key: None,
+            host_key: None,
+            password: password.map(Into::into),
+            key_id: key_id.map(Into::into),
+            region: region.map(Into::into),
+            endpoint: endpoint.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn an_s3_address_has_a_bucket_and_a_key() {
+        assert_eq!(s3("s3://logs-2026/daily/"), Some(Ok(S3 { bucket: "logs-2026".into(), key: "daily/".into() })));
+        assert_eq!(s3(" S3://logs//a.csv "), Some(Ok(S3 { bucket: "logs".into(), key: "a.csv".into() })));
+        assert_eq!(s3("s3://logs"), Some(Ok(S3 { bucket: "logs".into(), key: String::new() })));
+        assert_eq!(s3("s3://{param:b}/x").unwrap().unwrap().bucket, "{param:b}");
+        assert!(s3("sftp://h/in").is_none());
+        assert!(s3("D:\\in").is_none());
+        assert!(s3("s3://").unwrap().unwrap_err().contains("バケットが要る"));
+        assert!(s3("s3:///in").unwrap().unwrap_err().contains("バケットが要る"));
+        for bad in ["s3://ab/x", "s3://a b/x", "s3://a:b/x", "s3://user@bucket/x"] {
+            assert!(s3(bad).unwrap().unwrap_err().contains("バケットの名前"), "{bad}");
+        }
+        assert!(s3("s3://logs/a\nb").unwrap().unwrap_err().contains("改行"));
+    }
+
+    #[test]
+    fn s3_needs_a_key_id_a_secret_and_a_region_or_an_endpoint() {
+        let ok = |c: Chore| c.check();
+        let to = "s3://logs/daily/";
+        let pw = Some("secret:s3");
+        assert_eq!(ok(cloud_send(to, Some("AKIAEXAMPLE"), pw, Some("ap-northeast-1"), None)), Ok(()));
+        assert_eq!(ok(cloud_send(to, Some("secret:s3-id"), pw, None, Some("http://nas:9000"))), Ok(()));
+        assert_eq!(ok(cloud_send(to, Some("minio"), pw, Some("{param:r}"), Some("https://s3.example.com/"))), Ok(()));
+        assert_eq!(ok(cloud_send("s3://logs", Some("k"), pw, Some("us-east-1"), None)), Ok(()));
+        assert!(ok(cloud_send(to, None, pw, Some("us-east-1"), None)).unwrap_err().contains("key_id が要る"));
+        assert!(ok(cloud_send(to, Some("secret:"), pw, Some("us-east-1"), None)).unwrap_err().contains("名前を書く"));
+        assert!(ok(cloud_send(to, Some("AK IA"), pw, Some("us-east-1"), None)).unwrap_err().contains("空白"));
+        assert!(ok(cloud_send(to, Some("k"), None, Some("us-east-1"), None)).unwrap_err().contains("password = \"secret:<名前>\""));
+        assert!(ok(cloud_send(to, Some("k"), Some("hunter2"), Some("us-east-1"), None)).unwrap_err().contains("secret:<名前>"));
+        assert!(ok(cloud_send(to, Some("k"), pw, None, None)).unwrap_err().contains("region が要る"));
+        assert!(ok(cloud_send(to, Some("k"), pw, Some("Tokyo"), None)).unwrap_err().contains("ap-northeast-1 のように"));
+        assert!(ok(cloud_send(to, Some("k"), pw, None, Some("nas:9000"))).unwrap_err().contains("http://"));
+        for bad in ["http://", "http://nas:9000/minio", "http://u@nas", "https://nas?x=1"] {
+            assert!(ok(cloud_send(to, Some("k"), pw, None, Some(bad))).unwrap_err().contains("ホスト[:ポート]"), "{bad}");
+        }
+        assert!(ok(cloud_send("s3://logs/*.csv", Some("k"), pw, Some("us-east-1"), None)).unwrap_err().contains("* や ?"));
+        let mut with_key = cloud_send(to, Some("k"), pw, Some("us-east-1"), None);
+        if let Chore::Send { host_key, .. } = &mut with_key {
+            *host_key = Some(HK.into());
+        }
+        assert!(ok(with_key).unwrap_err().contains("host_key は sftp://"));
+        // `key_id`, `region` and `endpoint` go only with `s3://`.
+        assert!(ok(cloud_send("\\\\nas\\in", Some("k"), None, None, None)).unwrap_err().contains("key_id は s3://"));
+        assert!(ok(cloud_send("D:\\in", None, None, Some("us-east-1"), None)).unwrap_err().contains("region は s3://"));
+        let mut sftp_with_endpoint = cloud_send("sftp://u@h/in", None, None, None, Some("http://nas:9000"));
+        if let Chore::Send { host_key, .. } = &mut sftp_with_endpoint {
+            *host_key = Some(HK.into());
+        }
+        assert!(ok(sftp_with_endpoint).unwrap_err().contains("endpoint は s3://"));
+        // Not from S3 into here with a `send`, nor into S3 with a `fetch`.
+        let back = Chore::Send {
+            from: "s3://logs/a.csv".into(),
+            into: "D:\\in".into(),
+            key: None,
+            host_key: None,
+            password: None,
+            key_id: None,
+            region: None,
+            endpoint: None,
+        };
+        assert!(back.check().unwrap_err().contains("s3:// は into"));
+    }
+
+    #[test]
+    fn a_fetch_from_s3_names_its_keys_and_has_a_wildcard_only_in_the_name() {
+        let fetch = |from: &str, into: &str| Chore::Fetch {
+            from: from.into(),
+            into: into.into(),
+            key: None,
+            host_key: None,
+            password: Some("secret:s3".into()),
+            key_id: Some("k".into()),
+            region: Some("ap-northeast-1".into()),
+            endpoint: None,
+        };
+        assert_eq!(fetch("s3://logs/daily/*.csv", "D:\\in").check(), Ok(()));
+        assert_eq!(fetch("s3://logs/a.csv", "D:\\in").check(), Ok(()));
+        assert!(fetch("s3://logs/daily/", "D:\\in").check().unwrap_err().contains("*.csv のような形"));
+        assert!(fetch("s3://logs", "D:\\in").check().unwrap_err().contains("*.csv のような形"));
+        assert!(fetch("s3://logs/*/a.csv", "D:\\in").check().unwrap_err().contains("最後の / のあと"));
+        assert!(fetch("s3://logs/a.csv", "s3://logs/b/").check().unwrap_err().contains("s3:// は from"));
+        let f = fetch("s3://logs/daily/*.csv", "D:\\in");
+        assert!(f.cloud() && f.own() && !f.far());
+        assert_eq!(f.op(), "cloud");
+        let env = f.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_CLOUD_OP"), Some("fetch"));
+        assert_eq!(get("KOYOMI_CLOUD_FROM"), Some("s3://logs/daily/*.csv"));
+        assert_eq!(get("KOYOMI_CLOUD_INTO"), Some("D:\\in"));
+        assert_eq!(get("KOYOMI_CLOUD_KEY_ID"), Some("k"));
+        assert_eq!(get("KOYOMI_CLOUD_REGION"), Some("ap-northeast-1"));
+        assert_eq!(get("KOYOMI_CLOUD_PASSWORD"), Some("secret:s3"));
+        assert_eq!(get("KOYOMI_CLOUD_ENDPOINT"), None);
+        assert!(!env.iter().any(|(k, _)| k.starts_with("KOYOMI_SFTP_")));
+    }
+
+    #[test]
+    fn fill_runs_s3_as_koyomi_cloud_run_and_judges_no_file_as_a_warning() {
+        let mut net = crate::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"up\"\nkind = \"send\"\nfrom = 'D:\\out\\*.csv'\ninto = \"s3://logs/daily/\"\nkey_id = \"AKIAEXAMPLE\"\npassword = \"secret:s3\"\nregion = \"ap-northeast-1\"\n",
+        )
+        .unwrap();
+        fill(&mut net, "C:\\koyomi.exe").unwrap();
+        let j = &net.jobs[0];
+        assert_eq!(j.run, ["C:\\koyomi.exe", "cloud", "run"]);
+        assert!(j.script.is_none() && j.shell.is_none());
+        assert_eq!(j.judge.as_ref().unwrap().warn, vec![Range { from: NOTHING, to: NOTHING }]);
+        assert_eq!(j.env.get("KOYOMI_CLOUD_INTO").map(String::as_str), Some("s3://logs/daily/"));
+        assert!(!j.env.contains_key("KOYOMI_CLOUD_ENV"));
     }
 
     #[test]

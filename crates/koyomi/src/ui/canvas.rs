@@ -185,6 +185,10 @@ pub struct Fields {
     pub key: String,
     pub host_key: String,
     pub password: String,
+    /// A `send`'s or a `fetch`'s S3 access key ID, region and S3-compatible server.
+    pub key_id: String,
+    pub region: String,
+    pub endpoint: String,
     /// An `http`'s call; `headers` one `Name: value` a line, `expect` the codes with `,`.
     pub url: String,
     pub method: String,
@@ -282,12 +286,16 @@ impl Fields {
                     f.into = into.clone();
                     f.pattern = pattern.clone().unwrap_or_default();
                 }
-                Chore::Send { from, into, key, host_key, password } | Chore::Fetch { from, into, key, host_key, password } => {
+                Chore::Send { from, into, key, host_key, password, key_id, region, endpoint }
+                | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint } => {
                     f.from = from.clone();
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
                     f.host_key = host_key.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
+                    f.key_id = key_id.clone().unwrap_or_default();
+                    f.region = region.clone().unwrap_or_default();
+                    f.endpoint = endpoint.clone().unwrap_or_default();
                 }
                 Chore::Http { url, method, body, content_type, headers, expect } => {
                     f.url = url.clone();
@@ -443,6 +451,9 @@ impl Fields {
                         key: opt(&self.key),
                         host_key: opt(&self.host_key),
                         password: opt(&self.password),
+                        key_id: opt(&self.key_id),
+                        region: opt(&self.region),
+                        endpoint: opt(&self.endpoint),
                     },
                     Chore::Fetch { .. } => Chore::Fetch {
                         from: self.from.trim().into(),
@@ -450,6 +461,9 @@ impl Fields {
                         key: opt(&self.key),
                         host_key: opt(&self.host_key),
                         password: opt(&self.password),
+                        key_id: opt(&self.key_id),
+                        region: opt(&self.region),
+                        endpoint: opt(&self.endpoint),
                     },
                     Chore::Http { .. } => self.http()?,
                     Chore::Ssh { .. } => Chore::Ssh {

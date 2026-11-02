@@ -516,9 +516,18 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let (from, into) = if send { ("field.send_from", "field.send_into") } else { ("field.fetch_from", "field.fetch_into") };
             changed |= form.line(ui, from, req, false, &mut f.from, |i| i.mono());
             changed |= form.line(ui, into, req, false, &mut f.into, |i| i.mono());
-            changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
-            changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
-            changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            // S3 logs in with an access key, not with SSH's.
+            if koyomi_core::chore::s3(if send { &f.into } else { &f.from }).is_some() {
+                changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
+                changed |= form.line(ui, "field.s3_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
+                changed |= form.line(ui, "field.region", opt, false, &mut f.region, |i| i.mono().hint("ap-northeast-1"));
+                changed |=
+                    form.line(ui, "field.endpoint", opt, false, &mut f.endpoint, |i| i.mono().hint("http://nas:9000").mark(M::Server));
+            } else {
+                changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
+                changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
+                changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            }
         }
         Chore::Ssh { .. } => {
             // A group's PCs may each have their host key in koyomi.toml.
