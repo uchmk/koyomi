@@ -464,7 +464,7 @@
 
 - [ ] **35.1** [x] A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file → `<job> の実行ファイルが見つからない: …` and exit code 1 〔未訳〕
 - [ ] **35.2** [x] A job with `dir = "C:/nope"` → `作業フォルダーがない` 〔未訳〕
-- [ ] **35.3** A `kind = "file"` part watching `C:/nope/*.csv` → `見張るフォルダーがない: C:/nope` 〔未訳〕
+- [ ] **35.3** A `kind = "file"` part watching `C:/nope/*.csv` → `見張るフォルダーがない: C:\nope`（Windows ではパスを `\` 区切りで表示する） 〔未訳〕
 - [ ] **35.4** [x] `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` → No complaint about the dir (it has no name until the day) 〔未訳〕
 - [ ] **35.5** A net whose calendar uses the holiday table, within 60 days of its end → A line about the table; exit code stays 0 〔未訳〕
 
@@ -809,7 +809,7 @@
 - [ ] **75.6** [x] Stop the job (強制終了) during a pass of a long loop → The pass is killed and no later pass starts 〔未訳〕
 - [ ] **75.7** [x] Write both `file` and `count`, or neither → The definition does not load; the problem names the line and says to write one of them 〔未訳〕
 - [ ] **75.8** In the editor, drag 繰り返し from the shelf onto the canvas → A circle (it runs a process) with the file and count fields over the command fields; Save writes `kind = "loop"` 〔未訳〕
-- [ ] **75.9** `koyomi review <net>` with a loop → The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command 〔未訳〕
+- [ ] **75.9** `koyomi show <net>` with a loop → The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command 〔未訳〕
 
 ## 76. 外への生存の合図（`[ping]`）
 
@@ -1011,7 +1011,7 @@
 - [ ] **93.7** [x] On B: `koyomi standby giveback`; again → `a に戻した。また見張る`, back to 93.1; the second says `引き継いでいない（a を見張っている）`; `koyomi ops` shows `giveback` 〔未訳〕
 - [ ] **93.8** [x] On B: change one digit of `a`'s fingerprint; stop A → A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) 〔未訳〕
 - [ ] **93.9** [x] `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` → Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` 〔未訳〕
-- [ ] **93.10** Remove `[standby]` from B's koyomi.toml → B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] がない` 〔未訳〕
+- [ ] **93.10** Remove `[standby]` from B's koyomi.toml → B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] も [primary] もない` 〔未訳〕
 
 ## 94. People and roles over HTTP (`[[http.user]]`; TODO 83)
 
@@ -1150,7 +1150,7 @@
 - [ ] **100.8** [x] `GET /health` with `K` → `koyomi engine pid N` only (no net names after it); with `S`, the whole line 〔未訳〕
 - [ ] **100.9** Open the Web UI and sign in with `K` → Only `経理/a` and its runs 〔未訳〕
 - [ ] **100.10** [x] `koyomi check` with `nets = []`, `nets = ["経理"]` and `nets = ["*/*/x"]` → Each refused: `[[http.user]] kato の nets を空にしない…`, `… nets は <グループ>/<名前> で書く…` 〔未訳〕
-- [ ] **100.11** This PC's window and `koyomi runs` → Both nets and all runs, as before 〔未訳〕
+- [ ] **100.11** This PC's window and `koyomi list` and `koyomi history` → Both nets and all runs, as before 〔未訳〕
 
 ## 101. Run a command on another PC (`kind = "ssh"`; TODO 95)
 
@@ -1171,8 +1171,8 @@
 
 - [ ] **102.1** Start B's engine, then A's; `koyomi standby` on both → A: `[primary] b が待機している。この PC で流す`; B: `待機中: a を見張っている…`. `t/clock` runs on A only 〔未訳〕
 - [ ] **102.2** `koyomi check` with `[standby]` and `[primary]` both, `give_back = "sometimes"`, a net with `takeover = "maybe"` → Each is an error (`[standby] と [primary] は一緒に書けない…` for the first) 〔未訳〕
-- [ ] **102.3** Stop B; restart A; `koyomi standby` on A at once, then after 10 s → First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then `koyomi: 待機の PC` `b が答えないので、この PC で流す` and A runs. Start B again 〔未訳〕
-- [ ] **102.4** On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) → After about 10 s B says `koyomi: 待機から引き継いだ` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` 〔未訳〕
+- [ ] **102.3** Stop B; restart A; `koyomi standby` on A at once, then after 10 s → First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then the log (not the console) gets `koyomi: b が答えないので、この PC で流す` (the toast title is `koyomi: 待機の PC`) and A runs. Start B again 〔未訳〕
+- [ ] **102.4** On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) → After about 10 s B shows a toast titled `koyomi: 待機から引き継いだ`, and its log line is `koyomi: …` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` 〔未訳〕
 - [ ] **102.5** [x] B's window: the runs of `t/r` and `t/l` → `t/r` runs `two` (`one` shows it ended ok on A, not run again); `t/l` is ↷ with `a で動いていた・引き継いでいない（<A's id> / …）`, `two` 未実行 with `a で動いていた（終わったかは分からない）` 〔未訳〕
 - [ ] **102.6** [x] On B `koyomi rerun <t/l's id>` → `t/l` runs from `two` on B 〔未訳〕
 - [ ] **102.7** [x] Start A again (same console), when no net has a time within ±30 s of the release (else 409 `時刻が近い`, see 102.10) → A says `koyomi: 待機の PC` `b が引き継いでいる。返されるまで…`; `t/clock` does not run on A; B says `koyomi: 引き取りを待っている`; after about 10 s B says `koyomi: 戻した` (`a が引き取りに来たので戻した。また見張る`) and A `b から戻った。この PC で流す` 〔未訳〕
