@@ -807,7 +807,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 62.2 | Same, under 今日 on the left | The coming times today carry the same mark |
 | 62.3 | Set sleep to never | No mark anywhere |
 | 62.4 | In the editor's net pane, check 「PC が眠っていても起こして流す」 and save | The file has `wake = true`; the next times read `PC を起こして流す` |
-| 62.5 | `koyomi status` | `PC を起こす: <時刻の 2 分前>（<ネット>）` |
+| 62.5 | `koyomi engine status` | `PC を起こす: <時刻の 2 分前>（<ネット>）` (`koyomi status` lists only the running runs) |
 | 62.6 | `powercfg /waketimers` in an administrator prompt | A timer by koyomi's engine for that time |
 | 62.7 | Put the PC to sleep before the time | It wakes 2 minutes before, the net runs, and the PC sleeps again afterwards |
 | 62.8 | Turn wake timers off in the power plan (Advanced settings → Sleep → Allow wake timers: Disable), wait a minute | The marks read `PC を起こして流す設定だが、起こせない: 電源プランで復帰タイマーが無効`; `koyomi status` says the same |
@@ -846,7 +846,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 65.1 | A job `run = ["cmd.exe", "/c", "for /l %i in (1,1,15) do @echo line %i & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
+| 65.1 | A job `run = ["cmd.exe", "/c", "(for /l %i in (1,1,15) do @echo line %i) & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
 | 65.2 | With a webhook on for `failed` (e.g. ntfy), the same run | The message ends with `<job> のログの末尾` and `line 6` … `line 15` |
 | 65.3 | A job with `env = { PW = "secret:db" }` that echoes `%PW%` and exits 1 | Both the notification and the webhook show `***`, not the secret |
 | 65.4 | A run that ends 正常, or a job that fails before writing anything | The notice is as before, with no log lines |
@@ -1113,7 +1113,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 86.1 | Run a net whose job takes about 1 minute 5 seconds; `koyomi show <run>` | The run and the job lines read `1分5秒`, not `0:01:05` |
 | 86.2 | A job of a few seconds; open the run in the window and pick the job | 所要 reads `3秒`; a 41-minute one reads `41分`; a 65-minute one `1時間5分` |
 | 86.3 | Set `lang = "en"` in common.toml; repeat 86.1 | `1 min 5 s` |
-| 86.4 | `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` | `1分  →  1分10秒  (+10秒)`; いつもは in words |
+| 86.4 | `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` | `所要 1分 → 1分10秒（+10秒）`; いつもは in words |
 
 ## 87. Start over HTTP (`[http]`, TODO 82)
 
@@ -1124,7 +1124,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 87.3 | The same with the right token and `-d '{"net":"g/a","params":{"day":"2026-10-31"}}'` | 202 and `{"run":"<id>"}`; the run goes with that param; 操作の記録 has a by-hand run |
 | 87.4 | `curl -H "Authorization: Bearer …" http://127.0.0.1:8790/runs/<id>` while it runs and after it ends; then a run id of yesterday | JSON with `state`, `jobs`, `"over": false`, then `true`; yesterday's run is found too |
 | 87.5 | POST a net that is held, unconfirmed or does not exist; POST `{}`, `{"net":"g/a","dry":true}`, `not json`; GET `/runs/nope`; `PUT /runs` | 422 with the same reason `koyomi run` gives; 400 for the bodies; 404; 405 |
-| 87.6 | Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` | Each is refused when koyomi.toml is read (the band says why); nothing listens |
+| 87.6 | Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` | Each is refused when koyomi.toml is read and the band says why; the listener from the last good koyomi.toml stays (an engine that starts with a bad one listens on nothing), and it goes on once the file is good again |
 | 87.7 | `koyomi secret delete koyomi-http` and restart the engine; or take 8790 with another program first | A note says it cannot listen and why; it is tried again every 60 s; once fixed it listens without a restart |
 | 87.8 | Remove `[http]` while the engine runs | It stops listening within a few seconds; `koyomi status` has no HTTP line |
 | 87.9 | `ipv6 = true`; `curl -g "http://[::1]:8790/runs/<id>"` with the token | Answers the same as on 127.0.0.1 |
