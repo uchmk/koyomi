@@ -8,7 +8,7 @@
 //! came before (or while the engine was down) does not start the net. All the
 //! matches of one read start the net once, and the first is kept for the
 //! record. A mailbox that cannot be read (no secret, a wrong password, no such
-//! folder, the server down) is said in the warnings and tried again.
+//! folder, the server down) is said in the cautions and tried again.
 
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
@@ -203,7 +203,7 @@ impl Inbox for Imap {
     }
 }
 
-/// Why a mailbox cannot be read, for the warnings (never with the password).
+/// Why a mailbox cannot be read, for the cautions (never with the password).
 fn why(e: &ito_mail::Error) -> String {
     match e {
         ito_mail::Error::Connect(s) => format!("サーバーにつながらない: {s}"),

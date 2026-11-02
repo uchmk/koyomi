@@ -11,7 +11,7 @@
 //! `user`, anyone's lock starts the net. The engine a person started sees only its own
 //! session, so mostly the lock and the unlock: it starts after the sign-in and seldom
 //! lives through the sign-out, and a `user` that is someone else never comes. All three
-//! are said in the warnings there.
+//! are said in the cautions there (they stop nothing else).
 
 use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};

@@ -11,7 +11,7 @@
 //! through ito-power's `user_idle_for` (the console session's). Where the time
 //! cannot be known (a PC with no screen, nobody signed in there, or Windows not
 //! keeping that time for the session) nothing starts, and that is said in the
-//! warnings.
+//! cautions.
 
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};

@@ -6,7 +6,7 @@
 //! file already there does not. The logs are read every [`POLL`]; all the
 //! matches of one read start the net once, and the first is kept for the record.
 //! A log that cannot be read (a log file that cannot be opened, an event log
-//! not there or not allowed) is said in the warnings and tried again.
+//! not there or not allowed) is said in the cautions and tried again.
 
 use std::time::{Duration, Instant};
 

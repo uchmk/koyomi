@@ -1230,10 +1230,6 @@ impl State {
     fn snapshot(&self) -> Snapshot {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.bad_config.clone());
-        warnings.extend(self.logs.problems());
-        warnings.extend(self.mails.problems());
-        warnings.extend(self.idle.problems());
-        warnings.extend(self.sessions.problems());
         let ping = self.ping.notes(self.ping_cfg.as_ref(), self.ping_plain_ok);
         let notes = self
             .notify_notes
@@ -1262,6 +1258,12 @@ impl State {
                 .chain(self.primary.caution())
                 .chain(self.calendars.cautions(ito_common::now::now_local().date_naive(), CAUTION_DAYS))
                 .chain(self.staged_failed.values().cloned())
+                // A [[when]] that cannot come here (a mailbox or log that does not read, an idle
+                // or session this engine cannot see): the net is still valid and may be approved.
+                .chain(self.logs.problems())
+                .chain(self.mails.problems())
+                .chain(self.idle.problems())
+                .chain(self.sessions.problems())
                 .collect(),
             calendar_cautions: self.calendars.cautions_by_calendar(ito_common::now::now_local().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
@@ -2972,6 +2974,35 @@ run = [\"x.exe\"]
         assert_eq!(s.approve("経理/乙", &b), Ok("確認した: 経理/乙".to_owned()));
         assert_eq!(standing_of(&s, "経理/乙"), Some(Standing::Confirmed));
         assert_ne!(standing_of(&s, "経理/甲"), Some(Standing::Confirmed));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_when_that_cannot_come_is_a_caution_and_approving_goes_on() {
+        let paths = temp_paths("when-caution");
+        let mut s = State::new(paths.clone());
+        // Someone else's lock: the engine a person runs never sees it (or no session is seen at all).
+        let other = r#"format = 1
+name = "他人"
+
+[[when]]
+session = "lock"
+user = 'NOPE\nobody'
+
+[[job]]
+id = "a"
+run = ["x.exe"]
+"#;
+        let plain = "format = 1\nname = \"n\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        assert_eq!(s.save("保守/他人", other, None, false), Ok("保存した: 保守/他人".to_owned()));
+        s.propose("保守/乙", plain, None).unwrap();
+        let snap = s.snapshot();
+        assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
+        assert!(snap.cautions.iter().any(|c| c.starts_with("保守/他人: ")), "{:?}", snap.cautions);
+        // The window and the CLI ask the snapshot's warnings before they approve: nothing stands in the way.
+        assert!(warnings_about(&paths, &snap.warnings, &snap.defs, "保守/乙.toml").is_empty());
+        let sha = s.defs.iter().find(|d| d.id == "保守/乙").unwrap().sha256.clone();
+        assert_eq!(s.approve("保守/乙", &sha), Ok("確認した: 保守/乙".to_owned()));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

@@ -288,8 +288,11 @@ pub struct Snapshot {
     /// `koyomi pause`: no time starts anything.
     #[serde(default)]
     pub paused: bool,
-    /// One line each about the calendars: a file that does not read, the
-    /// holiday table's age. Nothing is stopped by these.
+    /// One line each about the calendars (a file that does not read, the
+    /// holiday table's age), a planned stop, a standby, a staged switch that
+    /// failed, and a `[[when]]` that cannot come here (a mailbox or event log
+    /// that does not read, an idle or session this engine cannot see).
+    /// Nothing is stopped by these, and every net can still be approved.
     #[serde(default)]
     pub cautions: Vec<String>,
     /// The calendar lines of `cautions` by the calendar they are about (not the engine's own).
