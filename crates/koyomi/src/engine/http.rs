@@ -102,7 +102,7 @@ impl Http {
                     self.server = Some(s);
                     self.note = None;
                 }
-                Err(e) => self.note = Some(format!("koyomi.toml: [http] で待ち受けられない（{e}）。{} 秒ごとに試す", RETRY.as_secs())),
+                Err(e) => self.note = Some(Self::not_listening(&e)),
             }
         }
         // ito-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
@@ -136,6 +136,12 @@ impl Http {
         if let Some(s) = self.server.take() {
             s.stop();
         }
+    }
+
+    /// The note for a failed start; the reason is cut to one line (a store's message can hold newlines).
+    fn not_listening(why: &str) -> String {
+        let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
+        format!("koyomi.toml: [http] で待ち受けられない（{why}）。{} 秒ごとに試す", RETRY.as_secs())
     }
 
     /// What a person should see about `[http]`.
@@ -283,9 +289,8 @@ fn page(req: &ito_http::Request) -> Option<Response> {
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
             )
-            .with_header("X-Content-Type-Options", "nosniff")
-            .with_header("Referrer-Policy", "no-referrer")
-            .with_header("Cache-Control", "no-store"),
+            // ito-http itself writes `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+            .with_header("Referrer-Policy", "no-referrer"),
     )
 }
 
@@ -451,12 +456,35 @@ fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Re
         return Some(Response::error(401, "token が要る"));
     };
     let has = roles.get(who).copied();
+    // A wrong method on a known path is 405 whatever the role: [`handle`] answers it.
+    if has.is_some() && wrong_method(&req.method, &req.path) {
+        return None;
+    }
     let needs = role::needs(&req.method, &req.path);
     match has {
         Some(has) if has.allows(needs) => None,
         Some(has) => Some(Response::error(403, &format!("{who} は {has} のロール。これには {needs} が要る"))),
         None => Some(Response::error(403, &format!("{who} は [[http.user]] にない"))),
     }
+}
+
+/// Whether `path` is one the API knows but not with `method` (what [`handle`] answers with 405).
+fn wrong_method(method: &str, path: &str) -> bool {
+    let path = path.trim_end_matches('/');
+    let reads = |m: &str| m == "GET";
+    let posts = |m: &str| m == "POST";
+    let ok = match path {
+        "/runs" => reads(method) || posts(method),
+        "/health" | "/nets" | "/nets/text" | "/me" => reads(method),
+        "/nets/hold" | "/nets/release" | "/nets/skip-next" | "/nets/propose" | "/standby/release" => posts(method),
+        _ => match path.strip_prefix("/runs/").map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
+            Some([id]) if !id.is_empty() => reads(method),
+            Some([id, "log"]) if !id.is_empty() => reads(method),
+            Some([id, "stop" | "rerun" | "skip"]) if !id.is_empty() => posts(method),
+            _ => return false,
+        },
+    };
+    !ok
 }
 
 fn log(l: &ito_http::LogLine) {
@@ -1414,6 +1442,14 @@ mod tests {
         assert_eq!((b["held"].as_bool(), b["today"].as_array().map(Vec::len), b["next"].is_null()), (Some(true), Some(0), true));
     }
 
+    /// the note for a failed start is one line.
+    #[test]
+    fn the_start_failure_note_is_one_line() {
+        let n = Http::not_listening("token の秘密 x: 見つからない\n（koyomi secret set x）\r\n");
+        assert!(!n.contains('\n') && !n.contains('\r'), "{n:?}");
+        assert!(n.contains("見つからない （koyomi secret set x）"), "{n}");
+    }
+
     /// The listener as the engine starts it: the token first, then the handler.
     #[test]
     fn a_request_without_the_token_is_turned_away() {
@@ -1456,7 +1492,13 @@ mod tests {
         assert_eq!(as_who(Some("sato"), "GET", "/runs"), None);
         assert_eq!(as_who(Some("sato"), "POST", "/runs"), Some(403));
         assert_eq!(as_who(Some("default"), "POST", "/runs"), None);
-        assert_eq!(as_who(Some("default"), "POST", "/nets"), Some(403));
+        assert_eq!(as_who(Some("default"), "POST", "/nets/propose"), Some(403));
+        // a wrong method on a known path is 405 (from `handle`), not 403, for any role
+        for (m, p) in [("PUT", "/runs"), ("DELETE", "/health"), ("POST", "/nets"), ("GET", "/nets/hold")] {
+            assert_eq!(as_who(Some("default"), m, p), None, "{m} {p}");
+            assert_eq!(as_who(Some("sato"), m, p), None, "{m} {p}");
+        }
+        assert_eq!(as_who(Some("gone"), "PUT", "/runs"), Some(403));
         assert_eq!(as_who(Some("ito"), "POST", "/nets"), None);
         assert_eq!(as_who(Some("gone"), "GET", "/runs"), Some(403));
         assert_eq!(as_who(None, "GET", "/runs"), Some(401));
@@ -1579,6 +1621,11 @@ high_contrast = true
         assert_eq!(p.status, 200);
         assert!(p.headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("script-src 'self'") && !v.contains("unsafe")));
         assert!(page(&req("GET", "/app.js", "")).is_some() && page(&req("GET", "/app.css", "")).is_some());
+        // ito-http writes nosniff and no-store itself; the page must not add them a second time.
+        for h in ["X-Content-Type-Options", "Cache-Control", "Content-Security-Policy"] {
+            let own = p.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(h)).count();
+            assert_eq!(own, usize::from(h == "Content-Security-Policy"), "{h}");
+        }
         let css = page(&req("GET", "/theme.css", "")).expect("the theme");
         assert!(css.headers.iter().any(|(k, _)| k == "Content-Security-Policy"));
         assert!(page(&req("POST", "/", "")).is_none() && page(&req("GET", "/runs", "")).is_none());

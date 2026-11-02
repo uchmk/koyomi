@@ -761,7 +761,11 @@ impl Runner {
             Ok(b) => b,
             Err(e) => {
                 let archived = self.logs.parent().and_then(|s| koyomi_core::retain::archived_log(s, run, job).ok());
-                archived.ok_or_else(|| format!("{}: {e}", path.display()))?
+                // No path in the message: it reaches HTTP callers.
+                archived.ok_or_else(|| match e.kind() {
+                    std::io::ErrorKind::NotFound => format!("{run} にジョブ {job} のログはない"),
+                    _ => format!("{run} のジョブ {job} のログを読めない"),
+                })?
             }
         };
         Ok(tail(&bytes))
@@ -1825,6 +1829,11 @@ mod tests {
         assert_eq!(a.exit, Some(0));
         assert_eq!(r.log_tail(&id, "a").unwrap().trim(), "one");
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "two");
+        let gone = r.log_tail(&id, "nope").unwrap_err();
+        assert!(
+            gone.contains("nope") && !gone.contains(&dir.display().to_string()) && !gone.contains('\\') && !gone.contains('/'),
+            "{gone}"
+        );
         assert!(r.run_dir(&id).join("definition.toml").exists());
         r.flush();
         let day = Day::load(&history::path(&dir.join("history"), Local::now().date_naive())).unwrap();
@@ -2725,7 +2734,7 @@ id = \"a\"
         assert!(tail.starts_with("line ") && tail.ends_with("line 04999 ............................\n"));
         assert!(tail.len() as u64 <= TAIL);
         // In neither place: the error names where logs/ would have it.
-        assert!(r.log_tail(id, "b").unwrap_err().contains("b.log"));
+        assert!(r.log_tail(id, "b").unwrap_err().contains("ジョブ b のログはない"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

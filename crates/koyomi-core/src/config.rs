@@ -498,8 +498,10 @@ impl Config {
                 format!("{line}知らない欄 {f}")
             } else if let Some(f) = m.strip_prefix("missing field `").and_then(|r| r.split('`').next()) {
                 format!("{line}欄 {f} が無い")
+            } else if m.starts_with("invalid type") || m.starts_with("invalid value") {
+                format!("{line}値の型か範囲が合わない（{m}）")
             } else {
-                m.to_owned()
+                format!("{line}{m}")
             }
         })?;
         if c.concurrency == 0 {
@@ -812,6 +814,33 @@ evry = \"5m\"
 ",
         ] {
             assert!(Config::parse(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn http_errors_are_japanese_with_a_line() {
+        for t in [
+            "[http]
+token = \"secret:t\"
+",
+            "
+[http]
+port = 8790
+host = \"0.0.0.0\"
+",
+            "[http]
+port = \"x\"
+",
+            "[http]
+port = 8790
+ipv6 = 3
+",
+            "[http]
+port = 70000
+",
+        ] {
+            let e = Config::parse(t).unwrap_err();
+            assert!(e.contains("行目") && !e.is_ascii(), "{e}");
         }
     }
 

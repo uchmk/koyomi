@@ -1297,7 +1297,15 @@ fn status(args: &[String]) -> i32 {
             out(&format!("  {}", show::job_line(&t, j)), false);
         }
     }
+    if let Some(line) = client::call(&Request::Status).ok().as_deref().and_then(http_line) {
+        out(line, false);
+    }
     0
+}
+
+/// The `HTTP: …` line of the engine's status text, if it listens.
+fn http_line(status: &str) -> Option<&str> {
+    status.lines().find(|l| l.starts_with("HTTP: "))
 }
 
 /// The runs as `status` prints them: a line each, its jobs under it.
@@ -1962,6 +1970,14 @@ fn startup_cmd(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    /// `koyomi status` shows the engine's HTTP line when it listens.
+    #[test]
+    fn status_picks_the_http_line() {
+        let text = "koyomi engine pid 1: 定義 0 件\nHTTP: 127.0.0.1:8790 で待ち受けている\nx";
+        assert_eq!(super::http_line(text), Some("HTTP: 127.0.0.1:8790 で待ち受けている"));
+        assert_eq!(super::http_line("koyomi engine pid 1"), None);
+    }
+
     use super::day_range;
 
     /// an exe in Temp is refused with where to put it instead, unless KOYOMI_ALLOW_TEMP lets a test through.
