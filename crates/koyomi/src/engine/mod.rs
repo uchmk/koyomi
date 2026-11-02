@@ -256,6 +256,8 @@ struct State {
     reveal_rx: mpsc::Receiver<(u64, NotifyCfg, Vec<String>)>,
     /// The words a run is told in: common.toml's language.
     words: ito_i18n::Table,
+    /// `acked.toml` as last read by the tray look, and when.
+    acked: std::sync::Mutex<(Option<std::time::Instant>, std::collections::BTreeSet<String>)>,
     /// When the runs were last looked at for being late (every [`LATE_EVERY`]).
     late_look: Option<Instant>,
     /// How long each net usually takes, read from the history when one of its
@@ -336,6 +338,7 @@ impl State {
             reveal_tx,
             reveal_rx,
             words: crate::cli::table(),
+            acked: std::sync::Mutex::new((None, std::collections::BTreeSet::new())),
             late_look: None,
             usual: HashMap::new(),
             late_told: HashSet::new(),
@@ -524,7 +527,18 @@ impl State {
     fn tray_look(&self) -> tray::Look {
         let now = ito_common::now::now_local().naive_local();
         let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, &self.blackouts, now, false) };
-        tray::look(&self.words, &self.runner.today(), self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
+        // `acked.toml` is the window's; read it again at most every few seconds.
+        let acked = {
+            let mut c = self.acked.lock().unwrap_or_else(|e| e.into_inner());
+            if c.0.is_none_or(|t| t.elapsed() >= std::time::Duration::from_secs(3)) {
+                *c = (
+                    Some(std::time::Instant::now()),
+                    ito_common::state_dir("koyomi").map(|d| crate::acked::Acked::read(&d)).unwrap_or_default(),
+                );
+            }
+            c.1.clone()
+        };
+        tray::look(&self.words, &self.runner.today(), &acked, self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
     }
 
     /// What `koyomi tray` asks for: the look, and the notices kept for it after `since`.

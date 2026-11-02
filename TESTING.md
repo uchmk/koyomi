@@ -819,7 +819,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 |---|---|---|
 | 63.1 | Start koyomi, close the window | The koyomi calendar icon stays in the task tray with a green ✔ badge; hovering reads `✔ koyomi: 次 HH:MM` (or `異常なし`); the right-click menu starts with the same words greyed |
 | 63.2 | Run a net whose job takes a minute | The badge turns blue … and the tip reads `実行中 1` |
-| 63.3 | Run a net that fails | The badge turns red ✖ and the tip reads `異常 1`; after the same net runs and ends 正常, it is green again |
+| 63.3 | Run a net that fails | The badge turns red ✖ and the tip reads `異常 1` (every failed run of today not marked 対応済み counts, the same number as the window's 未対応 chip and 未対応を見る (N)); a later 正常 run does not clear it; marking the run 対応済み in the window (within a few seconds) turns it green again |
 | 63.4 | Left-click the icon while the window is closed | The window opens |
 | 63.5 | Minimise the window, then left-click the icon | The window comes back to the front |
 | 63.6 | Right-click → 今日の一覧 | The window comes forward with ガント in the detail (unless a net is open in the editor) |

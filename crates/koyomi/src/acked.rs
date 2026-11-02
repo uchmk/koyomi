@@ -32,6 +32,11 @@ impl Acked {
         Acked { ids: last.acked.into_iter().collect(), dirty: true, writer: Some(kept::Writer::new(path, true)) }
     }
 
+    /// The ids in `acked.toml` under `dir`, for the engine's tray: the window is the one that writes it.
+    pub fn read(dir: &std::path::Path) -> BTreeSet<String> {
+        kept::read::<Kept>(&dir.join("acked.toml")).unwrap_or_default().acked.into_iter().collect()
+    }
+
     #[cfg(test)]
     pub fn is_acked(&self, id: &str) -> bool {
         self.ids.contains(id)

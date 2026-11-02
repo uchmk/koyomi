@@ -9,7 +9,7 @@
 //! has none (`koyomi engine --no-tray`, a service): it asks the engine for the look and the
 //! notices kept for it, shows those notices on this desktop, and its menu closes only itself.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
@@ -37,7 +37,7 @@ pub struct Look {
     pub paused: bool,
     /// Job processes running: the engine is not ended from the menu while there are.
     pub busy: usize,
-    /// Nets whose last run of today failed: 未対応を見る (N) is offered while there are.
+    /// Runs of today that failed and are not marked 対応済み: 未対応を見る (N) is offered while there are.
     pub errors: usize,
 }
 
@@ -114,7 +114,7 @@ impl Tray {
 /// The right-click menu, under a greyed line with the tip's counts. 終了 is greyed while a job's process
 /// runs: ending the engine would leave it unwatched.
 /// `apart` (`koyomi tray`): it is 閉じる instead, which leaves the engine running.
-/// 未対応を見る (N) is greyed while no net's last run of today failed.
+/// 未対応を見る (N) is greyed while no failure of today waits.
 pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
     let (paused, busy) = (look.paused, look.busy);
     let head = Item::Entry { id: "head".to_owned(), label: look.tip.clone(), enabled: false, checked: false };
@@ -146,18 +146,19 @@ pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
     ]
 }
 
-/// The look of today's runs: a net whose last run of today ended 異常 counts as one 異常
-/// (a later good run clears it), and what is still going counts as running.
-pub fn look(t: &ito_i18n::Table, runs: &[Run], paused: bool, busy: usize, next: Option<NaiveDateTime>) -> Look {
+/// The look of today's runs: every run that ended 異常 and is not marked 対応済み (`acked`, the run ids
+/// in `acked.toml`) counts as one 異常, the same count as the window's 未対応; what is still going
+/// counts as running.
+pub fn look(t: &ito_i18n::Table, runs: &[Run], acked: &BTreeSet<String>, paused: bool, busy: usize, next: Option<NaiveDateTime>) -> Look {
     let mut last: BTreeMap<&str, &Run> = BTreeMap::new();
-    // A time that never ran (held, missed) neither raises nor clears 異常.
+    // A time that never ran (held, missed) neither raises nor clears a warning.
     for r in runs.iter().filter(|r| r.is_over() && (r.state.is_error() || r.state.passed())) {
         let e = last.entry(r.jobnet.as_str()).or_insert(r);
         if r.started >= e.started {
             *e = r;
         }
     }
-    let errors = last.values().filter(|r| r.state.is_error()).count();
+    let errors = runs.iter().filter(|r| r.is_over() && r.state.is_error() && !acked.contains(&r.id)).count();
     let warns = last.values().filter(|r| r.state == RunState::Warn).count();
     let running = runs.iter().filter(|r| !r.is_over()).count();
     let state = if errors > 0 {
@@ -330,6 +331,7 @@ mod tests {
 
     fn run(net: &str, started: NaiveDateTime, state: RunState) -> Run {
         let mut r = Run::with_jobs("id", net, net, "2026-10-30", How::Manual, Vec::new(), started);
+        r.id = format!("{net}-{}", started.format("%H%M"));
         r.state = state;
         r.ended = state.is_final().then_some(started);
         r
@@ -339,19 +341,25 @@ mod tests {
         crate::i18n::table("ja").0
     }
 
-    /// the tray shows 異常 for a net whose last run of today failed, and a later good run clears it.
+    /// the tray counts every failed run of today not marked 対応済み, as the window does; marking clears it.
     #[test]
-    fn a_later_good_run_clears_the_error() {
+    fn the_error_count_is_the_windows_unhandled_count() {
         let t = ja();
-        let failed = vec![run("a/x", at(8, 0), RunState::Error), run("a/y", at(8, 5), RunState::Ok)];
-        let l = look(&t, &failed, false, 0, Some(at(9, 30)));
-        assert_eq!(l.state, State::Error);
-        assert_eq!(l.tip, "koyomi: 異常 1・次 09:30");
-        let mut cleared = failed.clone();
-        cleared.push(run("a/x", at(8, 30), RunState::Ok));
-        let l = look(&t, &cleared, false, 0, None);
-        assert_eq!(l.state, State::Done);
-        assert_eq!(l.tip, "koyomi: 異常なし");
+        let failed =
+            vec![run("a/x", at(8, 0), RunState::Error), run("a/x", at(8, 10), RunState::Error), run("a/y", at(8, 5), RunState::Ok)];
+        let l = look(&t, &failed, &BTreeSet::new(), false, 0, Some(at(9, 30)));
+        assert_eq!((l.state, l.errors), (State::Error, 2));
+        assert_eq!(l.tip, "koyomi: 異常 2・次 09:30");
+        // A later good run of the same net does not clear what was not dealt with.
+        let mut later = failed.clone();
+        later.push(run("a/x", at(8, 30), RunState::Ok));
+        assert_eq!(look(&t, &later, &BTreeSet::new(), false, 0, None).errors, 2);
+        // Marking one 対応済み takes it off; marking both clears the badge.
+        let one: BTreeSet<String> = ["a/x-0800".to_owned()].into();
+        assert_eq!(look(&t, &later, &one, false, 0, None).errors, 1);
+        let both: BTreeSet<String> = ["a/x-0800".to_owned(), "a/x-0810".to_owned()].into();
+        let l = look(&t, &later, &both, false, 0, None);
+        assert_eq!((l.state, l.errors, l.tip.as_str()), (State::Done, 0, "koyomi: 異常なし"));
     }
 
     /// running and paused have their own badge and words; 異常 still wins over both.
@@ -359,13 +367,13 @@ mod tests {
     fn running_and_paused_show_in_the_badge_and_the_tip() {
         let t = ja();
         let going = vec![run("a/x", at(8, 0), RunState::Running)];
-        let l = look(&t, &going, false, 1, Some(at(9, 0)));
+        let l = look(&t, &going, &BTreeSet::new(), false, 1, Some(at(9, 0)));
         assert_eq!((l.state, l.tip.as_str()), (State::Running, "koyomi: 実行中 1・次 09:00"));
-        let l = look(&t, &going, true, 1, Some(at(9, 0)));
+        let l = look(&t, &going, &BTreeSet::new(), true, 1, Some(at(9, 0)));
         assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: 実行中 1・スケジュールを止めている"));
         let mut both = going.clone();
         both.push(run("a/y", at(7, 0), RunState::Timeout));
-        assert_eq!(look(&t, &both, true, 1, None).state, State::Error);
+        assert_eq!(look(&t, &both, &BTreeSet::new(), true, 1, None).state, State::Error);
     }
 
     /// the menu offers the opposite of the pause state, and greys 終了 while a job's process runs.
@@ -381,19 +389,19 @@ mod tests {
                 })
                 .collect()
         };
-        let quiet = look(&t, &[], false, 0, None);
+        let quiet = look(&t, &[], &BTreeSet::new(), false, 0, None);
         let items = menu(&t, &quiet, false);
         let Some(Item::Entry { label, .. }) = items.first() else { panic!("no head") };
         assert_eq!(label, "koyomi: 異常なし");
         let m = ids(&items);
         assert_eq!(m.iter().map(|(i, _)| i.as_str()).collect::<Vec<_>>(), ["head", "open", "today", "failed", "skipnext", "pause", "quit"]);
         assert_eq!(m.iter().map(|(_, on)| *on).collect::<Vec<_>>(), [false, true, true, false, true, true, true]);
-        let m = ids(&menu(&t, &look(&t, &[], true, 2, None), false));
+        let m = ids(&menu(&t, &look(&t, &[], &BTreeSet::new(), true, 2, None), false));
         assert_eq!(m[5].0, "resume");
         assert_eq!(m[6], ("quit".to_owned(), false));
-        // 未対応を見る counts the nets whose last run of today failed, and opens once there is one.
+        // 未対応を見る counts the failed runs of today not marked 対応済み, and opens once there is one.
         let failed = [run("a/x", at(8, 0), RunState::Error), run("a/y", at(8, 0), RunState::Error)];
-        let items = menu(&t, &look(&t, &failed, false, 0, None), false);
+        let items = menu(&t, &look(&t, &failed, &BTreeSet::new(), false, 0, None), false);
         let Some(Item::Entry { label, enabled, .. }) = items.get(4) else { panic!("no failed entry") };
         assert_eq!((label.as_str(), *enabled), ("未対応を見る (2)", true));
     }
@@ -402,7 +410,7 @@ mod tests {
     #[test]
     fn the_tray_apart_closes_only_itself() {
         let t = ja();
-        let items = menu(&t, &look(&t, &[], false, 3, None), true);
+        let items = menu(&t, &look(&t, &[], &BTreeSet::new(), false, 3, None), true);
         let Some(Item::Entry { id, label, enabled, .. }) = items.last() else { panic!("no last entry") };
         assert_eq!((id.as_str(), label.as_str(), *enabled), ("quit", "トレイを閉じる（エンジンは動き続ける）", true));
     }
