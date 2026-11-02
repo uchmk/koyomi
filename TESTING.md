@@ -776,10 +776,10 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 59.1 | A job that prints a Shift_JIS file (`run = ["cmd.exe", "/c", "type", 'sjis.txt']`) with `encoding = "sjis"`, run it | The log shows the Japanese text, not mojibake |
-| 59.2 | The same job with `encoding = "utf8"` | The log does not show the Japanese text (the bytes are not UTF-8) |
-| 59.3 | No `encoding` (auto), a program that prints UTF-8, then one that prints in the console code page | Both read right |
-| 59.4 | `encoding = "cp932"` | The problem 「encoding は "auto"・"sjis"・"utf8" のどれか」 on that line |
+| 59.1 | [x] A job that prints a Shift_JIS file (`run = ["cmd.exe", "/c", "type", 'sjis.txt']`) with `encoding = "sjis"`, run it | The log shows the Japanese text, not mojibake |
+| 59.2 | [x] The same job with `encoding = "utf8"` | The log does not show the Japanese text (the bytes are not UTF-8) |
+| 59.3 | [x] No `encoding` (auto), a program that prints UTF-8, then one that prints in the console code page | Both read right |
+| 59.4 | [x] `encoding = "cp932"` | The problem 「encoding は "auto"・"sjis"・"utf8" のどれか」 on that line |
 | 59.5 | Open the job in the editor, pick Shift_JIS under 出力の文字コード, save | The file gets `encoding = "sjis"`; the review shows 出力の文字コード: Shift_JIS; picking 自動 removes the line |
 
 ## 60. エディターの部品の棚
@@ -807,7 +807,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 62.2 | Same, under 今日 on the left | The coming times today carry the same mark |
 | 62.3 | Set sleep to never | No mark anywhere |
 | 62.4 | In the editor's net pane, check 「PC が眠っていても起こして流す」 and save | The file has `wake = true`; the next times read `PC を起こして流す` |
-| 62.5 | `koyomi engine status` | `PC を起こす: <時刻の 2 分前>（<ネット>）` (`koyomi status` lists only the running runs) |
+| 62.5 | [x] `koyomi engine status` | `PC を起こす: <時刻の 2 分前>（<ネット>）` (`koyomi status` lists only the running runs) |
 | 62.6 | `powercfg /waketimers` in an administrator prompt | A timer by koyomi's engine for that time |
 | 62.7 | Put the PC to sleep before the time | It wakes 2 minutes before, the net runs, and the PC sleeps again afterwards |
 | 62.8 | Turn wake timers off in the power plan (Advanced settings → Sleep → Allow wake timers: Disable), wait a minute | The marks read `PC を起こして流す設定だが、起こせない: 電源プランで復帰タイマーが無効`; `koyomi status` says the same |
@@ -833,14 +833,14 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 64.1 | A net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`, and a job `run = ["cmd.exe", "/c", "echo", "{param:dept}", "{param:month}"]`; `koyomi run <net> --dry` | The job's line shows `all` and last month as `YYYY-MM` |
-| 64.2 | `koyomi run <net> --set dept=経理 --set month=2026-09 --wait`, then `koyomi log` | The log has `経理 2026-09` |
-| 64.3 | `koyomi run <net> --set nope=1` | Refused: `値 nope は [params] にない（あるのは dept・month）`; nothing runs |
-| 64.4 | `koyomi rerun <that run> --from <job>` | The log has `経理 2026-09` again (the values of the first run) |
-| 64.5 | The net's scheduled time comes | The job runs with the defaults |
+| 64.1 | [x] A net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`, and a job `run = ["cmd.exe", "/c", "echo", "{param:dept}", "{param:month}"]`; `koyomi run <net> --dry` | The job's line shows `all` and last month as `YYYY-MM` |
+| 64.2 | [x] `koyomi run <net> --set dept=経理 --set month=2026-09 --wait`, then `koyomi log` | The log has `経理 2026-09` |
+| 64.3 | [x] `koyomi run <net> --set nope=1` | Refused: `値 nope は [params] にない（あるのは dept・month）`; nothing runs |
+| 64.4 | [x] `koyomi rerun <that run> --from <job>` | The log has `経理 2026-09` again (the values of the first run) |
+| 64.5 | [x] The net's scheduled time comes | The job runs with the defaults |
 | 64.6 | In the window, select the net and press 今すぐ実行 | A box 値を決めて実行 lists dept and month with the defaults filled in; change dept, press Enter, and the run's log has the new dept |
 | 64.7 | Press 今すぐ実行 on a net without `[params]` | It starts at once, with no box |
-| 64.8 | Write `{param:x}` in a job of a net whose `[params]` has no `x`; open the window | The net shows the problem `{param:x}: [params] にない` and cannot be approved |
+| 64.8 | [x] Write `{param:x}` in a job of a net whose `[params]` has no `x`; open the window | The net shows the problem `{param:x}: [params] にない` and cannot be approved |
 
 ## 65. 通知に失敗したジョブのログの末尾
 
@@ -855,14 +855,14 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 66.1 | `schtasks /create /tn "\koyomi-test\夜間" /tr "cmd.exe /c echo hi" /sc daily /st 02:30 /f`, then `schtasks /query /xml /tn "\koyomi-test\夜間" > t.xml` and `koyomi import t.xml --dry-run` | `追加: ジョブネット koyomi-test/夜間`; nothing is written (the file is UTF-16 and reads) |
-| 66.2 | `koyomi import t.xml`, then `koyomi show koyomi-test/夜間` and `koyomi next koyomi-test/夜間` | The net has `every = "day"` `at = ["02:30"]` and one job `run = ["cmd.exe", "/c", "echo", "hi"]`; it is 未確認, and after approving `next` shows 02:30 each day |
-| 66.3 | A task with `/sc weekly /d MON,FRI /st 08:00 /ri 15 /du 10:00` | `every = "minutes"`, `n = 15`, `from = "08:00"`, `to = "17:59"`, `days = ["mon", "fri"]` |
-| 66.4 | A task with `/sc monthly /mo LAST /d TUE` or `/sc daily /mo 2`, or an event trigger | The plan ends with `注意:` lines saying which trigger did not come over; the rest comes in |
-| 66.5 | A task that runs as SYSTEM, or with `%windir%` in its command | `注意:` lines on the user and on `%…%` |
+| 66.1 | [x] `schtasks /create /tn "\koyomi-test\夜間" /tr "cmd.exe /c echo hi" /sc daily /st 02:30 /f`, then `schtasks /query /xml /tn "\koyomi-test\夜間" > t.xml` and `koyomi import t.xml --dry-run` | `追加: ジョブネット koyomi-test/夜間`; nothing is written (the file is UTF-16 and reads) |
+| 66.2 | [x] `koyomi import t.xml`, then `koyomi show koyomi-test/夜間` and `koyomi next koyomi-test/夜間` | The net has `every = "day"` `at = ["02:30"]` and one job `run = ["cmd.exe", "/c", "echo", "hi"]`; it is 未確認, and after approving `next` shows 02:30 each day |
+| 66.3 | [x] A task with `/sc weekly /d MON,FRI /st 08:00 /ri 15 /du 10:00` | `every = "minutes"`, `n = 15`, `from = "08:00"`, `to = "17:59"`, `days = ["mon", "fri"]` |
+| 66.4 | [x] A task with `/sc monthly /mo LAST /d TUE` or `/sc daily /mo 2`, or an event trigger | The plan ends with `注意:` lines saying which trigger did not come over; the rest comes in |
+| 66.5 | [x] A task that runs as SYSTEM, or with `%windir%` in its command | `注意:` lines on the user and on `%…%` |
 | 66.6 | The window's 取り込む box with the same `t.xml` | The same plan and notes as the CLI |
-| 66.7 | An XML that is not a task (`<a/>`), and a task with only a ComHandler action | `取り込めない: タスク スケジューラの XML ではない（一番外が <a>）` / `取り込めない: 取り込めるプログラム（<Exec> の <Command>）が無い` |
-| 66.8 | From cmd, `schtasks /query /xml /tn "\koyomi-test\夜間" > t2.xml` (the console code page, CP932, with Japanese in it), then `koyomi import t2.xml --dry-run` | It reads, and the plan is the same as 66.1 |
+| 66.7 | [x] An XML that is not a task (`<a/>`), and a task with only a ComHandler action | `取り込めない: タスク スケジューラの XML ではない（一番外が <a>）` / `取り込めない: 取り込めるプログラム（<Exec> の <Command>）が無い` |
+| 66.8 | [x] From cmd, `schtasks /query /xml /tn "\koyomi-test\夜間" > t2.xml` (the console code page, CP932, with Japanese in it), then `koyomi import t2.xml --dry-run` | It reads, and the plan is the same as 66.1 |
 
 ## 67. 遅延の監視
 
@@ -1014,20 +1014,20 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 79.2 | Plug the AC in again | The job starts within a few seconds |
 | 79.3 | `require = ["network"]`, turn the network off, then on | Waits with 「ネットワークにつながるのを待っています」, then starts |
 | 79.4 | `require = ["idle:1m"]`, keep using the mouse | Waits with 「PC が 1 分使われなくなるのを待っています」; starts after a minute untouched |
-| 79.5 | `require = ["wifi"]` | The net is invalid, with the message 「require は …」 |
+| 79.5 | [x] `require = ["wifi"]` | The net is invalid, with the message 「require は …」 |
 
 ## 80. よくある作業の部品（`kind = "delete"` / `"zip"` / `"copy"` / `"empty"`）
 
 | # | Do | Expect |
 |---|---|---|
-| 80.1 | A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it | Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` |
-| 80.2 | `kind = "zip"`, `from = 'D:\out\*.csv'`, `into = 'D:\arc\{date}.zip'` | `D:\arc\<today>.zip` holds the csv files; run again: replaced, ✓ |
+| 80.1 | [x] A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it | Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` |
+| 80.2 | [x] `kind = "zip"`, `from = 'D:\out\*.csv'`, `into = 'D:\arc\{date}.zip'` | `D:\arc\<today>.zip` holds the csv files; run again: replaced, ✓ |
 | 80.3 | `kind = "copy"` from a folder with subfolders into a new folder, then run again | All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays |
 | 80.4 | `kind = "copy"` with `into` on a share that does not exist | ✕ (robocopy 8 or more); `retry` tries again |
 | 80.5 | `kind = "empty"`, `path` = a folder with files and subfolders | The folder stays, empty; the log says how many items went |
-| 80.6 | `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore | Each is refused when read, with the line and why |
+| 80.6 | [x] `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore | Each is refused when read, with the line and why |
 | 80.7 | The editor: drag 古いファイルを消す from the parts; fill フォルダー and 名前 | The pane shows フォルダー・名前・何日より古いものを消すか, timeout and retry; saving writes `kind = "delete"`; `D:\` there shows the error and is not applied |
-| 80.8 | Approve a net with a chore | The confirm box shows each chore's paths and days instead of a command |
+| 80.8 | [x] Approve a net with a chore | The confirm box shows each chore's paths and days instead of a command |
 
 ## 81. ログの行・イベントログで起動する（`[[when]] log` / `eventlog`）
 
@@ -1046,7 +1046,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 81.10 | The net has `calendar = "会社"` and the line comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
 | 81.11 | The editor: add a `[[when]]` of ログに行が出たら and one of イベントログに出たら | The fields are ログのファイル・含む文字, and イベントログ・イベント ID・ソース; except / start / end / on_closed are not shown; saving writes `log` / `contains` and `eventlog` / `ids` / `source` |
 | 81.12 | `koyomi next` for the net | The rows `ログに「ERROR」の行が書かれたとき: D:\app\app.log` and `イベントログ Security に記録されたとき（ID 4625）` come first |
-| 81.13 | `koyomi check` a `[[when]]` with `log = 'app.log'`, with `log = 'D:\*.log'`, with `log = …` and no `contains`, with `eventlog = "Application"` and neither `ids` nor `source`, with `ids = [70000]` | `log は絶対パスで書く（例: …）`; `log は 1 つのファイルのパス（* / ? は使えない）`; `contains が要る（例: contains = "ERROR"）`; `eventlog には ids か source が要る（例: ids = [4625]）`; `ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）` |
+| 81.13 | [x] `koyomi check` a `[[when]]` with `log = 'app.log'`, with `log = 'D:\*.log'`, with `log = …` and no `contains`, with `eventlog = "Application"` and neither `ids` nor `source`, with `ids = [70000]` | `log は絶対パスで書く（例: …）`; `log は 1 つのファイルのパス（* / ? は使えない）`; `contains が要る（例: contains = "ERROR"）`; `eventlog には ids か source が要る（例: ids = [4625]）`; `ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）` |
 
 ## 82. ファイルを送る・受け取る部品（`kind = "send"` / `"fetch"`）
 
@@ -1057,22 +1057,22 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 82.3 | An SFTP server you can reach with a key; `koyomi sftp hostkey host` prints `host_key = "SHA256:…"`; `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` and that `host_key` | ✓; the files are in `/in` on the server; the log says `sent: <name> (<n> bytes)` for each; `known_hosts` is not used |
 | 82.4 | `kind = "fetch"`, `from = "sftp://user@host/~/out/*.csv"`, `into = 'D:\in'` | ✓; each csv under the home's `out` is in `D:\in`; a folder that matches is not fetched; no match is ⚠ 警告 |
 | 82.5 | The same send with a wrong `host_key`, to a wrong port, or with a key the server does not take; then `password = "secret:sftp"` instead of `key` after `koyomi secret set sftp` | ✕ with exit code 2 and `! <why>` in the log; nothing asks anything; `retry` tries again; with the password it is ✓ and the log never shows it |
-| 82.6 | `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy`, an sftp:// send without `host_key`, `password = "plain"`, both `key` and `password` | Each is refused with the line and why; the missing `host_key` names `koyomi sftp hostkey` |
+| 82.6 | [x] `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy`, an sftp:// send without `host_key`, `password = "plain"`, both `key` and `password` | Each is refused with the line and why; the missing `host_key` names `koyomi sftp hostkey` |
 | 82.7 | The editor: drag ファイルを送る and ファイルを受け取る from the parts | The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; and ホスト鍵・パスワード; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key`・`host_key`・`password` |
-| 82.8 | Approve a net with a send | The confirm box shows 元・先・SSH の鍵・ホスト鍵・パスワード instead of a command |
+| 82.8 | [x] Approve a net with a send | The confirm box shows 元・先・SSH の鍵・ホスト鍵・パスワード instead of a command |
 
 ## 83. HTTP で呼ぶ部品（`kind = "http"`）
 
 | # | Do | Expect |
 |---|---|---|
-| 83.1 | `kind = "http"`, `url = "https://example.com/"`; run it | ✓; the log starts with `HTTP 200` and then the start of the page (cut at 4000 characters with ` ...`) |
-| 83.2 | `url = "https://example.com/nope"`; run it; then add `expect = [404]` and run again | The first is ✕ with exit code 1 and `HTTP 404`; the second is ✓ |
-| 83.3 | `url = "https://no-such-host.invalid/"` with `retry = { count = 1, wait = "1m" }` | ✕ with exit code 2 and `no answer: …` (why) in the log; it is tried once more after a minute |
+| 83.1 | [x] `kind = "http"`, `url = "https://example.com/"`; run it | ✓; the log starts with `HTTP 200` and then the start of the page (cut at 4000 characters with ` ...`) |
+| 83.2 | [x] `url = "https://example.com/nope"`; run it; then add `expect = [404]` and run again | The first is ✕ with exit code 1 and `HTTP 404`; the second is ✓ |
+| 83.3 | [x] `url = "https://no-such-host.invalid/"` with `retry = { count = 1, wait = "1m" }` | ✕ with exit code 2 and `no answer: …` (why) in the log; it is tried once more after a minute |
 | 83.4 | A test API you can see (e.g. a local echo server): `method = "POST"`, `body = '{"day": "{date}", "名前": "テスト"}'`, `headers = { Authorization = "secret:api", X-Run = "{date}" }` with the secret `api` set | The server gets the body as UTF-8 JSON with today's date filled in, `Content-Type: application/json; charset=utf-8`, the Authorization value of the secret, and `X-Run` as written (`{date}` is not filled in a header); the job's log shows neither the secret nor the script |
 | 83.5 | The same with `content_type = "text/plain"` | The server gets `Content-Type: text/plain` |
-| 83.6 | `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` | Each is refused with the line and why |
+| 83.6 | [x] `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` | Each is refused with the line and why |
 | 83.7 | The editor: drag HTTP で呼ぶ from the parts | The pane shows URL・メソッド・送る中身・ヘッダー (one `名前: 値` a line)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a header line without `:` or a code that is not a number is refused |
-| 83.8 | Approve a net with an http | The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command |
+| 83.8 | [x] Approve a net with an http | The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command |
 
 ## 84. 別のアカウントで動かす（`run_as`）
 
@@ -1082,7 +1082,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 |---|---|---|
 | 84.1 | A job `run = ["C:/Windows/System32/whoami.exe"]` with `run_as = { user = "koyomi-test", password = "secret:koyomi-test" }`; approve and run it | ✓; the log has `▶ koyomi-test として動かす` and then `<computer>\koyomi-test` |
 | 84.2 | The same with `run = ["C:/Windows/System32/cmd.exe", "/c", "echo %KOYOMI_JOB% %USERPROFILE%"]` | The job's id and the test account's profile folder |
-| 84.3 | `koyomi secret delete koyomi-test` (or a wrong secret name), then run | ✕ with `koyomi-test のパスワードの秘密がない: … （koyomi secret set …）`; nothing is started |
+| 84.3 | [x] `koyomi secret delete koyomi-test` (or a wrong secret name), then run | ✕ with `koyomi-test のパスワードの秘密がない: … （koyomi secret set …）`; nothing is started |
 | 84.4 | Set the secret to a wrong password; run | ✕ with Windows' reason (the user name or password is incorrect) in the log; the password is not in the log |
 | 84.5 | A job that prints the password (`cmd /c echo <password>`) as the account | The log shows `***` |
 | 84.6 | A long job (`ping -n 600 127.0.0.1`) as the account; stop it from the window; and one with `timeout = "5s"` | 強制終了 / 打ち切り; no `ping.exe` is left running (Task Manager, user koyomi-test) |
@@ -1090,44 +1090,44 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 84.8 | A `kind = "copy"` to a share only koyomi-test can write, with `run_as` | ✓; the files are in the share |
 | 84.9 | `koyomi check` with `password = "hunter2"`, `password = "secret:"`, no `user`, `user = "a b"`, an unknown key, `run_as` on a `"time"` part | Each is refused with the line and why; the plain password one says to use `koyomi secret set` |
 | 84.10 | The editor: a job's pane, fill 実行のアカウント and the secret name; save | The file has `run_as = { user = …, password = "secret:…" }`; only one of the two filled is refused |
-| 84.11 | Approve a net with `run_as` | The confirm box shows `実行のアカウント: CORP\batch（パスワードは秘密 batch）`, and no password |
+| 84.11 | [x] Approve a net with `run_as` | The confirm box shows `実行のアカウント: CORP\batch（パスワードは秘密 batch）`, and no password |
 
 ## 85. 繰り返しの回を並べて動かす（`max`）
 
 | # | Do | Expect |
 |---|---|---|
-| 85.1 | `concurrency = 4`; a loop `count = 6`, `max = 3`, `run = ["cmd.exe", "/c", "ping -n 6 127.0.0.1 > nul & echo %KOYOMI_INDEX%"]`; run it | It ends in about 10 s (not 30); Task Manager shows 3 `ping.exe` at a time; the log starts with `▶ 6 回を 3 つずつ並べて動かす` and has each `▶ i/6` once, each followed by its index |
-| 85.2 | `concurrency = 2`; the same loop with `max = 3`, and another net's job started while it runs | The loop runs 2 at a time (`▶ 6 回を 2 つずつ…`); the other job waits with `同時に動かす数（2）の空きを待っています` until the loop ends |
-| 85.3 | `file = 'C:\in\*.csv'` with 5 files, `max = 2`, a script that echoes `%KOYOMI_FILE%` | ✓; each file once, under its own heading |
+| 85.1 | [x] `concurrency = 4`; a loop `count = 6`, `max = 3`, `run = ["cmd.exe", "/c", "ping -n 6 127.0.0.1 > nul & echo %KOYOMI_INDEX%"]`; run it | It ends in about 10 s (not 30); Task Manager shows 3 `ping.exe` at a time; the log starts with `▶ 6 回を 3 つずつ並べて動かす` and has each `▶ i/6` once, each followed by its index |
+| 85.2 | [x] `concurrency = 2`; the same loop with `max = 3`, and another net's job started while it runs | The loop runs 2 at a time (`▶ 6 回を 2 つずつ…`); the other job waits with `同時に動かす数（2）の空きを待っています` until the loop ends |
+| 85.3 | [x] `file = 'C:\in\*.csv'` with 5 files, `max = 2`, a script that echoes `%KOYOMI_FILE%` | ✓; each file once, under its own heading |
 | 85.4 | `count = 6`, `max = 2`, where pass 1 exits 3 at once and the others sleep 5 s | ✕ with `1/6 回目で異常: 終了コード 3`; pass 2 ran to its end; passes 3–6 did not start |
 | 85.5 | `count = 4`, `max = 2`, `ping -n 600 127.0.0.1`; stop it from the window | 強制終了 at once; no `ping.exe` is left; the log has `! 強制終了` under both running passes |
-| 85.6 | `count = 4`, `max = 2`, `timeout = "5s"`, `ping -n 600 127.0.0.1` | ✕ 打ち切り after about 5 s; no more passes start |
-| 85.7 | `koyomi check` with `max = 0`, `max = 17`, `max = "2"`, `max` on a `"job"` | Each is refused with the line and why |
+| 85.6 | [x] `count = 4`, `max = 2`, `timeout = "5s"`, `ping -n 600 127.0.0.1` | ✕ 打ち切り after about 5 s; no more passes start |
+| 85.7 | [x] `koyomi check` with `max = 0`, `max = 17`, `max = "2"`, `max` on a `"job"` | Each is refused with the line and why |
 | 85.8 | The editor: a loop's pane, fill max with 3; save; then empty it | The file has `max = 3`, then no `max`; `0` or `x` is refused |
-| 85.9 | Approve a net with `max = 3` | The confirm box shows `並べて動かす数: 3` under the loop |
+| 85.9 | [x] Approve a net with `max = 3` | The confirm box shows `並べて動かす数: 3` under the loop |
 
 ## 86. 長さの書き方（D4）
 
 | # | Do | Expect |
 |---|---|---|
-| 86.1 | Run a net whose job takes about 1 minute 5 seconds; `koyomi show <run>` | The run and the job lines read `1分5秒`, not `0:01:05` |
+| 86.1 | [x] Run a net whose job takes about 1 minute 5 seconds; `koyomi show <run>` | The run and the job lines read `1分5秒`, not `0:01:05` |
 | 86.2 | A job of a few seconds; open the run in the window and pick the job | 所要 reads `3秒`; a 41-minute one reads `41分`; a 65-minute one `1時間5分` |
-| 86.3 | Set `lang = "en"` in common.toml; repeat 86.1 | `1 min 5 s` |
-| 86.4 | `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` | `所要 1分 → 1分10秒（+10秒）`; いつもは in words |
+| 86.3 | [x] Set `lang = "en"` in common.toml; repeat 86.1 | `1 min 5 s` |
+| 86.4 | [x] `koyomi compare <a> <b>` for two runs that took 1 min and 1 min 10 s; `koyomi report` | `所要 1分 → 1分10秒（+10秒）`; いつもは in words |
 
 ## 87. Start over HTTP (`[http]`, TODO 82)
 
 | # | Do | Expect |
 |---|---|---|
-| 87.1 | `koyomi secret set koyomi-http` (a long random value); koyomi.toml `[http]` `port = 8790`, `token = "secret:koyomi-http"`; wait a few seconds; `koyomi status` | The status has `HTTP: 127.0.0.1:8790 で待ち受けている`; `netstat -an` shows 127.0.0.1:8790 only, not 0.0.0.0 |
-| 87.2 | `curl -i -X POST http://127.0.0.1:8790/runs -d '{"net":"g/a"}'` with no token, then with `-H "Authorization: Bearer wrong"` | 401 both times; no run starts; the engine's log has `http: POST /runs 401 …` and never the token |
+| 87.1 | [x] `koyomi secret set koyomi-http` (a long random value); koyomi.toml `[http]` `port = 8790`, `token = "secret:koyomi-http"`; wait a few seconds; `koyomi status` | The status has `HTTP: 127.0.0.1:8790 で待ち受けている`; `netstat -an` shows 127.0.0.1:8790 only, not 0.0.0.0 |
+| 87.2 | [x] `curl -i -X POST http://127.0.0.1:8790/runs -d '{"net":"g/a"}'` with no token, then with `-H "Authorization: Bearer wrong"` | 401 both times; no run starts; the engine's log has `http: POST /runs 401 …` and never the token |
 | 87.3 | The same with the right token and `-d '{"net":"g/a","params":{"day":"2026-10-31"}}'` | 202 and `{"run":"<id>"}`; the run goes with that param; 操作の記録 has a by-hand run |
 | 87.4 | `curl -H "Authorization: Bearer …" http://127.0.0.1:8790/runs/<id>` while it runs and after it ends; then a run id of yesterday | JSON with `state`, `jobs`, `"over": false`, then `true`; yesterday's run is found too |
-| 87.5 | POST a net that is held, unconfirmed or does not exist; POST `{}`, `{"net":"g/a","dry":true}`, `not json`; GET `/runs/nope`; `PUT /runs` | 422 with the same reason `koyomi run` gives; 400 for the bodies; 404; 405 |
-| 87.6 | Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` | Each is refused when koyomi.toml is read and the band says why; the listener from the last good koyomi.toml stays (an engine that starts with a bad one listens on nothing), and it goes on once the file is good again |
+| 87.5 | [x] POST a net that is held, unconfirmed or does not exist; POST `{}`, `{"net":"g/a","dry":true}`, `not json`; GET `/runs/nope`; `PUT /runs` | 422 with the same reason `koyomi run` gives; 400 for the bodies; 404; 405 |
+| 87.6 | [x] Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` | Each is refused when koyomi.toml is read and the band says why; the listener from the last good koyomi.toml stays (an engine that starts with a bad one listens on nothing), and it goes on once the file is good again |
 | 87.7 | `koyomi secret delete koyomi-http` and restart the engine; or take 8790 with another program first | A note says it cannot listen and why; it is tried again every 60 s; once fixed it listens without a restart |
-| 87.8 | Remove `[http]` while the engine runs | It stops listening within a few seconds; `koyomi status` has no HTTP line |
-| 87.9 | `ipv6 = true`; `curl -g "http://[::1]:8790/runs/<id>"` with the token | Answers the same as on 127.0.0.1 |
+| 87.8 | [x] Remove `[http]` while the engine runs | It stops listening within a few seconds; `koyomi status` has no HTTP line |
+| 87.9 | [x] `ipv6 = true`; `curl -g "http://[::1]:8790/runs/<id>"` with the token | Answers the same as on 127.0.0.1 |
 
 ## 88. The tray apart from the engine (`koyomi engine --no-tray`, `koyomi tray`, TODO 86)
 
@@ -1145,8 +1145,8 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 
 | # | Do | Expect |
 |---|---|---|
-| 89.1 | `koyomi service status`; `koyomi service start`; `koyomi service run` (not elevated, nothing installed) | `サービスは入っていない`; `入っていない` and exit 1; `サービスとして起こされたときだけ動く` and exit 2 |
-| 89.2 | `koyomi service install` in a terminal that is not elevated | It asks for the password, then says `管理者の権限が要る。「管理者として実行」…`; nothing is installed |
+| 89.1 | [x] `koyomi service status`; `koyomi service start`; `koyomi service run` (not elevated, nothing installed) | `サービスは入っていない`; `入っていない` and exit 1; `サービスとして起こされたときだけ動く` and exit 2 |
+| 89.2 | [x] `koyomi service install` in a terminal that is not elevated | It asks for the password, then says `管理者の権限が要る。「管理者として実行」…`; nothing is installed |
 | 89.3 | `koyomi engine stop`; `koyomi startup on`; then `koyomi service install` in an elevated terminal, giving your Windows password | It says it installed `koyomi-<user>` and started it; `services.msc` shows `koyomi (<user>)`, 自動（遅延開始）, logged on as you; `koyomi startup` says `トレイだけ` |
 | 89.4 | In a terminal that is not elevated: `koyomi service stop`, `koyomi service status`, `koyomi service start` | Each works without an administrator; status shows 止まっている then 動いている（pid …） |
 | 89.5 | With the service running: `koyomi engine status`; open the window; `koyomi run g/a` | The window and the CLI talk to the service's engine; no second engine starts; the run goes |
@@ -1167,11 +1167,11 @@ With `[http]` set as in §87 and `T` the token.
 
 | # | Do | Expect |
 |---|---|---|
-| 90.1 | `curl -H "Authorization: Bearer T" http://127.0.0.1:8790/health`; then the same with no token | `{"ok": true, "version": …, "proto": …, "status": "<koyomi status's line>"}`; 401 without the token |
+| 90.1 | [x] `curl -H "Authorization: Bearer T" http://127.0.0.1:8790/health`; then the same with no token | `{"ok": true, "version": …, "proto": …, "status": "<koyomi status's line>"}`; 401 without the token |
 | 90.2 | `GET /nets` with the token, with one net held and one unconfirmed | Each net with `id`, `group`, `name`, `standing` (`confirmed`/`unconfirmed`/`invalid`) and `held`; no definition text; `paused` follows `koyomi pause` |
-| 90.3 | `GET /runs`; then `GET "/runs?from=2026-10-30&to=2026-10-31"`; then `?from=bad` and `?to=2026-10-31` | Today's and running runs, each with `"over"`; the two days' runs, oldest first; 400 for both bad ones |
+| 90.3 | [x] `GET /runs`; then `GET "/runs?from=2026-10-30&to=2026-10-31"`; then `?from=bad` and `?to=2026-10-31` | Today's and running runs, each with `"over"`; the two days' runs, oldest first; 400 for both bad ones |
 | 90.4 | `GET "/runs/<id>/log?job=<job>"` for a job whose command has a registered secret in its arguments | The log's tail as `koyomi log` shows it, the secret as `***`; without `job` 400; an unknown job 404 |
-| 90.5 | `POST /nets`, `DELETE /health` | 405; nothing changes |
+| 90.5 | [x] `POST /nets`, `DELETE /health` | 405; nothing changes |
 
 ## 91. メールを受けて起動する（`[[when]] mail`）
 
@@ -1187,7 +1187,7 @@ With `[http]` set as in §87 and `T` the token.
 | 91.8 | The net has `calendar = "会社"` and the mail comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
 | 91.9 | The editor: add a `[[when]]` of メールが来たら | The fields are メールボックス・パスワード・差出人・件名; except / start / end / on_closed are not shown; saving writes `mail` / `password` / `sender` / `subject`; a password not starting with `secret:` is refused |
 | 91.10 | `koyomi next` for the net; approve it | The row `メールが来たとき: imaps://…（件名「請求」）` comes first; the confirm box shows the same |
-| 91.11 | `koyomi check` a `[[when]]` with `mail = "imap://me@host"`, with `mail = "me@host"`, with `password = "hunter2"`, with no `password`, with neither `sender` nor `subject` | `mail は imaps:// だけ…`; `mail は "imaps://ユーザー@サーバー/フォルダー" で書く…`; `password は "secret:<名前>" で書く…`; `mail には password = "secret:<名前>" が要る…`; `mail には sender か subject が要る…` |
+| 91.11 | [x] `koyomi check` a `[[when]]` with `mail = "imap://me@host"`, with `mail = "me@host"`, with `password = "hunter2"`, with no `password`, with neither `sender` nor `subject` | `mail は imaps:// だけ…`; `mail は "imaps://ユーザー@サーバー/フォルダー" で書く…`; `password は "secret:<名前>" で書く…`; `mail には password = "secret:<名前>" が要る…`; `mail には sender か subject が要る…` |
 
 ## 92. Another PC over the LAN (`[http] lan = true`, `[[remote]]`, `koyomi remote`; TODO 80)
 
