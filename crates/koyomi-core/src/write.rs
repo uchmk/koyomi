@@ -8,7 +8,7 @@
 
 use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 
-use crate::chore::{Chore, Pass, WinrmAuth};
+use crate::chore::{Chore, Pass, SqlTls, WinrmAuth};
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Takeover, Wait};
 use crate::quiet::OnQuiet;
@@ -404,6 +404,24 @@ fn job(j: &Job, out: &mut String) {
                         push(out, "via", &q(v));
                     }
                 }
+                Chore::Sql { db, sql, file, out: csv, rows, tls, .. } => {
+                    push(out, "db", &q(db));
+                    if let Some(s) = sql {
+                        push(out, "sql", &q(s));
+                    }
+                    if let Some(f) = file {
+                        push(out, "file", &q(f));
+                    }
+                    if let Some(c) = csv {
+                        push(out, "out", &q(c));
+                    }
+                    if let Some(r) = rows {
+                        push(out, "rows", &q(r));
+                    }
+                    if *tls != SqlTls::Verify {
+                        push(out, "tls", &q(tls.key()));
+                    }
+                }
             }
             if let Chore::Send { key: Some(k), .. } | Chore::Fetch { key: Some(k), .. } | Chore::Ssh { key: Some(k), .. } = c {
                 push(out, "key", &q(k));
@@ -415,7 +433,8 @@ fn job(j: &Job, out: &mut String) {
             if let Chore::Send { password: Some(p), .. }
             | Chore::Fetch { password: Some(p), .. }
             | Chore::Ssh { password: Some(p), .. }
-            | Chore::Winrm { password: Some(p), .. } = c
+            | Chore::Winrm { password: Some(p), .. }
+            | Chore::Sql { password: Some(p), .. } = c
             {
                 push(out, "password", &q(p));
             }
@@ -704,6 +723,21 @@ files = ['D:\out\売上.csv', 'D:\out\logs\*.log']
 via = "社内"
 retry = { count = 2, wait = "5m" }
 after = ["fan"]
+
+[[job]]
+id = "sq"
+kind = "sql"
+db = "sqlserver://ops@db01:1433/売上"
+sql = """
+select * from 売上 where 日付 = '{date}'
+GO
+"""
+out = 'D:\out\{date}.csv'
+rows = "1.."
+tls = "trust"
+password = "secret:db"
+retry = { count = 2, wait = "5m" }
+after = ["ml"]
 "#;
 
     #[test]

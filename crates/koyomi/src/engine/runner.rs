@@ -1149,7 +1149,8 @@ struct JobSpec {
 const FAR_GRACE: Duration = Duration::from_secs(10);
 
 /// How long a stop waits after asking `part` before it kills: [`FAR_GRACE`] for an
-/// `ssh` job, which can pass the ask on to the far side. Anything else is killed at
+/// `ssh` job, which can pass the ask on to the far side, and for a `sql`, which
+/// cancels what the server is running and says so. Anything else is killed at
 /// once, as before: a script or program that does not watch for the ask would only
 /// make a kill slower. Under `run_as` nothing can be asked: `ito_proc` gives another
 /// account's process neither CTRL_BREAK nor the stop event its own children get
@@ -1157,7 +1158,7 @@ const FAR_GRACE: Duration = Duration::from_secs(10);
 /// far command is left to end by itself.
 fn grace(part: &Part) -> Duration {
     match part {
-        Part::Chore(c) if c.far() => FAR_GRACE,
+        Part::Chore(c) if c.far() || matches!(c, koyomi_core::chore::Chore::Sql { .. }) => FAR_GRACE,
         _ => Duration::ZERO,
     }
 }

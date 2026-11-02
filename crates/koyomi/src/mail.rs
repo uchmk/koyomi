@@ -40,7 +40,7 @@ fn var(name: &str) -> Option<String> {
 }
 
 /// A text as the engine gives it, without the [`MAIL_TEXT`] put before it.
-fn text(v: &str) -> &str {
+pub(crate) fn text(v: &str) -> &str {
     v.strip_prefix(MAIL_TEXT).unwrap_or(v)
 }
 

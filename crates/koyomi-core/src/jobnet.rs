@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
+use crate::chore::{Chore, Pass, SqlTls, WinrmAuth, GROUP_MAX};
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
@@ -703,6 +703,11 @@ struct RawJob {
     subject: Field,
     files: Field,
     via: Field,
+    db: Field,
+    sql: Field,
+    out: Field,
+    rows: Field,
+    tls: Field,
     shell: Field,
     script: Field,
     timeout: Field,
@@ -1014,7 +1019,7 @@ impl Checker<'_> {
                 "kind",
                 &[
                     "job", "loop", "branch", "join", "time", "file", "notify", "approval", "jobnet", "delete", "zip", "copy", "empty",
-                    "send", "fetch", "http", "ssh", "winrm", "mail",
+                    "send", "fetch", "http", "ssh", "winrm", "mail", "sql",
                 ],
             )
             .unwrap_or("job");
@@ -1035,8 +1040,8 @@ impl Checker<'_> {
             self.only(&j.key, "key", "\"send\"・\"fetch\"・\"ssh\"");
             self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
         }
-        if !["send", "fetch", "ssh", "winrm"].contains(&kind) {
-            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"・\"winrm\"");
+        if !["send", "fetch", "ssh", "winrm", "sql"].contains(&kind) {
+            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"・\"winrm\"・\"sql\"");
         }
         if kind != "ssh" && kind != "winrm" {
             self.only(&j.on, "on", "\"ssh\" か \"winrm\"");
@@ -1062,6 +1067,11 @@ impl Checker<'_> {
                 self.only(field, name, "\"mail\"");
             }
         }
+        if kind != "sql" {
+            for (field, name) in [(&j.db, "db"), (&j.sql, "sql"), (&j.out, "out"), (&j.rows, "rows"), (&j.tls, "tls")] {
+                self.only(field, name, "\"sql\"");
+            }
+        }
         if kind != "join" {
             self.only(&j.wait, "wait", "\"join\"");
         }
@@ -1069,8 +1079,8 @@ impl Checker<'_> {
             self.only(&j.at, "at", "\"time\"");
             self.only(&j.days, "days", "\"time\"");
         }
-        if kind != "file" && kind != "loop" {
-            self.only(&j.file, "file", "\"file\" か \"loop\"");
+        if !["file", "loop", "sql"].contains(&kind) {
+            self.only(&j.file, "file", "\"file\"・\"loop\"・\"sql\"");
         }
         if kind != "file" {
             self.only(&j.settle, "settle", "\"file\"");
@@ -1179,7 +1189,7 @@ impl Checker<'_> {
                 };
                 Part::Jobnet { use_: use_.unwrap_or_default() }
             }
-            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" | "winrm" | "mail" => {
+            "delete" | "zip" | "copy" | "empty" | "send" | "fetch" | "http" | "ssh" | "winrm" | "mail" | "sql" => {
                 Part::Chore(self.chore(j, kind, start))
             }
             _ => Part::Job,
@@ -1263,6 +1273,7 @@ impl Checker<'_> {
             "http" => self.http(j, start),
             // Its own fields, checked once they all read.
             "mail" => return self.mail_job(j, start),
+            "sql" => return self.sql_job(j, start),
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
         // A missing field is already told; what is left is a root or a zip's name.
@@ -1357,6 +1368,65 @@ impl Checker<'_> {
             }
         }
         chore
+    }
+
+    /// A `sql`'s fields: `db`, `sql` or `file`, `out`, `rows` (a string or a whole
+    /// number), `tls`, `password`; then the whole, once they all read.
+    fn sql_job(&mut self, j: &RawJob, start: usize) -> Chore {
+        let before = self.problems.len();
+        let db = match &j.db {
+            None => {
+                self.add(start, "kind = \"sql\" には db が要る（流す先。例: db = \"sqlserver://db01/売上\"）");
+                String::new()
+            }
+            Some(_) => self.sql_text(&j.db, "db").unwrap_or_default(),
+        };
+        if let Some(f) = &j.db {
+            let t = db.trim();
+            if !t.is_empty() && !t.starts_with('{') {
+                if let Err(e) = crate::chore::sql_db(t) {
+                    self.add(f.span().start, e);
+                }
+            }
+        }
+        let sql = self.sql_text(&j.sql, "sql");
+        let file = self.sql_text(&j.file, "file");
+        let out = self.sql_text(&j.out, "out");
+        let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
+        let rows = j.rows.as_ref().and_then(|f| {
+            let rows = match f.get_ref() {
+                toml::Value::String(s) => s.trim().to_owned(),
+                toml::Value::Integer(n) if *n >= 0 => n.to_string(),
+                _ => {
+                    self.add(f.span().start, "rows は \"1..\" のような文字列か 0 以上の整数で書く（正常とする行の数）");
+                    return None;
+                }
+            };
+            if let Err(e) = crate::chore::sql_rows(&rows) {
+                self.add(f.span().start, e);
+            }
+            Some(rows)
+        });
+        let tls = self.choice(&j.tls, "tls", &SqlTls::ALL.map(SqlTls::key)).and_then(SqlTls::of).unwrap_or_default();
+        let chore = Chore::Sql { db, password, sql, file, out, rows, tls };
+        if self.problems.len() == before {
+            if let Err(e) = chore.check() {
+                self.add(start, e);
+            }
+        }
+        chore
+    }
+
+    /// A text of a `sql` when written: a string, not empty, a template.
+    fn sql_text(&mut self, field: &Field, name: &str) -> Option<String> {
+        let at = field.as_ref()?.span().start;
+        let s = self.string(field, name)?;
+        if s.trim().is_empty() {
+            self.add(at, format!("{name} が空"));
+        } else if let Err(e) = self.template(&s) {
+            self.add(at, format!("{name}: {e}"));
+        }
+        Some(s)
     }
 
     /// An array of texts, none empty, each a template: a `mail`'s `to`, `cc`, `files`.
@@ -3590,6 +3660,71 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(other("run = [\"x\"]\n", "body = 'x'\n").contains("body は kind = \"http\" か \"mail\" にだけ書く"));
     }
 
+    /// `kind = "sql"` takes its database, SQL or file, out file, rows and tls,
+    /// the password of a login, and the `retry`, `timeout` and `run_as` of a part;
+    /// not an `env` or `judge`.
+    #[test]
+    fn a_sql_reads_with_its_database_sql_and_rows() {
+        let parse_sql = |extra: &str| {
+            parse(&format!(
+                "format = 1\n[params]\nday = \"{{date}}\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"q\"\nkind = \"sql\"\n{extra}after = [\"a\"]\n"
+            ))
+            .map(|n| n.jobs[1].clone())
+            .map_err(|p| p.iter().map(|p| p.in_file("a.toml")).collect::<Vec<_>>().join("\n"))
+        };
+        let j = parse_sql(
+            "db = 'sqlserver://ops@db01:14330/売上'\npassword = ' secret:db '\nsql = \"\"\"\nselect * from t where d = '{param:day}'\n\"\"\"\nout = 'D:\\out\\{date}.csv'\nrows = '1..'\ntls = 'trust'\nretry = { count = 2, wait = \"1m\" }\ntimeout = \"5m\"\nrun_as = { user = 'CORP\\batch', password = \"secret:batch\" }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            j.part,
+            Part::Chore(Chore::Sql {
+                db: "sqlserver://ops@db01:14330/売上".into(),
+                password: Some("secret:db".into()),
+                sql: Some("select * from t where d = '{param:day}'\n".into()),
+                file: None,
+                out: Some("D:\\out\\{date}.csv".into()),
+                rows: Some("1..".into()),
+                tls: SqlTls::Trust,
+            })
+        );
+        assert_eq!(j.retry, Some(Retry { count: 2, wait: 60 }));
+        assert!(j.run_as.is_some());
+        let j = parse_sql("db = 'sqlite://C:\\data\\app.db'\nfile = 'D:\\sql\\clean.sql'\nrows = 0\n").unwrap();
+        let Part::Chore(Chore::Sql { file, rows, tls, .. }) = &j.part else { panic!("{:?}", j.part) };
+        assert_eq!((file.as_deref(), rows.as_deref(), *tls), (Some("D:\\sql\\clean.sql"), Some("0"), SqlTls::Verify));
+        let bad = |extra: &str| parse_sql(extra).unwrap_err();
+        assert!(bad("sql = 'select 1'\n").contains("kind = \"sql\" には db が要る"));
+        assert!(bad("db = 'mysql://x/y'\nsql = 'select 1'\n").contains("sqlserver://・postgres://・sqlite:// のどれか"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\n").contains("sql か file のどちらか"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = ' '\n").contains("sql が空"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 1\n").contains("sql は文字列で書く"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select {param:nobody}'\n").contains("nobody"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = -1\n").contains("0 以上の整数"));
+        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = '5..1'\n").contains("rows は 0・1..・1..100"));
+        assert!(
+            bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\ntls = 'none'\n").contains("tls は \"verify\"・\"trust\"・\"off\" のどれか")
+        );
+        assert!(bad("db = 'postgres://app@pg/app'\nsql = 'select 1'\n").contains("password が要る"));
+        for (extra, name) in [("env = { A = 'b' }\n", "env"), ("judge = { warn = '1' }\n", "judge")] {
+            assert!(bad(&format!("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\n{extra}")).contains(name), "{extra}");
+        }
+        let other = |kind: &str, extra: &str| {
+            parse(&format!("format = 1\n[[job]]\nid = \"j\"\n{kind}{extra}"))
+                .unwrap_err()
+                .iter()
+                .map(|p| p.in_file("a.toml"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        for field in ["db = 'x'", "sql = 's'", "out = 'a'", "rows = '1'", "tls = 'off'"] {
+            let name = field.split(' ').next().unwrap();
+            assert!(other("run = [\"x\"]\n", &format!("{field}\n")).contains(&format!("{name} は kind = \"sql\" にだけ書く")), "{field}");
+        }
+        assert!(other("run = [\"x\"]\n", "file = 'a'\n").contains("file は kind = \"file\"・\"loop\"・\"sql\" にだけ書く"));
+        assert!(other("run = [\"x\"]\n", "password = 'secret:a'\n").contains("\"winrm\"・\"sql\" にだけ書く"));
+    }
+
     #[test]
     fn each_kind_of_part_reads() {
         let net = |kind: &str, extra: &str| {
@@ -3690,7 +3825,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\"・\"mail\" のどれか".to_owned()
+                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\"・\"mail\"・\"sql\" のどれか".to_owned()
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.

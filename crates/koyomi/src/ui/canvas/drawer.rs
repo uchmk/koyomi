@@ -11,7 +11,7 @@ use ito_prefs::{
     fieldset, form_label, mark_button, seg_named, tag, CodeBox, FormWords, IconButton, InputField, Look, Mark as M, Need, Tag, Tone,
 };
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
+use koyomi_core::chore::{Chore, Pass, SqlDb, SqlTls, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
 use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
@@ -567,6 +567,44 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.code(ui, "field.mail_body", opt, false, &mut f.body, (4, ""));
             changed |= form.code(ui, "field.files", opt, false, &mut f.files, (2, ""));
             changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
+        }
+        Chore::Sql { .. } => {
+            // Which server it is decides how the SQL is cut into batches and what it signs in with.
+            let db = (!f.db.contains('{')).then(|| koyomi_core::chore::sql_db(f.db.trim()).ok()).flatten();
+            let db_bad = !f.db.trim().is_empty() && !f.db.contains('{') && db.is_none();
+            changed |= form.line(ui, "field.sql_db", req, db_bad, &mut f.db, |i| i.mono().hint("sqlserver://db01/売上").mark(M::Server));
+            let (text, file) = (!f.sql.trim().is_empty(), !f.file.trim().is_empty());
+            let aside = match &db {
+                Some(SqlDb::SqlServer { .. }) => "SQL Server",
+                Some(SqlDb::Postgres { .. }) => "PostgreSQL",
+                Some(SqlDb::Sqlite { .. }) => "SQLite",
+                None => "",
+            };
+            let need = if file { opt } else { req };
+            changed |= form.code(ui, "field.sql_text", need, text && file, &mut f.sql, (5, aside));
+            let need = if text { opt } else { req };
+            changed |= form.line(ui, "field.sql_file", need, text && file, &mut f.file, |i| i.mono());
+            changed |= form.line(ui, "field.sql_out", opt, false, &mut f.out, |i| i.mono().hint("D:\\out\\{date}.csv"));
+            let rows_bad = !f.rows.trim().is_empty() && koyomi_core::chore::sql_rows(f.rows.trim()).is_err();
+            changed |= form.line(ui, "field.sql_rows", opt, rows_bad, &mut f.rows, |i| i.mono().hint("1..").width(180.0));
+            // SQL Server signs in as the job's account when the address has no user.
+            // SQLite takes neither; one left from another db stays shown (marked) so it can be cleared.
+            let windows = matches!(&db, Some(SqlDb::SqlServer { user: None, .. }));
+            let lite = matches!(&db, Some(SqlDb::Sqlite { .. }));
+            let password = !f.password.trim().is_empty();
+            if !(windows || lite) || password {
+                let bad = (windows || lite) && password;
+                changed |= form.line(ui, "field.sql_password", req, bad, &mut f.password, |i| i.mono().mark(M::Lock));
+            }
+            if !lite || f.tls != SqlTls::Verify {
+                let options = SqlTls::ALL.map(|s| (s, s.key()));
+                let note = form.t.tr(match f.tls {
+                    SqlTls::Verify => "field.sql_tls_verify",
+                    SqlTls::Trust => "field.sql_tls_trust",
+                    SqlTls::Off => "field.sql_tls_off",
+                });
+                changed |= form.choice(ui, "field.sql_tls", &mut f.tls, &options, note);
+            }
         }
     }
     changed

@@ -1,13 +1,14 @@
 //! The everyday file chores a net can have as parts without a script:
 //! delete old files, zip, copy with robocopy, empty a folder, send and fetch
 //! files over SFTP or to and from a shared folder, call a web API, run a
-//! command on another PC over SSH or on a Windows PC over WinRM, send a mail.
+//! command on another PC over SSH or on a Windows PC over WinRM, send a mail,
+//! run SQL on a database.
 //! Each is written in the file as its own `kind` and runs as a PowerShell script
 //! the engine writes when the run starts, so it has the job's slot, log,
 //! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh`
 //! runs `koyomi ssh run` itself, without PowerShell, a `winrm` `koyomi winrm
-//! run` and a `mail` `koyomi mail run`. Each reads what to do from the
-//! environment.
+//! run`, a `mail` `koyomi mail run` and a `sql` `koyomi sql run`. Each reads
+//! what to do from the environment.
 
 use std::collections::BTreeMap;
 
@@ -140,6 +141,60 @@ pub enum Chore {
         #[serde(default)]
         via: Option<String>,
     },
+    /// SQL を流す: `sql` (or the SQL in the file `file`) on the database `db`:
+    /// `sqlserver://[user@]host[:port]/database`, `postgres://user@host[:port]/database`
+    /// or `sqlite://C:\data\app.db`. A user logs in with `password` (a `secret:`);
+    /// SQL Server without a user logs in as the Windows account the job runs as.
+    /// The rows of a result go to the CSV file `out`, and `rows` says how many
+    /// rows (a result's, else the changed ones) are 正常. koyomi runs it itself
+    /// (`koyomi sql run`).
+    Sql {
+        db: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        sql: Option<String>,
+        #[serde(default)]
+        file: Option<String>,
+        #[serde(default)]
+        out: Option<String>,
+        #[serde(default)]
+        rows: Option<String>,
+        #[serde(default)]
+        tls: SqlTls,
+    },
+}
+
+/// How a `sql` talks to its server (`tls`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SqlTls {
+    /// TLS, with a certificate the PC trusts for the host's name.
+    #[default]
+    Verify,
+    /// TLS, with whatever certificate the server shows (its own self-signed one).
+    Trust,
+    /// No TLS: PostgreSQL only (SQL Server always encrypts).
+    Off,
+}
+
+impl SqlTls {
+    /// Each, in the order of the editor's list.
+    pub const ALL: [SqlTls; 3] = [SqlTls::Verify, SqlTls::Trust, SqlTls::Off];
+
+    /// As written in `tls`.
+    pub fn key(self) -> &'static str {
+        match self {
+            SqlTls::Verify => "verify",
+            SqlTls::Trust => "trust",
+            SqlTls::Off => "off",
+        }
+    }
+
+    /// The one written as `key`.
+    pub fn of(key: &str) -> Option<SqlTls> {
+        SqlTls::ALL.into_iter().find(|t| t.key() == key)
+    }
 }
 
 /// How a `winrm` logs in (`auth`).
@@ -247,7 +302,7 @@ fn fan(on: &str, max: Option<u32>, pass: Pass) -> Result<bool, String> {
 }
 
 /// The `kind` of each chore, in the order of the editor's shelf.
-pub const KINDS: [&str; 10] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh", "winrm", "mail"];
+pub const KINDS: [&str; 11] = ["delete", "zip", "copy", "empty", "send", "fetch", "http", "ssh", "winrm", "mail", "sql"];
 
 /// The methods `kind = "http"` takes.
 pub const METHODS: [&str; 6] = ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"];
@@ -268,8 +323,9 @@ pub const NOTHING: i32 = 3;
 /// `KOYOMI_REASON` names.
 pub const NO_EXIT: i32 = 255;
 
-/// The longest `command` of an `ssh` or `winrm` (characters): it reaches `koyomi
-/// ssh run` or `koyomi winrm run` in an environment variable.
+/// The longest `command` of an `ssh` or `winrm`, and `sql` of a `sql` (characters):
+/// it reaches `koyomi ssh run`, `koyomi winrm run` or `koyomi sql run` in an
+/// environment variable.
 pub const COMMAND_MAX: usize = 8000;
 
 /// The port of `winrm://` when none is written: WinRM over HTTPS.
@@ -278,9 +334,16 @@ pub const WINRM_PORT: u16 = 5986;
 /// The most `files` a `mail` names, and the most files they may find.
 pub const FILES_MAX: usize = 20;
 
-/// Put before each text a `mail` gives `koyomi mail run` in the environment, so
-/// a subject or body that starts with `secret:` is not read as a secret.
+/// Put before each text a `mail` or `sql` gives `koyomi mail run` or `koyomi sql
+/// run` in the environment, so a text that starts with `secret:` is not read as a
+/// secret.
 pub const MAIL_TEXT: char = '|';
+
+/// The port of `sqlserver://` when none is written.
+pub const SQL_SERVER_PORT: u16 = 1433;
+
+/// The port of `postgres://` when none is written.
+pub const POSTGRES_PORT: u16 = 5432;
 
 impl Chore {
     /// The `kind` as written, and the key of its word.
@@ -296,6 +359,7 @@ impl Chore {
             Chore::Ssh { .. } => "ssh",
             Chore::Winrm { .. } => "winrm",
             Chore::Mail { .. } => "mail",
+            Chore::Sql { .. } => "sql",
         }
     }
 
@@ -306,9 +370,9 @@ impl Chore {
     }
 
     /// Whether koyomi runs it itself as `koyomi <kind> run`, not as a script: an
-    /// `ssh`, a `winrm`, a `mail`.
+    /// `ssh`, a `winrm`, a `mail`, a `sql`.
     pub fn own(&self) -> bool {
-        self.far() || matches!(self, Chore::Mail { .. })
+        self.far() || matches!(self, Chore::Mail { .. } | Chore::Sql { .. })
     }
 
     /// A new, empty one of `kind` (for the shelf).
@@ -347,6 +411,7 @@ impl Chore {
                 pass: Pass::All,
             },
             "mail" => Chore::Mail { to: Vec::new(), cc: Vec::new(), subject: String::new(), body: None, files: Vec::new(), via: None },
+            "sql" => Chore::Sql { db: String::new(), password: None, sql: None, file: None, out: None, rows: None, tls: SqlTls::Verify },
             _ => return None,
         })
     }
@@ -398,6 +463,13 @@ impl Chore {
                 v.extend(files.iter_mut().map(|f| ("files", f)));
                 v
             }
+            Chore::Sql { db, sql, file, out, .. } => {
+                let mut v = vec![("db", db)];
+                v.extend(sql.iter_mut().map(|s| ("sql", s)));
+                v.extend(file.iter_mut().map(|f| ("file", f)));
+                v.extend(out.iter_mut().map(|o| ("out", o)));
+                v
+            }
         }
     }
 
@@ -415,6 +487,7 @@ impl Chore {
             Chore::Mail { to, cc, subject, body, files, .. } => {
                 [subject].into_iter().chain(to).chain(cc).chain(body).chain(files).collect()
             }
+            Chore::Sql { db, sql, file, out, .. } => [db].into_iter().chain(sql).chain(file).chain(out).collect(),
         }
     }
 
@@ -422,7 +495,8 @@ impl Chore {
     /// for `delete` and `empty`, a zip that does not end in `.zip`, an `sftp://`
     /// that cannot be read or is on the wrong side, an `ssh` without its host,
     /// command or host key, a `winrm` without its user, host, command, certificate
-    /// or password, a `mail` without a good address or a subject.
+    /// or password, a `mail` without a good address or a subject, a `sql` without
+    /// a database it can read, a login that fits it, or its SQL.
     pub fn check(&self) -> Result<(), String> {
         let need = |name: &str, p: &str| if p.trim().is_empty() { Err(format!("{name} が空")) } else { Ok(()) };
         match self {
@@ -564,13 +638,64 @@ impl Chore {
                     return Err("files に空のものがある".into());
                 }
             }
+            Chore::Sql { db, password, sql, file, out, rows, tls } => {
+                if db.trim().is_empty() {
+                    return Err(
+                        "db が空（流す先を sqlserver://ホスト/データベース・postgres://ユーザー@ホスト/データベース・sqlite://C:\\data\\app.db で書く）"
+                            .into(),
+                    );
+                }
+                let password = password.as_deref().map(str::trim).filter(|p| !p.is_empty());
+                if let Some(p) = password {
+                    if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
+                        return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                    }
+                }
+                // A `db` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
+                if !db.trim().starts_with('{') {
+                    match sql_db(db)? {
+                        SqlDb::SqlServer { user: None, .. } if password.is_some() => {
+                            return Err("ユーザーを書かない sqlserver:// はジョブを動かす Windows のアカウントでログインする: password は書かない（SQL Server のログインなら sqlserver://ユーザー@ホスト/データベース）".into());
+                        }
+                        SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. } if password.is_none() => {
+                            return Err("このログインには password が要る（secret:<名前> で書き、値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                        }
+                        SqlDb::SqlServer { .. } if *tls == SqlTls::Off => {
+                            return Err(
+                                "SQL Server へはいつも暗号化してつなぐ: tls = \"off\" は使えない（証明書を確かめないなら tls = \"trust\"）"
+                                    .into(),
+                            );
+                        }
+                        SqlDb::Sqlite { .. } if password.is_some() => return Err("sqlite:// には password を書かない".into()),
+                        SqlDb::Sqlite { .. } if *tls != SqlTls::Verify => return Err("sqlite:// には tls を書かない".into()),
+                        _ => {}
+                    }
+                }
+                match (sql, file) {
+                    (None, None) => return Err("sql か file のどちらかを書く（流す SQL か、それを書いたファイル）".into()),
+                    (Some(_), Some(_)) => return Err("sql と file はどちらか一方".into()),
+                    (Some(s), None) if s.trim().is_empty() => return Err("sql が空".into()),
+                    (Some(s), None) if s.chars().count() > COMMAND_MAX => {
+                        return Err(format!("sql は {COMMAND_MAX} 文字まで（長いものは file に書く）"));
+                    }
+                    (None, Some(f)) if f.trim().is_empty() => return Err("file が空".into()),
+                    _ => {}
+                }
+                if out.as_ref().is_some_and(|o| o.trim().is_empty()) {
+                    return Err("out が空".into());
+                }
+                if let Some(r) = rows {
+                    sql_rows(r)?;
+                }
+            }
         }
         Ok(())
     }
 
     /// The PowerShell script that does it, and how its exit code is judged.
-    /// The paths are already filled in. An `ssh`, `winrm` or `mail` has none:
-    /// [`fill`] runs `koyomi ssh run`, `koyomi winrm run` or `koyomi mail run` straight.
+    /// The paths are already filled in. An `ssh`, `winrm`, `mail` or `sql` has none:
+    /// [`fill`] runs `koyomi ssh run`, `koyomi winrm run`, `koyomi mail run` or
+    /// `koyomi sql run` straight.
     pub fn script(&self) -> (String, Option<Judge>) {
         match self {
             Chore::Delete { path, pattern, keep_days } => {
@@ -635,8 +760,8 @@ impl Chore {
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 (http(url, method, body, content_type, headers, expect), None)
             }
-            // Not a script (fill()); judged by the job's own `judge`, a `mail` as 0 or not.
-            Chore::Ssh { .. } | Chore::Winrm { .. } | Chore::Mail { .. } => (String::new(), None),
+            // Not a script (fill()); judged by the job's own `judge`, a `mail` and a `sql` as 0 or not.
+            Chore::Ssh { .. } | Chore::Winrm { .. } | Chore::Mail { .. } | Chore::Sql { .. } => (String::new(), None),
         }
     }
 
@@ -647,7 +772,9 @@ impl Chore {
     /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
     /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`),
     /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
-    /// for `koyomi mail run`, a list one per line, each after [`MAIL_TEXT`].
+    /// for `koyomi mail run`, a list one per line, each after [`MAIL_TEXT`]; a `sql`
+    /// as `KOYOMI_SQL_*` for `koyomi sql run`, each text after [`MAIL_TEXT`] but the
+    /// password (a `secret:`) and `tls`.
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
@@ -705,6 +832,22 @@ impl Chore {
                 }
                 if let Some(x) = via.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                     v.push(("KOYOMI_MAIL_VIA".to_owned(), text(x)));
+                }
+                v
+            }
+            Chore::Sql { db, password, sql, file, out, rows, tls } => {
+                let text = |s: &str| format!("{MAIL_TEXT}{s}");
+                let mut v = vec![("KOYOMI_SQL_DB".to_owned(), text(db.trim())), ("KOYOMI_SQL_TLS".to_owned(), tls.key().to_owned())];
+                if let Some(s) = sql {
+                    v.push(("KOYOMI_SQL_TEXT".to_owned(), text(s)));
+                }
+                for (name, value) in [("FILE", file), ("OUT", out), ("ROWS", rows)] {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                        v.push((format!("KOYOMI_SQL_{name}"), text(x)));
+                    }
+                }
+                if let Some(p) = password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+                    v.push(("KOYOMI_SQL_PASSWORD".to_owned(), p.to_owned()));
                 }
                 v
             }
@@ -810,7 +953,8 @@ fn http(
 /// the engine's ask to stop reaches it straight, and PowerShell's debugger does
 /// not take the ask and write into the log. It keeps its own `judge`, and the
 /// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`. A `winrm` the
-/// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`; a `mail` as `exe mail run`.
+/// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`; a `mail` as `exe mail run`, a
+/// `sql` as `exe sql run`.
 pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
@@ -924,6 +1068,103 @@ pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
         _ => Ok(far),
     });
     Some(read.map_err(|e| format!("{e}: {t}")))
+}
+
+/// Where a `sql`'s `db` points.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SqlDb {
+    /// `sqlserver://[user@]host[:port]/database`: without a user, the Windows
+    /// account the job runs as logs in.
+    SqlServer { user: Option<String>, host: String, port: u16, database: String },
+    /// `postgres://user@host[:port]/database` (or `postgresql://`).
+    Postgres { user: String, host: String, port: u16, database: String },
+    /// `sqlite://C:\data\app.db`: the file, by its whole path.
+    Sqlite { path: String },
+}
+
+/// `t` after `scheme`, whatever its case; `None` when it does not start with it.
+fn after_scheme<'a>(t: &'a str, scheme: &str) -> Option<&'a str> {
+    t.get(..scheme.len()).filter(|p| p.eq_ignore_ascii_case(scheme)).map(|_| &t[scheme.len()..])
+}
+
+/// `s` read as a `sql`'s `db`. A named instance (`host\name`) is not taken: its
+/// port is written instead, as ito-sql connects by the port.
+pub fn sql_db(s: &str) -> Result<SqlDb, String> {
+    let t = s.trim();
+    if let Some(path) = after_scheme(t, "sqlite://") {
+        let b = path.as_bytes();
+        let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+        if path.contains(['\r', '\n']) || !(drive || path.starts_with(['\\', '/', '{'])) {
+            return Err(format!("sqlite:// のあとはデータベースのファイルを C:\\data\\app.db のように全部書く: {t}"));
+        }
+        return Ok(SqlDb::Sqlite { path: path.to_owned() });
+    }
+    let (rest, scheme, server) = if let Some(r) = after_scheme(t, "sqlserver://") {
+        (r, "sqlserver://", true)
+    } else if let Some(r) = after_scheme(t, "postgres://") {
+        (r, "postgres://", false)
+    } else if let Some(r) = after_scheme(t, "postgresql://") {
+        (r, "postgresql://", false)
+    } else {
+        return Err(format!("db は sqlserver://・postgres://・sqlite:// のどれかで書く: {t}"));
+    };
+    let form = if server {
+        "sqlserver://[ユーザー@]ホスト[:ポート]/データベース"
+    } else {
+        "postgres://ユーザー@ホスト[:ポート]/データベース"
+    };
+    let Some((auth, database)) = rest.split_once('/').filter(|(_, d)| !d.trim().is_empty()) else {
+        return Err(format!("{scheme} にはデータベースの名前が要る（{form}）: {t}"));
+    };
+    if database.contains(['/', '?']) || database.chars().any(char::is_control) {
+        return Err(format!("データベースの名前に使えない文字がある: {t}"));
+    }
+    let far = read_sftp(auth, scheme).map_err(|e| format!("{e}: {t}"))?;
+    if far.host.contains('\\') {
+        let why = if server {
+            "名前付きインスタンス（ホスト\\名前）は使えない: そのポートを書く（sqlserver://ホスト:ポート/データベース）"
+        } else {
+            "ホストに \\ は使えない"
+        };
+        return Err(format!("{why}: {t}"));
+    }
+    if far.user.as_deref().is_some_and(|u| u.contains('\\')) {
+        let why = if server {
+            "Windows のアカウントでログインするならユーザーを書かない（ジョブを動かすアカウントでログインする。ほかのアカウントは run_as）"
+        } else {
+            "ユーザーに \\ は使えない"
+        };
+        return Err(format!("{why}: {t}"));
+    }
+    let database = database.to_owned();
+    if server {
+        return Ok(SqlDb::SqlServer { user: far.user, host: far.host, port: far.port.unwrap_or(SQL_SERVER_PORT), database });
+    }
+    let Some(user) = far.user else {
+        return Err(format!("{scheme} にはユーザーが要る（{form}）: {t}"));
+    };
+    Ok(SqlDb::Postgres { user, host: far.host, port: far.port.unwrap_or(POSTGRES_PORT), database })
+}
+
+/// A `sql`'s `rows` read as the counts that are 正常, each `(least, most)`:
+/// `0`, `1..` (one or more), `1..100`, `..5`, several with `,`.
+pub fn sql_rows(s: &str) -> Result<Vec<(u64, u64)>, String> {
+    let bad = || format!("rows は 0・1..・1..100 のように書く（正常とする行の数。, で並べられる）: {s}");
+    let num = |x: &str, none: u64| match x.trim() {
+        "" => Some(none),
+        n => n.parse::<u64>().ok(),
+    };
+    s.split(',')
+        .map(|part| {
+            let part = part.trim();
+            let range = match part.split_once("..") {
+                _ if part.is_empty() => None,
+                Some((a, b)) => num(a, 0).zip(num(b, u64::MAX)),
+                None => part.parse::<u64>().ok().map(|n| (n, n)),
+            };
+            range.filter(|(a, b)| a <= b).ok_or_else(bad)
+        })
+        .collect()
 }
 
 /// `max` and `pass` of an `ssh` or `winrm` for `koyomi ssh run` or `koyomi winrm
@@ -1548,5 +1789,135 @@ mod tests {
         assert_eq!(m.run, ["C:\\koyomi\\koyomi.exe", "mail", "run"]);
         assert_eq!(m.env.get("KOYOMI_MAIL_FILES").map(String::as_str), Some("|D:\\out\\a.csv"));
         assert!(!m.env.contains_key("KOYOMI_MAIL_ENV"));
+    }
+
+    fn query(db: &str, password: Option<&str>, sql: Option<&str>, file: Option<&str>) -> Chore {
+        Chore::Sql {
+            db: db.into(),
+            password: password.map(Into::into),
+            sql: sql.map(Into::into),
+            file: file.map(Into::into),
+            out: None,
+            rows: None,
+            tls: SqlTls::Verify,
+        }
+    }
+
+    #[test]
+    fn a_sql_db_reads_as_sql_server_postgres_or_sqlite() {
+        let server = |user: Option<&str>, host: &str, port: u16, database: &str| SqlDb::SqlServer {
+            user: user.map(Into::into),
+            host: host.into(),
+            port,
+            database: database.into(),
+        };
+        let pg = |user: &str, host: &str, port: u16, database: &str| SqlDb::Postgres {
+            user: user.into(),
+            host: host.into(),
+            port,
+            database: database.into(),
+        };
+        assert_eq!(sql_db(" sqlserver://db01/売上 "), Ok(server(None, "db01", 1433, "売上")));
+        assert_eq!(sql_db("SQLSERVER://ops@db01:14330/sales"), Ok(server(Some("ops"), "db01", 14330, "sales")));
+        assert_eq!(sql_db("postgresql://app@10.0.0.5/app"), Ok(pg("app", "10.0.0.5", 5432, "app")));
+        assert_eq!(sql_db("postgres://app@pg:6543/app"), Ok(pg("app", "pg", 6543, "app")));
+        assert_eq!(sql_db("sqlite://C:\\data\\app.db"), Ok(SqlDb::Sqlite { path: "C:\\data\\app.db".into() }));
+        assert_eq!(sql_db("sqlite:///var/lib/app.db"), Ok(SqlDb::Sqlite { path: "/var/lib/app.db".into() }));
+        let err = |s: &str| sql_db(s).unwrap_err();
+        assert!(err("mysql://db01/x").contains("どれか"));
+        assert!(err("sqlserver://db01").contains("データベースの名前が要る"));
+        assert!(err("sqlserver://db01/ ").contains("データベースの名前が要る"));
+        assert!(err("sqlserver://db01/a/b").contains("使えない文字"));
+        assert!(err("postgres://app@pg/app?sslmode=require").contains("使えない文字"));
+        assert!(err("sqlserver://db01\\SQLEXPRESS/x").contains("名前付きインスタンス"));
+        assert!(err("sqlserver://CORP\\ops@db01/x").contains("ユーザーを書かない"));
+        assert!(err("sqlserver://db01:0/x").contains("ポート"));
+        assert!(err("postgres://pg/app").contains("ユーザーが要る"));
+        assert!(err("sqlite://app.db").contains("全部書く"));
+    }
+
+    #[test]
+    fn sql_rows_are_ranges_of_counts() {
+        assert_eq!(sql_rows("0"), Ok(vec![(0, 0)]));
+        assert_eq!(sql_rows(" 1.. "), Ok(vec![(1, u64::MAX)]));
+        assert_eq!(sql_rows("1..100, ..0"), Ok(vec![(1, 100), (0, 0)]));
+        for bad in ["", "x", "-1", "5..1", "1..=5", "1,,2"] {
+            assert!(sql_rows(bad).unwrap_err().contains("rows は"), "{bad}");
+        }
+    }
+
+    #[test]
+    fn a_sql_that_cannot_run_as_written_is_refused() {
+        let ok = |c: Chore| c.check().unwrap_or_else(|e| panic!("{e}"));
+        let err = |c: Chore| c.check().unwrap_err();
+        ok(query("sqlserver://db01/x", None, Some("select 1"), None));
+        ok(query("sqlserver://ops@db01/x", Some("secret:db"), None, Some("D:\\sql\\a.sql")));
+        ok(query("postgres://app@pg/app", Some("secret:pg"), Some("select 1"), None));
+        ok(query("sqlite://C:\\data\\app.db", None, Some("select 1"), None));
+        ok(query("{param:db}", Some("secret:db"), Some("select 1"), None));
+        assert!(err(query(" ", None, Some("select 1"), None)).contains("db が空"));
+        assert!(err(query("mysql://db01/x", None, Some("select 1"), None)).contains("どれか"));
+        assert!(err(query("sqlserver://db01/x", Some("secret:db"), Some("select 1"), None)).contains("password は書かない"));
+        assert!(err(query("sqlserver://ops@db01/x", None, Some("select 1"), None)).contains("password が要る"));
+        assert!(err(query("postgres://app@pg/app", None, Some("select 1"), None)).contains("password が要る"));
+        assert!(err(query("postgres://app@pg/app", Some("hunter2"), Some("select 1"), None)).contains("secret:<名前>"));
+        assert!(err(query("postgres://app@pg/app", Some("secret: "), Some("select 1"), None)).contains("secret:<名前>"));
+        assert!(err(query("sqlite://C:\\a.db", Some("secret:x"), Some("select 1"), None)).contains("password を書かない"));
+        assert!(err(query("sqlite://C:\\a.db", None, None, None)).contains("sql か file"));
+        assert!(err(query("sqlite://C:\\a.db", None, Some("select 1"), Some("D:\\a.sql"))).contains("どちらか一方"));
+        assert!(err(query("sqlite://C:\\a.db", None, Some(" \n"), None)).contains("sql が空"));
+        assert!(err(query("sqlite://C:\\a.db", None, None, Some(" "))).contains("file が空"));
+        assert!(err(query("sqlite://C:\\a.db", None, Some(&"x".repeat(COMMAND_MAX + 1)), None)).contains("文字まで"));
+        let with = |db: &str, password: Option<&str>, tls: SqlTls, out: Option<&str>, rows: Option<&str>| {
+            let mut c = query(db, password, Some("select 1"), None);
+            if let Chore::Sql { tls: t, out: o, rows: r, .. } = &mut c {
+                (*t, *o, *r) = (tls, out.map(Into::into), rows.map(Into::into));
+            }
+            c
+        };
+        assert!(err(with("sqlserver://db01/x", None, SqlTls::Off, None, None)).contains("tls = \"off\" は使えない"));
+        ok(with("sqlserver://db01/x", None, SqlTls::Trust, None, None));
+        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Trust, None, None)).contains("tls を書かない"));
+        ok(with("postgres://app@pg/app", Some("secret:pg"), SqlTls::Off, Some("D:\\out\\a.csv"), Some("1..")));
+        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Verify, None, Some("x"))).contains("rows は"));
+        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Verify, Some(" "), None)).contains("out が空"));
+    }
+
+    #[test]
+    fn a_sql_leaves_the_work_to_koyomi_and_marks_its_texts() {
+        let mut c = query(" sqlserver://ops@db01/x ", Some(" secret:db "), Some("select 1\n"), None);
+        if let Chore::Sql { out, rows, tls, .. } = &mut c {
+            (*out, *rows, *tls) = (Some(" D:\\out\\a.csv ".into()), Some("1..".into()), SqlTls::Trust);
+        }
+        assert_eq!(c.script(), (String::new(), None));
+        assert!(c.own() && !c.far());
+        let env = c.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_SQL_DB"), Some("|sqlserver://ops@db01/x"));
+        assert_eq!(get("KOYOMI_SQL_TEXT"), Some("|select 1\n"));
+        assert_eq!(get("KOYOMI_SQL_OUT"), Some("|D:\\out\\a.csv"));
+        assert_eq!(get("KOYOMI_SQL_ROWS"), Some("|1.."));
+        assert_eq!(get("KOYOMI_SQL_TLS"), Some("trust"));
+        // Read as a secret when the job starts.
+        assert_eq!(get("KOYOMI_SQL_PASSWORD"), Some("secret:db"));
+        assert_eq!(get("KOYOMI_SQL_FILE"), None);
+        let bare = query("sqlite://C:\\a.db", None, None, Some("D:\\a.sql")).env();
+        assert_eq!(bare.iter().map(|(k, _)| k.as_str()).collect::<Vec<_>>(), ["KOYOMI_SQL_DB", "KOYOMI_SQL_TLS", "KOYOMI_SQL_FILE"]);
+        // Filled in: the database, the SQL, the out file.
+        assert_eq!(c.paths().len(), 3);
+    }
+
+    #[test]
+    fn fill_runs_a_sql_as_koyomi_without_a_script() {
+        let mut net = crate::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"q\"\nkind = \"sql\"\ndb = 'sqlite://C:\\data\\app.db'\nsql = \"delete from log\"\n",
+        )
+        .unwrap();
+        fill(&mut net, "C:\\koyomi\\koyomi.exe").unwrap();
+        let q = &net.jobs[0];
+        assert_eq!((q.shell.as_deref(), q.script.as_deref(), q.judge.as_ref()), (None, None, None));
+        assert_eq!(q.run, ["C:\\koyomi\\koyomi.exe", "sql", "run"]);
+        assert_eq!(q.env.get("KOYOMI_SQL_TEXT").map(String::as_str), Some("|delete from log"));
+        assert!(!q.env.contains_key("KOYOMI_SQL_ENV"));
     }
 }

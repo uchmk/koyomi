@@ -36,6 +36,7 @@ mod settings;
 mod sftp;
 mod sheet;
 mod show;
+mod sql;
 mod ssh;
 mod ui;
 mod winrm;

@@ -13,7 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, Pass, WinrmAuth, GROUP_MAX};
+use koyomi_core::chore::{Chore, Pass, SqlTls, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
@@ -53,6 +53,8 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
         "ssh" => M::Server,
         "winrm" => M::Desktop,
         "mail" => M::Mail,
+        // Until ito-prefs has a database's mark (uchmk/ito#142).
+        "sql" => M::Code,
         _ => return None,
     })
 }
@@ -60,7 +62,7 @@ fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
 /// The heading of the shelf's group a part is under; the shelf lists the parts group by group.
 fn part_group(key: &str) -> &'static str {
     match key {
-        "job" | "loop" | "jobnet" | "ssh" | "winrm" => "canvas.group_basic",
+        "job" | "loop" | "jobnet" | "ssh" | "winrm" | "sql" => "canvas.group_basic",
         "branch" | "join" => "canvas.group_flow",
         "time" | "file" | "approval" => "canvas.group_wait",
         "notify" | "http" | "mail" => "canvas.group_tell",
@@ -205,6 +207,14 @@ pub struct Fields {
     pub files: String,
     /// The `[[notify.mails]]` place it goes through; empty: the first.
     pub via: String,
+    /// A `sql`'s database (`sqlserver://…`, `postgres://…`, `sqlite://…`) and its
+    /// SQL (or the file with it, [`Fields::file`]); the CSV of its result, the
+    /// rows that pass and how it talks to the server.
+    pub db: String,
+    pub sql: String,
+    pub out: String,
+    pub rows: String,
+    pub tls: SqlTls,
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
@@ -315,6 +325,15 @@ impl Fields {
                     f.body = body.clone().unwrap_or_default();
                     f.files = files.join("\n");
                     f.via = via.clone().unwrap_or_default();
+                }
+                Chore::Sql { db, password, sql, file, out, rows, tls } => {
+                    f.db = db.clone();
+                    f.password = password.clone().unwrap_or_default();
+                    f.sql = sql.clone().unwrap_or_default();
+                    f.file = file.clone().unwrap_or_default();
+                    f.out = out.clone().unwrap_or_default();
+                    f.rows = rows.clone().unwrap_or_default();
+                    f.tls = *tls;
                 }
             },
             _ => {}
@@ -458,6 +477,15 @@ impl Fields {
                         body: if self.body.trim().is_empty() { None } else { Some(self.body.clone()) },
                         files: lines(&self.files),
                         via: opt(&self.via),
+                    },
+                    Chore::Sql { .. } => Chore::Sql {
+                        db: self.db.trim().into(),
+                        password: opt(&self.password),
+                        sql: if self.sql.trim().is_empty() { None } else { Some(self.sql.clone()) },
+                        file: opt(&self.file),
+                        out: opt(&self.out),
+                        rows: opt(&self.rows),
+                        tls: self.tls,
                     },
                 };
                 chore.check()?;
@@ -647,13 +675,14 @@ pub struct Editor {
 }
 
 /// The parts of the shelf, in order, group by group (see [`part_group`]).
-pub fn shelf() -> [Part; 19] {
+pub fn shelf() -> [Part; 20] {
     [
         Part::Job,
         Part::Loop { file: None, count: Some(2), max: None },
         Part::Jobnet { use_: String::new() },
         Part::Chore(Chore::blank("ssh").unwrap()),
         Part::Chore(Chore::blank("winrm").unwrap()),
+        Part::Chore(Chore::blank("sql").unwrap()),
         Part::Branch,
         Part::Join { wait: Wait::All },
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
@@ -2640,6 +2669,41 @@ X-Day: 1"
         assert!(e.apply_fields(&h, &fields).unwrap_err().contains("アドレス"));
         fields.mail_to = "ops@example.com".into();
         fields.subject.clear();
+        assert!(e.apply_fields(&h, &fields).is_err());
+    }
+
+    #[test]
+    fn a_sql_from_the_shelf_takes_its_database_sql_and_rows() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let blank = shelf().into_iter().find(|p| p.key() == "sql").unwrap();
+        let h = e.add(blank, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        fields.db = " sqlserver://ops@db01/売上 ".into();
+        fields.password = "secret:db".into();
+        fields.sql = "update 売上 set 済 = 1 where 日 = '{date}'\nGO\n".into();
+        fields.out = " D:\\out\\{date}.csv ".into();
+        fields.rows = "1..".into();
+        fields.tls = SqlTls::Trust;
+        // Windows sign-in takes the job's account, so it keeps one.
+        (fields.run_as_user, fields.run_as_secret) = ("CORP\\batch".into(), "secret:batch".into());
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let j = &e.net.jobs[1];
+        assert_eq!(j.run_as.as_ref().map(|r| r.user.as_str()), Some("CORP\\batch"));
+        let Part::Chore(Chore::Sql { db, password, sql, file, out, rows, tls }) = &j.part else { panic!() };
+        assert_eq!((db.as_str(), password.as_deref()), ("sqlserver://ops@db01/売上", Some("secret:db")));
+        assert_eq!(sql.as_deref(), Some("update 売上 set 済 = 1 where 日 = '{date}'\nGO\n"));
+        assert_eq!((file, out.as_deref(), rows.as_deref(), *tls), (&None, Some("D:\\out\\{date}.csv"), Some("1.."), SqlTls::Trust));
+        let again = Fields::of(j);
+        assert_eq!((again.db.as_str(), again.rows.as_str(), again.tls), ("sqlserver://ops@db01/売上", "1..", SqlTls::Trust));
+        // Both the SQL and a file is one too many; a plain password is not taken.
+        fields.file = "D:\\sql\\a.sql".into();
+        assert!(e.apply_fields(&h, &fields).unwrap_err().contains("どちらか一方"));
+        fields.sql.clear();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        fields.password = "hunter2".into();
+        assert!(e.apply_fields(&h, &fields).is_err());
+        fields.password = "secret:db".into();
+        fields.rows = "many".into();
         assert!(e.apply_fields(&h, &fields).is_err());
     }
 

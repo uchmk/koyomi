@@ -305,6 +305,29 @@ fn chore(t: &Table, c: &Chore) -> Vec<String> {
             v.push(line("via", via.as_deref().unwrap_or(t.tr("review.via_first"))));
             v
         }
+        // Where it runs and what: the SQL itself is approved, as a command is.
+        Chore::Sql { db, password, sql, file, out, rows, tls } => {
+            let mut v = vec![line("sql_db", db)];
+            if let Some(s) = sql {
+                v.push(line("sql", &s.trim().replace('\n', " ⏎ ")));
+            }
+            if let Some(f) = file {
+                v.push(line("sql_file", f));
+            }
+            if let Some(o) = out {
+                v.push(line("sql_out", o));
+            }
+            if let Some(r) = rows {
+                v.push(line("sql_rows", r));
+            }
+            if *tls != chore::SqlTls::Verify {
+                v.push(line("sql_tls", tls.key()));
+            }
+            if let Some(p) = password {
+                v.push(line("password", p));
+            }
+            v
+        }
     }
 }
 

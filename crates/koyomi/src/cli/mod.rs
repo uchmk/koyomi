@@ -138,6 +138,7 @@ usage: koyomi [--version | --help | env]
        koyomi winrm cert <host>[:<port>]  the certificate a Windows PC shows for WinRM over HTTPS, as the line a winrm job takes (cert = AB:CD:…)
        koyomi winrm run              what a winrm job runs (kind = winrm): its command on the Windows PC in on = winrm://…
        koyomi mail run               what a mail job runs (kind = mail): its mail, through a [[notify.mails]] place
+       koyomi sql run                what a sql job runs (kind = sql): its SQL on SQL Server, PostgreSQL or SQLite
        koyomi http fingerprint       this PC's certificate fingerprint for [http] lan = true, to write in another PC's [[remote]]
        koyomi remote [list]          the other PCs' engines in [[remote]] of koyomi.toml, and whether each answers
        koyomi remote peek <url>      the fingerprint https://<PC>:<port> shows, to compare with koyomi http fingerprint there
@@ -189,7 +190,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 50] = [
+const COMMANDS: [&str; 51] = [
     "check",
     "list",
     "show",
@@ -237,6 +238,7 @@ const COMMANDS: [&str; 50] = [
     "ssh",
     "winrm",
     "mail",
+    "sql",
     "http",
     "remote",
     "mcp",
@@ -313,6 +315,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "ssh" => crate::ssh::cmd(rest),
         "winrm" => crate::winrm::cmd(rest),
         "mail" => crate::mail::cmd(rest),
+        "sql" => crate::sql::cmd(rest),
         "http" => crate::remote::http_cmd(rest),
         "remote" => crate::remote::cmd(rest),
         "mcp" => crate::mcp::run(),
