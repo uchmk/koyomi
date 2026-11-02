@@ -141,6 +141,16 @@ impl Far {
         !self.names.is_empty()
     }
 
+    /// The `[[remote]]` names, for 別の PC に送る (TODO 111).
+    pub fn names(&self) -> &[String] {
+        &self.names
+    }
+
+    #[cfg(test)]
+    pub(super) fn set_names(&mut self, names: Vec<String>) {
+        self.names = names;
+    }
+
     /// Whether another PC is shown (the window's own page is not).
     pub fn shown(&self) -> bool {
         self.on.is_some()

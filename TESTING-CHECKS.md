@@ -1,6 +1,6 @@
 # Checklist
 
-985 checks in TESTING.md, 979 left for a person.
+999 checks in TESTING.md, 993 left for a person.
 
 ## 1. Start
 
@@ -1327,3 +1327,20 @@
 - [ ] **113.14** Stage again; break the text in `next.toml` (`format = [`); switch as in 113.12 → A notice 定義を切り替えられなかった; a caution `経理/締め を <day> からの定義に切り替えられなかった（今までの定義のまま）: …`; the net runs `echo old`. Fix or drop it (`--cancel`) and the caution goes 〔未訳〕
 - [ ] **113.15** Break `next.toml` itself (`next = [[`) → A warning names `next.toml`; `koyomi stage` and 置く… are refused and the file is left as it was 〔未訳〕
 - [ ] **113.16** Stage a net, then rename it (and a net that uses it) in the window; then delete it → The staged definition follows the new name (and the user's `use =` points at it); after the delete nothing is staged for it 〔未訳〕
+
+## 114. Send a definition to another PC (`koyomi remote send`; TODO 111)
+
+- [ ] **114.1** With no `[[remote]]`, open the window and pick 経理/締め → No 別の PC に送る button 〔未訳〕
+- [ ] **114.2** With `[[remote]]` 本番, pick 経理/締め; press 別の PC に送る ▾ → A menu with 本番 に送る… 〔未訳〕
+- [ ] **114.3** Press 本番 に送る… → 本番 から 経理/締め の今の定義を読んでいます… for a moment, then a box 「経理/締め を 本番 に送る」 with 送り先 本番, 向こうの今 確認済み, この PC では 確認済み, and the change `- echo old` / `+ echo new` 〔未訳〕
+- [ ] **114.4** Esc; then again and press やめる → The box closes; nothing is sent (B's file is as it was) 〔未訳〕
+- [ ] **114.5** Again, and press 送る → `本番 に送った: 経理/締め（向こうでは未確認。本番 の窓で確認するまで流れない）`; on B the net is ▲ unconfirmed, does not run, and B's window shows the change from `echo old` to confirm; B's log has `propose` with `（HTTP: D）` 〔未訳〕
+- [ ] **114.6** Send it again before B confirms it → No box: `本番 の 経理/締め はこの PC と同じ中身です（送っていません）`, and nothing is sent 〔未訳〕
+- [ ] **114.7** On B confirm it; on this PC change it back to `echo old`, confirm, and send → `本番 に送った: …（向こうでは未確認…）`; on B, approve and it runs `echo old` 〔未訳〕
+- [ ] **114.8** Make a net 経理/新規 on this PC only; send it to 本番 → The box says 向こうの今 なし（新しく置く） and the whole file as added; once sent, B has 経理/新規 unconfirmed 〔未訳〕
+- [ ] **114.9** Open the box for 経理/締め; before pressing 送る, change the net on B in B's editor and save; then press 送る → `送れなかった: 本番: 読んだあとで向こうの 経理/締め が変わった（読み直してから送る）`; B's file keeps B's change 〔未訳〕
+- [ ] **114.10** Break the net on this PC (`format = [`) → 別の PC に送る ▾ is greyed; its tip says 定義の誤りを直してから送ります 〔未訳〕
+- [ ] **114.11** Keep `R`'s token (role `run`) as the secret; send → No box: `本番: 403 R は run のロール。これには edit が要る`; nothing is sent 〔未訳〕
+- [ ] **114.12** Stop B's engine (or point `url` at a PC that is off); send → 本番 から … を読んでいます… then the reason it could not connect, in one line; no box. While it reads, やめる stops waiting 〔未訳〕
+- [ ] **114.13** `koyomi remote send 本番 経理/締め` with a change, answer `n`; again with `y` → The change (`- 向こうの今 / + この PC`) is shown, then `経理/締め: 送らなかった` (exit 1); with `y`, `本番 に送った: 経理/締め（向こうでは未確認。本番 の窓で確認するまで流れない）` 〔未訳〕
+- [ ] **114.14** `koyomi remote send 本番 経理/締め` with no change; `koyomi remote send 本番 経理/新規2` for a net B lacks; `koyomi remote send nope 経理/締め` → `本番 の 経理/締め はこの PC と同じ中身（送らなかった）`; `本番 には 経理/新規2 がない。新しく置く:` and the whole file; `nope: [[remote]] にない（あるのは 本番）` 〔未訳〕

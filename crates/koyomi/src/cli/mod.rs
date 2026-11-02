@@ -143,6 +143,10 @@ usage: koyomi [--version | --help | env]
        koyomi remote peek <url>      the fingerprint https://<PC>:<port> shows, to compare with koyomi http fingerprint there
        koyomi remote status|nets|runs <name>  that PC's engine: its status line, its nets, today's runs
        koyomi remote run <name> <group/name>  start a net on that PC (its [http] token must be kept here as the secret [[remote]] names)
+       koyomi remote send <name> <group/name>
+                                     this PC's net to that PC: the change from what it has is shown, and `y` sends
+                                     it; it lands there unconfirmed and runs once that PC's window confirms it
+                                     (that PC's token needs the edit role)
        koyomi mcp                    an MCP server on stdin/stdout for Claude Code: claude mcp add koyomi -- koyomi mcp
 ";
 

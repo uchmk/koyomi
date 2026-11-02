@@ -19,7 +19,9 @@
 //! - Definitions, for the `edit` role (TODO 83): `GET /nets/text?net=<group>/<name>` is the
 //!   file's text and hash; `POST /nets/propose` with `{"net", "text", "base"?}` writes it as
 //!   the editor's save does, but leaves it unconfirmed: it runs only once this PC's window
-//!   confirms it. `base` is the hash read with the text; a file changed since gets 409.
+//!   confirms it. `base` is the hash read with the text; a file changed since gets 409. The
+//!   answer's `confirmed` is true only for the text already confirmed here (it runs as it is).
+//!   Another PC's 別の PC に送る and `koyomi remote send` send a net this way (TODO 111).
 //! - The Web UI (TODO 81): `GET /` and its script and style sheet, kept in the exe, need no
 //!   token; the page signs in with a token at ito-http's `POST /session` and goes on with the
 //!   cookie (a change also sends `X-Ito-Csrf: 1`). `GET /me` says who and with what role.
@@ -847,7 +849,10 @@ fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Str
     let id = p.net.trim().to_owned();
     let base = p.base.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty());
     match ask(&Request::Propose { id: id.clone(), text: p.text, base_sha256: base }) {
-        Ok(text) => Response::ok(serde_json::json!({ "net": id, "confirmed": false, "said": text.trim() })),
+        Ok(text) => {
+            let confirmed = text.starts_with("置いた（確認済み");
+            Response::ok(serde_json::json!({ "net": id, "confirmed": confirmed, "said": text.trim() }))
+        }
         Err(e) if e.starts_with("ほかで変わっています") => Response::error(409, &e),
         Err(e) => Response::error(422, &e),
     }
@@ -1226,6 +1231,7 @@ mod tests {
                 }
                 Request::Propose { base_sha256: Some(b), .. } if b == "old" => Err("ほかで変わっています: g/a".to_owned()),
                 Request::Propose { text, .. } if text.contains("bad") => Err("保存できない:\nx".to_owned()),
+                Request::Propose { text, .. } if text.contains("same") => Ok("置いた（確認済みと同じ中身）: g/a\n".to_owned()),
                 Request::Propose { .. } => Ok("置いた（未確認。この PC の窓で確認するまで動かない）: g/a\n".to_owned()),
                 _ => Err("定義がない".to_owned()),
             }
@@ -1242,6 +1248,8 @@ mod tests {
         let got = handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "format = 1\n", "base": "abc"}"#), ask);
         assert_eq!((got.status, got.json["confirmed"].as_bool()), (200, Some(false)));
         assert!(asked.borrow().last().is_some_and(|a| a.contains(r#"base_sha256: Some("abc")"#)), "{:?}", asked.borrow());
+        let got = handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "same", "base": "abc"}"#), ask);
+        assert_eq!((got.status, got.json["confirmed"].as_bool()), (200, Some(true)), "the text confirmed there");
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "x", "base": "old"}"#), ask).status, 409);
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a", "text": "bad"}"#), ask).status, 422);
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "g/a"}"#), ask).status, 400);

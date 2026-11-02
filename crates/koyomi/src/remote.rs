@@ -7,13 +7,18 @@
 //!   before trusting it (the only time a certificate is looked at unpinned).
 //! - `koyomi remote [list]`, `status <name>`, `nets <name>`, `runs <name>`, `run <name> <net>`.
 //! - The window switches to one of them with [`names`] and [`ask`] (`ui::far`).
+//! - A net goes to another PC (TODO 111) with [`there`] (what it has now) and [`propose`]
+//!   (`POST /nets/propose`, where it lands unconfirmed): the window's 別の PC に送る and
+//!   `koyomi remote send <name> <net>`.
 
 use std::time::Duration;
 
 use ito_http::client::{self, Client, Reply};
 use koyomi_core::config::Remote;
+use koyomi_core::scan::{Def, Standing};
 
 use crate::engine::Paths;
+use crate::proto::Request;
 
 const PEEK_WAIT: Duration = Duration::from_secs(10);
 
@@ -37,7 +42,8 @@ pub fn cmd(args: &[String]) -> i32 {
         ["nets", name] => with(name, nets),
         ["runs", name] => with(name, runs),
         ["run", name, net] => with(name, |r| run(r, net)),
-        _ => return usage("remote takes list, peek <url>, status|nets|runs <name>, or run <name> <group/name>"),
+        ["send", name, net] => send(name, &net.replace('\\', "/")),
+        _ => return usage("remote takes list, peek <url>, status|nets|runs <name>, run <name> <group/name>, or send <name> <group/name>"),
     };
     finish(res)
 }
@@ -105,6 +111,11 @@ fn client(r: &Remote) -> Result<Client, String> {
 /// One call, with what went wrong in the person's words.
 fn call(r: &Remote, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) -> Result<serde_json::Value, String> {
     let reply = f(&client(r)?).map_err(|e| why(r, &e))?;
+    answer(r, reply)
+}
+
+/// A reply's JSON when it is a yes, else what went wrong in the person's words.
+fn answer(r: &Remote, reply: Reply) -> Result<serde_json::Value, String> {
     match reply.status {
         200..=299 => Ok(reply.json),
         401 => Err(format!("{}: token が合わない（向こうの [http] の token と koyomi secret set {} を見る）", r.name, r.secret())),
@@ -205,6 +216,98 @@ fn run(r: &Remote, net: &str) -> Result<String, String> {
     Ok(format!("{}: {net} を流した（{}）", r.name, j["run"].as_str().unwrap_or("?")))
 }
 
+/// What `GET /nets/text` says of a net on another PC (TODO 111).
+#[derive(Debug, Clone, PartialEq)]
+pub struct There {
+    pub text: String,
+    /// Sent back as `base`: a file changed there since it was read is not overwritten.
+    pub sha256: String,
+    /// `None` when that PC does not say.
+    pub standing: Option<Standing>,
+}
+
+impl There {
+    fn from_json(j: &serde_json::Value) -> There {
+        There {
+            text: j["text"].as_str().unwrap_or_default().to_owned(),
+            sha256: j["sha256"].as_str().unwrap_or_default().to_owned(),
+            standing: serde_json::from_value(j["standing"].clone()).ok(),
+        }
+    }
+}
+
+/// The net `net` as the `[[remote]]` named `name` has it, `None` when it has no such net.
+/// That PC's token needs the `edit` role. It blocks: not on the UI thread.
+pub fn there(name: &str, net: &str) -> Result<Option<There>, String> {
+    with(name, |r| {
+        let reply = client(r)?.get(&format!("/nets/text?net={}", query(net))).map_err(|e| why(r, &e))?;
+        if reply.status == 404 {
+            return Ok(None);
+        }
+        answer(r, reply).map(|j| Some(There::from_json(&j)))
+    })
+}
+
+/// Sends `text` as the net `net` to the `[[remote]]` named `name` (`POST /nets/propose`), where it
+/// lands unconfirmed until that PC's window confirms it. `base` is the hash [`there`] read, `None`
+/// for a net that PC does not have. `Ok(true)` when the text is the one already confirmed there.
+/// It blocks: not on the UI thread.
+pub fn propose(name: &str, net: &str, text: &str, base: Option<&str>) -> Result<bool, String> {
+    with(name, |r| {
+        let mut body = serde_json::json!({ "net": net, "text": text });
+        if let Some(b) = base {
+            body["base"] = b.into();
+        }
+        let reply = client(r)?.post_json("/nets/propose", &body).map_err(|e| why(r, &e))?;
+        if reply.status == 409 {
+            return Err(format!("{}: 読んだあとで向こうの {net} が変わった（読み直してから送る）", r.name));
+        }
+        answer(r, reply).map(|j| j["confirmed"].as_bool() == Some(true))
+    })
+}
+
+/// `koyomi remote send <name> <group/name>`: the change from what that PC has to this PC's net,
+/// then `y` sends it.
+fn send(name: &str, id: &str) -> Result<String, String> {
+    let def: Def = crate::client::call(&Request::Show { id: id.to_owned() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))?;
+    if def.standing == Standing::Invalid {
+        return Err(format!("{id} に定義の誤りがある。直してから送る（koyomi show {id}）"));
+    }
+    let there = there(name, id)?;
+    if there.as_ref().is_some_and(|t| t.text == def.text) {
+        return Ok(format!("{name} の {id} はこの PC と同じ中身（送らなかった）"));
+    }
+    let head = match &there {
+        Some(_) => format!("{name} に {id} を送る（- 向こうの今 / + この PC）:"),
+        None => format!("{name} には {id} がない。新しく置く:"),
+    };
+    crate::say(&head, false);
+    let old = there.as_ref().map_or("", |t| t.text.as_str());
+    for l in crate::review::diff_text(&ito_diff::diff(old, &def.text, 3)) {
+        crate::say(&l, false);
+    }
+    if def.standing != Standing::Confirmed {
+        crate::say("（この PC でもまだ未確認の定義）", false);
+    }
+    crate::say("送ると向こうでは未確認で置かれ、向こうの窓で確認するまで流れない。送るなら y を入力（それ以外は送らない）:", false);
+    let mut typed = String::new();
+    let _ = std::io::stdin().read_line(&mut typed);
+    if !typed.trim().eq_ignore_ascii_case("y") {
+        return Err(format!("{id}: 送らなかった"));
+    }
+    let same = propose(name, id, &def.text, there.as_ref().map(|t| t.sha256.as_str()))?;
+    Ok(sent_line(name, id, same))
+}
+
+/// What a send says once that PC took it.
+fn sent_line(name: &str, net: &str, same: bool) -> String {
+    if same {
+        format!("{name} に送った: {net}（向こうの確認済みと同じ中身。そのまま流れる）")
+    } else {
+        format!("{name} に送った: {net}（向こうでは未確認。{name} の窓で確認するまで流れない）")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,5 +327,17 @@ mod tests {
         ]});
         assert_eq!(runs_text(&j), "1  g/a  A\n2  g/b  B  動いている");
         assert_eq!(runs_text(&serde_json::json!({ "runs": [] })), "今日の回はない");
+    }
+
+    /// What another PC has of a net is read from `GET /nets/text`; one that does not say its
+    /// standing reads as none. A send says whether it waits for that PC's window.
+    #[test]
+    fn a_net_there_is_read_and_a_send_is_said() {
+        let j = serde_json::json!({ "net": "g/a", "text": "format = 1\n", "sha256": "abc", "standing": "unconfirmed" });
+        let want = There { text: "format = 1\n".into(), sha256: "abc".into(), standing: Some(Standing::Unconfirmed) };
+        assert_eq!(There::from_json(&j), want);
+        assert_eq!(There::from_json(&serde_json::json!({ "text": "x", "sha256": "s" })).standing, None);
+        assert_eq!(sent_line("本番", "g/a", false), "本番 に送った: g/a（向こうでは未確認。本番 の窓で確認するまで流れない）");
+        assert_eq!(sent_line("本番", "g/a", true), "本番 に送った: g/a（向こうの確認済みと同じ中身。そのまま流れる）");
     }
 }

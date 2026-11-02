@@ -49,6 +49,8 @@ enum Msg {
     Done(Result<Said, Said>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
     PortText(String, Result<String, String>),
+    /// What a `[[remote]]` PC has of the net 別の PC に送る asked for: PC, net, what it has.
+    There(String, String, Result<Option<crate::remote::There>, String>),
     /// The engine's `"ha"`, every `HA_POLL`: `None` without `[standby]` or `[primary]`.
     Ha(Option<serde_json::Value>),
 }
@@ -56,6 +58,28 @@ enum Msg {
 pub struct Approval {
     id: String,
     sha256: String,
+}
+
+/// 別の PC に送る (TODO 111): this PC's net, the PC it goes to, and what that PC has of it once
+/// read (`Some(None)`: no such net there). The box is up once it is read.
+struct Sending {
+    id: String,
+    pc: String,
+    text: String,
+    there: Option<Option<crate::remote::There>>,
+}
+
+/// The calls 別の PC に送る makes, so a test can stand in for the other PC.
+#[derive(Clone, Copy)]
+struct Wire {
+    there: fn(&str, &str) -> Result<Option<crate::remote::There>, String>,
+    propose: fn(&str, &str, &str, Option<&str>) -> Result<bool, String>,
+}
+
+impl Default for Wire {
+    fn default() -> Self {
+        Wire { there: crate::remote::there, propose: crate::remote::propose }
+    }
 }
 
 /// The 取り込む box: a path to type, then the engine's plan for that file to confirm.
@@ -437,6 +461,9 @@ pub struct Browser {
     skip_pick: bool,
     /// The 次の定義 box: the net whose staged definition it shows.
     staged_box: Option<String>,
+    /// 別の PC に送る, from the pick of the PC until its box is answered.
+    sending: Option<Sending>,
+    wire: Wire,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
     /// Another PC's engine, when the PC list at the top picks one (TODO 80).
@@ -589,6 +616,8 @@ impl Browser {
             give: None,
             skip_pick: false,
             staged_box: None,
+            sending: None,
+            wire: Wire::default(),
             easy: None,
             ha: None,
         }
@@ -649,6 +678,7 @@ impl Browser {
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Done(r) => self.done = Some(r),
                 Msg::PortText(path, r) => self.port_text(&path, r),
+                Msg::There(pc, id, got) => self.send_read(pc, id, got),
                 Msg::Ha(v) => self.ha = v,
                 Msg::Down(e) => {
                     self.starting = false;
@@ -857,6 +887,7 @@ impl Browser {
             || self.give.is_some()
             || self.skip_pick
             || self.staged_box.is_some()
+            || self.sending.is_some()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
     }
 
@@ -1596,7 +1627,8 @@ impl Browser {
             || port.is_some()
             || making
             || asking_stage
-            || self.staged_box.is_some();
+            || self.staged_box.is_some()
+            || self.sending.as_ref().is_some_and(|s| s.there.is_some());
         let buttons = if self.vers.is_some() {
             4
         } else if conflict || self.staged_box.is_some() {
@@ -1811,6 +1843,7 @@ impl Browser {
             self.cal_deleting.is_some(),
             self.skip_pick,
             self.staged_box.is_some(),
+            self.sending.as_ref().is_some_and(|s| s.there.is_some()),
         ];
         let first = open.iter().position(|o| *o);
         let key_for = |i: usize| if first == Some(i) { key } else { None };
@@ -1826,6 +1859,7 @@ impl Browser {
         self.confirm_cal_delete(&ctx, t, key_for(9));
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
+        self.confirm_send(&ctx, t, key_for(12));
         if modal && !making && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -2763,6 +2797,127 @@ impl Browser {
         }
     }
 
+    /// 別の PC に送る ▾: the net to one of the `[[remote]]` PCs, where it lands unconfirmed (TODO 111).
+    fn send_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def) {
+        if !self.far.any() {
+            return;
+        }
+        let ok = def.standing != Standing::Invalid && !self.box_open();
+        let head = format!("{} ▾", t.tr("send.button"));
+        let button = ito_prefs::IconButton::new(ito_prefs::Mark::Send, &head);
+        let mut r = ui.add_enabled(ok, |ui: &mut egui::Ui| button.show(ui));
+        if def.standing == Standing::Invalid {
+            r = r.on_disabled_hover_text(t.tr("send.fix_first"));
+        }
+        let mut pick = None;
+        egui::Popup::menu(&r).show(|ui| {
+            for pc in self.far.names() {
+                let label = t.trf("send.to", &[pc]);
+                let r = ui.button(&label);
+                ito_a11y::say(&r, Role::Button, &label);
+                if r.clicked() {
+                    pick = Some(pc.clone());
+                }
+            }
+        });
+        if let Some(pc) = pick {
+            self.send_to(def, pc);
+        }
+    }
+
+    /// Reads what `pc` has of the net, off the UI thread; [`Browser::send_read`] gets it.
+    fn send_to(&mut self, def: &Def, pc: String) {
+        self.result = None;
+        self.sending = Some(Sending { id: def.id.clone(), pc: pc.clone(), text: def.text.clone(), there: None });
+        let (tx, ctx) = self.io.clone();
+        let (there, id) = (self.wire.there, def.id.clone());
+        std::thread::spawn(move || {
+            let got = there(&pc, &id);
+            let _ = tx.send(Msg::There(pc, id, got));
+            ctx.request_repaint();
+        });
+    }
+
+    /// What the other PC has of the net: the box opens on it, or a line says why not. The same
+    /// text is not sent. An answer for a send since stopped is dropped.
+    fn send_read(&mut self, pc: String, id: String, got: Result<Option<crate::remote::There>, String>) {
+        let Some(s) = self.sending.as_mut().filter(|s| s.pc == pc && s.id == id && s.there.is_none()) else { return };
+        match got {
+            Ok(Some(there)) if there.text == s.text => {
+                self.sending = None;
+                self.done = Some(Ok(("send.same", vec![pc, id])));
+            }
+            Ok(there) => {
+                s.there = Some(there);
+                self.focus = 0;
+            }
+            Err(e) => {
+                self.sending = None;
+                self.result = Some(Err(e));
+            }
+        }
+    }
+
+    /// While the other PC is read: which, and a button to stop waiting.
+    fn sending_note(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        let Some(s) = self.sending.as_ref().filter(|s| s.there.is_none()) else { return };
+        let text = t.trf("send.reading", &[&s.pc, &s.id]);
+        let c = ito_theme::colors();
+        let stop = ui
+            .horizontal_wrapped(|ui| {
+                ui.spinner();
+                let r = ui.label(egui::RichText::new(&text).color(c.dim));
+                ito_a11y::say(&r, Role::Label, &text);
+                ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("send.stop")).show(ui).clicked()
+            })
+            .inner;
+        if stop {
+            self.sending = None;
+        }
+    }
+
+    /// The 別の PC に送る box: what that PC has of the net against this PC's, and 送る.
+    fn confirm_send(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
+        let Some(s) = &self.sending else { return };
+        let Some(there) = &s.there else { return };
+        let word = |st: Option<Standing>| st.map_or_else(|| "?".to_owned(), |st| review::word(t, st));
+        let here = self.snap.as_ref().and_then(|snap| snap.defs.iter().find(|d| d.id == s.id)).map(|d| d.standing);
+        let rows = [
+            (t.tr("send.pc").to_owned(), s.pc.clone()),
+            (t.tr("send.there").to_owned(), there.as_ref().map_or_else(|| t.tr("send.there_none").to_owned(), |x| word(x.standing))),
+            (t.tr("send.here").to_owned(), word(here)),
+        ];
+        let diff = ito_diff::diff(there.as_ref().map_or("", |x| x.text.as_str()), &s.text, 3);
+        let body = [t.tr("send.body").to_owned()];
+        let buttons = [t.tr("send.go").to_owned(), t.tr("send.cancel").to_owned()];
+        let title = t.trf("send.title", &[&s.pc, &s.id]);
+        let q = ito_confirm::Question {
+            title: &title,
+            rows: &rows,
+            body: &body,
+            diff: &diff,
+            buttons: &buttons,
+            marks: &[Some(ito_prefs::Mark::Send), Some(ito_prefs::Mark::Close)],
+            focus: Some(self.focus),
+            primary: Some(0),
+            ..Default::default()
+        };
+        let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
+        if answer == Some(0) {
+            let (pc, id, text) = (s.pc.clone(), s.id.clone(), s.text.clone());
+            let base = there.as_ref().map(|x| x.sha256.clone());
+            let propose = self.wire.propose;
+            self.result = None;
+            Self::background(&self.io, move || match propose(&pc, &id, &text, base.as_deref()) {
+                Ok(same) => Ok((if same { "send.done_same" } else { "send.done" }, vec![pc, id])),
+                Err(e) => Err(("send.failed", vec![e])),
+            });
+        }
+        if answer.is_some() {
+            self.sending = None;
+        }
+    }
+
     /// Every start still to come today, as (net id, title, start).
     fn planned_today(&self, now: chrono::NaiveDateTime) -> Vec<(String, String, chrono::NaiveDateTime)> {
         let Some(snap) = &self.snap else { return Vec::new() };
@@ -3610,6 +3765,7 @@ impl Browser {
             self.approve_button(ui, t, &def);
             self.edit_button(ui, t, &def);
             self.hold_button(ui, t, &def, held);
+            self.send_button(ui, t, &def);
         });
         if held {
             let text = format!("{} {}", State::Held.mark(), t.tr("run.held_note"));
@@ -3617,6 +3773,7 @@ impl Browser {
             ito_a11y::say(&r, Role::Label, &text);
         }
         self.staged_note(ui, t, &def.id);
+        self.sending_note(ui, t);
         self.show_result(ui);
         let section = |ui: &mut egui::Ui, key: &str| {
             ui.add_space(12.0);
@@ -3715,6 +3872,7 @@ impl Browser {
             self.edit_button(ui, t, &def);
             self.run_now_button(ui, t, &def, held);
             self.hold_button(ui, t, &def, held);
+            self.send_button(ui, t, &def);
             // The job picked on the graph or in the jobs table is held from here too, next to the net's own hold.
             let job = self.job_sel.clone().filter(|p| def.net.as_ref().is_some_and(|n| n.jobs.iter().any(|j| &j.id == p)));
             if let Some(job) = job {
@@ -3727,6 +3885,7 @@ impl Browser {
             ito_a11y::say(&r, Role::Label, &text);
         }
         self.staged_note(ui, t, &def.id);
+        self.sending_note(ui, t);
         self.show_result(ui);
         ui.add_space(6.0);
         for p in &def.problems {
@@ -4882,6 +5041,8 @@ mod tests {
             give: None,
             skip_pick: false,
             staged_box: None,
+            sending: None,
+            wire: Wire::default(),
             easy: None,
             ha: None,
         }
@@ -5958,6 +6119,85 @@ run = [\"x.exe\"]
         s.show(key(egui::Key::Enter), &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Unstage { id: i }) if i == id));
         assert!(b.staged_box.is_none());
+    }
+
+    /// 別の PC に送る: the `[[remote]]` PCs in a menu; what the picked one has of the net against
+    /// this PC's in a box, and 送る sends it with the hash read. The same text, or a PC that cannot
+    /// be read, is a line with no box; Esc sends nothing; with no `[[remote]]` there is no button.
+    #[test]
+    fn a_net_is_sent_to_another_pc() {
+        use crate::remote::There;
+        use std::sync::Mutex;
+        type Sent = (String, String, String, Option<String>);
+        static SENT: Mutex<Vec<Sent>> = Mutex::new(Vec::new());
+        fn there(pc: &str, id: &str) -> Result<Option<There>, String> {
+            let confirmed = Some(Standing::Confirmed);
+            match pc {
+                "本番" => Ok(Some(There { text: NET.replace("x.exe", "old.exe"), sha256: "abc".into(), standing: confirmed })),
+                "同じ" => Ok(Some(There { text: NET.into(), sha256: "s".into(), standing: confirmed })),
+                "新しい" => Ok(None),
+                _ => Err(format!("{pc}: つながらない（{id}）")),
+            }
+        }
+        fn propose(pc: &str, id: &str, text: &str, base: Option<&str>) -> Result<bool, String> {
+            SENT.lock().unwrap().push((pc.into(), id.into(), text.into(), base.map(str::to_owned)));
+            Ok(false)
+        }
+        fn wait(s: &mut Screen, b: &mut Browser, done: impl Fn(&Browser) -> bool) {
+            for _ in 0..500 {
+                s.show(Vec::new(), b);
+                if done(b) {
+                    s.settle(b);
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            panic!("no answer in time");
+        }
+        let sent = || SENT.lock().unwrap().clone();
+        let defs = defs();
+        let id = defs[0].id.clone();
+        let mut b = quiet(defs);
+        b.selected = Some(id.clone());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(says(&s, "今すぐ流す") && !says(&s, "別の PC に送る"), "no [[remote]], no button");
+        b.far.set_names(vec!["本番".into(), "同じ".into(), "新しい".into(), "遠い".into()]);
+        b.wire = Wire { there, propose };
+        s.settle(&mut b);
+        s.click("別の PC に送る ▾", &mut b);
+        s.click("本番 に送る…", &mut b);
+        wait(&mut s, &mut b, |b| b.sending.as_ref().is_some_and(|x| x.there.is_some()));
+        assert!(says(&s, &format!("{id} を 本番 に送る")), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+        assert!(says(&s, "向こうの今") && says(&s, "確認済み"));
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.sending.is_none() && sent().is_empty(), "Esc sends nothing");
+        s.click("別の PC に送る ▾", &mut b);
+        s.click("本番 に送る…", &mut b);
+        wait(&mut s, &mut b, |b| b.sending.as_ref().is_some_and(|x| x.there.is_some()));
+        s.show(key(egui::Key::Enter), &mut b);
+        assert!(b.sending.is_none());
+        wait(&mut s, &mut b, |b| b.result.is_some());
+        assert_eq!(b.result, Some(Ok(format!("本番 に送った: {id}（向こうでは未確認。本番 の窓で確認するまで流れない）"))));
+        assert_eq!(sent(), [("本番".to_owned(), id.clone(), NET.to_owned(), Some("abc".to_owned()))]);
+        // A PC without the net: the box says so, and the send has no hash.
+        s.click("別の PC に送る ▾", &mut b);
+        s.click("新しい に送る…", &mut b);
+        wait(&mut s, &mut b, |b| b.sending.as_ref().is_some_and(|x| x.there.is_some()));
+        assert!(says(&s, "なし（新しく置く）"));
+        s.show(key(egui::Key::Enter), &mut b);
+        wait(&mut s, &mut b, |b| b.result.is_some());
+        assert_eq!(sent().last().map(|x| (x.0.as_str(), x.3.clone())), Some(("新しい", None)));
+        s.click("別の PC に送る ▾", &mut b);
+        s.click("同じ に送る…", &mut b);
+        wait(&mut s, &mut b, |b| b.sending.is_none() && b.result.is_some());
+        assert_eq!(b.result, Some(Ok(format!("同じ の {id} はこの PC と同じ中身です（送っていません）"))));
+        s.click("別の PC に送る ▾", &mut b);
+        s.click("遠い に送る…", &mut b);
+        wait(&mut s, &mut b, |b| b.sending.is_none() && b.result.is_some());
+        assert_eq!(b.result, Some(Err(format!("遠い: つながらない（{id}）"))));
+        assert_eq!(sent().len(), 2, "nothing sent without the box");
     }
 
     #[test]
