@@ -471,6 +471,11 @@ fn check(args: &[String]) -> i32 {
             for w in crate::mail::unknown(&n.mail_places, net) {
                 out(&format!("{name}: 注意: {w}"), true);
             }
+            // A `{var:…}` that `[vars]` does not have stops the run that reads it.
+            let vars = config.vars();
+            for v in koyomi_core::template::vars_of(net).into_iter().filter(|v| !vars.contains_key(v)) {
+                out(&format!("{name}: 注意: {{var:{v}}} が koyomi.toml の [vars] にない（流すと止まる）"), true);
+            }
         }
     }
     if !bad {

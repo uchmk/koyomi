@@ -1,6 +1,6 @@
 # Checklist
 
-950 checks in TESTING.md, 944 left for a person.
+957 checks in TESTING.md, 951 left for a person.
 
 ## 1. Start
 
@@ -1283,3 +1283,13 @@
 - [ ] **110.8** The editor: drag メールを送る from 知らせる・呼ぶ → It shows the mail mark; the pane has 送り先 (required), CC, 件名 (required), 本文, 添付するファイル, 送るのに使う設定, timeout and retry, and no 別のアカウントで動かす and no 結果の判定; an address that is not one is marked red; two addresses on two lines and an empty line between save as `to = ["…", "…"]` 〔未訳〕
 - [ ] **110.9** Approve a net with a mail → The confirm box shows 送り先, CC, 件名, 本文 (lines joined with ⏎), each 添付, and 送るのに使う設定 (`最初の [[notify.mails]]` without `via`), instead of a script 〔未訳〕
 - [ ] **110.10** `koyomi mail`; `koyomi mail run` in a console → `koyomi: mail takes run (what a mail job does)` and exit 2; then exit 255 with `KOYOMI_MAIL_TO がない（…）` 〔未訳〕
+
+## 111. Values every net reads (`[vars]`; TODO 108)
+
+- [ ] **111.1** Without `[vars]` in koyomi.toml: `koyomi check <the net's file>`; then 今すぐ流す on the net → `注意: {var:share} が koyomi.toml の [vars] にない（流すと止まる）`; the run does not start and says `a の run: {var:share}: koyomi.toml の [vars] にない` (the `{var:share}` that came in through `{param:into}`) 〔未訳〕
+- [ ] **111.2** Add `[vars]` `share = '\10.0.0.1\Backup\{date:%Y%m}'` and save; `koyomi check` again; run it → No 注意; ✓, and the log of `a` is `\10.0.0.1\Backup\<this month>\in \10.0.0.1\Backup\<this month>` 〔未訳〕
+- [ ] **111.3** `koyomi run 基盤/共有 --dry`, then with `--set into=D:\x` → The first shows the same paths; the second `D:\x \10.0.0.1\Backup\<this month>` 〔未訳〕
+- [ ] **111.4** Change `share` to `'D:\share'` and save; run again (no confirm in between) → The new run reads `D:\share\in D:\share`; the net stays confirmed (the value is not part of the net) 〔未訳〕
+- [ ] **111.5** `koyomi check koyomi.toml` with, one at a time, in `[vars]`: `"共有" = 'x'`; `n = 3`; `a = '{var:share}'`; `a = '{param:into}'`; `a = '{date-1q}'` → Each is refused in Japanese: `[vars] の名前に使えない: 共有（英数字と _ だけ…）`, `[vars] の n は文字列で書く…`, `[vars] の a に {param:…}・{var:…} は書けない…` (twice), `[vars] の a: {date-1q}: …` 〔未訳〕
+- [ ] **111.6** In the net, `run = ["cmd", "/c", "echo", "{var:}"]`; then `into = '{var:共有}'` → The editor and `koyomi check` refuse each with its line: `{var:}: 名前がない（…）`, `params into: {var:共有}: [vars] の名前は英数字と _ だけ` 〔未訳〕
+- [ ] **111.7** A `kind = "ssh"` with `on = "{var:pc}"` and `[vars]` `pc = "<a PC you reach over ssh>"`; a `kind = "http"` with `url = "{var:api}/health"` → Both pass `koyomi check` and run against the values in `[vars]` 〔未訳〕

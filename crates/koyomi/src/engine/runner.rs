@@ -343,13 +343,14 @@ impl Runner {
         self.calendar_of = calendar_of;
     }
 
-    /// The net with its child nets in, and `{param:…}` (`set` over the defaults) and `{date}`
-    /// in its jobs written out for the business day `date`; each job in the folder `work_dir` gives.
+    /// The net with its child nets in, and `{param:…}` (`set` over the defaults), `{var:…}`
+    /// (koyomi.toml's `[vars]`) and `{date}` in its jobs written out for the business day `date`;
+    /// each job in the folder `work_dir` gives.
     fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<Jobnet, String> {
         let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
         let values = template::values(&net, set)?;
-        let mut net = template::expand_net(&net, date, cal, &values)?;
+        let mut net = template::expand_net(&net, date, cal, &values, &self.config.vars())?;
         let folder = |id: &str| self.jobnets.as_ref().zip(id.split_once('/')).map(|(j, (group, _))| j.join(group));
         jobnet::place(&mut net, jobnet, &|id| self.config.work_folder(folder(id).as_deref()));
         // An `ssh` runs koyomi itself (`koyomi ssh run`).
@@ -3244,6 +3245,22 @@ id = \"b\"
         let again = r.rerun(&id, Some("b"), None).unwrap();
         wait_over(&mut r, &again);
         assert_eq!(r.log_tail(&again, "b").unwrap().trim(), "acct_202610");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// koyomi.toml's `[vars]` fill `{var:…}`, the `[params]`' defaults included; one it lacks stops the run.
+    #[test]
+    fn vars_from_the_config_fill_every_net() {
+        let dir = scratch("vars");
+        let text = format!("format = 1\n[params]\nat = \"{{var:share}}_in\"\n[[job]]\nid = \"b\"\n{}\n", echo("{param:at}_{var:share}"));
+        let d = def("net", &text);
+        let day = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
+        let config = Config::parse("[vars]\nshare = \"nas{month-1}\"\n").unwrap();
+        let r = Runner::new(&dir, config);
+        let seen = r.dry(&d, day, &BTreeMap::new()).unwrap();
+        assert!(seen.contains("nas202610_in_nas202610"), "{seen}");
+        let none = Runner::new(&dir, Config::default()).dry(&d, day, &BTreeMap::new()).unwrap_err();
+        assert!(none.contains("{var:share}: koyomi.toml の [vars] にない"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

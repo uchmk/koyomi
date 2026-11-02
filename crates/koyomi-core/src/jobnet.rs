@@ -800,14 +800,16 @@ struct Checker<'a> {
 }
 
 /// A name `env` and `[params]` take: letters, digits and `_`, not starting with a digit.
-fn plain_name(k: &str) -> bool {
+pub(crate) fn plain_name(k: &str) -> bool {
     !k.is_empty() && !k.starts_with(|c: char| c.is_ascii_digit()) && k.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl Checker<'_> {
-    /// Whether the `{date…}` / `{month…}` of `text` read and its `{param:…}` are in `[params]`.
+    /// Whether the `{date…}` / `{month…}` of `text` read, its `{param:…}` are in `[params]` and
+    /// its `{var:…}` have names (koyomi.toml's `[vars]` is told by `koyomi check` and the run).
     fn template(&self, text: &str) -> Result<(), String> {
         crate::template::check(text)?;
+        crate::template::check_vars(text)?;
         match crate::template::param_names(text).into_iter().find(|n| !self.params.contains_key(*n)) {
             Some(n) => Err(format!("{{param:{n}}}: [params] にない")),
             None => Ok(()),
@@ -831,7 +833,7 @@ impl Checker<'_> {
                 self.add(at, format!("params の値は文字列で書く: {k}"));
                 continue;
             };
-            if let Err(e) = crate::template::check(s) {
+            if let Err(e) = crate::template::check(s).and_then(|()| crate::template::check_vars(s)) {
                 self.add(at, format!("params {k}: {e}"));
             }
             out.insert(k.clone(), s.to_owned());
@@ -2826,6 +2828,15 @@ after = ["extract"]
             Ok(_) => Vec::new(),
             Err(p) => p.iter().map(|p| p.in_file("a.toml")).collect(),
         }
+    }
+
+    /// `{var:…}` reads in a job and a `[params]` default; only a name it cannot have is told here.
+    #[test]
+    fn a_var_needs_a_plain_name_and_nothing_else_here() {
+        let net = |param: &str, run: &str| format!("format = 1\n[params]\nat = '{param}'\n[[job]]\nid = \"a\"\nrun = ['{run}']\n");
+        assert!(parse(&net(r"{var:share}\in", "copy {var:share} {param:at}")).is_ok());
+        assert!(problems(&net("x", "copy {var:}")).iter().any(|p| p.contains("{var:}: 名前がない")));
+        assert!(problems(&net("{var:共有}", "x")).iter().any(|p| p.contains("params at: {var:共有}: [vars] の名前は英数字と _ だけ")));
     }
 
     #[test]

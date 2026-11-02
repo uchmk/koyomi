@@ -10,10 +10,13 @@
 //! - `{param:month}` is the value of `month` in the net's `[params]`: its default, or what
 //!   `koyomi run --set month=2026-09` (or the window's box) gave. It is put in first, so a
 //!   default may itself be `{month-1:%Y-%m}`.
+//! - `{var:share}` is the value of `share` in koyomi.toml's `[vars]`, the same for every net.
+//!   It is put in after the `{param:…}`, so a default may be `{var:share}\in`, and before
+//!   the day's tokens, so a value may hold `{date}`.
 //!
 //! A `{` that does not start one of these is left as it is (PowerShell scripts are full of braces).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use chrono::format::{Item, StrftimeItems};
 use chrono::{Months, NaiveDate};
@@ -71,12 +74,24 @@ pub fn expand(text: &str, date: NaiveDate, cal: Option<&Calendar>) -> Result<Str
     })
 }
 
+const PARAM: &str = "{param:";
+const VAR: &str = "{var:";
+
 /// The names of the `{param:…}` in `text`, in order (an empty one as `""`).
 pub fn param_names(text: &str) -> Vec<&str> {
+    names(text, PARAM)
+}
+
+/// The names of the `{var:…}` in `text`, in order (an empty one as `""`).
+pub fn var_names(text: &str) -> Vec<&str> {
+    names(text, VAR)
+}
+
+fn names<'a>(text: &'a str, open: &str) -> Vec<&'a str> {
     let mut out = Vec::new();
     let mut rest = text;
-    while let Some(at) = rest.find("{param:") {
-        let tail = &rest[at + "{param:".len()..];
+    while let Some(at) = rest.find(open) {
+        let tail = &rest[at + open.len()..];
         let Some(end) = tail.find('}') else { break };
         out.push(&tail[..end]);
         rest = &tail[end + 1..];
@@ -84,15 +99,33 @@ pub fn param_names(text: &str) -> Vec<&str> {
     out
 }
 
+/// Whether every `{var:…}` in `text` has a name `[vars]` can hold.
+pub fn check_vars(text: &str) -> Result<(), String> {
+    match var_names(text).into_iter().find(|n| !crate::jobnet::plain_name(n)) {
+        Some("") => Err("{var:}: 名前がない（koyomi.toml の [vars] の名前を {var:share} のように書く）".to_owned()),
+        Some(n) => Err(format!("{{var:{n}}}: [vars] の名前は英数字と _ だけ")),
+        None => Ok(()),
+    }
+}
+
 /// `text` with every `{param:…}` replaced by its value in `values`.
 pub fn fill(text: &str, values: &BTreeMap<String, String>) -> Result<String, String> {
+    put(text, PARAM, values, "[params] にない")
+}
+
+/// `text` with every `{var:…}` replaced by its value in koyomi.toml's `[vars]`.
+pub fn fill_vars(text: &str, vars: &BTreeMap<String, String>) -> Result<String, String> {
+    put(text, VAR, vars, "koyomi.toml の [vars] にない")
+}
+
+fn put(text: &str, open: &str, values: &BTreeMap<String, String>, missing: &str) -> Result<String, String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
-    while let Some(at) = rest.find("{param:") {
-        let tail = &rest[at + "{param:".len()..];
+    while let Some(at) = rest.find(open) {
+        let tail = &rest[at + open.len()..];
         let Some(end) = tail.find('}') else { break };
         let name = &tail[..end];
-        let v = values.get(name).ok_or_else(|| format!("{{param:{name}}}: [params] にない"))?;
+        let v = values.get(name).ok_or_else(|| format!("{open}{name}}}: {missing}"))?;
         out.push_str(&rest[..at]);
         out.push_str(v);
         rest = &tail[end + 1..];
@@ -117,38 +150,66 @@ pub fn values(net: &Jobnet, set: &BTreeMap<String, String>) -> Result<BTreeMap<S
     Ok(out)
 }
 
-/// The net with every job's `run`, `script`, `env`, `dir` and `judge.ok_file` written out:
-/// first the `{param:…}` from `values` ([`values`]), then the day's tokens for `date`.
-pub fn expand_net(net: &Jobnet, date: NaiveDate, cal: Option<&Calendar>, values: &BTreeMap<String, String>) -> Result<Jobnet, String> {
-    let both = |t: &str| fill(t, values).and_then(|t| expand(&t, date, cal));
+/// The net with every job's `run`, `script`, `env`, `dir`, `judge.ok_file` and its part's paths
+/// written out: first the `{param:…}` from `values` ([`values`]), then the `{var:…}` from
+/// koyomi.toml's `vars`, then the day's tokens for `date`.
+pub fn expand_net(
+    net: &Jobnet,
+    date: NaiveDate,
+    cal: Option<&Calendar>,
+    values: &BTreeMap<String, String>,
+    vars: &BTreeMap<String, String>,
+) -> Result<Jobnet, String> {
     let mut out = net.clone();
-    for j in &mut out.jobs {
-        let id = j.id.clone();
-        let at = |what: &str, e: String| format!("{id} の {what}: {e}");
+    each_text(&mut out, &mut |id, what, t| {
+        *t = fill(t, values)
+            .and_then(|t| fill_vars(&t, vars))
+            .and_then(|t| expand(&t, date, cal))
+            .map_err(|e| format!("{id} の {what}: {e}"))?;
+        Ok(())
+    })?;
+    Ok(out)
+}
+
+/// The names of the `{var:…}` the net reads, in its jobs and its `[params]`' defaults.
+pub fn vars_of(net: &Jobnet) -> BTreeSet<String> {
+    let mut out: BTreeSet<String> = net.params.values().flat_map(|v| var_names(v)).map(str::to_owned).collect();
+    let _ = each_text(&mut net.clone(), &mut |_, _, t| {
+        out.extend(var_names(t).into_iter().map(str::to_owned));
+        Ok(())
+    });
+    out
+}
+
+/// Calls `f` with the job's id, the field's name and each text [`expand_net`] writes out
+/// (an `env` value that is `secret:…` is not one).
+fn each_text(net: &mut Jobnet, f: &mut dyn FnMut(&str, &str, &mut String) -> Result<(), String>) -> Result<(), String> {
+    for j in &mut net.jobs {
+        let id = j.id.as_str();
         for a in &mut j.run {
-            *a = both(a).map_err(|e| at("run", e))?;
+            f(id, "run", a)?;
         }
         if let Some(s) = &mut j.script {
-            *s = both(s).map_err(|e| at("script", e))?;
+            f(id, "script", s)?;
         }
         for (k, v) in &mut j.env {
             if !v.starts_with("secret:") {
-                *v = both(v).map_err(|e| at(&format!("env {k}"), e))?;
+                f(id, &format!("env {k}"), v)?;
             }
         }
         if let Some(d) = &mut j.dir {
-            *d = both(d).map_err(|e| at("dir", e))?;
+            f(id, "dir", d)?;
         }
-        if let Some(f) = j.judge.as_mut().and_then(|g| g.ok_file.as_mut()) {
-            *f = both(f).map_err(|e| at("judge ok_file", e))?;
+        if let Some(o) = j.judge.as_mut().and_then(|g| g.ok_file.as_mut()) {
+            f(id, "judge ok_file", o)?;
         }
         if let Part::Chore(c) = &mut j.part {
             for (name, p) in c.paths_mut() {
-                *p = both(p).map_err(|e| at(name, e))?;
+                f(id, name, p)?;
             }
         }
     }
-    Ok(out)
+    Ok(())
 }
 
 fn shift_months(date: NaiveDate, n: i32) -> Option<NaiveDate> {
@@ -290,5 +351,25 @@ mod tests {
         assert!(fill("{param:n}", &set).unwrap_err().contains("[params] にない"));
         assert!(values(&net, &BTreeMap::from([("n".to_owned(), "1".to_owned())])).unwrap_err().contains("あるのは m"));
         assert_eq!(param_names("a {param:m} {param:} {date}"), ["m", ""]);
+    }
+
+    /// `{var:…}`: koyomi.toml's `[vars]`, after the `{param:…}` and before the day's tokens.
+    #[test]
+    fn vars_go_in_after_params_and_before_the_day() {
+        let vars = BTreeMap::from([("share".to_owned(), r"\\nas\backup\{date:%Y%m}".to_owned())]);
+        let params = BTreeMap::from([("into".to_owned(), r"{var:share}\in".to_owned())]);
+        let mut net = Jobnet { params, ..Jobnet::default() };
+        let run = vec!["copy".to_owned(), "{param:into}".to_owned(), "{var:share}".to_owned()];
+        net.jobs.push(crate::jobnet::Job { id: "a".into(), run, ..crate::jobnet::Job::default() });
+        let dflt = values(&net, &BTreeMap::new()).unwrap();
+        let out = expand_net(&net, d("2026-11-02"), None, &dflt, &vars).unwrap();
+        assert_eq!(out.jobs[0].run, ["copy", r"\\nas\backup\202611\in", r"\\nas\backup\202611"]);
+        let e = expand_net(&net, d("2026-11-02"), None, &dflt, &BTreeMap::new()).unwrap_err();
+        assert!(e.contains("a の run: {var:share}: koyomi.toml の [vars] にない"), "{e}");
+        assert_eq!(vars_of(&net).into_iter().collect::<Vec<_>>(), ["share"]);
+        assert_eq!(var_names("{var:a} {var:} {param:b}"), ["a", ""]);
+        assert!(check_vars("{var:a_1} {date}").is_ok());
+        assert!(check_vars("{var:}").unwrap_err().contains("名前がない"));
+        assert!(check_vars("{var:共有}").unwrap_err().contains("英数字と _ だけ"));
     }
 }

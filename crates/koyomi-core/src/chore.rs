@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Jobnet, Judge, Part, Range};
 
-/// One chore and what it works on. Paths may have `{date}` and `{param:…}`.
+/// One chore and what it works on. Paths may have `{date}`, `{param:…}` and `{var:…}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "op", rename_all = "lowercase")]
 pub enum Chore {
@@ -258,7 +258,7 @@ impl Chore {
         })
     }
 
-    /// Every path of it, to fill in `{date}` and `{param:…}`.
+    /// Every path of it, to fill in `{date}`, `{param:…}` and `{var:…}`.
     pub fn paths_mut(&mut self) -> Vec<(&'static str, &mut String)> {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![("path", path)],
@@ -380,7 +380,7 @@ impl Chore {
             }
             Chore::Http { url, method, body, content_type, headers, expect } => {
                 need("url", url)?;
-                // A url that starts with `{param:…}` is told once it is filled in.
+                // A url that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 let u = url.trim().to_ascii_lowercase();
                 if !u.starts_with('{') && !u.starts_with("http://") && !u.starts_with("https://") {
                     return Err(format!("url は http:// か https:// で始める: {url}"));
@@ -408,7 +408,7 @@ impl Chore {
                 if on.trim().is_empty() {
                     return Err("on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] で書く）".into());
                 }
-                // An `on` that starts with `{param:…}` is told once it is filled in.
+                // An `on` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 if ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
                     return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] で書く: {on}"));
                 }
@@ -614,7 +614,7 @@ impl Chore {
 }
 
 /// An address of a `mail`'s `to` or `cc`: `ops@example.com` or `名前 <ops@example.com>`,
-/// as ito's mail reads it; one that starts with `{param:…}` is told once it is filled in.
+/// as ito's mail reads it; one that starts with `{param:…}` or `{var:…}` is told once it is filled in.
 pub fn mail_address(a: &str) -> Result<(), String> {
     let t = a.trim();
     if t.starts_with('{') {
@@ -850,7 +850,7 @@ pub fn cert_ok(c: &str) -> Result<(), String> {
 
 fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
     let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
-    // A `:` inside `{param:…}` is not a port.
+    // A `:` inside `{param:…}` or `{var:…}` is not a port.
     let (dest, port) = match auth.rsplit_once(':') {
         Some((d, p)) if !p.contains('}') => match p.parse::<u16>() {
             Ok(n) if n > 0 => (d, Some(n)),
@@ -894,7 +894,7 @@ fn login(scheme: &str, far: bool, key: &Option<String>, host_key: &Option<String
         None => {
             return Err(format!("{scheme} には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）"));
         }
-        // `{param:…}` is told once it is filled in.
+        // `{param:…}` or `{var:…}` is told once it is filled in.
         Some(h) if h.starts_with('{') => {}
         Some(h) => host_key_ok(h)?,
     }
@@ -1095,6 +1095,7 @@ mod tests {
         let ok = |on: &str, command: &str| remote(on, command, None, Some(HK), None).check();
         assert_eq!(ok("ssh://u@h", "df -h"), Ok(()));
         assert_eq!(ok("{param:pc}", "df -h"), Ok(()));
+        assert_eq!(ok("{var:pc}", "df -h"), Ok(()));
         assert!(ok("", "df -h").unwrap_err().contains("on が空"));
         assert!(ok("u@h", "df -h").unwrap_err().contains("ssh://[ユーザー@]ホスト[:ポート] で書く"));
         assert!(ok("sftp://u@h/in", "df -h").unwrap_err().contains("ssh://"));
@@ -1282,6 +1283,7 @@ mod tests {
         assert!(url("ftp://x").unwrap_err().contains("http:// か https://"));
         assert_eq!(url("HTTP://x"), Ok(()));
         assert_eq!(url("{param:api}/jobs"), Ok(()));
+        assert_eq!(url("{var:api}/jobs"), Ok(()));
         assert!(http("get", None, &[], &[]).check().unwrap_err().contains("method は"));
         assert!(http("HEAD", Some("a"), &[], &[]).check().unwrap_err().contains("body を書けない"));
         assert!(http("POST", Some(&"a".repeat(BODY_MAX + 1)), &[], &[]).check().unwrap_err().contains("文字まで"));

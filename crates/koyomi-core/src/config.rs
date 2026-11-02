@@ -6,7 +6,8 @@
 //! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
 //! this one stands by for (HA), `[primary]`, which of them stands by for this one, and
 //! `[locks]`, how many nets may hold a `lock` at once, and `work_dir`, where a job without
-//! `dir` runs, and `[[blackout]]`, the planned stops in which nothing starts by itself.
+//! `dir` runs, `[[blackout]]`, the planned stops in which nothing starts by itself, and
+//! `[vars]`, the values every net reads as `{var:name}`.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -55,6 +56,10 @@ pub struct Config {
     /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blackout: Vec<crate::blackout::Blackout>,
+    /// `[vars]`: `share = '\\nas\backup'`, read by every net as `{var:share}`. Kept as written so
+    /// [`Config::parse`] can say what is wrong in Japanese; [`Config::vars`] gives the values.
+    #[serde(skip_serializing_if = "toml::Table::is_empty")]
+    pub vars: toml::Table,
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
@@ -394,6 +399,7 @@ impl Default for Config {
             locks: toml::Table::new(),
             work_dir: None,
             blackout: Vec::new(),
+            vars: toml::Table::new(),
         }
     }
 }
@@ -450,7 +456,24 @@ impl Config {
         for b in &c.blackout {
             b.check()?;
         }
+        for (name, v) in &c.vars {
+            if !crate::jobnet::plain_name(name) {
+                return Err(format!("[vars] の名前に使えない: {name}（英数字と _ だけ。{{var:{name}}} で読むので）"));
+            }
+            let Some(s) = v.as_str() else {
+                return Err(format!("[vars] の {name} は文字列で書く（例: {name} = '\\\\nas\\backup'）"));
+            };
+            if !crate::template::param_names(s).is_empty() || !crate::template::var_names(s).is_empty() {
+                return Err(format!("[vars] の {name} に {{param:…}}・{{var:…}} は書けない（{{date}} などは書ける）"));
+            }
+            crate::template::check(s).map_err(|e| format!("[vars] の {name}: {e}"))?;
+        }
         Ok(c)
+    }
+
+    /// `[vars]`' values, for `{var:…}` ([`Config::parse`] has seen that each is a string).
+    pub fn vars(&self) -> std::collections::BTreeMap<String, String> {
+        self.vars.iter().filter_map(|(k, v)| Some((k.clone(), v.as_str()?.to_owned()))).collect()
     }
 
     /// The folder a job without `dir` runs in, with `folder` the one its net's file is in;
@@ -507,6 +530,21 @@ archive_days = 365
         assert!(Config::parse("keep_days = 0\n").is_err());
         assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    /// `[vars]`: strings with plain names, which may hold the day's tokens but no other `{…:…}`.
+    #[test]
+    fn vars_read_and_are_checked() {
+        let c = Config::parse("[vars]\nshare = '\\\\nas\\backup'\nday = '{date:%Y%m%d}'\n").unwrap();
+        assert_eq!(c.vars().get("share").map(String::as_str), Some(r"\\nas\backup"));
+        assert_eq!(c.vars().len(), 2);
+        assert!(Config::default().vars().is_empty());
+        let bad = |t: &str| Config::parse(&format!("[vars]\n{t}\n")).unwrap_err();
+        assert!(bad("\"共有\" = 'x'").contains("[vars] の名前に使えない: 共有"));
+        assert!(bad("n = 3").contains("[vars] の n は文字列で書く"));
+        assert!(bad("a = '{var:b}'").contains("{param:…}・{var:…} は書けない"));
+        assert!(bad("a = '{param:b}'").contains("{param:…}・{var:…} は書けない"));
+        assert!(bad("a = '{date-1q}'").contains("[vars] の a: {date-1q}: 単位が読めない"));
     }
 
     /// `[[blackout]]`: read as written, checked, and a typo in one is an error.
