@@ -532,9 +532,27 @@ impl Run {
         if !previous.is_over() {
             return Err(format!("{}: まだ終わっていない", previous.id));
         }
-        let mut redo: BTreeSet<String> = previous.jobs.iter().filter(|j| !j.state.passed()).map(|j| j.id.clone()).collect();
+        // In a run that ended well, a job that did not run (a handler, the branch not taken) was never work to do.
+        let well = matches!(previous.state, State::Ok | State::Warn);
+        let mut redo: BTreeSet<String> =
+            previous.jobs.iter().filter(|j| !j.state.passed() && !(well && j.state == State::NotRun)).map(|j| j.id.clone()).collect();
         if let Some(from) = from {
             redo.extend(downstream(&net.jobs, from)?);
+        }
+        // A handler (a line that is not plain `ok`) answers the job before it: when that job runs again, it may answer again.
+        loop {
+            let more: Vec<String> = net
+                .jobs
+                .iter()
+                .filter(|j| !redo.contains(&j.id) && j.after.iter().any(|l| l.on != On::Ok && redo.contains(&l.job)))
+                .map(|j| j.id.clone())
+                .collect();
+            if more.is_empty() {
+                break;
+            }
+            for id in more {
+                redo.extend(downstream(&net.jobs, &id)?);
+            }
         }
         if redo.is_empty() {
             return Err(format!("{}: 全部済んでいる（流し直すなら --from <ジョブ>）", previous.id));
@@ -662,6 +680,10 @@ impl Run {
         let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| format!("ジョブがない: {id}"))?;
         if j.state == State::Running {
             return Err(format!("{}: もう動いている", j.label()));
+        }
+        // A skipped branch has no exit code to choose a way by, and a skipped station would leave its children running.
+        if matches!(j.part, Part::Branch | Part::Jobnet { .. }) {
+            return Err(format!("{}: 分岐とジョブネットは飛ばせない（中のジョブを飛ばす）", j.label()));
         }
         if !j.pending() && !(j.state == State::Held && j.ended.is_none()) {
             return Err(format!("{}: もう終わっている", j.label()));
@@ -1482,6 +1504,44 @@ mod tests {
         assert_eq!(r.job("b").unwrap().reason, format!("{CARRIED}: {SKIPPED}"));
         assert_eq!(r.ready(), vec!["a"]);
         assert_eq!(r.job("d").unwrap().state, State::Waiting);
+    }
+
+    #[test]
+    fn a_branch_or_a_station_is_not_skipped() {
+        let mut r =
+            net_of(vec![job("chk", &[]), part("way", Part::Branch, &[line("chk", On::Any)]), job("x", &[]).after(line("way", On::Else))]);
+        assert!(r.skip("way", at("2026-10-30 09:00:01")).unwrap_err().contains("飛ばせない"));
+        assert_eq!(r.job("way").unwrap().state, State::Waiting);
+    }
+
+    #[test]
+    fn a_rerun_of_a_good_run_does_not_redo_what_never_ran() {
+        let net = Jobnet {
+            name: None,
+            jobs: vec![job("a", &[]), job("h", &[]).after(line("a", On::Error))],
+            when: Vec::new(),
+            ..Default::default()
+        };
+        let mut prev = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
+        ended(&mut prev, "a", 0, "2026-10-30 09:00:01");
+        assert_eq!((prev.state, prev.job("h").unwrap().state), (State::Ok, State::NotRun));
+        assert!(Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap_err().contains("全部済んでいる"));
+    }
+
+    #[test]
+    fn a_handler_that_ran_answers_again_when_its_job_is_redone() {
+        let net = Jobnet {
+            name: None,
+            jobs: vec![job("a", &[]), job("h", &[]).after(line("a", On::Error))],
+            when: Vec::new(),
+            ..Default::default()
+        };
+        let mut prev = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
+        ended(&mut prev, "a", 1, "2026-10-30 09:00:01");
+        ended(&mut prev, "h", 0, "2026-10-30 09:00:02");
+        let r = Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap();
+        assert_eq!(r.ready(), vec!["a"]);
+        assert_eq!(r.job("h").unwrap().state, State::Waiting);
     }
 
     #[test]
