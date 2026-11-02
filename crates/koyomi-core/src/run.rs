@@ -656,7 +656,8 @@ impl Run {
     }
 
     /// A person skips the job `id` before it starts: it ends ⊘ now with [`SKIPPED`], and the
-    /// jobs after it go on as if it passed. A job that runs or has ended is refused.
+    /// jobs after it wait for what it waited for and then go on as if it passed
+    /// (a failure before it still reaches them). A job that runs or has ended is refused.
     pub fn skip(&mut self, id: &str, now: NaiveDateTime) -> Result<(), String> {
         let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| format!("ジョブがない: {id}"))?;
         if j.state == State::Running {
@@ -1061,9 +1062,23 @@ fn codes_of(jobs: &[JobRun]) -> BTreeMap<String, Vec<Range>> {
 
 /// What the state of the job a line comes from means for the line.
 fn line_fate(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) -> Fate {
+    line_fate_in(l, jobs, codes, jobs.len())
+}
+
+/// [`line_fate`], following at most `depth` skipped jobs back (a cycle that cannot be placed ends there).
+fn line_fate_in(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, depth: usize) -> Fate {
     let Some(p) = jobs.iter().find(|j| j.id == l.job) else { return Fate::Dead };
     if p.pending() || matches!(p.state, State::Running | State::Held) {
         return Fate::Open;
+    }
+    // A job a person skipped before its own lines were met is only passed through: what comes after
+    // it waits for what it waited for, and goes the way those lines go (a failed `a` is still a failed `a`).
+    if depth > 0 && p.state == State::Skipped && p.reason == SKIPPED && p.started.is_none() {
+        match fate_in(p, jobs, codes, depth - 1).0 {
+            Fate::Open => return Fate::Open,
+            Fate::Dead => return Fate::Dead,
+            Fate::Met => {}
+        }
     }
     let met = match &l.on {
         On::Ok => p.state.passed(),
@@ -1082,8 +1097,12 @@ fn line_fate(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) ->
 /// The fate of a job from all its lines (a `kind = "join"` with `wait = "any"`
 /// goes on the first met line), with the reason for 実行待ち or 未実行.
 fn fate_of(j: &JobRun, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) -> (Fate, String) {
+    fate_in(j, jobs, codes, jobs.len())
+}
+
+fn fate_in(j: &JobRun, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, depth: usize) -> (Fate, String) {
     let label = |id: &str| jobs.iter().find(|x| x.id == id).map_or(id.to_owned(), |x| x.label().to_owned());
-    let fates: Vec<(&Line, Fate)> = j.after.iter().map(|l| (l, line_fate(l, jobs, codes))).collect();
+    let fates: Vec<(&Line, Fate)> = j.after.iter().map(|l| (l, line_fate_in(l, jobs, codes, depth))).collect();
     let any = matches!(j.part, Part::Join { wait: Wait::Any });
     let dead = |l: &Line| match l.on {
         On::Ok => format!("先行の {} が異常終了", label(&l.job)),
@@ -1417,6 +1436,31 @@ mod tests {
     fn ended(r: &mut Run, id: &str, code: i32, t: &str) {
         r.start(id, at(t));
         r.finish(id, Outcome::Exited(code), at(t));
+    }
+
+    #[test]
+    fn a_skipped_job_still_waits_for_what_it_waited_for() {
+        let mut r = diamond();
+        let t = at("2026-10-30 09:00:01");
+        r.start("a", t);
+        r.skip("b", t).unwrap();
+        r.skip("c", t).unwrap();
+        // d follows only skipped jobs, but their `a` is still running.
+        assert!(r.ready().is_empty());
+        r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
+        assert_eq!(r.ready(), vec!["d".to_owned()]);
+    }
+
+    #[test]
+    fn a_failure_goes_through_a_skipped_job() {
+        let mut r = diamond();
+        let t = at("2026-10-30 09:00:01");
+        r.start("a", t);
+        r.skip("b", t).unwrap();
+        r.skip("c", t).unwrap();
+        r.finish("a", Outcome::Exited(3), at("2026-10-30 09:00:02"));
+        assert!(r.ready().is_empty());
+        assert_eq!(r.job("d").unwrap().state, State::NotRun);
     }
 
     #[test]
