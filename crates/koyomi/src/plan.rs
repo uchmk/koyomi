@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
+use koyomi_core::blackout::Blackout;
 use koyomi_core::calendar::Calendar;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
@@ -69,6 +70,19 @@ fn fill<T: Ord>(
         list.sort();
     }
     days
+}
+
+/// The starts in a planned stop marked after the name (`夜間バックアップ  ⊘ 計画停止（年末年始）`),
+/// for the sheets: they are on them, and do not start.
+pub fn mark(days: &mut [Day], stops: &[Blackout], word: impl Fn(&Blackout) -> String) {
+    for (_, list) in days {
+        for (at, name) in list {
+            if let Some(b) = koyomi_core::blackout::find(stops, *at) {
+                name.push_str("  ");
+                name.push_str(&word(b));
+            }
+        }
+    }
 }
 
 /// The month as lines: `YYYY-MM-DD  HH:MM  name`, a day without a start as one line alone.
@@ -165,6 +179,14 @@ mod tests {
         assert!(pages[0].contains("a&amp;b"));
         assert!(pages[0].contains("1 / "));
         assert_eq!(svg(&[], 2026, 1).len(), 1);
+    }
+
+    #[test]
+    fn a_start_in_a_planned_stop_is_marked() {
+        let mut days = [day(1, &[(9, "a"), (17, "b")]), day(2, &[(9, "a")])];
+        let stops = [Blackout { from: "2026-01-01 12:00".into(), to: "2026-01-02".into(), why: "点検".into() }];
+        mark(&mut days, &stops, |b| format!("⊘ {}", b.why));
+        assert_eq!(text(&days), "2026-01-01  09:00  a\n2026-01-01  17:00  b  ⊘ 点検\n2026-01-02  09:00  a  ⊘ 点検\n");
     }
 
     #[test]

@@ -391,6 +391,8 @@ fn narrow(
                 held_jobs: s.held_jobs.into_iter().filter(|h| sees(&h.net)).collect(),
                 skips: s.skips.into_iter().filter(|k| sees(&k.id)).collect(),
                 paused: s.paused,
+                // The planned stops are the whole PC's, not a net's: the times they stop show as such.
+                blackouts: s.blackouts,
                 ..Snapshot::default()
             }
             .to_toml()

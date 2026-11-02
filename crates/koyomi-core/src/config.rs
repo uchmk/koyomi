@@ -6,7 +6,7 @@
 //! TLS), `[[remote]]`, the other PCs' engines this one calls, `[standby]`, which of them
 //! this one stands by for (HA), `[primary]`, which of them stands by for this one, and
 //! `[locks]`, how many nets may hold a `lock` at once, and `work_dir`, where a job without
-//! `dir` runs.
+//! `dir` runs, and `[[blackout]]`, the planned stops in which nothing starts by itself.
 //!
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
@@ -52,6 +52,9 @@ pub struct Config {
     /// absolute path, for every net.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_dir: Option<String>,
+    /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blackout: Vec<crate::blackout::Blackout>,
 }
 
 /// `[standby]`: poll the `[[remote]]` named `watch` every `every`; after `misses` polls in a row
@@ -390,6 +393,7 @@ impl Default for Config {
             primary: None,
             locks: toml::Table::new(),
             work_dir: None,
+            blackout: Vec::new(),
         }
     }
 }
@@ -442,6 +446,9 @@ impl Config {
                     "work_dir は \"{DEFINITION}\"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\\batch'）: {w}"
                 ));
             }
+        }
+        for b in &c.blackout {
+            b.check()?;
         }
         Ok(c)
     }
@@ -500,6 +507,30 @@ archive_days = 365
         assert!(Config::parse("keep_days = 0\n").is_err());
         assert!(Config::parse("log_max_mb = 0\n").is_err());
         assert!(Config::parse("notify = 1\n").is_err());
+    }
+
+    /// `[[blackout]]`: read as written, checked, and a typo in one is an error.
+    #[test]
+    fn blackouts_read_and_are_checked() {
+        let c = Config::parse(
+            "[[blackout]]
+from = \"2026-12-29\"
+to = \"2027-01-03\"
+why = \"年末年始\"
+
+[[blackout]]
+from = \"2026-11-14 22:00\"
+to = \"2026-11-15 06:00\"
+",
+        )
+        .unwrap();
+        assert_eq!(c.blackout.len(), 2);
+        assert_eq!((c.blackout[0].why.as_str(), c.blackout[1].why.as_str()), ("年末年始", ""));
+        let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-28\"\n").unwrap_err();
+        assert!(e.contains("[[blackout]] の to（2026-12-28）が from（2026-12-29）より前"), "{e}");
+        assert!(Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\n").is_err());
+        assert!(Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-30\"\nreason = \"x\"\n").is_err());
+        assert!(Config::default().blackout.is_empty());
     }
 
     /// `work_dir`: not written, the engine's folder; `"definition"`, the net's own; else one

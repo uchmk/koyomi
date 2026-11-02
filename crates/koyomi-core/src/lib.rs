@@ -6,6 +6,7 @@
 
 pub mod approved;
 pub mod backfill;
+pub mod blackout;
 pub mod bundle;
 pub mod calendar;
 pub mod chore;

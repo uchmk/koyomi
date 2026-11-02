@@ -748,12 +748,12 @@ fn next(args: &[String]) -> i32 {
     let unconfirmed = def.standing != Standing::Confirmed;
     if toml() {
         let mut next: Vec<NextRow> =
-            net.when.iter().filter_map(|w| show::event_row(&t, w)).map(|e| NextRow { at: None, event: Some(e) }).collect();
-        next.extend(
-            koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, count, cal)
-                .into_iter()
-                .map(|at| NextRow { at: Some(at.format("%Y-%m-%d %H:%M:%S").to_string()), event: None }),
-        );
+            net.when.iter().filter_map(|w| show::event_row(&t, w)).map(|e| NextRow { at: None, event: Some(e), stop: None }).collect();
+        next.extend(koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, count, cal).into_iter().map(|at| NextRow {
+            at: Some(at.format("%Y-%m-%d %H:%M:%S").to_string()),
+            event: None,
+            stop: koyomi_core::blackout::find(&snap.blackouts, at).map(|b| b.reason()),
+        }));
         emit(&toml::to_string(&Next { unconfirmed, next }).unwrap_or_default());
         return 0;
     }
@@ -764,7 +764,16 @@ fn next(args: &[String]) -> i32 {
     if unconfirmed {
         out(&format!("{}: {}", def.file, t.tr("run.next_unconfirmed")), false);
     }
-    let rows = show::next_rows(&t, &net.when, (&net.quiet, net.on_quiet), cal, now, count, Some(&show::Sleep::of(&snap.power, net.wake)));
+    let rows = show::next_rows(
+        &t,
+        &net.when,
+        (&net.quiet, net.on_quiet),
+        cal,
+        now,
+        count,
+        Some(&show::Sleep::of(&snap.power, net.wake)),
+        &snap.blackouts,
+    );
     if rows.is_empty() {
         out(t.tr("run.next_over"), false);
     }
@@ -774,7 +783,8 @@ fn next(args: &[String]) -> i32 {
     0
 }
 
-/// `koyomi next --toml`: `unconfirmed`, then a `[[next]]` with `at` (a time) or `event` (what starts it) each.
+/// `koyomi next --toml`: `unconfirmed`, then a `[[next]]` with `at` (a time) or `event` (what starts it) each;
+/// a time in a planned stop has `stop`, why it will not start.
 #[derive(Serialize)]
 struct Next {
     unconfirmed: bool,
@@ -787,6 +797,8 @@ struct NextRow {
     at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     event: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    stop: Option<String>,
 }
 
 /// `koyomi calendar --toml`: the month, its business days, and a `[[day]]` each with
@@ -851,7 +863,9 @@ fn plan(args: &[String]) -> i32 {
     };
     let today = chrono::Local::now().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
-    let days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
+    let mut days = crate::plan::month(&snap.defs, &snap.calendars, y, m);
+    let t = table();
+    crate::plan::mark(&mut days, &snap.blackouts, |b| crate::show::stop_mark(&t, b));
     if let Some(to) = csv {
         let code = wrote(&to, &crate::sheet::plan(&table(), &days));
         if code != 0 || (pdf.is_none() && !print) {

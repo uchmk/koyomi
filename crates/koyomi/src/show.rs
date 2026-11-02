@@ -4,6 +4,7 @@
 
 use chrono::{Datelike, NaiveDateTime};
 use ito_i18n::Table;
+use koyomi_core::blackout::Blackout;
 use koyomi_core::calendar::{Calendar, Day};
 use koyomi_core::jobnet::Part;
 use koyomi_core::quiet::{OnQuiet, Span};
@@ -114,6 +115,8 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
 ///
 /// With `sleep`, a time that comes after this PC would have gone to sleep is
 /// marked too: asleep, woken for it (`wake = true`), or why it cannot be woken.
+/// A time in a planned stop (`stops`) is marked with it instead: it will not start.
+#[allow(clippy::too_many_arguments)]
 pub fn next_rows(
     t: &Table,
     whens: &[When],
@@ -122,10 +125,14 @@ pub fn next_rows(
     now: NaiveDateTime,
     n: usize,
     sleep: Option<&Sleep>,
+    stops: &[Blackout],
 ) -> Vec<String> {
     let mut rows: Vec<String> = whens.iter().filter_map(|w| event_row(t, w)).collect();
     rows.extend(koyomi_core::quiet::next_starts(whens, quiet.0, quiet.1, now, n, cal).into_iter().map(|at| {
         let mut row = when_row(t, at);
+        if let Some(b) = koyomi_core::blackout::find(stops, at) {
+            return format!("{row}  {}", stop_mark(t, b));
+        }
         if cal.is_some_and(|c| c.stale(at.date())) {
             row = format!("{row}  {}", t.tr("calendar.stale"));
         }
@@ -135,6 +142,19 @@ pub fn next_rows(
         row
     }));
     rows
+}
+
+/// What a planned stop is for, or that nothing is written.
+pub fn stop_why<'a>(t: &'a Table, b: &'a Blackout) -> &'a str {
+    match b.why.trim() {
+        "" => t.tr("blackout.none"),
+        why => why,
+    }
+}
+
+/// The mark for a time in a planned stop: `⊘ 計画停止（年末年始）`.
+pub fn stop_mark(t: &Table, b: &Blackout) -> String {
+    t.trf("blackout.mark", &[stop_why(t, b)])
 }
 
 /// What the power settings mean for a net's times: how long this PC idles
@@ -432,11 +452,20 @@ run = [\"x\"]
         .when;
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let (ja, _) = crate::i18n::table("ja");
-        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 3, None);
+        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 3, None, &[]);
         assert_eq!(rows, vec!["2026-10-31（土）02:00", "2026-11-01（日）02:00", "2026-11-02（月）02:00"]);
         let (en, _) = crate::i18n::table("en");
-        assert_eq!(next_rows(&en, &whens, (&[], OnQuiet::Wait), None, now, 1, None), vec!["2026-10-31 (Sat) 02:00"]);
-        assert!(next_rows(&en, &[], (&[], OnQuiet::Wait), None, now, 10, None).is_empty());
+        assert_eq!(next_rows(&en, &whens, (&[], OnQuiet::Wait), None, now, 1, None, &[]), vec!["2026-10-31 (Sat) 02:00"]);
+        assert!(next_rows(&en, &[], (&[], OnQuiet::Wait), None, now, 10, None, &[]).is_empty());
+        // A time in a planned stop is marked with it, and nothing else.
+        let stop = [Blackout { from: "2026-11-01".into(), to: "2026-11-01".into(), why: "点検".into() }];
+        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, None, &stop);
+        assert_eq!(rows, vec!["2026-10-31（土）02:00", "2026-11-01（日）02:00  ⊘ 計画停止（点検）"]);
+        let stop = [Blackout { why: String::new(), ..stop[0].clone() }];
+        assert_eq!(
+            next_rows(&en, &whens, (&[], OnQuiet::Wait), None, now, 2, None, &stop)[1],
+            "2026-11-01 (Sun) 02:00  ⊘ planned stop (no reason given)"
+        );
     }
 
     /// with a calendar the closed days are skipped (`on_closed = "skip"`), and a day past the holiday table is marked.
@@ -458,10 +487,10 @@ run = [\"x\"]
         let cal = Calendar::parse("会社", "format = 1\nholidays = \"japan\"\nweekly_off = [\"sat\", \"sun\"]\n").unwrap();
         let (ja, _) = crate::i18n::table("ja");
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), Some(&cal), now, 2, None);
+        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), Some(&cal), now, 2, None, &[]);
         assert_eq!(rows, vec!["2026-11-02（月）02:00", "2026-11-04（水）02:00"], "the weekend and 文化の日 are skipped");
         let late = NaiveDateTime::parse_from_str("2027-12-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
-        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), Some(&cal), late, 2, None);
+        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), Some(&cal), late, 2, None, &[]);
         assert_eq!(rows, vec!["2027-12-31（金）02:00", "2028-01-03（月）02:00  祝日の表が古い"]);
     }
 
@@ -483,17 +512,17 @@ run = [\"x\"]
         let (ja, _) = crate::i18n::table("ja");
         let now = NaiveDateTime::parse_from_str("2026-10-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let mut s = Sleep { after: Some(1800), wake: false, cannot: None };
-        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s));
+        let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[]);
         assert_eq!(rows[0], "2026-10-30（金）09:10", "within 30 minutes: awake still");
         assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30分で眠る設定。起こさなければ動かない");
         s.wake = true;
-        assert!(next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s))[1].ends_with("PC を起こして流す"));
+        assert!(next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1].ends_with("PC を起こして流す"));
         s.cannot = Some("battery".into());
-        let row = &next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s))[1];
+        let row = &next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1];
         assert!(row.contains("起こせない") && row.contains("バッテリー"), "{row}");
         s.after = None;
         assert_eq!(
-            next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s))[1],
+            next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1],
             "2026-10-30（金）10:00",
             "never sleeps: no mark"
         );

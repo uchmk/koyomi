@@ -12,7 +12,9 @@
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use ito_a11y::Role;
+use koyomi_core::blackout::{self, Blackout};
 use koyomi_core::calendar::{Calendar, Day, Table, TABLE_FILE};
+use koyomi_core::run::State;
 use koyomi_core::scan::{Def, Standing};
 
 use super::{bad_file_name, Browser, Why};
@@ -380,7 +382,10 @@ impl Browser {
                     Some(1) => self.delete_cal_box(&name),
                     Some(3) => {
                         // The month's sheet of every approved net, as `koyomi plan --print` makes it.
-                        let days = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+                        let mut days = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
+                        if let Some(s) = &self.snap {
+                            crate::plan::mark(&mut days, &s.blackouts, |b| show::stop_mark(t, b));
+                        }
                         self.result = Some(Ok(t.tr("run.writing").to_owned()));
                         Self::background(&self.io, move || super::print_plan(&days, y, m));
                     }
@@ -388,15 +393,16 @@ impl Browser {
                     None => {}
                 }
                 ui.add_space(8.0);
+                let stops = self.snap.as_ref().map(|s| s.blackouts.clone()).unwrap_or_default();
                 let out = match view {
                     CalView::Day | CalView::Week => {
                         let (from, n) = if view == CalView::Day { (anchor, 1) } else { (sunday, 7) };
                         let starts = self.snap.as_ref().map(|s| crate::plan::days(&s.defs, &s.calendars, from, n)).unwrap_or_default();
-                        timetable(ui, t, &name, shown, &starts, picked, today)
+                        timetable(ui, t, &name, shown, (&starts, &stops), picked, today)
                     }
                     CalView::Month => {
                         let starts = self.snap.as_ref().map(|s| crate::plan::month(&s.defs, &s.calendars, y, m)).unwrap_or_default();
-                        month_grid(ui, t, &name, (y, m), &days, &starts, picked, today)
+                        month_grid(ui, t, &name, (y, m), &days, (&starts, &stops), picked, today)
                     }
                 };
                 self.month_notes(ui, t, &name, &cal);
@@ -546,7 +552,7 @@ impl Browser {
             }
             let power = Some(show::Sleep::of(&snap.power, net.wake));
             let now = chrono::Local::now().naive_local();
-            for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(cal), now, 10, power.as_ref()) {
+            for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(cal), now, 10, power.as_ref(), &snap.blackouts) {
                 ui.label(egui::RichText::new(row).monospace().small());
             }
         });
@@ -607,8 +613,9 @@ fn weekday_colour(c: &ito_theme::Colors, w: Weekday) -> egui::Color32 {
 
 /// The month as one table without gaps, Sunday first, as wide as the room: a band of weekdays,
 /// then a cell a day. Each cell has its date at the top left, its name (or 選択中) as a tag at the
-/// top right, a tint by what the day is, and the times that start on it. The days of the months
-/// either side fill the first and last weeks, faint and not pressed.
+/// top right, a tint by what the day is, and the times that start on it. A day a planned stop
+/// reaches into has the stop as its tag when it has no name, and a time in one is faint with ⊘.
+/// The days of the months either side fill the first and last weeks, faint and not pressed.
 #[allow(clippy::too_many_arguments)]
 fn month_grid(
     ui: &mut egui::Ui,
@@ -616,7 +623,7 @@ fn month_grid(
     name: &str,
     (y, m): (i32, u32),
     days: &[(NaiveDate, Day)],
-    starts: &[crate::plan::Day],
+    (starts, stops): (&[crate::plan::Day], &[Blackout]),
     picked: Option<NaiveDate>,
     today: NaiveDate,
 ) -> Grid {
@@ -677,17 +684,22 @@ fn month_grid(
         }
         // The name (or 選択中) as a tag at the top right, as wide as is left. A name too long for
         // the corner takes a line of its own under the date; 選択中 is left out (the ring says it).
-        let tag_words = named.clone().or_else(|| here.then(|| t.tr("calendar.picked").to_owned()));
+        let stop = blackout::on_day(stops, d).map(|b| show::stop_mark(t, b));
+        let tag_words = named.clone().or_else(|| stop.clone()).or_else(|| here.then(|| t.tr("calendar.picked").to_owned()));
         let line = 16.0;
         let mut top = cell.min.y + 28.0;
         if let Some(words) = &tag_words {
-            let colour = if named.is_some() { day_colour(&c, day) } else { c.run };
+            let colour = match (&named, &stop) {
+                (Some(_), _) => day_colour(&c, day),
+                (None, Some(_)) => c.wait_text(),
+                (None, None) => c.run,
+            };
             let tag = ito_prefs::Tag::new(words).color(colour);
             let max = (cell.width() - size.x - 26.0).max(20.0);
             let w = ito_prefs::tag_width(ui, tag);
             if w <= max {
                 ito_prefs::paint_tag(&painter, ui.ctx(), &c, egui::pos2(cell.max.x - 6.0 - w, cell.min.y + 5.0), tag, max);
-            } else if named.is_some() {
+            } else if named.is_some() || stop.is_some() {
                 let r = ito_prefs::paint_tag(&painter, ui.ctx(), &c, egui::pos2(cell.min.x + 5.0, top), tag, cell.width() - 10.0);
                 top = r.max.y + 3.0;
             }
@@ -703,16 +715,22 @@ fn month_grid(
                 painter.text(chip.left_center() + egui::vec2(4.0, 0.0), egui::Align2::LEFT_CENTER, more, small.clone(), c.dim);
                 break;
             }
-            painter.rect_filled(chip, 3.0, ito_theme::mix(tint, c.run, 0.10));
-            painter.rect_stroke(chip, 3.0, egui::Stroke::new(1.0, ito_theme::mix(tint, c.run, 0.35)), egui::StrokeKind::Inside);
+            // A time in a planned stop does not start: faint, with ⊘ before it.
+            let stopped = blackout::find(stops, *at).is_some();
+            let (ink, words) = if stopped { (c.dim, c.dim) } else { (c.run, c.fg) };
+            painter.rect_filled(chip, 3.0, ito_theme::mix(tint, ink, 0.10));
+            painter.rect_stroke(chip, 3.0, egui::Stroke::new(1.0, ito_theme::mix(tint, ink, 0.35)), egui::StrokeKind::Inside);
             let mut job = egui::text::LayoutJob::default();
             let fmt = |colour| egui::TextFormat { font_id: small.clone(), color: colour, ..Default::default() };
-            let hm = at.format("%H:%M").to_string();
-            let hm_w = painter.layout_no_wrap(hm.clone(), small.clone(), c.run).size().x;
-            job.append(&hm, 0.0, fmt(c.run));
+            let hm = match stopped {
+                true => format!("{} {}", State::Skipped.mark(), at.format("%H:%M")),
+                false => at.format("%H:%M").to_string(),
+            };
+            let hm_w = painter.layout_no_wrap(hm.clone(), small.clone(), ink).size().x;
+            job.append(&hm, 0.0, fmt(ink));
             // The net only when a few letters of it fit; else the time alone, and the pane says the rest.
             if chip.width() - 8.0 - hm_w > 40.0 {
-                job.append(net, 6.0, fmt(c.fg));
+                job.append(net, 6.0, fmt(words));
             }
             job.wrap.max_width = chip.width() - 8.0;
             job.wrap.max_rows = 1;
@@ -731,12 +749,11 @@ fn month_grid(
         if r.has_focus() {
             painter.rect_stroke(cell.shrink(4.0), 2.0, egui::Stroke::new(1.0, c.fg), egui::StrokeKind::Inside);
         }
-        let r = match &named {
-            Some(n) => r.on_hover_text(n),
-            None => r,
-        };
+        let hover: Vec<&str> = named.iter().chain(&stop).map(String::as_str).collect();
+        let r = if hover.is_empty() { r } else { r.on_hover_text(hover.join("\n")) };
         let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-        ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, d.weekday())));
+        let said = format!("{} {}（{kind}）{}", d, weekday(t, d.weekday()), stop.map(|s| format!(" {s}")).unwrap_or_default());
+        ito_a11y::say(&r, Role::Button, &said);
         day_press(&r, t, name, d, day, &mut out);
     }
     // The lines between the cells, and round the whole.
@@ -792,13 +809,14 @@ fn day_press(r: &egui::Response, t: &ito_i18n::Table, name: &str, d: NaiveDate, 
 /// weekday, date and name, then a row for each time something starts on those days, with the nets
 /// that start then as chips in their day's column. A column is tinted by what its day is and
 /// pressed as a day of the month is; a chip picks its day, and a double click on it opens the net.
+/// A planned stop is a day's tag as in the month, and a net in one is faint with ⊘.
 #[allow(clippy::too_many_arguments)]
 fn timetable(
     ui: &mut egui::Ui,
     t: &ito_i18n::Table,
     name: &str,
     week: &[(NaiveDate, Day)],
-    starts: &[(NaiveDate, Vec<crate::plan::Start>)],
+    (starts, stops): (&[(NaiveDate, Vec<crate::plan::Start>)], &[Blackout]),
     picked: Option<NaiveDate>,
     today: NaiveDate,
 ) -> Grid {
@@ -865,8 +883,14 @@ fn timetable(
             painter.text(at, egui::Align2::CENTER_CENTER, &date, mono.clone(), ink);
         }
         let named = show::day_name(t, day);
-        if let Some(n) = &named {
-            let tag = ito_prefs::Tag::new(n).color(day_colour(&c, day));
+        let stop = blackout::on_day(stops, d).map(|b| show::stop_mark(t, b));
+        let tagged = match (&named, &stop) {
+            (Some(n), _) => Some((n, day_colour(&c, day))),
+            (None, Some(s)) => Some((s, c.wait_text())),
+            (None, None) => None,
+        };
+        if let Some((n, colour)) = tagged {
+            let tag = ito_prefs::Tag::new(n).color(colour);
             let w = ito_prefs::tag_width(ui, tag).min(cw - 8.0);
             ito_prefs::paint_tag(&painter, ui.ctx(), &c, egui::pos2(x - w / 2.0, head.min.y + 42.0), tag, cw - 8.0);
         }
@@ -878,12 +902,11 @@ fn timetable(
         if r.has_focus() {
             rings.push((col.shrink(3.0), c.fg));
         }
-        let r = match &named {
-            Some(n) => r.on_hover_text(n),
-            None => r,
-        };
+        let hover: Vec<&str> = named.iter().chain(&stop).map(String::as_str).collect();
+        let r = if hover.is_empty() { r } else { r.on_hover_text(hover.join("\n")) };
         let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-        ito_a11y::say(&r, Role::Button, &format!("{} {}（{kind}）", d, weekday(t, w)));
+        let said = format!("{} {}（{kind}）{}", d, weekday(t, w), stop.map(|s| format!(" {s}")).unwrap_or_default());
+        ito_a11y::say(&r, Role::Button, &said);
         day_press(&r, t, name, d, day, &mut out);
     }
     // The rows: the time at the left, the nets that start then in their day's column, on top.
@@ -904,20 +927,30 @@ fn timetable(
                     egui::Rect::from_min_size(egui::pos2(col.min.x + 4.0, y + pad + n as f32 * (chip + gap)), egui::vec2(cw - 8.0, chip));
                 let r = ui.interact(cr, ui.id().with(("cal_week_net", *d, *at, id)), egui::Sense::click());
                 let hot = r.hovered() || r.has_focus();
-                painter.rect_filled(cr, 4.0, ito_theme::mix(tint, c.run, if hot { 0.22 } else { 0.12 }));
-                let edge = if hot { c.run } else { ito_theme::mix(tint, c.run, 0.4) };
+                // A net in a planned stop does not start then: faint, with ⊘ before it.
+                let stop = blackout::find(stops, *at);
+                let (ink, words) = if stop.is_some() { (c.dim, c.dim) } else { (c.run, c.fg) };
+                painter.rect_filled(cr, 4.0, ito_theme::mix(tint, ink, if hot { 0.22 } else { 0.12 }));
+                let edge = if hot { ink } else { ito_theme::mix(tint, ink, 0.4) };
                 painter.rect_stroke(cr, 4.0, egui::Stroke::new(1.0, edge), egui::StrokeKind::Inside);
+                let shown = match stop {
+                    Some(_) => format!("{} {net}", State::Skipped.mark()),
+                    None => net.clone(),
+                };
                 let mut job = egui::text::LayoutJob::single_section(
-                    net.clone(),
-                    egui::TextFormat { font_id: font.clone(), color: c.fg, ..Default::default() },
+                    shown,
+                    egui::TextFormat { font_id: font.clone(), color: words, ..Default::default() },
                 );
                 job.wrap.max_width = cr.width() - 12.0;
                 job.wrap.max_rows = 1;
                 job.wrap.break_anywhere = true;
                 job.wrap.overflow_character = Some('…');
                 let g = painter.layout_job(job);
-                painter.galley(egui::pos2(cr.min.x + 6.0, cr.center().y - g.size().y / 2.0), g, c.fg);
-                let said = format!("{} {} {net}", d, at.format("%H:%M"));
+                painter.galley(egui::pos2(cr.min.x + 6.0, cr.center().y - g.size().y / 2.0), g, words);
+                let said = match stop {
+                    Some(b) => format!("{} {} {net} {}", d, at.format("%H:%M"), show::stop_mark(t, b)),
+                    None => format!("{} {} {net}", d, at.format("%H:%M")),
+                };
                 if net_link(ui, t, &r, &said) {
                     out.open = Some(id.clone());
                 } else if r.clicked() {
@@ -959,6 +992,7 @@ impl Browser {
         let c = ito_theme::colors();
         let starts =
             self.snap.as_ref().and_then(|s| crate::plan::days(&s.defs, &s.calendars, d, 1).pop()).map(|(_, l)| l).unwrap_or_default();
+        let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
         let mut side = Side::default();
         let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
         card(ui, &c, |ui| {
@@ -980,12 +1014,23 @@ impl Browser {
             let r = ui.add(egui::Label::new(egui::RichText::new(&head).strong()).wrap());
             ito_a11y::say(&r, Role::Heading, &head);
             ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.day_note")).color(c.dim).small()).wrap());
+            // A planned stop on the day: what it is and from when to when.
+            if let Some(b) = blackout::on_day(stops, d) {
+                let words = format!("{}  {}", show::stop_mark(t, b), b.when());
+                let r = ui.add(egui::Label::new(egui::RichText::new(&words).color(c.wait_text())).wrap());
+                ito_a11y::say(&r, Role::Label, &words);
+            }
             ui.add_space(6.0);
             if starts.is_empty() {
                 ui.label(egui::RichText::new(t.tr("calendar.day_none")).color(c.dim));
             }
             for (at, net, id) in &starts {
-                let hm = at.format("%H:%M").to_string();
+                let stop = blackout::find(stops, *at);
+                let hm = match stop {
+                    Some(b) => format!("{}  {}", at.format("%H:%M"), show::stop_mark(t, b)),
+                    None => at.format("%H:%M").to_string(),
+                };
+                let ink = if stop.is_some() { c.dim } else { c.run };
                 let r = egui::Frame::new()
                     .fill(c.raised())
                     .stroke(egui::Stroke::new(1.0, c.border))
@@ -993,7 +1038,7 @@ impl Browser {
                     .inner_margin(egui::Margin::symmetric(10, 6))
                     .show(ui, |ui| {
                         ui.set_width(ui.available_width());
-                        ui.add(egui::Label::new(egui::RichText::new(&hm).monospace().strong().color(c.run)).selectable(false));
+                        ui.add(egui::Label::new(egui::RichText::new(&hm).monospace().strong().color(ink)).selectable(false));
                         ui.add(egui::Label::new(net.as_str()).wrap().selectable(false));
                     })
                     .response

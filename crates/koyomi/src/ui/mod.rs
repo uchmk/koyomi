@@ -776,7 +776,11 @@ impl Browser {
             .filter_map(|d| {
                 let net = d.net.as_ref()?;
                 let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal).into_iter().next()
+                koyomi_core::blackout::outside(&snap.blackouts, now, 1, |after, k| {
+                    koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, after, k, cal)
+                })
+                .into_iter()
+                .next()
             })
             .min();
         (word, running, next)
@@ -1417,7 +1421,8 @@ impl Browser {
         let no_power = crate::proto::Power::default();
         let power = self.snap.as_ref().map(|s| &s.power).unwrap_or(&no_power);
         let defs = self.snap.as_ref().map(|s| s.defs.as_slice()).unwrap_or(&[]);
-        let around = canvas::Around { calendars, power, depth: self.editors.len(), defs };
+        let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
+        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -1551,6 +1556,24 @@ impl Browser {
                         let _ = self.tx.send(Request::Resume);
                     }
                 });
+            });
+        }
+        // A planned stop going on, or one to begin within the week: its time comes and nothing starts.
+        let stop_line = self.snap.as_ref().and_then(|s| {
+            let now = chrono::Local::now().naive_local();
+            let b = koyomi_core::blackout::near(&s.blackouts, now, 7)?;
+            let why = show::stop_why(t, b);
+            Some(if b.contains(now) {
+                t.trf("band.blackout_now", &[why, b.to.trim()])
+            } else {
+                t.trf("band.blackout_soon", &[why, b.from.trim(), b.to.trim()])
+            })
+        });
+        if let Some(line) = stop_line {
+            egui::Panel::top("blackout").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
+                let text = format!("{} {line}", State::Skipped.mark());
+                let r = ui.add(egui::Label::new(egui::RichText::new(text.clone()).color(c.wait_text())).wrap());
+                ito_a11y::say(&r, Role::Label, &text);
             });
         }
         // The lesser notes (autostart off; the calendars: a file that does not read, a holiday table
@@ -2035,13 +2058,8 @@ impl Browser {
             .map(|(order, d)| {
                 let held = snap.held.contains(&d.id);
                 let last = self.runs.iter().filter(|r| r.jobnet == d.id).max_by_key(|r| r.started);
-                let next = match (&d.net, d.standing == Standing::Confirmed && !held) {
-                    (Some(net), true) => {
-                        let cal = d.calendar.as_deref().and_then(|c| snap.calendars.get(c));
-                        koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal).into_iter().next()
-                    }
-                    _ => None,
-                };
+                // The next time that starts: quiet hours and planned stops seen.
+                let next = snap.next_start(d, now);
                 let took = last.map(|r| r.duration().unwrap_or(now - r.started));
                 let note = match d.standing {
                     Standing::Confirmed if held => t.tr("state.held").to_owned(),
@@ -2125,19 +2143,24 @@ impl Browser {
         }
     }
 
-    /// Today as a table: what is still to come (waiting), then the runs newest first, each with its
-    /// state, net, planned time, start, end and duration. A click on a run opens it.
+    /// Today as a table: what is still to come (waiting, or スキップ with why in a planned stop), then
+    /// the runs newest first, each with its state, net, planned time, start, end and duration. A
+    /// click on a run opens it.
     fn today_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
         let now = chrono::Local::now().naive_local();
-        let mut coming: Vec<(chrono::NaiveDateTime, String, String, Option<String>)> = Vec::new();
+        let mut coming: Vec<(chrono::NaiveDateTime, String, String, Option<String>, State)> = Vec::new();
         for (d, at) in snap.starts_today(now) {
             let wake = d.net.as_ref().is_some_and(|n| n.wake);
             let sleep = show::Sleep::of(&snap.power, wake);
-            coming.push((at, d.id.clone(), d.label().to_owned(), show::sleep_mark(t, &sleep, at, now)));
+            coming.push((at, d.id.clone(), d.label().to_owned(), show::sleep_mark(t, &sleep, at, now), State::Waiting));
         }
-        coming.sort();
+        // A time in a planned stop is shown, as the スキップ it will be, with why.
+        for (d, at, b) in snap.stopped_today(now) {
+            coming.push((at, d.id.clone(), d.label().to_owned(), Some(show::stop_mark(t, b)), State::Skipped));
+        }
+        coming.sort_by(|a, b| (a.0, &a.1).cmp(&(b.0, &b.1)));
         // The next start of a net (by id) after `from`: quiet spans are seen, a held net has none.
         let by_id: std::collections::HashMap<&str, &Def> = snap.defs.iter().map(|d| (d.id.as_str(), d)).collect();
         let average = |id: &str| self.past.get(id).copied();
@@ -2151,15 +2174,15 @@ impl Browser {
         }
         // The rows: what is still to come, then the runs, newest first.
         let mut rows: Vec<TodayRow> = Vec::new();
-        for (at, id, title, mark) in &coming {
+        for (at, id, title, mark, state) in &coming {
             let planned = match mark {
                 Some(m) => format!("{}  {m}", show::hms(*at)),
                 None => show::hms(*at),
             };
-            let usual = average(id);
+            let usual = average(id).filter(|_| *state == State::Waiting);
             let next = next_at(id, *at);
             // Read out as a run's row is: its state, the net and when it starts.
-            let said = format!("{} {title} {planned}", show::tag(t, State::Waiting));
+            let said = format!("{} {title} {planned}", show::tag(t, *state));
             let cells = [
                 planned,
                 String::new(),
@@ -2168,13 +2191,13 @@ impl Browser {
                 next_words(next),
             ];
             rows.push(TodayRow {
-                state: State::Waiting,
+                state: *state,
                 title: title.clone(),
                 said,
                 cells,
                 run: None,
                 net: id.clone(),
-                kinds: vec![TodayKind::Is(State::Waiting)],
+                kinds: vec![TodayKind::Is(*state)],
                 keys: (Some(*at), None, None, usual.map(|a| a.num_milliseconds()), next.map(stamp)),
             });
         }
@@ -3638,8 +3661,9 @@ impl Browser {
                 }
                 let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
                 let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
-                let rows =
-                    show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, chrono::Local::now().naive_local(), 10, power.as_ref());
+                let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
+                let now = chrono::Local::now().naive_local();
+                let rows = show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, now, 10, power.as_ref(), stops);
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
                 }

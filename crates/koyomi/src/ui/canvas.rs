@@ -74,6 +74,8 @@ const STRIP_DAYS: u64 = 7;
 pub struct Around<'a> {
     pub calendars: &'a BTreeMap<String, Calendar>,
     pub power: &'a crate::proto::Power,
+    /// The planned stops: the next starts step over them.
+    pub stops: &'a [koyomi_core::blackout::Blackout],
     /// How many editors lie under this one (0: none, so no 親へ戻る).
     pub depth: usize,
     /// Every definition: 検査 links the net with them, and the 未確認 badge reads this one's.
@@ -1477,7 +1479,7 @@ impl Editor {
                 }
             });
         });
-        self.drawer(ui, t, calendars, power, &mut action);
+        self.drawer(ui, t, (calendars, around.stops), power, &mut action);
         egui::Panel::bottom("editor-foot").show(ui, |ui| {
             let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
             self.foot(ui, t, cal);

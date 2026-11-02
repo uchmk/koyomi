@@ -1512,3 +1512,22 @@ Two of your PCs on one tailnet with Tailscale running: this PC (the engine), who
 | 108.7 | Change `tailscale` to another login, restart, `curl http://<pc>:8791/me`; then add `token = "secret:sato"` and send that token as `Authorization: Bearer …` | 401; then 200 as sato (a token works on the tailnet port too) |
 | 108.8 | On a PC tagged `tag:koyomi-ha` (`tailscale up --advertise-tags=tag:koyomi-ha`), with `[[http.user]]` `name = "ha"`, `tailscale = "tag:koyomi-ha"`; `curl http://<pc>:8791/me` from it; then the same from a PC whose tags are other ones but whose login is `<login>` | 200 as ha; then 401 (a tagged PC is judged by its tags, not the login) |
 | 108.9 | Quit Tailscale on this PC (exit it from the tray, or stop the Tailscale service), start the engine and run `koyomi engine status`; then start Tailscale again | The engine starts and the window and Web UI on this PC work; the status line ends `tailnet の :8791 はまだ開けない` and the window's notes show `koyomi.toml: [http] の tailnet の :8791 がまだ開けない（…）。Tailscale が動けば開く`; within about a minute of Tailscale coming back the log says `koyomi: HTTP: tailnet の :8791 を開いた（Tailscale の相手は token なし）`, the note goes, and 108.3 works |
+
+## 109. Planned stops (`[[blackout]]`; TODO 106)
+
+A confirmed net `基盤/毎時` with `[[when]]` `every = "hour"`, `at = [":00", ":30"]` (or any times you can wait for), and the window open on 今日. Below, `<a>` and `<b>` are two times a few minutes apart from now, today, as `HH:MM`, with a `:00` or `:30` of the net between them.
+
+| # | Do | Expect |
+|---|---|---|
+| 109.1 | `koyomi check koyomi.toml` with, one at a time, a `[[blackout]]` with: `from = "2026/12/29"`; `to = "あした"`; `to` before `from`; no `to`; `reason = "x"` | Each is refused with its line in Japanese (`[[blackout]] の from は "2026-12-29" か "2026-12-29 22:00" で書く…`, `…to は…`, `[[blackout]] の to（…）が from（…）より前`, the missing field, the unknown field) |
+| 109.2 | Add `[[blackout]]` `from = "<today> <a>"`, `to = "<today> <b>"`, `why = "電源工事"` and save | Within 5 s the band above 今日 says `⊘ 計画停止があります（電源工事）。<today> <a> から <today> <b> まで、時刻が来ても流しません`; in 今日 the net's time between `<a>` and `<b>` is a スキップ row with `⊘ 計画停止（電源工事）`, not a 待ち row |
+| 109.3 | Wait until `<a>` | The band says `⊘ 計画停止中です（電源工事）。<today> <b> まで、時刻が来ても流しません（手で流すことはできます）` |
+| 109.4 | Wait past the net's time in the stop | No run starts; 今日 and 履歴 show a スキップ record with the reason `計画停止（電源工事、<today> <a>〜<today> <b>）`; `koyomi history` shows the same |
+| 109.5 | During the stop, 今すぐ流す on the net (or `koyomi run 基盤/毎時`) | It runs and ends ✓ (a run by hand is not stopped) |
+| 109.6 | A run that is still going at `<a>` (a job with `ping -n 300 127.0.0.1`, started by hand just before) | It goes on to its end; nothing stops it |
+| 109.7 | After `<b>`; restart the engine | The band goes; the time in the stop is not caught up (no 逃した run for it); the next time after `<b>` runs as usual |
+| 109.8 | `koyomi next 基盤/毎時` while a stop is ahead | The next starts step over the stop (none of them is in it); open the net in the editor and look at 次の開始 in its pane: the same |
+| 109.9 | Change the stop to `from = "<tomorrow>"`, `to = "<the day after>"`, `why = "年末年始"`; open カレンダー on the month, then the week, then the day | The two days carry the tag `⊘ 計画停止（年末年始）` in the wait colour; the net's chips on them are dim with `⊘`; hovering one says the stop; the day view shows `⊘ 計画停止（年末年始）  <tomorrow>〜<the day after>` under the day and each card `HH:MM  ⊘ 計画停止（年末年始）` |
+| 109.10 | `koyomi plan <YYYY-MM>`, then with `--csv <file>` and `--pdf <file>`; then カレンダー's この月の予定を印刷… | Each start on the two days ends with `  ⊘ 計画停止（年末年始）`; the others are as before |
+| 109.11 | Remove `why` | The marks read `⊘ 計画停止（理由なし）` and the record's reason `計画停止（<from>〜<to>）` |
+| 109.12 | Turn on a screen reader (NVDA) and move over the band, a skipped 今日 row and a calendar chip in the stop | Each is read with the stop and its why |

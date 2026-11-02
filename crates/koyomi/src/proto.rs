@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 use chrono::NaiveDateTime;
 use ito_ipc::door::Door;
+use koyomi_core::blackout::{self, Blackout};
 use koyomi_core::calendar::Calendar;
 use koyomi_core::held::{HeldJob, Skip};
 use koyomi_core::run::{Run, State};
@@ -287,6 +288,9 @@ pub struct Snapshot {
     /// This PC's power settings as the engine sees them: what marks the next times.
     #[serde(default)]
     pub power: Power,
+    /// `[[blackout]]` in `koyomi.toml`: the planned stops, in which no time starts a net.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub blackouts: Vec<Blackout>,
 }
 
 /// How this PC sleeps and whether the engine can wake it (`wake = true` nets).
@@ -318,7 +322,18 @@ impl Snapshot {
     /// Every start of an approved, not held net still to come today: the planned times as the quiet
     /// spans leave them (a skipped one is gone, a waiting one moves to the span's end). What the
     /// window's 今日 and the Web UI list as 待ち.
+    /// A time in a planned stop (`[[blackout]]`) is not one: [`Snapshot::stopped_today`] lists those.
     pub fn starts_today(&self, now: NaiveDateTime) -> Vec<(&Def, NaiveDateTime)> {
+        self.today(now).into_iter().filter(|(_, at)| blackout::find(&self.blackouts, *at).is_none()).collect()
+    }
+
+    /// The starts still to come today that a planned stop keeps from starting, with the stop.
+    pub fn stopped_today(&self, now: NaiveDateTime) -> Vec<(&Def, NaiveDateTime, &Blackout)> {
+        self.today(now).into_iter().filter_map(|(d, at)| blackout::find(&self.blackouts, at).map(|b| (d, at, b))).collect()
+    }
+
+    /// Every time still to come today of an approved, not held net, planned stops or not.
+    fn today(&self, now: NaiveDateTime) -> Vec<(&Def, NaiveDateTime)> {
         let end = now.date().and_hms_opt(23, 59, 59).unwrap_or(now);
         let mut out = Vec::new();
         for d in self.defs.iter().filter(|d| self.starts(d)) {
@@ -330,10 +345,14 @@ impl Snapshot {
         out
     }
 
-    /// The next start of `d` after `from`, quiet spans seen; none for a net not approved or on hold.
+    /// The next start of `d` after `from`, quiet spans and planned stops seen; none for a net not
+    /// approved or on hold.
     pub fn next_start(&self, d: &Def, from: NaiveDateTime) -> Option<NaiveDateTime> {
         let net = d.net.as_ref().filter(|_| self.starts(d))?;
-        quiet::next_starts(&net.when, &net.quiet, net.on_quiet, from, 1, self.calendar_of(d)).into_iter().next()
+        let cal = self.calendar_of(d);
+        blackout::outside(&self.blackouts, from, 1, |after, k| quiet::next_starts(&net.when, &net.quiet, net.on_quiet, after, k, cal))
+            .into_iter()
+            .next()
     }
 
     /// Whether a time of `d` starts it: approved and not on hold.

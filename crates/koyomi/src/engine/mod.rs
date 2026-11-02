@@ -17,6 +17,7 @@ use chrono::{DateTime, Local, NaiveDate, NaiveDateTime, TimeZone, Utc};
 use ito_ipc::door::{ask, Ask};
 use ito_prefs::NotifyCfg;
 use koyomi_core::approved::{self, Store};
+use koyomi_core::blackout::Blackout;
 use koyomi_core::bundle::{self, Change};
 use koyomi_core::calendar::Calendars;
 use koyomi_core::config::Config;
@@ -165,6 +166,8 @@ struct State {
     warnings: Vec<String>,
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
     bad_config: Option<String>,
+    /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
+    blackouts: Vec<Blackout>,
     runner: Runner,
     /// The clock: when `[[when]]` was last looked at.
     schedule: Schedule,
@@ -244,6 +247,7 @@ impl State {
             Err(e) => (Config::default(), Some(e)),
         };
         let keep = retain::Settings::of(&config);
+        let blackouts = config.blackout.clone();
         let mut runner = Runner::new(&paths.state, config);
         runner.set_jobnets(paths.jobnets.clone());
         let schedule = Schedule::new(&paths.state);
@@ -262,6 +266,7 @@ impl State {
             calendars: Calendars::default(),
             warnings: Vec::new(),
             bad_config,
+            blackouts,
             runner,
             schedule,
             events: events::Events::new(),
@@ -333,6 +338,7 @@ impl State {
                 self.http_cfg = c.http.clone();
                 self.standby.set(c.standby.as_ref(), &c.remote);
                 self.primary.set(c.primary.as_ref(), &c.remote);
+                self.blackouts = c.blackout.clone();
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
@@ -473,7 +479,7 @@ impl State {
     /// What the tray shows now.
     fn tray_look(&self) -> tray::Look {
         let now = Local::now().naive_local();
-        let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, now, false) };
+        let next = if self.held.paused { None } else { next_due(&self.defs, &self.calendars, &self.held, &self.blackouts, now, false) };
         tray::look(&self.words, &self.runner.today(), self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
     }
 
@@ -515,7 +521,7 @@ impl State {
         self.power_look = Some(Instant::now());
         self.sleep_after = ito_power::sleep_after();
         let now = Local::now().naive_local();
-        let next = if self.held.paused { None } else { next_wake(&self.defs, &self.calendars, &self.held, now) };
+        let next = if self.held.paused { None } else { next_wake(&self.defs, &self.calendars, &self.held, &self.blackouts, now) };
         let Some((start, id)) = next else {
             self.wake = None;
             return;
@@ -582,7 +588,7 @@ impl State {
                     continue;
                 }
             }
-            if let Some((state, why)) = self.stopped(&def, planned.date()) {
+            if let Some((state, why)) = self.stopped(&def, planned.date(), *planned) {
                 self.runner.not_run(&def, *planned, state, &why);
                 continue;
             }
@@ -658,7 +664,7 @@ impl State {
         for theirs in &runs {
             let def = self.defs.iter().find(|d| d.id == theirs.jobnet && d.standing == Standing::Confirmed).cloned();
             let why = match (koyomi_core::standby::resume(theirs, def.as_ref().and_then(|d| d.net.as_ref())), &def) {
-                (Resume::Rerun, Some(d)) => match self.stopped(d, today) {
+                (Resume::Rerun, Some(d)) => match self.stopped(d, today, Local::now().naive_local()) {
                     Some((_, why)) => why,
                     None => match self.runner.resume(d, theirs, from) {
                         Ok(_) => {
@@ -777,7 +783,7 @@ impl State {
                 self.quieted.push(q);
                 continue;
             }
-            if let Some((state, why)) = self.stopped(&q.def, q.planned.date()) {
+            if let Some((state, why)) = self.stopped(&q.def, q.planned.date(), now) {
                 self.runner.not_run(&q.def, q.planned, state, &why);
                 continue;
             }
@@ -844,11 +850,16 @@ impl State {
         }
     }
 
-    /// Why `def` is not to start on `day` whatever its `[[when]]` says: the
-    /// holiday table does not reach the day (it may be a holiday, so it is not
-    /// run as if it were not), the schedule is paused, or the net is held.
-    /// Each is written down (⏸ for the two by hand), so nothing is lost in silence.
-    fn stopped(&self, def: &Def, day: NaiveDate) -> Option<(RunState, String)> {
+    /// Why `def` is not to start on `day` whatever its `[[when]]` says: `at` (its
+    /// time) or now is in a planned stop (`[[blackout]]`), the holiday table does
+    /// not reach the day (it may be a holiday, so it is not run as if it were not),
+    /// the schedule is paused, or the net is held. Each is written down (⏸ for the
+    /// two by hand), so nothing is lost in silence.
+    fn stopped(&self, def: &Def, day: NaiveDate, at: NaiveDateTime) -> Option<(RunState, String)> {
+        let now = Local::now().naive_local();
+        if let Some(b) = koyomi_core::blackout::find(&self.blackouts, at).or_else(|| koyomi_core::blackout::find(&self.blackouts, now)) {
+            return Some((RunState::Skipped, b.reason()));
+        }
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         if let Some(until) = cal.filter(|c| c.stale(day)).and_then(|c| c.until()) {
             return Some((RunState::Locked, format!("祝日の表が古い（{until} まで）")));
@@ -900,7 +911,7 @@ impl State {
                     self.runner.not_run(&def, now, RunState::Skipped, &why);
                     continue;
                 }
-                if let Some((state, why)) = self.stopped(&def, today) {
+                if let Some((state, why)) = self.stopped(&def, today, now) {
                     self.runner.not_run(&def, now, state, &why);
                     continue;
                 }
@@ -933,7 +944,7 @@ impl State {
                 self.events.fired(&a.def_id, &a.pattern, &a.path);
                 continue;
             }
-            if let Some((state, why)) = self.stopped(&def, today) {
+            if let Some((state, why)) = self.stopped(&def, today, now) {
                 self.runner.not_run(&def, now, state, &why);
                 self.events.fired(&a.def_id, &a.pattern, &a.path);
                 continue;
@@ -971,7 +982,7 @@ impl State {
                 self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}: {}{more}", hit.first));
                 continue;
             }
-            if let Some((state, why)) = self.stopped(&def, today) {
+            if let Some((state, why)) = self.stopped(&def, today, now) {
                 self.runner.not_run(&def, now, state, &why);
                 continue;
             }
@@ -1014,7 +1025,7 @@ impl State {
                     self.runner.not_run(&def, now, RunState::Skipped, &why);
                     continue;
                 }
-                if let Some((state, why)) = self.stopped(&def, date) {
+                if let Some((state, why)) = self.stopped(&def, date, now) {
                     self.runner.not_run(&def, now, state, &why);
                     continue;
                 }
@@ -1148,6 +1159,7 @@ impl State {
             calendar_cautions: self.calendars.cautions_by_calendar(Local::now().date_naive(), CAUTION_DAYS),
             calendars: self.calendars.map.clone(),
             power: self.power(),
+            blackouts: self.blackouts.clone(),
         }
     }
 
@@ -1407,7 +1419,7 @@ impl State {
         let _ = self.save_held();
         for s in due {
             let Some(def) = self.defs.iter().find(|d| d.id == s.id).cloned() else { continue };
-            if let Some((state, why)) = self.stopped(&def, s.from.date()) {
+            if let Some((state, why)) = self.stopped(&def, s.from.date(), now) {
                 self.runner.not_run(&def, s.from, state, &why);
             } else if let Err(e) = self.runner.start(&def, s.from.date(), How::Schedule, Some(s.from)) {
                 self.runner.not_run(&def, s.from, RunState::Locked, &e);
@@ -2083,21 +2095,31 @@ impl Wake {
 }
 
 /// The soonest time after `now` of a confirmed `wake = true` net not on hold, and the net.
-fn next_wake(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime) -> Option<(NaiveDateTime, String)> {
-    next_due(defs, calendars, held, now, true)
+fn next_wake(defs: &[Def], calendars: &Calendars, held: &Held, stops: &[Blackout], now: NaiveDateTime) -> Option<(NaiveDateTime, String)> {
+    next_due(defs, calendars, held, stops, now, true)
 }
 
 /// The soonest time of a confirmed net that is not held (of a `wake = true` one when `wake`), with its id.
-fn next_due(defs: &[Def], calendars: &Calendars, held: &Held, now: NaiveDateTime, wake: bool) -> Option<(NaiveDateTime, String)> {
+fn next_due(
+    defs: &[Def],
+    calendars: &Calendars,
+    held: &Held,
+    stops: &[Blackout],
+    now: NaiveDateTime,
+    wake: bool,
+) -> Option<(NaiveDateTime, String)> {
     defs.iter()
         .filter(|d| d.standing == Standing::Confirmed && !held.is_held(&d.id))
         .filter_map(|d| {
             let net = d.net.as_ref().filter(|n| n.wake || !wake)?;
             let cal = d.calendar.as_deref().and_then(|c| calendars.get(c));
-            koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, now, 1, cal)
-                .into_iter()
-                .next()
-                .map(|at| (at, d.id.clone()))
+            // A time in a planned stop does not start, so it neither wakes the PC nor keeps it up.
+            koyomi_core::blackout::outside(stops, now, 1, |after, k| {
+                koyomi_core::quiet::next_starts(&net.when, &net.quiet, net.on_quiet, after, k, cal)
+            })
+            .into_iter()
+            .next()
+            .map(|at| (at, d.id.clone()))
         })
         .min()
 }
@@ -2342,11 +2364,14 @@ run = [\"x\"]
         let cals = Calendars::default();
         let mut held = Held::default();
         let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").unwrap();
-        assert_eq!(next_wake(&defs, &cals, &held, now), Some((at("2026-10-31 02:00"), "夜/中".to_owned())));
+        assert_eq!(next_wake(&defs, &cals, &held, &[], now), Some((at("2026-10-31 02:00"), "夜/中".to_owned())));
+        // A time in a planned stop does not wake the PC: the next one past it does.
+        let stop = [Blackout { from: "2026-10-31 01:45".into(), to: "2026-10-31 02:30".into(), why: "電源工事".into() }];
+        assert_eq!(next_wake(&defs, &cals, &held, &stop, now), Some((at("2026-10-31 03:00"), "夜/遅い".to_owned())));
         held.held.push("夜/中".to_owned());
-        assert_eq!(next_wake(&defs, &cals, &held, now), Some((at("2026-10-31 03:00"), "夜/遅い".to_owned())));
+        assert_eq!(next_wake(&defs, &cals, &held, &[], now), Some((at("2026-10-31 03:00"), "夜/遅い".to_owned())));
         defs.truncate(2);
-        assert_eq!(next_wake(&defs, &cals, &held, now), None);
+        assert_eq!(next_wake(&defs, &cals, &held, &[], now), None);
         let w = Wake { start: at("2026-10-31 02:00"), id: String::new(), set: Err(ito_power::WhyNot::OnBattery) };
         assert!(!w.waking(at("2026-10-31 01:57")));
         assert!(w.waking(at("2026-10-31 01:58")) && w.waking(at("2026-10-31 02:01")));
@@ -2820,6 +2845,7 @@ run = [\"x.exe\"]
                 wake_at: Some("2026-10-31 01:58".into()),
                 wake_for: Some("夜/中".into()),
             },
+            blackouts: vec![Blackout { from: "2026-12-29".into(), to: "2027-01-03".into(), why: "年末年始".into() }],
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
