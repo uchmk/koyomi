@@ -84,7 +84,7 @@ fn transfer() -> Result<usize, String> {
     let host_key = var("HOST_KEY").ok_or("host_key がない")?;
     let session = ito_sftp::Session::connect(&target(&far, host_key, "sftp")?).map_err(|e| format!("{}: {e}", far.host))?;
     let never = AtomicBool::new(false);
-    let opts = ito_sftp::Options { overwrite: true };
+    let opts = ito_sftp::Options { overwrite: true, ..Default::default() };
     if send {
         let Some(local) = sendable(Path::new(&from)) else {
             crate::say(&format!("no file to send: {from}"), false);

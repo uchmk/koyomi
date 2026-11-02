@@ -117,7 +117,7 @@ fn send_files(target: &Target, at: &S3, from: &str, stop: &AtomicBool) -> Result
     for (local, _, _) in &files {
         let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let key = format!("{folder}{name}");
-        let bytes = ito_cloud::put(target, local, &key, &opts, stop, &mut progress(&name)).map_err(|e| why(&e, &at.bucket, &key))?;
+        let bytes = ito_cloud::put(target, local, &key, &opts, stop, &mut progress(&name)).map_err(|e| why(&e, &at.bucket, &key))?.bytes;
         crate::say(&format!("sent: s3://{}/{key} ({bytes} bytes)", at.bucket), false);
     }
     Ok(0)
@@ -147,7 +147,7 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, stop: &AtomicBool) -> Result
         let name = &e.key[dir.len()..];
         let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..opts };
         let bytes =
-            ito_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name)).map_err(|x| why(&x, &at.bucket, &e.key))?;
+            ito_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name)).map_err(|x| why(&x, &at.bucket, &e.key))?.bytes;
         crate::say(&format!("fetched: s3://{}/{} ({bytes} bytes)", at.bucket, e.key), false);
     }
     Ok(0)
@@ -180,6 +180,7 @@ fn why(e: &Error, bucket: &str, key: &str) -> String {
     match e {
         Error::Auth(s) => format!("{at}: 断られた: {s}（key_id・password・region を確かめる）"),
         Error::NotFound => format!("{at}: バケットかキーがない"),
+        Error::Mismatch(s) => format!("{at}: 届いたバイトが合わない: {s}"),
         Error::Cancelled => format!("{at}: 止めた（送りかけ・受けかけのものは残していない）"),
         Error::Timeout => format!("{at}: 時間切れ"),
         Error::Network(s) => format!("{at}: つなげない: {s}"),
