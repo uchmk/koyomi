@@ -1066,6 +1066,11 @@ fn line_fate(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) ->
 }
 
 /// [`line_fate`], following at most `depth` skipped jobs back (a cycle that cannot be placed ends there).
+/// Whether a reason says a person skipped the job, also after a rerun carried it.
+fn skipped_by_person(reason: &str) -> bool {
+    reason == SKIPPED || reason.strip_prefix(CARRIED).and_then(|r| r.strip_prefix(": ")) == Some(SKIPPED)
+}
+
 fn line_fate_in(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, depth: usize) -> Fate {
     let Some(p) = jobs.iter().find(|j| j.id == l.job) else { return Fate::Dead };
     if p.pending() || matches!(p.state, State::Running | State::Held) {
@@ -1073,7 +1078,7 @@ fn line_fate_in(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>,
     }
     // A job a person skipped before its own lines were met is only passed through: what comes after
     // it waits for what it waited for, and goes the way those lines go (a failed `a` is still a failed `a`).
-    if depth > 0 && p.state == State::Skipped && p.reason == SKIPPED && p.started.is_none() {
+    if depth > 0 && p.state == State::Skipped && skipped_by_person(&p.reason) && p.started.is_none() {
         match fate_in(p, jobs, codes, depth - 1).0 {
             Fate::Open => return Fate::Open,
             Fate::Dead => return Fate::Dead,
@@ -1461,6 +1466,22 @@ mod tests {
         r.finish("a", Outcome::Exited(3), at("2026-10-30 09:00:02"));
         assert!(r.ready().is_empty());
         assert_eq!(r.job("d").unwrap().state, State::NotRun);
+    }
+
+    #[test]
+    fn a_carried_skip_stays_transparent_in_a_rerun() {
+        let now = at("2026-10-30 10:00:00");
+        let net = diamond_net();
+        let mut prev = diamond();
+        let t = at("2026-10-30 09:00:01");
+        prev.start("a", t);
+        prev.skip("b", t).unwrap();
+        prev.skip("c", t).unwrap();
+        prev.finish("a", Outcome::Exited(3), at("2026-10-30 09:00:02"));
+        let r = Run::rerun("r2", &prev, &net, None, now).unwrap();
+        assert_eq!(r.job("b").unwrap().reason, format!("{CARRIED}: {SKIPPED}"));
+        assert_eq!(r.ready(), vec!["a"]);
+        assert_eq!(r.job("d").unwrap().state, State::Waiting);
     }
 
     #[test]
