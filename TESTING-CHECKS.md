@@ -564,7 +564,7 @@
 
 ## 49. 回復の通知
 
-- [ ] **49.1** Run a net whose job exits 3, then change it to exit 0 and run it again → The second end shows "Back to normal" naming the abnormal run, after the usual ok end 〔未訳〕
+- [ ] **49.1** [x] Run a net whose job exits 3, then change it to exit 0 and run it again → The second end shows "Back to normal" naming the abnormal run, after the usual ok end 〔未訳〕
 - [ ] **49.2** [x] Run it ok once more → No recovery notice (the run before it was ok) 〔未訳〕
 
 ## 50. ジョブの間で値を渡す
@@ -578,7 +578,7 @@
 - [ ] **51.2** [x] Start a net without `lock` meanwhile → It starts normally 〔未訳〕
 - [ ] **51.3** [x] Wait for the first to end, start the second again → It starts 〔未訳〕
 - [ ] **51.4** [x] Give two nets `lock = { name = "db", shared = true }` and one `lock = "db"`; start both shared nets (slow jobs), then the plain one by hand → Both shared nets run together; the plain one is refused with 「排他「db」は … が共有で使っている」 〔未訳〕
-- [ ] **51.5** While the plain `lock = "db"` net runs, start a shared one by hand → Refused with 「共有「db」は … が排他で使っている」 〔未訳〕
+- [ ] **51.5** [x] While the plain `lock = "db"` net runs, start a shared one by hand → Refused with 「共有「db」は … が排他で使っている」 〔未訳〕
 - [ ] **51.6** [x] Put `[locks]` `"api" = 2` in koyomi.toml; give three nets `lock = "api"` (slow jobs) and start them one after another → The first two run together; the third is refused with 「排他「api」は 2 本まで。… が使っている」 〔未訳〕
 - [ ] **51.7** [x] Give the third of 51.6 a schedule a minute ahead while the other two still run → At its time the day shows it 🔒 止めた, with the same reason 〔未訳〕
 - [ ] **51.8** [x] Write `"api" = 0` (or `"a/b" = 2`) under `[locks]` → The engine shows 「koyomi.toml が読めない（[locks] の "api" は同時に持てる数で、1 以上 …）。直すまで流さない」 (or the line about the name) 〔未訳〕
@@ -586,9 +586,9 @@
 
 ## 52. 人の確認待ち
 
-- [ ] **52.1** Add an "approval" part (shelf) between two jobs and start the net → The run waits at the approval part and a notification arrives 〔未訳〕
-- [ ] **52.2** Press "承認する" on the run's toolbar → The part ends 正常 and the next job runs 〔未訳〕
-- [ ] **52.3** Start again and press "却下する" (or `koyomi approve-step <run> <job> --no`) → The part ends 異常, the run fails and the next job does not run 〔未訳〕
+- [ ] **52.1** [x] Add an "approval" part (shelf) between two jobs and start the net → The run waits at the approval part and a notification arrives 〔未訳〕
+- [ ] **52.2** [x] Press "承認する" on the run's toolbar → The part ends 正常 and the next job runs 〔未訳〕
+- [ ] **52.3** [x] Start again and press "却下する" (or `koyomi approve-step <run> <job> --no`) → The part ends 異常, the run fails and the next job does not run 〔未訳〕
 
 ## 53. 期間をまとめて流す
 
@@ -596,12 +596,12 @@
 - [ ] **53.2** [x] Run it without `--dry` → The days run one after another, each started after the last ended 〔未訳〕
 - [ ] **53.3** [x] Make one day fail, then run the range → It stops at that day with a non-zero exit 〔未訳〕
 - [ ] **53.4** [x] `--date 2026-05-03..2026-05-01` → Refused: the range ends before it starts 〔未訳〕
-- [ ] **53.5** For a net that runs daily, with runs on some days of the last week and one of them ended 異常: `koyomi run <net> --date <a week ago>..<today> --only missing --dry` → Each day is listed: 流す for the days with no run (実行の記録がない, or only a 時刻を過ぎた/保留/未確認で止めた record, or a スキップ whose reason is 待っている間にエンジンが止まった: stop the engine while a time waits for the run before it), 流さない with the record's state and id for a day whose last record is any other スキップ and for the others; nothing starts 〔未訳〕
+- [ ] **53.5** [x] For a net that runs daily, with runs on some days of the last week and one of them ended 異常: (a run cut off by stopping the engine counts as 異常終了, so its day shows 流さない 異常終了) `koyomi run <net> --date <a week ago>..<today> --only missing --dry` → Each day is listed: 流す for the days with no run (実行の記録がない, or only a 時刻を過ぎた/保留/未確認で止めた record, or a スキップ whose reason is 待っている間にエンジンが止まった: stop the engine while a time waits for the run before it), 流さない with the record's state and id for a day whose last record is any other スキップ and for the others; nothing starts 〔未訳〕
 - [ ] **53.6** [x] The same with `--only failed --dry` → The day that ended 異常 is now 流す too; a day off the net's calendar is 流さない 予定のない日 〔未訳〕
 - [ ] **53.7** [x] Run `--only failed` without `--dry` → One line says how many days run and which, then only those days run in turn; with none to run it says 流す日はない and exits 0 〔未訳〕
 - [ ] **53.8** [x] `koyomi run <net> --only missing` (no range) → Refused: `--only` goes with `--date A..B` 〔未訳〕
-- [ ] **53.9** With `keep_days = 7`, `koyomi run <net> --date <30 days ago>..<today> --only missing --dry` → The days older than 7 days with no record are 流さない 記録が残っていない（keep_days より前）, and one line says 記録が残っていない日は流さない。範囲の日を全部流すなら --only を外す; with `archive = true` and those days in `archive/`, their runs are read from the zip and the days are listed as in 53.5 〔未訳〕
-- [ ] **53.10** On a standby PC (`[standby]`, not taken over): `koyomi run <net> --date A..B --only missing` → Refused: 待機中の PC では --only を使えない（流しているのは <primary> で、実行の記録もそちらにある）。<primary> で流す; nothing starts. After it has taken over, it picks the days as in 53.5 〔未訳〕
+- [ ] **53.9** [x] With `keep_days = 7`, `koyomi run <net> --date <30 days ago>..<today> --only missing --dry` → The days older than 7 days with no record are 流さない 記録が残っていない（keep_days より前）, and one line says 記録が残っていない日は流さない。範囲の日を全部流すなら --only を外す; with `archive = true` and those days in `archive/`, their runs are read from the zip and the days are listed as in 53.5 〔未訳〕
+- [ ] **53.10** [x] On a standby PC (`[standby]`, not taken over): `koyomi run <net> --date A..B --only missing` → Refused: 待機中の PC では --only を使えない（流しているのは <primary> で、実行の記録もそちらにある）。<primary> で流す; nothing starts. After it has taken over, it picks the days as in 53.5 〔未訳〕
 
 ## 54. 平均の所要時間と終了の予想
 
@@ -614,7 +614,7 @@
 - [ ] **55.1** [x] `claude mcp add koyomi -- koyomi mcp`, start the engine, then ask Claude Code for today's runs → `koyomi_status` answers without asking 〔未訳〕
 - [ ] **55.2** [x] Ask it to run a net → Claude Code asks first; the first call only lists the commands, and nothing starts until it is called again with `confirm = true` 〔未訳〕
 - [ ] **55.3** [x] Ask it to stop a running run → Same: nothing stops without `confirm = true` 〔未訳〕
-- [ ] **55.4** Stop the engine and ask for the runs → The tool answers with an error saying the engine is not running 〔未訳〕
+- [ ] **55.4** Stop the engine and ask for the runs → `koyomi mcp` starts an engine by itself (client::call), so the tool answers with the runs and `isError:false`; with the engine unable to start (its address unreachable) it answers `isError:true` saying the engine is not running 〔未訳〕
 
 ## 56. ガント（今日のチャート）
 
@@ -718,21 +718,21 @@
 
 ## 67. 遅延の監視
 
-- [ ] **67.1** A net with `late_end = "20s"` and a job `run = ["ping", "-n", "40", "127.0.0.1"]`; approve it and `koyomi run <net>`; wait 25 s → One notification `⏰ 遅れ  <name>` / `<name>: <time> を過ぎても終わっていない`; `koyomi status --today` shows `⏰終了の遅れ` on the run, and only one notification comes however long it runs 〔未訳〕
-- [ ] **67.2** `koyomi show <net>` for that net → A line `終わらなければ知らせる: 20s` 〔未訳〕
-- [ ] **67.3** A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes → When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again 〔未訳〕
+- [ ] **67.1** [x] A net with `late_end = "20s"` and a job `run = ["ping", "-n", "40", "127.0.0.1"]`; approve it and `koyomi run <net>`; wait 25 s → One notification `⏰ 遅れ  <name>` / `<name>: <time> を過ぎても終わっていない`; `koyomi status --today` shows `⏰終了の遅れ` on the run, and only one notification comes however long it runs 〔未訳〕
+- [ ] **67.2** [x] `koyomi show <net>` for that net → A line `終わらなければ知らせる: 20s` 〔未訳〕
+- [ ] **67.3** [x] A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes → When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again 〔未訳〕
 - [ ] **67.4** [x] A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it → After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 1分、もう 2分 動いている`, and the mark `⏰いつもより長い` 〔未訳〕
 - [ ] **67.5** [x] The same net with `late_slow = false` → No notification for taking long 〔未訳〕
-- [ ] **67.5b** `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs → When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` 〔未訳〕
+- [ ] **67.5b** [x] `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs → When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` 〔未訳〕
 - [ ] **67.6** `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` → `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved 〔未訳〕
 - [ ] **67.7** Stop and start the engine after 67.1 → The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again 〔未訳〕
 
 ## 68. 2 つの実行を比べる
 
-- [ ] **68.1** A net a → b where b prints `start` / `loaded 10` / `end` when a file is there, and `start` / `no such file` and exits 3 when not; run it once with the file and once without; `koyomi compare <run-ok> <run-error>` → `A` and `B` lines as `history` prints the runs, `所要 … → …（±…）`; under ジョブ, `= a …` and `≠ b ✓ 正常終了 … 終了コード 0  →  ✕ 異常終了 … 終了コード 3`; then `ログの違い: b` with ` start`, `-loaded 10`, `-end`, `+no such file` (a's log is the same and is not shown) 〔未訳〕
-- [ ] **68.2** The same with `--toml` → `a`, `b`, `a_seconds`, `b_seconds` and a `[[job]]` each with `differs`, `[job.a]` / `[job.b]` (`state`, `seconds`, `exit`) and `log_diff` only on b 〔未訳〕
-- [ ] **68.3** Compare two runs of different nets, one with a job the other lacks → `別のジョブネットです: … と …`; the job only one run has shows `（なし）` on the other side and `≠` 〔未訳〕
-- [ ] **68.4** `koyomi compare <run> 20261030-999999-00` → `koyomi: 実行がない: 20261030-999999-00`, exit 1 〔未訳〕
+- [ ] **68.1** [x] A net a → b where b prints `start` / `loaded 10` / `end` when a file is there, and `start` / `no such file` and exits 3 when not; run it once with the file and once without; `koyomi compare <run-ok> <run-error>` → `A` and `B` lines as `history` prints the runs, `所要 … → …（±…）`; under ジョブ, `= a …` and `≠ b ✓ 正常終了 … 終了コード 0  →  ✕ 異常終了 … 終了コード 3`; then `ログの違い: b` with ` start`, `-loaded 10`, `-end`, `+no such file` (a's log is the same and is not shown) 〔未訳〕
+- [ ] **68.2** [x] The same with `--toml` → `a`, `b`, `a_seconds`, `b_seconds` and a `[[job]]` each with `differs`, `[job.a]` / `[job.b]` (`state`, `seconds`, `exit`) and `log_diff` only on b 〔未訳〕
+- [ ] **68.3** [x] Compare two runs of different nets, one with a job the other lacks → `別のジョブネットです: … と …`; the job only one run has shows `（なし）` on the other side and `≠` 〔未訳〕
+- [ ] **68.4** [x] `koyomi compare <run> 20261030-999999-00` → `koyomi: 実行がない: 20261030-999999-00`, exit 1 〔未訳〕
 
 ## 69. 流さない時間帯
 
@@ -740,18 +740,18 @@
 - [ ] **69.2** [x] The same with `on_quiet = "skip"` → Each time in the span is recorded `⊘ スキップ` with `流さない時間帯（HH:MM-HH:MM）`; the times after the span start as usual 〔未訳〕
 - [ ] **69.3** [x] 69.1 with `koyomi hold <net>` while the time waits, then let the span end → The time is recorded `⏸` (保留中), not started 〔未訳〕
 - [ ] **69.4** [x] `koyomi run <net>` in the span → The run starts at once (by hand is not held back) 〔未訳〕
-- [ ] **69.5** `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` → `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved 〔未訳〕
+- [ ] **69.5** [x] `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` → `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved 〔未訳〕
 - [ ] **69.6** [x] `quiet = ["23:00-01:00"]` on a net at 00:30 → The 00:30 time starts at 01:00 〔未訳〕
-- [ ] **69.7** 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times → At the end the waited time starts first; the time due at the end is recorded `⊘ スキップ` `前の回がまだ動いていました` (`overlap = "queue"`: it runs after) 〔未訳〕
+- [ ] **69.7** 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times → At the end the waited time starts first; the time due at the end finds the run still going and, by `overlap = "queue"`, waits and runs when it ends (not recorded `⊘ スキップ`; with `overlap = "skip"` it is recorded `⊘ スキップ` `前の回がまだ動いていました`) 〔未訳〕
 
 ## 70. 通知の宛先
 
-- [ ] **70.1** `koyomi.toml`: `[[notify.webhooks]]` three times — one with no `name`, one `name = "経理"`, one `name = "ops"` (each a test URL that shows what it got); a failing net with no `notify_to` → Its `failed` notice reaches the place with no name only 〔未訳〕
-- [ ] **70.2** The same net with `notify_to = ["経理"]` → `koyomi show <net>` has `通知の宛先: 経理`; the notice reaches 経理 only; the system's notification still shows 〔未訳〕
-- [ ] **70.3** A net with `notify_to = ["経理"]` and a `kind = "notify"` part with `to = ["ops"]` → The part's notice reaches ops only; the run's end reaches 経理 only 〔未訳〕
-- [ ] **70.4** `notify_to = ["夜間"]` (no place has it); `koyomi check <file>` → `注意: koyomi.toml の [notify] にその名前の通知先がない: 夜間`; the file still reads (a warning) 〔未訳〕
-- [ ] **70.5** `notify_to = "経理"`, `notify_to = ["経理", "経理"]`, or `to = ["ops"]` on a plain job; `koyomi check <file>` → `notify_to は通知の場所の名前の配列で書く…` / `notify_to: 同じ名前が 2 つある: 経理` / `to は kind = "notify" にだけ書く`; the net cannot be approved 〔未訳〕
-- [ ] **70.6** Stop the engine for a while with webhooks named and not, then start it → The outage notice reaches every place 〔未訳〕
+- [ ] **70.1** [x] `koyomi.toml`: `[[notify.webhooks]]` three times — one with no `name`, one `name = "経理"`, one `name = "ops"` (each a test URL that shows what it got); a failing net with no `notify_to` → Its `failed` notice reaches the place with no name only 〔未訳〕
+- [ ] **70.2** [x] The same net with `notify_to = ["経理"]` → `koyomi show <net>` has `通知の宛先: 経理`; the notice reaches 経理 only; the system's notification still shows 〔未訳〕
+- [ ] **70.3** [x] A net with `notify_to = ["経理"]` and a `kind = "notify"` part with `to = ["ops"]` → The part's notice reaches ops only; the run's end reaches 経理 only 〔未訳〕
+- [ ] **70.4** [x] `notify_to = ["夜間"]` (no place has it); `koyomi check <file>` → `注意: koyomi.toml の [notify] にその名前の通知先がない: 夜間`; the file still reads (a warning) 〔未訳〕
+- [ ] **70.5** [x] `notify_to = "経理"`, `notify_to = ["経理", "経理"]`, or `to = ["ops"]` on a plain job; `koyomi check <file>` → `notify_to は通知の場所の名前の配列で書く…` / `notify_to: 同じ名前が 2 つある: 経理` / `to は kind = "notify" か "mail" にだけ書く`; the net cannot be approved 〔未訳〕
+- [ ] **70.6** [x] Stop the engine for a while with webhooks named and not, then start it → The outage notice reaches every place 〔未訳〕
 
 ## 71. メールの通知
 
@@ -768,17 +768,17 @@
 
 ## 72. 祝日の表を足す
 
-- [ ] **72.1** Download `syukujitsu.csv` from the Cabinet Office's "国民の祝日について" page and put it, as it is (Shift_JIS), in `calendars/`; `koyomi check calendars/syukujitsu.csv` → `問題なし（…〜… 年の祝日 N 日。祝日は <last year>-12-31 まで分かる）` 〔未訳〕
+- [ ] **72.1** [x] Download `syukujitsu.csv` from the Cabinet Office's "国民の祝日について" page and put it, as it is (Shift_JIS), in `calendars/`; `koyomi check calendars/syukujitsu.csv` → `問題なし（…〜… 年の祝日 N 日。祝日は <last year>-12-31 まで分かる）` 〔未訳〕
 - [ ] **72.2** A calendar with `holidays = "japan"`; the window's calendar page for a year in the file → The holidays and their names are the file's 〔未訳〕
 - [ ] **72.3** Edit the file so its last line is `2028/1/1,元日` (save as UTF-8); wait a few seconds → The band's "祝日の表は … まで" goes away or moves to 2028-12-31; `koyomi check calendars/<name>.toml` says no caution 〔未訳〕
-- [ ] **72.4** Write a line `x,y` in the middle of the file → The band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x`; nets run on the built-in rules 〔未訳〕
+- [ ] **72.4** Write a line `x,y` in the middle of the file → The window's band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x` (`koyomi check` on a calendar file prints it as `syukujitsu.csv: N 行目: 日付が読めない: x`, no `calendars/`); nets run on the built-in rules 〔未訳〕
 - [ ] **72.5** Remove the file (with today near the end of 2027) → The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on 〔未訳〕
 - [ ] **72.6** `koyomi export -o out.zip --calendars` with the file in `calendars/` → The bundle has the calendars' `.toml` but not `syukujitsu.csv` 〔未訳〕
 
 ## 73. CSV の書き出し
 
-- [ ] **73.1** `koyomi list --csv jobs.csv`; open it in Excel → One row per job of every definition, with the heads グループ・ジョブネット・名前・確認・カレンダー・ジョブ…; Japanese is not garbled 〔未訳〕
-- [ ] **73.2** `koyomi history --from <a week ago> --csv runs.csv` → One row per run, oldest first; 秒 is the run's length; 異常のジョブ names the jobs that ended 異常 〔未訳〕
+- [ ] **73.1** [x] `koyomi list --csv jobs.csv`; open it in Excel → One row per job of every definition, with the heads グループ・ジョブネット・名前・確認・カレンダー・ジョブ…; Japanese is not garbled 〔未訳〕
+- [ ] **73.2** [x] `koyomi history --from <a week ago> --csv runs.csv` → One row per run, oldest first; 秒 is the run's length; 異常のジョブ names the jobs that ended 異常 〔未訳〕
 - [ ] **73.3** [x] `koyomi plan --csv plan.csv` → Every day of this month; a day with no start is one row with only its date and weekday 〔未訳〕
 - [ ] **73.4** `koyomi plan --csv -` → The table on the console with no BOM, and no file name said 〔未訳〕
 - [ ] **73.5** A net whose name has a comma; `koyomi list --csv -` → The name is in double quotes; Excel shows it in one cell 〔未訳〕
@@ -829,10 +829,10 @@
 
 ## 78. システムのイベントログ（Application ログ、ソース `koyomi`）
 
-- [ ] **78.1** Let a net end ✓, then a net that fails (`exit 1`) → Event Viewer → Windows ログ → Application, source `koyomi`: id 1000 (情報) and id 2000 (エラー) with the title and the failed jobs 〔未訳〕
+- [ ] **78.1** [x] Let a net end ✓, then a net that fails (`exit 1`) → Event Viewer → Windows ログ → Application, source `koyomi`: id 1000 (情報) and id 2000 (エラー) with the title and the failed jobs 〔未訳〕
 - [ ] **78.2** [x] A net stopped at its `timeout`; one stopped with 強制終了 → id 2001 and id 2002 (エラー) 〔未訳〕
-- [ ] **78.3** The failed net runs well on the next start → id 1100 (情報) after the 1000 〔未訳〕
-- [ ] **78.4** A net held with ⏸ → Nothing is written (a person did it) 〔未訳〕
+- [ ] **78.3** [x] The failed net runs well on the next start → id 1100 (情報) after the 1000 〔未訳〕
+- [ ] **78.4** [x] A net held with ⏸ → Nothing is written (a person did it) 〔未訳〕
 
 ## 79. 動かす条件（`require`）
 
@@ -1128,15 +1128,15 @@
 
 ## 99. A standby copies the definitions (TODO 87)
 
-- [ ] **99.1** Start B's engine; wait a few seconds → B says `koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: g/a` for each confirmed net of A; B's window shows them 未確認 〔未訳〕
-- [ ] **99.2** Confirm them in B's window → They show 確認済み; nothing more is copied (the hashes match) 〔未訳〕
-- [ ] **99.3** Change and confirm `g/a` on A; wait up to 5 minutes → B copies `g/a` again, 未確認, the confirm box shows the change; `koyomi versions g/a` on B keeps the one before 〔未訳〕
-- [ ] **99.4** On A, change `g/a` but do not confirm it → B does not copy it 〔未訳〕
-- [ ] **99.5** On A make `b`'s role `view`; restart B → B's cautions and `koyomi standby` show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
+- [ ] **99.1** [x] Start B's engine; wait a few seconds → B says `koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: g/a` for each confirmed net of A; B's window shows them 未確認 〔未訳〕
+- [ ] **99.2** [x] Confirm them in B's window → They show 確認済み; nothing more is copied (the hashes match) 〔未訳〕
+- [ ] **99.3** [x] Change and confirm `g/a` on A; wait up to 5 minutes → B copies `g/a` again, 未確認, the confirm box shows the change; `koyomi versions g/a` on B keeps the one before 〔未訳〕
+- [ ] **99.4** [x] On A, change `g/a` but do not confirm it → B does not copy it 〔未訳〕
+- [ ] **99.5** [x] On A make `b`'s role `view`; restart B → B's cautions and `koyomi standby` show `[standby] a: 定義を写せない: 向こうでこの token に edit のロールが要る…`; watching goes on 〔未訳〕
 - [ ] **99.6** [x] A net on A that calls a child net (`kind = "jobnet"`, `use = "g/child"`), both new to B → Both land on B in one copy (the child first) 〔未訳〕
-- [ ] **99.7** Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone 〔未訳〕
-- [ ] **99.9** Start A again; `koyomi standby giveback` on B → B watches again and copies at once (no 5-minute wait) 〔未訳〕
-- [ ] **99.8** A net only on B → Still there after copies 〔未訳〕
+- [ ] **99.7** [x] Stop A so that B takes over; leave `g/a` unconfirmed on B → B does not run `g/a` (unconfirmed); it copies no more, and the copy's caution from 99.5 is gone 〔未訳〕
+- [ ] **99.9** [x] Start A again; `koyomi standby giveback` on B → B watches again and copies at once (no 5-minute wait) 〔未訳〕
+- [ ] **99.8** [x] A net only on B → Still there after copies 〔未訳〕
 
 ## 100. Nets per person over HTTP (`nets`; TODO 94)
 
@@ -1162,7 +1162,7 @@
 - [ ] **101.6** `env = { DAY = "{date}" }` and `command = "echo %DAY%"` (`echo $DAY`) → When the server's `AcceptEnv` takes `DAY`: today's date. When it does not (the default): `! localhost: env を受け付けなかった: DAY（相手の sshd_config の AcceptEnv）` and the job goes on 〔未訳〕
 - [ ] **101.7** `command = "ping -n 120 127.0.0.1"` (`sleep 120`) with `timeout = "10s"`; then without the timeout, 強制終了 it → 打ち切り, then 強制終了, each within about 10 s of the ask (an ssh job is asked first). Under `run_as`, where the ask cannot reach `koyomi ssh run` (DECISIONS.md), the command on the server may go on: look with Task Manager (`ps`) 〔未訳〕
 - [ ] **101.8** Linux only: `command = "kill -9 $$"` → ✕ with exit code 255 and `localhost: 相手のコマンドがシグナル KILL で終わった` as the reason 〔未訳〕
-- [ ] **101.9** `koyomi check` with `on = "db1"`, `on = "ssh://db1/tmp"`, no `command`, an 8001-character `command`, no `host_key`, `password = "plain"`, both `key` and `password`, `on` on a `copy`, `encoding` on an ssh → Each is refused with the line and why in Japanese; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
+- [ ] **101.9** [x] `koyomi check` with `on = "db1"`, `on = "ssh://db1/tmp"`, no `command`, an 8001-character `command`, no `host_key`, `password = "plain"`, both `key` and `password`, `on` on a `copy`, `encoding` on an ssh → Each is refused with the line and why in Japanese; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
 - [ ] **101.10** The editor: drag 別の PC で動かす（SSH） from 基本 → The pane shows 動かす PC・コマンド・ホスト鍵・SSH の秘密鍵・パスワード, 結果の判定, timeout and retry; saving writes `kind = "ssh"` with `on`・`command`・`host_key` (and `key`・`password`・`judge` when set); an `on` without `ssh://` is refused 〔未訳〕
 - [ ] **101.11** Approve a net with an ssh → The confirm box shows 動かす PC, コマンド (lines joined with ⏎) and the host key instead of a script 〔未訳〕
 - [ ] **101.12** A Linux server: `command = "sleep 600"`; run it with the release `koyomi.exe` engine on Windows (a window program, no console), and once the log shows it started, 強制終了 it; then the same with an engine that has a console (`cargo run -p koyomi -- engine`, or the engine on Linux or macOS), and with `run_as`. Then stop one while it connects: on the server `nc -lk 2222` (takes the connection, never answers), `on = "ssh://<you>@<server>:2222"`, run it with the release `koyomi.exe` and 強制終了 it within 10 s → The release `koyomi.exe` and the console alike: 強制終了 within a few seconds, the reason `強制終了、<server>: 止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）`, `pgrep -f "sleep 600"` on the server finds nothing, and the job's log has no `Entering debug mode` or `[DBG]` lines. `run_as`: 強制終了 at once with no 頼んだ. While it connects: 強制終了 within about 1 s (not 10 s), with the same reason 〔未訳〕
@@ -1205,29 +1205,29 @@
 
 ## 105. A role per net over HTTP (`roles`; TODO 101)
 
-- [ ] **105.1** `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/me` → `"role": "view"`, `"roles": {"経理/*": "run"}`; with `K`, `"roles": null` 〔未訳〕
-- [ ] **105.2** `GET /nets` with `S` → Both nets; `経理/a` has `"role": "run"`, `人事/b` `"role": "view"`; with `K`, no `role` on the nets 〔未訳〕
-- [ ] **105.3** `POST /runs` `{"net":"経理/a"}` with `S`; then `{"net":"人事/b"}` → 202 and it runs; then 403 `人事/b では view のロール。これには run が要る`, nothing starts 〔未訳〕
-- [ ] **105.4** `POST /runs/<人事/b's run>/stop` and `POST /nets/hold` `{"net":"人事/b"}` with `S` → 403 both times; nothing stops or is held. With `経理/a` (and a run of it still going) both are done 〔未訳〕
-- [ ] **105.5** `GET /runs/<人事/b's run>/log?job=…` with `S` → 200 with the log (view is enough) 〔未訳〕
-- [ ] **105.6** `GET "/nets/text?net=経理/a"` with `S` → 403 `sato は run のロール。これには edit が要る` (the strongest of `S`'s roles is still not edit) 〔未訳〕
-- [ ] **105.7** `POST /runs` `{"net":"人事/b"}` with `I`; then `{"net":"経理/a"}` → 403 `人事/b では view のロール…`; then 202 〔未訳〕
+- [ ] **105.1** [x] `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/me` → `"role": "view"`, `"roles": {"経理/*": "run"}`; with `K`, `"roles": null` 〔未訳〕
+- [ ] **105.2** [x] `GET /nets` with `S` → Both nets; `経理/a` has `"role": "run"`, `人事/b` `"role": "view"`; with `K`, no `role` on the nets 〔未訳〕
+- [ ] **105.3** [x] `POST /runs` `{"net":"経理/a"}` with `S`; then `{"net":"人事/b"}` → 202 and it runs; then 403 `人事/b では view のロール。これには run が要る`, nothing starts 〔未訳〕
+- [ ] **105.4** [x] `POST /runs/<人事/b's run>/stop` and `POST /nets/hold` `{"net":"人事/b"}` with `S` → 403 both times; nothing stops or is held. With `経理/a` (and a run of it still going) both are done 〔未訳〕
+- [ ] **105.5** [x] `GET /runs/<人事/b's run>/log?job=…` with `S` → 200 with the log (view is enough) 〔未訳〕
+- [ ] **105.6** [x] `GET "/nets/text?net=経理/a"` with `S` → 403 `sato は run のロール。これには edit が要る` (the strongest of `S`'s roles is still not edit) 〔未訳〕
+- [ ] **105.7** [x] `POST /runs` `{"net":"人事/b"}` with `I`; then `{"net":"経理/a"}` → 403 `人事/b では view のロール…`; then 202 〔未訳〕
 - [ ] **105.8** On the standby of §99, `POST /standby/release` with `S`; then with `I` → 403 `ネットごとでないものは view のロール。これには run が要る`; then 200 〔未訳〕
 - [ ] **105.9** Open the Web UI and sign in with `S` → Next to the name, `sato（view、経理/* は run）`. `経理/a` and its run have 今すぐ流す, 保留, 強制終了 / 流し直す and スキップ; `人事/b` and its run have none of them 〔未訳〕
-- [ ] **105.10** `koyomi check` with `roles = {}`, `roles = { "経理" = "run" }` and `roles = { "経理/*" = "admin" }` → Each refused: `[[http.user]] sato の roles を空にしない…`, `… roles のキーは <グループ>/<名前> で書く…`, `… roles の 経理/* の role は view・run・edit のどれか…` 〔未訳〕
+- [ ] **105.10** [x] `koyomi check` with `roles = {}`, `roles = { "経理" = "run" }` and `roles = { "経理/*" = "admin" }` → Each refused: `[[http.user]] sato の roles を空にしない…`, `… roles のキーは <グループ>/<名前> で書く…`, `… roles の 経理/* の role は view・run・edit のどれか…` 〔未訳〕
 - [ ] **105.11** This PC's window and `koyomi run 人事/b` → Both work as before 〔未訳〕
 
 ## 106. The working folder of a job without `dir` (`work_dir`) and a month's `day = 29`–`31`
 
-- [ ] **106.1** No `work_dir` in koyomi.toml; run `経理/a` → `p`'s log shows the engine's own folder, as before; `q` ends in ✕ (no `out` there) 〔未訳〕
-- [ ] **106.2** Write `work_dir = "definition"`; within 5 s run `経理/a` again → `p`'s log shows `…\jobnets\経理`, `q`'s `…\jobnets\経理\out`; both ✓ 〔未訳〕
-- [ ] **106.3** Run `経理/b` → `r`'s log shows `…\jobnets\共通` (the child's own folder, not `経理`) 〔未訳〕
-- [ ] **106.4** `koyomi run 経理/a --dry` → `p: cmd /c cd @ …\jobnets\経理` and `q: … @ …\jobnets\経理\out` 〔未訳〕
-- [ ] **106.5** Write `work_dir = 'D:\batch'` (make `D:\batch` but not `D:\batch\out`) and run `経理/a` → `p`'s log shows `D:\batch`; `q` ends in ✕ 〔未訳〕
-- [ ] **106.6** Remove `D:\batch`; `koyomi check jobnets/経理/a.toml` → `q の作業フォルダーがない: D:\batch\out` and `dir のないジョブの作業フォルダーがない: D:\batch（koyomi.toml の work_dir）`; exit 1 〔未訳〕
-- [ ] **106.7** Write `work_dir = "batch"`; `koyomi check koyomi.toml` → Refused: `work_dir は "definition"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\batch'）: batch` 〔未訳〕
-- [ ] **106.8** A net with `[[when]]` `every = "month"`, `day = 31`, `at = ["21:00"]`; `koyomi check` it → `注意: [[when]] の day = 31 は 31 日のない月（2・4・6・9・11 月）には流れない。月末に流すなら day = "last"`, then `問題なし`; exit 0 〔未訳〕
-- [ ] **106.9** The same with `day = 30`, `day = 29` and `day = "last"` → `（2 月）`; `（うるう年でない 2 月）`; no word 〔未訳〕
+- [ ] **106.1** [x] No `work_dir` in koyomi.toml; run `経理/a` → `p`'s log shows the engine's own folder, as before; `q` ends in ✕ (no `out` there) 〔未訳〕
+- [ ] **106.2** [x] Write `work_dir = "definition"`; within 5 s run `経理/a` again → `p`'s log shows `…\jobnets\経理`, `q`'s `…\jobnets\経理\out`; both ✓ 〔未訳〕
+- [ ] **106.3** [x] Run `経理/b` → `r`'s log shows `…\jobnets\共通` (the child's own folder, not `経理`) 〔未訳〕
+- [ ] **106.4** [x] `koyomi run 経理/a --dry` → `p: cmd /c cd @ …\jobnets\経理` and `q: … @ …\jobnets\経理\out` 〔未訳〕
+- [ ] **106.5** [x] Write `work_dir = 'D:\batch'` (make `D:\batch` but not `D:\batch\out`) and run `経理/a` → `p`'s log shows `D:\batch`; `q` ends in ✕ 〔未訳〕
+- [ ] **106.6** [x] Remove `D:\batch`; `koyomi check jobnets/経理/a.toml` → `q の作業フォルダーがない: D:\batch\out` and `dir のないジョブの作業フォルダーがない: D:\batch（koyomi.toml の work_dir）`; exit 1 〔未訳〕
+- [ ] **106.7** [x] Write `work_dir = "batch"`; `koyomi check koyomi.toml` → Refused: `work_dir は "definition"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\batch'）: batch` 〔未訳〕
+- [ ] **106.8** [x] A net with `[[when]]` `every = "month"`, `day = 31`, `at = ["21:00"]`; `koyomi check` it → `注意: [[when]] の day = 31 は 31 日のない月（2・4・6・9・11 月）には流れない。月末に流すなら day = "last"`, then `問題なし`; exit 0 〔未訳〕
+- [ ] **106.9** [x] The same with `day = 30`, `day = 29` and `day = "last"` → `（2 月）`; `（うるう年でない 2 月）`; no word 〔未訳〕
 
 ## 107. Run a command on another Windows PC (`kind = "winrm"`; TODO 100)
 
@@ -1237,16 +1237,16 @@
 - [ ] **107.4** A wrong `cert`; then `on = "winrm://<you>@<pc>:2"`; then `password = "secret:nope"` after `koyomi secret set nope` with a wrong password; also with `retry = { count = 1, wait = "1m" }` → ✕ each time with exit code 255 and the why in Japanese as the reason: `<pc>: 証明書が cert と違う（相手が出したのは …）`, `<pc>: つながらない…`, `<pc>: ユーザーかパスワードを断られた（…Basic…）`; the retry tries once more 〔未訳〕
 - [ ] **107.5** `env = { DAY = "{date}" }` and `command = "echo %DAY%"` → Today's date 〔未訳〕
 - [ ] **107.6** `command = "ping -n 120 127.0.0.1"` with `timeout = "10s"`; then without the timeout, 強制終了 it; then the same with the release `koyomi.exe` engine → 打ち切り, then 強制終了, each within about 10 s of the ask, the reason ending `<pc>: 止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）`; on `<pc>`, Task Manager shows no `PING.EXE` left 〔未訳〕
-- [ ] **107.7** `koyomi check` with `on = "<pc>"`, `on = "winrm://<pc>"`, `on = "winrm://<you>@<pc>/wsman"`, no `cert`, `cert = "AB:CD"`, no `password`, `password = "plain"`, `host_key` or `key` on a winrm, `cert` on an ssh, `encoding` on a winrm → Each is refused with the line and why in Japanese; the missing `cert` names `koyomi winrm cert` 〔未訳〕
+- [ ] **107.7** [x] `koyomi check` with `on = "<pc>"`, `on = "winrm://<pc>"`, `on = "winrm://<you>@<pc>/wsman"`, no `cert`, `cert = "AB:CD"`, no `password`, `password = "plain"`, `host_key` or `key` on a winrm, `cert` on an ssh, `encoding` on a winrm → Each is refused with the line and why in Japanese; the missing `cert` names `koyomi winrm cert` 〔未訳〕
 - [ ] **107.8** The editor: drag 別の Windows で動かす（WinRM） from 基本 → The pane shows 動かす PC・コマンド・証明書の指紋・パスワード (all required), 結果の判定, timeout and retry; a malformed 証明書の指紋 is marked; saving writes `kind = "winrm"` with `on`・`command`・`cert`・`password` (and `judge` when set) 〔未訳〕
 - [ ] **107.9** Approve a net with a winrm → The confirm box shows 動かす PC, コマンド (lines joined with ⏎), 証明書の指紋 and パスワード as `secret:winrm` (the name, not the value) instead of a script 〔未訳〕
 - [ ] **107.10** With Negotiate on in that PC's WinRM (`winrm get winrm/config/service/auth`; the default), add `auth = "ntlm"` to 107.2's job and run it; then `on = 'winrm://<DOMAIN>\<user>@<pc>'` with a domain account's secret; then a wrong password → ✓ both times with the same lines as 107.2; then ✕ 255 with `<pc>: ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは…）` (no word of Basic) 〔未訳〕
-- [ ] **107.11** `koyomi check` with `auth = "kerberos"`, `auth = "NTLM"`, and `auth = "ntlm"` on an `ssh` → Each is refused: `auth は "basic"・"ntlm" のどれか` twice, then `auth は kind = "winrm" にだけ書く` 〔未訳〕
+- [ ] **107.11** [x] `koyomi check` with `auth = "kerberos"`, `auth = "NTLM"`, and `auth = "ntlm"` on an `ssh` → Each is refused: `auth は "basic"・"ntlm" のどれか` twice, then `auth は kind = "winrm" にだけ書く` 〔未訳〕
 - [ ] **107.12** The editor: a winrm's pane; pick NTLM, save; reopen it and pick Basic, save; then approve → The shelf and the canvas show the Windows PC mark; 認証 shows Basic and NTLM, each with its own note; saving writes `auth = "ntlm"`, then no `auth` line; the confirm box shows 認証: NTLM (or Basic) 〔未訳〕
 
 ## 108. Let Tailscale peers in without a token (`[http] tailnet`; TODO 105)
 
-- [ ] **108.1** `koyomi check koyomi.toml` with, one at a time: `tailnet = 8790`; no user with `tailscale`; `tailscale = "sato"`; `tailscale = "tag:"`; `tailscale` but no `tailnet`; the same login on two users (one in capitals) → Each is refused with its line in Japanese (`[http] の tailnet は port と別のポート…`, `…tailnet で通す人がいない…`, `…ログイン名（sato@example.com）かタグ（tag:koyomi-ha）で書く…` twice, `…[http] の tailnet…と一緒に書く`, `…tailscale … が 2 つある`); the starting koyomi.toml says 問題なし 〔未訳〕
+- [ ] **108.1** [x] `koyomi check koyomi.toml` with, one at a time: `tailnet = 8790`; no user with `tailscale`; `tailscale = "sato"`; `tailscale = "tag:"`; `tailscale` but no `tailnet`; the same login on two users (one in capitals) → Each is refused with its line in Japanese (`[http] の tailnet は port と別のポート…`, `…tailnet で通す人がいない…`, `…ログイン名（sato@example.com）かタグ（tag:koyomi-ha）で書く…` twice, `…[http] の tailnet…と一緒に書く`, `…tailscale … が 2 つある`); the starting koyomi.toml says 問題なし 〔未訳〕
 - [ ] **108.2** Start the engine → Its log says `koyomi: HTTP: 127.0.0.1:8790 で待ち受けている。tailnet の :8791 でも（Tailscale の相手は token なし）` 〔未訳〕
 - [ ] **108.3** From the other PC: `curl http://<pc>:8791/me`; then `curl http://<pc>:8790/me` → The first is 200 with `"name":"sato"` and the view role, and the engine logs `http: GET /me 200 …ms（sato、Tailscale）`; the second cannot connect (8790 is this PC only) 〔未訳〕
 - [ ] **108.4** On the other PC, open `http://<pc>:8791/` in a browser → The Web UI opens without asking for a token, as sato with view: the lists show, there are no run or stop buttons 〔未訳〕
@@ -1258,17 +1258,17 @@
 
 ## 109. Planned stops (`[[blackout]]`; TODO 106)
 
-- [ ] **109.1** `koyomi check koyomi.toml` with, one at a time, a `[[blackout]]` with: `from = "2026/12/29"`; `to = "あした"`; `to` before `from`; no `to`; `reason = "x"` → Each is refused with its line in Japanese (`[[blackout]] の from は "2026-12-29" か "2026-12-29 22:00" で書く…`, `…to は…`, `[[blackout]] の to（…）が from（…）より前`, the missing field, the unknown field) 〔未訳〕
+- [ ] **109.1** [x] `koyomi check koyomi.toml` with, one at a time, a `[[blackout]]` with: `from = "2026/12/29"`; `to = "あした"`; `to` before `from`; no `to`; `reason = "x"` → Each is refused with its line in Japanese (`[[blackout]] の from は "2026-12-29" か "2026-12-29 22:00" で書く…`, `…to は…`, `[[blackout]] の to（…）が from（…）より前`, the missing field, the unknown field) 〔未訳〕
 - [ ] **109.2** Add `[[blackout]]` `from = "<today> <a>"`, `to = "<today> <b>"`, `why = "電源工事"` and save → Within 5 s the band above 今日 says `⊘ 計画停止があります（電源工事）。<today> <a> から <today> <b> まで、時刻が来ても流しません`; in 今日 the net's time between `<a>` and `<b>` is a スキップ row with `⊘ 計画停止（電源工事）`, not a 待ち row 〔未訳〕
 - [ ] **109.3** Wait until `<a>` → The band says `⊘ 計画停止中です（電源工事）。<today> <b> まで、時刻が来ても流しません（手で流すことはできます）` 〔未訳〕
-- [ ] **109.4** Wait past the net's time in the stop → No run starts; 今日 and 履歴 show a スキップ record with the reason `計画停止（電源工事、<today> <a>〜<today> <b>）`; `koyomi history` shows the same 〔未訳〕
-- [ ] **109.5** During the stop, 今すぐ流す on the net (or `koyomi run 基盤/毎時`) → It runs and ends ✓ (a run by hand is not stopped) 〔未訳〕
-- [ ] **109.6** A run that is still going at `<a>` (a job with `ping -n 300 127.0.0.1`, started by hand just before) → It goes on to its end; nothing stops it 〔未訳〕
-- [ ] **109.7** After `<b>`; restart the engine → The band goes; the time in the stop is not caught up (no 逃した run for it); the next time after `<b>` runs as usual 〔未訳〕
+- [ ] **109.4** [x] Wait past the net's time in the stop → No run starts; 今日 and 履歴 show a スキップ record with the reason `計画停止（電源工事、<today> <a>〜<today> <b>）`; `koyomi history` shows the same 〔未訳〕
+- [ ] **109.5** [x] During the stop, 今すぐ流す on the net (or `koyomi run 基盤/毎時`) → It runs and ends ✓ (a run by hand is not stopped) 〔未訳〕
+- [ ] **109.6** [x] A run that is still going at `<a>` (a job with `ping -n 300 127.0.0.1`, started by hand just before) → It goes on to its end; nothing stops it 〔未訳〕
+- [ ] **109.7** [x] After `<b>`; restart the engine → The band goes; the time in the stop is not caught up (no 逃した run for it); the next time after `<b>` runs as usual 〔未訳〕
 - [ ] **109.8** `koyomi next 基盤/毎時` while a stop is ahead → The next starts step over the stop (none of them is in it); open the net in the editor and look at 次の開始 in its pane: the same 〔未訳〕
 - [ ] **109.9** Change the stop to `from = "<tomorrow>"`, `to = "<the day after>"`, `why = "年末年始"`; open カレンダー on the month, then the week, then the day → The two days carry the tag `⊘ 計画停止（年末年始）` in the wait colour; the net's chips on them are dim with `⊘`; hovering one says the stop; the day view shows `⊘ 計画停止（年末年始）  <tomorrow>〜<the day after>` under the day and each card `HH:MM  ⊘ 計画停止（年末年始）` 〔未訳〕
-- [ ] **109.10** `koyomi plan <YYYY-MM>`, then with `--csv <file>` and `--pdf <file>`; then カレンダー's この月の予定を印刷… → Each start on the two days ends with `  ⊘ 計画停止（年末年始）`; the others are as before 〔未訳〕
-- [ ] **109.11** Remove `why` → The marks read `⊘ 計画停止（理由なし）` and the record's reason `計画停止（<from>〜<to>）` 〔未訳〕
+- [ ] **109.10** [x] `koyomi plan <YYYY-MM>`, then with `--csv <file>` and `--pdf <file>`; then カレンダー's この月の予定を印刷… → Each start on the two days ends with `  ⊘ 計画停止（年末年始）`; the others are as before 〔未訳〕
+- [ ] **109.11** [x] Remove `why` → The marks read `⊘ 計画停止（理由なし）` and the record's reason `計画停止（<from>〜<to>）` 〔未訳〕
 - [ ] **109.12** Turn on a screen reader (NVDA) and move over the band, a skipped 今日 row and a calendar chip in the stop → Each is read with the stop and its why 〔未訳〕
 
 ## 110. Send a mail with files (`kind = "mail"`; TODO 107)
@@ -1278,20 +1278,20 @@
 - [ ] **110.3** `files = ['D:\out\none.csv']`; then `files = ['D:\out\big\*']` → ✕ with exit code 255 and the reason `添付するファイルがない: D:\out\none.csv`, then `添付するファイルが大きすぎる（合わせて … MB。18 MB まで）`; no mail arrives 〔未訳〕
 - [ ] **110.4** `via = "経理"` (no such place); then remove every `[[notify.mails]]`; then put the place back and `koyomi secret delete <its password's secret name>` (e.g. `gmail` for `password = "secret:gmail"`) → ✕ 255 each time: `[[notify.mails]] に name = "経理" がない（あるのは ops）`, `koyomi.toml に [[notify.mails]] がない（…）`, `…パスワードを資格情報ストアから読めない（secret:gmail。…）`; `koyomi check <the net's file>` warns `注意: <job>: …` for the first two before it runs 〔未訳〕
 - [ ] **110.5** A wrong app password → ✕ 255, the reason `smtp.gmail.com: 送れなかった: …` in Japanese, no password in it 〔未訳〕
-- [ ] **110.6** `koyomi check` with, one at a time: no `to`; `to = ["ops"]`; `to = ["a@x, b@x"]`; `subject = ""`; no `subject`; `files = [""]`; 21 files; `cc` on a `kind = "http"`; `run_as` on the mail; `method` on the mail → Each is refused with its line and why in Japanese (`to が空…` or `…to が要る`, `…アドレスとして読めない…（1 つに 1 人）`, `subject が空…`, `files に空のものがある`, `files は 20 個まで`, `cc は kind = "mail" にだけ書く`, `run_as は kind = …（"mail" のほか）にだけ書く`, `method は kind = "http" にだけ書く`) 〔未訳〕
+- [ ] **110.6** [x] `koyomi check` with, one at a time: no `to`; `to = ["ops"]`; `to = ["a@x, b@x"]`; `subject = ""`; no `subject`; `files = [""]`; 21 files; `cc` on a `kind = "http"`; `run_as` on the mail; `method` on the mail → Each is refused with its line and why in Japanese (`to が空…` or `…to が要る`, `…アドレスとして読めない…（1 つに 1 人）`, `subject が空…`, `files に空のものがある`, `files は 20 個まで`, `cc は kind = "mail" にだけ書く`, `run_as は kind = …（"mail" のほか）にだけ書く`, `method は kind = "http" にだけ書く`) 〔未訳〕
 - [ ] **110.7** `subject = "secret:gmail"`; `body = "secret:gmail"` → The mail's subject and body are the words `secret:gmail`, not the password 〔未訳〕
 - [ ] **110.8** The editor: drag メールを送る from 知らせる・呼ぶ → It shows the mail mark; the pane has 送り先 (required), CC, 件名 (required), 本文, 添付するファイル, 送るのに使う設定, timeout and retry, and no 別のアカウントで動かす and no 結果の判定; an address that is not one is marked red; two addresses on two lines and an empty line between save as `to = ["…", "…"]` 〔未訳〕
 - [ ] **110.9** Approve a net with a mail → The confirm box shows 送り先, CC, 件名, 本文 (lines joined with ⏎), each 添付, and 送るのに使う設定 (`最初の [[notify.mails]]` without `via`), instead of a script 〔未訳〕
-- [ ] **110.10** `koyomi mail`; `koyomi mail run` in a console → `koyomi: mail takes run (what a mail job does)` and exit 2; then exit 255 with `KOYOMI_MAIL_TO がない（…）` 〔未訳〕
+- [ ] **110.10** [x] `koyomi mail`; `koyomi mail run` in a console → `koyomi: mail takes run (what a mail job does)` and exit 2; then exit 255 with `KOYOMI_MAIL_TO がない（…）` 〔未訳〕
 
 ## 111. Values every net reads (`[vars]`; TODO 108)
 
-- [ ] **111.1** Without `[vars]` in koyomi.toml: `koyomi check <the net's file>`; then 今すぐ流す on the net → `注意: {var:share} が koyomi.toml の [vars] にない（流すと止まる）`; the run does not start and says `a の run: {var:share}: koyomi.toml の [vars] にない` (the `{var:share}` that came in through `{param:into}`) 〔未訳〕
+- [ ] **111.1** [x] Without `[vars]` in koyomi.toml: `koyomi check <the net's file>`; then 今すぐ流す on the net → `注意: {var:share} が koyomi.toml の [vars] にない（流すと止まる）`; the run does not start and says `a の run: {var:share}: koyomi.toml の [vars] にない` (the `{var:share}` that came in through `{param:into}`) 〔未訳〕
 - [ ] **111.2** Add `[vars]` `share = '\10.0.0.1\Backup\{date:%Y%m}'` and save; `koyomi check` again; run it → No 注意; ✓, and the log of `a` is `\10.0.0.1\Backup\<this month>\in \10.0.0.1\Backup\<this month>` 〔未訳〕
 - [ ] **111.3** `koyomi run 基盤/共有 --dry`, then with `--set into=D:\x` → The first shows the same paths; the second `D:\x \10.0.0.1\Backup\<this month>` 〔未訳〕
 - [ ] **111.4** Change `share` to `'D:\share'` and save; run again (no confirm in between) → The new run reads `D:\share\in D:\share`; the net stays confirmed (the value is not part of the net) 〔未訳〕
-- [ ] **111.5** `koyomi check koyomi.toml` with, one at a time, in `[vars]`: `"共有" = 'x'`; `n = 3`; `a = '{var:share}'`; `a = '{param:into}'`; `a = '{date-1q}'` → Each is refused in Japanese: `[vars] の名前に使えない: 共有（英数字と _ だけ…）`, `[vars] の n は文字列で書く…`, `[vars] の a に {param:…}・{var:…} は書けない…` (twice), `[vars] の a: {date-1q}: …` 〔未訳〕
-- [ ] **111.6** In the net, `run = ["cmd", "/c", "echo", "{var:}"]`; then `into = '{var:共有}'` → The editor and `koyomi check` refuse each with its line: `{var:}: 名前がない（…）`, `params into: {var:共有}: [vars] の名前は英数字と _ だけ` 〔未訳〕
+- [ ] **111.5** [x] `koyomi check koyomi.toml` with, one at a time, in `[vars]`: `"共有" = 'x'`; `n = 3`; `a = '{var:share}'`; `a = '{param:into}'`; `a = '{date-1q}'` → Each is refused in Japanese: `[vars] の名前に使えない: 共有（英数字と _ だけ…）`, `[vars] の n は文字列で書く…`, `[vars] の a に {param:…}・{var:…} は書けない…` (twice), `[vars] の a: {date-1q}: …` 〔未訳〕
+- [ ] **111.6** [x] In the net, `run = ["cmd", "/c", "echo", "{var:}"]`; then `into = '{var:共有}'` → The editor and `koyomi check` refuse each with its line: `{var:}: 名前がない（…）`, `params into: {var:共有}: [vars] の名前は英数字と _ だけ` 〔未訳〕
 - [ ] **111.7** A `kind = "ssh"` with `on = "{var:pc}"` and `[vars]` `pc = "<a PC you reach over ssh>"`; a `kind = "http"` with `url = "{var:api}/health"` → Both pass `koyomi check` and run against the values in `[vars]` 〔未訳〕
 
 ## 112. Run on a group of PCs (`on = "group:…"`; TODO 109)
@@ -1303,7 +1303,7 @@
 - [ ] **112.5** `max = 1`, `command = "sleep 60"`; run and stop it while pc1 runs → pc1's command is asked to stop (TERM); `! [pc2] 止めたので始めなかった` and `! [10.255.255.1] 止めたので始めなかった`; the job ends stopped 〔未訳〕
 - [ ] **112.6** Take `host_key` off the job; `koyomi check`; run → `注意: fan: 組 web の ssh://ops@pc1, ssh://ops@10.255.255.1 に host_key がなく、ジョブにもない（流すと止まる）`; in the run, `! [pc1] host_key がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く…）` and pc2 still runs 〔未訳〕
 - [ ] **112.7** `on = "group:db"`; `koyomi check`; run. Then a `kind = "winrm"` job with `on = "group:web"` → `注意: fan: 組 db が koyomi.toml の [groups] にない（流すと止まる）` and the run stops with it; the winrm one with `組 web の PC は ssh:// で書いてある（kind = "winrm" の on には winrm:// の PC の組を書く）` 〔未訳〕
-- [ ] **112.8** `koyomi check koyomi.toml` with, one at a time, in `[groups]`: `web = 'ssh://h'`; `web = ['ssh://h', 'winrm://u@h2']`; `"web-1" = ['ssh://h']`; `web = ['ssh://h', 'SSH://h']` → Each is refused in Japanese: `[groups] の web は PC の配列で書く…`, `…ssh:// と winrm:// が混ざっている…`, `[groups] の名前に使えない: web-1…`, `…同じ PC が 2 つある: SSH://h` 〔未訳〕
+- [ ] **112.8** [x] `koyomi check koyomi.toml` with, one at a time, in `[groups]`: `web = 'ssh://h'`; `web = ['ssh://h', 'winrm://u@h2']`; `"web-1" = ['ssh://h']`; `web = ['ssh://h', 'SSH://h']` → Each is refused in Japanese: `[groups] の web は PC の配列で書く…`, `…ssh:// と winrm:// が混ざっている…`, `[groups] の名前に使えない: web-1…`, `…同じ PC が 2 つある: SSH://h` 〔未訳〕
 - [ ] **112.9** In the editor, the `fan` job: set 動かす PC to `ssh://ops@pc1`, then back to `group:web` → On one PC the host key is required and there is no max; on the group the host key is optional, and `max（組の PC をいくつ同時に動かすか…）` and 正常とするのは (全部の PC が正常 / どれか 1 台が正常) show, with the note on `[groups]` under them 〔未訳〕
 - [ ] **112.10** In the editor, max `65`, then save; then max `2` and どれか 1 台が正常, and save → `65` is red and saving says `max は 1 から 64 までの数で書く: "65"`; the second saves `max = 2` and `pass = "any"` 〔未訳〕
 - [ ] **112.11** Open the net's approval → It shows `同時に動かす PC の数: 2` and `正常とするのは: どれか 1 台が正常のとき`; the change to `pass` left the net to be confirmed again 〔未訳〕
@@ -1315,18 +1315,18 @@
 - [ ] **113.2** Type today's date; then a later day; then undo the change (Ctrl+Z) and redo it → Today: 明日より後の日を選びます and 置く… is greyed; a later day: 置く… can be pressed; undone: 今の定義と同じです。変えてから置きます, greyed again 〔未訳〕
 - [ ] **113.3** Press 置く… (or Enter in the day) → A box 「<day> からこの形にする」 with the file, the day and the change `- echo old` / `+ echo new`; Esc closes it and nothing is staged 〔未訳〕
 - [ ] **113.4** Again, and press 承認して置く → `<day> から使う定義を置いた: 経理/締め（それまでは今の定義で流す）`; the editor shows the net as it is (`echo old`), with a button 「<day> から次の定義」 by the title; the tree shows `→M/D` on the net; the detail shows `→ <day> から次の定義に切り替わる` and 次の定義を見る 〔未訳〕
-- [ ] **113.5** Run the net now → It runs `echo old` 〔未訳〕
+- [ ] **113.5** [x] Run the net now → It runs `echo old` 〔未訳〕
 - [ ] **113.6** Press 次の定義を見る → A box with the change, 承認: 承認済み（その日に確認済みで入る）, and 編集に読み込む / 閉じる / 置いた定義をやめる; 閉じる and Esc leave it staged 〔未訳〕
 - [ ] **113.7** 編集に読み込む; change `echo new` to `echo newer`; 置く… and 承認して置く → The editor opens on `echo new` with the day row on its day, and Ctrl+Z goes back to `echo old`; once staged again, there is still one next definition, now `echo newer` 〔未訳〕
-- [ ] **113.8** `koyomi list`; `koyomi show 経理/締め` → `→ <day> から次の定義: 経理/締め`; in show, `→ <day> から次の定義に切り替わる（koyomi stage 経理/締め --cancel でやめる）` 〔未訳〕
-- [ ] **113.9** `koyomi stage 経理/締め --cancel` → `<day> から使う定義をやめた: 経理/締め（今の定義のまま流す）`; the tree and the detail no longer show it; a second `--cancel` says `経理/締め に次の定義は置いていない` and exits 1 〔未訳〕
-- [ ] **113.10** `koyomi stage 経理/締め <desktop>\next.toml --from <tomorrow>` and answer `n`; again with `y` → The change is shown, then `経理/締め: 置かなかった` (exit 1); with `y`, `<tomorrow> から使う定義を置いた: …` 〔未訳〕
-- [ ] **113.11** `koyomi stage 経理/締め <the net's own file> --from <tomorrow>`; `--from <today>`; `--from 12/1`; a file with `format = [` → `今の定義と同じ中身: 経理/締め`; `<today> は今日か過ぎた日。今日から使うなら、ふつうに保存する`; `日付は YYYY-MM-DD で書く: 12/1`; `置けない: …` with the fault in the file. None is staged 〔未訳〕
+- [ ] **113.8** [x] `koyomi list`; `koyomi show 経理/締め` → `→ <day> から次の定義: 経理/締め`; in show, `→ <day> から次の定義に切り替わる（koyomi stage 経理/締め --cancel でやめる）` 〔未訳〕
+- [ ] **113.9** [x] `koyomi stage 経理/締め --cancel` → `<day> から使う定義をやめた: 経理/締め（今の定義のまま流す）`; the tree and the detail no longer show it; a second `--cancel` says `経理/締め に次の定義は置いていない` and exits 1 〔未訳〕
+- [ ] **113.10** [x] `koyomi stage 経理/締め <desktop>\next.toml --from <tomorrow>` and answer `n`; again with `y` → The change is shown, then `経理/締め: 置かなかった` (exit 1); with `y`, `<tomorrow> から使う定義を置いた: …` 〔未訳〕
+- [ ] **113.11** [x] `koyomi stage 経理/締め <the net's own file> --from <tomorrow>`; `--from <today>`; `--from 12/1`; a file with `format = [` → `今の定義と同じ中身: 経理/締め`; `<today> は今日か過ぎた日。今日から使うなら、ふつうに保存する`; `日付は YYYY-MM-DD で書く: 12/1`; `置けない: …` with the fault in the file. None is staged 〔未訳〕
 - [ ] **113.12** Leave the engine up over midnight into the staged day (or stop it, set the PC's date to that day, start it) → At 0:00 `経理/締め を <day> からの定義にした` (a notice 定義を切り替えた, where notices go); the net's file is the next one, the net is ✓ confirmed, the old one is in its versions, and the net runs `echo new`; nothing is staged any more 〔未訳〕
 - [ ] **113.13** Stage again; in the state folder's `next.toml`, change the text by hand; switch as in 113.12 → The box in 113.6 says 置いたあとで手で直された（その日は未確認で入る）; after the switch the net is ▲ unconfirmed (…未確認。確かめるまで流さない) and does not run till approved 〔未訳〕
 - [ ] **113.14** Stage again; break the text in `next.toml` (`format = [`); switch as in 113.12 → A notice 定義を切り替えられなかった; a caution `経理/締め を <day> からの定義に切り替えられなかった（今までの定義のまま）: …`; the net runs `echo old`. Fix or drop it (`--cancel`) and the caution goes 〔未訳〕
-- [ ] **113.15** Break `next.toml` itself (`next = [[`) → A warning names `next.toml`; `koyomi stage` and 置く… are refused and the file is left as it was 〔未訳〕
-- [ ] **113.16** Stage a net, then rename it (and a net that uses it) in the window; then delete it → The staged definition follows the new name (and the user's `use =` points at it); after the delete nothing is staged for it 〔未訳〕
+- [ ] **113.15** [x] Break `next.toml` itself (`next = [[`) → A warning names `next.toml`; `koyomi stage` and 置く… are refused and the file is left as it was 〔未訳〕
+- [ ] **113.16** [x] Stage a net, then rename it (and a net that uses it) in the window; then delete it → The staged definition follows the new name (and the user's `use =` points at it); after the delete nothing is staged for it 〔未訳〕
 
 ## 114. Send a definition to another PC (`koyomi remote send`; TODO 111)
 
@@ -1354,7 +1354,7 @@
 - [ ] **115.5** Make the job `cmd /c ping -n 300 127.0.0.1 > nul`; leave the PC alone; use it and leave it alone again while that run is going → A ⊘ スキップ row `PC が 1 分 使われなかったが、前の回がまだ動いているので流さない`; nothing starts after the first run ends 〔未訳〕
 - [ ] **115.6** Add `calendar` with today closed (or hold the net) and leave the PC alone → ⊘ スキップ `PC が 1 分 使われなかったが、休業日なので流さない（on_closed = "run" で流せる）` (⏸ 保留 for the held net); not run afterwards 〔未訳〕
 - [ ] **115.7** Run the engine as the service (§89) with the same net → The window's 注意 says `保守/空き: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない`; nothing starts however long the PC is left alone. Back to `koyomi engine start`: the warning goes 〔未訳〕
-- [ ] **115.8** `koyomi check` with `idle = "30s"`, with `idle = "10"`, with `idle = "10m"` and `on_closed = "next"` → `idle は 1m 以上（それより短いと、手を止めるたびに流れる）`; the `30m・1h30m・90s のように書く` error; `idle では on_closed は "skip" か "run"` 〔未訳〕
+- [ ] **115.8** [x] `koyomi check` with `idle = "30s"`, with `idle = "10"`, with `idle = "10m"` and `on_closed = "next"` → `idle は 1m 以上（それより短いと、手を止めるたびに流れる）`; the `30m・1h30m・90s のように書く` error; `idle では on_closed は "skip" か "run"` 〔未訳〕
 - [ ] **115.9** The editor: add a `[[when]]` of PC が空いたら → One field 使われない時間（例: 10m） with `10m`; except / start / end / on_closed are not shown; saving writes `idle = "10m"`; `30s` is refused with the same words as 115.8 〔未訳〕
 - [ ] **115.10** `koyomi next 保守/空き`; approve it after a change → The row `PC が 1m 使われなかったとき` comes first, with no time; the confirm box shows the same 〔未訳〕
 - [ ] **115.11** `schtasks /create /tn "\koyomi-test\空き" /tr "cmd.exe /c echo hi" /sc onidle /i 15 /f`, `schtasks /query /xml /tn "\koyomi-test\空き" > i.xml`, `koyomi import i.xml --dry-run` → The plan has `idle = "15m"` and the note `アイドル時のトリガーは idle = "15m"（PC がその間使われなかったとき）にした`; then `schtasks /delete /tn "\koyomi-test\空き" /f` 〔未訳〕
