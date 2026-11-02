@@ -1067,6 +1067,11 @@ impl State {
                 self.unreadable = Some(e);
             }
         }
+        self.reload_held();
+    }
+
+    /// Reads `held.toml` again: a person may edit it while the engine runs.
+    fn reload_held(&mut self) {
         match self.paths.held() {
             Ok(held) => {
                 self.held = held;
@@ -1081,8 +1086,10 @@ impl State {
     }
 
     fn rescan(&mut self) {
-        if self.unreadable.is_some() || self.held_bad.is_some() {
+        if self.unreadable.is_some() {
             self.reload();
+        } else {
+            self.reload_held();
         }
         self.reload_config();
         self.calendars = Calendars::load(&self.paths.calendars);
@@ -1104,9 +1111,6 @@ impl State {
         self.mails.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
         self.warnings = access_warnings(&self.paths, &files);
-        if !self.events.watching() {
-            self.warnings.push("待つファイルのフォルダーを見張れない（5 秒ごとに見る）".to_owned());
-        }
         self.warnings.extend(self.unreadable.clone());
         self.warnings.extend(self.held_bad.clone());
     }
@@ -1140,6 +1144,8 @@ impl State {
             .chain(self.http.notes())
             .chain(self.standby.notes())
             .chain(self.primary.notes())
+            // Not a reason to stop: the folders are looked at every 5 s instead, and a file still starts its net.
+            .chain((!self.events.watching()).then(|| "待つファイルのフォルダーを見張れない（5 秒ごとに見る）".to_owned()))
             .collect();
         Snapshot {
             defs: self.defs.clone(),
