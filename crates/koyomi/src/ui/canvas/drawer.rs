@@ -11,7 +11,7 @@ use ito_prefs::{
     fieldset, form_label, mark_button, seg_named, tag, CodeBox, FormWords, IconButton, InputField, Look, Mark as M, Need, Tag, Tone,
 };
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, Pass, SqlDb, SqlTls, WinrmAuth, GROUP_MAX};
+use koyomi_core::chore::{Chore, Pass, SqlDb, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
 use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
@@ -490,6 +490,24 @@ fn account_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     changed
 }
 
+/// How a `send` or `fetch` checks each file, and what that means for where it goes.
+fn verify_row(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> bool {
+    let far = if send { f.into.as_str() } else { f.from.as_str() };
+    let note = match f.verify {
+        None => "field.verify_note_off",
+        Some(_) if koyomi_core::chore::s3(far).is_some() => "field.verify_note_s3",
+        Some(_) if koyomi_core::chore::sftp(far).is_none() => "field.verify_note_share",
+        Some(Verify::Sha256) => "field.verify_note_sha256",
+        Some(Verify::Readback) => "field.verify_note_readback",
+    };
+    let options = [
+        (None, form.t.tr("field.verify_off")),
+        (Some(Verify::Sha256), "sha256"),
+        (Some(Verify::Readback), form.t.tr("field.verify_readback")),
+    ];
+    form.choice(ui, "field.verify", &mut f.verify, &options, form.t.tr(note))
+}
+
 /// The fields of a chore, by what it does.
 fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> bool {
     let (req, opt) = (Need::Required, Need::Optional);
@@ -528,6 +546,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
                 changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
                 changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
             }
+            changed |= verify_row(ui, form, send, f);
         }
         Chore::Ssh { .. } => {
             // A group's PCs may each have their host key in koyomi.toml.

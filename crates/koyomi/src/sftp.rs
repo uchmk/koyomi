@@ -6,7 +6,8 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use koyomi_core::chore::{self, Sftp};
+use koyomi_core::chore::{self, Sftp, Verify};
+use koyomi_core::run::Moved;
 
 /// The exit code of a run that found nothing to move: the chore judges it a warning.
 const NOTHING: i32 = chore::NOTHING;
@@ -58,7 +59,8 @@ pub(crate) fn env_var(prefix: &str, name: &str) -> Option<String> {
 }
 
 /// What a `send` or `fetch` job runs. Prints each file moved; exits 0 when done,
-/// [`NOTHING`] when there was no file, 2 on an error (with the reason after `! `).
+/// [`NOTHING`] when there was no file, 2 on an error (with the reason after `! `;
+/// a check that failed leaves it in `KOYOMI_REASON` too, for the job's ✕).
 fn run() -> i32 {
     match transfer() {
         Ok(0) => NOTHING,
@@ -84,57 +86,117 @@ fn transfer() -> Result<usize, String> {
     let host_key = var("HOST_KEY").ok_or("host_key がない")?;
     let session = ito_sftp::Session::connect(&target(&far, host_key, "sftp")?).map_err(|e| format!("{}: {e}", far.host))?;
     let never = AtomicBool::new(false);
-    let opts = ito_sftp::Options { overwrite: true, ..Default::default() };
+    let opts = ito_sftp::Options { overwrite: true, verify: verify(var("VERIFY").as_deref()) };
     if send {
-        let Some(local) = sendable(Path::new(&from)) else {
+        // A folder's files (not those below), the files a wildcard names, or one.
+        let path = Path::new(&from);
+        let pattern = if path.is_dir() { path.join("*").display().to_string() } else { from.clone() };
+        let files = crate::engine::files::find_files(&pattern);
+        if files.is_empty() {
             crate::say(&format!("no file to send: {from}"), false);
             return Ok(0);
-        };
-        let remote = format!("{}/", far.path.trim_end_matches('/'));
-        let moved = match session.put(&local, &remote, opts, &never, &mut |_, _, _| {}) {
-            Err(ito_sftp::Error::NotFound(p)) if p == local.display().to_string() => {
-                crate::say(&format!("no file to send: {from}"), false);
-                return Ok(0);
-            }
-            r => r.map_err(|e| format!("{remote}: {e}"))?,
-        };
-        for m in &moved {
-            crate::say(&format!("sent: {} ({} bytes)", m.name, m.bytes), false);
         }
-        Ok(moved.len())
+        let remote = format!("{}/", far.path.trim_end_matches('/'));
+        for (local, size, _) in &files {
+            let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+            let moved = session
+                .put(local, &remote, opts, &never, &mut |_, _, _| {})
+                .map_err(|e| failed(&format!("{remote}{name}"), &e, &name, *size))?;
+            for m in moved {
+                said("sent", m);
+            }
+        }
+        Ok(files.len())
     } else {
         let (dir, pattern) = far.path.rsplit_once('/').map_or((".", far.path.as_str()), |(d, p)| (if d.is_empty() { "/" } else { d }, p));
-        let names: Vec<String> = session
+        let found: Vec<(String, u64)> = session
             .list(dir)
             .map_err(|e| format!("{dir}: {e}"))?
             .into_iter()
             .filter(|e| !e.is_dir && ito_sftp::glob_match(pattern, &e.name, false))
-            .map(|e| e.name)
+            .map(|e| (e.name, e.size))
             .collect();
-        if names.is_empty() {
+        if found.is_empty() {
             crate::say(&format!("no file to fetch: {from}"), false);
             return Ok(0);
         }
         let into = PathBuf::from(&into);
         std::fs::create_dir_all(&into).map_err(|e| format!("{}: {e}", into.display()))?;
-        for name in &names {
+        for (name, size) in &found {
             let remote = if dir == "/" { format!("/{name}") } else { format!("{dir}/{name}") };
-            for m in session.get(&remote, &into.join(name), opts, &never, &mut |_, _, _| {}).map_err(|e| format!("{remote}: {e}"))? {
-                crate::say(&format!("fetched: {} ({} bytes)", m.name, m.bytes), false);
+            let moved =
+                session.get(&remote, &into.join(name), opts, &never, &mut |_, _, _| {}).map_err(|e| failed(&remote, &e, name, *size))?;
+            for m in moved {
+                said("fetched", m);
             }
         }
-        Ok(names.len())
+        Ok(found.len())
     }
 }
 
-/// What `put` takes for `from`: a folder's files as `<folder>\*`, a wildcard or a file as
-/// it is; `None` when there is no such file.
-fn sendable(from: &Path) -> Option<PathBuf> {
-    if from.is_dir() {
-        return Some(from.join("*"));
+/// How ito-sftp checks a file for the job's `verify`: `sha256` asks the far side for
+/// the file's hash (`sha256sum`, or `Get-FileHash` on a Windows server), `readback`
+/// reads it back.
+fn verify(v: Option<&str>) -> ito_sftp::Verify {
+    match v.and_then(Verify::of) {
+        Some(Verify::Sha256) => ito_sftp::Verify::Exec,
+        Some(Verify::Readback) => ito_sftp::Verify::Readback,
+        None => ito_sftp::Verify::None,
     }
-    let name = from.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
-    (ito_sftp::has_wildcard(&name) || from.is_file()).then(|| from.to_path_buf())
+}
+
+/// Logs a file moved (`sent` or `fetched`) and records it for the history.
+fn said(verb: &str, m: ito_sftp::Moved) {
+    let hash = m.sha256.as_deref().map(|h| format!(" (sha256 {h})")).unwrap_or_default();
+    crate::say(&format!("{verb}: {} ({} bytes){hash}", m.name, m.bytes), false);
+    keep(&record(m));
+}
+
+/// What the history keeps of a file moved: its hash came only from a check that agreed.
+fn record(m: ito_sftp::Moved) -> Moved {
+    let matched = m.sha256.is_some().then_some(true);
+    Moved { name: m.name, bytes: m.bytes, sha256: m.sha256, matched }
+}
+
+/// Why the file `name` (`bytes` long) did not move, as the log says it. A check that
+/// failed is recorded as not matched and left as the job's reason too.
+fn failed(at: &str, e: &ito_sftp::Error, name: &str, bytes: u64) -> String {
+    let text = format!("{at}: {e}");
+    let (kept, why) = failure(e, name, bytes);
+    if let Some(m) = kept {
+        keep(&m);
+    }
+    if why {
+        reason(&text);
+    }
+    text
+}
+
+/// For an error moving `name`: what to record, and whether it is the job's reason
+/// (a check that failed, not the move itself).
+fn failure(e: &ito_sftp::Error, name: &str, bytes: u64) -> (Option<Moved>, bool) {
+    match e {
+        ito_sftp::Error::Mismatch { ours, .. } => {
+            (Some(Moved { name: name.to_owned(), bytes, sha256: Some(ours.clone()), matched: Some(false) }), true)
+        }
+        ito_sftp::Error::VerifyUnavailable(_) => (None, true),
+        _ => (None, false),
+    }
+}
+
+/// Adds `m` to the list `KOYOMI_MOVED` names, which the engine keeps with the job's
+/// end; nothing when the job is run by hand.
+pub(crate) fn keep(m: &Moved) {
+    if let Some(path) = std::env::var_os("KOYOMI_MOVED") {
+        let _ = m.append(Path::new(&path));
+    }
+}
+
+/// Leaves `why` in the file `KOYOMI_REASON` names: the engine shows it as the job's ✕.
+fn reason(why: &str) {
+    if let Some(path) = std::env::var_os("KOYOMI_REASON") {
+        let _ = std::fs::write(path, why);
+    }
 }
 
 /// Who logs in and how, for `scheme` (`sftp`, or `ssh`, whose `KOYOMI_SSH_*` are read):
@@ -175,5 +237,38 @@ pub(crate) fn password(p: String) -> Result<String, String> {
             .map_err(|e| format!("秘密を読めない: {name}: {e}"))?
             .ok_or_else(|| format!("秘密がない: {name}（koyomi secret set {name}）")),
         None => Ok(p),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn verify_maps_to_how_ito_sftp_checks() {
+        assert_eq!(verify(None), ito_sftp::Verify::None);
+        assert_eq!(verify(Some("sha256")), ito_sftp::Verify::Exec);
+        assert_eq!(verify(Some("readback")), ito_sftp::Verify::Readback);
+        assert_eq!(verify(Some("md5")), ito_sftp::Verify::None);
+    }
+
+    #[test]
+    fn a_failed_check_is_recorded_and_is_the_reason() {
+        let e = ito_sftp::Error::Mismatch { name: "a.csv".into(), ours: "11".into(), theirs: "22".into() };
+        assert_eq!(
+            failure(&e, "a.csv", 5),
+            (Some(Moved { name: "a.csv".into(), bytes: 5, sha256: Some("11".into()), matched: Some(false) }), true)
+        );
+        assert_eq!(failure(&ito_sftp::Error::VerifyUnavailable("no exec".into()), "x", 0), (None, true));
+        // Any other error is the log's only.
+        assert_eq!(failure(&ito_sftp::Error::NotFound("/in/d.csv".into()), "d.csv", 0), (None, false));
+        assert_eq!(
+            record(ito_sftp::Moved { name: "b.csv".into(), bytes: 3, sha256: Some("33".into()) }),
+            Moved { name: "b.csv".into(), bytes: 3, sha256: Some("33".into()), matched: Some(true) }
+        );
+        assert_eq!(
+            record(ito_sftp::Moved { name: "c.csv".into(), bytes: 4, sha256: None }),
+            Moved { name: "c.csv".into(), bytes: 4, sha256: None, matched: None }
+        );
     }
 }

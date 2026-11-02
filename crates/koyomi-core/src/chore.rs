@@ -68,6 +68,10 @@ pub enum Chore {
         /// the bucket then goes in the path.
         #[serde(default)]
         endpoint: Option<String>,
+        /// Make sure each file arrived as it left, before it gets its name; none: as
+        /// before, not checked.
+        #[serde(default)]
+        verify: Option<Verify>,
     },
     /// ファイルを受け取る: the files `from`, either `sftp://[user@]host[:port]/folder/*.csv`,
     /// `s3://bucket/folder/*.csv` or a folder or share (a wildcard allowed), into the
@@ -87,6 +91,8 @@ pub enum Chore {
         region: Option<String>,
         #[serde(default)]
         endpoint: Option<String>,
+        #[serde(default)]
+        verify: Option<Verify>,
     },
     /// HTTP で呼ぶ: `method` to `url` with `body`, judged by the status code: one of
     /// `expect` (empty: 200–299) is 正常, another is 異常.
@@ -183,6 +189,39 @@ pub enum Chore {
         #[serde(default)]
         tls: SqlTls,
     },
+}
+
+/// How a `send` or `fetch` makes sure what arrived is what left (`verify`). Either
+/// way the file is checked under its `.part` name, before it gets its own, so a file
+/// seen under its own name is whole. Over SFTP `sha256` hashes it on the far side
+/// (`exec`) and `readback` reads it back; S3 checks either with the store's SHA-256
+/// checksum, and a folder or share by hashing both files here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Verify {
+    /// Hashed where it landed: over SFTP with `exec` (`sha256sum`, or `Get-FileHash`
+    /// on Windows), which a transfer-only account refuses.
+    Sha256,
+    /// Read back and hashed here: any SFTP server, twice the traffic.
+    Readback,
+}
+
+impl Verify {
+    /// Each, in the order of the editor's list.
+    pub const ALL: [Verify; 2] = [Verify::Sha256, Verify::Readback];
+
+    /// As written in `verify`.
+    pub fn key(self) -> &'static str {
+        match self {
+            Verify::Sha256 => "sha256",
+            Verify::Readback => "readback",
+        }
+    }
+
+    /// The one written as `key`.
+    pub fn of(key: &str) -> Option<Verify> {
+        Verify::ALL.into_iter().find(|v| v.key() == key)
+    }
 }
 
 /// How a `sql` talks to its server (`tls`).
@@ -433,6 +472,7 @@ impl Chore {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             },
             "fetch" => Chore::Fetch {
                 from: String::new(),
@@ -443,6 +483,7 @@ impl Chore {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             },
             "http" => Chore::Http {
                 url: String::new(),
@@ -586,7 +627,7 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
             }
-            Chore::Send { from, into, key, host_key, password, key_id, region, endpoint } => {
+            Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, .. } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(from).is_some() || s3(from).is_some() {
@@ -603,7 +644,7 @@ impl Chore {
                     login("sftp://", far.is_some(), true, key, host_key, password)?;
                 }
             }
-            Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint } => {
+            Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, .. } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(into).is_some() || s3(into).is_some() {
@@ -830,15 +871,15 @@ impl Chore {
                 );
                 (s, None)
             }
-            Chore::Send { from, into, .. } | Chore::Fetch { from, into, .. } => {
+            Chore::Send { from, into, verify, .. } | Chore::Fetch { from, into, verify, .. } => {
                 let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
                 let s = match (self, sftp(from).or_else(|| sftp(into))) {
                     // Not a script (fill()): only its judge.
                     _ if self.cloud() => String::new(),
                     // What to do is in the environment (env()): no path or secret is written here.
                     (_, Some(Ok(_))) => SFTP_SCRIPT.to_owned(),
-                    (Chore::Send { .. }, _) => shared(from, into, "send", "sent"),
-                    _ => shared(from, into, "fetch", "fetched"),
+                    (Chore::Send { .. }, _) => shared(from, into, "send", "sent", verify.is_some()),
+                    _ => shared(from, into, "fetch", "fetched", verify.is_some()),
                 };
                 (s, warn)
             }
@@ -854,7 +895,8 @@ impl Chore {
     /// value (maybe `secret:<name>`) as `KOYOMI_HEADER_<n>`, in the order of `headers`;
     /// an SFTP `send` or `fetch` as `KOYOMI_SFTP_*`, which `koyomi sftp run` reads
     /// (the password as `secret:<name>`, read when the job starts); one with S3 as
-    /// `KOYOMI_CLOUD_*` for `koyomi cloud run` (the same); an `ssh` as
+    /// `KOYOMI_CLOUD_*` for `koyomi cloud run` (the same); either's `verify` as
+    /// `KOYOMI_SFTP_VERIFY` or `KOYOMI_CLOUD_VERIFY`; an `ssh` as
     /// `KOYOMI_SSH_*`, which `koyomi ssh run` reads (fill() adds `KOYOMI_SSH_ENV`); a
     /// `winrm` as `KOYOMI_WINRM_*` for `koyomi winrm run` (and `KOYOMI_WINRM_ENV`),
     /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
@@ -864,8 +906,8 @@ impl Chore {
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
-            Chore::Send { from, into, password, key_id, region, endpoint, .. }
-            | Chore::Fetch { from, into, password, key_id, region, endpoint, .. }
+            Chore::Send { from, into, password, key_id, region, endpoint, verify, .. }
+            | Chore::Fetch { from, into, password, key_id, region, endpoint, verify, .. }
                 if self.cloud() =>
             {
                 let mut v = vec![
@@ -878,9 +920,13 @@ impl Chore {
                         v.push((format!("KOYOMI_CLOUD_{name}"), x.to_owned()));
                     }
                 }
+                if let Some(x) = verify {
+                    v.push(("KOYOMI_CLOUD_VERIFY".to_owned(), x.key().to_owned()));
+                }
                 v
             }
-            Chore::Send { from, into, key, host_key, password, .. } | Chore::Fetch { from, into, key, host_key, password, .. }
+            Chore::Send { from, into, key, host_key, password, verify, .. }
+            | Chore::Fetch { from, into, key, host_key, password, verify, .. }
                 if sftp(from).or_else(|| sftp(into)).is_some() =>
             {
                 let mut v = vec![
@@ -892,6 +938,9 @@ impl Chore {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_SFTP_{name}"), x.to_owned()));
                     }
+                }
+                if let Some(x) = verify {
+                    v.push(("KOYOMI_SFTP_VERIFY".to_owned(), x.key().to_owned()));
                 }
                 v
             }
@@ -1485,19 +1534,73 @@ pub fn host_key_ok(h: &str) -> Result<(), String> {
 }
 
 /// `send` and `fetch` between folders and shares: each file `from` matches is
-/// copied into `into`, which is made when it is not there.
-fn shared(from: &str, into: &str, verb: &str, done: &str) -> String {
+/// copied into `into`, which is made when it is not there. With `verify`, each goes
+/// to `<name>.part` first and gets its name only when both files hash the same; when
+/// they do not, the `.part` goes and the job ends 異常 with why. Each file moved is
+/// added to the list `KOYOMI_MOVED` names, as [`crate::run::Moved`].
+fn shared(from: &str, into: &str, verb: &str, done: &str, verify: bool) -> String {
     format!(
         "$ErrorActionPreference = 'Stop'\n\
-         $files = @(Get-ChildItem -Path {f} -File)\n\
-         if ($files.Count -eq 0) {{ Write-Output ('no file to {verb}: ' + {f}); exit {NOTHING} }}\n\
+         [Console]::OutputEncoding = [Text.Encoding]::UTF8\n\
+         $from = {f}\n\
          $into = {i}\n\
-         New-Item -ItemType Directory -Force -Path $into | Out-Null\n\
-         foreach ($x in $files) {{ Copy-Item -LiteralPath $x.FullName -Destination $into -Force; Write-Output \"{done}: $($x.FullName)\" }}\n",
+         $verb = '{verb}'\n\
+         $done = '{done}'\n\
+         $verify = ${verify}\n\
+         $nothing = {NOTHING}\n\
+         {SHARED_SCRIPT}",
         f = quote(from),
         i = quote(into),
     )
 }
+
+/// The body of [`shared`], after its values. A record is TOML, a `[[file]]` each,
+/// written as UTF-8 without a BOM; a name's `\` and `"` are escaped. The hash is
+/// .NET's, not `Get-FileHash`: Windows PowerShell started from PowerShell 7 may not
+/// load the module that has it (its `PSModulePath` points at 7's).
+const SHARED_SCRIPT: &str = r#"$files = @(Get-ChildItem -Path $from -File)
+if ($files.Count -eq 0) { Write-Output "no file to ${verb}: $from"; exit $nothing }
+New-Item -ItemType Directory -Force -Path $into | Out-Null
+$utf8 = New-Object System.Text.UTF8Encoding($false)
+function Kept($name, $bytes, $sha, $matched) {
+    if (-not $env:KOYOMI_MOVED) { return }
+    $t = "[[file]]`nname = `"" + $name.Replace('\', '\\').Replace('"', '\"') + "`"`nbytes = $bytes`n"
+    if ($sha) { $t += "sha256 = `"$sha`"`n" }
+    if ($null -ne $matched) { $t += 'matched = ' + "$matched".ToLower() + "`n" }
+    [System.IO.File]::AppendAllText($env:KOYOMI_MOVED, $t, $utf8)
+}
+function Sha($path) {
+    $s = [System.IO.File]::OpenRead($path)
+    try { -join ([System.Security.Cryptography.SHA256]::Create().ComputeHash($s) | ForEach-Object { $_.ToString('x2') }) }
+    finally { $s.Dispose() }
+}
+if ($verify) { $dir = (Get-Item -LiteralPath $into).FullName }
+foreach ($x in $files) {
+    if (-not $verify) {
+        Copy-Item -LiteralPath $x.FullName -Destination $into -Force
+        Kept $x.Name $x.Length $null $null
+        Write-Output "${done}: $($x.FullName)"
+        continue
+    }
+    $to = Join-Path $dir $x.Name
+    $part = $to + '.part'
+    try { [System.IO.File]::Copy($x.FullName, $part, $true) } catch { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue; throw }
+    $ours = Sha $x.FullName
+    $theirs = Sha $part
+    if ($ours -ne $theirs) {
+        Remove-Item -LiteralPath $part -Force
+        Kept $x.Name $x.Length $ours $false
+        $why = "届いた中身が違います: $($x.Name)（こちら $ours、相手 $theirs）"
+        if ($env:KOYOMI_REASON) { [System.IO.File]::WriteAllText($env:KOYOMI_REASON, $why, $utf8) }
+        Write-Output "! $why"
+        exit 2
+    }
+    if (Test-Path -LiteralPath $to) { Remove-Item -LiteralPath $to -Force }
+    [System.IO.File]::Move($part, $to)
+    Kept $x.Name $x.Length $ours $true
+    Write-Output "${done}: $($x.FullName) (sha256 $ours)"
+}
+"#;
 
 #[cfg(test)]
 mod tests {
@@ -1561,6 +1664,7 @@ mod tests {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             }
             .check()
         };
@@ -1574,6 +1678,7 @@ mod tests {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             }
             .check()
         };
@@ -1600,6 +1705,7 @@ mod tests {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             }
             .check()
         };
@@ -1627,6 +1733,7 @@ mod tests {
             key_id: None,
             region: None,
             endpoint: None,
+            verify: Some(Verify::Sha256),
         };
         let (script, judge) = s.script();
         assert!(script.contains("& $env:KOYOMI_EXE sftp run | ForEach-Object"), "{script}");
@@ -1640,6 +1747,7 @@ mod tests {
         assert_eq!(get("KOYOMI_SFTP_HOST_KEY"), Some(HK));
         assert_eq!(get("KOYOMI_SFTP_PASSWORD"), Some("secret:partner"));
         assert_eq!(get("KOYOMI_SFTP_KEY"), None);
+        assert_eq!(get("KOYOMI_SFTP_VERIFY"), Some("sha256"));
         let f = Chore::Fetch {
             from: "sftp://u@h/~/out/*.csv".into(),
             into: "D:\\in".into(),
@@ -1649,9 +1757,11 @@ mod tests {
             key_id: None,
             region: None,
             endpoint: None,
+            verify: None,
         };
         assert!(f.env().contains(&("KOYOMI_SFTP_OP".to_owned(), "fetch".to_owned())));
         assert!(f.env().contains(&("KOYOMI_SFTP_KEY".to_owned(), "C:\\keys\\id".to_owned())));
+        assert!(!f.env().iter().any(|(k, _)| k == "KOYOMI_SFTP_VERIFY"));
         let share = Chore::Send {
             from: "D:\\out".into(),
             into: "\\\\nas\\share\\in".into(),
@@ -1661,13 +1771,33 @@ mod tests {
             key_id: None,
             region: None,
             endpoint: None,
+            verify: None,
         };
         let (script, judge) = share.script();
         assert!(script.contains("Copy-Item -LiteralPath $x.FullName -Destination $into -Force"), "{script}");
+        assert!(script.contains("$verify = $false"), "{script}");
         assert!(!script.contains("sftp"), "{script}");
         assert!(judge.is_some());
         assert!(share.env().is_empty());
         assert!(!share.own() && !share.cloud());
+        // With `verify`, it copies to `.part`, compares the hashes and renames only when they match.
+        let mut sure = share.clone();
+        if let Chore::Send { verify, .. } = &mut sure {
+            *verify = Some(Verify::Readback);
+        }
+        let (script, _) = sure.script();
+        assert!(script.contains("$verify = $true"), "{script}");
+        assert!(script.contains("$part = $to + '.part'") && script.contains("SHA256]::Create()"), "{script}");
+        assert!(script.contains("exit 2") && script.contains("KOYOMI_REASON"), "{script}");
+        assert!(sure.env().is_empty(), "the shared folder needs no variable");
+    }
+
+    #[test]
+    fn verify_has_two_keys() {
+        for v in Verify::ALL {
+            assert_eq!(Verify::of(v.key()), Some(v));
+        }
+        assert_eq!(Verify::of("md5"), None);
     }
 
     fn cloud_send(into: &str, key_id: Option<&str>, password: Option<&str>, region: Option<&str>, endpoint: Option<&str>) -> Chore {
@@ -1680,6 +1810,7 @@ mod tests {
             key_id: key_id.map(Into::into),
             region: region.map(Into::into),
             endpoint: endpoint.map(Into::into),
+            verify: None,
         }
     }
 
@@ -1743,6 +1874,7 @@ mod tests {
             key_id: None,
             region: None,
             endpoint: None,
+            verify: None,
         };
         assert!(back.check().unwrap_err().contains("s3:// は into"));
     }
@@ -1758,6 +1890,7 @@ mod tests {
             key_id: Some("k".into()),
             region: Some("ap-northeast-1".into()),
             endpoint: None,
+            verify: None,
         };
         assert_eq!(fetch("s3://logs/daily/*.csv", "D:\\in").check(), Ok(()));
         assert_eq!(fetch("s3://logs/a.csv", "D:\\in").check(), Ok(()));
@@ -1777,7 +1910,13 @@ mod tests {
         assert_eq!(get("KOYOMI_CLOUD_REGION"), Some("ap-northeast-1"));
         assert_eq!(get("KOYOMI_CLOUD_PASSWORD"), Some("secret:s3"));
         assert_eq!(get("KOYOMI_CLOUD_ENDPOINT"), None);
+        assert_eq!(get("KOYOMI_CLOUD_VERIFY"), None);
         assert!(!env.iter().any(|(k, _)| k.starts_with("KOYOMI_SFTP_")));
+        let mut sure = f.clone();
+        if let Chore::Fetch { verify, .. } = &mut sure {
+            *verify = Some(Verify::Sha256);
+        }
+        assert!(sure.env().contains(&("KOYOMI_CLOUD_VERIFY".to_owned(), "sha256".to_owned())));
     }
 
     #[test]

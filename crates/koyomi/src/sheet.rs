@@ -108,6 +108,34 @@ pub fn runs(t: &Table, rs: &[Run]) -> ito_table::Table {
     s
 }
 
+/// One row per file a `send` or `fetch` moved, the runs oldest first as given; `verified` is
+/// empty when the far side's hash was not compared.
+pub fn files(t: &Table, rs: &[Run]) -> ito_table::Table {
+    let mut s = sheet(t, "files", &["run_id", "jobnet", "job", "ended", "file", "bytes", "sha256", "verified"]);
+    for r in rs {
+        for j in &r.jobs {
+            for m in &j.moved {
+                let verified = match m.matched {
+                    Some(true) => t.tr("csv.verified_yes"),
+                    Some(false) => t.tr("csv.verified_no"),
+                    None => "",
+                };
+                s.row([
+                    r.id.clone().into(),
+                    r.jobnet.clone().into(),
+                    j.id.clone().into(),
+                    at(j.ended),
+                    m.name.clone().into(),
+                    m.bytes.into(),
+                    m.sha256.clone().unwrap_or_default().into(),
+                    verified.to_owned().into(),
+                ]);
+            }
+        }
+    }
+    s
+}
+
 /// One row per net: its runs, how many passed and failed, the share that passed, the usual time
 /// of the good ones and the jobs that failed most.
 pub fn report(t: &Table, rows: &[koyomi_core::report::Row]) -> ito_table::Table {
@@ -190,6 +218,32 @@ mod tests {
         let s = runs(&t, &[r]);
         let row = csv(&s).lines().nth(1).unwrap().to_owned();
         assert_eq!(row, "20261030-020000-01,g/n,n,2026-10-30,スケジュール,,2026-10-30 02:00:00,2026-10-30 02:01:05,65,異常終了,,'=b");
+        assert!(s.xlsx_bytes().is_ok());
+    }
+
+    #[test]
+    fn a_moved_file_is_one_row_with_its_hash_and_check() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::Moved;
+        let job = |id: &str| Job { id: id.into(), run: vec!["x".into()], ..Default::default() };
+        let net = Jobnet { jobs: vec![job("send"), job("other")], ..Default::default() };
+        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap();
+        let mut r = Run::new("20261030-020000-01", "g/n", "n", "2026-10-30", How::Schedule, &net, at("2026-10-30 02:00:00"));
+        r.jobs[0].ended = Some(at("2026-10-30 02:00:09"));
+        r.jobs[0].moved = vec![
+            Moved { name: "売上 1.csv".into(), bytes: 3, sha256: Some("ab".repeat(32)), matched: Some(true) },
+            Moved { name: "s3://b/x.csv".into(), bytes: 0, sha256: None, matched: Some(false) },
+            Moved { name: "plain.csv".into(), bytes: 7, sha256: None, matched: None },
+        ];
+        let (t, _) = crate::i18n::table("ja");
+        let s = files(&t, &[r]);
+        let text = csv(&s);
+        let rows: Vec<&str> = text.lines().collect();
+        assert_eq!(rows[0], "実行,ジョブネット,ジョブ,終了,ファイル,バイト,SHA-256,照合");
+        assert_eq!(rows[1], format!("20261030-020000-01,g/n,send,2026-10-30 02:00:09,売上 1.csv,3,{},合っていた", "ab".repeat(32)));
+        assert_eq!(rows[2], "20261030-020000-01,g/n,send,2026-10-30 02:00:09,s3://b/x.csv,0,,違っていた");
+        assert_eq!(rows[3], "20261030-020000-01,g/n,send,2026-10-30 02:00:09,plain.csv,7,,");
+        assert_eq!(rows.len(), 4, "the job that moved nothing has no row");
         assert!(s.xlsx_bytes().is_ok());
     }
 }

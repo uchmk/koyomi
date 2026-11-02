@@ -348,7 +348,24 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
         let env: Vec<String> = j.env.iter().map(|(k, v)| format!("{k}={}", if v.starts_with("secret:") { "***" } else { v })).collect();
         add("run.env", env.join("  "));
     }
+    for m in &j.moved {
+        add("run.file", moved(t, m));
+    }
     rows
+}
+
+/// A file a `send` or `fetch` moved: its name, size, hash and whether the far side's was the same.
+pub fn moved(t: &Table, m: &koyomi_core::run::Moved) -> String {
+    let mut s = format!("{}  {}", m.name, t.trf("run.bytes", &[&m.bytes.to_string()]));
+    if let Some(h) = &m.sha256 {
+        s.push_str(&format!("  sha256 {h}"));
+    }
+    match m.matched {
+        Some(true) => s.push_str(&format!("  {}", ito_a11y::State::Done.marked(t.tr("run.file_matched")))),
+        Some(false) => s.push_str(&format!("  {}", ito_a11y::State::Error.marked(t.tr("run.file_mismatched")))),
+        None => {}
+    }
+    s
 }
 
 /// `【分岐】` and the like before a part's name; nothing before a job's.

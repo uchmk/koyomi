@@ -236,6 +236,49 @@ pub struct JobRun {
     /// The state's reason in words: `売上取込の終わりを待っています`, `強制終了`.
     #[serde(default)]
     pub reason: String,
+    /// The files a `send` or `fetch` moved, every try's, in order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub moved: Vec<Moved>,
+}
+
+/// A file a `send` or `fetch` moved, as its run keeps it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Moved {
+    /// Its name, or where it went (`s3://…`).
+    pub name: String,
+    pub bytes: u64,
+    /// Its SHA-256 in lowercase hex, when it was taken.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<String>,
+    /// Whether the far side's hash was the same; none when it was not compared.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub matched: Option<bool>,
+}
+
+/// The list file `KOYOMI_MOVED` names: a `[[file]]` each.
+#[derive(Default, Serialize, Deserialize)]
+struct MovedList {
+    #[serde(default)]
+    file: Vec<Moved>,
+}
+
+impl Moved {
+    /// Adds it to the list file at `path` (what a job's `KOYOMI_MOVED` names).
+    pub fn append(&self, path: &std::path::Path) -> std::io::Result<()> {
+        use std::io::Write;
+        let text = toml::to_string(&MovedList { file: vec![self.clone()] }).map_err(std::io::Error::other)?;
+        std::fs::OpenOptions::new().create(true).append(true).open(path)?.write_all(text.as_bytes())
+    }
+
+    /// The list file at `path`, as written; none when there is no such file or it
+    /// cannot be read.
+    pub fn read(path: &std::path::Path) -> Vec<Moved> {
+        std::fs::read_to_string(path)
+            .ok()
+            .and_then(|t| toml::from_str::<MovedList>(t.trim_start_matches('\u{feff}')).ok())
+            .map(|l| l.file)
+            .unwrap_or_default()
+    }
 }
 
 impl JobRun {
@@ -263,6 +306,7 @@ impl JobRun {
             ended: None,
             exit: None,
             reason: String::new(),
+            moved: Vec::new(),
         }
     }
 
@@ -934,6 +978,13 @@ impl Run {
         self.finish(id, Outcome::NoExit, now);
     }
 
+    /// The files the job `id` moved (a `send` or `fetch`), kept with its end in the history.
+    pub fn set_moved(&mut self, id: &str, moved: Vec<Moved>) {
+        if let Some(i) = self.index(id) {
+            self.jobs[i].moved = moved;
+        }
+    }
+
     /// A person stops the whole run: what has not started will not. The jobs that run are
     /// finished by the engine with [`Outcome::Killed`] once their processes are gone.
     pub fn kill_pending(&mut self, now: NaiveDateTime) {
@@ -1229,6 +1280,27 @@ pub fn average_duration(runs: &[Run], jobnet: &str, last: usize) -> Option<chron
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn moved_files_are_appended_and_read_back() {
+        let dir = std::env::temp_dir().join(format!("koyomi-moved-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.moved.toml");
+        let _ = std::fs::remove_file(&path);
+        assert!(Moved::read(&path).is_empty(), "no file is no record");
+        let one = Moved { name: "a \"b\".csv".into(), bytes: 12, sha256: Some("ab".repeat(32)), matched: Some(true) };
+        let two = Moved { name: "c.csv".into(), bytes: 0, sha256: None, matched: None };
+        one.append(&path).unwrap();
+        two.append(&path).unwrap();
+        assert_eq!(Moved::read(&path), vec![one.clone(), two.clone()]);
+        // What PowerShell writes: a BOM, CRLF, and `matched = false`.
+        let ps = "\u{feff}[[file]]\r\nname = \"x.csv\"\r\nbytes = 3\r\nsha256 = \"00\"\r\nmatched = false\r\n";
+        std::fs::write(&path, ps).unwrap();
+        assert_eq!(Moved::read(&path), vec![Moved { name: "x.csv".into(), bytes: 3, sha256: Some("00".into()), matched: Some(false) }]);
+        std::fs::write(&path, "not toml [").unwrap();
+        assert!(Moved::read(&path).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
     use crate::jobnet::{parse, ranges, Job};
 
     fn at(s: &str) -> NaiveDateTime {

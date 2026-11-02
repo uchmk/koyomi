@@ -448,6 +448,9 @@ fn job(j: &Job, out: &mut String) {
                     }
                 }
             }
+            if let Chore::Send { verify: Some(v), .. } | Chore::Fetch { verify: Some(v), .. } = c {
+                push(out, "verify", &q(v.key()));
+            }
             if let Chore::Ssh { max, pass, .. } | Chore::Winrm { max, pass, .. } = c {
                 if let Some(m) = max {
                     push(out, "max", &m.to_string());
@@ -757,6 +760,7 @@ into = "s3://logs/daily/{date}/"
 key_id = "AKIAEXAMPLE"
 password = "secret:s3"
 region = "ap-northeast-1"
+verify = "sha256"
 after = ["sq"]
 
 [[job]]
@@ -767,6 +771,7 @@ into = 'D:\in'
 key_id = "secret:minio-id"
 password = "secret:minio"
 endpoint = "http://nas:9000"
+verify = "readback"
 after = ["up"]
 "#;
 

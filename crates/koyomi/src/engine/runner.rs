@@ -40,7 +40,7 @@ use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
 use koyomi_core::lock::{admit, Holder};
-use koyomi_core::run::{verdict, How, JobRun, Outcome, Run, State};
+use koyomi_core::run::{verdict, How, JobRun, Moved, Outcome, Run, State};
 use koyomi_core::scan::Def;
 use koyomi_core::template;
 
@@ -64,6 +64,8 @@ struct Done {
     reason: String,
     /// How many times the job was run again before this end.
     retried: u32,
+    /// The files a `send` or `fetch` moved, from every try and pass.
+    moved: Vec<Moved>,
 }
 
 /// The `[params]` values a run by hand was given, beside its `definition.toml`.
@@ -820,6 +822,7 @@ impl Runner {
             let now = ito_common::now::now_local().naive_local();
             let Some(r) = self.runs.iter_mut().find(|r| r.id == done.run) else { continue };
             r.retried(&done.job, done.retried);
+            r.set_moved(&done.job, done.moved);
             match done.outcome {
                 _ if done.reason.is_empty() => r.finish(&done.job, done.outcome, now),
                 // A stop's reason says how it went (an `ssh` job's far command was asked too).
@@ -1220,9 +1223,25 @@ struct LogSize {
 }
 
 /// Runs one job to its end on this thread, writing its lines to the log:
-/// once, or again after each abnormal end while its `retry` allows.
+/// once, or again after each abnormal end while its `retry` allows. What it
+/// recorded in `KOYOMI_MOVED` comes back with the end.
 fn run_job(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
-    let done = |outcome, reason: String, retried: u32| Done { run: job.run.clone(), job: job.id.clone(), outcome, reason, retried };
+    // Left by an earlier run of the job in this run (a rerun): already in the history.
+    let _ = take_moved(&job.log, &job.id);
+    let mut done = run_job_once(job, stop, why);
+    done.moved = take_moved(&job.log, &job.id);
+    done
+}
+
+fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> Done {
+    let done = |outcome, reason: String, retried: u32| Done {
+        run: job.run.clone(),
+        job: job.id.clone(),
+        outcome,
+        reason,
+        retried,
+        moved: Vec::new(),
+    };
     let Some((exe, args)) = job.command.split_first() else {
         return done(Outcome::Failed, "run が空".to_owned(), 0);
     };
@@ -1550,6 +1569,38 @@ fn reason_path(log: &std::path::Path, job: &str, index: Option<u32>) -> PathBuf 
     log.with_file_name(format!("{job}{pass}.reason"))
 }
 
+/// Where a `send` or `fetch` records each file it moved (`KOYOMI_MOVED`, `[[file]]`
+/// tables): one per pass, as passes may run side by side. Tries append to it.
+fn moved_path(log: &std::path::Path, job: &str, index: Option<u32>) -> PathBuf {
+    let pass = index.map(|i| format!(".{i}")).unwrap_or_default();
+    log.with_file_name(format!("{job}.moved{pass}.toml"))
+}
+
+/// What the job's tries and passes recorded in their `KOYOMI_MOVED` files, in pass
+/// order, taken away.
+fn take_moved(log: &std::path::Path, job: &str) -> Vec<Moved> {
+    let Some(dir) = log.parent() else { return Vec::new() };
+    let whole = format!("{job}.moved.toml");
+    let head = format!("{job}.moved.");
+    let mut files: Vec<(u32, PathBuf)> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_str()?.to_owned();
+            let pass = if name == whole { 0 } else { name.strip_prefix(&head)?.strip_suffix(".toml")?.parse::<u32>().ok()? };
+            Some((pass, e.path()))
+        })
+        .collect();
+    files.sort();
+    let mut all = Vec::new();
+    for (_, path) in files {
+        all.extend(Moved::read(&path));
+        let _ = std::fs::remove_file(&path);
+    }
+    all
+}
+
 /// What a job left in its `KOYOMI_REASON` file, taken away; `None` when it left nothing.
 fn left_reason(path: &std::path::Path) -> Option<String> {
     let text = std::fs::read_to_string(path).ok()?;
@@ -1612,6 +1663,8 @@ fn attempt(
     let reason = reason_path(&job.log, &job.id, job.index);
     let _ = std::fs::remove_file(&reason);
     cmd.env("KOYOMI_REASON", &reason);
+    // Where a `send` or `fetch` records each file it moved, for the history.
+    cmd.env("KOYOMI_MOVED", moved_path(&job.log, &job.id, job.index));
     cmd.env("KOYOMI_JOBNET", &job.jobnet).env("KOYOMI_JOB", &job.id).env("KOYOMI_RUN", &job.run).env("KOYOMI_DATE", &job.date);
     if let Some(f) = &job.file {
         cmd.env("KOYOMI_FILE", f);
@@ -2197,6 +2250,7 @@ id = \"a\"
             key_id: Some("k".into()),
             region: Some("us-east-1".into()),
             endpoint: None,
+            verify: None,
         });
         assert_eq!(grace(&s3), grace(&ssh));
     }
@@ -2527,6 +2581,83 @@ judge = {{ ok_file = '{ok_file}.none' }}
         assert!(back.join("a.csv").exists() && back.join("b.csv").exists());
         assert!(log("s").contains("sent: "), "{}", log("s"));
         assert!(log("none").contains("no file to fetch"), "{}", log("none"));
+        // Each file moved is kept with the job's end, without a hash when not verified.
+        let names = |j: &str| run.job(j).unwrap().moved.iter().map(|m| m.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names("s"), ["a.csv", "b.csv"]);
+        assert_eq!(names("f"), ["a.csv", "b.csv"]);
+        assert!(run.job("s").unwrap().moved.iter().all(|m| m.bytes == 1 && m.sha256.is_none() && m.matched.is_none()));
+        assert!(names("none").is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_verified_send_and_fetch_keep_each_files_hash() {
+        if !cfg!(windows) {
+            return;
+        }
+        let dir = scratch("verify");
+        let (out, share, back) = (dir.join("out"), dir.join("share"), dir.join("back"));
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("売上 1.csv"), "abc").unwrap();
+        std::fs::create_dir_all(&share).unwrap();
+        // An old copy is replaced only by the checked one.
+        std::fs::write(share.join("売上 1.csv"), "old").unwrap();
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"s\"\nkind = \"send\"\nfrom = '{}\\*.csv'\ninto = '{}'\nverify = \"sha256\"\n\
+             [[job]]\nid = \"f\"\nkind = \"fetch\"\nfrom = '{}\\*.csv'\ninto = '{}'\nverify = \"readback\"\nafter = [\"s\"]\n",
+            out.display(),
+            share.display(),
+            share.display(),
+            back.display()
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let log = |j: &str| r.log_tail(&id, j).unwrap_or_default();
+        // sha256 of "abc".
+        let abc = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad";
+        for j in ["s", "f"] {
+            let job = run.job(j).unwrap();
+            assert_eq!(job.state, State::Ok, "{j}\n{}", log(j));
+            assert_eq!(
+                job.moved,
+                [Moved { name: "売上 1.csv".into(), bytes: 3, sha256: Some(abc.into()), matched: Some(true) }],
+                "{j}\n{}",
+                log(j)
+            );
+            assert!(log(j).contains(&format!("(sha256 {abc})")), "{}", log(j));
+        }
+        assert_eq!(std::fs::read_to_string(share.join("売上 1.csv")).unwrap(), "abc");
+        assert_eq!(std::fs::read_to_string(back.join("売上 1.csv")).unwrap(), "abc");
+        let parts = |d: &std::path::Path| {
+            std::fs::read_dir(d).unwrap().flatten().filter(|e| e.path().extension().is_some_and(|x| x == "part")).count()
+        };
+        assert_eq!((parts(&share), parts(&back)), (0, 0));
+        // The history keeps them: `koyomi history` reads the runs back from it.
+        r.flush();
+        let day = Day::load(&history::path(&dir.join("history"), ito_common::now::now_local().date_naive())).unwrap();
+        let back = day.runs();
+        let kept = back.iter().find(|x| x.id == id).expect("the run in the history");
+        assert_eq!(kept.job("s").unwrap().moved, run.job("s").unwrap().moved);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_moved_files_of_each_pass_come_back_in_order() {
+        let dir = scratch("moved");
+        let log = dir.join("run").join("j.log");
+        std::fs::create_dir_all(log.parent().unwrap()).unwrap();
+        let m = |n: &str| Moved { name: n.into(), bytes: 1, ..Default::default() };
+        m("two").append(&moved_path(&log, "j", Some(2))).unwrap();
+        m("ten").append(&moved_path(&log, "j", Some(10))).unwrap();
+        m("one").append(&moved_path(&log, "j", Some(1))).unwrap();
+        m("whole").append(&moved_path(&log, "j", None)).unwrap();
+        m("other").append(&moved_path(&log, "jj", None)).unwrap();
+        let names: Vec<String> = take_moved(&log, "j").into_iter().map(|m| m.name).collect();
+        assert_eq!(names, ["whole", "one", "two", "ten"]);
+        assert!(take_moved(&log, "j").is_empty(), "taken away");
+        assert_eq!(take_moved(&log, "jj").len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

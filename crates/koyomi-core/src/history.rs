@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Line, Part};
 use crate::late::Delay;
-use crate::run::{How, JobRun, Run, State};
+use crate::run::{How, JobRun, Moved, Run, State};
 
 /// One line of history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -44,6 +44,9 @@ pub enum Event {
         /// How many times the engine ran it again.
         #[serde(default)]
         retried: u32,
+        /// The files a `send` or `fetch` moved.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        moved: Vec<Moved>,
     },
     /// The end, with every job's last state (the ones that never ran have theirs only here).
     RunEnd {
@@ -173,6 +176,7 @@ pub fn job_end(run: &Run, job: &JobRun) -> Event {
         exit: job.exit,
         reason: job.reason.clone(),
         retried: job.retried,
+        moved: job.moved.clone(),
     }
 }
 
@@ -217,6 +221,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         ended: None,
                         exit: None,
                         reason: String::new(),
+                        moved: Vec::new(),
                     })
                     .collect();
                 let mut r = Run::with_jobs(run, jobnet, title, date, *how, jobs, *at);
@@ -236,7 +241,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     r.start(job, *at);
                 }
             }
-            Event::JobEnd { at, run, job, state, exit, reason, retried } => {
+            Event::JobEnd { at, run, job, state, exit, reason, retried, moved } => {
                 if let Some(r) = runs.iter_mut().find(|r| &r.id == run) {
                     if let Some(j) = r.jobs.iter_mut().find(|j| &j.id == job) {
                         if j.started.is_none() {
@@ -247,6 +252,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         j.exit = *exit;
                         j.reason = reason.clone();
                         j.retried = *retried;
+                        j.moved = moved.clone();
                     }
                     // Re-derive what follows (未実行 after an error, the waits).
                     r.resettle(*at);
@@ -322,6 +328,11 @@ mod tests {
         r.start("a", at("2026-10-30 09:00:01"));
         day.events.push(job_start(&r, r.job("a").unwrap()));
         r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
+        let moved = vec![
+            Moved { name: "a.csv".into(), bytes: 10, sha256: Some("0f".repeat(32)), matched: Some(true) },
+            Moved { name: "b.csv".into(), bytes: 0, sha256: None, matched: None },
+        ];
+        r.set_moved("a", moved.clone());
         day.events.push(job_end(&r, r.job("a").unwrap()));
         r.start("b", at("2026-10-30 09:00:03"));
         day.events.push(job_start(&r, r.job("b").unwrap()));
@@ -331,6 +342,7 @@ mod tests {
         assert_eq!(r.state, State::Error);
         let text = day.to_toml();
         assert!(text.contains("[[event]]") && text.contains("kind = \"run_start\""), "{text}");
+        assert!(text.contains("name = \"a.csv\"") && text.contains("matched = true"), "{text}");
         let back = Day::parse(&text).unwrap();
         assert_eq!(back, day);
         let runs = back.runs();
@@ -338,6 +350,8 @@ mod tests {
         let mut expect = r.clone();
         expect.jobs.iter_mut().for_each(|j| j.run.clear());
         assert_eq!(runs[0], expect);
+        assert_eq!(runs[0].job("a").unwrap().moved, moved);
+        assert!(runs[0].job("b").unwrap().moved.is_empty());
         assert_eq!(runs[0].job("c").unwrap().state, State::NotRun);
         assert_eq!(runs[0].job("c").unwrap().reason, "先行の bの名 が異常終了");
     }

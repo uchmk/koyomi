@@ -49,10 +49,12 @@ usage: koyomi [--version | --help | env]
        koyomi next <group/name> [--count N]
                                      the next 10 times its [[when]] comes (N: that many)
        koyomi status [--today]       the runs still going (--today: every run of today)
-       koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [--csv <file>] [<group/name>]
+       koyomi history [--from YYYY-MM-DD] [--to YYYY-MM-DD] [--status <state>] [--files] [--csv <file>] [<group/name>]
                                      the runs of those days, oldest first (the last 7 days when none;
                                      --status: ok, warn, error, timeout, killed, running, running_error,
                                      waiting, held, skipped, missed, locked or not_run; --csv: one row per run;
+                                     --files: each file a send or fetch moved instead, with its size, its
+                                     sha256 and whether the far side's matched (verify), one row each with --csv;
                                      the days that went into archive/ are read from there)
        koyomi log <run> <job>        the tail of one job's log (gone from logs/: from archive/)
        koyomi archive [list]         the month zips that archive = true in koyomi.toml keeps in archive/,
@@ -1346,10 +1348,12 @@ fn say_runs(t: &ito_i18n::Table, rs: &[Run]) {
     }
 }
 
-/// `koyomi history [--from D] [--to D] [--status <state>] [<group/name>]`: the runs that
-/// started on those days (the last 7 when none), oldest first, narrowed by state and net here.
+/// `koyomi history [--from D] [--to D] [--status <state>] [--files] [<group/name>]`: the runs that
+/// started on those days (the last 7 when none), oldest first, narrowed by state and net here;
+/// with `--files`, the files their `send`s and `fetch`es moved.
 fn history(args: &[String]) -> i32 {
     let (mut from, mut to, mut state, mut net, mut csv) = (None, None, None, None, None);
+    let mut files = false;
     let day = |d: Option<&String>| d.and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok());
     let mut it = args.iter();
     while let Some(a) = it.next() {
@@ -1373,8 +1377,9 @@ fn history(args: &[String]) -> i32 {
                 Some(f) => csv = Some(f.clone()),
                 None => return usage("--csv takes a file"),
             },
+            "--files" => files = true,
             _ if net.is_none() && !a.starts_with("--") => net = Some(a.replace('\\', "/")),
-            _ => return usage("history takes --from, --to, --status, --csv and one group/name"),
+            _ => return usage("history takes --from, --to, --status, --files, --csv and one group/name"),
         }
     }
     let to = to.unwrap_or_else(|| ito_common::now::now_local().date_naive());
@@ -1387,6 +1392,9 @@ fn history(args: &[String]) -> i32 {
     };
     let rs: Vec<Run> =
         rs.into_iter().filter(|r| net.as_deref().is_none_or(|n| r.jobnet == n) && state.is_none_or(|s| r.state == s)).collect();
+    if files {
+        return moved_files(&rs, csv);
+    }
     if let Some(to) = csv {
         return wrote(&to, &crate::sheet::runs(&table(), &rs));
     }
@@ -1399,6 +1407,65 @@ fn history(args: &[String]) -> i32 {
         out(t.tr("run.history_none"), false);
     }
     say_runs(&t, &rs);
+    0
+}
+
+/// `koyomi history --files`: each file the runs' `send`s and `fetch`es moved, oldest run first.
+fn moved_files(rs: &[Run], csv: Option<String>) -> i32 {
+    if let Some(to) = csv {
+        return wrote(&to, &crate::sheet::files(&table(), rs));
+    }
+    if toml() {
+        #[derive(Serialize)]
+        struct File<'a> {
+            run: &'a str,
+            jobnet: &'a str,
+            job: &'a str,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            ended: Option<String>,
+            name: &'a str,
+            bytes: u64,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            sha256: Option<&'a str>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            matched: Option<bool>,
+        }
+        #[derive(Serialize)]
+        struct Files<'a> {
+            file: Vec<File<'a>>,
+        }
+        let file = rs
+            .iter()
+            .flat_map(|r| r.jobs.iter().map(move |j| (r, j)))
+            .flat_map(|(r, j)| {
+                j.moved.iter().map(move |m| File {
+                    run: &r.id,
+                    jobnet: &r.jobnet,
+                    job: &j.id,
+                    ended: j.ended.map(|e| e.format("%Y-%m-%d %H:%M:%S").to_string()),
+                    name: &m.name,
+                    bytes: m.bytes,
+                    sha256: m.sha256.as_deref(),
+                    matched: m.matched,
+                })
+            })
+            .collect();
+        emit(&toml::to_string(&Files { file }).unwrap_or_default());
+        return 0;
+    }
+    let t = table();
+    let mut any = false;
+    for r in rs {
+        for j in &r.jobs {
+            for m in &j.moved {
+                any = true;
+                out(&format!("{}  {}  {}  {}", r.id, r.jobnet, j.id, show::moved(&t, m)), false);
+            }
+        }
+    }
+    if !any {
+        out(t.tr("run.files_none"), false);
+    }
     0
 }
 

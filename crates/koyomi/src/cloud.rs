@@ -12,6 +12,12 @@
 //! behind (an upload is aborted, a download's `.part` deleted). There is no resume:
 //! the job's `retry` starts over.
 //!
+//! With `verify`, each file is checked by the store with its SHA-256 (an upload's
+//! `x-amz-checksum-sha256`, a download's against the one stored), and a file whose
+//! bytes do not agree fails the job; without it, nothing is checked, as before, for
+//! the stores that do not keep checksums. Each file moved is recorded in the list
+//! `KOYOMI_MOVED` names, with its hash when it was checked.
+//!
 //! It ends with 0 when every file moved, with [`NOTHING`] (a warning) when there
 //! was none, and else with [`NO_EXIT`](crate::ssh) and why in the file
 //! `KOYOMI_REASON` names. The files moved before the one that failed stay moved.
@@ -21,7 +27,8 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use ito_cloud::{Error, Options, Target};
-use koyomi_core::chore::{self, Chore, NOTHING, S3};
+use koyomi_core::chore::{self, Chore, Verify, NOTHING, S3};
+use koyomi_core::run::Moved;
 
 /// The most a run may take here: the job's own `timeout` ends it sooner.
 const RUN_MAX: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -61,9 +68,12 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let (id_mark, password_mark) =
         (key_id.as_ref().map(|_| "secret:key_id".to_owned()), password.as_ref().map(|_| "secret:password".to_owned()));
     let (region, endpoint) = (var("REGION"), var("ENDPOINT"));
+    let verify = var("VERIFY").and_then(|v| Verify::of(&v));
     let job = match op.as_str() {
-        "send" => Chore::Send { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint },
-        "fetch" => Chore::Fetch { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint },
+        "send" => Chore::Send { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint, verify },
+        "fetch" => {
+            Chore::Fetch { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint, verify }
+        }
         _ => return Err(format!("KOYOMI_CLOUD_OP は send か fetch: {op}")),
     };
     go(&job, key_id, password, stop)
@@ -75,11 +85,13 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
 fn go(job: &Chore, key_id: Option<String>, password: Option<String>, stop: &AtomicBool) -> Result<i32, String> {
     // Checked again now that each `{…}` is filled in.
     job.check()?;
-    let (send, from, into, region, endpoint) = match job {
-        Chore::Send { from, into, region, endpoint, .. } if job.cloud() => (true, from, into, region, endpoint),
-        Chore::Fetch { from, into, region, endpoint, .. } if job.cloud() => (false, from, into, region, endpoint),
+    let (send, from, into, region, endpoint, verify) = match job {
+        Chore::Send { from, into, region, endpoint, verify, .. } if job.cloud() => (true, from, into, region, endpoint, verify),
+        Chore::Fetch { from, into, region, endpoint, verify, .. } if job.cloud() => (false, from, into, region, endpoint, verify),
         _ => return Err("s3:// の send か fetch のジョブではない".into()),
     };
+    // The store checks the SHA-256 only when asked: some S3-compatible ones refuse it.
+    let opts = Options { timeout: RUN_MAX, checksum: verify.is_some(), ..Options::default() };
     let at = chore::s3(if send { into } else { from }).ok_or("s3:// の相手がない")??;
     let read = |v: Option<String>, name: &str| -> Result<String, String> {
         let v = crate::sftp::password(v.ok_or_else(|| format!("{name} がない"))?)?;
@@ -97,14 +109,14 @@ fn go(job: &Chore, key_id: Option<String>, password: Option<String>, stop: &Atom
         session_token: None,
     };
     if send {
-        send_files(&target, &at, from.trim(), stop)
+        send_files(&target, &at, from.trim(), &opts, stop)
     } else {
-        fetch_keys(&target, &at, into.trim(), stop)
+        fetch_keys(&target, &at, into.trim(), &opts, stop)
     }
 }
 
 /// Puts the files `from` names under the folder `at`.
-fn send_files(target: &Target, at: &S3, from: &str, stop: &AtomicBool) -> Result<i32, String> {
+fn send_files(target: &Target, at: &S3, from: &str, opts: &Options, stop: &AtomicBool) -> Result<i32, String> {
     let path = Path::new(from);
     let pattern = if path.is_dir() { path.join("*").display().to_string() } else { from.to_owned() };
     let files = crate::engine::files::find_files(&pattern);
@@ -113,21 +125,19 @@ fn send_files(target: &Target, at: &S3, from: &str, stop: &AtomicBool) -> Result
         return Ok(NOTHING);
     }
     let folder = if at.key.is_empty() { String::new() } else { format!("{}/", at.key.trim_end_matches('/')) };
-    let opts = Options { timeout: RUN_MAX, ..Options::default() };
-    for (local, _, _) in &files {
+    for (local, size, _) in &files {
         let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let key = format!("{folder}{name}");
-        let bytes = ito_cloud::put(target, local, &key, &opts, stop, &mut progress(&name)).map_err(|e| why(&e, &at.bucket, &key))?.bytes;
-        crate::say(&format!("sent: s3://{}/{key} ({bytes} bytes)", at.bucket), false);
+        let moved = ito_cloud::put(target, local, &key, opts, stop, &mut progress(&name)).map_err(|e| failed(&e, at, &key, *size))?;
+        said("sent", at, &key, moved, opts.checksum);
     }
     Ok(0)
 }
 
 /// Gets the keys `at` names (in its folder, not below) into the folder `into`.
-fn fetch_keys(target: &Target, at: &S3, into: &str, stop: &AtomicBool) -> Result<i32, String> {
-    let opts = Options { timeout: RUN_MAX, ..Options::default() };
+fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &AtomicBool) -> Result<i32, String> {
     let dir = &at.key[..at.key.rfind('/').map_or(0, |i| i + 1)];
-    let found: Vec<_> = ito_cloud::list(target, &at.key, &opts, stop)
+    let found: Vec<_> = ito_cloud::list(target, &at.key, opts, stop)
         .map_err(|e| why(&e, &at.bucket, &at.key))?
         .into_iter()
         // `*` matches `/` too: the keys below the folder are not this fetch's.
@@ -145,12 +155,35 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, stop: &AtomicBool) -> Result
     std::fs::create_dir_all(&into).map_err(|e| format!("into のフォルダーを作れない: {}: {e}", into.display()))?;
     for e in &found {
         let name = &e.key[dir.len()..];
-        let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..opts };
-        let bytes =
-            ito_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name)).map_err(|x| why(&x, &at.bucket, &e.key))?.bytes;
-        crate::say(&format!("fetched: s3://{}/{} ({bytes} bytes)", at.bucket, e.key), false);
+        let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..*opts };
+        let moved =
+            ito_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name)).map_err(|x| failed(&x, at, &e.key, e.size))?;
+        said("fetched", at, &e.key, moved, opts.checksum);
     }
     Ok(0)
+}
+
+/// Logs a file moved (`sent` or `fetched`) and records it for the history. With
+/// `verify` its hash is kept, as matched when the store checked it; a download the
+/// store could not check (no checksum, or one of a multipart upload) says so.
+fn said(verb: &str, at: &S3, key: &str, m: ito_cloud::Moved, verify: bool) {
+    let name = format!("s3://{}/{key}", at.bucket);
+    let hash = if verify { format!(" (sha256 {})", m.sha256) } else { String::new() };
+    crate::say(&format!("{verb}: {name} ({} bytes){hash}", m.bytes), false);
+    if verify && !m.verified {
+        crate::say(&format!("  {name}: 相手にチェックサムがなく、照らし合わせていない"), false);
+    }
+    let matched = (verify && m.verified).then_some(true);
+    crate::sftp::keep(&Moved { name, bytes: m.bytes, sha256: verify.then_some(m.sha256), matched });
+}
+
+/// Why the file at `key` (`bytes` long) did not move, as the log says it; bytes
+/// that did not agree are recorded as not matched.
+fn failed(e: &Error, at: &S3, key: &str, bytes: u64) -> String {
+    if matches!(e, Error::Mismatch(_)) {
+        crate::sftp::keep(&Moved { name: format!("s3://{}/{key}", at.bucket), bytes, sha256: None, matched: Some(false) });
+    }
+    why(e, &at.bucket, key)
 }
 
 /// Whether `name` can be a file's name in a folder here, as it is: not `.` or
@@ -228,6 +261,7 @@ mod tests {
             key_id: Some("secret:key_id".into()),
             region: None,
             endpoint: Some(endpoint(s3)),
+            verify: None,
         }
     }
 
@@ -241,7 +275,15 @@ mod tests {
             key_id: Some("secret:key_id".into()),
             region: None,
             endpoint: Some(format!("{}/", endpoint(s3))),
+            verify: None,
         }
+    }
+
+    fn checked(mut job: Chore) -> Chore {
+        if let Chore::Send { verify, .. } | Chore::Fetch { verify, .. } = &mut job {
+            *verify = Some(Verify::Sha256);
+        }
+        job
     }
 
     fn run(job: &Chore, stop: bool) -> Result<i32, String> {
@@ -314,6 +356,38 @@ mod tests {
         assert!(!dir.0.join("again").join("a.csv.part").exists() && !dir.0.join("again").join("a.csv").exists());
         // A stop.
         assert!(run(&fetch(&s3, "s3://bucket/in/*.csv", &into), true).unwrap_err().contains("止めた"));
+    }
+
+    #[test]
+    fn verify_has_the_store_check_each_files_bytes() {
+        let s3 = FakeS3::start();
+        let dir = Dir::new("verify");
+        let out = dir.0.join("out");
+        std::fs::create_dir_all(&out).unwrap();
+        std::fs::write(out.join("a.csv"), "abc").unwrap();
+        // Checked: the store keeps the checksum it was sent.
+        assert_eq!(run(&checked(send(&s3, &out.join("a.csv"), "s3://bucket/in/")), false), Ok(0));
+        assert!(s3.checksum("in/a.csv").is_some());
+        // Not checked: no checksum is sent, for the stores that refuse one.
+        assert_eq!(run(&send(&s3, &out.join("a.csv"), "s3://bucket/plain/"), false), Ok(0));
+        assert!(s3.checksum("plain/a.csv").is_none());
+        // Bytes changed on the way: the store refuses them and the job fails.
+        s3.damage_in_transit(true);
+        let e = run(&checked(send(&s3, &out.join("a.csv"), "s3://bucket/bad/")), false).unwrap_err();
+        assert!(e.contains("届いたバイトが合わない"), "{e}");
+        s3.damage_in_transit(false);
+        // A stored object that no longer agrees with its checksum fails a checked fetch,
+        // and leaves no file.
+        let got = dir.0.join("got");
+        assert_eq!(run(&checked(fetch(&s3, "s3://bucket/in/a.csv", &got)), false), Ok(0));
+        assert_eq!(std::fs::read_to_string(got.join("a.csv")).unwrap(), "abc");
+        s3.corrupt_object("in/a.csv");
+        let again = dir.0.join("again");
+        let e = run(&checked(fetch(&s3, "s3://bucket/in/a.csv", &again)), false).unwrap_err();
+        assert!(e.contains("届いたバイトが合わない"), "{e}");
+        assert!(!again.join("a.csv").exists() && !again.join("a.csv.part").exists());
+        // Unchecked, the same fetch takes what is there.
+        assert_eq!(run(&fetch(&s3, "s3://bucket/in/a.csv", &again), false), Ok(0));
     }
 
     #[test]

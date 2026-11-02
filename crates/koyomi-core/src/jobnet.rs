@@ -11,7 +11,7 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 use toml::Spanned;
 
-use crate::chore::{Chore, Pass, SqlTls, WinrmAuth, GROUP_MAX};
+use crate::chore::{Chore, Pass, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use crate::late::Deadline;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, When};
@@ -690,6 +690,7 @@ struct RawJob {
     key_id: Field,
     region: Field,
     endpoint: Field,
+    verify: Field,
     cert: Field,
     auth: Field,
     pass: Field,
@@ -1044,7 +1045,7 @@ impl Checker<'_> {
             self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
         }
         if kind != "send" && kind != "fetch" {
-            for (field, name) in [(&j.key_id, "key_id"), (&j.region, "region"), (&j.endpoint, "endpoint")] {
+            for (field, name) in [(&j.key_id, "key_id"), (&j.region, "region"), (&j.endpoint, "endpoint"), (&j.verify, "verify")] {
                 self.only(field, name, "\"send\" か \"fetch\"");
             }
         }
@@ -1267,9 +1268,13 @@ impl Checker<'_> {
                         }
                     }
                 }
+                let verify = match kind {
+                    "ssh" => None,
+                    _ => self.choice(&j.verify, "verify", &Verify::ALL.map(Verify::key)).and_then(Verify::of),
+                };
                 match kind {
-                    "send" => Chore::Send { from, into, key, host_key, password, key_id, region, endpoint },
-                    "fetch" => Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint },
+                    "send" => Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify },
+                    "fetch" => Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify },
                     _ => {
                         let (max, pass) = self.fan(j);
                         Chore::Ssh { on: from, command: into, key, host_key, password, max, pass }
@@ -3422,7 +3427,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(
             net(
                 "send",
-                "from = 'D:\\out\\*.csv'\ninto = \"sftp://partner@ftp.example.com/in/{date}\"\nkey = 'C:\\keys\\partner'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+                "from = 'D:\\out\\*.csv'\ninto = \"sftp://partner@ftp.example.com/in/{date}\"\nkey = 'C:\\keys\\partner'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\nverify = \"readback\"\n"
             )
             .map(|p| p.0),
             Ok(Part::Chore(Chore::Send {
@@ -3434,8 +3439,12 @@ after = [{ job = \"way\", code = \"else\" }]
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: Some(Verify::Readback),
             }))
         );
+        assert!(bad("send", "from = 'a'\ninto = 'b'\nverify = \"md5\"\n").contains("verify は \"sha256\"・\"readback\" のどれか"));
+        assert!(bad("copy", "from = 'a'\ninto = 'b'\nverify = \"sha256\"\n").contains("verify は kind = \"send\" か \"fetch\" にだけ書く"));
+        assert!(bad("ssh", "from = 'h'\ninto = 'ls'\nverify = \"sha256\"\n").contains("verify は kind"));
         assert_eq!(
             net("fetch", "from = '\\\\nas\\share\\out\\*.csv'\ninto = 'D:\\in'\n").map(|p| p.0),
             Ok(Part::Chore(Chore::Fetch {
@@ -3447,6 +3456,7 @@ after = [{ job = \"way\", code = \"else\" }]
                 key_id: None,
                 region: None,
                 endpoint: None,
+                verify: None,
             }))
         );
         assert!(bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n").contains("send の from はこのマシンのファイル"));
@@ -3471,6 +3481,7 @@ after = [{ job = \"way\", code = \"else\" }]
                 key_id: Some("secret:s3-id".into()),
                 region: None,
                 endpoint: Some("http://nas:9000".into()),
+                verify: None,
             }))
         );
         assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n").contains("key_id が要る"));

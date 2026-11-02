@@ -13,7 +13,7 @@ use egui::{Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
 use ito_a11y::{Role, State as Mark};
 use ito_i18n::Table;
 use koyomi_core::calendar::Calendar;
-use koyomi_core::chore::{Chore, Pass, SqlTls, WinrmAuth, GROUP_MAX};
+use koyomi_core::chore::{Chore, Pass, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, when, write};
@@ -188,6 +188,8 @@ pub struct Fields {
     pub key_id: String,
     pub region: String,
     pub endpoint: String,
+    /// How a `send` or `fetch` checks each file; none: not at all.
+    pub verify: Option<Verify>,
     /// An `http`'s call; `headers` one `Name: value` a line, `expect` the codes with `,`.
     pub url: String,
     pub method: String,
@@ -285,8 +287,8 @@ impl Fields {
                     f.into = into.clone();
                     f.pattern = pattern.clone().unwrap_or_default();
                 }
-                Chore::Send { from, into, key, host_key, password, key_id, region, endpoint }
-                | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint } => {
+                Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify }
+                | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify } => {
                     f.from = from.clone();
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
@@ -295,6 +297,7 @@ impl Fields {
                     f.key_id = key_id.clone().unwrap_or_default();
                     f.region = region.clone().unwrap_or_default();
                     f.endpoint = endpoint.clone().unwrap_or_default();
+                    f.verify = *verify;
                 }
                 Chore::Http { url, method, body, content_type, headers, expect } => {
                     f.url = url.clone();
@@ -453,6 +456,7 @@ impl Fields {
                         key_id: opt(&self.key_id),
                         region: opt(&self.region),
                         endpoint: opt(&self.endpoint),
+                        verify: self.verify,
                     },
                     Chore::Fetch { .. } => Chore::Fetch {
                         from: self.from.trim().into(),
@@ -463,6 +467,7 @@ impl Fields {
                         key_id: opt(&self.key_id),
                         region: opt(&self.region),
                         endpoint: opt(&self.endpoint),
+                        verify: self.verify,
                     },
                     Chore::Http { .. } => self.http()?,
                     Chore::Ssh { .. } => Chore::Ssh {
