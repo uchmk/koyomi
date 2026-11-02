@@ -406,7 +406,18 @@ impl Default for Config {
 
 impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
-        let c: Config = toml::from_str(text).map_err(|e| e.message().to_owned())?;
+        let c: Config = toml::from_str(text).map_err(|e| {
+            let m = e.message();
+            let line =
+                e.span().map(|s| format!("{} 行目: ", text[..s.start.min(text.len())].matches('\n').count() + 1)).unwrap_or_default();
+            if let Some(f) = m.strip_prefix("unknown field `").and_then(|r| r.split('`').next()) {
+                format!("{line}知らない欄 {f}")
+            } else if let Some(f) = m.strip_prefix("missing field `").and_then(|r| r.split('`').next()) {
+                format!("{line}欄 {f} が無い")
+            } else {
+                m.to_owned()
+            }
+        })?;
         if c.concurrency == 0 {
             return Err("concurrency は 1 以上".to_owned());
         }
@@ -566,8 +577,10 @@ to = \"2026-11-15 06:00\"
         assert_eq!((c.blackout[0].why.as_str(), c.blackout[1].why.as_str()), ("年末年始", ""));
         let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-28\"\n").unwrap_err();
         assert!(e.contains("[[blackout]] の to（2026-12-28）が from（2026-12-29）より前"), "{e}");
-        assert!(Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\n").is_err());
-        assert!(Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-30\"\nreason = \"x\"\n").is_err());
+        let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\n").unwrap_err();
+        assert!(e.contains("欄 to が無い") && e.contains("行目"), "{e}");
+        let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-30\"\nreason = \"x\"\n").unwrap_err();
+        assert!(e.contains("4 行目: 知らない欄 reason"), "{e}");
         assert!(Config::default().blackout.is_empty());
     }
 
