@@ -31,15 +31,20 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
   - 終わりの見込みで先に知らせる（H2）は Control-M の SLA Management だけ（オンプレは追加の製品）。
   - タスク スケジューラからの取り込み（H23）は Control-M の Conversion Tool だけ。
   - 外への生存の合図（H18）は、どれにも専用のものが見当たらない（Rundeck・Airflow は代わりの方法がある）。
+  - 全部のネットを止める枠と、そのために流れない回を先に見せること（N1）。枠は Rundeck の有償の Blackout にあるが、影響する回の一覧はどれにも無い。
+  - 何台かの PC に流して「どれか 1 つが通れば正常」（N4）は、どの製品の文書にも無い（Airflow の `one_success` が近い）。
+  - PC が空いたら起動（N7）は、ほかにはタスク スケジューラだけ。
 
 **koyomi が弱いところ**
 
 - 多くの PC で流す（H9）。JP1・Control-M はエージェント、Rundeck は SSH・WinRM で、1 か所から多くの PC に流す。
-  koyomi は PC ごとに koyomi を入れ、`[[remote]]` で LAN の koyomi どうしをつなぐ。
+  koyomi も ssh・winrm の部品で koyomi の無い PC に流せ、`[groups]` の PC にまとめて流せる（N4）。
+  ただ、相手の PC で予定を持って流すには PC ごとに koyomi を入れ、`[[remote]]` で LAN の koyomi どうしをつなぐ。
 - Web UI（H10）。タスク スケジューラ以外は Web が本体。koyomi の本体は窓で、Web は見る・流す・止める・流し直すまで（定義を直すのは窓）。
-- 長い保管とつながりの広さ。Control-M は Workload Archiving（最長 7 年）と MFT（FTP・SFTP・S3・Azure）、
-  Airflow は provider（SFTP・IMAP・HTTP など）で広げる。koyomi の履歴は既定 90 日。
-- 表 4（N1〜N9）は、競合にあって koyomi に無いもの（TODO 106〜114）。どれも 1 つか 2 つの製品にしか無いか、別製品・add-on・別に入れる provider。
+- つながりの広さ。Control-M は MFT（FTP・SFTP・S3・Azure）、Airflow は provider（SFTP・IMAP・HTTP など）で広げる。
+  koyomi が送る・受けるのは SFTP・共有フォルダー・S3（と S3 互換）までで、FTP・Azure Blob は無い。
+  古い履歴は `archive = true` で月ごとの zip にしまえる（TODO 92。Control-M の Workload Archiving にあたる）。
+- 表 4 の残り: サインイン・ロックで起動（N7。TODO 115 は ito 待ち）と Azure Blob（N9）。
 - 権限の細かさ（H12）。JP1 は資源グループごとに 5 つのロール、Rundeck は ACL でジョブごと。koyomi は view・run・edit の 3 つで、`nets` でネット・グループごとに絞れ、`roles` でネット・グループごとに違うロールを持てる（JP1 の 5 つほど細かくはない）。
 
 **差が無くなったところ**
@@ -48,6 +53,8 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 - 承認の待ち（C10）は JP1（保留）・Control-M（Confirm）・Airflow（3.1 からの HITL）も持つ。
 - HA（H16）は、待機系が自動で引き継ぐようになった（2026-11-01 にサービスで確かめた）。JP1 はクラスタ（共有ディスク）、Control-M は二次ホスト、Airflow は scheduler を複数動かす。
   koyomi は共有のディスクも DB も要らない。戻すのは人か自動かを選べ、相手で動いていた回はネットごとに続きから流せる（2026-11-01、TODO 96）。
+- 表 4（N1〜N9）は、競合にあって koyomi に無かったもの。2026-11-02 に TODO 106〜114 で入れた。
+  添えて送るメール（N2）・共通の値（N3）・日を決めた切り替え（N5）・別の PC に配る（N6）・SQL（N8）・S3（N9）は、持つ製品と並んだ。
 
 ## 1. 基本の機能
 
@@ -63,7 +70,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | P6 | 前の回が動いているとき | ○ 飛ばす・`overlap = "queue"`・`max` で並べる | ○ 待つ・飛ばす | △ 専用設定なし。Cyclic は前回後に次、特定時刻は Tolerance 超過で次へ、Lock で直列 | ○ 待たせるのは有償版 | △ 同時の数の上限だけ | ○ 並行・待つ・無視・前を止める | × |
 | P7 | 依存（ジョブネット）・分岐 | ○ 線 3 種・分岐・待ち合わせ・子のジョブネット | ○ 判定ジョブ・リカバリー | ○ Events（AND/OR/NOT）で依存、If-Actions（Add Event 等）で分岐 | ○ 条件の分岐は有償版 | ○ | △ 順に流すだけ | × |
 | P8 | 失敗したところからの再実行 | ○ 失敗したジョブから・選んだジョブから・次から | ○ 異常終了ジョブから・その次から・指定したジョブから・指定したものだけ | ○ 失敗ジョブを Rerun→後続へ。Rerun from point of failure は FT/DB 等 | △ 失敗したノードだけ流し直す。失敗した手順から続けるのは有償版 | ○ Clear（Downstream・Failed） | 見当たらない | × |
-| P9 | 実行履歴とログ | ○ 既定 90 日 | ○ 1〜99 世代、標準出力はファイル名を書いたときだけ | ○ 出力 OUTPUTRETN 既定 1 日・ログ 2 日。長期は Workload Archiving（最長 7 年） | ○ 既定 60 日・50 回 | ○ | △ 最後の 1 回の結果だけ | △ syslog の行だけ |
+| P9 | 実行履歴とログ | ○ 既定 90 日。`archive = true` で月ごとの zip にしまう | ○ 1〜99 世代、標準出力はファイル名を書いたときだけ | ○ 出力 OUTPUTRETN 既定 1 日・ログ 2 日。長期は Workload Archiving（最長 7 年） | ○ 既定 60 日・50 回 | ○ | △ 最後の 1 回の結果だけ | △ syslog の行だけ |
 | P10 | 失敗の通知 | ○ システムの通知・ベル・webhook・メール。ネットごとの宛先 | ○ メール・JP1 イベント | ○ Mail・Alerts・Remedy 等。Teams は Communication Suite | ○ メール・webhook | ○ コールバック | × メールの動作は廃止 | △ 出力があればメール |
 | P11 | 休日・営業日のカレンダー | ○ 日本の祝日・振替・第 n 営業日・`shift` | ○ 振替 4 種と猶予日数 | ○ RBC・Confirmation calendar、前後の営業日、Shift By、Dn/Ln | △ 有償版で、飛ばすだけ | △ timetable を自分で書く | × | × |
 | P12 | 出来事での起動 | ○ ファイル・起動時・別のネット・ログの行・イベントログ・メール・HTTP | ○ ファイル・イベントログ・メールなど | ○ File Watcher job（作成・削除・最小サイズ・安定確認） | △ webhook だけ | ○ AssetWatcher（ファイル待ちは勧めない） | ○ イベントログ・起動・ログオン（ファイルは無い） | × @reboot だけ |
@@ -109,7 +116,7 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H4 | ログファイルの行・イベントログで起動 | ○ `[[when]] log`・`eventlog` | ○ ログファイル監視ジョブ・Windows イベントログ監視ジョブ（同梱の JP1/Base のトラップ） | ? File Watcher はファイルの有無・サイズのみ。行・イベントログ起動は未発見 | ? Webhook で外から起動はできる。ログ・イベントログの監視は見当たらず | △ AssetWatcher＋BaseEventTrigger（MQ・ファイル）。ログ行・イベントログは trigger を自作 | △ EventTrigger（XPath）でイベントログは可。ログファイルの行は不可 |
 | H5 | 枠が埋まったときの優先度 | ○ `priority = 1..5` | ○ ジョブの実行優先順位、ルートジョブネット優先順位の一時変更、実行多重度 | ○ Priority（Very High〜Very Low / AA〜99）で実行順 | × Quartz の待ちは FIFO。優先度の要望 #1848 は not planned で閉じた | ○ priority_weight（下流の分も足す）で queued の順を決める | △ Priority 0–10 はプロセス・I/O・メモリの優先度。待ち順ではない |
 | H6 | よくある作業の部品（消す・zip・写す・空ける） | ○ 消す・zip・写す・空ける | ? ファイル削除・圧縮・コピーの部品は公式で見つからず | △ MFT の File Transfer job に rm・mkdir・rename・元削除。zip 段は未発見 | △ Copy file だけ。削除・zip の部品は見当たらず。File Transfer は有償 | △ 古いファイルの削除・zip・コピーの専用部品は見当たらず。Bash/Python で書く | × Exec・ComHandler のみ。メール・メッセージの動作は廃止 |
-| H7 | ファイル転送（SFTP など） | ○ SFTP・共有フォルダーへ送る・受ける | △ 標準カスタムジョブ JP1FTP。送受両側に JP1/FTP（別製品）が要る | △ Control-M MFT（add-on）で FTP・SFTP・S3・Azure 等 | ○ Copy file ステップ（OSS）。File Transfer のステップは有償 | △ SFTP provider の SFTPOperator（別に入れる）。FTP provider は既定で入る | × FTP/SFTP の部品なし |
+| H7 | ファイル転送（SFTP など） | ○ SFTP・共有フォルダー・S3 へ送る・受ける | △ 標準カスタムジョブ JP1FTP。送受両側に JP1/FTP（別製品）が要る | △ Control-M MFT（add-on）で FTP・SFTP・S3・Azure 等 | ○ Copy file ステップ（OSS）。File Transfer のステップは有償 | △ SFTP provider の SFTPOperator（別に入れる）。FTP provider は既定で入る | × FTP/SFTP の部品なし |
 | H8 | ジョブごとに実行のアカウント | ○ `run_as` | ○ ジョブごとの実行ユーザー＋JP1 ユーザー→OS ユーザーのユーザーマッピング | ○ RunAs でジョブ・フォルダごとに OS ユーザーを指定 | ○ ノード属性 username に `${option.x}` でジョブごとに指定 | ○ run_as_user（Unix ユーザーへ sudo -u、passwordless sudo が要る） | ○ タスクごとに実行アカウント（利用者・S4U・SYSTEM・グループ） |
 | H9 | 複数の PC・エージェント | ○ `[[remote]]`（LAN、TLS） | ○ マネージャーから実行エージェント・エージェントグループで実行 | ○ 各ホストに Agent、Host Group で振り分け | ○ SSH・WinRM で複数のノードに実行。Runner もある | △ Celery・Edge・Kubernetes executor（各 provider）。Edge の Windows は PoC | △ schtasks /s・-CimSession で遠隔の PC を 1 台ずつ。集中管理なし |
 | H10 | Web UI | ○ 今日・履歴・ログを見る、流す・止める・流し直す・飛ばす・保留。見た目は窓の今日の画面と同じ（TODO 81）。定義を直すのは窓 | ○ Web GUI（ジョブポータル／マネジメントポータル）で監視・実行・保留。Web Console 要 | ○ Control-M Web（Planning・Monitoring 等）をブラウザで | ○ ブラウザーの UI が本体 | ○ React の Web UI（API server）。17 言語 | △ Windows Admin Center の Scheduled tasks ツール（別製品・履歴なし） |
@@ -132,19 +139,20 @@ cron は表 1 だけに置く（表 2・表 3 はほとんど × なので省い
 | H27 | 定義の版・差分・戻す | ○ `versions/`・差分・戻す | △ ジョブネットリリースで指定日時に定義を切替。差分・版の管理は記載なし | ○ Changes History で版の一覧・JSON 比較・復元（180 日保持） | △ Git の SCM プラグインで版を管理。差分・戻す操作の記述はなし | △ DAG versioning（run ごとに版を記録、Git bundle なら旧版で再実行）。差分・戻すは記載なし | × RegistrationInfo の Version は文字列のみ。履歴・差分・戻しなし |
 | H28 | Excel・CSV への書き出し | ○ CSV・.xlsx | △ ajsshow で書式指定出力。CSV・Excel は別製品（Print Option 等） | ○ Reports を CSV・XLSX・PDF で出力（履歴・定義など） | △ ジョブは YAML/XML/JSON、履歴は API とアーカイブ。CSV は見当たらず | △ UI の CSV 書き出しは記載なし。CLI・REST API（JSON）から自作 | △ schtasks /query /fo CSV でタスク一覧。履歴の CSV は記載なし |
 
-## 4. まだ無い機能
+## 4. 9 周目で足した機能
 
-9 周目（TODO 106〜114）。表 1〜表 3 の外で、競合にあって koyomi に無いもの。2026-11-02 に公式の文書で確かめた。
+9 周目（TODO 106〜114）。表 1〜表 3 の外で、競合にあって koyomi に無かったもの。2026-11-02 に公式の文書で確かめ、同じ日に入れた。
+残りは N7 のサインイン・ロック（TODO 115、ito 待ち）と N9 の Azure Blob。
 
 | | 機能 | koyomi | JP1/AJS3 | Control-M | Rundeck | Airflow | タスク スケジューラ |
 |---|---|---|---|---|---|---|---|
-| N1 | 計画停止の日時 | △ ネットごとの `quiet`（毎日の時刻だけ）。全部を止める日は TODO 106 | △ 一時変更の「実行中止」をジョブネットごとに（ルートジョブネットは複数の予定をまとめて）。全部を止める日時の枠・影響する回の表示は見当たらない | △ What-If の Downtime で停止の枠を入れたときの影響を模擬（実際には止めない）。Workload Policy に日時の期間があるが、0 本にできるかは見当たらない | △ 有償の System Calendars の Blackout（日付の範囲・時間帯、全プロジェクトに当てられる、手での実行は止めない）。止まるジョブには印が出るが、影響する回の一覧は見当たらない | ? 計画停止の枠は文書に見当たらず | × 停止の枠なし（推測: API に項目が無い） |
-| N2 | ファイルを添えてメールを送るジョブ | △ 知らせ（`notify`）のメールだけ。添えて送る部品は TODO 107 | ○ メール送信ジョブ。添付は Windows だけで 20 個まで。Outlook 経由（32bit の 2016・2019・2021 のみ、64bit・365 は不可）か SMTP へ直接（SMTPS は不可） | △ If-Action の Mail でジョブの出力を添付（AttachOutput）。任意のファイルを付けて送る job type は見当たらない | △ メールは通知だけで、ログを添付できる。任意のファイルを付けて送るステップは見当たらない | △ smtp provider の EmailOperator の `files` で添付。3.3.2 では smtp provider は既定で入らない（別に入れる） | × メールの動作（添付あり）は Windows 7・2008 R2 までで廃止。代わりに PowerShell の Send-MailMessage を勧める |
-| N3 | どのジョブからも読める共通の値 | △ ネットの中の `params`・`env` だけ。共通の値は TODO 108 | △ マクロ変数は実行登録のときに指定し、配下のユニットで効く。全ジョブで共通の変数は見当たらない | ○ Global（`%%\`、self-hosted の Server の全ジョブ）と Named Pool の変数。ctmvar・Set Variable で書き換え | ○ `project.globals.X` をプロジェクトの全ジョブで `${globals.X}` | ○ Variables（global な key/value、`Variable.get`・`{{ var.value.x }}`） | × 共通の値なし（推測: API に項目が無い） |
-| N4 | 何台かの PC にまとめて流す（同時数・全部かどれか） | × ssh・winrm の `on` は 1 台。TODO 109 | × 実行エージェントグループは 1 台へ振り分けるだけ（優先順位・多重度・使用率）。全台で同時に流す機能は見当たらない | ○ RunOnAllAgentsInGroup（"Run job on all hosts in group"）で、グループの全 Agent に同じジョブ（それぞれ別の Order ID）。同時数の上限・全部かどれかの成功は見当たらない | ○ ノードへ配り、Thread Count で同時数、失敗したら止めるか残りを流すかを選べる。どれか 1 つの成功で正常は見当たらない | △ ホストへ配る機能なし。dynamic task mapping でホストごとに写し（SSH など）を作り、`max_active_tis_per_dag` で上限、後続の trigger rule `all_success`・`one_success` | × `schtasks /s` で 1 台ずつ |
-| N5 | 決めた日時から新しい定義に切り替える | × `versions/` は残すだけ。TODO 110 | ○ ジョブネットリリースで、指定した日時から定義を切り替え | △ When の期間（StartDate・EndDate、ActivePeriod=false で止める）で旧・新を受け渡す。定義の版を日時で切り替える機能は見当たらない | ? 指定した日時からの定義の切り替えは見当たらず | △ 旧の DAG に `end_date`、新の DAG に `start_date` を書いて受け渡す。版を日時で切り替える機能は見当たらない | △ StartBoundary・EndBoundary で 2 つのタスクを受け渡す |
-| N6 | 定義を別の PC・環境に配る | △ `koyomi export`・`import`（取り込んだものは未確認）と、HA の待機への写し。窓から送るのは TODO 111 | △ ajsexport→ajsimport（パッケージング機能用のスクリプトの中だけで使える）、ajsprint→ajsdefine。配る・昇格する仕組みは見当たらない | ○ Workspace を JSON に書き出し、別の環境へ取り込む。Automation API の Deploy Descriptor で Dev・Test・Prod ごとに値を置き換え | ○ プロジェクトのアーカイブで別のインスタンスへ移す（`rd projects archives`）、SCM Git の Export・Import | △ Git の DAG bundle が `tracking_ref`（ブランチ・タグ・SHA）を追う。環境の間の昇格の機能は見当たらない | △ XML へ書き出し、`schtasks /create /xml` で取り込む。ドメインなら GPP の Scheduled Task で配る |
-| N7 | PC が空いたら起動する（サインイン・ロックも） | △ `require` の空いているとき（条件だけ）。起動は TODO 112 | × イベントジョブ 8 種にアイドル・ログオン・ロックなし | ? 公式で見つからず | × サーバーの製品で対象外 | × Linux のサーバー前提で、アイドルなどで起動するものなし | ○ Idle トリガー（Windows 8 以降は 4 分・80%）、ログオン、SessionStateChange（ロック・アンロック・接続・切断） |
+| N1 | 計画停止の日時 | ○ koyomi.toml の `[[blackout]]`（`from`・`to`・`why`）の間はどのネットも流さない。止まる回を今日・カレンダー・`koyomi plan` が先に見せる。手で流すのは止めない（TODO 106 で入れた） | △ 一時変更の「実行中止」をジョブネットごとに（ルートジョブネットは複数の予定をまとめて）。全部を止める日時の枠・影響する回の表示は見当たらない | △ What-If の Downtime で停止の枠を入れたときの影響を模擬（実際には止めない）。Workload Policy に日時の期間があるが、0 本にできるかは見当たらない | △ 有償の System Calendars の Blackout（日付の範囲・時間帯、全プロジェクトに当てられる、手での実行は止めない）。止まるジョブには印が出るが、影響する回の一覧は見当たらない | ? 計画停止の枠は文書に見当たらず | × 停止の枠なし（推測: API に項目が無い） |
+| N2 | ファイルを添えてメールを送るジョブ | ○ `kind = "mail"`（`to`・`cc`・`subject`・`body`・`files`。20 個・18 MB まで）。知らせと同じ `[[notify.mails]]` の SMTP で送る（TODO 107 で入れた） | ○ メール送信ジョブ。添付は Windows だけで 20 個まで。Outlook 経由（32bit の 2016・2019・2021 のみ、64bit・365 は不可）か SMTP へ直接（SMTPS は不可） | △ If-Action の Mail でジョブの出力を添付（AttachOutput）。任意のファイルを付けて送る job type は見当たらない | △ メールは通知だけで、ログを添付できる。任意のファイルを付けて送るステップは見当たらない | △ smtp provider の EmailOperator の `files` で添付。3.3.2 では smtp provider は既定で入らない（別に入れる） | × メールの動作（添付あり）は Windows 7・2008 R2 までで廃止。代わりに PowerShell の Send-MailMessage を勧める |
+| N3 | どのジョブからも読める共通の値 | ○ koyomi.toml の `[vars]` をどのネットのコマンド・パス・`params` の既定からも `{var:名前}` で。秘密は `secret:`（TODO 108 で入れた） | △ マクロ変数は実行登録のときに指定し、配下のユニットで効く。全ジョブで共通の変数は見当たらない | ○ Global（`%%\`、self-hosted の Server の全ジョブ）と Named Pool の変数。ctmvar・Set Variable で書き換え | ○ `project.globals.X` をプロジェクトの全ジョブで `${globals.X}` | ○ Variables（global な key/value、`Variable.get`・`{{ var.value.x }}`） | × 共通の値なし（推測: API に項目が無い） |
+| N4 | 何台かの PC にまとめて流す（同時数・全部かどれか） | ○ ssh・winrm の `on = "group:web"` で koyomi.toml の `[groups]` の PC に。同時数は `max`、全部で正常か どれか 1 つで正常かは `pass = "all" \| "any"`（TODO 109 で入れた） | × 実行エージェントグループは 1 台へ振り分けるだけ（優先順位・多重度・使用率）。全台で同時に流す機能は見当たらない | ○ RunOnAllAgentsInGroup（"Run job on all hosts in group"）で、グループの全 Agent に同じジョブ（それぞれ別の Order ID）。同時数の上限・全部かどれかの成功は見当たらない | ○ ノードへ配り、Thread Count で同時数、失敗したら止めるか残りを流すかを選べる。どれか 1 つの成功で正常は見当たらない | △ ホストへ配る機能なし。dynamic task mapping でホストごとに写し（SSH など）を作り、`max_active_tis_per_dag` で上限、後続の trigger rule `all_success`・`one_success` | × `schtasks /s` で 1 台ずつ |
+| N5 | 決めた日時から新しい定義に切り替える | ○ エディターの「この日から使う」か `koyomi stage … --from YYYY-MM-DD` で置き、その日の最初の回から新しい定義で流す。置くときに差分を見せて確認する（TODO 110 で入れた） | ○ ジョブネットリリースで、指定した日時から定義を切り替え | △ When の期間（StartDate・EndDate、ActivePeriod=false で止める）で旧・新を受け渡す。定義の版を日時で切り替える機能は見当たらない | ? 指定した日時からの定義の切り替えは見当たらず | △ 旧の DAG に `end_date`、新の DAG に `start_date` を書いて受け渡す。版を日時で切り替える機能は見当たらない | △ StartBoundary・EndBoundary で 2 つのタスクを受け渡す |
+| N6 | 定義を別の PC・環境に配る | ○ 窓の「別の PC に送る」か `koyomi remote send` で `[[remote]]` の PC へ、差分を見せて送る（向こうでは未確認で置かれ、向こうで確認するまで流れない）。`export`・`import` と HA の待機への写しも（TODO 111 で入れた） | △ ajsexport→ajsimport（パッケージング機能用のスクリプトの中だけで使える）、ajsprint→ajsdefine。配る・昇格する仕組みは見当たらない | ○ Workspace を JSON に書き出し、別の環境へ取り込む。Automation API の Deploy Descriptor で Dev・Test・Prod ごとに値を置き換え | ○ プロジェクトのアーカイブで別のインスタンスへ移す（`rd projects archives`）、SCM Git の Export・Import | △ Git の DAG bundle が `tracking_ref`（ブランチ・タグ・SHA）を追う。環境の間の昇格の機能は見当たらない | △ XML へ書き出し、`schtasks /create /xml` で取り込む。ドメインなら GPP の Scheduled Task で配る |
+| N7 | PC が空いたら起動する（サインイン・ロックも） | △ `[[when]] idle = "10m"` で空いたら起動（TODO 112 で入れた）。サービスのエンジンからは空いたかが見えない。サインイン・ロックは TODO 115（ito 待ち） | × イベントジョブ 8 種にアイドル・ログオン・ロックなし | ? 公式で見つからず | × サーバーの製品で対象外 | × Linux のサーバー前提で、アイドルなどで起動するものなし | ○ Idle トリガー（Windows 8 以降は 4 分・80%）、ログオン、SessionStateChange（ロック・アンロック・接続・切断） |
 | N8 | SQL を流すジョブ | ○ `kind = "sql"`（SQL Server・PostgreSQL・SQLite。TODO 113 で入れた） | △ 本体のジョブの種類に DB のジョブなし。別製品 JP1/AJS3 for Cloud Service Applications のサンプルに Athena・BigQuery の SQL | ○ Databases のジョブ（SQL Script・Stored Procedure・Embedded Query。Oracle・MSSQL・DB2・PostgreSQL など、JDBC で足せる）。Agent に plug-in を入れる | △ 有償の SQL Runner（node step）。OSS は MongoDB Command Runner だけ | ○ 既定で入る common.sql の SQLExecuteQueryOperator（DB ごとの provider は別に入れる） | × 動作はプログラムの起動だけ |
 | N9 | クラウドのストレージ（S3・Azure Blob）へ送る・受ける | △ `send`・`fetch` の `s3://` で S3 と S3 互換（MinIO など）へ（TODO 114 で入れた）。Azure Blob はまだ | △ 別製品 JP1/AJS3 for Cloud Service Applications のサービス連携ジョブのサンプル（S3・Azure Blob・GCS・OCI の upload・download など、サポート契約者向け） | △ MFT（add-on）の File Transfer ジョブで S3・Azure Storage・GCS など | △ AWS S3 の node step（OSS、Copy・Sync・Move でローカルとの間も）。Azure Blob は見当たらない。File Transfer は file・ftp・sftp・http だけ | △ amazon provider の LocalFilesystemToS3Operator・S3 の operator、microsoft.azure provider の LocalFilesystemToWasbOperator（どちらも別に入れる） | × 動作はプログラムの起動だけ |
 
