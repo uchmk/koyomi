@@ -548,10 +548,10 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 35.1 | A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file | `<job> の実行ファイルが見つからない: …` and exit code 1 |
-| 35.2 | A job with `dir = "C:/nope"` | `作業フォルダーがない` |
+| 35.1 | [x] A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file | `<job> の実行ファイルが見つからない: …` and exit code 1 |
+| 35.2 | [x] A job with `dir = "C:/nope"` | `作業フォルダーがない` |
 | 35.3 | A `kind = "file"` part watching `C:/nope/*.csv` | `見張るフォルダーがない: C:/nope` |
-| 35.4 | `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` | No complaint about the dir (it has no name until the day) |
+| 35.4 | [x] `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` | No complaint about the dir (it has no name until the day) |
 | 35.5 | A net whose calendar uses the holiday table, within 60 days of its end | A line about the table; exit code stays 0 |
 
 ## 36. 失敗の対応済み
@@ -584,9 +584,9 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 39.1 | Net B: `[[when]] every="day" at=["HH:MM"] wait_for="g/A"`; A runs daily and is still running at HH:MM | B does not start at HH:MM; it starts right after A ends, with the same business day |
+| 39.1 | [x] Net B: `[[when]] every="day" at=["HH:MM"] wait_for="g/A"`; A runs daily and is still running at HH:MM | B does not start at HH:MM; it starts right after A ends, with the same business day |
 | 39.2 | Add `wait_until` a few minutes after HH:MM; keep A running past it | B is recorded as 異常 with the reason (wait_until), and a notification comes |
-| 39.3 | A is not scheduled that day (e.g. `days` excludes today) | B starts at HH:MM without waiting |
+| 39.3 | [x] A is not scheduled that day (e.g. `days` excludes today) | B starts at HH:MM without waiting |
 | 39.4 | In the editor open B's `[[when]]` | Fields 先行の終わりを待つ / 待つのは何時まで show and save to the file |
 
 ## 40. ステータスバー
@@ -604,40 +604,40 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 41.1 | A job that prints `ERROR x` and exits 0, with `judge = { error_output = "^error" }` | The job ends 異常, reason `出力に異常の行があった: ERROR x`; it is retried if `retry` is set |
-| 41.2 | A job that exits 3 and leaves `C:/out/{date}.csv`, with `judge = { ok_file = "C:/out/{date}.csv" }` | The job ends 正常; the log says the file made it normal |
-| 41.3 | Same job with the file missing | The job ends 異常 (exit 3) |
+| 41.1 | [x] A job that prints `ERROR x` and exits 0, with `judge = { error_output = "^error" }` | The job ends 異常, reason `出力に異常の行があった: ERROR x`; it is retried if `retry` is set |
+| 41.2 | [x] A job that exits 3 and leaves `C:/out/{date}.csv`, with `judge = { ok_file = "C:/out/{date}.csv" }` | The job ends 正常; the log says the file made it normal |
+| 41.3 | [x] Same job with the file missing | The job ends 異常 (exit 3) |
 | 41.4 | In the editor open the job | Fields 出力にあれば失敗 / あれば成功にするファイル show and save; a bad regex is refused on save |
 
 ## 42. 時刻を 1 回だけずらす
 
 | # | Do | Expect |
 |---|---|---|
-| 42.1 | `koyomi shift g/a 09:00 09:30` (a net with a time at 09:00 later today) | It answers that the time was moved; at 09:00 nothing starts; at 09:30 the net runs once with planned time 09:00 |
+| 42.1 | [x] `koyomi shift g/a 09:00 09:30` (a net with a time at 09:00 later today) | It answers that the time was moved; at 09:00 nothing starts; at 09:30 the net runs once with planned time 09:00 |
 | 42.2 | The next day | The net runs at 09:00 as the definition says (the file was not changed) |
-| 42.3 | `koyomi shift g/a 09:00 09:30` then `koyomi shift g/a 09:00 --cancel` | The move is taken back; 09:00 runs as usual |
-| 42.4 | A time the net does not have, or a new time before the old one or already past | It is refused with the reason |
-| 42.5 | `koyomi skip-next g/a` (an approved net with a time later today) | It answers which time it skips; `held.toml` has a `[[skip]]` with it; at that time nothing starts and the history shows the time as スキップ「次の 1 回だけスキップ」; the time after runs as usual |
-| 42.6 | `koyomi skip-next g/a` twice, then `koyomi skip-next g/a --cancel` | The second skips the time after the first; `--cancel` takes both back and the times run; `--cancel` with nothing skipped is refused |
+| 42.3 | [x] `koyomi shift g/a 09:00 09:30` then `koyomi shift g/a 09:00 --cancel` | The move is taken back; 09:00 runs as usual |
+| 42.4 | [x] A time the net does not have, or a new time before the old one or already past | It is refused with the reason |
+| 42.5 | [x] `koyomi skip-next g/a` (an approved net with a time later today) | It answers which time it skips; `held.toml` has a `[[skip]]` with it; at that time nothing starts and the history shows the time as スキップ「次の 1 回だけスキップ」; the time after runs as usual |
+| 42.6 | [x] `koyomi skip-next g/a` twice, then `koyomi skip-next g/a --cancel` | The second skips the time after the first; `--cancel` takes both back and the times run; `--cancel` with nothing skipped is refused |
 | 42.7 | `koyomi rename g/a g/b` with a time skipped | The skip moves to g/b and still holds |
 
 ## 43. 操作の記録
 
 | # | Do | Expect |
 |---|---|---|
-| 43.1 | `koyomi hold g/a`, `koyomi release g/a`, then `koyomi ops` | Two lines with the time, `hold` / `release` and `g/a`, oldest first |
+| 43.1 | [x] `koyomi hold g/a`, `koyomi release g/a`, then `koyomi ops` | Two lines with the time, `hold` / `release` and `g/a`, oldest first |
 | 43.2 | Run a net by hand, save one in the editor, then `koyomi ops` | `run` and `save` lines appear |
-| 43.3 | A refused operation (hold a net that is already held) | No line is written |
-| 43.4 | `koyomi ops --from <yesterday>` after restarting the engine | The earlier lines are still there; `koyomi history` is unchanged |
+| 43.3 | [x] A refused operation (hold a net that is already held) | No line is written |
+| 43.4 | [x] `koyomi ops --from <yesterday>` after restarting the engine | The earlier lines are still there; `koyomi history` is unchanged |
 
 ## 44. 使っている所を探す
 
 | # | Do | Expect |
 |---|---|---|
-| 44.1 | `koyomi uses <calendar name>` | Lines `calendar   g/x` for each net that counts by it |
-| 44.2 | `koyomi uses g/a` where g/b has a child-net job `use = "g/a"` and `after_jobnet = "g/a"` | `child net  g/b (job …)` and `follows    g/b (on Ok)` |
-| 44.3 | `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) | `program    g/x (job …)`; the folder and `.exe` do not matter |
-| 44.4 | `koyomi uses nothing-here` | `(not used)` |
+| 44.1 | [x] `koyomi uses <calendar name>` | Lines `calendar   g/x` for each net that counts by it |
+| 44.2 | [x] `koyomi uses g/a` where g/b has a child-net job `use = "g/a"` and `after_jobnet = "g/a"` | `child net  g/b (job …)` and `follows    g/b (on Ok)` |
+| 44.3 | [x] `koyomi uses robocopy` (a job runs `C:/tools/Robocopy.exe`) | `program    g/x (job …)`; the folder and `.exe` do not matter |
+| 44.4 | [x] `koyomi uses nothing-here` | `(not used)` |
 
 ## 45. 初めての起動の案内
 
@@ -760,7 +760,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 57.1 | [x] `koyomi plan` with the engine running | Each day of this month with the times approved nets start; days with none show `-` |
 | 57.2 | `koyomi plan 2026-02 --pdf out.pdf`, open the PDF | A4 pages titled with the month, text selectable, page numbers at the foot |
 | 57.3 | `koyomi plan --print` | The PDF path is printed, and the PDF goes to the printer (or opens in the viewer when it has no print verb) |
-| 57.4 | A net on a calendar that closes a day | That day shows no start for the net |
+| 57.4 | [x] A net on a calendar that closes a day | That day shows no start for the net |
 
 ## 58. ネット間のつながり（map）
 
@@ -769,7 +769,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 58.1 | [x] `koyomi map` with a net that follows another (`after_jobnet`) and one that uses a child net | One line each: `g/a -> g/b (after ok)`, `g/a -> g/b (child)` |
 | 58.2 | `koyomi map --dot \| dot -Tsvg > map.svg`, open it | The nets as boxes, arrows from the first to the dependent, labelled |
 | 58.3 | `koyomi map --mermaid`, paste into a Mermaid viewer | A left-to-right flowchart of the same links |
-| 58.4 | With no links | `(no links)` |
+| 58.4 | [x] With no links | `(no links)` |
 
 
 ## 59. 出力の文字コード（encoding）
@@ -871,8 +871,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 67.1 | A net with `late_end = "20s"` and a job `run = ["ping", "-n", "40", "127.0.0.1"]`; approve it and `koyomi run <net>`; wait 25 s | One notification `⏰ 遅れ  <name>` / `<name>: <time> を過ぎても終わっていない`; `koyomi status --today` shows `⏰終了の遅れ` on the run, and only one notification comes however long it runs |
 | 67.2 | `koyomi show <net>` for that net | A line `終わらなければ知らせる: 20s` |
 | 67.3 | A net with `[[when]] every = "minutes"` `n = 1`, `overlap = "queue"`, `late_start = "30s"` and a job that takes 3 minutes | When the next minute's time has waited 30 s, one notification `<name>: <time> になっても始まっていない`; when that time starts later, the run is marked `⏰開始の遅れ` and not told again |
-| 67.4 | A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it | After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 1分、もう 2分 動いている`, and the mark `⏰いつもより長い` |
-| 67.5 | The same net with `late_slow = false` | No notification for taking long |
+| 67.4 | [x] A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it | After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 1分、もう 2分 動いている`, and the mark `⏰いつもより長い` |
+| 67.5 | [x] The same net with `late_slow = false` | No notification for taking long |
 | 67.5b | `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs | When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` |
 | 67.6 | `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` | `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved |
 | 67.7 | Stop and start the engine after 67.1 | The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again |
@@ -890,12 +890,12 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 69.1 | A net with `[[when]] every = "minutes"` `n = 2` and `quiet = ["<now>-<now + 5 min>"]` (a span that starts now); approve it | `koyomi show <net>` has a line `流さない時間帯: …（来た回は終わってから流す）`; no run starts in the span; at its end one run starts (`koyomi status --today`), its planned time the first one in the span; the later times in the span are recorded `⊘ スキップ` with `流さない時間帯。H:MM の回が終わりを待っている` |
-| 69.2 | The same with `on_quiet = "skip"` | Each time in the span is recorded `⊘ スキップ` with `流さない時間帯（HH:MM-HH:MM）`; the times after the span start as usual |
-| 69.3 | 69.1 with `koyomi hold <net>` while the time waits, then let the span end | The time is recorded `⏸` (保留中), not started |
-| 69.4 | `koyomi run <net>` in the span | The run starts at once (by hand is not held back) |
+| 69.1 | [x] A net with `[[when]] every = "minutes"` `n = 2` and `quiet = ["<now>-<now + 5 min>"]` (a span that starts now); approve it | `koyomi show <net>` has a line `流さない時間帯: …（来た回は終わってから流す）`; no run starts in the span; at its end one run starts (`koyomi status --today`), its planned time the first one in the span; the later times in the span are recorded `⊘ スキップ` with `流さない時間帯。H:MM の回が終わりを待っている` |
+| 69.2 | [x] The same with `on_quiet = "skip"` | Each time in the span is recorded `⊘ スキップ` with `流さない時間帯（HH:MM-HH:MM）`; the times after the span start as usual |
+| 69.3 | [x] 69.1 with `koyomi hold <net>` while the time waits, then let the span end | The time is recorded `⏸` (保留中), not started |
+| 69.4 | [x] `koyomi run <net>` in the span | The run starts at once (by hand is not held back) |
 | 69.5 | `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` | `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved |
-| 69.6 | `quiet = ["23:00-01:00"]` on a net at 00:30 | The 00:30 time starts at 01:00 |
+| 69.6 | [x] `quiet = ["23:00-01:00"]` on a net at 00:30 | The 00:30 time starts at 01:00 |
 | 69.7 | 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times | At the end the waited time starts first; the time due at the end is recorded `⊘ スキップ` `前の回がまだ動いていました` (`overlap = "queue"`: it runs after) |
 
 ## 70. 通知の宛先
@@ -941,7 +941,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 |---|---|---|
 | 73.1 | `koyomi list --csv jobs.csv`; open it in Excel | One row per job of every definition, with the heads グループ・ジョブネット・名前・確認・カレンダー・ジョブ…; Japanese is not garbled |
 | 73.2 | `koyomi history --from <a week ago> --csv runs.csv` | One row per run, oldest first; 秒 is the run's length; 異常のジョブ names the jobs that ended 異常 |
-| 73.3 | `koyomi plan --csv plan.csv` | Every day of this month; a day with no start is one row with only its date and weekday |
+| 73.3 | [x] `koyomi plan --csv plan.csv` | Every day of this month; a day with no start is one row with only its date and weekday |
 | 73.4 | `koyomi plan --csv -` | The table on the console with no BOM, and no file name said |
 | 73.5 | A net whose name has a comma; `koyomi list --csv -` | The name is in double quotes; Excel shows it in one cell |
 | 73.6 | Set the language to English in Settings; `koyomi plan --csv -` | The heads are Day,Weekday,Time,Jobnet |
@@ -953,27 +953,27 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 74.1 | Right-click a net in the tree → "Rename or move…"; pick another group, Enter | The net is under the new group, still confirmed and (if held) still held; Compare versions on it shows its old file |
-| 74.2 | A net another net uses as a child net; rename it without the checkbox | The result line lists the nets that use it and says to use `--fix`; nothing moved |
+| 74.2 | [x] A net another net uses as a child net; rename it without the checkbox | The result line lists the nets that use it and says to use `--fix`; nothing moved |
 | 74.3 | The same with "Point them at the new name too" ticked | Both moved along; the user's file has the new name in `use`, its comments kept, and a version of its old file |
-| 74.4 | `koyomi rename 経理/月次 総務/月次 --fix` | `名前を変えた: 経理/月次 → 総務/月次（参照も直した: …）` |
-| 74.5 | "Copy…" on a net, Enter | A `<name>-2` net appears, unconfirmed; the original is not touched |
+| 74.4 | [x] `koyomi rename 経理/月次 総務/月次 --fix` | `名前を変えた: 経理/月次 → 総務/月次（参照も直した: …）` |
+| 74.5 | [x] "Copy…" on a net, Enter | A `<name>-2` net appears, unconfirmed; the original is not touched |
 | 74.6 | "Delete…" on a net; Enter at once | Nothing is deleted (the box starts on Cancel) |
 | 74.7 | "Delete…", Tab, Enter | The net goes from the tree; `koyomi versions <id>` lists its file, and `koyomi restore <id> <version>` brings it back unconfirmed |
-| 74.8 | `koyomi delete <id>` on a net another net uses | The nets that use it are printed; after `y` the engine refuses and says to change them first |
-| 74.9 | Rename a net while it runs | `実行中のため変えられない` |
+| 74.8 | [x] `koyomi delete <id>` on a net another net uses | The nets that use it are printed; after `y` the engine refuses and says to change them first |
+| 74.9 | [x] Rename a net while it runs | `実行中のため変えられない` |
 | 74.10 | With a net open in the editor, right-click a net | The three items are greyed out ("Close the editor first") |
 
 ## 75. 繰り返しの部品（`kind = "loop"`）
 
 | # | Do | Expect |
 |---|---|---|
-| 75.1 | A job with `kind = "loop"`, `file = 'C:\in\*.csv'`, `run = ["cmd.exe", "/c", "echo %KOYOMI_INDEX% %KOYOMI_FILE%"]`; put `b.csv` and `a.csv` in `C:\in`; start the net | The job ends 正常; its log has `▶ 1/2: …a.csv`, `1 …a.csv`, `▶ 2/2: …b.csv`, `2 …b.csv` |
-| 75.2 | The same with no file in the folder | 正常 at once; the log says no file matched and nothing ran |
-| 75.3 | `count = 3` instead of `file` | Three passes, `KOYOMI_INDEX` 1, 2, 3 |
-| 75.4 | `count = 3` with a command that exits 3 on the second pass | 異常, the reason `2/3 回目で異常: 終了コード 3`; the third pass does not run |
-| 75.5 | Add `retry = { count = 1, wait = "1s" }` to 75.4 | The second pass is tried again once before the job ends 異常; the reason ends with `やり直し 1 回` |
-| 75.6 | Stop the job (強制終了) during a pass of a long loop | The pass is killed and no later pass starts |
-| 75.7 | Write both `file` and `count`, or neither | The definition does not load; the problem names the line and says to write one of them |
+| 75.1 | [x] A job with `kind = "loop"`, `file = 'C:\in\*.csv'`, `run = ["cmd.exe", "/c", "echo %KOYOMI_INDEX% %KOYOMI_FILE%"]`; put `b.csv` and `a.csv` in `C:\in`; start the net | The job ends 正常; its log has `▶ 1/2: …a.csv`, `1 …a.csv`, `▶ 2/2: …b.csv`, `2 …b.csv` |
+| 75.2 | [x] The same with no file in the folder | 正常 at once; the log says no file matched and nothing ran |
+| 75.3 | [x] `count = 3` instead of `file` | Three passes, `KOYOMI_INDEX` 1, 2, 3 |
+| 75.4 | [x] `count = 3` with a command that exits 3 on the second pass | 異常, the reason `2/3 回目で異常: 終了コード 3`; the third pass does not run |
+| 75.5 | [x] Add `retry = { count = 1, wait = "1s" }` to 75.4 | The second pass is tried again once before the job ends 異常; the reason ends with `やり直し 1 回` |
+| 75.6 | [x] Stop the job (強制終了) during a pass of a long loop | The pass is killed and no later pass starts |
+| 75.7 | [x] Write both `file` and `count`, or neither | The definition does not load; the problem names the line and says to write one of them |
 | 75.8 | In the editor, drag 繰り返し from the shelf onto the canvas | A circle (it runs a process) with the file and count fields over the command fields; Save writes `kind = "loop"` |
 | 75.9 | `koyomi review <net>` with a loop | The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command |
 
@@ -993,8 +993,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 77.1 | `koyomi report` after a few runs | The month, then a line per net: runs, pass rate, usual time, and the jobs that failed most |
-| 77.2 | `koyomi report 2026-09 --csv r.csv` | A CSV with one row per net, rates in percent and averages in seconds |
+| 77.1 | [x] `koyomi report` after a few runs | The month, then a line per net: runs, pass rate, usual time, and the jobs that failed most |
+| 77.2 | [x] `koyomi report 2026-09 --csv r.csv` | A CSV with one row per net, rates in percent and averages in seconds |
 | 77.3 | History view, open 成績 | The same lines for the rows the filter shows |
 
 ## 78. システムのイベントログ（Application ログ、ソース `koyomi`）
@@ -1033,19 +1033,19 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 81.1 | A net with `[[when]] log = 'D:\app\app.log'` and `contains = "ERROR"`; `koyomi approve`; append `ok` and then `ERROR disk full` to the file | A run starts within a few seconds (only for the second line); `koyomi show` says `ログ`（`D:\app\app.log に行が書かれた: ERROR disk full`） |
-| 81.2 | The file already has `ERROR` lines when the net is approved (or the engine starts) | Nothing starts: only lines written after the watch starts count |
-| 81.3 | Append three `ERROR` lines at once | One run; the reason ends with `（ほか 2 件）` |
-| 81.4 | Append an `ERROR` line while the run is still going | No second run; a ⊘ スキップ row `… に行が書かれたが、前の回がまだ動いているので流さない: …` |
-| 81.5 | Rotate the log (rename `app.log` to `app.1.log` and make a new `app.log`), then append an `ERROR` line to the new file | A run starts: the new file is read from its start |
-| 81.6 | `[[when]] log = 'D:\nothere\app.log'`; then make the folder and the file with an `ERROR` line | Nothing is said while the file is not there; the new file is read from its start and the run starts |
+| 81.1 | [x] A net with `[[when]] log = 'D:\app\app.log'` and `contains = "ERROR"`; `koyomi approve`; append `ok` and then `ERROR disk full` to the file | A run starts within a few seconds (only for the second line); `koyomi show` says `ログ`（`D:\app\app.log に行が書かれた: ERROR disk full`） |
+| 81.2 | [x] The file already has `ERROR` lines when the net is approved (or the engine starts) | Nothing starts: only lines written after the watch starts count |
+| 81.3 | [x] Append three `ERROR` lines at once | One run; the reason ends with `（ほか 2 件）` |
+| 81.4 | [x] Append an `ERROR` line while the run is still going | No second run; a ⊘ スキップ row `… に行が書かれたが、前の回がまだ動いているので流さない: …` |
+| 81.5 | [x] Rotate the log (rename `app.log` to `app.1.log` and make a new `app.log`), then append an `ERROR` line to the new file | A run starts: the new file is read from its start |
+| 81.6 | [x] `[[when]] log = 'D:\nothere\app.log'`; then make the folder and the file with an `ERROR` line | Nothing is said while the file is not there; the new file is read from its start and the run starts |
 | 81.7 | `[[when]] eventlog = "Security"`, `ids = [4625]` (run the engine as administrator); sign in with a wrong password once | A run starts; `koyomi show` says `イベントログ Security に記録された: ID 4625 …` |
 | 81.8 | `[[when]] eventlog = "Application"`, `source = "MyApp"`; `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "boom"` | A run starts; an event from another source does not start one |
-| 81.8a | `[[when]] eventlog = "Application"`, `ids = [1000, 2000]` and no `source`; run any net by hand so it ends ✓ (koyomi writes ID 1000, source `koyomi`) | The net does not start: koyomi's own records are not counted when no `source` is written. Then write `source = "koyomi"` and `ids = [2000]`, and run another net that fails: this net starts (named on purpose, koyomi's records count); it ends ✓ (1000), so it does not start itself again |
-| 81.9 | `eventlog = "NoSuchLog"`, or `Security` with the engine not as administrator | The window's 注意 says `<net>: イベントログ … を読めない（…）`; the net is still valid |
-| 81.10 | The net has `calendar = "会社"` and the line comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
+| 81.8a | [x] `[[when]] eventlog = "Application"`, `ids = [1000, 2000]` and no `source`; run any net by hand so it ends ✓ (koyomi writes ID 1000, source `koyomi`) | The net does not start: koyomi's own records are not counted when no `source` is written. Then write `source = "koyomi"` and `ids = [2000]`, and run another net that fails: this net starts (named on purpose, koyomi's records count); it ends ✓ (1000), so it does not start itself again |
+| 81.9 | [x] `eventlog = "NoSuchLog"`, or `Security` with the engine not as administrator | The window's 注意 says `<net>: イベントログ … を読めない（…）`; the net is still valid |
+| 81.10 | [x] The net has `calendar = "会社"` and the line comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
 | 81.11 | The editor: add a `[[when]]` of ログに行が出たら and one of イベントログに出たら | The fields are ログのファイル・含む文字, and イベントログ・イベント ID・ソース; except / start / end / on_closed are not shown; saving writes `log` / `contains` and `eventlog` / `ids` / `source` |
-| 81.12 | `koyomi next` for the net | The rows `ログに「ERROR」の行が書かれたとき: D:\app\app.log` and `イベントログ Security に記録されたとき（ID 4625）` come first |
+| 81.12 | [x] `koyomi next` for the net | The rows `ログに「ERROR」の行が書かれたとき: D:\app\app.log` and `イベントログ Security に記録されたとき（ID 4625）` come first |
 | 81.13 | [x] `koyomi check` a `[[when]]` with `log = 'app.log'`, with `log = 'D:\*.log'`, with `log = …` and no `contains`, with `eventlog = "Application"` and neither `ids` nor `source`, with `ids = [70000]` | `log は絶対パスで書く（例: …）`; `log は 1 つのファイルのパス（* / ? は使えない）`; `contains が要る（例: contains = "ERROR"）`; `eventlog には ids か source が要る（例: ids = [4625]）`; `ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）` |
 
 ## 82. ファイルを送る・受け取る部品（`kind = "send"` / `"fetch"`）
@@ -1186,7 +1186,7 @@ With `[http]` set as in §87 and `T` the token.
 | 91.7 | `password = "secret:nothere"`; or a wrong password with `koyomi secret set`; or `/NoSuchFolder` | The window's 注意 says `<net>: メールボックス … を読めない（…）`; the net is still valid; after fixing it the warning goes within about a minute; the password never appears in the log or the warning |
 | 91.8 | The net has `calendar = "会社"` and the mail comes on a closed day; or the net is held | ⊘ スキップ `… が、休業日なので流さない（on_closed = "run" で流せる）`; ⏸ 保留 with the reason, not run afterwards |
 | 91.9 | The editor: add a `[[when]]` of メールが来たら | The fields are メールボックス・パスワード・差出人・件名; except / start / end / on_closed are not shown; saving writes `mail` / `password` / `sender` / `subject`; a password not starting with `secret:` is refused |
-| 91.10 | `koyomi next` for the net; approve it | The row `メールが来たとき: imaps://…（件名「請求」）` comes first; the confirm box shows the same |
+| 91.10 | [x] `koyomi next` for the net; approve it | The row `メールが来たとき: imaps://…（件名「請求」）` comes first; the confirm box shows the same |
 | 91.11 | [x] `koyomi check` a `[[when]]` with `mail = "imap://me@host"`, with `mail = "me@host"`, with `password = "hunter2"`, with no `password`, with neither `sender` nor `subject` | `mail は imaps:// だけ…`; `mail は "imaps://ユーザー@サーバー/フォルダー" で書く…`; `password は "secret:<名前>" で書く…`; `mail には password = "secret:<名前>" が要る…`; `mail には sender か subject が要る…` |
 
 ## 92. Another PC over the LAN (`[http] lan = true`, `[[remote]]`, `koyomi remote`; TODO 80)
@@ -1212,15 +1212,15 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 
 | # | Do | Expect |
 |---|---|---|
-| 93.1 | Start B's engine; `koyomi status` and `koyomi standby` on B | `待機中: a を見張っている。こちらではスケジュールとイベントで流さない`; the window's cautions show the same line |
-| 93.2 | Let a net's time pass on both | It runs on A only; B's history has no row for it |
-| 93.3 | On B: `koyomi run <net>` | It runs on B (by hand still goes) |
-| 93.4 | Stop A's engine; wait about 15 s | B tells `koyomi: 待機から引き継いだ` with `a が答えなくなった（つながらない: …）ので、… からこの PC で流す。向こうで動いていた回は引き継いでいない…`; `koyomi status` says `a から引き継いで流している（… から。koyomi standby giveback で戻す）`; the next time runs on B |
-| 93.5 | Restart B's engine | Still taken over at once (`standby.toml` in the state folder has `active = true`) |
-| 93.6 | Start A's engine again | B tells `koyomi: 両方で流している` once, and stays taken over |
-| 93.7 | On B: `koyomi standby giveback`; again | `a に戻した。また見張る`, back to 93.1; the second says `引き継いでいない（a を見張っている）`; `koyomi ops` shows `giveback` |
-| 93.8 | On B: change one digit of `a`'s fingerprint; stop A | A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) |
-| 93.9 | `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` | Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` |
+| 93.1 | [x] Start B's engine; `koyomi status` and `koyomi standby` on B | `待機中: a を見張っている。こちらではスケジュールとイベントで流さない`; the window's cautions show the same line |
+| 93.2 | [x] Let a net's time pass on both | It runs on A only; B's history has no row for it |
+| 93.3 | [x] On B: `koyomi run <net>` | It runs on B (by hand still goes) |
+| 93.4 | [x] Stop A's engine; wait about 15 s | B tells `koyomi: 待機から引き継いだ` with `a が答えなくなった（つながらない: …）ので、… からこの PC で流す。向こうで動いていた回は引き継いでいない…`; `koyomi status` says `a から引き継いで流している（… から。koyomi standby giveback で戻す）`; the next time runs on B |
+| 93.5 | [x] Restart B's engine | Still taken over at once (`standby.toml` in the state folder has `active = true`) |
+| 93.6 | [x] Start A's engine again | B tells `koyomi: 両方で流している` once, and stays taken over |
+| 93.7 | [x] On B: `koyomi standby giveback`; again | `a に戻した。また見張る`, back to 93.1; the second says `引き継いでいない（a を見張っている）`; `koyomi ops` shows `giveback` |
+| 93.8 | [x] On B: change one digit of `a`'s fingerprint; stop A | A note `[standby] a: 証明書が fingerprint と違う…`; B does not take over while the note shows (only no connection counts) |
+| 93.9 | [x] `koyomi check` koyomi.toml with `watch = "nope"`, `every = "1s"`, `misses = 0` | Each refused: `[standby] の watch "nope" は [[remote]] の name で書く`, `every は 5s から 10m まで`, `misses は 1 から 20 まで` |
 | 93.10 | Remove `[standby]` from B's koyomi.toml | B runs its schedules again; `koyomi standby` says `koyomi.toml に [standby] がない` |
 
 ## 94. People and roles over HTTP (`[[http.user]]`; TODO 83)
@@ -1229,13 +1229,13 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 
 | # | Do | Expect |
 |---|---|---|
-| 94.1 | `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/runs` | 200 and the runs |
-| 94.2 | `curl -X POST -H "Authorization: Bearer S" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` | 403 `sato は view のロール。これには run が要る`; nothing starts |
-| 94.3 | The same POST with `I`; then with `T` | 202 both times; `koyomi ops` shows the two `run` lines ending `（HTTP: ito）` and `（HTTP: default）` |
-| 94.4 | Run a net from this PC's window and with `koyomi run` | Their `koyomi ops` lines have no `（HTTP: …）` |
-| 94.5 | Remove `token` from `[http]` (keep the users); restart the engine | It listens; `T` gets 401, `S` and `I` as before |
-| 94.6 | `koyomi check` with `role = "admin"`, `name = "default"`, two users named `sato`, `token = "S"`, and `[http]` with neither `token` nor users | Each refused with its reason |
-| 94.7 | `koyomi secret delete sato` (or never set it); restart | The status says `[http] で待ち受けられない（token の秘密 sato: …）` and tries again every 60 s |
+| 94.1 | [x] `curl -H "Authorization: Bearer S" http://127.0.0.1:8790/runs` | 200 and the runs |
+| 94.2 | [x] `curl -X POST -H "Authorization: Bearer S" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` | 403 `sato は view のロール。これには run が要る`; nothing starts |
+| 94.3 | [x] The same POST with `I`; then with `T` | 202 both times; `koyomi ops` shows the two `run` lines ending `（HTTP: ito）` and `（HTTP: default）` |
+| 94.4 | [x] Run a net from this PC's window and with `koyomi run` | Their `koyomi ops` lines have no `（HTTP: …）` |
+| 94.5 | [x] Remove `token` from `[http]` (keep the users); restart the engine | It listens; `T` gets 401, `S` and `I` as before |
+| 94.6 | [x] `koyomi check` with `role = "admin"`, `name = "default"`, two users named `sato`, `token = "S"`, and `[http]` with neither `token` nor users | Each refused with its reason |
+| 94.7 | [x] `koyomi secret delete sato` (or never set it); restart | The status says `[http] で待ち受けられない（token の秘密 sato: …）` and tries again every 60 s |
 
 ## 95. The Web UI (`http://127.0.0.1:<port>/`; TODO 81)
 
@@ -1244,7 +1244,7 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | # | Do | Expect |
 |---|---|---|
 | 95.1 | Open `http://127.0.0.1:8790/` | The サインイン form; no other request than `/`, `/theme.css`, `/app.css`, `/app.js`, `/me` (the browser's network tab) |
-| 95.2 | Sign in with a wrong token | トークンが合いません; still signed out |
+| 95.2 | [x] Sign in with a wrong token | トークンが合いません; still signed out |
 | 95.3 | Sign in with `S` | The header shows `sato（view）` and 稼働中; at the left ジョブネット一覧 by group, each net with the mark of its last run today; in the middle 今日 with today's date; no 今すぐ流す or 強制終了 anywhere; the token field is empty |
 | 95.4 | Look at 今日 with nets that start later today and runs that ended, failed and run now | As the window's 今日: a ○ 待ち row for each start still to come (予定 and 次の回), then the runs newest first (開始・終了・時間, `…` while running); rows tinted by state; a chip per state that has rows (`✕ 異常終了 1` …) |
 | 95.5 | Press a chip; press it again | Only that state's rows; then all again |
@@ -1254,12 +1254,12 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 95.9 | Reload the page | Still signed in (the cookie); refreshes every 5 s; the picked row and the focus stay through a refresh |
 | 95.10 | 履歴, then pick a day | That day's runs; no 次の回 column; 今日 comes back to today's |
 | 95.11 | In the window's 設定, set the theme to a dark one, then a light one, then system, reloading the page each time; then put `high_contrast = true` in common.toml and reload | The page takes the window's colours each time, also with a page-darkening add-on such as Dark Reader on; with system it follows the browser's light or dark; with high_contrast the stronger colours |
-| 95.12 | `curl -i http://127.0.0.1:8790/theme.css` | 200 `text/css` with `:root {` and `--bg`; no token needed |
+| 95.12 | [x] `curl -i http://127.0.0.1:8790/theme.css` | 200 `text/css` with `:root {` and `--bg`; no token needed |
 | 95.13 | サインアウト, then sign in with `I` | `ito（run）`; on a picked confirmed net 今すぐ流す (greyed on 未承認 and held ones) |
 | 95.14 | 今すぐ流す a net, then 今すぐ流す in the question | A new running run in 今日, picked in the pane; `koyomi ops` shows `run … （HTTP: ito）` |
 | 95.15 | Pick a running run, 強制終了 | The question starts on やめる; with 強制終了する its jobs stop (■ 強制終了); `koyomi ops` shows the kill with `（HTTP: ito）` |
-| 95.16 | `curl -i http://127.0.0.1:8790/` | 200 with `Content-Security-Policy` (`script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` |
-| 95.17 | With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) | Refused; nothing starts |
+| 95.16 | [x] `curl -i http://127.0.0.1:8790/` | 200 with `Content-Security-Policy` (`script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` |
+| 95.17 | [x] With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) | Refused; nothing starts |
 | 95.18 | Put a job's title or log line `<img src=x onerror=alert(1)>` and view it | Shown as text; no dialog |
 | 95.19 | With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) | The same page; the cookie is `Secure` |
 | 95.20 | Pause the schedule (`koyomi engine pause`); stop the engine | スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays |
@@ -1279,8 +1279,8 @@ PC A runs nets as in §92 (`lan = true`). PC B has the same nets confirmed, `[[r
 | 95.34 | As a `view` user (no `run` role on the net), open the net and a run | No 「保留」 / 「保留を解く」 button on the jobs, in the pane or in the run (⏸ still shows in the pane's 「ジョブ」 list, not in the run's table); with a `roles` entry giving `run` on another net only, this net has no buttons while the other has them; with the token of a `run` user the buttons are there |
 | 95.35 | [x] Press 「保留」 on b, then 「やめる」 in the question | Nothing is held; no toast; `koyomi ops` has no new line |
 | 95.36 | A net with a job that calls a child jobnet (`use`), and one with a branch/part job | Only the net's own jobs are listed (not the child's inside jobs, no job id with `/`); holding the calling job holds the child as 23.14 and the child's jobs show no ⏸ of their own in the tree or the pane |
-| 95.37 | `curl -X POST /nets/hold -d '{"net":"<group/name>","job":"b"}'` as a `view` user, and as an `edit` user whose `nets` leaves the net out; then as a `run` user for a job id that is not in the net and for a job already held | `view`/outside `nets`: 403 and nothing is held; unknown job: 422 `<net> にジョブがない: x`; already held: 422 `もう保留している…`; `release` of a job not held: 422 `保留していない…`; in the page the same text shows as a red toast (e.g. a stale page pressing 「保留」 on a job held from the shell) |
-| 95.38 | `GET /nets` with a held job, an unnamed job and a job with `name` set, as `run` and as `view` | Each net has `jobs: [{id, name, held}]` (`name` is null when unset; `held` true only for the held one); the net's own `held` stays false; the `view` user gets the same list. A job with `name` set shows that name in the list and the question (`<name> を保留にしますか？<net> のどの回も、ここに来たら待ちます`; buttons `<name> を保留` / `<name> の保留を解く`), while `koyomi ops` shows the job id |
+| 95.37 | [x] `curl -X POST /nets/hold -d '{"net":"<group/name>","job":"b"}'` as a `view` user, and as an `edit` user whose `nets` leaves the net out; then as a `run` user for a job id that is not in the net and for a job already held | `view`/outside `nets`: 403 and nothing is held; unknown job: 422 `<net> にジョブがない: x`; already held: 422 `もう保留している…`; `release` of a job not held: 422 `保留していない…`; in the page the same text shows as a red toast (e.g. a stale page pressing 「保留」 on a job held from the shell) |
+| 95.38 | [x] `GET /nets` with a held job, an unnamed job and a job with `name` set, as `run` and as `view` | Each net has `jobs: [{id, name, held}]` (`name` is null when unset; `held` true only for the held one); the net's own `held` stays false; the `view` user gets the same list. A job with `name` set shows that name in the list and the question (`<name> を保留にしますか？<net> のどの回も、ここに来たら待ちます`; buttons `<name> を保留` / `<name> の保留を解く`), while `koyomi ops` shows the job id |
 | 95.39 | Hold the net (ジョブネットを保留) and job b together; release the net only; release b | Releasing the net leaves b held (⏸ on b, a run waits there); releasing b lets runs go; each toast names what was released |
 | 95.40 | Hold a job, then 「再実行 ▾」 a run of that net from a job before it; hold a job of a run that is already over and start a new run | The rerun waits at the held job as 23.11 does; the over run's row shows 「保留を解く」 for it and the new run waits there |
 
@@ -1328,15 +1328,15 @@ As §95, signed in with `I` (run) unless said.
 | 97.6 | While a run waits on a long job, スキップ on a later job that has not started, confirm | The job ends as ⊘ and the next ones go when their turn comes |
 | 97.7 | Any of these, then やめる (or Esc) in the question | Nothing is sent |
 | 97.8 | Sign in with `S` (view) | No 今すぐ流す, 保留, 再実行 ▾, スキップ, 次の回を飛ばす or 強制終了 buttons; ログ is there |
-| 97.9 | `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` | 403; nothing starts |
-| 97.10 | `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` | 400 (`from と next はどちらか 1 つ`) |
-| 97.11 | `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` | 422 with the engine's reason |
+| 97.9 | [x] `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` | 403; nothing starts |
+| 97.10 | [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` | 400 (`from と next はどちらか 1 つ`) |
+| 97.11 | [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` | 422 with the engine's reason |
 | 97.12 | 今すぐ流す on a net with `[params]` | One question with a field per value, its default filled in; やめる sends nothing |
-| 97.13 | Change one value, keep the others, 今すぐ流す | The run gets the changed value, the others take their defaults |
-| 97.14 | `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` | Each net has `params` with its names and defaults (`{}` when none), and `today` (the starts still to come today), `next`, `then` (the one after today's last) and `skips`; a held or unapproved net has no `today` and `next` null |
-| 97.15 | `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) | 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` |
-| 97.16 | The same with `{"net":"g/a","cancel":true}`; then once more | 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) |
-| 97.17 | The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` | 403; 405; 400 |
+| 97.13 | [x] Change one value, keep the others, 今すぐ流す | The run gets the changed value, the others take their defaults |
+| 97.14 | [x] `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` | Each net has `params` with its names and defaults (`{}` when none), and `today` (the starts still to come today), `next`, `then` (the one after today's last) and `skips`; a held or unapproved net has no `today` and `next` null |
+| 97.15 | [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) | 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` |
+| 97.16 | [x] The same with `{"net":"g/a","cancel":true}`; then once more | 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) |
+| 97.17 | [x] The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` | 403; 405; 400 |
 | 97.18 | In the page, pick the net, 次の回を飛ばす, 飛ばす | The line names the time it skips; the pane lists it under 飛ばす回 and shows 飛ばしを戻す; 飛ばしを戻す, 戻す takes it back |
 
 ## 98. Definitions from the `edit` role (`GET /nets/text`, `POST /nets/propose`; TODO 83)
@@ -1345,16 +1345,16 @@ As §94, plus `[[http.user]]` `kato` (`role = "edit"`, `token = "secret:kato"`; 
 
 | # | Do | Expect |
 |---|---|---|
-| 98.1 | `curl -H "Authorization: Bearer I" "http://127.0.0.1:8790/nets/text?net=g/a"` | 403 `ito は run のロール。これには edit が要る` |
-| 98.2 | The same with `K` | 200 with `text` (the file as it is), `sha256` and `standing` |
+| 98.1 | [x] `curl -H "Authorization: Bearer I" "http://127.0.0.1:8790/nets/text?net=g/a"` | 403 `ito は run のロール。これには edit が要る` |
+| 98.2 | [x] The same with `K` | 200 with `text` (the file as it is), `sha256` and `standing` |
 | 98.3 | `curl -X POST -H "Authorization: Bearer K" -d '{"net":"g/a","text":"<the text with a job changed>","base":"<sha256 from 98.2>"}' http://127.0.0.1:8790/nets/propose` | 200, `"confirmed": false`; the file on disk is the new text; the window shows `g/a` as 未確認 and its confirm box shows the change |
-| 98.4 | Wait for `g/a`'s next scheduled time, or `koyomi run g/a` | It does not run the new text (refused as unconfirmed) |
+| 98.4 | [x] Wait for `g/a`'s next scheduled time, or `koyomi run g/a` | It does not run the new text (refused as unconfirmed) |
 | 98.5 | Confirm `g/a` in the window | It runs again as scheduled, with the new text |
-| 98.6 | Send 98.3 again with the old `base` | 409 `ほかで変わっています: g/a`; the file is not touched |
-| 98.7 | Send a text that does not read (`format = 1` and a job without `run`) | 422 `保存できない: …`; the file is not touched |
-| 98.8 | Send a new net `g/new` without `base` | 200; `jobnets/g/new.toml` is there, 未確認 in the window |
-| 98.9 | `koyomi ops` | `propose g/a （HTTP: kato）` and `propose g/new （HTTP: kato）` |
-| 98.10 | `koyomi versions g/a` | The text before 98.3 is kept as a version |
+| 98.6 | [x] Send 98.3 again with the old `base` | 409 `ほかで変わっています: g/a`; the file is not touched |
+| 98.7 | [x] Send a text that does not read (`format = 1` and a job without `run`) | 422 `保存できない: …`; the file is not touched |
+| 98.8 | [x] Send a new net `g/new` without `base` | 200; `jobnets/g/new.toml` is there, 未確認 in the window |
+| 98.9 | [x] `koyomi ops` | `propose g/a （HTTP: kato）` and `propose g/new （HTTP: kato）` |
+| 98.10 | [x] `koyomi versions g/a` | The text before 98.3 is kept as a version |
 
 ## 99. A standby copies the definitions (TODO 87)
 
@@ -1378,16 +1378,16 @@ As §98, plus `nets = ["経理/*"]` on `kato` (`K`). Nets `経理/a` and `人事
 
 | # | Do | Expect |
 |---|---|---|
-| 100.1 | `curl -H "Authorization: Bearer K" http://127.0.0.1:8790/me` | `"nets": ["経理/*"]`; with `S`, `"nets": null` |
-| 100.2 | `GET /nets` and `GET /runs` with `K` | Only `経理/a` and its runs; with `S`, both nets and all runs as before |
-| 100.3 | `GET /runs/<人事/b's run>` and `GET /runs/<人事/b's run>/log?job=…` with `K` | 404 both times, as for a run that is not there |
-| 100.4 | `POST /runs` `{"net":"人事/b"}` with `K`; also `POST /nets/hold` and `/nets/skip-next` with it | 422 `定義がない: 人事/b`; nothing starts or changes; `koyomi ops` has no line for them |
-| 100.5 | `POST /runs/<人事/b's run>/rerun` and `/stop` with `K` | 422 `実行がない: …`; nothing starts or stops |
-| 100.6 | `GET "/nets/text?net=人事/b"` with `K`; then `net=経理/a` | 404 `定義がない: 人事/b`; 200 with the text |
+| 100.1 | [x] `curl -H "Authorization: Bearer K" http://127.0.0.1:8790/me` | `"nets": ["経理/*"]`; with `S`, `"nets": null` |
+| 100.2 | [x] `GET /nets` and `GET /runs` with `K` | Only `経理/a` and its runs; with `S`, both nets and all runs as before |
+| 100.3 | [x] `GET /runs/<人事/b's run>` and `GET /runs/<人事/b's run>/log?job=…` with `K` | 404 both times, as for a run that is not there |
+| 100.4 | [x] `POST /runs` `{"net":"人事/b"}` with `K`; also `POST /nets/hold` and `/nets/skip-next` with it | 422 `定義がない: 人事/b`; nothing starts or changes; `koyomi ops` has no line for them |
+| 100.5 | [x] `POST /runs/<人事/b's run>/rerun` and `/stop` with `K` | 422 `実行がない: …`; nothing starts or stops |
+| 100.6 | [x] `GET "/nets/text?net=人事/b"` with `K`; then `net=経理/a` | 404 `定義がない: 人事/b`; 200 with the text |
 | 100.7 | `POST /nets/propose` with `K` for a new `人事/new`; then for a new `経理/new` | 403 `nets の外なので出せない: 人事/new（出せるのは 経理/*）`, no file; 200, `経理/new` is 未確認 in the window |
-| 100.8 | `GET /health` with `K` | `koyomi engine pid N` only (no net names after it); with `S`, the whole line |
+| 100.8 | [x] `GET /health` with `K` | `koyomi engine pid N` only (no net names after it); with `S`, the whole line |
 | 100.9 | Open the Web UI and sign in with `K` | Only `経理/a` and its runs |
-| 100.10 | `koyomi check` with `nets = []`, `nets = ["経理"]` and `nets = ["*/*/x"]` | Each refused: `[[http.user]] kato の nets を空にしない…`, `… nets は <グループ>/<名前> で書く…` |
+| 100.10 | [x] `koyomi check` with `nets = []`, `nets = ["経理"]` and `nets = ["*/*/x"]` | Each refused: `[[http.user]] kato の nets を空にしない…`, `… nets は <グループ>/<名前> で書く…` |
 | 100.11 | This PC's window and `koyomi runs` | Both nets and all runs, as before |
 
 ## 101. Run a command on another PC (`kind = "ssh"`; TODO 95)
