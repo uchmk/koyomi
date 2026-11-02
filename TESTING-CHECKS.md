@@ -456,8 +456,8 @@
 ## 34. エンジンが落ちていたことの通知
 
 - [ ] **34.1** Start the engine, kill its process (`taskkill /f`), wait 2 minutes, start it again → A notification `エンジンが落ちていた`, and a band at the top of the window with the span 〔未訳〕
-- [ ] **34.2** `koyomi engine stop`, wait 11 minutes, start it again → `エンジンが止まっていた` is told the same way 〔未訳〕
-- [ ] **34.3** `koyomi engine stop` and start it again within a minute → Nothing is told 〔未訳〕
+- [ ] **34.2** [x] `koyomi engine stop`, wait 11 minutes, start it again → `エンジンが止まっていた` is told the same way 〔未訳〕
+- [ ] **34.3** [x] `koyomi engine stop` and start it again within a minute → Nothing is told 〔未訳〕
 - [ ] **34.4** The band an hour after the start → It is gone 〔未訳〕
 
 ## 35. 実行前の点検
@@ -1025,26 +1025,26 @@
 
 ## 95. The Web UI (`http://127.0.0.1:<port>/`; TODO 81)
 
-- [ ] **95.1** Open `http://127.0.0.1:8790/` → The サインイン form; no other request than `/`, `/theme.css`, `/app.css`, `/app.js`, `/me` (the browser's network tab) 〔未訳〕
+- [ ] **95.1** [x] Open `http://127.0.0.1:8790/` → The サインイン form; no other request than `/`, `/theme.css`, `/app.css`, `/app.js`, `/me` (the browser's network tab) 〔未訳〕
 - [ ] **95.2** [x] Sign in with a wrong token → トークンが合いません; still signed out 〔未訳〕
-- [ ] **95.3** Sign in with `S` → The header shows `sato（view）` and 稼働中; at the left ジョブネット一覧 by group, each net with the mark of its last run today; in the middle 今日 with today's date; no 今すぐ流す or 強制終了 anywhere; the token field is empty 〔未訳〕
-- [ ] **95.4** Look at 今日 with nets that start later today and runs that ended, failed and run now → As the window's 今日: a ○ 待ち row for each start still to come (予定 and 次の回), then the runs newest first (開始・終了・時間, `…` while running); rows tinted by state; a chip per state that has rows (`✕ 異常終了 1` …) 〔未訳〕
-- [ ] **95.5** Press a chip; press it again → Only that state's rows; then all again 〔未訳〕
-- [ ] **95.6** Click a run row → The pane at the right: its state, `id · date · times · time taken`, the reason, and its jobs with state, times and exit code 〔未訳〕
+- [ ] **95.3** [x] Sign in with `S` → The header shows `sato（view）` and 稼働中; at the left ジョブネット一覧 by group, each net with the mark of its last run today; in the middle 今日 with today's date; no 今すぐ流す or 強制終了 anywhere; the token field is empty 〔未訳〕
+- [ ] **95.4** [x] Look at 今日 with nets that start later today and runs that ended, failed and run now → As the window's 今日: a ○ 待ち row for each start still to come (予定 and 次の回), then the runs newest first (開始・終了・時間, `…` while running); rows tinted by state; a chip per state that has rows (`✕ 異常終了 1` …) 〔未訳〕
+- [ ] **95.5** [x] Press a chip; press it again → Only that state's rows; then all again 〔未訳〕
+- [ ] **95.6** [x] Click a run row → The pane at the right: its state, `id · date · times · time taken`, the reason, and its jobs with state, times and exit code 〔未訳〕
 - [ ] **95.7** ログ on a job of it → The log tail under the jobs, secrets as `***`; while the run goes it follows 〔未訳〕
-- [ ] **95.8** Click a 待ち row, or a net in the tree → The pane shows the net: its id, 次の回, 今日の予定 and today's runs of it (a click opens the run) 〔未訳〕
-- [ ] **95.9** Reload the page → Still signed in (the cookie); refreshes every 5 s; the picked row and the focus stay through a refresh 〔未訳〕
-- [ ] **95.10** 履歴, then pick a day → That day's runs; no 次の回 column; 今日 comes back to today's 〔未訳〕
+- [ ] **95.8** [x] Click a 待ち row, or a net in the tree → The pane shows the net: its id, 次の回, 今日の予定 and today's runs of it (a click opens the run) 〔未訳〕
+- [ ] **95.9** [x] Reload the page → Still signed in (the cookie); refreshes every 5 s; the picked row and the focus stay through a refresh 〔未訳〕
+- [ ] **95.10** [x] 履歴, then pick a day → That day's runs; no 次の回 column; 今日 comes back to today's 〔未訳〕
 - [ ] **95.11** In the window's 設定, set the theme to a dark one, then a light one, then system, reloading the page each time; then put `high_contrast = true` in common.toml and reload → The page takes the window's colours each time, also with a page-darkening add-on such as Dark Reader on; with system it follows the browser's light or dark; with high_contrast the stronger colours 〔未訳〕
 - [ ] **95.12** [x] `curl -i http://127.0.0.1:8790/theme.css` → 200 `text/css` with `:root {` and `--bg`; no token needed 〔未訳〕
 - [ ] **95.13** サインアウト, then sign in with `I` → `ito（run）`; on a picked confirmed net 今すぐ流す (greyed on 未承認 and held ones) 〔未訳〕
-- [ ] **95.14** 今すぐ流す a net, then 今すぐ流す in the question → A new running run in 今日, picked in the pane; `koyomi ops` shows `run … （HTTP: ito）` 〔未訳〕
-- [ ] **95.15** Pick a running run, 強制終了 → The question starts on やめる; with 強制終了する its jobs stop (■ 強制終了); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
+- [ ] **95.14** [x] 今すぐ流す a net, then 今すぐ流す in the question → A new running run in 今日, picked in the pane; `koyomi ops` shows `run … （HTTP: ito）` 〔未訳〕
+- [ ] **95.15** [x] Pick a running run, 強制終了 → The question starts on やめる; with 強制終了する its jobs stop (■ 強制終了); `koyomi ops` shows the kill with `（HTTP: ito）` 〔未訳〕
 - [ ] **95.16** [x] `curl -i http://127.0.0.1:8790/` → 200 with `Content-Security-Policy` (`script-src 'self'`, `style-src 'self'`, `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` 〔未訳〕
 - [ ] **95.17** [x] With a signed-in cookie, `curl -X POST --cookie "ito_session=…" -d '{"net":"<group/name>"}' http://127.0.0.1:8790/runs` (no `X-Ito-Csrf`) → Refused; nothing starts 〔未訳〕
 - [ ] **95.18** Put a job's title or log line `<img src=x onerror=alert(1)>` and view it → Shown as text; no dialog 〔未訳〕
 - [ ] **95.19** With `[http] lan = true`, open `https://<PC>:<port>/` from another PC (accept the self-signed certificate after checking its fingerprint) → The same page; the cookie is `Secure` 〔未訳〕
-- [ ] **95.20** Pause the schedule (`koyomi engine pause`); stop the engine → スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays 〔未訳〕
+- [ ] **95.20** [x] Pause the schedule (`koyomi engine pause`); stop the engine → スケジュール停止中 in the header and a band over 今日; then エンジンに繋がらない in red, the page stays 〔未訳〕
 - [ ] **95.21** With `[standby]` (or `[primary]`) on the engine; then §102's take-over and give-back → The header says which PC runs the schedules in the window's words and colours (40.5, 40.6): `待機中: … を見張っている` amber, `… から引き継いで流している（YYYY-MM-DD HH:MM から）` green, `… が待機している` grey; after a give-back the standby's chip ends `（YYYY-MM-DD HH:MM に戻した）` 〔未訳〕
 - [ ] **95.22** Make the window narrower than 900 px → The tree, 今日 and the pane stack in one column; nothing is cut off 〔未訳〕
 - [ ] **95.23** [x] As `I`, open a net and press 「ジョブネットを保留」, then 「ジョブネットを保留」 in the question; look at the tree and the pane; `koyomi run <group/name>`; `koyomi ops` → The line `<net> を保留にしました` (not `[object Object]`); the tree row has ⏸; the pane says `ジョブネットを保留中です…` and 今すぐ流す is grey, the button now reads 「ジョブネットの保留を解く」; `koyomi run` says `保留中のため流さない: <group/name>（koyomi release …）`; `koyomi ops` shows `hold … （HTTP: <user>）` 〔未訳〕
@@ -1058,7 +1058,7 @@
 - [ ] **95.31** [x] In that run, press 「保留を解く」 on b, then 「b の保留を解く」 in the question → `b の保留を解きました`; b and c run and the run ends ✔ (no new run appears); the ⏸ is gone from the net's 「ジョブ」 list; `koyomi ops` shows `release <group/name> b （HTTP: <user>）` 〔未訳〕
 - [ ] **95.32** (`held.toml` and `koyomi list` after a restart checked 2026-11-02; the window and the Web UI after it not yet) Hold b from the Web UI (95.29); in a shell `koyomi list`; open the window; `koyomi engine stop`, then `koyomi list` → `koyomi list` and the window (as 23.13) show b held; the hold is still on after the restart (`held.toml` has `[[jobs]]` with `net` and `job = "b"`); the Web UI shows b ⏸ again 〔未訳〕
 - [ ] **95.33** [x] Hold b with `koyomi hold <group/name> b`; wait for the Web UI's refresh (5 s); then release b in the Web UI; `koyomi release <group/name> b` again → The pane shows b ⏸ with 「保留を解く」 without a reload; releasing works; the second release prints `保留していない: <group/name> の b` 〔未訳〕
-- [ ] **95.34** As a `view` user (no `run` role on the net), open the net and a run → No 「保留」 / 「保留を解く」 button on the jobs, in the pane or in the run (⏸ still shows in the pane's 「ジョブ」 list, not in the run's table); with a `roles` entry giving `run` on another net only, this net has no buttons while the other has them; with the token of a `run` user the buttons are there 〔未訳〕
+- [ ] **95.34** [x] As a `view` user (no `run` role on the net), open the net and a run → No 「保留」 / 「保留を解く」 button on the jobs, in the pane or in the run (⏸ still shows in the pane's 「ジョブ」 list, not in the run's table); with a `roles` entry giving `run` on another net only, this net has no buttons while the other has them; with the token of a `run` user the buttons are there 〔未訳〕
 - [ ] **95.35** [x] Press 「保留」 on b, then 「やめる」 in the question → Nothing is held; no toast; `koyomi ops` has no new line 〔未訳〕
 - [ ] **95.36** A net with a job that calls a child jobnet (`use`), and one with a branch/part job → Only the net's own jobs are listed (not the child's inside jobs, no job id with `/`); holding the calling job holds the child as 23.14 and the child's jobs show no ⏸ of their own in the tree or the pane 〔未訳〕
 - [ ] **95.37** [x] `curl -X POST /nets/hold -d '{"net":"<group/name>","job":"b"}'` as a `view` user, and as an `edit` user whose `nets` leaves the net out; then as a `run` user for a job id that is not in the net and for a job already held → `view`/outside `nets`: 403 and nothing is held; unknown job: 422 `<net> にジョブがない: x`; already held: 422 `もう保留している…`; `release` of a job not held: 422 `保留していない…`; in the page the same text shows as a red toast (e.g. a stale page pressing 「保留」 on a job held from the shell) 〔未訳〕
@@ -1094,24 +1094,24 @@
 
 ## 97. Rerun, skip and hold from the Web UI (TODO 81)
 
-- [ ] **97.1** Pick a net, ジョブネットを保留, then ジョブネットを保留 in the question → The tree shows ⏸ and the button turns to ジョブネットの保留を解く, with the note that it does not run; its next scheduled time does not start; `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
-- [ ] **97.2** ジョブネットの保留を解く and confirm → The ⏸ mark goes; `koyomi ops` shows `release … （HTTP: ito）` 〔未訳〕
-- [ ] **97.3** Let a run fail, pick it, 再実行 ▾ → 止まったところから（済んだジョブは引き継ぐ）, confirm → A new run that starts from the failed job (passed jobs carried over), picked in the pane 〔未訳〕
-- [ ] **97.4** 再実行 ▾ → `<middle job> から再実行`, confirm → A new run that starts from that job 〔未訳〕
-- [ ] **97.5** 再実行 ▾ on a failed run → `<failed job> の次から（… はスキップ）`; again with `（… は警告終了）` → New runs that start after that job, which ends ⊘ (then △) 〔未訳〕
-- [ ] **97.6** While a run waits on a long job, スキップ on a later job that has not started, confirm → The job ends as ⊘ and the next ones go when their turn comes 〔未訳〕
-- [ ] **97.7** Any of these, then やめる (or Esc) in the question → Nothing is sent 〔未訳〕
-- [ ] **97.8** Sign in with `S` (view) → No 今すぐ流す, 保留, 再実行 ▾, スキップ, 次の回を飛ばす or 強制終了 buttons; ログ is there 〔未訳〕
+- [ ] **97.1** [x] Pick a net, ジョブネットを保留, then ジョブネットを保留 in the question → The tree shows ⏸ and the button turns to ジョブネットの保留を解く, with the note that it does not run; its next scheduled time does not start; `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
+- [ ] **97.2** [x] ジョブネットの保留を解く and confirm → The ⏸ mark goes; `koyomi ops` shows `release … （HTTP: ito）` 〔未訳〕
+- [ ] **97.3** [x] Let a run fail, pick it, 再実行 ▾ → 止まったところから（済んだジョブは引き継ぐ）, confirm → A new run that starts from the failed job (passed jobs carried over), picked in the pane 〔未訳〕
+- [ ] **97.4** [x] 再実行 ▾ → `<middle job> から再実行`, confirm → A new run that starts from that job 〔未訳〕
+- [ ] **97.5** [x] 再実行 ▾ on a failed run → `<failed job> の次から（… はスキップ）`; again with `（… は警告終了）` → New runs that start after that job, which ends ⊘ (then △) 〔未訳〕
+- [ ] **97.6** [x] While a run waits on a long job, スキップ on a later job that has not started, confirm → The job ends as ⊘ and the next ones go when their turn comes 〔未訳〕
+- [ ] **97.7** [x] Any of these, then やめる (or Esc) in the question → Nothing is sent 〔未訳〕
+- [ ] **97.8** [x] Sign in with `S` (view) → No 今すぐ流す, 保留, 再実行 ▾, スキップ, 次の回を飛ばす or 強制終了 buttons; ログ is there 〔未訳〕
 - [ ] **97.9** [x] `curl -X POST -H "Authorization: Bearer <S>" -d '{}' http://127.0.0.1:8790/runs/<id>/rerun` → 403; nothing starts 〔未訳〕
 - [ ] **97.10** [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"from":"a","next":"b"}' http://127.0.0.1:8790/runs/<id>/rerun` → 400 (`from と next はどちらか 1 つ`) 〔未訳〕
 - [ ] **97.11** [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"job":"nope"}' http://127.0.0.1:8790/runs/<id>/skip` → 422 with the engine's reason 〔未訳〕
-- [ ] **97.12** 今すぐ流す on a net with `[params]` → One question with a field per value, its default filled in; やめる sends nothing 〔未訳〕
+- [ ] **97.12** [x] 今すぐ流す on a net with `[params]` → One question with a field per value, its default filled in; やめる sends nothing 〔未訳〕
 - [ ] **97.13** [x] Change one value, keep the others, 今すぐ流す → The run gets the changed value, the others take their defaults 〔未訳〕
 - [ ] **97.14** [x] `curl -H "Authorization: Bearer <S>" http://127.0.0.1:8790/nets` → Each net has `params` with its names and defaults (`{}` when none), and `today` (the starts still to come today), `next`, `then` (the one after today's last) and `skips`; a held or unapproved net has no `today` and `next` null 〔未訳〕
 - [ ] **97.15** [x] `curl -X POST -H "Authorization: Bearer <I>" -d '{"net":"g/a"}' http://127.0.0.1:8790/nets/skip-next` (an approved net with a time later today) → 200 with `"skip": true` and the time it skips, as `koyomi skip-next g/a` says; at that time nothing starts; `koyomi ops` shows `skip-next g/a （HTTP: ito）` 〔未訳〕
 - [ ] **97.16** [x] The same with `{"net":"g/a","cancel":true}`; then once more → 200 with `"skip": false` and the time runs; the second is 422 (nothing skipped) 〔未訳〕
 - [ ] **97.17** [x] The same POST with `<S>`; `GET /nets/skip-next`; `{"net":"g/a","job":"b"}` → 403; 405; 400 〔未訳〕
-- [ ] **97.18** In the page, pick the net, 次の回を飛ばす, 飛ばす → The line names the time it skips; the pane lists it under 飛ばす回 and shows 飛ばしを戻す; 飛ばしを戻す, 戻す takes it back 〔未訳〕
+- [ ] **97.18** [x] In the page, pick the net, 次の回を飛ばす, 飛ばす → The line names the time it skips; the pane lists it under 飛ばす回 and shows 飛ばしを戻す; 飛ばしを戻す, 戻す takes it back 〔未訳〕
 
 ## 98. Definitions from the `edit` role (`GET /nets/text`, `POST /nets/propose`; TODO 83)
 
@@ -1154,13 +1154,13 @@
 
 ## 101. Run a command on another PC (`kind = "ssh"`; TODO 95)
 
-- [ ] **101.1** `koyomi sftp hostkey ssh://localhost`, then `koyomi sftp hostkey localhost` → `host_key = "SHA256:…"`, the same both times 〔未訳〕
-- [ ] **101.2** `kind = "ssh"`, `on = "ssh://<you>@localhost"`, `command = "echo こんにちは & ping -n 4 127.0.0.1 & echo done"` (`echo こんにちは; sleep 3; echo done`) with that `host_key`; run it and watch its log → The lines come as they are printed, not all at the end; こんにちは is not garbled; ✓ 〔未訳〕
-- [ ] **101.3** `command = "echo oops 1>&2 & exit 3"` (`echo oops >&2; exit 3`); then add `judge = { warn = "3" }` → ✕ with exit code 3 and `! oops` in the log; with the judge, ⚠ 警告 〔未訳〕
-- [ ] **101.4** A wrong `host_key`; then `on = "ssh://<you>@localhost:2"`; then `key` = a key the server does not take; also with `retry = { count = 1, wait = "1m" }` → ✕ each time with exit code 255, the why in Japanese as the reason (`localhost: …`) and on the log's last line after `! `; nothing asks anything; the retry tries once more 〔未訳〕
-- [ ] **101.5** `password = "secret:ssh"` instead of the key, after `koyomi secret set ssh` (a server that takes passwords) → ✓; neither the log nor the confirm box shows the password 〔未訳〕
-- [ ] **101.6** `env = { DAY = "{date}" }` and `command = "echo %DAY%"` (`echo $DAY`) → When the server's `AcceptEnv` takes `DAY`: today's date. When it does not (the default): `! localhost: env を受け付けなかった: DAY（相手の sshd_config の AcceptEnv）` and the job goes on 〔未訳〕
-- [ ] **101.7** `command = "ping -n 120 127.0.0.1"` (`sleep 120`) with `timeout = "10s"`; then without the timeout, 強制終了 it → 打ち切り, then 強制終了, each within about 10 s of the ask (an ssh job is asked first). Under `run_as`, where the ask cannot reach `koyomi ssh run` (DECISIONS.md), the command on the server may go on: look with Task Manager (`ps`) 〔未訳〕
+- [ ] **101.1** [x] `koyomi sftp hostkey ssh://localhost`, then `koyomi sftp hostkey localhost` → `host_key = "SHA256:…"`, the same both times 〔未訳〕
+- [ ] **101.2** [x] `kind = "ssh"`, `on = "ssh://<you>@localhost"`, `command = "echo こんにちは & ping -n 4 127.0.0.1 & echo done"` (`echo こんにちは; sleep 3; echo done`) with that `host_key`; run it and watch its log → The lines come as they are printed, not all at the end; こんにちは is not garbled; ✓ 〔未訳〕
+- [ ] **101.3** [x] `command = "echo oops 1>&2 & exit 3"` (`echo oops >&2; exit 3`); then add `judge = { warn = "3" }` → ✕ with exit code 3 and `! oops` in the log; with the judge, ⚠ 警告 〔未訳〕
+- [ ] **101.4** [x] A wrong `host_key`; then `on = "ssh://<you>@localhost:2"`; then `key` = a key the server does not take; also with `retry = { count = 1, wait = "1m" }` → ✕ each time with exit code 255, the why in Japanese as the reason (`localhost: …`) and on the log's last line after `! `; nothing asks anything; the retry tries once more 〔未訳〕
+- [ ] **101.5** [x] `password = "secret:ssh"` instead of the key, after `koyomi secret set ssh` (a server that takes passwords) → ✓; neither the log nor the confirm box shows the password 〔未訳〕
+- [ ] **101.6** [x] `env = { DAY = "{date}" }` and `command = "echo %DAY%"` (`echo $DAY`) → When the server's `AcceptEnv` takes `DAY`: today's date. When it does not (the default): `! localhost: env を受け付けなかった: DAY（相手の sshd_config の AcceptEnv）` and the job goes on 〔未訳〕
+- [ ] **101.7** [x] `command = "ping -n 120 127.0.0.1"` (`sleep 120`) with `timeout = "10s"`; then without the timeout, 強制終了 it → 打ち切り, then 強制終了, each within about 10 s of the ask (an ssh job is asked first). Under `run_as`, where the ask cannot reach `koyomi ssh run` (DECISIONS.md), the command on the server may go on: look with Task Manager (`ps`) 〔未訳〕
 - [ ] **101.8** Linux only: `command = "kill -9 $$"` → ✕ with exit code 255 and `localhost: 相手のコマンドがシグナル KILL で終わった` as the reason 〔未訳〕
 - [ ] **101.9** [x] `koyomi check` with `on = "db1"`, `on = "ssh://db1/tmp"`, no `command`, an 8001-character `command`, no `host_key`, `password = "plain"`, both `key` and `password`, `on` on a `copy`, `encoding` on an ssh → Each is refused with the line and why in Japanese; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
 - [ ] **101.10** The editor: drag 別の PC で動かす（SSH） from 基本 → The pane shows 動かす PC・コマンド・ホスト鍵・SSH の秘密鍵・パスワード, 結果の判定, timeout and retry; saving writes `kind = "ssh"` with `on`・`command`・`host_key` (and `key`・`password`・`judge` when set); an `on` without `ssh://` is refused 〔未訳〕
@@ -1169,20 +1169,20 @@
 
 ## 102. Hand back and take over runs (`give_back`, `[primary]`, `takeover = "rerun"`; TODO 96)
 
-- [ ] **102.1** Start B's engine, then A's; `koyomi standby` on both → A: `[primary] b が待機している。この PC で流す`; B: `待機中: a を見張っている…`. `t/clock` runs on A only 〔未訳〕
-- [ ] **102.2** `koyomi check` with `[standby]` and `[primary]` both, `give_back = "sometimes"`, a net with `takeover = "maybe"` → Each is an error (`[standby] と [primary] は一緒に書けない…` for the first) 〔未訳〕
-- [ ] **102.3** Stop B; restart A; `koyomi standby` on A at once, then after 10 s → First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then the log (not the console) gets `koyomi: b が答えないので、この PC で流す` (the toast title is `koyomi: 待機の PC`) and A runs. Start B again 〔未訳〕
-- [ ] **102.4** On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) → After about 10 s B shows a toast titled `koyomi: 待機から引き継いだ`, and its log line is `koyomi: …` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` 〔未訳〕
+- [ ] **102.1** [x] Start B's engine, then A's; `koyomi standby` on both → A: `[primary] b が待機している。この PC で流す`; B: `待機中: a を見張っている…`. `t/clock` runs on A only 〔未訳〕
+- [ ] **102.2** [x] `koyomi check` with `[standby]` and `[primary]` both, `give_back = "sometimes"`, a net with `takeover = "maybe"` → Each is an error (`[standby] と [primary] は一緒に書けない…` for the first) 〔未訳〕
+- [ ] **102.3** [x] Stop B; restart A; `koyomi standby` on A at once, then after 10 s → First `[primary] b に聞いている…スケジュールとイベントは待たせる`; then the log (not the console) gets `koyomi: b が答えないので、この PC で流す` (the toast title is `koyomi: 待機の PC`) and A runs. Start B again 〔未訳〕
+- [ ] **102.4** [x] On A `koyomi run t/r` and `koyomi run t/l`; once both are in `two` and 5 s have passed, stop A's engine process (`Stop-Process` on the pid you started) → After about 15 s B shows a toast titled `koyomi: 待機から引き継いだ`, and its log line is `koyomi: …` ending `a で動いていた 2 回: 続きから流す 1 回、引き継いでいない <id>（koyomi rerun <id> で続きから流せる）` 〔未訳〕
 - [ ] **102.5** [x] B's window: the runs of `t/r` and `t/l` → `t/r` runs `two` (`one` shows it ended ok on A, not run again); `t/l` is ↷ with `a で動いていた・引き継いでいない（<A's id> / …）`, `two` 未実行 with `a で動いていた（終わったかは分からない）` 〔未訳〕
 - [ ] **102.6** [x] On B `koyomi rerun <t/l's id>` → `t/l` runs from `two` on B 〔未訳〕
 - [ ] **102.7** [x] Start A again (same console), when no net has a time within ±30 s of the release (else 409 `時刻が近い`, see 102.10) → A says `koyomi: 待機の PC` `b が引き継いでいる。返されるまで…`; `t/clock` does not run on A; B says `koyomi: 引き取りを待っている`; after about 10 s B says `koyomi: 戻した` (`a が引き取りに来たので戻した。また見張る`) and A `b から戻った。この PC で流す` 〔未訳〕
-- [ ] **102.8** B's `standby.toml` in its state folder; `koyomi ops` on B → One line each for the takeover and the hand-back; ops has `handover-release` 〔未訳〕
-- [ ] **102.9** Repeat 102.4 and 102.7 with `koyomi run t/l` started on B just before A comes back → The run on B goes on to the end after the hand-back; A runs the schedules 〔未訳〕
+- [ ] **102.8** [x] B's `standby.toml` in its state folder; `koyomi ops` on B → One line each for the takeover and the hand-back; ops has `handover-release` 〔未訳〕
+- [ ] **102.9** [x] Repeat 102.4 and 102.7 with `koyomi run t/l` started on B just before A comes back → The run on B goes on to the end after the hand-back; A runs the schedules 〔未訳〕
 - [ ] **102.10** [x] Make `t/clock`'s next time 20 s after you start A again in 102.7 → B answers 409; A's `koyomi standby` shows `[primary] b: 時刻が近い（t/clock HH:MM:SS）。少しあとで`; it is handed back on a later ask, and `t/clock` runs once (on one of them) 〔未訳〕
 - [ ] **102.11** [x] `give_back = "manual"` on B (restart B); repeat 102.4, then start A → A waits; B's `koyomi standby` says `…戻すのは koyomi standby giveback`; `koyomi standby giveback` on B says `a が引き取りを待っているので、次に聞いてきたら戻す`, and within 5 s A runs. `koyomi ops` on B has `giveback` 〔未訳〕
 - [ ] **102.12** [x] Take `[primary]` out of A; with `give_back = "auto"` repeat 102.4, then start A → A runs at once; B says `koyomi: 両方で流している` (`…a が 2 回続けて答えたらこちらは止める`) and after about 10 s `koyomi: 戻した` 〔未訳〕
 - [ ] **102.13** [x] Put `[primary]` back; on B give `a` `nets = ["t/*"]`; repeat 102.4, then start A → A stays waiting; its cautions show `[primary] b: 引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）`. Take `nets` out: A takes them back 〔未訳〕
-- [ ] **102.14** Clean up → Stop both engines (only the two started here), `koyomi secret delete t96-a` and `t96-b`, remove `%TEMP%\koyomi-t96` 〔未訳〕
+- [ ] **102.14** [x] Clean up → Stop both engines (only the two started here), `koyomi secret delete t96-a` and `t96-b`, remove `%TEMP%\koyomi-t96` 〔未訳〕
 
 ## 103. A click on a notification opens its run (TODO 99)
 
@@ -1213,7 +1213,7 @@
 - [ ] **105.6** [x] `GET "/nets/text?net=経理/a"` with `S` → 403 `sato は run のロール。これには edit が要る` (the strongest of `S`'s roles is still not edit) 〔未訳〕
 - [ ] **105.7** [x] `POST /runs` `{"net":"人事/b"}` with `I`; then `{"net":"経理/a"}` → 403 `人事/b では view のロール…`; then 202 〔未訳〕
 - [ ] **105.8** On the standby of §99, `POST /standby/release` with `S`; then with `I` → 403 `ネットごとでないものは view のロール。これには run が要る`; then 200 〔未訳〕
-- [ ] **105.9** Open the Web UI and sign in with `S` → Next to the name, `sato（view、経理/* は run）`. `経理/a` and its run have 今すぐ流す, 保留, 強制終了 / 流し直す and スキップ; `人事/b` and its run have none of them 〔未訳〕
+- [ ] **105.9** [x] Open the Web UI and sign in with `S` → Next to the name, `sato（view、経理/* は run）`. `経理/a` and its run have 今すぐ流す, 保留, 強制終了 / 流し直す and スキップ; `人事/b` and its run have none of them 〔未訳〕
 - [ ] **105.10** [x] `koyomi check` with `roles = {}`, `roles = { "経理" = "run" }` and `roles = { "経理/*" = "admin" }` → Each refused: `[[http.user]] sato の roles を空にしない…`, `… roles のキーは <グループ>/<名前> で書く…`, `… roles の 経理/* の role は view・run・edit のどれか…` 〔未訳〕
 - [ ] **105.11** This PC's window and `koyomi run 人事/b` → Both work as before 〔未訳〕
 
@@ -1273,13 +1273,13 @@
 
 ## 110. Send a mail with files (`kind = "mail"`; TODO 107)
 
-- [ ] **110.1** A net with a job `kind = "mail"`, `to = ["<you>"]`, `subject = "売上の集計 {date}"`, `body = "添付のとおり。\n{date} の分です。"`, `files = ['D:\out\*.csv']`; approve and run it, then open the mail → ✓; the job's log has `attached: D:\out\a.csv (… bytes)`, the same for b.csv, and `mailed: <you> (… bytes, through smtp.gmail.com)`; the mail's subject and body have today's date, the Japanese is not garbled, and a.csv and b.csv are attached with their names; nothing in the log shows the password 〔未訳〕
-- [ ] **110.2** Add `cc = ["名前 <another address>"]` and a second `[[notify.mails]]` with `name = "ops"`; `via = "ops"` → Both get it; the log's `through` is ops's host 〔未訳〕
-- [ ] **110.3** `files = ['D:\out\none.csv']`; then `files = ['D:\out\big\*']` → ✕ with exit code 255 and the reason `添付するファイルがない: D:\out\none.csv`, then `添付するファイルが大きすぎる（合わせて … MB。18 MB まで）`; no mail arrives 〔未訳〕
-- [ ] **110.4** `via = "経理"` (no such place); then remove every `[[notify.mails]]`; then put the place back and `koyomi secret delete <its password's secret name>` (e.g. `gmail` for `password = "secret:gmail"`) → ✕ 255 each time: `[[notify.mails]] に name = "経理" がない（あるのは ops）`, `koyomi.toml に [[notify.mails]] がない（…）`, `…パスワードを資格情報ストアから読めない（secret:gmail。…）`; `koyomi check <the net's file>` warns `注意: <job>: …` for the first two before it runs 〔未訳〕
-- [ ] **110.5** A wrong app password → ✕ 255, the reason `smtp.gmail.com: 送れなかった: …` in Japanese, no password in it 〔未訳〕
+- [ ] **110.1** [x] A net with a job `kind = "mail"`, `to = ["<you>"]`, `subject = "売上の集計 {date}"`, `body = "添付のとおり。\n{date} の分です。"`, `files = ['D:\out\*.csv']`; approve and run it, then open the mail → ✓; the job's log has `attached: D:\out\a.csv (… bytes)`, the same for b.csv, and `mailed: <you> (… bytes, through smtp.gmail.com)`; the mail's subject and body have today's date, the Japanese is not garbled, and a.csv and b.csv are attached with their names; nothing in the log shows the password 〔未訳〕
+- [ ] **110.2** [x] Add `cc = ["名前 <another address>"]` and a second `[[notify.mails]]` with `name = "ops"`; `via = "ops"` → Both get it; the log's `through` is ops's host 〔未訳〕
+- [ ] **110.3** [x] `files = ['D:\out\none.csv']`; then `files = ['D:\out\big\*']` → ✕ with exit code 255 and the reason `添付するファイルがない: D:\out\none.csv`, then `添付するファイルが大きすぎる（合わせて … MB。18 MB まで）`; no mail arrives 〔未訳〕
+- [ ] **110.4** [x] `via = "経理"` (no such place); then remove every `[[notify.mails]]`; then put the place back and `koyomi secret delete <its password's secret name>` (e.g. `gmail` for `password = "secret:gmail"`) → ✕ 255 each time: `[[notify.mails]] に name = "経理" がない（あるのは ops）`, `koyomi.toml に [[notify.mails]] がない（…）`, `…パスワードを資格情報ストアから読めない（secret:gmail。…）`; `koyomi check <the net's file>` warns `注意: <job>: …` for the first two before it runs 〔未訳〕
+- [ ] **110.5** [x] A wrong app password → ✕ 255, the reason `smtp.gmail.com: 送れなかった: …` in Japanese, no password in it 〔未訳〕
 - [ ] **110.6** [x] `koyomi check` with, one at a time: no `to`; `to = ["ops"]`; `to = ["a@x, b@x"]`; `subject = ""`; no `subject`; `files = [""]`; 21 files; `cc` on a `kind = "http"`; `run_as` on the mail; `method` on the mail → Each is refused with its line and why in Japanese (`to が空…` or `…to が要る`, `…アドレスとして読めない…（1 つに 1 人）`, `subject が空…`, `files に空のものがある`, `files は 20 個まで`, `cc は kind = "mail" にだけ書く`, `run_as は kind = …（"mail" のほか）にだけ書く`, `method は kind = "http" にだけ書く`) 〔未訳〕
-- [ ] **110.7** `subject = "secret:gmail"`; `body = "secret:gmail"` → The mail's subject and body are the words `secret:gmail`, not the password 〔未訳〕
+- [ ] **110.7** [x] `subject = "secret:gmail"`; `body = "secret:gmail"` → The mail's subject and body are the words `secret:gmail`, not the password 〔未訳〕
 - [ ] **110.8** The editor: drag メールを送る from 知らせる・呼ぶ → It shows the mail mark; the pane has 送り先 (required), CC, 件名 (required), 本文, 添付するファイル, 送るのに使う設定, timeout and retry, and no 別のアカウントで動かす and no 結果の判定; an address that is not one is marked red; two addresses on two lines and an empty line between save as `to = ["…", "…"]` 〔未訳〕
 - [ ] **110.9** Approve a net with a mail → The confirm box shows 送り先, CC, 件名, 本文 (lines joined with ⏎), each 添付, and 送るのに使う設定 (`最初の [[notify.mails]]` without `via`), instead of a script 〔未訳〕
 - [ ] **110.10** [x] `koyomi mail`; `koyomi mail run` in a console → `koyomi: mail takes run (what a mail job does)` and exit 2; then exit 255 with `KOYOMI_MAIL_TO がない（…）` 〔未訳〕
@@ -1296,13 +1296,13 @@
 
 ## 112. Run on a group of PCs (`on = "group:…"`; TODO 109)
 
-- [ ] **112.1** `koyomi check <the net's file>`; run the net → 問題なし. The log of `fan`: `組 web の 2 台で動かす（同時に 1 台まで。ジョブはいちばん悪い PC に合わせて終わる）`, `[pc1] <pc1's name>`, `[pc1] 終了コード 0`, then the same for pc2, about 10 s in all; ✓ 〔未訳〕
-- [ ] **112.2** Add `max = 2`; run → Both start together (about 5 s in all), each line marked `[pc1]` or `[pc2]`; ✓ 〔未訳〕
-- [ ] **112.3** `command = "test $(hostname) = <pc1's name>"`; run; then add `pass = "any"` and run → The first ends ✗ with code 1 (pc2's); the second ✓ with 0 (pc1's) 〔未訳〕
-- [ ] **112.4** Add a PC that does not answer to the group (`"ssh://ops@10.255.255.1"`) with `pass = "all"`; run; then with `pass = "any"` → ✗ with `3 台のうち 1 台が終了コードなしで終わった: 10.255.255.1: …`; with `any`, ✓, and `! [10.255.255.1] …` in the log 〔未訳〕
-- [ ] **112.5** `max = 1`, `command = "sleep 60"`; run and stop it while pc1 runs → pc1's command is asked to stop (TERM); `! [pc2] 止めたので始めなかった` and `! [10.255.255.1] 止めたので始めなかった`; the job ends stopped 〔未訳〕
-- [ ] **112.6** Take `host_key` off the job; `koyomi check`; run → `注意: fan: 組 web の ssh://ops@pc1, ssh://ops@10.255.255.1 に host_key がなく、ジョブにもない（流すと止まる）`; in the run, `! [pc1] host_key がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く…）` and pc2 still runs 〔未訳〕
-- [ ] **112.7** `on = "group:db"`; `koyomi check`; run. Then a `kind = "winrm"` job with `on = "group:web"` → `注意: fan: 組 db が koyomi.toml の [groups] にない（流すと止まる）` and the run stops with it; the winrm one with `組 web の PC は ssh:// で書いてある（kind = "winrm" の on には winrm:// の PC の組を書く）` 〔未訳〕
+- [ ] **112.1** [x] `koyomi check <the net's file>`; run the net → 問題なし. The log of `fan`: `組 web の 2 台で動かす（同時に 1 台まで。ジョブはいちばん悪い PC に合わせて終わる）`, `[pc1] <pc1's name>`, `[pc1] 終了コード 0`, then the same for pc2, about 10 s in all; ✓ 〔未訳〕
+- [ ] **112.2** [x] Add `max = 2`; run → Both start together (about 5 s in all), each line marked `[pc1]` or `[pc2]`; ✓ 〔未訳〕
+- [ ] **112.3** [x] `command = "test $(hostname) = <pc1's name>"`; run; then add `pass = "any"` and run → The first ends ✗ with code 1 (pc2's); the second ✓ with 0 (pc1's) 〔未訳〕
+- [ ] **112.4** [x] Add a PC that does not answer to the group (`"ssh://ops@10.255.255.1"`) with `pass = "all"`; run; then with `pass = "any"` → ✗ with `3 台のうち 1 台が終了コードなしで終わった: 10.255.255.1: …`; with `any`, ✓, and `! [10.255.255.1] …` in the log 〔未訳〕
+- [ ] **112.5** [x] `max = 1`, `command = "sleep 60"`; run and stop it while pc1 runs → pc1's command is asked to stop (TERM); `! [pc2] 止めたので始めなかった` and `! [10.255.255.1] 止めたので始めなかった`; the job ends stopped 〔未訳〕
+- [ ] **112.6** [x] Take `host_key` off the job; `koyomi check`; run → `注意: fan: 組 web の ssh://ops@pc1, ssh://ops@10.255.255.1 に host_key がなく、ジョブにもない（流すと止まる）`; in the run, `! [pc1] host_key がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く…）` and pc2 still runs 〔未訳〕
+- [ ] **112.7** [x] `on = "group:db"`; `koyomi check`; run. Then a `kind = "winrm"` job with `on = "group:web"` → `注意: fan: 組 db が koyomi.toml の [groups] にない（流すと止まる）` and the run stops with it; the winrm one with `組 web の PC は ssh:// で書いてある（kind = "winrm" の on には winrm:// の PC の組を書く）` 〔未訳〕
 - [ ] **112.8** [x] `koyomi check koyomi.toml` with, one at a time, in `[groups]`: `web = 'ssh://h'`; `web = ['ssh://h', 'winrm://u@h2']`; `"web-1" = ['ssh://h']`; `web = ['ssh://h', 'SSH://h']` → Each is refused in Japanese: `[groups] の web は PC の配列で書く…`, `…ssh:// と winrm:// が混ざっている…`, `[groups] の名前に使えない: web-1…`, `…同じ PC が 2 つある: SSH://h` 〔未訳〕
 - [ ] **112.9** In the editor, the `fan` job: set 動かす PC to `ssh://ops@pc1`, then back to `group:web` → On one PC the host key is required and there is no max; on the group the host key is optional, and `max（組の PC をいくつ同時に動かすか…）` and 正常とするのは (全部の PC が正常 / どれか 1 台が正常) show, with the note on `[groups]` under them 〔未訳〕
 - [ ] **112.10** In the editor, max `65`, then save; then max `2` and どれか 1 台が正常, and save → `65` is red and saving says `max は 1 から 64 までの数で書く: "65"`; the second saves `max = 2` and `pass = "any"` 〔未訳〕
@@ -1340,10 +1340,10 @@
 - [ ] **114.8** Make a net 経理/新規 on this PC only; send it to 本番 → The box says 向こうの今 なし（新しく置く） and the whole file as added; once sent, B has 経理/新規 unconfirmed 〔未訳〕
 - [ ] **114.9** Open the box for 経理/締め; before pressing 送る, change the net on B in B's editor and save; then press 送る → `送れなかった: 本番: 読んだあとで向こうの 経理/締め が変わった（読み直してから送る）`; B's file keeps B's change 〔未訳〕
 - [ ] **114.10** Break the net on this PC (`format = [`) → 別の PC に送る ▾ is greyed; its tip says 定義の誤りを直してから送ります 〔未訳〕
-- [ ] **114.11** Keep `R`'s token (role `run`) as the secret; send → No box: `本番: 403 R は run のロール。これには edit が要る`; nothing is sent 〔未訳〕
+- [ ] **114.11** [x] Keep `R`'s token (role `run`) as the secret; send → No box: `本番: 403 R は run のロール。これには edit が要る`; nothing is sent 〔未訳〕
 - [ ] **114.12** Stop B's engine (or point `url` at a PC that is off); send → 本番 から … を読んでいます… then the reason it could not connect, in one line; no box. While it reads, やめる stops waiting 〔未訳〕
-- [ ] **114.13** `koyomi remote send 本番 経理/締め` with a change, answer `n`; again with `y` → The change (`- 向こうの今 / + この PC`) is shown, then `経理/締め: 送らなかった` (exit 1); with `y`, `本番 に送った: 経理/締め（向こうでは未確認。本番 の窓で確認するまで流れない）` 〔未訳〕
-- [ ] **114.14** `koyomi remote send 本番 経理/締め` with no change; `koyomi remote send 本番 経理/新規2` for a net B lacks; `koyomi remote send nope 経理/締め` → `本番 の 経理/締め はこの PC と同じ中身（送らなかった）`; `本番 には 経理/新規2 がない。新しく置く:` and the whole file; `nope: [[remote]] にない（あるのは 本番）` 〔未訳〕
+- [ ] **114.13** [x] `koyomi remote send 本番 経理/締め` with a change, answer `n`; again with `y` → The change (`- 向こうの今 / + この PC`) is shown, then `経理/締め: 送らなかった` (exit 1); with `y`, `本番 に送った: 経理/締め（向こうでは未確認。本番 の窓で確認するまで流れない）` 〔未訳〕
+- [ ] **114.14** [x] `koyomi remote send 本番 経理/締め` with no change; `koyomi remote send 本番 経理/新規2` for a net B lacks; `koyomi remote send nope 経理/締め` → `本番 の 経理/締め はこの PC と同じ中身（送らなかった）`; `本番 には 経理/新規2 がない。新しく置く:` and the whole file; `nope: [[remote]] にない（あるのは 本番）` 〔未訳〕
 
 ## 115. Start when the PC is left alone (`[[when]] idle`; TODO 112)
 
@@ -1356,8 +1356,8 @@
 - [ ] **115.7** Run the engine as the service (§89) with the same net → The window's 注意 says `保守/空き: PC が空いたかが分からない（サービスのエンジン・画面の無い PC では見えない）ので、idle の [[when]] では流れない`; nothing starts however long the PC is left alone. Back to `koyomi engine start`: the warning goes 〔未訳〕
 - [ ] **115.8** [x] `koyomi check` with `idle = "30s"`, with `idle = "10"`, with `idle = "10m"` and `on_closed = "next"` → `idle は 1m 以上（それより短いと、手を止めるたびに流れる）`; the `30m・1h30m・90s のように書く` error; `idle では on_closed は "skip" か "run"` 〔未訳〕
 - [ ] **115.9** The editor: add a `[[when]]` of PC が空いたら → One field 使われない時間（例: 10m） with `10m`; except / start / end / on_closed are not shown; saving writes `idle = "10m"`; `30s` is refused with the same words as 115.8 〔未訳〕
-- [ ] **115.10** `koyomi next 保守/空き`; approve it after a change → The row `PC が 1m 使われなかったとき` comes first, with no time; the confirm box shows the same 〔未訳〕
-- [ ] **115.11** `schtasks /create /tn "\koyomi-test\空き" /tr "cmd.exe /c echo hi" /sc onidle /i 15 /f`, `schtasks /query /xml /tn "\koyomi-test\空き" > i.xml`, `koyomi import i.xml --dry-run` → The plan has `idle = "15m"` and the note `アイドル時のトリガーは idle = "15m"（PC がその間使われなかったとき）にした`; then `schtasks /delete /tn "\koyomi-test\空き" /f` 〔未訳〕
+- [ ] **115.10** [x] `koyomi next 保守/空き`; approve it after a change → The row `PC が 1m 使われなかったとき` comes first, with no time; the confirm box shows the same 〔未訳〕
+- [ ] **115.11** [x] `schtasks /create /tn "\koyomi-test\空き" /tr "cmd.exe /c echo hi" /sc onidle /i 15 /f`, `schtasks /query /xml /tn "\koyomi-test\空き" > i.xml`, `koyomi import i.xml --dry-run` → The plan has `idle = "15m"` and the note `アイドル時のトリガーは idle = "15m"（PC がその間使われなかったとき）にした`; then `schtasks /delete /tn "\koyomi-test\空き" /f` 〔未訳〕
 - [ ] **115.12** `koyomi history --csv runs.csv` after 115.1 → The run's きっかけ is `PC が空いた` 〔未訳〕
 
 ## 116. Run SQL (`kind = "sql"`; TODO 113)
