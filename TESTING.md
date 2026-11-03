@@ -75,9 +75,9 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 8.9 | Watch a run with one job running, one failed, and one not reached, flowing sideways and downwards | The running job's lines carry pulses moving left to right (top to bottom), and its circle sends out a fading ring; lines a result came through are thick in that result's soft colour, curving between rows; lines not reached yet are dotted; finished and running circles are filled with their symbol inside; under each name is `9:00–9:04` (`9:00–` while it runs, ` exit 3` after a bad end, in red) |
 | 8.7 | [x] `koyomi run 経理/月次締め --wait` | The run id is printed, then its line and one line per job (symbol, word, name, times, duration); exit 0 only when every job ended ok |
 | 8.8 | [x] `koyomi run` the same net while it runs | `動いている間はもう一度は流せない` and exit 1 |
-| 8.9 | `koyomi run` on an unconfirmed net | `未確認のため流さない` with `koyomi approve …` and exit 1 |
+| 8.9 | [x] `koyomi run` on an unconfirmed net | `未確認のため流さない` with `koyomi approve …` and exit 1 |
 | 8.10 | [x] `koyomi status`, `koyomi status --today`, `koyomi log <run> <job>`, `koyomi kill <run>` | status lists the runs still going (`--today` every run of today); log prints the tail; kill ends the run |
-| 8.11 | Stop the engine (`koyomi engine stop`) while a run is going, start it again | The run is `✕ 異常終了` and its running job `強制終了` |
+| 8.11 | [x] Stop the engine (`koyomi engine stop`) while a run is going, start it again | The run is `✕ 異常終了` and its running job `強制終了` |
 | 8.12 | [x] Set `concurrency = 1` in `koyomi.toml` and run a net with two jobs that have no `after` | The second job is `○ 待ち` until the first ends |
 | 8.13 | [x] A job that prints more than `log_max_mb` | Its log ends with `（ログが 10 MB を超えたので、この先は書かない）` and the job still ends with its own exit code |
 
@@ -137,7 +137,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 12.4 | [x] Approve a daily net, then add `except = ["<a day within the week>"]` | `7 日で 7 回 → 6 回（-1）` and one `- ` row for that day |
 | 12.5 | [x] A net with `calendar = "jp"` on weekdays, approved; change it to a calendar file with no holidays (`holidays = "none"`) across a holiday | The holiday's time appears as a `+ ` row |
 | 12.6 | [x] A new net with no `[[when]]`; open the box | No week lines at all; after approving, remove a `[[when]]` from a net that had one | `7 日で N 回 → 0 回（-N）` with the `- ` rows |
-| 12.7 | Open the box, wait, open it again a minute later | The counts are from the moment the box opens: a time that passed meanwhile is gone from the list |
+| 12.7 | [x] Open the box, wait, open it again a minute later | The counts are from the moment the box opens: a time that passed meanwhile is gone from the list |
 
 ## 13. `--keys`
 
@@ -249,7 +249,7 @@ A test takes a row off the list by naming its number in a doc comment on the `#[
 | 19.1 | [x] Write a job with `retry = { count = 2, wait = "5s" }` and run `koyomi check`, then `koyomi approve` | check says OK; the approve text shows `やり直し: 2 回まで、5s おいて` under the job |
 | 19.2 | [x] Make that job `cmd.exe /c exit 3` and run it | The log shows `! やり直し (1/2): 5s 待つ`, then `! やり直し (2/2): 5s 待つ`; the job turns 異常 after about 10 s with the reason `終了コード 3、やり直し 2 回`; the run screen and the history show the same reason |
 | 19.3 | [x] Make the job fail once and succeed the second time (a flag file) | The run ends 正常; the job's reason is `やり直し 1 回`; the log has `(1/2)` and no `(2/2)` |
-| 19.4 | Give the job `timeout = "2s"` and a command that sleeps 10 s | 打ち切り after 2 s, no やり直し line: a timeout is not run again; the same for `koyomi kill` during the job (強制終了) |
+| 19.4 | [x] Give the job `timeout = "2s"` and a command that sleeps 10 s | 打ち切り after 2 s, no やり直し line: a timeout is not run again; the same for `koyomi kill` during the job (強制終了) |
 | 19.5 | [x] With `wait = "60s"`, run `koyomi kill` while the log says やり直し | The job ends 強制終了 at once (not after the wait); the log ends with `! 強制終了` |
 | 19.6 | [x] Write `retry = 2`, `retry = { count = 0, wait = "5m" }`, `retry = { count = 2 }` or `retry = { count = 2, wait = 300 }` | `koyomi check` refuses each with the line number and what to write (the shape, 1 to 100, wait missing, a string like "5m") |
 
@@ -351,14 +351,14 @@ Set `KOYOMI_DATE` where a step needs a day that is not today. `app_dir("koyomi")
 |---|---|---|
 | 25.1 | A net: `a` (fails, exit 3), `b` with `after = [{ job = "a", on = "error" }]`, `c` with `after = ["a"]`; run it | `b` runs, `c` ends `· 未実行`（`c  先行の a が異常終了`）; the run is ✕ 異常（`a` failed）even though the error line led on; the thick line a→c stays in the border colour, the thin line a→b takes `a`'s colour |
 | 25.2 | [x] `d` with `after = [{ job = "a", on = "any" }]` after a failing and after a passing `a` | `d` runs both times; `koyomi show` of the net lists `線: a (any)` under `d` |
-| 25.3 | `a` ends by `timeout = "1s"`, then by `koyomi kill`; `b` has `on = "error"`, `c` has `on = "ok"` | Both times `b` runs and `c` is 未実行 (`先行の a が異常終了`): 打ち切り and 強制終了 count as abnormal on a line |
+| 25.3 | [x] `a` ends by `timeout = "1s"`, then by `koyomi kill`; `b` has `on = "error"`, `c` has `on = "ok"` | Both times `b` runs and `c` is 未実行 (`先行の a が異常終了`): 打ち切り and 強制終了 count as abnormal on a line |
 | 25.4 | [x] `p` with `kind = "branch"`, `after = [{ job = "a", on = "any" }]` (a plain `after = ["a"]` follows only a 0 from `a`); `x` with `after = [{ job = "p", code = "0" }]`, `y` with `code = "1..3"`, `z` with `code = "else"`; `a` exits 0, 2, 9 in turn | Exactly one of x / y / z runs each time (0 → x, 2 → y, 9 → z); the others are 未実行 (`p の線の条件に合わなかった`); `p` reads `【分岐】p` and ends ○ with `a` 's code as its reason |
 | 25.5 | [x] `j` with `kind = "join"`, `wait = "all"`, `after = ["a", "b"]` (a 1 s, b 5 s), `c` after `j`; then `wait = "any"` | `all`: `c` starts after `b` ends; `any`: `c` starts right after `a`, `b` keeps running and the run ends when `b` does |
 | 25.6 | [x] `k` (a plain job) with `after = ["a", "b"]` | `k` waits for both, like `wait = "all"`: a job with 2 or more lines waits for all of them |
 | 25.7 | [x] `t` with `kind = "time"`, `at` 2 minutes ahead, `after = ["a"]`, `c` after `t`; then `at = "00:00"` | `t` reads 実行中 `【時刻待ち】t` with the reason `HH:MM を待っています` and a dashed line; at the time it ends ✓ 正常終了 `HH:MM になった` and `c` runs; `00:00`: it ends at once (✓ 正常終了) with `00:00 を過ぎていた` |
 | 25.8 | [x] `t` with `days = 1`, `at = "00:00"`; `koyomi kill <run> t` | The reason reads `YYYY-MM-DD 00:00 を待っています` (tomorrow); kill ends it ✕ 強制終了, the run ends ✕ 異常, `c` is 実行なし |
 | 25.9 | [x] `f` with `kind = "file"`, `file = 'C:\in\*.csv'`, `settle = "3s"`, `timeout = "10m"`, `c` after `f` running `cmd /c echo %KOYOMI_FILE%`; drop `note.txt`, then `Sales.csv` and keep writing it for 5 s | `f` waits (`C:\in\*.csv を待っています`), `note.txt` changes nothing; `Sales.csv` ends `f` 3 s after it stops changing: ○ `C:\in\Sales.csv が来た`; `c`'s log shows `C:\in\Sales.csv`; without `settle` it ends as soon as the file is there |
-| 25.10 | `f` with `timeout = "5s"` and no file | `f` ends ✕ 打ち切り（`打ち切り（5s を超えた）`）after 5 s, the run ends ✕ 異常 |
+| 25.10 | [x] `f` with `timeout = "5s"` and no file | `f` ends ✕ 打ち切り（`打ち切り（5s を超えた）`）after 5 s, the run ends ✕ 異常 |
 | 25.11 | `n` with `kind = "notify"`, `after = [{ job = "a", on = "error" }]`, and `to = "x"` on it; then without `to`; `a` fails | `koyomi check`: `to は通知の場所の名前の配列で書く（例: to = ["経理"]）`; without it the notification arrives as `✕ 異常  <title>: n` with the line of `a` and the run's id and day; `n` ends ○ `通知した` at once; the run is ✕ 異常 (`a` failed) |
 | 25.12 | [x] `n` after a passing `a` | The notification is a `done` one (title `✓ 正常終了  <title>: n`, state `done`) with the run's line |
 | 25.13 | [x] `jobnets/共通/バックアップ.toml` (confirmed, jobs `x`, `y`); a net with `c` `kind = "jobnet"`, `use = "共通/バックアップ"`, `after = ["a"]`, `b` after `c`; run it | The run lists `a`, `c/x`, `c/y`, `【子ジョブネット】c`, `b` in that order; `c/x` and `c/y` run after `a`, `b` after them; `c` ends with the child's result; the child's own `[[when]]` is not used |
@@ -426,7 +426,7 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.9 | [x] `koyomi approve g/a --toml` on an unconfirmed net | The preview and `確かめたなら y を入力` are still said as text (a person answers); after `y`, `ok = true` + `lines` |
 | 28.10 | [x] `koyomi list --help`, `koyomi history -h`, `koyomi --toml list --help`, `koyomi pause --help` | Only that command's lines of the usage under `usage:`, then `every command takes --help …` (exit 0); `pause --help` prints the `pause \| resume` line |
 | 28.11 | [x] `koyomi list --group 経理`; `koyomi list --group nothing`; `koyomi list --toml --group 経理` | Only that group's nets in the tree (the warnings and notes still above); `koyomi: グループがない: nothing` (exit 1); the snapshot with only those defs |
-| 28.12 | `koyomi show g/a` (confirmed, unconfirmed, held, and ✗ 誤り) | The file and its standing (`⏸ ジョブネットを保留` when held, `未確認`, `定義の誤り` with the problem line under it), then what `approve` shows (the jobs, the times, the next week) without the question or the diff; a ✗ net prints its problems and nothing under them; exit 0 |
+| 28.12 | [x] `koyomi show g/a` (confirmed, unconfirmed, held, and ✗ 誤り) | The file and its standing (`⏸ ジョブネットを保留` when held, `未確認`, `定義の誤り` with the problem line under it), then what `approve` shows (the jobs, the times, the next week) without the question or the diff; a ✗ net prints its problems and nothing under them; exit 0 |
 | 28.13 | The window: click the 履歴 tab | The right side shows 履歴: 開始日 (7 days ago), 終了日 (today), ジョブネット = すべて, 状態 = すべて, 検索; the rows of those days newest first (columns 状態 / ジョブネット / 日付 / 開始 / 終了; the duration is cut off at the default window width; coloured by state), the quick ranges 今日 / 過去7日 / 過去30日, 成績 and CSV 出力; the count above; the tree's and 今日's picks are off |
 | 28.14 | [x] Change 開始日 to a date and press 検索; type `2026/10/1` and press 検索 | The rows of the new days; `日付は YYYY-MM-DD で書く` in red and the rows stay |
 | 28.15 | Pick a net in ジョブネット, then a state in 状態 | The rows narrow at once (no 検索 needed); the count follows; `該当する実行はありません` when nothing matches |
@@ -550,7 +550,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 |---|---|---|
 | 35.1 | [x] A job `run = ["C:/nope/x.exe"]`; `koyomi check` the file | `<job> の実行ファイルが見つからない: …` and exit code 1 |
 | 35.2 | [x] A job with `dir = "C:/nope"` | `作業フォルダーがない` |
-| 35.3 | A `kind = "file"` part watching `C:/nope/*.csv` | `見張るフォルダーがない: C:\nope`（Windows ではパスを `\` 区切りで表示する） |
+| 35.3 | [x] A `kind = "file"` part watching `C:/nope/*.csv` | `見張るフォルダーがない: C:\nope`（Windows ではパスを `\` 区切りで表示する） |
 | 35.4 | [x] `run = ["cmd.exe", ...]` with `dir = "C:/work/{month}"` | No complaint about the dir (it has no name until the day) |
 | 35.5 | A net whose calendar uses the holiday table, within 60 days of its end | A line about the table; exit code stays 0 |
 
@@ -585,7 +585,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 39.1 | [x] Net B: `[[when]] every="day" at=["HH:MM"] wait_for="g/A"`; A runs daily and is still running at HH:MM | B does not start at HH:MM; it starts right after A ends, with the same business day |
-| 39.2 | Add `wait_until` a few minutes after HH:MM; keep A running past it | B is recorded as 異常 with the reason (wait_until), and a notification comes |
+| 39.2 | [x] Add `wait_until` a few minutes after HH:MM; keep A running past it | B is recorded as 異常 with the reason (wait_until), and a notification comes |
 | 39.3 | [x] A is not scheduled that day (e.g. `days` excludes today) | B starts at HH:MM without waiting |
 | 39.4 | In the editor open B's `[[when]]` | Fields 先行の終わりを待つ / 待つのは何時まで show and save to the file |
 
@@ -758,7 +758,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 57.1 | [x] `koyomi plan` with the engine running | Each day of this month with the times approved nets start; days with none show `-` |
-| 57.2 | `koyomi plan 2026-02 --pdf out.pdf`, open the PDF | A4 pages titled with the month, text selectable, page numbers at the foot |
+| 57.2 | [x] `koyomi plan 2026-02 --pdf out.pdf`, open the PDF | A4 pages titled with the month, text selectable, page numbers at the foot |
 | 57.3 | `koyomi plan --print` | The PDF path is printed, and the PDF goes to the printer (or opens in the viewer when it has no print verb) |
 | 57.4 | [x] A net on a calendar that closes a day | That day shows no start for the net |
 
@@ -848,9 +848,9 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 65.1 | [x] A job `run = ["cmd.exe", "/c", "(for /l %i in (1,1,15) do @echo line %i) & exit /b 3"]`; `koyomi run <net> --wait` | The system's notification has a last line `<job>: line 15` under the job's line |
-| 65.2 | With a webhook on for `failed` (e.g. ntfy), the same run | The message ends with `<job> のログの末尾` and `line 6` … `line 15` |
+| 65.2 | [x] With a webhook on for `failed` (e.g. ntfy), the same run | The message ends with `<job> のログの末尾` and `line 6` … `line 15` |
 | 65.3 | A job with `env = { PW = "secret:db" }` that echoes `%PW%` and exits 1 | Both the notification and the webhook show `***`, not the secret |
-| 65.4 | A run that ends 正常, or a job that fails before writing anything | The notice is as before, with no log lines |
+| 65.4 | [x] A run that ends 正常, or a job that fails before writing anything | The notice is as before, with no log lines |
 
 ## 66. タスク スケジューラの XML の取り込み
 
@@ -875,8 +875,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 67.4 | [x] A net that ended 正常 at least 3 times taking about 1 minute; make its job take 3 minutes and run it | After 2 minutes (the usual time ×2, at least the usual time + 1 minute), one notification `<name>: いつもは 1分、もう 2分 動いている`, and the mark `⏰いつもより長い` |
 | 67.5 | [x] The same net with `late_slow = false` | No notification for taking long |
 | 67.5b | [x] `concurrency = 1`; three nets with `priority = 1`, `3` and `5` (a 1-minute job each) started by hand in that order while a fourth runs | When the fourth ends, the `priority = 5` net starts, then 3, then 1; waiting jobs say `同時に動かす数（1）の空きを待っています`. Approving a net with `priority = 5` shows `空きの枠を先に取る（priority = 5）` |
-| 67.6 | `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` | `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved |
-| 67.7 | Stop and start the engine after 67.1 | The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again |
+| 67.6 | [x] `late_end = "6"` or `late_start = "25:00"` in a net; `koyomi check <file>` | `late_end: "06:00"（時刻）か "30m"（長さ）のように書く: "6"` / an error on the time; the net cannot be approved |
+| 67.7 | [x] Stop and start the engine after 67.1 | The history keeps the mark (`kind = "late"`); the run is closed as before, and no late notice is sent again |
 
 ## 68. 2 つの実行を比べる
 
@@ -897,7 +897,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 69.4 | [x] `koyomi run <net>` in the span | The run starts at once (by hand is not held back) |
 | 69.5 | [x] `quiet = ["12:00"]`, `quiet = ["12:00-12:00"]` or `on_quiet = "later"`; `koyomi check <file>` | `quiet: "12:00-13:00" のように書く: "12:00"` / `quiet: 始まりと終わりが同じ: …` / `on_quiet は "wait"・"skip" のどれか`; the net cannot be approved |
 | 69.6 | [x] `quiet = ["23:00-01:00"]` on a net at 00:30 | The 00:30 time starts at 01:00 |
-| 69.7 | 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times | At the end the waited time starts first; the time due at the end finds the run still going and, by `overlap = "queue"`, waits and runs when it ends (not recorded `⊘ スキップ`; with `overlap = "skip"` it is recorded `⊘ スキップ` `前の回がまだ動いていました`) |
+| 69.7 | [x] 69.1 with a job that takes 2 minutes, the span ending on one of the net's own times | At the end the waited time starts first; the time due at the end finds the run still going and, by `overlap = "queue"`, waits and runs when it ends (not recorded `⊘ スキップ`; with `overlap = "skip"` it is recorded `⊘ スキップ` `前の回がまだ動いていました`) |
 
 ## 70. 通知の宛先
 
@@ -930,11 +930,11 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | # | Do | Expect |
 |---|---|---|
 | 72.1 | [x] Download `syukujitsu.csv` from the Cabinet Office's "国民の祝日について" page and put it, as it is (Shift_JIS), in `calendars/`; `koyomi check calendars/syukujitsu.csv` | `問題なし（…〜… 年の祝日 N 日。祝日は <last year>-12-31 まで分かる）` |
-| 72.2 | A calendar with `holidays = "japan"`; the window's calendar page for a year in the file | The holidays and their names are the file's |
+| 72.2 | [x] A calendar with `holidays = "japan"`; the window's calendar page for a year in the file | The holidays and their names are the file's |
 | 72.3 | Edit the file so its last line is `2028/1/1,元日` (save as UTF-8); wait a few seconds | The band's "祝日の表は … まで" goes away or moves to 2028-12-31; `koyomi check calendars/<name>.toml` says no caution |
 | 72.4 | Write a line `x,y` in the middle of the file | The window's band says `calendars/syukujitsu.csv: N 行目: 日付が読めない: x` (`koyomi check` on a calendar file prints it as `syukujitsu.csv: N 行目: 日付が読めない: x`, no `calendars/`); nets run on the built-in rules |
 | 72.5 | [x] Remove the file (with today near the end of 2027) | The band says the table lasts until 2027-12-31 and names `syukujitsu.csv` as the way to carry it on |
-| 72.6 | `koyomi export -o out.zip --calendars` with the file in `calendars/` | The bundle has the calendars' `.toml` but not `syukujitsu.csv` |
+| 72.6 | [x] `koyomi export -o out.zip --calendars` with the file in `calendars/` | The bundle has the calendars' `.toml` but not `syukujitsu.csv` |
 
 ## 73. CSV の書き出し
 
@@ -943,9 +943,9 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 73.1 | [x] `koyomi list --csv jobs.csv`; open it in Excel | One row per job of every definition, with the heads グループ・ジョブネット・名前・確認・カレンダー・ジョブ…; Japanese is not garbled |
 | 73.2 | [x] `koyomi history --from <a week ago> --csv runs.csv` | One row per run, oldest first; 秒 is the run's length; 異常のジョブ names the jobs that ended 異常 |
 | 73.3 | [x] `koyomi plan --csv plan.csv` | Every day of this month; a day with no start is one row with only its date and weekday |
-| 73.4 | `koyomi plan --csv -` | The table on the console with no BOM, and no file name said |
+| 73.4 | [x] `koyomi plan --csv -` | The table on the console with no BOM, and no file name said |
 | 73.5 | A net whose name has a comma; `koyomi list --csv -` | The name is in double quotes; Excel shows it in one cell |
-| 73.6 | Set the language to English in Settings; `koyomi plan --csv -` | The heads are Day,Weekday,Time,Jobnet |
+| 73.6 | [x] Set the language to English in Settings; `koyomi plan --csv -` | The heads are Day,Weekday,Time,Jobnet |
 | 73.7 | `koyomi history --from <a week ago> --csv runs.xlsx`; open it in Excel | A workbook: bold frozen heads; 日付・開始・終了 are dates (sortable), 秒 is a number |
 | 73.8 | A job whose id starts with `=`; `koyomi list --csv jobs.csv` and open it in Excel | The id shows as text with a leading `'`, not as a formula |
 
@@ -976,7 +976,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 75.6 | [x] Stop the job (強制終了) during a pass of a long loop | The pass is killed and no later pass starts |
 | 75.7 | [x] Write both `file` and `count`, or neither | The definition does not load; the problem names the line and says to write one of them |
 | 75.8 | In the editor, drag 繰り返し from the shelf onto the canvas | A circle (it runs a process) with the file and count fields over the command fields; Save writes `kind = "loop"` |
-| 75.9 | `koyomi show <net>` with a loop | The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command |
+| 75.9 | [x] `koyomi show <net>` with a loop | The loop's line shows `このファイルごとに 1 回` or `くり返す回数: 3 回` above its command |
 
 ## 76. 外への生存の合図（`[ping]`）
 
@@ -985,9 +985,9 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 76.1 | Make a check on healthchecks.io (or Uptime Kuma's push monitor); `echo <its URL> \| koyomi secret set ping`; write `[ping]` with `url = "secret:ping"` and `every = "1m"` in koyomi.toml; start the engine | Within a minute the watcher shows a ping; then one each minute |
 | 76.2 | Stop the engine (`koyomi engine stop`), or pull the PC's network | The pings stop; the watcher tells of it after its grace time |
 | 76.3 | `url = "https://…"` in plain text, `hide_webhooks` not written | No ping goes; the window's notes say the address is in plain text and how to move it to the credential store |
-| 76.4 | Add `hide_webhooks = false` to `[notify]` | The plain address is pinged |
+| 76.4 | [x] Add `hide_webhooks = false` to `[notify]` | The plain address is pinged |
 | 76.5 | `url = "secret:nope"` (not in the store) | No ping goes; the notes say `nope` is not in the credential store |
-| 76.6 | `every = "30s"`, or `url = "hc-ping.com/x"` | koyomi.toml does not read; the engine says why and runs nothing until it is fixed |
+| 76.6 | [x] `every = "30s"`, or `url = "hc-ping.com/x"` | koyomi.toml does not read; the engine says why and runs nothing until it is fixed |
 | 76.7 | Remove `[ping]` while the engine runs | The pings stop within a minute, with no note |
 
 ## 77. 月の成績（report）
@@ -1023,7 +1023,7 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 |---|---|---|
 | 80.1 | [x] A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it | Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` |
 | 80.2 | [x] `kind = "zip"`, `from = 'D:\out\*.csv'`, `into = 'D:\arc\{date}.zip'` | `D:\arc\<today>.zip` holds the csv files; run again: replaced, ✓ |
-| 80.3 | `kind = "copy"` from a folder with subfolders into a new folder, then run again | All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays |
+| 80.3 | [x] `kind = "copy"` from a folder with subfolders into a new folder, then run again | All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays |
 | 80.4 | `kind = "copy"` with `into` on a share that does not exist | ✕ (robocopy 8 or more); `retry` tries again |
 | 80.5 | `kind = "empty"`, `path` = a folder with files and subfolders | The folder stays, empty; the log says how many items went |
 | 80.6 | [x] `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore | Each is refused when read, with the line and why |
@@ -1053,8 +1053,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 
 | # | Do | Expect |
 |---|---|---|
-| 82.1 | `kind = "send"`, `from = 'D:\out\*.csv'`, `into = '\\nas\share\in\{date}'`; run it | The csv files are in the share's folder for today (made when missing); the log says `sent: …` for each; ✓ |
-| 82.2 | `kind = "fetch"`, `from = '\\nas\share\out\*.csv'`, `into = 'D:\in'`; run it; then once more with no csv in the share | ✓ and the files are in `D:\in`; the second run is ⚠ 警告 with `no file to fetch: …` |
+| 82.1 | [x] `kind = "send"`, `from = 'D:\out\*.csv'`, `into = '\\nas\share\in\{date}'`; run it | The csv files are in the share's folder for today (made when missing); the log says `sent: …` for each; ✓ |
+| 82.2 | [x] `kind = "fetch"`, `from = '\\nas\share\out\*.csv'`, `into = 'D:\in'`; run it; then once more with no csv in the share | ✓ and the files are in `D:\in`; the second run is ⚠ 警告 with `no file to fetch: …` |
 | 82.3 | An SFTP server you can reach with a key; `koyomi sftp hostkey host` prints `host_key = "SHA256:…"`; `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` and that `host_key` | ✓; the files are in `/in` on the server; the log says `sent: <name> (<n> bytes)` for each; `known_hosts` is not used |
 | 82.4 | `kind = "fetch"`, `from = "sftp://user@host/~/out/*.csv"`, `into = 'D:\in'` | ✓; each csv under the home's `out` is in `D:\in`; a folder that matches is not fetched; no match is ⚠ 警告 |
 | 82.5 | The same send with a wrong `host_key`, to a wrong port, or with a key the server does not take; then `password = "secret:sftp"` instead of `key` after `koyomi secret set sftp` | ✕ with exit code 2 and `! <why>` in the log; nothing asks anything; `retry` tries again; with the password it is ✓ and the log never shows it |
@@ -1069,8 +1069,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 83.1 | [x] `kind = "http"`, `url = "https://example.com/"`; run it | ✓; the log starts with `HTTP 200` and then the start of the page (cut at 4000 characters with ` ...`) |
 | 83.2 | [x] `url = "https://example.com/nope"`; run it; then add `expect = [404]` and run again | The first is ✕ with exit code 1 and `HTTP 404`; the second is ✓ |
 | 83.3 | [x] `url = "https://no-such-host.invalid/"` with `retry = { count = 1, wait = "1m" }` | ✕ with exit code 2 and `no answer: …` (why) in the log; it is tried once more after a minute |
-| 83.4 | A test API you can see (e.g. a local echo server): `method = "POST"`, `body = '{"day": "{date}", "名前": "テスト"}'`, `headers = { Authorization = "secret:api", X-Run = "{date}" }` with the secret `api` set | The server gets the body as UTF-8 JSON with today's date filled in, `Content-Type: application/json; charset=utf-8`, the Authorization value of the secret, and `X-Run` as written (`{date}` is not filled in a header); the job's log shows neither the secret nor the script |
-| 83.5 | The same with `content_type = "text/plain"` | The server gets `Content-Type: text/plain` |
+| 83.4 | [x] A test API you can see (e.g. a local echo server): `method = "POST"`, `body = '{"day": "{date}", "名前": "テスト"}'`, `headers = { Authorization = "secret:api", X-Run = "{date}" }` with the secret `api` set | The server gets the body as UTF-8 JSON with today's date filled in, `Content-Type: application/json; charset=utf-8`, the Authorization value of the secret, and `X-Run` as written (`{date}` is not filled in a header); the job's log shows neither the secret nor the script |
+| 83.5 | [x] The same with `content_type = "text/plain"` | The server gets `Content-Type: text/plain` |
 | 83.6 | [x] `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` | Each is refused with the line and why |
 | 83.7 | The editor: drag HTTP で呼ぶ from the parts | The pane shows URL・メソッド・送る中身・ヘッダー (one `名前: 値` a line)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a header line without `:` or a code that is not a number is refused |
 | 83.8 | [x] Approve a net with an http | The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command |
@@ -1100,7 +1100,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 | 85.1 | [x] `concurrency = 4`; a loop `count = 6`, `max = 3`, `run = ["cmd.exe", "/c", "ping -n 6 127.0.0.1 > nul & echo %KOYOMI_INDEX%"]`; run it | It ends in about 10 s (not 30); Task Manager shows 3 `ping.exe` at a time; the log starts with `▶ 6 回を 3 つずつ並べて動かす` and has each `▶ i/6` once, each followed by its index |
 | 85.2 | [x] `concurrency = 2`; the same loop with `max = 3`, and another net's job started while it runs | The loop runs 2 at a time (`▶ 6 回を 2 つずつ…`); the other job waits with `同時に動かす数（2）の空きを待っています` until the loop ends |
 | 85.3 | [x] `file = 'C:\in\*.csv'` with 5 files, `max = 2`, a script that echoes `%KOYOMI_FILE%` | ✓; each file once, under its own heading |
-| 85.4 | `count = 6`, `max = 2`, where pass 1 exits 3 at once and the others sleep 5 s | ✕ with `1/6 回目で異常: 終了コード 3`; pass 2 ran to its end; passes 3–6 did not start |
+| 85.4 | [x] `count = 6`, `max = 2`, where pass 1 exits 3 at once and the others sleep 5 s | ✕ with `1/6 回目で異常: 終了コード 3`; pass 2 ran to its end; passes 3–6 did not start |
 | 85.5 | `count = 4`, `max = 2`, `ping -n 600 127.0.0.1`; stop it from the window | 強制終了 at once; no `ping.exe` is left; the log has `! 強制終了` under both running passes |
 | 85.6 | [x] `count = 4`, `max = 2`, `timeout = "5s"`, `ping -n 600 127.0.0.1` | ✕ 打ち切り after about 5 s; no more passes start |
 | 85.7 | [x] `koyomi check` with `max = 0`, `max = 17`, `max = "2"`, `max` on a `"job"` | Each is refused with the line and why |
@@ -1122,7 +1122,7 @@ Make a test account first: `net user koyomi-test <password> /add` (as administra
 |---|---|---|
 | 87.1 | [x] `koyomi secret set koyomi-http` (a long random value); koyomi.toml `[http]` `port = 8790`, `token = "secret:koyomi-http"`; wait a few seconds; `koyomi status` | The status has `HTTP: 127.0.0.1:8790 で待ち受けている`; `netstat -an` shows 127.0.0.1:8790 only, not 0.0.0.0 |
 | 87.2 | [x] `curl -i -X POST http://127.0.0.1:8790/runs -d '{"net":"g/a"}'` with no token, then with `-H "Authorization: Bearer wrong"` | 401 both times; no run starts; the engine's log has `http: POST /runs 401 …` and never the token |
-| 87.3 | The same with the right token and `-d '{"net":"g/a","params":{"day":"2026-10-31"}}'` | 202 and `{"run":"<id>"}`; the run goes with that param; 操作の記録 has a by-hand run |
+| 87.3 | [x] The same with the right token and `-d '{"net":"g/a","params":{"day":"2026-10-31"}}'` | 202 and `{"run":"<id>"}`; the run goes with that param; 操作の記録 has a by-hand run |
 | 87.4 | `curl -H "Authorization: Bearer …" http://127.0.0.1:8790/runs/<id>` while it runs and after it ends; then a run id of yesterday | JSON with `state`, `jobs`, `"over": false`, then `true`; yesterday's run is found too |
 | 87.5 | [x] POST a net that is held, unconfirmed or does not exist; POST `{}`, `{"net":"g/a","dry":true}`, `not json`; GET `/runs/nope`; `PUT /runs` | 422 with the same reason `koyomi run` gives; 400 for the bodies; 404; 405 |
 | 87.6 | [x] Write `token = "plain"`, then `port = 0`, then `host = "0.0.0.0"` under `[http]` | Each is refused when koyomi.toml is read and the band says why; the listener from the last good koyomi.toml stays (an engine that starts with a bad one listens on nothing), and it goes on once the file is good again |
@@ -1169,9 +1169,9 @@ With `[http]` set as in §87 and `T` the token.
 | # | Do | Expect |
 |---|---|---|
 | 90.1 | [x] `curl -H "Authorization: Bearer T" http://127.0.0.1:8790/health`; then the same with no token | `{"ok": true, "version": …, "proto": …, "status": "<koyomi status's line>"}`; 401 without the token |
-| 90.2 | `GET /nets` with the token, with one net held and one unconfirmed | Each net with `id`, `group`, `name`, `standing` (`confirmed`/`unconfirmed`/`invalid`) and `held`; no definition text; `paused` follows `koyomi pause` |
+| 90.2 | [x] `GET /nets` with the token, with one net held and one unconfirmed | Each net with `id`, `group`, `name`, `standing` (`confirmed`/`unconfirmed`/`invalid`) and `held`; no definition text; `paused` follows `koyomi pause` |
 | 90.3 | [x] `GET /runs`; then `GET "/runs?from=2026-10-30&to=2026-10-31"`; then `?from=bad` and `?to=2026-10-31` | Today's and running runs, each with `"over"`; the two days' runs, oldest first; 400 for both bad ones |
-| 90.4 | `GET "/runs/<id>/log?job=<job>"` for a job whose command has a registered secret in its arguments | The log's tail as `koyomi log` shows it, the secret as `***`; without `job` 400; an unknown job 404 |
+| 90.4 | [x] `GET "/runs/<id>/log?job=<job>"` for a job whose command has a registered secret in its arguments | The log's tail as `koyomi log` shows it, the secret as `***`; without `job` 400; an unknown job 404 |
 | 90.5 | [x] `POST /nets`, `DELETE /health` | 405; nothing changes |
 
 ## 91. メールを受けて起動する（`[[when]] mail`）
