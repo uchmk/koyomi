@@ -1575,9 +1575,9 @@ A confirmed net `基盤/共有` with `[params]` `into = '{var:share}\in'` and a 
 | # | Do | Expect |
 |---|---|---|
 | 111.1 | [x] Without `[vars]` in koyomi.toml: `koyomi check <the net's file>`; then 今すぐ流す on the net | `注意: {var:share} が koyomi.toml の [vars] にない（流すと止まる）`; the run does not start and says `a の run: {var:share}: koyomi.toml の [vars] にない` (the `{var:share}` that came in through `{param:into}`) |
-| 111.2 | Add `[vars]` `share = '\10.0.0.1\Backup\{date:%Y%m}'` and save; `koyomi check` again; run it | No 注意; ✓, and the log of `a` is `\10.0.0.1\Backup\<this month>\in \10.0.0.1\Backup\<this month>` |
-| 111.3 | `koyomi run 基盤/共有 --dry`, then with `--set into=D:\x` | The first shows the same paths; the second `D:\x \10.0.0.1\Backup\<this month>` |
-| 111.4 | Change `share` to `'D:\share'` and save; run again (no confirm in between) | The new run reads `D:\share\in D:\share`; the net stays confirmed (the value is not part of the net) |
+| 111.2 | [x] Add `[vars]` `share = '\10.0.0.1\Backup\{date:%Y%m}'` and save; `koyomi check` again; run it | No 注意; ✓, and the log of `a` is `\10.0.0.1\Backup\<this month>\in \10.0.0.1\Backup\<this month>` |
+| 111.3 | [x] `koyomi run 基盤/共有 --dry`, then with `--set into=D:\x` | The first shows the same paths; the second `D:\x \10.0.0.1\Backup\<this month>` |
+| 111.4 | [x] Change `share` to `'D:\share'` and save; run again (no confirm in between) | The new run reads `D:\share\in D:\share`; the net stays confirmed (the value is not part of the net) |
 | 111.5 | [x] `koyomi check koyomi.toml` with, one at a time, in `[vars]`: `"共有" = 'x'`; `n = 3`; `a = '{var:share}'`; `a = '{param:into}'`; `a = '{date-1q}'` | Each is refused in Japanese: `[vars] の名前に使えない: 共有（英数字と _ だけ…）`, `[vars] の n は文字列で書く…`, `[vars] の a に {param:…}・{var:…} は書けない…` (twice), `[vars] の a: {date-1q}: …` |
 | 111.6 | [x] In the net, `run = ["cmd", "/c", "echo", "{var:}"]`; then `into = '{var:共有}'` | The editor and `koyomi check` refuse each with its line: `{var:}: 名前がない（…）`, `params into: {var:共有}: [vars] の名前は英数字と _ だけ` |
 | 111.7 | A `kind = "ssh"` with `on = "{var:pc}"` and `[vars]` `pc = "<a PC you reach over ssh>"`; a `kind = "http"` with `url = "{var:api}/health"` | Both pass `koyomi check` and run against the values in `[vars]` |
@@ -1670,16 +1670,16 @@ SQLite needs nothing more: make an empty file with `type nul > D:\koyomi-test\a.
 
 | # | Do | Expect |
 |---|---|---|
-| 116.1 | `koyomi check` on a net with a job `kind = "sql"`, `db = "sqlite://D:\koyomi-test\a.db"` and neither `sql` nor `file`; then both | `sql か file のどちらかを書く（流す SQL か、それを書いたファイル）`; then `sql と file はどちらか一方` |
-| 116.2 | The job with `sql = "create table t (id integer, msg text); insert into t values (1, 'a'); insert into t values (2, 'b'); insert into t values (3, 'c');"` and `rows = "3"`; approve it and run it now | ✓; the job's log has `sql: D:\koyomi-test\a.db` and `ran: 4 batches, 3 rows changed` |
-| 116.3 | Change it to `sql = "delete from t where id = 99"`, `rows = "1.."`; run it | ✕; the reason is `変えた行が 0 行で、rows = 1.. に合わない` |
+| 116.1 | [x] `koyomi check` on a net with a job `kind = "sql"`, `db = "sqlite://D:\koyomi-test\a.db"` and neither `sql` nor `file`; then both | `sql か file のどちらかを書く（流す SQL か、それを書いたファイル）`; then `sql と file はどちらか一方` |
+| 116.2 | [x] The job with `sql = "create table t (id integer, msg text); insert into t values (1, 'a'); insert into t values (2, 'b'); insert into t values (3, 'c');"` and `rows = "3"`; approve it and run it now | ✓; the job's log has `sql: D:\koyomi-test\a.db` and `ran: 4 batches, 3 rows changed` |
+| 116.3 | [x] Change it to `sql = "delete from t where id = 99"`, `rows = "1.."`; run it | ✕; the reason is `変えた行が 0 行で、rows = 1.. に合わない` |
 | 116.4 | Change it to `sql = "select * from t order by id"`, `out = "D:\koyomi-test\out\{date}.csv"`, no `rows`; run it; open the CSV in Excel | ✓; the folder `out` is made; the log has `result: 3 rows -> D:\koyomi-test\out\<today>.csv` and the four lines `id,msg` … `3,c`; Excel shows the Japanese and the numbers as numbers (right-aligned) |
-| 116.5 | Save `select msg from t where msg = 'あ';` in Notepad as UTF-8, then as UTF-16 LE (Unicode), then as ANSI (Shift_JIS); point `file` at it (no `sql`) and run each | ✓ each time; `result: 0 rows` (the table only has a header) — no line says the file could not be read and no mojibake in the log |
-| 116.6 | `db = "sqlite://D:\koyomi-test\nothere.db"`; run it | ✕ `データベースのファイルがない: D:\koyomi-test\nothere.db`; no file `nothere.db` is made |
-| 116.7 | `sql = "select * from nowhere"`; run it | ✕ `D:\koyomi-test\a.db: データベースが断った: no such table: nowhere` |
+| 116.5 | [x] Save `select msg from t where msg = 'あ';` in Notepad as UTF-8, then as UTF-16 LE (Unicode), then as ANSI (Shift_JIS); point `file` at it (no `sql`) and run each | ✓ each time; `result: 0 rows` (the table only has a header) — no line says the file could not be read and no mojibake in the log |
+| 116.6 | [x] `db = "sqlite://D:\koyomi-test\nothere.db"`; run it | ✕ `データベースのファイルがない: D:\koyomi-test\nothere.db`; no file `nothere.db` is made |
+| 116.7 | [x] `sql = "select * from nowhere"`; run it | ✕ `D:\koyomi-test\a.db: データベースが断った: no such table: nowhere` |
 | 116.8 | SQL Server, Windows sign-in: `db = "sqlserver://<host>:<port>/koyomi_test"`, `sql = "create table t (id int, msg nvarchar(10))\nGO\ninsert into t values (1, N'あ'), (2, N'い')\nGO\nselect * from t"`, `out` set, `tls = "trust"` (a server with its own certificate) | ✓; `ran: 3 batches, 2 rows changed`, `result: 2 rows -> …`; the CSV has `あ` and `い` |
 | 116.9 | The same with `tls = "verify"` against a server with its own certificate | ✕; the reason starts with `<host>:<port>/koyomi_test: つなげない:` and ends with `（サーバーが自分で作った証明書なら tls = "trust"）` |
-| 116.10 | `db = "sqlserver://<host>\SQLEXPRESS/koyomi_test"` in `koyomi check`; then `tls = "off"` with a good db | `名前付きインスタンス（ホスト\名前）は使えない: そのポートを書く（…）`; then `SQL Server へはいつも暗号化してつなぐ: tls = "off" は使えない（…）` |
+| 116.10 | [x] `db = "sqlserver://<host>\SQLEXPRESS/koyomi_test"` in `koyomi check`; then `tls = "off"` with a good db | `名前付きインスタンス（ホスト\名前）は使えない: そのポートを書く（…）`; then `SQL Server へはいつも暗号化してつなぐ: tls = "off" は使えない（…）` |
 | 116.11 | The job of 116.8 with `run_as` set to another Windows account that is not a user of `koyomi_test` | ✕; the reason has the server's refusal of that account's sign-in (the job ran as it, not as you) |
 | 116.12 | SQL Server login: `db = "sqlserver://koyomi@<host>:<port>/koyomi_test"`, no `password` in `koyomi check`; then `password = "secret:mssql"` and run 116.8's select | `このログインには password が要る（…）`; then ✓; the password is in no log line, reason or `koyomi show` |
 | 116.13 | PostgreSQL: `db = "postgres://koyomi@<host>/koyomi_test"`, `password = "secret:pg"`, `sql = "create table if not exists t (id int); insert into t values (1); select count(*) as n from t;"`, `tls` as the server needs (`off` for a server without TLS) | ✓; the log has `result: 1 rows` and the lines `n` and the count |
@@ -1687,7 +1687,7 @@ SQLite needs nothing more: make an empty file with `type nul > D:\koyomi-test\a.
 | 116.15 | The same job with `timeout = "15s"` | ✕ after about 15 seconds, and the statement is gone from the server as in 116.14 |
 | 116.16 | The editor: add 「SQL を流す」 from 基本 on the shelf; type `sqlserver://db01/売上` in データベース; then `postgres://x@db01/売上`; then `sqlite://C:\a.db` | The SQL box's top right says `SQL Server`, then `PostgreSQL`, then `SQLite`; the password field shows only for PostgreSQL (and for a SQL Server address with a user); TLS is hidden for SQLite; a password left from PostgreSQL stays shown and marked wrong for the SQLite address |
 | 116.17 | In the editor, write both SQL and a file; then `rows = "many"`; then save a good one and approve it | Both fields are marked wrong; then the 正常とする行の数 field; the approve box lists データベース, SQL (each line break as ⏎), 結果の置き場所, 正常とする行の数 and, when not verify, TLS |
-| 116.18 | `koyomi sql run` by hand in cmd with `set KOYOMI_SQL_DB=sqlite://D:\koyomi-test\a.db` and `set KOYOMI_SQL_TEXT=select count(*) from t` | It prints `sql: …`, the result lines and ends with 0; without `KOYOMI_SQL_DB` it says `KOYOMI_SQL_DB がない（koyomi sql run は kind = "sql" のジョブが動かす）` |
+| 116.18 | [x] `koyomi sql run` by hand in cmd with `set KOYOMI_SQL_DB=sqlite://D:\koyomi-test\a.db` and `set KOYOMI_SQL_TEXT=select count(*) from t` | It prints `sql: …`, the result lines and ends with 0; without `KOYOMI_SQL_DB` it says `KOYOMI_SQL_DB がない（koyomi sql run は kind = "sql" のジョブが動かす）` |
 
 ## 117. Send to and fetch from S3 (`s3://`; TODO 114)
 
@@ -1695,9 +1695,9 @@ A MinIO server you can reach (`minio server D:\minio-data` on this PC or a NAS; 
 
 | # | Do | Expect |
 |---|---|---|
-| 117.1 | `koyomi check` on a net with a job `kind = "send"`, `from = 'D:\koyomi-test\out'`, `into = "s3://koyomi-test/daily/"` and nothing else; then add `key_id = "<the MinIO access key>"` and `password = "secret:minio"`; then `endpoint = "http://<host>:9000"` | `s3:// には key_id が要る（…）`; then `s3:// には region が要る（例: region = "ap-northeast-1"。MinIO などは endpoint を書く）`; then no problem |
+| 117.1 | [x] `koyomi check` on a net with a job `kind = "send"`, `from = 'D:\koyomi-test\out'`, `into = "s3://koyomi-test/daily/"` and nothing else; then add `key_id = "<the MinIO access key>"` and `password = "secret:minio"`; then `endpoint = "http://<host>:9000"` | `s3:// には key_id が要る（…）`; then `s3:// には region が要る（例: region = "ap-northeast-1"。MinIO などは endpoint を書く）`; then no problem |
 | 117.2 | Approve the job and run it now; look at the bucket in the MinIO console | ✓; the log has `sent: s3://koyomi-test/daily/a.csv (… bytes)` for `a.csv`, `b.csv` and `c.txt`; the bucket has `daily/a.csv`, `daily/b.csv`, `daily/c.txt` and no `daily/sub/` |
-| 117.3 | `from = 'D:\koyomi-test\out\*.zip'` (no zip there); run it | ⚠ warning (end code 3); the log has `no file to send: D:\koyomi-test\out\*.zip` |
+| 117.3 | [x] `from = 'D:\koyomi-test\out\*.zip'` (no zip there); run it | ⚠ warning (end code 3); the log has `no file to send: D:\koyomi-test\out\*.zip` |
 | 117.4 | Add `in/x.csv`, `in/y.csv`, `in/sub/z.csv` and `in/n.txt` in the MinIO console. A job `kind = "fetch"`, `from = "s3://koyomi-test/in/*.csv"`, `into = 'D:\koyomi-test\in'`, the same `key_id`, `password` and `endpoint`; run it | ✓; the folder `in` is made with `x.csv` and `y.csv` only (no `z.csv`, no `n.txt`, no `.part` left); the log has a `fetched: s3://koyomi-test/in/x.csv (… bytes)` line for each |
 | 117.5 | `from = "s3://koyomi-test/in/*.zip"`; run it | ⚠ warning; the log has `no file to fetch: s3://koyomi-test/in/*.zip` |
 | 117.6 | `password = "secret:minio"` with a wrong value kept under `minio` (`koyomi secret set minio` again); run 117.2's send | ✕; the reason starts with `s3://koyomi-test/daily/a.csv: 断られた:` and ends with `（key_id・password・region を確かめる）`; the secret is in no log line or reason |
