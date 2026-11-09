@@ -14,8 +14,9 @@
 
 見た目の行で、期待値のすべてを機械が測った行だけが `[x]` になりうる（TODO.md の規則）。ただし測るための道具がまだ揃っていない。
 
-- **まだない**: state JSON（`state_json`）、`<Snap:>`、部品の test id（`ito_a11y::test_id`）、`ito_keyscript::set_wgpu_backend`。
-  これが入るまで、koyomi の見た目の行は `[~]` までにする。
+- **ito には入っている**（a55c886）: state JSON（`Runner::state_json(true)`）、`<Snap:>`、部品の test id（`ito_a11y::test_id`）、`ito_keyscript::set_wgpu_backend`。
+- **koyomi がまだ配線していない**: `state_json(true)` を選ぶこと、アプリの状態（画面・オーバーレイ・アプリ固有の値）を渡すこと、main で `set_wgpu_backend` を呼ぶこと、主要なウィジェットに Test ID を付けること。
+  この配線が済むまで、koyomi の見た目の行は `[~]` までにする。
 - **今ある**: `scripts\keys.ps1` の `<State:名前>`（文字）、`<Shot:名前>`（窓全体の PNG）、done ファイル（`KOYOMI_KEYS_DONE`）、`scripts\visual-check.py`、`scripts\evidence.py`（`-Evidence` の証拠）。
 - 閾値を書いた check spec（`tests/visual/<行>.toml`）は、実行の**前に**書く。見たあとで決めた閾値は数えない。
 - AI Vision の答え・見た印象は、測定に数えない。

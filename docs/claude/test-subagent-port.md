@@ -12,7 +12,7 @@ fude・yagura・michi に同じ方針を取ってもらうための記録。kura
 | 走らせる道具（`--keys` の実行、証拠、検査器） | ito `scripts/lanes/` | `scripts/lanes.sh sync` が `scripts/` にコピー |
 | 配線の設定 | — | `scripts/lanes.conf`（`isolate=`・`evidence=`・`todo_marks=`・`keys_env=`） |
 
-見た目の subagent `vision` は、Tier 2（AI の見た目判断）が持ち主に承認されていないので移していない。`qa-tester` は kura の `qa-role.md` と `qa-audit` 手順が要るので、まだ移していない。
+見た目の subagent `vision` は、Tier 2（AI の見た目判断）が持ち主に承認されていないので移していない。`qa-tester` は移した（`.claude/qa-role.md`・`.claude/skills/qa-audit/SKILL.md`・`.claude/agents/qa-tester.md`）。koyomi 向けに、TESTING.md の照合（job 1）と TESTING-CHECKS.md の照合（job 2）だけにした。テストを行に起こす job 3 は、koyomi に画面なしで描画を回す harness がないので、まだ使わない。push は main に直接（持ち主の許可、verify が ALL OK のとき）。
 
 ## 順番（この順にやると詰まりにくい）
 
