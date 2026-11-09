@@ -3054,13 +3054,23 @@ after = [\"none\"]
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// A command that takes about `secs` seconds, then prints `KOYOMI_INDEX`.
-    fn slow_index(secs: u32) -> String {
-        if cfg!(windows) {
-            format!("run = [\"cmd.exe\", \"/c\", \"ping -n {} 127.0.0.1 > nul & echo %KOYOMI_INDEX%\"]", secs + 1)
+    /// A pass that marks itself with a file, then waits until another pass has marked itself too, for up to 30
+    /// seconds. It goes on only while another pass runs beside it: if the passes ran one after another, the first
+    /// would give up and fail the loop. No clock is compared, so a slow process start cannot make it flaky.
+    fn rendezvous(dir: &std::path::Path) -> String {
+        let d = dir.display().to_string().replace('\\', "/");
+        let (run, shell) = if cfg!(windows) {
+            (
+                r#"run = ["powershell.exe", "-NoProfile", "-Command", "$d='DIR'; New-Item -ItemType File -Path ($d+'/start.'+$env:KOYOMI_INDEX) -Force | Out-Null; $t=(Get-Date).AddSeconds(30); while ((Get-ChildItem -Path $d -Filter 'start.*').Count -lt 2) { if ((Get-Date) -gt $t) { exit 9 }; Start-Sleep -Milliseconds 100 }; Write-Output $env:KOYOMI_INDEX"]"#,
+                "DIR",
+            )
         } else {
-            format!("run = [\"sh\", \"-c\", \"sleep {secs}; echo $KOYOMI_INDEX\"]")
-        }
+            (
+                r#"run = ["sh", "-c", "mkdir -p DIR; : > DIR/start.$KOYOMI_INDEX; n=0; while [ $(ls DIR | wc -l) -lt 2 ]; do n=$((n+1)); [ $n -gt 300 ] && exit 9; sleep 0.1; done; echo $KOYOMI_INDEX"]"#,
+                "DIR",
+            )
+        };
+        run.replace(shell, &d)
     }
 
     #[test]
@@ -3068,32 +3078,30 @@ after = [\"none\"]
         let dir = scratch("loopmax");
         let text = format!(
             "format = 1\n[[job]]\nid = \"many\"\nkind = \"loop\"\ncount = 4\nmax = 2\n{}\n[[job]]\nid = \"other\"\n{}\n",
-            slow_index(2),
+            rendezvous(&dir),
             echo("x")
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        // The loop holds both slots, so the other job waits for one.
+        // The loop reserves both slots, so the other job waits for one.
         let run = r.run(&id).unwrap();
         assert_eq!(r.busy(), 1);
+        assert_eq!(r.slots_used(), 2, "the loop reserves its max in slots");
         assert_eq!(run.job("other").unwrap().state, State::Waiting);
-        // Two at a time, seen in the slots in use rather than in the wall-clock time: each pass starts a process,
-        // which can take seconds on a busy machine, so the time says nothing about the slots.
-        let until = Instant::now() + Duration::from_secs(20);
-        let mut both_in_use = false;
+        // The passes running side by side is checked by the passes themselves (see `rendezvous`): a pass that ran
+        // alone would fail. Here only the reservation is kept: never more slots than the max.
+        let until = Instant::now() + Duration::from_secs(60);
         let run = loop {
             r.tick();
-            let used: usize = r.active.iter().map(|a| a.slots).sum();
+            let used = r.slots_used();
             assert!(used <= 2, "{used} slots in use with max 2");
-            both_in_use |= used == 2;
             if let Some(run) = r.run(&id).filter(|r| r.is_over()) {
                 break run.clone();
             }
             assert!(Instant::now() < until, "{id} did not end");
             std::thread::sleep(Duration::from_millis(5));
         };
-        assert!(both_in_use, "the two slots were never both in use");
         assert_eq!(run.state, State::Ok);
         let log = r.log_tail(&id, "many").unwrap();
         assert!(log.contains("4 回を 2 つずつ並べて動かす"), "{log}");
