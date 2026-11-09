@@ -1,4 +1,5 @@
 /target
+/dist/
 
 # Worktrees a background agent works in (Agent isolation: "worktree").
 .claude/worktrees/

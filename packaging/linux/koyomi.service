@@ -1,0 +1,19 @@
+[Unit]
+Description=koyomi job scheduler engine
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=koyomi
+Group=koyomi
+WorkingDirectory=/var/lib/koyomi
+ExecStart=/usr/local/bin/koyomi engine --no-tray
+Restart=on-failure
+RestartSec=5
+LoadCredential=koyomi:/etc/koyomi/credentials
+TimeoutStopSec=30
+KillMode=mixed
+
+[Install]
+WantedBy=multi-user.target
