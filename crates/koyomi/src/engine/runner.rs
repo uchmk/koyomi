@@ -2284,7 +2284,13 @@ id = \"a\"
     #[test]
     fn stopping_the_engine_stops_the_running_jobs() {
         let dir = scratch("stop-all");
-        let long = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"ping -n 30 127.0.0.1 > nul\"]" } else { "run = [\"sleep\", \"30\"]" };
+        // The job says `started` once its process runs: the stop must find a running job, not one still being created
+        // (process creation can take seconds on a busy machine while the other tests run).
+        let long = if cfg!(windows) {
+            "run = [\"cmd.exe\", \"/c\", \"echo started & ping -n 30 127.0.0.1 > nul\"]"
+        } else {
+            "run = [\"sh\", \"-c\", \"echo started; sleep 30\"]"
+        };
         let d = def(
             "net",
             &format!(
@@ -2298,6 +2304,12 @@ id = \"a\"
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert_eq!(r.busy(), 1);
+        let log = r.log_path(&id, "a");
+        let began = Instant::now();
+        while !std::fs::read_to_string(&log).is_ok_and(|s| s.contains("started")) {
+            assert!(began.elapsed() < Duration::from_secs(60), "the job never started: {}", log.display());
+            std::thread::sleep(Duration::from_millis(20));
+        }
         let asked = Instant::now();
         r.stop_all(Duration::from_secs(5));
         assert_eq!(r.busy(), 0, "no process is left");
@@ -3061,16 +3073,28 @@ after = [\"none\"]
         );
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config { concurrency: 2, ..Config::default() });
-        let began = Instant::now();
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         // The loop holds both slots, so the other job waits for one.
         let run = r.run(&id).unwrap();
         assert_eq!(r.busy(), 1);
         assert_eq!(run.job("other").unwrap().state, State::Waiting);
-        let run = wait_over(&mut r, &id);
+        // Two at a time, seen in the slots in use rather than in the wall-clock time: each pass starts a process,
+        // which can take seconds on a busy machine, so the time says nothing about the slots.
+        let until = Instant::now() + Duration::from_secs(20);
+        let mut both_in_use = false;
+        let run = loop {
+            r.tick();
+            let used: usize = r.active.iter().map(|a| a.slots).sum();
+            assert!(used <= 2, "{used} slots in use with max 2");
+            both_in_use |= used == 2;
+            if let Some(run) = r.run(&id).filter(|r| r.is_over()) {
+                break run.clone();
+            }
+            assert!(Instant::now() < until, "{id} did not end");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert!(both_in_use, "the two slots were never both in use");
         assert_eq!(run.state, State::Ok);
-        // Two at a time: about 4 s, where one after another takes 8 s.
-        assert!(began.elapsed() < Duration::from_secs(7), "{:?}", began.elapsed());
         let log = r.log_tail(&id, "many").unwrap();
         assert!(log.contains("4 回を 2 つずつ並べて動かす"), "{log}");
         let mut lines: Vec<&str> = log.lines().filter(|l| !l.starts_with('▶')).map(str::trim).collect();
