@@ -23,7 +23,7 @@ const STATES = {
 const ERRORS = ["error", "timeout", "killed", "locked"];
 const NOT_STARTED = ["waiting", "held", "not_run"];
 const STANDINGS = { confirmed: "承認済み", unconfirmed: "未承認", invalid: "誤り" };
-const RANK = { view: 0, run: 1, edit: 2 };
+const RANK = { view: 0, run: 1, edit: 2, admin: 3 };
 const WEEKDAYS = "日月火水木金土";
 
 const view = {

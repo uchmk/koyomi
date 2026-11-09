@@ -307,7 +307,7 @@ pub struct Http {
 pub struct HttpUser {
     /// Written down with what they did (`koyomi ops`).
     pub name: String,
-    /// `view`, `run` or `edit`.
+    /// `view`, `run`, `edit` or `admin`.
     pub role: String,
     /// `secret:<name>`; may be left out when `tailscale` is set.
     #[serde(default)]
@@ -430,7 +430,12 @@ impl Http {
             if !names.insert(name) {
                 return Err(format!("[[http.user]] の name {name} が 2 つある"));
             }
-            crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+            let role = crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+            if role == crate::role::Role::Admin && (u.nets.is_some() || u.roles.is_some()) {
+                return Err(format!(
+                    "[[http.user]] {name} は role = \"admin\" で、nets と roles は一緒に書けない（admin は全部のネットにかかる）"
+                ));
+            }
             if u.secret().is_empty() && (!u.token.trim().is_empty() || u.tailscale.is_none()) {
                 return Err(format!("[[http.user]] {name} の token は secret:<名前> で書く"));
             }
@@ -893,7 +898,7 @@ port = 70000
         assert_eq!((h.user[0].role(), h.user[1].secret()), (crate::role::Role::View, "ito"));
         for bad in [
             "[http]\nport = 8790\n".to_owned(),
-            format!("[http]\nport = 8790\n{}", user("sato", "admin", "secret:s")),
+            format!("[http]\nport = 8790\n{}", user("sato", "owner", "secret:s")),
             format!("[http]\nport = 8790\n{}", user("sato", "view", "plain")),
             format!("[http]\nport = 8790\n{}", user("default", "view", "secret:s")),
             format!("[http]\nport = 8790\n{}", user("a b", "view", "secret:s")),
@@ -932,6 +937,40 @@ port = 70000
         let e = Config::parse(&format!("{head}roles = {{ \"経理/*\" = \"admin\" }}\n")).unwrap_err();
         assert!(e.contains("[[http.user]] sato の roles の 経理/* の role は"), "{e}");
         assert!(Config::parse(&format!("{head}roles = {{}}\n")).unwrap_err().contains("空にしない"));
+    }
+
+    /// `admin` is a role of its own and is not narrowed: `nets` and `roles` are refused with it,
+    /// and `admin` is not a role a net can be given.
+    #[test]
+    fn admin_is_not_narrowed() {
+        use crate::role::Role;
+        let head = "[http]
+port = 8790
+[[http.user]]
+name = \"boss\"
+role = \"admin\"
+token = \"secret:boss\"
+";
+        assert_eq!(Config::parse(head).unwrap().http.unwrap().user[0].role(), Role::Admin);
+        let e = Config::parse(&format!(
+            "{head}nets = [\"経理/*\"]
+"
+        ))
+        .unwrap_err();
+        assert!(e.contains("[[http.user]] boss は role = \"admin\""), "{e}");
+        let e = Config::parse(&format!(
+            "{head}roles = {{ \"経理/*\" = \"run\" }}
+"
+        ))
+        .unwrap_err();
+        assert!(e.contains("[[http.user]] boss は role = \"admin\""), "{e}");
+        let low = head.replace("admin", "run");
+        let e = Config::parse(&format!(
+            "{low}roles = {{ \"経理/*\" = \"admin\" }}
+"
+        ))
+        .unwrap_err();
+        assert!(e.contains("[[http.user]] boss の roles の 経理/* の role は"), "{e}");
     }
 
     /// `[http] tailnet` and a person's `tailscale` go together; such a person needs no token.

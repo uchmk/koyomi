@@ -1,9 +1,9 @@
 //! Who may do what over HTTP (TODO 83, DECISIONS「複数の PC・Web UI・利用者とロール・HA」).
 //!
-//! Three roles, each holding the one below: `view` reads, `run` also starts and stops runs,
+//! Four roles, each holding the one below: `view` reads, `run` also starts and stops runs,
 //! `edit` also sends definitions (which still wait for the first-time confirmation in that PC's
-//! window). A path this table does not know needs `edit`, so a new path is closed until it is
-//! placed here.
+//! window), `admin` also confirms them over `POST /door`. A path this table does not know needs
+//! `edit`, so a new path is closed until it is placed here.
 //!
 //! A caller may also be narrowed to some nets ([`Nets`], TODO 94): the others are as if they
 //! were not there. And a caller may hold a role per net ([`Access`], TODO 101), as JP1's resource
@@ -12,12 +12,15 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-/// A caller's role. Ordered: `View < Run < Edit`.
+/// A caller's role. Ordered: `View < Run < Edit < Admin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
     View,
     Run,
     Edit,
+    /// Confirms definitions and changes the schedule over `POST /door`; only a named
+    /// `[[http.user]]` may hold it, and not narrowed by `nets` or `roles`.
+    Admin,
 }
 
 impl Role {
@@ -27,7 +30,8 @@ impl Role {
             "view" => Ok(Role::View),
             "run" => Ok(Role::Run),
             "edit" => Ok(Role::Edit),
-            _ => Err(format!("role は view・run・edit のどれか: {text}")),
+            "admin" => Ok(Role::Admin),
+            _ => Err(format!("role は view・run・edit・admin のどれか: {text}")),
         }
     }
 
@@ -36,6 +40,7 @@ impl Role {
             Role::View => "view",
             Role::Run => "run",
             Role::Edit => "edit",
+            Role::Admin => "admin",
         }
     }
 
@@ -149,6 +154,9 @@ pub fn per_net(roles: &BTreeMap<String, String>) -> Result<Vec<(String, Role)>, 
     for (key, role) in roles {
         let p = pattern(key).map_err(|e| format!("roles のキーは {e}"))?;
         let r = Role::parse(role.trim()).map_err(|e| format!("roles の {p} の {e}"))?;
+        if r == Role::Admin {
+            return Err(format!("roles の {p} の role は view・run・edit のどれか（admin は ネットごとには書けない）: admin"));
+        }
         out.push((p.to_owned(), r));
     }
     Ok(out)
@@ -180,13 +188,15 @@ fn glob(pattern: &str, text: &str) -> bool {
 /// The role a request needs. Reads need `view`, but a definition's text needs `edit` (it is what
 /// would run); starting, stopping, rerunning and skipping runs and holding nets or skipping their
 /// next run need `run`, as does an HA primary taking the schedules back (`POST /standby/release`);
-/// anything else, including what this table does not know yet, needs `edit`.
+/// `POST /door` needs `view` only as the gate: which request it carries is checked after, by
+/// `proto::door_needs`; anything else, including what this table does not know yet, needs `edit`.
 pub fn needs(method: &str, path: &str) -> Role {
     let path = path.trim_end_matches('/');
     let run_part: Option<Vec<&str>> = path.strip_prefix("/runs/").map(|rest| rest.split('/').collect());
     match method {
         "GET" | "HEAD" if path == "/nets/text" => Role::Edit,
         "GET" | "HEAD" => Role::View,
+        "POST" if path == "/door" => Role::View,
         "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release" | "/nets/skip-next" | "/standby/release") => Role::Run,
         "POST" => match run_part.as_deref() {
             Some([id, "stop" | "rerun" | "skip"]) if !id.is_empty() => Role::Run,
@@ -203,12 +213,15 @@ mod tests {
     /// the roles read as written and hold the ones below them.
     #[test]
     fn the_roles_read_and_hold_the_ones_below() {
-        for r in [Role::View, Role::Run, Role::Edit] {
+        for r in [Role::View, Role::Run, Role::Edit, Role::Admin] {
             assert_eq!(Role::parse(r.name()), Ok(r));
         }
-        assert!(Role::parse("admin").is_err());
+        assert_eq!(Role::parse("admin"), Ok(Role::Admin));
+        assert!(Role::parse("root").is_err());
+        assert!(Role::View < Role::Run && Role::Run < Role::Edit && Role::Edit < Role::Admin);
         assert!(Role::Edit.allows(Role::Run) && Role::Run.allows(Role::View));
         assert!(!Role::View.allows(Role::Run) && !Role::Run.allows(Role::Edit));
+        assert!(Role::Admin.allows(Role::Edit) && !Role::Edit.allows(Role::Admin));
     }
 
     /// reads need view, runs need run, and what the table does not know needs edit.
@@ -230,6 +243,10 @@ mod tests {
         assert_eq!(needs("GET", "/nets/text/"), Role::Edit);
         assert_eq!(needs("POST", "/nets/propose"), Role::Edit);
         assert_eq!(needs("POST", "/standby/release"), Role::Run);
+        assert_eq!(needs("POST", "/door"), Role::View);
+        assert_eq!(needs("POST", "/door/"), Role::View);
+        assert_eq!(needs("GET", "/door"), Role::View, "GET is a read like any other");
+        assert_eq!(needs("PUT", "/door"), Role::Edit);
     }
 
     fn nets(patterns: &[&str]) -> Result<Nets, String> {

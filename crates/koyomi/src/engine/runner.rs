@@ -91,6 +91,8 @@ struct Active {
     why: Arc<AtomicU8>,
     /// The slots it holds: 1, or the passes a loop part runs side by side.
     slots: usize,
+    /// How long a stop waits after asking it before it kills ([`grace`]).
+    grace: Duration,
 }
 
 /// A time of the schedule that waits for the net's last run to end.
@@ -670,6 +672,29 @@ impl Runner {
         if self.busy() > 0 {
             crate::say(&format!("koyomi: {} job(s) did not stop within {grace:?}", self.busy()), true);
         }
+        self.close_left();
+    }
+
+    /// How long [`Self::stop_all`] may wait: the longest grace of a job that is running plus 5 s, at most 25 s
+    /// (systemd's default stop timeout is 90 s); 5 s with nothing running.
+    pub fn stop_wait(&self) -> Duration {
+        stop_wait_for(self.active.iter().map(|a| a.grace))
+    }
+
+    /// Closes every run that is still not over (a job whose process did not stop in time) the way the next
+    /// start would (`Run::abandon`) and writes it down, so the history does not keep a run that is "running"
+    /// after the engine is gone. They are not told as ended: the engine is stopping, as with a job killed
+    /// on the way out.
+    fn close_left(&mut self) {
+        let now = ito_common::now::now_local().naive_local();
+        let mut closed = Vec::new();
+        for run in self.runs.iter_mut().filter(|r| !r.is_over()) {
+            run.abandon(now);
+            closed.push(run.clone());
+        }
+        for run in closed {
+            self.record(&run, history::run_end(&run));
+        }
     }
 
     /// Records each waiting time as スキップ: the engine stops, and nothing
@@ -964,7 +989,15 @@ impl Runner {
         self.record(&r, history::job_start(&r, j));
         let stop = Arc::new(AtomicBool::new(false));
         let why = Arc::new(AtomicU8::new(WHY_NONE));
-        self.active.push(Active { run: run_id.to_owned(), job: job_id.to_owned(), stop: stop.clone(), why: why.clone(), slots: width });
+        let wait = grace(&j.part);
+        self.active.push(Active {
+            run: run_id.to_owned(),
+            job: job_id.to_owned(),
+            stop: stop.clone(),
+            why: why.clone(),
+            slots: width,
+            grace: wait,
+        });
         let log = self.log_path(run_id, job_id);
         let job = JobSpec {
             run: run_id.to_owned(),
@@ -974,7 +1007,7 @@ impl Runner {
             command: j.command(),
             dir: j.dir.clone(),
             timeout: j.timeout,
-            grace: grace(&j.part),
+            grace: wait,
             retry: j.retry,
             judge: j.judge.clone(),
             env: j.env.clone(),
@@ -1165,6 +1198,13 @@ fn grace(part: &Part) -> Duration {
         Part::Chore(c) if c.far() || c.cloud() || matches!(c, koyomi_core::chore::Chore::Sql { .. }) => FAR_GRACE,
         _ => Duration::ZERO,
     }
+}
+
+/// How long a stop waits for the jobs to be reaped: the longest of their `graces` plus 5 s, but at most 25 s.
+/// With no job running, 5 s.
+fn stop_wait_for(graces: impl Iterator<Item = Duration>) -> Duration {
+    const MOST: Duration = Duration::from_secs(25);
+    (graces.max().unwrap_or(Duration::ZERO) + Duration::from_secs(5)).min(MOST)
 }
 
 /// The slots a part takes when `free` are free: a loop with `max` as many of them as its
@@ -3522,5 +3562,55 @@ id = \"b\"
         assert_eq!(unmet_by(&req, Some(true), Some(true), idle), None);
         assert_eq!(unmet_by(&req, None, None, None), None, "unknown is not a reason to hold");
         assert_eq!(unmet_by(&Require::default(), Some(false), Some(false), Some(Duration::ZERO)), None);
+    }
+
+    #[test]
+    fn the_stop_waits_for_the_longest_grace_and_never_more_than_25_seconds() {
+        let secs = |v: &[u64]| stop_wait_for(v.iter().map(|s| Duration::from_secs(*s)));
+        assert_eq!(secs(&[]), Duration::from_secs(5));
+        assert_eq!(secs(&[0]), Duration::from_secs(5));
+        assert_eq!(secs(&[0, 10, 3]), Duration::from_secs(15));
+        assert_eq!(secs(&[60]), Duration::from_secs(25));
+        assert_eq!(secs(&[20]), Duration::from_secs(25));
+        // With nothing running the runner asks for the least.
+        let dir = scratch("stop-wait");
+        let r = Runner::new(&dir, Config::default());
+        assert_eq!(r.stop_wait(), Duration::from_secs(5));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_left_when_the_engine_stops_is_closed_and_written_down() {
+        let dir = scratch("close-left");
+        let long = if cfg!(windows) { "run = [\"cmd.exe\", \"/c\", \"ping -n 4 127.0.0.1 > nul\"]" } else { "run = [\"sleep\", \"3\"]" };
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{long}\n[[job]]\nid = \"b\"\nafter = [\"a\"]\n{}\n", echo("two"));
+        let mut r = Runner::new(&dir, Config::default());
+        let today = ito_common::now::now_local().date_naive();
+        let id = r.start(&def("net", &text), today, How::Manual, None).unwrap();
+        for _ in 0..200 {
+            r.tick();
+            if r.busy() > 0 {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(r.busy() > 0, "the job did not start");
+        r.close_left();
+        let run = r.runs().iter().find(|x| x.id == id).unwrap().clone();
+        assert!(run.is_over());
+        let a = run.job("a").unwrap();
+        assert_eq!((a.state, a.reason.as_str()), (State::Error, "エンジンが止まった"));
+        assert_eq!(run.job("b").unwrap().state, State::NotRun);
+        // Not told as ended: the engine is stopping.
+        assert!(r.take_over().is_empty());
+        r.flush();
+        let loaded = Day::load(&history::path(&r.history, today)).unwrap_or_default();
+        let back = loaded.runs().into_iter().find(|x| x.id == id).expect("the run is in the history");
+        assert!(back.is_over(), "the history keeps the run as running");
+        assert_eq!(back.job("a").unwrap().state, State::Error);
+        // The child is still running (`close_left` only writes the run down): stop it before the folder goes.
+        r.stop_all(Duration::from_secs(5));
+        assert_eq!(r.busy(), 0, "the child outlived the test");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

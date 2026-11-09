@@ -1757,3 +1757,46 @@ Two nets with one job each, approved: 保守/ロック with `[[when]] session = 
 | 120.6 | The editor: a `[[when]]` of サインイン・ロック; type `PC\taro` in ユーザー and save; then type `taro@x` | The field reads ユーザー（PC\taro。空ならだれでも）; saving writes `user = "PC\\taro"`; empty writes no `user`; `taro@x` is refused with `user は PC\taro・CORP\taro・taro のように書く（@ や空白は書かない）: "taro@x"` |
 | 120.7 | `koyomi next 保守/他人`; approve it after a change | The row `画面をロックしたとき（<other> だけ）`; the confirm box shows the same |
 | 120.8 | (the import of hand-written XML of the same form checked 2026-11-03, in an engine of its own; a task made in taskschd.msc not yet) §119.10's task with 特定のユーザー (ワークステーション ロック解除時); `koyomi import l.xml --dry-run`, then `koyomi import l.xml` and `koyomi show koyomi-test/ロック` | The plan has no note about the trigger; the file has `session = "unlock"` and `user = "<PC>\\<name>"`, and `koyomi show` says `画面のロックを解いたとき（<PC>\<name> だけ）`; a UserId given as a SID (`S-1-5-21-…`) leaves `user` out with the note `… に限ったトリガーだが、この書き方は読めないので、session = "unlock" はどのユーザーのでも流れる（user = 'PC\名前' を書き足す）` |
+
+## 121. Engine on Debian, operated from Windows
+
+Run on a Debian 12 or 13 machine or VM with systemd, reachable over TCP from this PC, with the package from `scripts/package-linux.sh` unpacked there. Blocked until koyomi pins the ito rev that reads tokens from systemd credentials: before that the service does not start. The `view`, `run` and `edit` tokens are added by hand as in `packaging/linux/README.md` (人を足す). 保守/夜間 is an approved net with one job, `sleep 600`. `<addr>` is one address of the machine; the port is 8790 unless a row says otherwise.
+
+| # | Do | Expect |
+|---|---|---|
+| 121.1 | On a fresh machine (no user `koyomi`, no `/var/lib/koyomi`), `sudo ./install.sh` from the unpacked folder | Prints `利用者 koyomi を作りました。`, `admin の token を作りました。`, `設定を書きました: /var/lib/koyomi/.config/uchmk/koyomi/koyomi.toml (port 8790)`, then `入れました。`; one `https://<addr>:8790` line per address; the fingerprint; `sudo cat /etc/koyomi/credentials/http-admin` as where the token is; exit 0 |
+| 121.2 | `systemctl is-active koyomi`; then `sudo -H -u koyomi koyomi status` | `active`; `koyomi status` answers without an error |
+| 121.3 | `sudo stat -c '%a %U:%G' /etc/koyomi/credentials/http-admin` | `600 root:root` |
+| 121.4 | With a job running, `sudo ./install.sh` again | Prints `admin の token は既にあります。変えません。`, `koyomi を止めます。動いているジョブは止まります。` and `設定は既にあります。触りません:`; the token (`sudo cat`) and `koyomi.toml` (`sha256sum`) are unchanged; `systemctl is-active koyomi` is `active` again |
+| 121.5 | On a fresh machine, `sudo ./install.sh --port 9000` | The URLs show `:9000`; `koyomi.toml` has `port = 9000` and `lan = true` |
+| 121.6 | Where it is installed with port 8790, `sudo ./install.sh --port 9001` | Prints `--port は初回だけ効きます。今の koyomi.toml の port を使います。`; `koyomi.toml` still has `port = 8790` |
+| 121.7 | `sudo ./install.sh --uninstall` | `/etc/systemd/system/koyomi.service`, `/usr/local/bin/koyomi` and `/usr/local/sbin/koyomi-secret` are gone; `/var/lib/koyomi`, `/etc/koyomi/credentials/http-admin` and the user `koyomi` are still there; the output names them and the `sudo rm -rf …` command, which it does not run |
+| 121.8 | Install again; pipe `test-1` with no newline into `sudo koyomi-secret http-test` with the engine running | Prints `書きました: /etc/koyomi/credentials/http-test`, `koyomi を再起動します。` and `再起動しました。`; `sudo cat` of the file prints `test-1` with no newline |
+| 121.9 | `sudo koyomi-secret http-prompt` in a terminal; type `abc` at `http-prompt の値:` and press Enter | Nothing shows while typing; `sudo cat` of the file prints `abc` |
+| 121.10 | `sudo stat -c '%a %U:%G' /etc/koyomi/credentials/http-test` | `600 root:root` |
+| 121.11 | Pipe nothing into `sudo koyomi-secret http-empty`; then pipe `x` into `sudo koyomi-secret 'bad name'` | First: `値が空です。何も書きませんでした。`, exit 1. Second: `名前が使えません:`, exit 2. No file is written in either case |
+| 121.12 | `sudo koyomi-secret http-test secret-value` | Prints the usage, exit 2; the file is unchanged |
+| 121.13 | With 保守/夜間 running (`sudo -H -u koyomi koyomi run 保守/夜間`), `time sudo systemctl stop koyomi` | Returns within 30 seconds; `systemctl is-active koyomi` is `inactive`; no `sleep 600` is left (`pgrep -a sleep`); the unit does not restart |
+| 121.14 | After 121.13, `sudo systemctl start koyomi`, then `sudo -H -u koyomi koyomi history` | The run is over, not listed as running; its job is written as `強制終了`, or as `エンジンが止まった` when it did not stop within the wait |
+| 121.15 | `sudo -H -u koyomi koyomi engine stop`; wait 15 seconds; then `sudo systemctl start koyomi` | After the stop the unit stays `inactive` (no automatic restart); after the start it is `active` |
+| 121.16 | `sudo systemctl restart koyomi` | `active` within 10 seconds; `journalctl -u koyomi -n 20 --no-pager` shows no error |
+| 121.17 | `curl -sk -X POST https://<addr>:8790/door -H "Authorization: Bearer <view token>" -H "Content-Type: application/json" -d '{"proto": 45, "request": "Status"}' -w ' %{http_code}\n'` (`-k`: the engine's own certificate) | `200`; the body is `{"ok": true, "text": …}`. The rows below change the token and the `request`: a request with no fields is a string (`"Status"`), one with fields an object (`{"Hold": {"id": "保守/夜間", "job": null}}`) |
+| 121.18 | `view` token, `{"Hold": {"id": "保守/夜間", "job": null}}` | `403`; the body says `<name> は view のロール。これには run が要る` |
+| 121.19 | `run` token, the same `Hold`; then `{"Release": {"id": "保守/夜間", "job": null}}` | `200` with `"ok": true` both times |
+| 121.20 | `run` token, `"List"` | `403`; the body says `これには edit が要る` |
+| 121.21 | `edit` token, `"List"` | `200` with `"ok": true` |
+| 121.22 | `edit` token, `"Pause"` | `403`; the body says `これには admin が要る`; the engine keeps running |
+| 121.23 | `admin` token, `"Pause"`, then `"Resume"` | Both `200` with `"ok": true`; nets start again after `"Resume"` |
+| 121.24 | `"Stop"` with each of the `view`, `run`, `edit` and `admin` tokens | `403` every time; the body says `これは /door からはできない`; `systemctl is-active koyomi` is still `active` |
+| 121.25 | `"Status"` with no `Authorization` header, then with `Bearer nope` | `401` both times |
+| 121.26 | `admin` token, body `{"proto": 44, "request": "Status"}` | `409`; the body has `"proto": 45` and a `"version"`, and `"error"` says `窓とエンジンの版が違う（窓 44、エンジン 45）` |
+| 121.27 | `edit` token, `{"Propose": {"id": "保守/夜間", "text": "<the net with one command changed>", "base_sha256": "<sha256 of the current text>"}}` | `200` with `"ok": true`; `sudo -H -u koyomi koyomi list` shows the net `▲ 未確認` |
+| 121.28 | `run` token, `{"Approve": {"id": "保守/夜間", "sha256": "<sha256 of the proposed text>"}}` | `403`; the body says `これには admin が要る`; the net stays `▲ 未確認` |
+| 121.29 | `admin` token, the same `Approve` | `200` with `"ok": true`; `koyomi list` no longer shows `▲ 未確認` for the net; `sudo -H -u koyomi koyomi ops` has an approve line that names `admin` |
+| 121.30 | Propose another change, then `admin` token, `Approve` with 64 zeros as `sha256` | `200` with `"ok": false` and an error; the net stays `▲ 未確認`; no new approve line in `koyomi ops` |
+| 121.31 | `admin` token, `{"CalendarPut": {"name": "Office", "text": "format = 1\n", "base_sha256": null}}` | `200` with `"ok": true`; `calendars/Office.toml` has that text |
+| 121.32 | `edit` token, `{"CalendarText": {"name": "Office"}}` | `200` with `"ok": true`; the text holds the calendar and its `sha256` |
+| 121.33 | `admin` token, `CalendarPut` with `"name": "office"` and `"text": "format = 1\nweekly_off = [\"sun\"]\n"` | `200` with `"ok": true`; `calendars/Office.toml` and `calendars/office.toml` both exist |
+| 121.34 | `admin` token, `{"CalendarRename": {"from": "Office", "to": "office"}}` | `200` with `"ok": false`; the error is `移し先の暦がもうある: office`; both files are unchanged (`sha256sum` before and after) |
+| 121.35 | `admin` token, `CalendarPut` of `Office` with a wrong `base_sha256`, then with the current `sha256` | First: `"ok": false`, the error says `ほかで変わっています`, the file is unchanged. Second: `"ok": true`; the old text is kept under `versions/_calendars/Office/` in the engine's state folder |
+| 121.36 | `admin` token, `{"CalendarDelete": {"name": "office", "base_sha256": "<wrong hash>"}}`, then with the current hash | Wrong hash: `"ok": false`, the error says `ほかで変わっています`, the file stays. Current hash: `"ok": true`; `calendars/office.toml` is gone; its old text is kept under `versions/_calendars/office/` |

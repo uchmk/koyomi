@@ -209,13 +209,14 @@ pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_s
         .user
         .clone()
         .or_else(|| std::env::var("USERNAME").ok())
+        .or_else(|| std::env::var("USER").ok())
         .ok_or_else(|| format!("ユーザーがわからない（{scheme}://ユーザー@ホスト と書く）"))?;
     let auth = if let Some(k) = env_var(&prefix, "KEY") {
         ito_sftp::Auth::Key { path: PathBuf::from(k), passphrase: None }
     } else if let Some(p) = env_var(&prefix, "PASSWORD") {
         ito_sftp::Auth::Password(password(p)?)
     } else {
-        let ssh = std::env::var_os("USERPROFILE").map(|h| PathBuf::from(h).join(".ssh")).ok_or("USERPROFILE がない")?;
+        let ssh = ito_common::home_dir().map(|h| h.join(".ssh")).ok_or("ホームフォルダーがわからない")?;
         let key = ["id_ed25519", "id_ecdsa"]
             .iter()
             .map(|n| ssh.join(n))

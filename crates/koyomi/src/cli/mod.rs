@@ -1735,7 +1735,7 @@ fn stage_file(id: &str, file: &str, from: &str) -> i32 {
     if !answer.trim().eq_ignore_ascii_case("y") {
         return fail(&format!("{id}: 置かなかった"));
     }
-    ask_and_say(&Request::Stage { id: id.to_owned(), text, from: from.to_owned() })
+    ask_and_say(&Request::Stage { id: id.to_owned(), text, from: from.to_owned(), expect: None })
 }
 
 /// `koyomi export -o <file> …`: reads the settings folder itself (the engine need not be up)

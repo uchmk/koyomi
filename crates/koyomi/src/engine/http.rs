@@ -231,9 +231,15 @@ fn tailnet(cfg: &config::Http, port: u16) -> ito_http::Tailnet {
 }
 
 fn start(cfg: &config::Http) -> Result<Server, String> {
+    let mut tokens = BTreeMap::new();
     let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { token(cfg.secret())? });
+    if !cfg.secret().is_empty() {
+        tokens.insert("default".to_owned(), c.token.clone());
+    }
     for u in cfg.user.iter().filter(|u| !u.secret().is_empty()) {
-        c = c.token_named(u.name.trim(), token(u.secret())?);
+        let t = token(u.secret())?;
+        tokens.insert(u.name.trim().to_owned(), t.clone());
+        c = c.token_named(u.name.trim(), t);
     }
     c.tailnet = cfg.tailnet.map(|port| tailnet(cfg, port));
     for path in PAGES.iter().map(|(p, ..)| *p).chain([THEME_CSS]) {
@@ -241,6 +247,8 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     }
     c.sessions = true;
     c.ipv6 = cfg.ipv6;
+    // `Import` and `Save` over `POST /door` carry whole files; the token is checked before the body is read.
+    c.max_body = MAX_BODY;
     let at = if cfg.lan {
         let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
         c.bind = ito_http::Bind::Lan { addr: None, tls: ito_http::TlsCfg::new(dir) };
@@ -252,16 +260,42 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
         Some(port) => format!("{at}・tailnet :{port}"),
         None => at,
     };
-    let (roles, access) = (roles(cfg), access(cfg));
+    let gate = Gate { roles: roles(cfg), access: access(cfg), tokens };
     let serve = move |req: ito_http::Request| {
         let by = req.who.clone().unwrap_or_default();
         let ask = |r: &Request| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) });
-        page(&req).or_else(|| allowed(&req, &roles)).or_else(|| me(&req, &roles, &access)).unwrap_or_else(|| match access.get(&by) {
-            Some(a) => within(&req, a, ask),
-            None => handle(&req, ask),
-        })
+        gate.serve(&req, ask)
     };
     Server::start(c, serve, log).map_err(|e| format!("{at}: {e}"))
+}
+
+/// The largest body accepted: `POST /door` carries whole files (`Import`, `Save`, a holiday table).
+const MAX_BODY: usize = 4 * 1024 * 1024;
+
+/// Who may do what, and the tokens that let them in: everything [`Gate::serve`] judges a request by.
+struct Gate {
+    roles: BTreeMap<String, Role>,
+    access: BTreeMap<String, Access>,
+    /// Each caller's token by name (`default` for `[http]`'s), to tell a bearer token from a cookie or the
+    /// tailnet: `ito_http::Request` does not say how the caller was let in.
+    tokens: BTreeMap<String, String>,
+}
+
+impl Gate {
+    /// The answer to one request: the Web UI's files, then the role's gate, `/me`, `POST /door`, and the REST
+    /// paths (cut to the nets of a caller narrowed by `nets` or `roles`). `ask` sends a request to the engine
+    /// as the caller.
+    fn serve(&self, req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+        let by = req.who.clone().unwrap_or_default();
+        page(req)
+            .or_else(|| allowed(req, &self.roles))
+            .or_else(|| me(req, &self.roles, &self.access))
+            .or_else(|| door(req, self, &ask))
+            .unwrap_or_else(|| match self.access.get(&by) {
+                Some(a) => within(req, a, ask),
+                None => handle(req, ask),
+            })
+    }
 }
 
 /// The Web UI's files, kept in the exe: path, content type, body.
@@ -450,6 +484,81 @@ fn run_net(id: &str, ask: &impl Fn(&Request) -> Result<String, String>) -> Optio
         let day = started_on(id)?;
         find(&Request::History { from: day.clone(), to: day })
     })
+}
+
+/// `POST /door`: any request the window sends its own engine, for another PC's window. The body is
+/// `{"proto": <PROTO>, "request": <Request as JSON>}`; the answer is 200 with `{"ok": true, "text": …}` or
+/// `{"ok": false, "error": …}` in the engine's own words. 405 for another method, 409 when the window and the
+/// engine speak another `PROTO`, 400 when the body does not read.
+///
+/// Only a bearer token comes in: not a browser's session cookie, not the tailnet, not a caller narrowed by
+/// `nets` or `roles` (which [`within`] cuts per net and this does not). What each request needs is
+/// [`proto::door_needs`]; what it does not place (`Save{force}`, `Stage` without `expect`, `Stop`, ...) is refused.
+fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<String, String>) -> Option<Response> {
+    if req.path.trim_end_matches('/') != "/door" {
+        return None;
+    }
+    if req.method != "POST" {
+        return Some(Response::error(405, "POST で送る"));
+    }
+    let who = req.who.as_deref().unwrap_or_default();
+    if !bearer_of(req, &gate.tokens) {
+        return Some(Response::error(403, &format!("{who}: /door は token（Authorization: Bearer）でだけ使える")));
+    }
+    if gate.access.contains_key(who) {
+        return Some(Response::error(403, &format!("{who}: nets か roles で絞った利用者は /door を使えない")));
+    }
+    let body = match req.json::<serde_json::Value>() {
+        Ok(Some(v)) => v,
+        Ok(None) => return Some(Response::error(400, "本文が要る: {\"proto\": …, \"request\": …}")),
+        Err(e) => return Some(Response::error(400, &format!("本文が JSON として読めない: {e}"))),
+    };
+    let Some(sent) = body.get("proto").and_then(serde_json::Value::as_u64) else {
+        return Some(Response::error(400, "proto が要る（数）"));
+    };
+    if sent != u64::from(proto::PROTO) {
+        return Some(Response::new(
+            409,
+            serde_json::json!({
+                "error": format!("窓とエンジンの版が違う（窓 {sent}、エンジン {}）", proto::PROTO),
+                "proto": proto::PROTO,
+                "version": env!("CARGO_PKG_VERSION"),
+            }),
+        ));
+    }
+    let Some(request) = body.get("request") else {
+        return Some(Response::error(400, "request が要る"));
+    };
+    let request: Request = match serde_json::from_value(request.clone()) {
+        Ok(r) => r,
+        Err(e) => return Some(Response::error(400, &format!("request が読めない: {e}"))),
+    };
+    let Some(needs) = proto::door_needs(&request) else {
+        return Some(Response::error(403, &format!("{who}: これは /door からはできない")));
+    };
+    match gate.roles.get(who).copied() {
+        Some(has) if has.allows(needs) => {}
+        Some(has) => return Some(Response::error(403, &format!("{who} は {has} のロール。これには {needs} が要る"))),
+        None => return Some(Response::error(403, &format!("{who} は [[http.user]] にない"))),
+    }
+    Some(Response::ok(match ask(&request) {
+        Ok(text) => serde_json::json!({ "ok": true, "text": text }),
+        Err(error) => serde_json::json!({ "ok": false, "error": error }),
+    }))
+}
+
+/// Whether the request came in with a bearer token that is its caller's own, so not with a session cookie or
+/// on the tailnet. ito-http lets a good bearer token win over a cookie, so a header that matches the token of
+/// `who` means the token let it in (the pinned `ito_http::Request` has no `via`).
+fn bearer_of(req: &ito_http::Request, tokens: &BTreeMap<String, String>) -> bool {
+    let Some(want) = req.who.as_deref().and_then(|w| tokens.get(w)) else { return false };
+    let sent = req.headers.iter().find(|(k, _)| k == "authorization").and_then(|(_, v)| v.split_once(' '));
+    sent.is_some_and(|(scheme, t)| scheme.eq_ignore_ascii_case("bearer") && same(t.trim().as_bytes(), want.as_bytes()))
+}
+
+/// Equal bytes, compared without stopping at the first difference.
+fn same(a: &[u8], b: &[u8]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
 }
 
 /// A refusal when the caller's role does not reach what the request needs; `None` lets it through.
@@ -1464,17 +1573,12 @@ mod tests {
         let ask = |_: &Request| Ok::<_, String>("20261031-090000-01".to_owned());
         let server = Server::start(ito_http::Config::new(0, "tok"), move |r| handle(&r, ask), |_| {}).expect("listen");
         let send = |auth: &str| {
-            let mut c = std::net::TcpStream::connect(("127.0.0.1", server.port())).expect("connect");
             let body = r#"{"net":"g/a"}"#;
-            write!(
-                c,
+            let request = format!(
                 "POST /runs HTTP/1.1\r\nHost: x\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
                 body.len()
-            )
-            .expect("send");
-            let mut out = String::new();
-            let _ = c.read_to_string(&mut out);
-            out
+            );
+            send_raw(server.port(), &request)
         };
         assert!(send("").starts_with("HTTP/1.1 401"), "{}", send(""));
         assert!(send("Authorization: Bearer nope\r\n").starts_with("HTTP/1.1 401"));
@@ -1655,5 +1759,215 @@ high_contrast = true
         assert_eq!(handle(&req("POST", "/runs/20261031-090000-01/stop", ""), ask).status, 200);
         assert!(asked.borrow()[0].starts_with("Kill") && asked.borrow()[0].contains("job: None"), "{:?}", asked.borrow());
         assert_eq!(handle(&req("GET", "/runs/20261031-090000-01/stop", ""), ask).status, 405);
+    }
+
+    /// A gate of five callers: `default` (run), `root` (admin), `ed` (edit), `look` (view) and `narrow`
+    /// (run, cut to some nets), each with the token `tok-<name>`.
+    fn gate() -> Gate {
+        let cfg = config::Config::parse(
+            "[http]\nport = 8790\ntoken = \"secret:t\"\n\
+             [[http.user]]\nname = \"root\"\nrole = \"admin\"\ntoken = \"secret:r\"\n\
+             [[http.user]]\nname = \"ed\"\nrole = \"edit\"\ntoken = \"secret:e\"\n\
+             [[http.user]]\nname = \"look\"\nrole = \"view\"\ntoken = \"secret:l\"\n\
+             [[http.user]]\nname = \"narrow\"\nrole = \"run\"\nnets = [\"経理/*\"]\ntoken = \"secret:n\"\n",
+        )
+        .unwrap();
+        let http = cfg.http.as_ref().unwrap();
+        let tokens = ["default", "root", "ed", "look", "narrow"].iter().map(|n| ((*n).to_owned(), format!("tok-{n}"))).collect();
+        Gate { roles: roles(http), access: access(http), tokens }
+    }
+
+    /// `POST /door` as `who`, with its bearer token (or none) and the JSON `body`.
+    fn at_door(who: &str, bearer: bool, body: &str) -> ito_http::Request {
+        let mut r = req("POST", "/door", body);
+        r.who = Some(who.to_owned());
+        if bearer {
+            r.headers.push(("authorization".to_owned(), format!("Bearer tok-{who}")));
+        }
+        r
+    }
+
+    fn door_body(request: serde_json::Value) -> String {
+        serde_json::json!({ "proto": proto::PROTO, "request": request }).to_string()
+    }
+
+    /// The status of `r` through the gate, and the requests that reached the engine.
+    fn through(g: &Gate, r: &ito_http::Request) -> (u16, serde_json::Value, Vec<Request>) {
+        let seen = RefCell::new(Vec::new());
+        let ask = |q: &Request| {
+            seen.borrow_mut().push(q.clone());
+            Ok("done".to_owned())
+        };
+        let out = g.serve(r, ask);
+        (out.status, out.json, seen.into_inner())
+    }
+
+    #[test]
+    fn the_door_lets_each_role_send_what_it_may() {
+        let g = gate();
+        let status = door_body(serde_json::json!("Status"));
+        let pause = door_body(serde_json::json!("Pause"));
+        let run = door_body(serde_json::json!({"Hold": {"id": "g/a", "job": null}}));
+        let list = door_body(serde_json::json!("List"));
+        for (who, body, want) in [
+            ("look", &status, 200),
+            ("look", &run, 403),
+            ("default", &run, 200),
+            ("default", &list, 403),
+            ("ed", &list, 200),
+            ("ed", &pause, 403),
+            ("root", &pause, 200),
+            ("root", &list, 200),
+        ] {
+            let (code, json, seen) = through(&g, &at_door(who, true, body));
+            assert_eq!(code, want, "{who} {body}: {json}");
+            assert_eq!(seen.len(), usize::from(want == 200), "{who} {body}");
+        }
+        // The answer is the engine's own words.
+        let (_, json, _) = through(&g, &at_door("root", true, &pause));
+        assert_eq!(json, serde_json::json!({"ok": true, "text": "done"}));
+    }
+
+    #[test]
+    fn the_door_takes_a_bearer_token_alone() {
+        let g = gate();
+        let body = door_body(serde_json::json!("Status"));
+        // a session cookie or the tailnet: let in as `root`, but with no bearer header
+        assert_eq!(through(&g, &at_door("root", false, &body)).0, 403);
+        // another caller's token in the header
+        let mut other = at_door("root", false, &body);
+        other.headers.push(("authorization".to_owned(), "Bearer tok-look".to_owned()));
+        assert_eq!(through(&g, &other).0, 403);
+        // a caller narrowed by nets is refused even with the token
+        assert_eq!(through(&g, &at_door("narrow", true, &body)).0, 403);
+        // another method
+        let mut get = at_door("root", true, &body);
+        get.method = "GET".to_owned();
+        assert_eq!(through(&g, &get).0, 405);
+    }
+
+    #[test]
+    fn the_door_answers_a_wrong_version_and_a_bad_body() {
+        let g = gate();
+        let old = serde_json::json!({"proto": proto::PROTO - 1, "request": "Status"}).to_string();
+        let (code, json, seen) = through(&g, &at_door("root", true, &old));
+        assert_eq!(code, 409);
+        assert_eq!(json["proto"], serde_json::json!(proto::PROTO));
+        assert!(json["error"].as_str().is_some_and(|e| e.contains("版が違う")) && json["version"].is_string());
+        assert!(seen.is_empty());
+        for body in
+            ["", "{", "{\"request\": \"Status\"}", &format!("{{\"proto\": {}}}", proto::PROTO), &door_body(serde_json::json!("Nope"))]
+        {
+            assert_eq!(through(&g, &at_door("root", true, body)).0, 400, "{body}");
+        }
+    }
+
+    #[test]
+    fn the_door_does_not_confirm_what_no_one_compared() {
+        let g = gate();
+        let save = |force: bool| door_body(serde_json::json!({"Save": {"id": "g/a", "text": "x", "base_sha256": null, "force": force}}));
+        assert_eq!(through(&g, &at_door("root", true, &save(false))).0, 200);
+        assert_eq!(through(&g, &at_door("root", true, &save(true))).0, 403);
+        let stage = |expect: serde_json::Value| {
+            door_body(serde_json::json!({"Stage": {"id": "g/a", "text": "x", "from": "2099-12-01", "expect": expect}}))
+        };
+        assert_eq!(through(&g, &at_door("root", true, &stage(serde_json::json!({"live": "h", "staged": null})))).0, 200);
+        assert_eq!(through(&g, &at_door("root", true, &stage(serde_json::Value::Null))).0, 403);
+        // what is for this PC alone
+        assert_eq!(through(&g, &at_door("root", true, &door_body(serde_json::json!("Stop")))).0, 403);
+        let release = door_body(serde_json::json!({"Handover": {"release": true}}));
+        assert_eq!(through(&g, &at_door("root", true, &release)).0, 403);
+        let read = door_body(serde_json::json!({"Handover": {"release": false}}));
+        assert_eq!(through(&g, &at_door("look", true, &read)).0, 200);
+    }
+
+    #[test]
+    fn the_door_hands_the_caller_to_the_engine_once() {
+        // `serve` gives `ask` the caller's name; the door sends the bare request through it (no second `Over`).
+        let g = gate();
+        let (_, _, seen) = through(&g, &at_door("root", true, &door_body(serde_json::json!("Pause"))));
+        assert!(matches!(seen.as_slice(), [Request::Pause]));
+    }
+
+    /// One raw request over a real connection. A reply with no status line at all is asked for again (up to
+    /// 5 tries): replies were seen lost on loopback on this PC. A reply that has a status is never retried,
+    /// so a wrong status still fails the caller's assertion.
+    fn send_raw(port: u16, request: &str) -> String {
+        let mut out = String::new();
+        for _ in 0..5 {
+            let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).expect("connect");
+            c.set_read_timeout(Some(Duration::from_secs(5))).expect("timeout");
+            let _ = c.write_all(request.as_bytes());
+            out.clear();
+            let _ = c.read_to_string(&mut out);
+            if out.starts_with("HTTP/") {
+                break;
+            }
+        }
+        out
+    }
+
+    /// The server as the engine starts it (a token per caller, the body limit, the real gate), but with
+    /// an `ask` that answers "done" to anything, so a repeated request does no harm.
+    fn door_server() -> Server {
+        let g = gate();
+        let mut c = ito_http::Config::new(0, "tok-default");
+        for n in ["root", "ed", "look", "narrow"] {
+            c = c.token_named(n, format!("tok-{n}"));
+        }
+        c.max_body = MAX_BODY;
+        Server::start(c, move |r| g.serve(&r, |_: &Request| Ok::<_, String>("done".to_owned())), |_| {}).expect("listen")
+    }
+
+    fn post_door(port: u16, bearer: Option<&str>, body: &str) -> String {
+        let auth = bearer.map(|t| format!("Authorization: Bearer {t}\r\n")).unwrap_or_default();
+        let head =
+            format!("POST /door HTTP/1.1\r\nHost: x\r\n{auth}Content-Type: application/json\r\nContent-Length: {}\r\n\r\n", body.len());
+        send_raw(port, &format!("{head}{body}"))
+    }
+
+    #[test]
+    fn the_door_over_a_real_connection_answers_by_role() {
+        let server = door_server();
+        let port = server.port();
+        let status = door_body(serde_json::json!("Status"));
+        let hold = door_body(serde_json::json!({"Hold": {"id": "g/a", "job": null}}));
+        let list = door_body(serde_json::json!("List"));
+        let pause = door_body(serde_json::json!("Pause"));
+        let stop = door_body(serde_json::json!("Stop"));
+        // view (look), run (default), edit (ed), admin (root): what each may send, then what it may not.
+        for (who, body, want) in [
+            ("look", &status, 200),
+            ("look", &hold, 403),
+            ("default", &hold, 200),
+            ("default", &list, 403),
+            ("ed", &list, 200),
+            ("ed", &pause, 403),
+            ("root", &pause, 200),
+            ("root", &stop, 403),
+        ] {
+            let reply = post_door(port, Some(&format!("tok-{who}")), body);
+            assert!(reply.starts_with(&format!("HTTP/1.1 {want}")), "{who} {body}: {reply}");
+        }
+        let ok = post_door(port, Some("tok-root"), &pause);
+        assert!(ok.contains("\"ok\":true") && ok.contains("done"), "{ok}");
+        // no token, a wrong token
+        assert!(post_door(port, None, &status).starts_with("HTTP/1.1 401"));
+        assert!(post_door(port, Some("nope"), &status).starts_with("HTTP/1.1 401"));
+        // a wrong version
+        let old = serde_json::json!({"proto": proto::PROTO - 1, "request": "Status"}).to_string();
+        assert!(post_door(port, Some("tok-root"), &old).starts_with("HTTP/1.1 409"));
+        server.stop();
+    }
+
+    #[test]
+    fn the_door_refuses_a_body_over_the_limit_before_reading_it() {
+        let server = door_server();
+        let head = format!(
+            "POST /door HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer tok-root\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY + 1
+        );
+        assert!(send_raw(server.port(), &head).starts_with("HTTP/1.1 413"));
+        server.stop();
     }
 }

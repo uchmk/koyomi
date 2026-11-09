@@ -10,13 +10,14 @@ use ito_ipc::door::Door;
 use koyomi_core::blackout::{self, Blackout};
 use koyomi_core::calendar::Calendar;
 use koyomi_core::held::{HeldJob, Skip};
+use koyomi_core::role::Role;
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 44;
+pub const PROTO: u32 = 45;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -228,15 +229,192 @@ pub enum Request {
     /// the net runs as it is; at its start the engine writes the text as the net's file (the
     /// old one under `versions/`) before any time of the day starts. One per net: staging again
     /// replaces it. Only from this PC's window or command line, like an approval.
+    ///
+    /// `expect` (from a window that read the definition and the staged one before the person
+    /// edited; `None` from the command line): what they must still be, else it is refused with
+    /// `ほかで変わっています`. `POST /door` takes only a request with it.
     Stage {
         id: String,
         text: String,
         from: String,
+        #[serde(default)]
+        expect: Option<StageExpect>,
     },
     /// Drop what was staged for `id`: the net runs as it is.
     Unstage {
         id: String,
     },
+    /// The text of the calendar `name` (`calendars/<name>.toml`) and its SHA-256, as a [`CalendarBody`].
+    CalendarText {
+        name: String,
+    },
+    /// Write `text` as the calendar `name`; the file as it was goes under `versions/_calendars/`.
+    /// `base_sha256` is what the file hashed to when it was read (`None`: a new calendar); when it
+    /// is not that now, the write is refused with `ほかで変わっています`.
+    CalendarPut {
+        name: String,
+        text: String,
+        base_sha256: Option<String>,
+    },
+    /// Give the calendar `from` the name `to`; refused when `to` is there.
+    CalendarRename {
+        from: String,
+        to: String,
+    },
+    /// Take the calendar `name` away (kept under `versions/_calendars/`), if it still hashes to `base_sha256`.
+    CalendarDelete {
+        name: String,
+        base_sha256: String,
+    },
+    /// Write `bytes` as the holiday table, over the one there (which is kept).
+    HolidayTable {
+        bytes: Vec<u8>,
+    },
+    /// Everything in the settings folder as one bundle (`koyomi export --all`), as its TOML.
+    ExportAll,
+}
+
+/// What a window read before it staged a definition: the live definition's SHA-256 (the version the
+/// text was edited from), and the seal of the staged one it saw ([`koyomi_core::next::Entry::seal`];
+/// `None`: none staged).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StageExpect {
+    pub live: String,
+    #[serde(default)]
+    pub staged: Option<String>,
+}
+
+/// What `CalendarText` answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CalendarBody {
+    pub text: String,
+    pub sha256: String,
+}
+
+impl CalendarBody {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    /// Read by a window of another PC, which is wired apart from the engine.
+    #[allow(dead_code)]
+    pub fn parse(text: &str) -> Result<CalendarBody, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// The role `POST /door` asks for to pass `r` on to the engine; `None`: it cannot be done from there
+/// (it is for this PC alone, or it is not for HTTP to confirm). A `match` without a wildcard: a new
+/// request does not compile until it is placed here.
+///
+/// `List` needs `edit` because the snapshot holds every definition's text, which `view` and `run`
+/// may not read (`role::needs`). `Save{force}` and `Stage` without `expect` are not let through:
+/// they would confirm what no one compared.
+pub fn door_needs(r: &Request) -> Option<Role> {
+    match r {
+        Request::Status | Request::Runs | Request::History { .. } | Request::Log { .. } | Request::Ops { .. } => Some(Role::View),
+        Request::Handover { release: false } => Some(Role::View),
+        Request::Run { .. }
+        | Request::Rerun { .. }
+        | Request::Kill { .. }
+        | Request::Skip { .. }
+        | Request::Answer { .. }
+        | Request::Hold { .. }
+        | Request::Release { .. }
+        | Request::SkipNext { .. }
+        | Request::Shift { .. } => Some(Role::Run),
+        Request::List
+        | Request::Show { .. }
+        | Request::Versions { .. }
+        | Request::VersionText { .. }
+        | Request::Uses { .. }
+        | Request::CalendarText { .. }
+        | Request::Propose { .. }
+        | Request::Copy { .. }
+        | Request::Restore { .. }
+        | Request::Replace { .. } => Some(Role::Edit),
+        Request::Save { force: false, .. }
+        | Request::Approve { .. }
+        | Request::Stage { expect: Some(_), .. }
+        | Request::Unstage { .. }
+        | Request::Import { .. }
+        | Request::Rename { .. }
+        | Request::Delete { .. }
+        | Request::Pause
+        | Request::Resume
+        | Request::CalendarPut { .. }
+        | Request::CalendarRename { .. }
+        | Request::CalendarDelete { .. }
+        | Request::HolidayTable { .. }
+        | Request::ExportAll => Some(Role::Admin),
+        Request::Stop
+        | Request::Tray { .. }
+        | Request::Standby { .. }
+        | Request::Handover { release: true }
+        | Request::Over { .. }
+        | Request::Save { force: true, .. }
+        | Request::Stage { expect: None, .. } => None,
+    }
+}
+
+impl Request {
+    /// Whether the request leaves the engine as it was: a failed read can be asked again, and one
+    /// that is not (a run, a save …) is never sent twice on its own. A `match` without a wildcard.
+    #[allow(dead_code)] // the window of another PC decides its retries by this
+    pub fn is_read(&self) -> bool {
+        is_read(self)
+    }
+}
+
+/// See [`Request::is_read`].
+#[allow(dead_code)]
+pub fn is_read(r: &Request) -> bool {
+    match r {
+        Request::Status
+        | Request::Runs
+        | Request::History { .. }
+        | Request::Log { .. }
+        | Request::Ops { .. }
+        | Request::Handover { release: false }
+        | Request::List
+        | Request::Show { .. }
+        | Request::Versions { .. }
+        | Request::VersionText { .. }
+        | Request::Uses { .. }
+        | Request::CalendarText { .. }
+        | Request::ExportAll
+        | Request::Tray { .. } => true,
+        Request::Stop
+        | Request::Approve { .. }
+        | Request::Run { .. }
+        | Request::Rerun { .. }
+        | Request::Kill { .. }
+        | Request::Hold { .. }
+        | Request::Release { .. }
+        | Request::Skip { .. }
+        | Request::Answer { .. }
+        | Request::Shift { .. }
+        | Request::SkipNext { .. }
+        | Request::Pause
+        | Request::Resume
+        | Request::Standby { .. }
+        | Request::Handover { release: true }
+        | Request::Over { .. }
+        | Request::Save { .. }
+        | Request::Restore { .. }
+        | Request::Rename { .. }
+        | Request::Copy { .. }
+        | Request::Replace { .. }
+        | Request::Delete { .. }
+        | Request::Import { .. }
+        | Request::Propose { .. }
+        | Request::Stage { .. }
+        | Request::Unstage { .. }
+        | Request::CalendarPut { .. }
+        | Request::CalendarRename { .. }
+        | Request::CalendarDelete { .. }
+        | Request::HolidayTable { .. } => false,
+    }
 }
 
 pub fn door() -> Door<Request> {
@@ -311,6 +489,13 @@ pub struct Snapshot {
     /// The definitions staged to take over on a day (`next.toml`), earliest first.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub staged: Vec<koyomi_core::next::Entry>,
+    /// The ids of the nets a warning bears on (approving them is refused), counted by the engine
+    /// from the paths it knows: a window on another PC cannot.
+    #[serde(default)]
+    pub blocked: Vec<String>,
+    /// The engine's offset from UTC in minutes: a window in another zone counts today differently.
+    #[serde(default)]
+    pub utc_offset_min: i32,
 }
 
 /// How this PC sleeps and whether the engine can wake it (`wake = true` nets).
@@ -557,5 +742,148 @@ mod tests {
         // A note without a tag (an engine before PROTO 35) reads as one that only shows.
         let old = TrayView::parse("last = 1\n[[note]]\nseq = 1\nevent = \"failed\"\ntitle = \"t\"\nbody = \"b\"\n").unwrap();
         assert_eq!(old.notes[0].tag, "");
+    }
+
+    fn id() -> String {
+        "g/a".to_owned()
+    }
+
+    fn save(force: bool) -> Request {
+        Request::Save { id: id(), text: "x".into(), base_sha256: None, force }
+    }
+
+    fn stage(expect: Option<StageExpect>) -> Request {
+        Request::Stage { id: id(), text: "x".into(), from: "2099-12-01".into(), expect }
+    }
+
+    fn expect() -> Option<StageExpect> {
+        Some(StageExpect { live: "a".into(), staged: None })
+    }
+
+    /// every request with the role `POST /door` asks for it: the table of the design, line by line.
+    #[test]
+    fn the_door_table_places_every_request() {
+        use Role::{Admin, Edit, Run, View};
+        let run = || Request::Run { id: id(), date: None, from: None, dry: false, params: BTreeMap::new() };
+        let table: Vec<(Request, Option<Role>)> = vec![
+            (Request::Status, Some(View)),
+            (Request::Runs, Some(View)),
+            (Request::History { from: "2026-11-01".into(), to: "2026-11-02".into() }, Some(View)),
+            (Request::Log { run: "r".into(), job: "j".into() }, Some(View)),
+            (Request::Ops { from: "2026-11-01".into(), to: "2026-11-02".into() }, Some(View)),
+            (Request::Handover { release: false }, Some(View)),
+            (Request::Handover { release: true }, None),
+            (run(), Some(Run)),
+            (Request::Rerun { run: "r".into(), from: None, next: None }, Some(Run)),
+            (Request::Kill { run: "r".into(), job: None }, Some(Run)),
+            (Request::Skip { run: "r".into(), job: "j".into() }, Some(Run)),
+            (Request::Answer { run: "r".into(), job: "j".into(), yes: true }, Some(Run)),
+            (Request::Hold { id: id(), job: None }, Some(Run)),
+            (Request::Release { id: id(), job: None }, Some(Run)),
+            (Request::SkipNext { id: id(), cancel: false }, Some(Run)),
+            (Request::Shift { id: id(), from: "2026-11-01 09:00".into(), to: None }, Some(Run)),
+            (Request::List, Some(Edit)),
+            (Request::Show { id: id() }, Some(Edit)),
+            (Request::Versions { id: id() }, Some(Edit)),
+            (Request::VersionText { id: id(), version: "current".into() }, Some(Edit)),
+            (Request::Uses { target: "g/a".into() }, Some(Edit)),
+            (Request::CalendarText { name: "c".into() }, Some(Edit)),
+            (Request::Propose { id: id(), text: "x".into(), base_sha256: None }, Some(Edit)),
+            (Request::Copy { id: id(), to: "g/b".into(), title: None }, Some(Edit)),
+            (Request::Restore { id: id(), version: "v".into() }, Some(Edit)),
+            (Request::Replace { from: "a".into(), to: "b".into(), apply: true }, Some(Edit)),
+            (save(false), Some(Admin)),
+            (save(true), None),
+            (Request::Approve { id: id(), sha256: "s".into() }, Some(Admin)),
+            (stage(expect()), Some(Admin)),
+            (stage(None), None),
+            (Request::Unstage { id: id() }, Some(Admin)),
+            (Request::Import { text: String::new(), dry_run: false, on_conflict: None }, Some(Admin)),
+            (Request::Rename { id: id(), to: "g/b".into(), fix: false }, Some(Admin)),
+            (Request::Delete { id: id() }, Some(Admin)),
+            (Request::Pause, Some(Admin)),
+            (Request::Resume, Some(Admin)),
+            (Request::CalendarPut { name: "c".into(), text: String::new(), base_sha256: None }, Some(Admin)),
+            (Request::CalendarRename { from: "c".into(), to: "d".into() }, Some(Admin)),
+            (Request::CalendarDelete { name: "c".into(), base_sha256: "s".into() }, Some(Admin)),
+            (Request::HolidayTable { bytes: vec![1] }, Some(Admin)),
+            (Request::ExportAll, Some(Admin)),
+            (Request::Stop, None),
+            (Request::Tray { since: None }, None),
+            (Request::Standby { give_back: false }, None),
+            (Request::Standby { give_back: true }, None),
+            (Request::Over { by: "x".into(), request: Box::new(Request::Status) }, None),
+        ];
+        for (r, want) in &table {
+            assert_eq!(door_needs(r), *want, "{r:?}");
+        }
+    }
+
+    /// what leaves the engine as it was is a read; everything else may not be asked twice on its own.
+    #[test]
+    fn only_what_changes_nothing_is_a_read() {
+        let reads = [
+            Request::Status,
+            Request::Runs,
+            Request::History { from: "a".into(), to: "b".into() },
+            Request::Log { run: "r".into(), job: "j".into() },
+            Request::Ops { from: "a".into(), to: "b".into() },
+            Request::Handover { release: false },
+            Request::List,
+            Request::Show { id: id() },
+            Request::Versions { id: id() },
+            Request::VersionText { id: id(), version: "v".into() },
+            Request::Uses { target: "t".into() },
+            Request::CalendarText { name: "c".into() },
+            Request::ExportAll,
+            Request::Tray { since: None },
+        ];
+        for r in &reads {
+            assert!(r.is_read() && is_read(r), "{r:?}");
+        }
+        let writes = [
+            Request::Handover { release: true },
+            Request::Run { id: id(), date: None, from: None, dry: true, params: BTreeMap::new() },
+            Request::Stop,
+            Request::Pause,
+            save(false),
+            save(true),
+            stage(expect()),
+            stage(None),
+            Request::Approve { id: id(), sha256: "s".into() },
+            Request::CalendarPut { name: "c".into(), text: String::new(), base_sha256: None },
+            Request::HolidayTable { bytes: Vec::new() },
+            Request::Propose { id: id(), text: "x".into(), base_sha256: None },
+        ];
+        for r in &writes {
+            assert!(!r.is_read(), "{r:?}");
+        }
+    }
+
+    /// the new requests and the staged one's `expect` travel through the door and through JSON.
+    #[test]
+    fn the_new_requests_read_back() {
+        let want = StageExpect { live: "l".into(), staged: Some("s".into()) };
+        let Request::Stage { expect: got, .. } = round(&stage(Some(want.clone()))) else { panic!("not a stage") };
+        assert_eq!(got, Some(want));
+        let put = Request::CalendarPut { name: "c".into(), text: "t".into(), base_sha256: Some("b".into()) };
+        let Request::CalendarPut { name, base_sha256, .. } = round(&put) else { panic!("not a put") };
+        assert_eq!((name.as_str(), base_sha256.as_deref()), ("c", Some("b")));
+        let json = serde_json::to_string(&Request::HolidayTable { bytes: vec![1, 2] }).unwrap();
+        assert!(matches!(serde_json::from_str::<Request>(&json), Ok(Request::HolidayTable { bytes }) if bytes == [1, 2]));
+        // A stage written without `expect` (a client before PROTO 45) reads as one with none.
+        let old: Request = serde_json::from_str(r#"{"Stage":{"id":"g/a","text":"x","from":"2099-12-01"}}"#).unwrap();
+        assert!(matches!(old, Request::Stage { expect: None, .. }));
+        let body = CalendarBody { text: "a = 1\n".into(), sha256: "abc".into() };
+        assert_eq!(CalendarBody::parse(&body.to_toml()).unwrap(), body);
+    }
+
+    /// the snapshot reads back with the engine's blocked nets and offset, and without them (an older engine).
+    #[test]
+    fn the_snapshot_holds_what_a_remote_window_cannot_count() {
+        let snap = Snapshot { blocked: vec!["g/a".into()], utc_offset_min: 540, ..Snapshot::default() };
+        assert_eq!(Snapshot::parse(&snap.to_toml()).unwrap(), snap);
+        let old = Snapshot::parse("defs = []\nwarnings = []\n").unwrap();
+        assert_eq!((old.blocked.len(), old.utc_offset_min), (0, 0));
     }
 }

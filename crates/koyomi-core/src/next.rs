@@ -31,6 +31,27 @@ impl Entry {
     pub fn approved(&self) -> bool {
         crate::approved::hash(self.text.as_bytes()) == self.sha256
     }
+
+    /// A seal over everything a person sees of this staged definition: `from`, `base` (`-` for
+    /// none, `+<hash>` for one, so none and an empty one differ), the recorded `sha256` and the
+    /// `text` itself. The text goes in beside the recorded hash so that a hand edit of just the
+    /// text in `next.toml` changes the seal too. It is computed, never stored.
+    pub fn seal(&self) -> String {
+        let base = match &self.base {
+            None => "-".to_owned(),
+            Some(b) => format!("+{b}"),
+        };
+        let joined = format!(
+            "{}
+{base}
+{}
+{}",
+            self.from.format("%Y-%m-%d"),
+            self.sha256,
+            self.text
+        );
+        crate::approved::hash(joined.as_bytes())
+    }
 }
 
 /// The contents of `next.toml`.
@@ -133,6 +154,31 @@ mod tests {
         let mut e = entry("a/x", "2026-12-01", "x");
         e.text.push('\n');
         assert!(!e.approved());
+    }
+
+    /// every part of the entry changes the seal, even when the recorded hash stays the same.
+    #[test]
+    fn the_seal_follows_each_part_of_the_entry() {
+        let e = entry("a/x", "2026-12-01", "x");
+        assert_eq!(e.seal(), e.clone().seal(), "the same entry, the same seal");
+        assert_eq!(e.seal().len(), 64);
+        let later = Entry { from: d("2026-12-02"), ..e.clone() };
+        assert_ne!(later.seal(), e.seal(), "only the day changed");
+        let based = Entry { base: Some(hash(b"old")), ..e.clone() };
+        assert_ne!(based.seal(), e.seal(), "a base where there was none");
+        let empty = Entry { base: Some(String::new()), ..e.clone() };
+        assert_ne!(empty.seal(), e.seal(), "an empty base is not none");
+        assert_ne!(empty.seal(), based.seal());
+        let edited = Entry {
+            text: "x
+"
+            .to_owned(),
+            ..e.clone()
+        };
+        assert_eq!(edited.sha256, e.sha256, "the recorded hash is untouched");
+        assert_ne!(edited.seal(), e.seal(), "only the text changed");
+        let other = Entry { sha256: hash(b"y"), ..e.clone() };
+        assert_ne!(other.seal(), e.seal(), "only the recorded hash changed");
     }
 
     #[test]

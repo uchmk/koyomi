@@ -1576,7 +1576,7 @@ impl Browser {
                 Some(0) => {
                     e.stage_ask = None;
                     e.result = None;
-                    let _ = self.tx.send(Request::Stage { id: e.id.clone(), text, from });
+                    let _ = self.tx.send(Request::Stage { id: e.id.clone(), text, from, expect: None });
                 }
                 Some(_) => e.stage_ask = None,
                 None => {}
@@ -6095,12 +6095,12 @@ run = [\"x.exe\"]
         assert!(b.box_open(), "asked first");
         frame(&ctx, size, key(egui::Key::Enter), &mut b);
         match rx_req.try_recv() {
-            Ok(Request::Stage { id: i, text: x, from }) => {
+            Ok(Request::Stage { id: i, text: x, from, .. }) => {
                 assert_eq!((i.as_str(), x.as_str(), from.as_str()), (id.as_str(), text.as_str(), "2099-12-01"))
             }
             other => panic!("not a stage: {other:?}"),
         }
-        let staged = Request::Stage { id: id.clone(), text: text.clone(), from: "2099-12-01".into() };
+        let staged = Request::Stage { id: id.clone(), text: text.clone(), from: "2099-12-01".into(), expect: None };
         b.io.0.send(Msg::Answer(staged, Ok("置いた".into()))).unwrap();
         frame(&ctx, size, Vec::new(), &mut b);
         let e = b.editor.as_ref().unwrap();
