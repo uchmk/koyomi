@@ -114,6 +114,9 @@ impl Paths {
     }
 }
 
+/// Set to run the ACL tests (`scripts/verify-acl.sh`): the tests that need the machine's real permissions.
+pub const ACL_TEST_ENV: &str = "KOYOMI_TEST_ACL";
+
 /// Who other than this user can write what koyomi runs from, one line each. Empty: nothing in the way.
 ///
 /// The definitions, the folders above them and `approved.toml` all count: whoever can change one
@@ -194,6 +197,9 @@ struct State {
     /// `calendars/*.toml` as last read; the nets count their days by these.
     calendars: Calendars,
     warnings: Vec<String>,
+    /// Whether reloading asks the machine who can write what koyomi runs (`access_warnings`). Off in a normal
+    /// test run (the machine's ACL would decide its results); on in production, and in the `KOYOMI_TEST_ACL` run.
+    access_check: bool,
     /// Why `koyomi.toml` does not read: until it does, nothing is started.
     bad_config: Option<String>,
     /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
@@ -307,6 +313,7 @@ impl State {
             defs: Vec::new(),
             calendars: Calendars::default(),
             warnings: Vec::new(),
+            access_check: !cfg!(test) || std::env::var_os(ACL_TEST_ENV).is_some(),
             bad_config,
             blackouts,
             runner,
@@ -1207,7 +1214,7 @@ impl State {
         self.idle.set_rules(&self.defs);
         self.sessions.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
-        self.warnings = access_warnings(&self.paths, &files);
+        self.warnings = if self.access_check { access_warnings(&self.paths, &files) } else { Vec::new() };
         self.warnings.extend(self.unreadable.clone());
         self.warnings.extend(self.held_bad.clone());
         self.warnings.extend(self.staged_bad.clone());

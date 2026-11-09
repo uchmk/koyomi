@@ -47,6 +47,7 @@ use std::path::PathBuf;
 use ito_common::window::{Saved, Tracker};
 use ito_keymap::Match;
 use ito_keys::Key;
+use ito_keyscript::pace::{Ended, Ending};
 use ito_keyscript::{Do, Runner, Step};
 
 /// The window's icon, in pixels square.
@@ -356,6 +357,15 @@ impl App {
                     if let Some(done) = script.done.clone() {
                         self.write_state(done, &ito_keyscript::failed_report(&step, &why, script.left()));
                     }
+                    std::process::exit(ito_keyscript::FAILED_EXIT);
+                }
+                // The run ended with a step gone in on a screen that had not settled: the tail goes to the done
+                // file, is printed, and the run fails.
+                Do::Unsettled(tail) => {
+                    if let Some(done) = script.done.clone() {
+                        self.write_state(done, &tail);
+                    }
+                    say(tail.trim_end(), true);
                     std::process::exit(ito_keyscript::FAILED_EXIT);
                 }
                 Do::Done => {
@@ -829,10 +839,19 @@ impl eframe::App for App {
         if !script.running() {
             return;
         }
-        let left = script.left();
-        script.finish();
-        let Some(done) = script.done.clone() else { return };
-        self.write_state(done, &ito_keyscript::closed_report(left));
+        // Closed from outside while the script ran: the run's own tail says how it ended (koyomi writes no
+        // state report of its own, so the tail is the whole done file).
+        let Some(ended) = script.end(Ending::Closed) else { return };
+        let Ended { tail, say: line, failed, .. } = ended;
+        if let Some(done) = script.done.clone() {
+            self.write_state(done, &tail);
+        }
+        if let Some(line) = line {
+            say(&line, true);
+        }
+        if failed {
+            std::process::exit(ito_keyscript::FAILED_EXIT);
+        }
     }
 }
 
@@ -932,6 +951,16 @@ fn main() -> eframe::Result {
     };
     if let (Some(_), Some(done)) = (&script, &done) {
         ito_keyscript::install_panic_report(done.clone());
+    }
+    // The window talks to the engine at KOYOMI_ADDRESS. A script without it would reach the real engine (its jobs
+    // included), so it stops before the window opens.
+    if script.is_some() && std::env::var_os(proto::ENV).is_none_or(|v| v.is_empty()) {
+        let why = "KOYOMI_ADDRESS がない。--keys の窓は本物のエンジンにつながるので、回ごとに別の名前を渡してから走らせる";
+        if let Some(done) = &done {
+            let _ = std::fs::write(done, ito_keyscript::refused_report(why));
+        }
+        say(&format!("koyomi --keys: {why}"), true);
+        std::process::exit(2);
     }
     if let (Some(a), None) = (args.first(), &script) {
         match a.as_str() {

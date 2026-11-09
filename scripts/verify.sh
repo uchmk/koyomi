@@ -73,4 +73,6 @@ run cargo run -q -p koyomi --example make-bugform -- --check
 run scripts/lanes.sh check
 # ito first: no crate ito already stands in for, and every crate an app needs.
 run python3 scripts/ito-first.py
-echo "ALL OK: $tests"
+# The ACL tests need this machine's real permissions: they are not part of ALL OK. Run
+# scripts/verify-acl.sh and report its result separately.
+echo "ALL OK: $tests (ACL は未確認。scripts/verify-acl.sh で別に確かめる)"
