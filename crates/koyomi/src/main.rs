@@ -159,6 +159,8 @@ impl App {
             used.adapter = info.name;
             used.backend = format!("{:?}", info.backend);
             used.device = format!("{:?}", info.device_type);
+            // The state JSON names the backend the pictures were drawn with.
+            ito_keyscript::set_wgpu_backend(info.backend.to_str());
         }
         used.ppp = cc.egui_ctx.pixels_per_point();
         ito_common::runinfo::save("koyomi", &used);
@@ -317,6 +319,26 @@ impl App {
         }
     }
 
+    /// What koyomi knows of its own screen, for the state JSON. What it does not know stays `None`, which the file
+    /// writes as null: nothing is guessed. koyomi shows no in-app toasts (its notes are OS notifications), so none.
+    fn keys_app_part(&self) -> ito_keyscript::state::App {
+        let overlay = if self.palette.is_some() {
+            Some("palette")
+        } else if self.settings_open {
+            Some("settings")
+        } else if self.help.open {
+            Some("help")
+        } else {
+            None
+        };
+        ito_keyscript::state::App {
+            screen: Some(if self.browser.editing() { "editor" } else { "browser" }.to_owned()),
+            overlay: Some(overlay.map(str::to_owned)),
+            toasts: None,
+            app_state: None,
+        }
+    }
+
     /// The steps of the `--keys` script that are not keys: pictures, state
     /// files, the theme and the language (set on this window's copy of
     /// common.toml, which `sync_common` applies; the owner's file is not
@@ -329,7 +351,16 @@ impl App {
         for d in std::mem::take(&mut self.todo) {
             let Some(script) = &self.script else { return };
             match d {
-                Do::State(name) => self.write_state(script.dir.join(format!("{name}.txt")), ""),
+                Do::State(name) => {
+                    self.write_state(script.dir.join(format!("{name}.txt")), "");
+                    // The state JSON is held until the app's part is in, in this same frame.
+                    let part = self.keys_app_part();
+                    if let Some(script) = &mut self.script {
+                        if let Err(e) = script.write_state(ctx, &name, part) {
+                            say(&format!("koyomi --keys: <State:{name}>: {e}"), true);
+                        }
+                    }
+                }
                 Do::Quit => {
                     // `<Quit>` finishes the run itself, so `on_exit` finds it over and writes nothing.
                     if let Some(done) = script.done.clone() {
@@ -992,7 +1023,8 @@ fn main() -> eframe::Result {
         options,
         Box::new(move |cc| {
             let script = script.map(|steps| {
-                let mut r = Runner::new(steps, done);
+                // The state JSON (`<State:>` and `<Snap:>`): the window hands ito its part in `script()`.
+                let mut r = Runner::new(steps, done).app("koyomi", env!("CARGO_PKG_VERSION")).state_json(true);
                 r.watch(cc.egui_ctx.clone());
                 r
             });

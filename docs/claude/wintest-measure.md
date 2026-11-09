@@ -15,9 +15,11 @@
 見た目の行で、期待値のすべてを機械が測った行だけが `[x]` になりうる（TODO.md の規則）。ただし測るための道具がまだ揃っていない。
 
 - **ito には入っている**（a55c886）: state JSON（`Runner::state_json(true)`）、`<Snap:>`、部品の test id（`ito_a11y::test_id`）、`ito_keyscript::set_wgpu_backend`。
-- **koyomi がまだ配線していない**: `state_json(true)` を選ぶこと、アプリの状態（画面・オーバーレイ・アプリ固有の値）を渡すこと、main で `set_wgpu_backend` を呼ぶこと、主要なウィジェットに Test ID を付けること。
-  この配線が済むまで、koyomi の見た目の行は `[~]` までにする。
-- **今ある**: `scripts\keys.ps1` の `<State:名前>`（文字）、`<Shot:名前>`（窓全体の PNG）、done ファイル（`KOYOMI_KEYS_DONE`）、`scripts\visual-check.py`、`scripts\evidence.py`（`-Evidence` の証拠）。
+- **koyomi に配線済み**（`crates/koyomi/src/main.rs`・`ui/mod.rs`）: `state_json(true)`、`Runner::write_state` で画面（browser / editor）とオーバーレイ（palette / settings / help）を渡す、`set_wgpu_backend`、Test ID（`main.tree`・`main.central`）。
+  `<Snap:名前>` は `state\名前-before.json`・`state\名前-after.json`・`shots\名前.json`・`shots\名前.png` を書く（実機の `--keys` 直接起動で確認）。
+  まだ渡していない値: テーマ名・言語・トースト・アプリ固有の値（`app_state` は null のまま）。見た目の行で必要になれば足す。
+- **今ある**: `scripts\keys.ps1` の `<State:名前>`（文字）、`<Shot:名前>`（窓全体の PNG）、`<Snap:名前>`（前後の state と shot）、done ファイル（`KOYOMI_KEYS_DONE`）、`scripts\visual-check.py`、`scripts\evidence.py`（`-Evidence` の証拠）。
+  `keys.ps1` の経由では一度 done ファイルが出なかった（直接起動では出る）。原因は未確認。
 - 閾値を書いた check spec（`tests/visual/<行>.toml`）は、実行の**前に**書く。見たあとで決めた閾値は数えない。
 - AI Vision の答え・見た印象は、測定に数えない。
 

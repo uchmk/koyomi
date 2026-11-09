@@ -1748,6 +1748,7 @@ impl Browser {
             return;
         }
         egui::Panel::left("tree").default_size(200.0).show(ui, |ui| {
+            ito_a11y::test_id(&ui.response(), "main.tree");
             if modal {
                 ui.disable();
             }
@@ -1771,6 +1772,7 @@ impl Browser {
         // its own room with `page`.
         let central = egui::Frame::central_panel(ui.style()).inner_margin(egui::Margin { left: 8, top: 8, right: 0, bottom: 0 });
         egui::CentralPanel::default().frame(central).show(ui, |ui| {
+            ito_a11y::test_id(&ui.response(), "main.central");
             if modal {
                 ui.disable();
             }
