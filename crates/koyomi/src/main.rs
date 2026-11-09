@@ -906,7 +906,13 @@ fn load_keys(own: Option<&std::path::Path>) -> (keymap::Keys, Vec<String>) {
 
 /// `--keys SCRIPT` as its steps; `None` when the arguments are not that.
 /// `-x` after `--keys` is the script's text, not an option.
+/// keys.ps1 (ito) puts the fixture folder first, as kura takes it. koyomi has no folder to open, so that
+/// one argument is read past and not used; without it the run would stop at "unknown argument".
 fn keys_arg(args: &[String]) -> Result<Option<Vec<Step>>, String> {
+    let args = match args {
+        [dir, rest @ ..] if !dir.starts_with('-') && rest.first().is_some_and(|k| k == "--keys") => rest,
+        _ => args,
+    };
     match args {
         [k, ..] if k != "--keys" => Ok(None),
         [_] => Err("--keys needs a script".to_owned()),
@@ -1047,5 +1053,10 @@ mod tests {
         assert_eq!(a(&["--keys"]).unwrap_err(), "--keys needs a script");
         assert!(a(&["--keys", "<Nope>"]).unwrap_err().starts_with("--keys:"));
         assert_eq!(a(&["--keys", "j", "--more"]).unwrap_err(), "unknown argument `--more`");
+        // keys.ps1 puts the fixture folder first; koyomi reads past it.
+        assert_eq!(a(&["C:\\fixtures", "--keys", "j<Enter>"]).unwrap().unwrap().len(), 2);
+        assert_eq!(a(&["C:\\fixtures", "--keys"]).unwrap_err(), "--keys needs a script");
+        assert!(matches!(a(&["C:\\fixtures"]), Ok(None)));
+        assert!(matches!(a(&["--version", "--keys", "j"]), Ok(None)));
     }
 }
