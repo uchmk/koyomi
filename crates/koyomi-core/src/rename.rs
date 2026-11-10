@@ -3,6 +3,7 @@
 //! changed as text, line by line, so their comments and layout stay.
 
 use crate::jobnet::{self, Jobnet, Part};
+use crate::msg;
 use crate::scan::Def;
 use crate::when::Kind;
 use crate::write::q;
@@ -35,7 +36,7 @@ pub fn retarget(text: &str, from: &str, to: &str) -> Result<String, String> {
     }
     match jobnet::parse(&out) {
         Ok(net) if !names(&net, from) => Ok(out),
-        Ok(_) => Err(format!("{from} の書き方を直せない")),
+        Ok(_) => Err(msg::line(msg::RETARGET_UNFOLLOWED, &[from])),
         Err(p) => Err(p.first().map(|p| p.message.clone()).unwrap_or_default()),
     }
 }

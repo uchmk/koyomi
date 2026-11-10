@@ -8,6 +8,7 @@ use crate::approved::{self, Store};
 use crate::calendar::Calendars;
 use crate::group::{self, Group};
 use crate::jobnet::{self, Jobnet, Problem};
+use crate::msg;
 use crate::when::Kind;
 
 /// Where a definition stands. Only [`Confirmed`](Standing::Confirmed) may ever run.
@@ -69,9 +70,9 @@ pub fn read_def_in(path: &Path, group: &str, name: &str, store: &Store, shared: 
     match std::fs::read(path) {
         Ok(b) => match std::str::from_utf8(&b) {
             Ok(t) => def_of_text(t, group, name, store, shared, cals),
-            Err(_) => unreadable(&approved::hash(&b), group, name, "UTF-8 の文字として読めない".to_owned()),
+            Err(_) => unreadable(&approved::hash(&b), group, name, msg::line(msg::DEF_NOT_UTF8, &[&format!("{group}/{name}.toml")])),
         },
-        Err(e) => unreadable("", group, name, format!("読めない: {e}")),
+        Err(e) => unreadable("", group, name, msg::line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()])),
     }
 }
 
@@ -115,11 +116,11 @@ pub fn def_of_text(text: &str, group: &str, name: &str, store: &Store, shared: R
                             bad(why);
                         }
                     }
-                    None if n.needs_calendar() => bad("calendar が要る（business_day・shift・on_closed を使うとき）".to_owned()),
+                    None if n.needs_calendar() => bad(msg::line(msg::DEF_NEEDS_CALENDAR, &[])),
                     None => {}
                 }
             }
-            Err(e) => bad(format!("_group.toml: {e}")),
+            Err(e) => bad(e.clone()),
         }
     }
     if !problems.is_empty() {
@@ -170,10 +171,10 @@ pub fn scan_in(dir: &Path, store: &Store, cals: &Calendars) -> Vec<Def> {
 pub fn child_problem(net: &Jobnet, defs: &[Def]) -> Option<String> {
     let lookup = |u: &str| -> Result<Jobnet, String> {
         match defs.iter().find(|d| d.id == u) {
-            None => Err(format!("子ジョブネットがない: {u}")),
+            None => Err(msg::line(msg::CHILD_MISSING, &[u])),
             Some(d) => match &d.net {
                 Some(n) => Ok(n.clone()),
-                None => Err(format!("子ジョブネット {u} に定義の誤りがある")),
+                None => Err(msg::line(msg::CHILD_INVALID, &[u])),
             },
         }
     };
@@ -196,7 +197,7 @@ pub fn after_problem(id: &str, net: &Jobnet, defs: &[Def]) -> Option<String> {
     };
     for before in befores(net) {
         if !defs.iter().any(|d| d.id == before) {
-            return Some(format!("先行のジョブネットがない: {before}"));
+            return Some(msg::line(msg::BEFORE_MISSING, &[&before]));
         }
     }
     // Walks the nets before, before those, …; a way back to `id` is a loop.
@@ -221,7 +222,7 @@ pub fn after_problem(id: &str, net: &Jobnet, defs: &[Def]) -> Option<String> {
     }
     let of = |i: &str| defs.iter().find(|d| d.id == i).and_then(|d| d.net.as_ref()).map(befores).unwrap_or_default();
     let mut path = vec![id.to_owned()];
-    walk(id, id, &mut path, &of).map(|p| format!("after_jobnet が輪になっている: {}", p.join(" → ")))
+    walk(id, id, &mut path, &of).map(|p| msg::line(msg::BEFORE_LOOP, &[&p.join(" → ")]))
 }
 
 /// Marks each net whose child jobnets cannot be used, or whose `after_jobnet`
@@ -365,10 +366,13 @@ mod tests {
         let shown = by("経理/b").problems[0].in_file("経理/b.toml");
         // The calendar's own coded line stays at the head, the file it was found in goes last.
         assert_eq!(shown, format!("{}（経理/b.toml）", crate::msg::line(crate::msg::CAL_MISSING, &["工場"])));
-        assert_eq!(by("営業/c").problems[0].message, "calendar が要る（business_day・shift・on_closed を使うとき）");
+        assert!(msg::DEF_NEEDS_CALENDAR.is_in(&by("営業/c").problems[0].message));
         assert_eq!(by("営業/d").standing, Standing::Unconfirmed);
         assert_eq!(by("壊れ/e").standing, Standing::Invalid);
-        assert_eq!(by("壊れ/e").problems[0].message, "_group.toml: 知らない欄 x");
+        assert!(
+            msg::GROUP_FILE_UNKNOWN_KEY.is_in(&by("壊れ/e").problems[0].message)
+                && by("壊れ/e").problems[0].message.contains("未知の項目 x")
+        );
         assert_eq!(
             scan(&d, &Store::default()).iter().find(|d| d.id == "経理/a").unwrap().standing,
             Standing::Invalid,
@@ -393,10 +397,10 @@ mod tests {
             let x = defs.iter().find(|x| x.id == id).unwrap();
             (x.standing, x.problems.iter().map(|p| p.message.clone()).collect::<Vec<_>>())
         };
-        assert_eq!(of("g/a"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/a → g/b → g/c → g/a".to_owned()]));
-        assert_eq!(of("g/b"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/b → g/c → g/a → g/b".to_owned()]));
-        assert_eq!(of("g/d"), (Standing::Invalid, vec!["先行のジョブネットがない: g/none".to_owned()]));
-        assert_eq!(of("g/f"), (Standing::Invalid, vec!["after_jobnet が輪になっている: g/f → g/f".to_owned()]));
+        assert_eq!(of("g/a"), (Standing::Invalid, vec![msg::line(msg::BEFORE_LOOP, &["g/a → g/b → g/c → g/a"])]));
+        assert_eq!(of("g/b"), (Standing::Invalid, vec![msg::line(msg::BEFORE_LOOP, &["g/b → g/c → g/a → g/b"])]));
+        assert_eq!(of("g/d"), (Standing::Invalid, vec![msg::line(msg::BEFORE_MISSING, &["g/none"])]));
+        assert_eq!(of("g/f"), (Standing::Invalid, vec![msg::line(msg::BEFORE_LOOP, &["g/f → g/f"])]));
         // e follows a, which is in a loop; e itself is not: a fine net (a will never run).
         assert_eq!(of("g/e"), (Standing::Unconfirmed, vec![]));
         let _ = std::fs::remove_dir_all(&d);

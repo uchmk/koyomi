@@ -2190,8 +2190,8 @@ mod tests {
         let w = super::group_warnings(&config, &net);
         assert_eq!(w.len(), 3, "{w:?}");
         assert_eq!(w[0], "a: 組 web の ssh://ops@web1 に host_key がなく、ジョブにもない");
-        assert!(w[1].starts_with("b: 組 db が koyomi.toml の [groups] にない"), "{}", w[1]);
-        assert!(w[2].starts_with("e: 組 web の PC は ssh:// で書いてある"), "{}", w[2]);
+        assert!(w[1].starts_with("b: ") && koyomi_core::msg::CFG_GROUP_MISSING.is_in(&w[1][3..]), "{}", w[1]);
+        assert!(w[2].starts_with("e: ") && koyomi_core::msg::CFG_GROUP_WRONG_KIND.is_in(&w[2][3..]), "{}", w[2]);
     }
 
     #[test]

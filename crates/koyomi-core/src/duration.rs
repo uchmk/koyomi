@@ -4,11 +4,14 @@
 //! number with its unit. A bare number is refused: `timeout = 30` could mean
 //! seconds or minutes, and the wrong guess hangs a night job or cuts it off.
 
+use crate::msg;
+
 /// The seconds `text` says, or why it does not read. Zero is refused here:
 /// every length a definition writes (`timeout`, `wait`, `settle`) must pass.
 pub fn parse(text: &str) -> Result<u64, String> {
-    match ito_common::text::parse_duration(text)? {
-        0 => Err(format!("{text}: 0 より長くする")),
+    // ito's reason is plain Japanese whatever the language; the catalogue's action already names the form.
+    match ito_common::text::parse_duration(text).map_err(|_| msg::line(msg::DURATION_UNREADABLE, &[text]))? {
+        0 => Err(msg::line(msg::DURATION_ZERO, &[text])),
         secs => Ok(secs),
     }
 }
@@ -32,9 +35,11 @@ mod tests {
     #[test]
     fn a_bare_number_a_wrong_order_and_zero_are_refused() {
         for bad in ["30", "", "m", "30x", "30m1h", "5m5m", "1.5h", "30 m"] {
-            assert!(parse(bad).unwrap_err().contains("30m・1h30m・90s のように書く"), "{bad}");
+            let e = parse(bad).unwrap_err();
+            assert!(msg::DURATION_UNREADABLE.is_in(&e) && e.contains("30m、1h30m、90s のように"), "{bad}: {e}");
         }
-        assert_eq!(parse("0m").unwrap_err(), "0m: 0 より長くする");
+        let zero = parse("0m").unwrap_err();
+        assert!(msg::DURATION_ZERO.is_in(&zero) && zero.contains("0 より長い時間を指定してください"), "{zero}");
     }
 
     #[test]

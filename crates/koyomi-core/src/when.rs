@@ -17,6 +17,7 @@ use chrono::{DateTime, Datelike, Days, Duration, MappedLocalTime, NaiveDate, Nai
 use serde::{Deserialize, Serialize};
 
 use crate::calendar::Calendar;
+use crate::msg;
 use crate::run::State;
 
 /// One `[[when]]`: a kind of time, within `start`..=`end`, minus `except`.
@@ -503,9 +504,7 @@ pub fn resolve<Tz: TimeZone>(tz: &Tz, naive: NaiveDateTime) -> Option<DateTime<U
 /// `"02:00"` or `"02:00:30"`.
 pub fn time(s: &str) -> Result<NaiveTime, String> {
     let s = s.trim();
-    NaiveTime::parse_from_str(s, "%H:%M:%S")
-        .or_else(|_| NaiveTime::parse_from_str(s, "%H:%M"))
-        .map_err(|_| format!("時刻は \"02:00\" のように書く: \"{s}\""))
+    NaiveTime::parse_from_str(s, "%H:%M:%S").or_else(|_| NaiveTime::parse_from_str(s, "%H:%M")).map_err(|_| msg::line(msg::TIME_BAD, &[s]))
 }
 
 /// `mon` … `sun` (or the whole word), any case.
@@ -520,7 +519,7 @@ pub fn weekday(s: &str) -> Result<Weekday, String> {
         "fri" => Ok(Weekday::Fri),
         "sat" => Ok(Weekday::Sat),
         "sun" => Ok(Weekday::Sun),
-        _ => Err(format!("曜日は mon・tue・wed・thu・fri・sat・sun のどれか: \"{}\"", s.trim())),
+        _ => Err(msg::line(msg::WEEKDAY_BAD, &[s.trim()])),
     }
 }
 
@@ -529,10 +528,10 @@ pub fn date(v: &toml::Value) -> Result<NaiveDate, String> {
     let s = match v {
         toml::Value::Datetime(d) => d.to_string(),
         toml::Value::String(s) => s.trim().to_owned(),
-        _ => return Err("日付は 2026-11-30 のように書く".to_owned()),
+        _ => return Err(msg::line(msg::DATE_BAD, &[&v.to_string()])),
     };
     let day = s.get(..10).unwrap_or(&s);
-    NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(|_| format!("日付は 2026-11-30 のように書く: {s}"))
+    NaiveDate::parse_from_str(day, "%Y-%m-%d").map_err(|_| msg::line(msg::DATE_BAD, &[&s]))
 }
 
 /// A TOML date-time (`2026-11-30T21:00:00`, no offset) or a string of one.
@@ -540,17 +539,17 @@ pub fn datetime(v: &toml::Value) -> Result<NaiveDateTime, String> {
     let s = match v {
         toml::Value::Datetime(d) => d.to_string(),
         toml::Value::String(s) => s.trim().to_owned(),
-        _ => return Err("日時は 2026-11-30T21:00:00 のように書く".to_owned()),
+        _ => return Err(msg::line(msg::DATETIME_BAD, &[&v.to_string()])),
     };
     let s = s.replace(' ', "T");
     NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| NaiveDateTime::parse_from_str(&s, "%Y-%m-%dT%H:%M"))
-        .map_err(|_| format!("日時は 2026-11-30T21:00:00 のように書く（時差はつけない）: {s}"))
+        .map_err(|_| msg::line(msg::DATETIME_BAD, &[&s]))
 }
 
 /// `"04-01"` as (month, day); `02-29` allowed.
 pub fn month_day(s: &str) -> Result<(u32, u32), String> {
-    let bad = || format!("date は \"04-01\" のように月-日で書く: \"{}\"", s.trim());
+    let bad = || msg::line(msg::MONTH_DAY_BAD, &[s.trim()]);
     let (m, d) = s.trim().split_once('-').ok_or_else(bad)?;
     let (m, d): (u32, u32) = (m.parse().map_err(|_| bad())?, d.parse().map_err(|_| bad())?);
     // A leap year: 02-29 is a day.
@@ -571,24 +570,19 @@ pub struct Mailbox {
 /// and the folder `INBOX` when left out. The user may be a mail address
 /// (`me@example.com@imap.example.com`): the last `@` before the folder ends it.
 pub fn mailbox(s: &str) -> Result<Mailbox, String> {
-    const SHAPE: &str = "mail は \"imaps://ユーザー@サーバー/フォルダー\" で書く（例: imaps://me@example.com@imap.example.com/INBOX）";
+    let shape = || msg::line(msg::MAIL_SHAPE, &[s.trim()]);
     let s = s.trim();
-    let rest = s.strip_prefix("imaps://").ok_or_else(|| {
-        if s.starts_with("imap://") {
-            "mail は imaps:// だけ（暗号化しない imap:// は使えない）".to_owned()
-        } else {
-            SHAPE.to_owned()
-        }
-    })?;
+    let rest =
+        s.strip_prefix("imaps://").ok_or_else(|| if s.starts_with("imap://") { msg::line(msg::MAIL_NOT_TLS, &[]) } else { shape() })?;
     let (auth, folder) = rest.split_once('/').unwrap_or((rest, ""));
-    let (user, server) = auth.rsplit_once('@').ok_or_else(|| SHAPE.to_owned())?;
+    let (user, server) = auth.rsplit_once('@').ok_or_else(shape)?;
     let (host, port) = match server.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| format!("mail のポートは 1〜65535: \"{p}\""))?),
+        Some((h, p)) => (h, p.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| msg::line(msg::MAIL_PORT_BAD, &[p]))?),
         None => (server, 993),
     };
     let bad = |t: &str| t.is_empty() || t.chars().any(|c| c.is_whitespace() || c == '"');
     if bad(user) || bad(host) {
-        return Err(SHAPE.to_owned());
+        return Err(shape());
     }
     let folder = if folder.trim().is_empty() { "INBOX" } else { folder.trim() };
     Ok(Mailbox { user: user.to_owned(), host: host.to_owned(), port, folder: folder.to_owned() })

@@ -3322,7 +3322,7 @@ id = \"a\"
         let id2 = r.start(&r2, day, How::Manual, None).unwrap();
         assert!(r.runs.iter().find(|x| x.id == id2).is_some_and(|x| x.lock_shared));
         let err = r.start(&w, day, How::Manual, None).unwrap_err();
-        assert_eq!(err, "w: 排他「db」は r1、r2 が共有で使っている");
+        assert_eq!(err, "w: 排他ロック「db」は、r1、r2 が共有で使用しています。");
         wait_over(&mut r, &id1);
         wait_over(&mut r, &id2);
         // `[locks] api = 2`: two exclusive holders go, the third is kept out.
@@ -3331,7 +3331,7 @@ id = \"a\"
         let ida = r.start(&a, day, How::Manual, None).unwrap();
         let idb = r.start(&b, day, How::Manual, None).unwrap();
         let err = r.start(&c, day, How::Manual, None).unwrap_err();
-        assert_eq!(err, "c: 排他「api」は 2 本まで。a、b が使っている");
+        assert_eq!(err, "c: 排他ロック「api」は、同時に 2 本まで使用できます。a、b が使用しています。");
         wait_over(&mut r, &ida);
         wait_over(&mut r, &idb);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3449,7 +3449,7 @@ id = \"b\"
             ),
         );
         let err = r.start(&d, NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(), How::Manual, None).unwrap_err();
-        assert!(err.contains("calendar が要る"), "{err}");
+        assert!(err.contains("calendar が指定されていません"), "{err}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3499,7 +3499,7 @@ id = \"b\"
         let seen = r.dry(&d, day, &BTreeMap::new()).unwrap();
         assert!(seen.contains("nas202610_in_nas202610"), "{seen}");
         let none = Runner::new(&dir, Config::default()).dry(&d, day, &BTreeMap::new()).unwrap_err();
-        assert!(none.contains("{var:share}: koyomi.toml の [vars] にない"), "{none}");
+        assert!(none.contains("{var:share} の値が、koyomi.toml の [vars] にありません"), "{none}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

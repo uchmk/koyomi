@@ -11,6 +11,12 @@
 //! it. The same catalogue makes the troubleshooting page (`docs/troubleshooting.md`,
 //! written by `cargo run -p koyomi-core --example make-messages`) and the
 //! window's card.
+//!
+//! A sentence that is not an error or a warning (a completion notice, a progress
+//! line, a heading, a status word) is a **note**: `[note]` in the same catalogue,
+//! flat keys, no ID and no `when`, `cause` or `action`. [`note`] gives it in the
+//! process's language. A note is never shown with an ID, so it is never coded
+//! ([`is_coded`] is false for it) and the troubleshooting page does not list it.
 
 use std::sync::{LazyLock, RwLock};
 
@@ -35,6 +41,10 @@ const RETIRED_WORDS: &[&str] = &[
     "ほかで変わって",
     "読めない",
     "書けない",
+    "が要る",
+    "知らない欄",
+    "部品",
+    "だめ",
 ];
 
 /// A message's ID, such as `E2101`.
@@ -185,6 +195,164 @@ ids! {
     TABLE_ENDING_SOON = "W4152",
     TABLE_STALE = "W4153",
     TABLE_PATH_EMPTY = "E4154",
+    CFG_GROUP_NOT_ARRAY = "E1001",
+    CFG_GROUP_TOO_MANY = "E1002",
+    CFG_GROUP_UNKNOWN_KEY = "E1003",
+    CFG_GROUP_NOT_STRING = "E1004",
+    CFG_GROUP_NO_ON = "E1005",
+    CFG_GROUP_BRACES = "E1006",
+    CFG_GROUP_ADDRESS = "E1007",
+    CFG_GROUP_MEMBER = "E1008",
+    CFG_GROUP_MIXED = "E1009",
+    CFG_GROUP_KEY_SCHEME = "E1010",
+    CFG_GROUP_DUPLICATE = "E1011",
+    CFG_NAME_NOT_PLAIN = "E1012",
+    CFG_GROUP_MISSING = "E1013",
+    CFG_GROUP_WRONG_KIND = "E1014",
+    CFG_POLL_TARGET = "E1015",
+    CFG_EVERY_UNREADABLE = "E1016",
+    CFG_EVERY_RANGE = "E1017",
+    CFG_MISSES_RANGE = "E1018",
+    CFG_PING_URL = "E1019",
+    CFG_REMOTE_NAME = "E1020",
+    CFG_REMOTE_URL = "E1021",
+    CFG_REMOTE_FINGERPRINT = "E1022",
+    CFG_TOKEN_NOT_SECRET = "E1023",
+    CFG_HTTP_PORT = "E1024",
+    CFG_TAILNET_PORT = "E1025",
+    CFG_TAILNET_NO_USER = "E1026",
+    CFG_USER_NAME = "E1027",
+    CFG_DUPLICATE = "E1028",
+    CFG_USER_FIELD = "E1029",
+    CFG_USER_ADMIN_NARROWED = "E1030",
+    CFG_TAILSCALE_FORM = "E1031",
+    CFG_TAILSCALE_NEEDS_TAILNET = "E1032",
+    CFG_UNKNOWN_KEY = "E1033",
+    CFG_MISSING_KEY = "E1034",
+    CFG_VALUE_UNKNOWN = "E1035",
+    CFG_UNREADABLE = "E1036",
+    CFG_LIMIT_TOO_LOW = "E1037",
+    CFG_STANDBY_AND_PRIMARY = "E1038",
+    CFG_LOCK_NAME = "E1039",
+    CFG_LOCK_COUNT = "E1040",
+    CFG_WORK_DIR = "E1041",
+    CFG_VARS_NOT_STRING = "E1042",
+    CFG_VARS_NESTED = "E1043",
+    CFG_VARS_VALUE = "E1044",
+    ROLE_NOT_KNOWN = "E2231",
+    NETS_EMPTY = "E2232",
+    ROLES_EMPTY = "E2233",
+    NET_PATTERN_BAD = "E2234",
+    ROLES_VALUE_BAD = "E2235",
+    PREFLIGHT_EXE_MISSING = "E3181",
+    PREFLIGHT_DIR_MISSING = "E3182",
+    PREFLIGHT_WATCH_MISSING = "E3183",
+    PREFLIGHT_WORK_MISSING = "E3184",
+    PREFLIGHT_DAY_ABSENT = "W3185",
+    RETARGET_UNFOLLOWED = "E3186",
+    GROUP_FILE_UNKNOWN_KEY = "E3370",
+    GROUP_FILE_SYNTAX = "E3371",
+    GROUP_FILE_NO_FORMAT = "E3372",
+    GROUP_FILE_FORMAT = "E3373",
+    GROUP_FILE_CALENDAR = "E3374",
+    DEF_NEEDS_CALENDAR = "E3375",
+    CHILD_MISSING = "E3376",
+    CHILD_INVALID = "E3377",
+    BEFORE_MISSING = "E3378",
+    BEFORE_LOOP = "E3379",
+    DEF_NOT_UTF8 = "E3380",
+    BLACKOUT_TIME_BAD = "E3381",
+    BLACKOUT_ORDER = "E3382",
+    QUIET_SPAN_BAD = "E3383",
+    QUIET_SPAN_SAME = "E3384",
+    DEADLINE_BAD = "E3385",
+    ONLY_ON_STANDBY = "E3386",
+    TIME_BAD = "E3387",
+    WEEKDAY_BAD = "E3388",
+    DATE_BAD = "E3389",
+    DATETIME_BAD = "E3390",
+    MONTH_DAY_BAD = "E3391",
+    MAIL_SHAPE = "E3392",
+    MAIL_NOT_TLS = "E3393",
+    MAIL_PORT_BAD = "E3394",
+    DURATION_ZERO = "E3470",
+    DURATION_UNREADABLE = "E3471",
+    TEMPLATE_NO_CALENDAR = "E3472",
+    TEMPLATE_NO_DAY = "E3473",
+    VAR_NAME_EMPTY = "E3474",
+    VAR_NAME_BAD = "E3475",
+    PARAM_MISSING = "E3476",
+    VAR_MISSING = "E3477",
+    PARAMS_NONE = "E3478",
+    PARAM_UNKNOWN = "E3479",
+    TOKEN_NO_NUMBER = "E3480",
+    TOKEN_NO_UNIT = "E3481",
+    TOKEN_UNIT_BAD = "E3482",
+    TOKEN_FORMAT_BAD = "E3483",
+    TEMPLATE_EXPAND = "E3484",
+    STATE_NOT_UTF8 = "E3770",
+    RETAIN_NAME_NOT_UTF8 = "E3771",
+    RETAIN_RUN_ID_BAD = "E3772",
+}
+
+/// A sentence with no ID: a completion notice, a progress line, a heading. Its words live in `[note]` of the catalogue.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Note(&'static str);
+
+impl Note {
+    /// The key in `[note]`.
+    pub fn key(self) -> &'static str {
+        self.0
+    }
+}
+
+macro_rules! notes {
+    ($($name:ident = $key:literal),* $(,)?) => {
+        $(pub const $name: Note = Note($key);)*
+        /// Every note there is.
+        pub const ALL_NOTES: &[Note] = &[$($name),*];
+    }
+}
+
+notes! {
+    N_LIST_SEP = "list_sep",
+    N_CONFIG_AT_LINE = "config_at_line",
+    N_BLACKOUT_REASON = "blackout_reason",
+    N_BLACKOUT_REASON_WHY = "blackout_reason_why",
+    N_PS_WARNING = "ps_warning",
+    N_PS_VERBOSE = "ps_verbose",
+    N_PS_DEBUG = "ps_debug",
+    N_STANDBY_NO_DEFINITION = "standby_no_definition",
+    N_STANDBY_NOT_RERUN = "standby_not_rerun",
+    N_STANDBY_ALL_PASSED = "standby_all_passed",
+    N_LOCK_SHARED_HELD = "lock_shared_held",
+    N_LOCK_EXCLUSIVE_BY_SHARED = "lock_exclusive_by_shared",
+    N_LOCK_EXCLUSIVE_BY_ONE = "lock_exclusive_by_one",
+    N_LOCK_EXCLUSIVE_FULL = "lock_exclusive_full",
+    N_LOCK_AND_MORE = "lock_and_more",
+    N_MONTHS_WITHOUT_31 = "months_without_31",
+    N_MONTHS_WITHOUT_30 = "months_without_30",
+    N_MONTHS_WITHOUT_29 = "months_without_29",
+    N_NEW_JOBNET_FILE = "new_jobnet_file",
+    N_HOLIDAY_DEFAULT = "holiday_default",
+    N_HOLIDAY_SUBSTITUTE = "holiday_substitute",
+    N_HOLIDAY_CITIZENS = "holiday_citizens",
+    N_HOLIDAY_NEW_YEAR = "holiday_new_year",
+    N_HOLIDAY_COMING_OF_AGE = "holiday_coming_of_age",
+    N_HOLIDAY_FOUNDATION = "holiday_foundation",
+    N_HOLIDAY_EMPEROR_BIRTHDAY = "holiday_emperor_birthday",
+    N_HOLIDAY_VERNAL_EQUINOX = "holiday_vernal_equinox",
+    N_HOLIDAY_SHOWA = "holiday_showa",
+    N_HOLIDAY_CONSTITUTION = "holiday_constitution",
+    N_HOLIDAY_GREENERY = "holiday_greenery",
+    N_HOLIDAY_CHILDRENS = "holiday_childrens",
+    N_HOLIDAY_MARINE = "holiday_marine",
+    N_HOLIDAY_MOUNTAIN = "holiday_mountain",
+    N_HOLIDAY_RESPECT_AGED = "holiday_respect_aged",
+    N_HOLIDAY_AUTUMN_EQUINOX = "holiday_autumn_equinox",
+    N_HOLIDAY_SPORTS = "holiday_sports",
+    N_HOLIDAY_CULTURE = "holiday_culture",
+    N_HOLIDAY_LABOR_THANKS = "holiday_labor_thanks",
 }
 
 /// A message filled in for a language. Text and action stay apart until a surface joins them.
@@ -235,6 +403,16 @@ pub fn say_in(code: &str, id: Id, args: &[&str]) -> Said {
     let t = table(code);
     let n = id.number();
     Said { id, text: t.trf(&format!("{n}.text"), args), action: t.trf(&format!("{n}.action"), args) }
+}
+
+/// The note in the process's language.
+pub fn note(n: Note, args: &[&str]) -> String {
+    note_in(&language(), n, args)
+}
+
+/// The note in `code`'s language; no global state is read.
+pub fn note_in(code: &str, n: Note, args: &[&str]) -> String {
+    table(code).trf(&format!("note.{}", n.key()), args)
 }
 
 /// `say(id, args).line()`.
@@ -362,11 +540,32 @@ mod tests {
                 }
             }
             let known: Vec<&str> = ALL.iter().map(|i| i.number()).collect();
+            let notes: Vec<String> = ALL_NOTES.iter().map(|n| format!("note.{}", n.key())).collect();
             for key in t.keys() {
                 let head = key.split('.').next().unwrap_or("");
-                assert!(matches!(head, "area" | "page") || known.contains(&head), "{code}: {key} is not in ALL");
+                if head == "note" {
+                    assert!(notes.iter().any(|n| n == key), "{code}: {key} has no const in ALL_NOTES");
+                } else {
+                    assert!(matches!(head, "area" | "page") || known.contains(&head), "{code}: {key} is not in ALL");
+                }
             }
         }
+    }
+
+    #[test]
+    fn every_note_has_a_text_in_both_languages_with_the_same_holes_and_is_never_coded() {
+        let holes = |s: &str| (0..10).filter(|i| s.contains(&format!("{{{i}}}"))).collect::<Vec<_>>();
+        for (i, n) in ALL_NOTES.iter().enumerate() {
+            assert!(!ALL_NOTES[..i].contains(n), "{} twice", n.key());
+            let key = format!("note.{}", n.key());
+            for code in ["en", "ja"] {
+                assert!(table(code).contains(&key) && !table(code).tr(&key).is_empty(), "{code}: {key} is missing or empty");
+            }
+            assert_eq!(holes(EN.tr(&key)), holes(JA.tr(&key)), "{key}");
+            assert!(!is_coded(JA.tr(&key)) && !is_coded(EN.tr(&key)), "{key}");
+        }
+        assert_eq!(note_in("ja", N_LOCK_AND_MORE, &["2"]), "ほか 2 件");
+        assert_eq!(note_in("en", N_LOCK_AND_MORE, &["2"]), "and 2 more");
     }
 
     #[test]

@@ -23,6 +23,7 @@ use chrono::{Months, NaiveDate};
 
 use crate::calendar::Calendar;
 use crate::jobnet::{Jobnet, Part};
+use crate::msg;
 
 /// One `{…}` found in a text.
 struct Token {
@@ -64,11 +65,11 @@ pub fn expand(text: &str, date: NaiveDate, cal: Option<&Calendar>) -> Result<Str
             (Unit::Month, n) => shift_months(date, n),
             (Unit::Year, n) => n.checked_mul(12).and_then(|m| shift_months(date, m)),
             (Unit::Business, n) => {
-                let cal = cal.ok_or_else(|| format!("{src}: 営業日で動かすには calendar が要る"))?;
+                let cal = cal.ok_or_else(|| msg::line(msg::TEMPLATE_NO_CALENDAR, &[src]))?;
                 cal.shift(date, n)
             }
         };
-        let moved = moved.ok_or_else(|| format!("{src}: {date} から動かした日がない"))?;
+        let moved = moved.ok_or_else(|| msg::line(msg::TEMPLATE_NO_DAY, &[src, &date.to_string()]))?;
         let format = t.format.as_deref().unwrap_or(if t.month { "%Y%m" } else { "%Y-%m-%d" });
         Ok(moved.format(format).to_string())
     })
@@ -102,30 +103,30 @@ fn names<'a>(text: &'a str, open: &str) -> Vec<&'a str> {
 /// Whether every `{var:…}` in `text` has a name `[vars]` can hold.
 pub fn check_vars(text: &str) -> Result<(), String> {
     match var_names(text).into_iter().find(|n| !crate::jobnet::plain_name(n)) {
-        Some("") => Err("{var:}: 名前がない（koyomi.toml の [vars] の名前を {var:share} のように書く）".to_owned()),
-        Some(n) => Err(format!("{{var:{n}}}: [vars] の名前は英数字と _ だけ")),
+        Some("") => Err(msg::line(msg::VAR_NAME_EMPTY, &[])),
+        Some(n) => Err(msg::line(msg::VAR_NAME_BAD, &[n])),
         None => Ok(()),
     }
 }
 
 /// `text` with every `{param:…}` replaced by its value in `values`.
 pub fn fill(text: &str, values: &BTreeMap<String, String>) -> Result<String, String> {
-    put(text, PARAM, values, "[params] にない")
+    put(text, PARAM, values, msg::PARAM_MISSING)
 }
 
 /// `text` with every `{var:…}` replaced by its value in koyomi.toml's `[vars]`.
 pub fn fill_vars(text: &str, vars: &BTreeMap<String, String>) -> Result<String, String> {
-    put(text, VAR, vars, "koyomi.toml の [vars] にない")
+    put(text, VAR, vars, msg::VAR_MISSING)
 }
 
-fn put(text: &str, open: &str, values: &BTreeMap<String, String>, missing: &str) -> Result<String, String> {
+fn put(text: &str, open: &str, values: &BTreeMap<String, String>, missing: msg::Id) -> Result<String, String> {
     let mut out = String::with_capacity(text.len());
     let mut rest = text;
     while let Some(at) = rest.find(open) {
         let tail = &rest[at + open.len()..];
         let Some(end) = tail.find('}') else { break };
         let name = &tail[..end];
-        let v = values.get(name).ok_or_else(|| format!("{open}{name}}}: {missing}"))?;
+        let v = values.get(name).ok_or_else(|| msg::line(missing, &[name]))?;
         out.push_str(&rest[..at]);
         out.push_str(v);
         rest = &tail[end + 1..];
@@ -140,10 +141,10 @@ pub fn values(net: &Jobnet, set: &BTreeMap<String, String>) -> Result<BTreeMap<S
     for (k, v) in set {
         match out.get_mut(k) {
             Some(slot) => *slot = v.clone(),
-            None if net.params.is_empty() => return Err(format!("値 {k} を渡せない（このジョブネットに [params] がない）")),
+            None if net.params.is_empty() => return Err(msg::line(msg::PARAMS_NONE, &[k])),
             None => {
                 let known: Vec<&str> = net.params.keys().map(String::as_str).collect();
-                return Err(format!("値 {k} は [params] にない（あるのは {}）", known.join("・")));
+                return Err(msg::line(msg::PARAM_UNKNOWN, &[k, &known.join(&msg::note(msg::N_LIST_SEP, &[]))]));
             }
         }
     }
@@ -165,7 +166,7 @@ pub fn expand_net(
         *t = fill(t, values)
             .and_then(|t| fill_vars(&t, vars))
             .and_then(|t| expand(&t, date, cal))
-            .map_err(|e| format!("{id} の {what}: {e}"))?;
+            .map_err(|e| msg::line(msg::TEMPLATE_EXPAND, &[id, what, msg::uncoded(&e)]))?;
         Ok(())
     })?;
     Ok(out)
@@ -233,12 +234,12 @@ fn walk(text: &str, f: &mut dyn FnMut(&Token, &str) -> Result<String, String>) -
             return Ok(out);
         };
         let src = &tail[..=end];
-        match parse(&src[1..end]) {
+        match parse(&src[1..end], src) {
             None => {
                 out.push('{');
                 rest = &tail[1..];
             }
-            Some(Err(e)) => return Err(format!("{src}: {e}")),
+            Some(Err(e)) => return Err(e),
             Some(Ok(t)) => {
                 out.push_str(&f(&t, src)?);
                 rest = &tail[end + 1..];
@@ -250,7 +251,7 @@ fn walk(text: &str, f: &mut dyn FnMut(&Token, &str) -> Result<String, String>) -
 }
 
 /// The inside of a `{…}`: `None` when it is not ours.
-fn parse(inner: &str) -> Option<Result<Token, String>> {
+fn parse(inner: &str, src: &str) -> Option<Result<Token, String>> {
     let (head, format) = match inner.split_once(':') {
         Some((h, f)) => (h, Some(f)),
         None => (inner, None),
@@ -259,30 +260,30 @@ fn parse(inner: &str) -> Option<Result<Token, String>> {
     if !(rest.is_empty() || rest.starts_with(['+', '-'])) {
         return None;
     }
-    Some(token(month, rest, format))
+    Some(token(month, rest, format, src))
 }
 
-fn token(month: bool, rest: &str, format: Option<&str>) -> Result<Token, String> {
+fn token(month: bool, rest: &str, format: Option<&str>, src: &str) -> Result<Token, String> {
     let (n, unit) = if rest.is_empty() {
         (0, if month { Unit::Month } else { Unit::Day })
     } else {
         let sign = if rest.starts_with('-') { -1 } else { 1 };
         let body = &rest[1..];
         let digits = body.chars().take_while(char::is_ascii_digit).count();
-        let n: i32 = body[..digits].parse().map_err(|_| "動かす数がない（{date-1d} のように書く）".to_owned())?;
+        let n: i32 = body[..digits].parse().map_err(|_| msg::line(msg::TOKEN_NO_NUMBER, &[src]))?;
         let unit = match (&body[digits..], month) {
             ("", true) | ("m", _) => Unit::Month,
             ("d", false) => Unit::Day,
             ("bd", false) => Unit::Business,
             ("y", false) => Unit::Year,
-            ("", false) => return Err("単位がない（d・bd・m・y）".to_owned()),
-            (u, _) => return Err(format!("単位が読めない: {u}（{{month}} は数だけか m、{{date}} は d・bd・m・y）")),
+            ("", false) => return Err(msg::line(msg::TOKEN_NO_UNIT, &[src])),
+            (u, _) => return Err(msg::line(msg::TOKEN_UNIT_BAD, &[src, u])),
         };
         (sign * n, unit)
     };
     if let Some(f) = format {
         if f.is_empty() || StrftimeItems::new(f).any(|i| matches!(i, Item::Error)) {
-            return Err(format!("書式が読めない: {f}"));
+            return Err(msg::line(msg::TOKEN_FORMAT_BAD, &[src, f]));
         }
     }
     Ok(Token { month, n, unit, format: format.map(str::to_owned) })
@@ -321,7 +322,7 @@ mod tests {
         let c = cal();
         // 2026-11-02 is a Monday: one business day back is Friday the 30th.
         assert_eq!(expand("{date-1bd:%m%d}", d("2026-11-02"), Some(&c)).unwrap(), "1030");
-        assert!(expand("{date-1bd}", d("2026-11-02"), None).unwrap_err().contains("calendar が要る"));
+        assert!(expand("{date-1bd}", d("2026-11-02"), None).is_err_and(|e| msg::TEMPLATE_NO_CALENDAR.is_in(&e)));
         assert!(needs_calendar("x {date+2bd}") && !needs_calendar("{date-1d}"));
     }
 
@@ -348,8 +349,8 @@ mod tests {
         assert_eq!(expand(&fill("x{param:m}.csv", &dflt).unwrap(), day, None).unwrap(), "x2026-09.csv");
         let set = values(&net, &BTreeMap::from([("m".to_owned(), "2026-07".to_owned())])).unwrap();
         assert_eq!(fill("{param:m} {0}", &set).unwrap(), "2026-07 {0}");
-        assert!(fill("{param:n}", &set).unwrap_err().contains("[params] にない"));
-        assert!(values(&net, &BTreeMap::from([("n".to_owned(), "1".to_owned())])).unwrap_err().contains("あるのは m"));
+        assert!(msg::PARAM_MISSING.is_in(&fill("{param:n}", &set).unwrap_err()));
+        assert!(values(&net, &BTreeMap::from([("n".to_owned(), "1".to_owned())])).unwrap_err().contains("定義されているのは m"));
         assert_eq!(param_names("a {param:m} {param:} {date}"), ["m", ""]);
     }
 
@@ -365,11 +366,16 @@ mod tests {
         let out = expand_net(&net, d("2026-11-02"), None, &dflt, &vars).unwrap();
         assert_eq!(out.jobs[0].run, ["copy", r"\\nas\backup\202611\in", r"\\nas\backup\202611"]);
         let e = expand_net(&net, d("2026-11-02"), None, &dflt, &BTreeMap::new()).unwrap_err();
-        assert!(e.contains("a の run: {var:share}: koyomi.toml の [vars] にない"), "{e}");
+        assert!(
+            msg::TEMPLATE_EXPAND.is_in(&e)
+                && e.contains("ジョブ a の run を展開できません")
+                && e.contains("{var:share} の値が、koyomi.toml の [vars] にありません"),
+            "{e}"
+        );
         assert_eq!(vars_of(&net).into_iter().collect::<Vec<_>>(), ["share"]);
         assert_eq!(var_names("{var:a} {var:} {param:b}"), ["a", ""]);
         assert!(check_vars("{var:a_1} {date}").is_ok());
-        assert!(check_vars("{var:}").unwrap_err().contains("名前がない"));
-        assert!(check_vars("{var:共有}").unwrap_err().contains("英数字と _ だけ"));
+        assert!(msg::VAR_NAME_EMPTY.is_in(&check_vars("{var:}").unwrap_err()));
+        assert!(msg::VAR_NAME_BAD.is_in(&check_vars("{var:共有}").unwrap_err()));
     }
 }

@@ -63,7 +63,7 @@ impl Table {
                 return Err(msg::line(msg::TABLE_DATE_UNREADABLE, &[&(i + 1).to_string(), date]));
             };
             let name = name.trim().trim_matches('"');
-            days.insert(d, if name.is_empty() { "祝日".to_owned() } else { name.to_owned() });
+            days.insert(d, if name.is_empty() { msg::note(msg::N_HOLIDAY_DEFAULT, &[]) } else { name.to_owned() });
         }
         let (Some(first), Some(last)) = (days.keys().next(), days.keys().next_back()) else {
             return Err(line(msg::TABLE_EMPTY, &[]));
@@ -206,7 +206,7 @@ impl Calendar {
             .weekly_off
             .unwrap_or_default()
             .iter()
-            .map(|s| crate::when::weekday(s).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, "weekly_off", &e])))
+            .map(|s| crate::when::weekday(s).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, "weekly_off", msg::uncoded(&e)])))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Calendar {
             name: name.to_owned(),
@@ -237,7 +237,7 @@ impl Calendar {
         if self.holidays {
             let name = match &self.table {
                 Some(t) if t.covers(date) => t.days.get(&date).cloned(),
-                _ => japan::holiday(date).map(str::to_owned),
+                _ => japan::holiday(date),
             };
             if let Some(n) = name {
                 return Day::Holiday(n);
@@ -375,9 +375,9 @@ fn days(name: &str, list: Option<Vec<toml::Value>>, field: &str) -> Result<BTree
         let (date, name) = match &v {
             toml::Value::Table(_) => {
                 let n: Named = v.clone().try_into().map_err(|_| line(msg::CAL_ENTRY_SHAPE, &[name, field]))?;
-                (crate::when::date(&n.date).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, &e]))?, n.name)
+                (crate::when::date(&n.date).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, msg::uncoded(&e)]))?, n.name)
             }
-            _ => (crate::when::date(&v).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, &e]))?, String::new()),
+            _ => (crate::when::date(&v).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, msg::uncoded(&e)]))?, String::new()),
         };
         out.insert(date, name);
     }
@@ -494,6 +494,7 @@ impl Calendars {
 
 /// Japan's public holidays, by the rules in force, up to [`UNTIL`].
 pub mod japan {
+    use crate::msg;
     use chrono::{Datelike, NaiveDate, Weekday};
 
     /// The last day the rules are known to hold: the Cabinet Office has
@@ -507,7 +508,12 @@ pub mod japan {
     /// The holiday's name on `date`, by the rules, when it is one. Past
     /// [`UNTIL`] the rules are applied as they are: the caller says whether
     /// to trust them.
-    pub fn holiday(date: NaiveDate) -> Option<&'static str> {
+    pub fn holiday(date: NaiveDate) -> Option<String> {
+        Some(msg::note(name_of(date)?, &[]))
+    }
+
+    /// Which holiday `date` is.
+    fn name_of(date: NaiveDate) -> Option<msg::Note> {
         if let Some(n) = fixed(date) {
             return Some(n);
         }
@@ -515,38 +521,38 @@ pub mod japan {
         let mut p = date.pred_opt()?;
         while fixed(p).is_some() {
             if p.weekday() == Weekday::Sun {
-                return Some("振替休日");
+                return Some(msg::N_HOLIDAY_SUBSTITUTE);
             }
             p = p.pred_opt()?;
         }
         // 国民の休日: a day between two holidays (not a Sunday).
         if date.weekday() != Weekday::Sun && fixed(date.pred_opt()?).is_some() && fixed(date.succ_opt()?).is_some() {
-            return Some("国民の休日");
+            return Some(msg::N_HOLIDAY_CITIZENS);
         }
         None
     }
 
     /// The holidays on their own days (not the made-up ones).
-    fn fixed(date: NaiveDate) -> Option<&'static str> {
+    fn fixed(date: NaiveDate) -> Option<msg::Note> {
         let (y, m, d) = (date.year(), date.month(), date.day());
         let nth_monday = |n: u32| date.weekday() == Weekday::Mon && (d - 1) / 7 + 1 == n;
         Some(match (m, d) {
-            (1, 1) => "元日",
-            (1, _) if nth_monday(2) => "成人の日",
-            (2, 11) => "建国記念の日",
-            (2, 23) => "天皇誕生日",
-            (3, _) if d == equinox(y, 20.8431) => "春分の日",
-            (4, 29) => "昭和の日",
-            (5, 3) => "憲法記念日",
-            (5, 4) => "みどりの日",
-            (5, 5) => "こどもの日",
-            (7, _) if nth_monday(3) => "海の日",
-            (8, 11) => "山の日",
-            (9, _) if nth_monday(3) => "敬老の日",
-            (9, _) if d == equinox(y, 23.2488) => "秋分の日",
-            (10, _) if nth_monday(2) => "スポーツの日",
-            (11, 3) => "文化の日",
-            (11, 23) => "勤労感謝の日",
+            (1, 1) => msg::N_HOLIDAY_NEW_YEAR,
+            (1, _) if nth_monday(2) => msg::N_HOLIDAY_COMING_OF_AGE,
+            (2, 11) => msg::N_HOLIDAY_FOUNDATION,
+            (2, 23) => msg::N_HOLIDAY_EMPEROR_BIRTHDAY,
+            (3, _) if d == equinox(y, 20.8431) => msg::N_HOLIDAY_VERNAL_EQUINOX,
+            (4, 29) => msg::N_HOLIDAY_SHOWA,
+            (5, 3) => msg::N_HOLIDAY_CONSTITUTION,
+            (5, 4) => msg::N_HOLIDAY_GREENERY,
+            (5, 5) => msg::N_HOLIDAY_CHILDRENS,
+            (7, _) if nth_monday(3) => msg::N_HOLIDAY_MARINE,
+            (8, 11) => msg::N_HOLIDAY_MOUNTAIN,
+            (9, _) if nth_monday(3) => msg::N_HOLIDAY_RESPECT_AGED,
+            (9, _) if d == equinox(y, 23.2488) => msg::N_HOLIDAY_AUTUMN_EQUINOX,
+            (10, _) if nth_monday(2) => msg::N_HOLIDAY_SPORTS,
+            (11, 3) => msg::N_HOLIDAY_CULTURE,
+            (11, 23) => msg::N_HOLIDAY_LABOR_THANKS,
             _ => return None,
         })
     }
@@ -578,26 +584,26 @@ mod tests {
     #[test]
     fn japans_holidays_in_2026_and_2027() {
         let h = |s: &str| japan::holiday(d(s));
-        assert_eq!(h("2026-01-01"), Some("元日"));
-        assert_eq!(h("2026-01-12"), Some("成人の日"));
-        assert_eq!(h("2026-02-11"), Some("建国記念の日"));
-        assert_eq!(h("2026-02-23"), Some("天皇誕生日"));
-        assert_eq!(h("2026-03-20"), Some("春分の日"));
-        assert_eq!(h("2026-05-06"), Some("振替休日"), "憲法記念日 on a Sunday, made up after こどもの日");
-        assert_eq!(h("2026-07-20"), Some("海の日"));
-        assert_eq!(h("2026-09-21"), Some("敬老の日"));
-        assert_eq!(h("2026-09-22"), Some("国民の休日"));
-        assert_eq!(h("2026-09-23"), Some("秋分の日"));
-        assert_eq!(h("2026-10-12"), Some("スポーツの日"));
-        assert_eq!(h("2026-11-03"), Some("文化の日"));
-        assert_eq!(h("2026-11-23"), Some("勤労感謝の日"));
+        assert_eq!(h("2026-01-01"), Some("元日".to_owned()));
+        assert_eq!(h("2026-01-12"), Some("成人の日".to_owned()));
+        assert_eq!(h("2026-02-11"), Some("建国記念の日".to_owned()));
+        assert_eq!(h("2026-02-23"), Some("天皇誕生日".to_owned()));
+        assert_eq!(h("2026-03-20"), Some("春分の日".to_owned()));
+        assert_eq!(h("2026-05-06"), Some("振替休日".to_owned()), "憲法記念日 on a Sunday, made up after こどもの日");
+        assert_eq!(h("2026-07-20"), Some("海の日".to_owned()));
+        assert_eq!(h("2026-09-21"), Some("敬老の日".to_owned()));
+        assert_eq!(h("2026-09-22"), Some("国民の休日".to_owned()));
+        assert_eq!(h("2026-09-23"), Some("秋分の日".to_owned()));
+        assert_eq!(h("2026-10-12"), Some("スポーツの日".to_owned()));
+        assert_eq!(h("2026-11-03"), Some("文化の日".to_owned()));
+        assert_eq!(h("2026-11-23"), Some("勤労感謝の日".to_owned()));
         assert_eq!(h("2026-11-24"), None);
-        assert_eq!(h("2027-03-21"), Some("春分の日"));
-        assert_eq!(h("2027-03-22"), Some("振替休日"));
-        assert_eq!(h("2027-09-20"), Some("敬老の日"));
-        assert_eq!(h("2027-09-23"), Some("秋分の日"));
+        assert_eq!(h("2027-03-21"), Some("春分の日".to_owned()));
+        assert_eq!(h("2027-03-22"), Some("振替休日".to_owned()));
+        assert_eq!(h("2027-09-20"), Some("敬老の日".to_owned()));
+        assert_eq!(h("2027-09-23"), Some("秋分の日".to_owned()));
         assert_eq!(h("2027-09-22"), None, "a Wednesday between a plain day and a holiday");
-        assert_eq!(h("2027-08-11"), Some("山の日"));
+        assert_eq!(h("2027-08-11"), Some("山の日".to_owned()));
     }
 
     #[test]

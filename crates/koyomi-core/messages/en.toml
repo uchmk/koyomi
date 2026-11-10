@@ -4,6 +4,9 @@ a21 = "Connection and authentication"
 a22 = "Permissions"
 a31 = "Saving and checking jobnets"
 a32 = "Running jobs"
+a33 = "Jobnet definitions"
+a34 = "Job definitions"
+a37 = "Running the engine"
 a41 = "Calendars"
 
 [page]
@@ -666,3 +669,631 @@ when = "A holiday table is imported without a path"
 text = "The path of the holiday table to import is not given."
 cause = "The path of the file to import is required."
 action = "Enter the path."
+
+[E1001]
+when = "A [groups] group is not an array of PCs"
+text = "[groups] group {0} is not an array of PCs."
+cause = "A group needs an array of one or more PCs."
+action = "Give the PCs as an array, for example {0} = [\"ssh://ops@web1\", \"ssh://ops@web2\"]."
+
+[E1002]
+when = "A [groups] group has more PCs than allowed"
+text = "[groups] group {0} has more than {1} PCs."
+cause = "A group can hold only a limited number of PCs."
+action = "Keep the group to {1} PCs or fewer."
+
+[E1003]
+when = "A PC in [groups] has a key that is not allowed"
+text = "[groups] group {0} has a PC with the key {1}, which is not allowed."
+cause = "A PC written as a table can only have on, host_key and cert."
+action = "Remove {1}."
+
+[E1004]
+when = "A key of a PC in [groups] is not a string"
+text = "[groups] group {0}: {1} is not a string."
+cause = "When a PC is written as a table, on, host_key and cert must be strings."
+action = "Give {1} as a string."
+
+[E1005]
+when = "A PC in [groups] has no on"
+text = "[groups] group {0} has a PC with no on."
+cause = "When a PC is written as a table, its address must be given as on."
+action = "Give on, for example { on = \"ssh://ops@web1\", host_key = \"SHA256:…\" }."
+
+[E1006]
+when = "A PC in [groups] has a value with {"
+text = "[groups] group {0}: a value with {…} is not allowed. ({1})"
+cause = "The PCs of a group cannot contain a value with {."
+action = "Give an address without {."
+
+[E1007]
+when = "The address of a PC in [groups] is neither ssh:// nor winrm://"
+text = "[groups] group {0}: the address {1} is not valid."
+cause = "The address does not start with ssh:// or winrm://."
+action = "Use ssh://[user@]host[:port] or winrm://user@host[:port]."
+
+[E1008]
+when = "A PC in [groups] is not valid"
+text = "[groups] group {0} has a PC that is not valid. ({1})"
+cause = "The address, host_key or cert of the PC has the wrong form."
+action = "Read the reason in the brackets and correct the PC."
+
+[E1009]
+when = "A [groups] group mixes ssh:// and winrm:// PCs"
+text = "[groups] group {0} mixes ssh:// and winrm:// PCs."
+cause = "A group can be used for either ssh or winrm, not both."
+action = "Give a group only ssh:// PCs or only winrm:// PCs."
+
+[E1010]
+when = "A PC in [groups] has a host_key or cert that does not fit its scheme"
+text = "[groups] group {0}: {1} cannot be given to the PC {3}."
+cause = "host_key is for ssh:// PCs and cert is for winrm:// PCs only."
+action = "Give {1} only to {2}:// PCs."
+
+[E1011]
+when = "A [groups] group lists the same PC twice"
+text = "[groups] group {0} lists the same PC more than once. ({1})"
+cause = "A group cannot list the same address twice."
+action = "Remove the duplicate PC."
+
+[E1012]
+when = "A name in [groups] or [vars] has a character that is not allowed"
+text = "The name {1} in {0} cannot be used."
+cause = "A name can only have letters, digits and _."
+action = "Use a name of letters, digits and _ so it can be read as {2}."
+
+[E1013]
+when = "A job's on names a group that [groups] does not have"
+text = "The group {0} is not in [groups] of koyomi.toml."
+cause = "The group named by on is not defined in [groups] of koyomi.toml."
+action = "Add {0} to [groups], or correct the name in on = \"group:…\"."
+
+[E1014]
+when = "A job's kind does not match the PCs of the group named by on"
+text = "The PCs of group {0} are {1}://, which does not match the job's kind."
+cause = "An ssh job needs a group of ssh:// PCs and a winrm job needs a group of winrm:// PCs."
+action = "For kind = \"{2}\", give a group of {2}:// PCs in on."
+
+[E1015]
+when = "[standby] or [primary] names a connection that [[remote]] does not have"
+text = "The {2} given as {1} in [{0}] is not a name in [[remote]]."
+cause = "The connection must be a name defined in [[remote]]."
+action = "Give a name defined in [[remote]], or add the [[remote]]."
+
+[E1016]
+when = "every cannot be read as a length of time"
+text = "Cannot read every in [{0}] as a length of time. ({1})"
+cause = "every is not a length longer than zero, written as a number with a unit such as 30s, 5m or 1h."
+action = "Give every as a number with a unit, such as 30s or 5m."
+
+[E1017]
+when = "every is outside the allowed range"
+text = "every in [{0}] is out of range."
+cause = "every has a lower and an upper limit."
+action = "Give every a length from {1} to {2}."
+
+[E1018]
+when = "misses is outside the allowed range"
+text = "misses in [{0}] is out of range."
+cause = "misses can be a number from 1 to 20."
+action = "Give misses a number from 1 to 20."
+
+[E1019]
+when = "The url in [ping] is not valid"
+text = "The url in [ping] is not valid."
+cause = "url is neither secret:<name> nor an address starting with http:// or https://."
+action = "Give secret:<name>, or an address starting with http:// or https://."
+
+[E1020]
+when = "The name in [[remote]] is not valid"
+text = "The name in [[remote]] is not valid."
+cause = "name is empty or has a space."
+action = "Give a name without spaces."
+
+[E1021]
+when = "The url in [[remote]] is not valid"
+text = "The url of [[remote]] {0} is not valid."
+cause = "url is not of the form https://<PC>:<port>."
+action = "Give url as https://<PC>:<port>. Only TLS is allowed on a LAN."
+
+[E1022]
+when = "The fingerprint in [[remote]] is not a SHA-256"
+text = "The fingerprint of [[remote]] {0} is not a SHA-256."
+cause = "fingerprint is not 64 hexadecimal digits."
+action = "Run koyomi http fingerprint on the connection, or koyomi remote peek <url> here, to see the fingerprint."
+
+[E1023]
+when = "A token is not in the form secret:<name>"
+text = "The token of {0} is not given as secret:<name>."
+cause = "token is not in the form secret:<name>."
+action = "Give token as secret:<name> and store its value with koyomi secret set <name>."
+
+[E1024]
+when = "The port in [http] is out of range"
+text = "The port in [http] is out of range."
+cause = "port is 0."
+action = "Give port a number from 1 to 65535."
+
+[E1025]
+when = "The tailnet in [http] is not valid"
+text = "The tailnet in [http] is not valid."
+cause = "tailnet is 0 or the same as port."
+action = "Give tailnet a port from 1 to 65535 that differs from port."
+
+[E1026]
+when = "[http] has a tailnet and no user connects by tailscale"
+text = "[http] has a tailnet, but no user connects by tailscale."
+cause = "No [[http.user]] has a tailscale."
+action = "Give a [[http.user]] tailscale = \"<login name>\"."
+
+[E1027]
+when = "The name in [[http.user]] is not valid"
+text = "The name in [[http.user]] is not valid."
+cause = "name is empty, has a space, or is default."
+action = "Give a name with no spaces other than default."
+
+[E1028]
+when = "A name in [[remote]], or a name or tailscale in [[http.user]], is listed twice"
+text = "The {1} {2} in {0} is listed more than once."
+cause = "Two or more entries have the same value."
+action = "Give each {1} only once."
+
+[E1029]
+when = "The role, nets or roles of an [[http.user]] is not valid"
+text = "The settings of [[http.user]] {0} are not valid. ({1})"
+cause = "One of role, nets and roles is not valid."
+action = "Check role, nets and roles."
+
+[E1030]
+when = "A user with role = \"admin\" also has nets or roles"
+text = "[[http.user]] {0} has role = \"admin\" and also nets or roles."
+cause = "admin applies to every jobnet, so nets and roles cannot narrow it."
+action = "Remove nets and roles."
+
+[E1031]
+when = "The tailscale of an [[http.user]] is not valid"
+text = "The tailscale of [[http.user]] {0} is not valid. ({1})"
+cause = "tailscale is neither a login name nor a tag."
+action = "Give a Tailscale login name (sato@example.com) or a tag (tag:koyomi-ha)."
+
+[E1032]
+when = "An [[http.user]] has a tailscale and [http] has no tailnet"
+text = "[[http.user]] {0} has a tailscale, but [http] has no tailnet."
+cause = "Connections by tailscale arrive at the port that tailnet listens on."
+action = "Give tailnet in [http] the port to listen on."
+
+[E1033]
+when = "koyomi.toml has a key that is not known"
+text = "{0} has an unknown key {1}."
+cause = "The key is not one this version knows."
+action = "Check the key name and correct it, or remove it."
+
+[E1034]
+when = "koyomi.toml lacks a required key"
+text = "{0} lacks the required key {1}."
+cause = "A key that is needed is not given."
+action = "Add {1}."
+
+[E1035]
+when = "A value in koyomi.toml is not one of the allowed values"
+text = "The value {1} in {0} cannot be used. (Allowed: {2})"
+cause = "The value is not one of those that can be given."
+action = "Give one of the allowed values."
+
+[E1036]
+when = "The type, range or syntax of koyomi.toml is not valid"
+text = "Cannot read {0}. ({1})"
+cause = "A value has the wrong type or range, or the TOML syntax is wrong."
+action = "Check the keys and values, and correct koyomi.toml."
+
+[E1037]
+when = "concurrency, keep_days or log_max_mb is 0"
+text = "{0} is 0."
+cause = "concurrency, keep_days and log_max_mb need a number of 1 or more."
+action = "Give {0} a number of 1 or more."
+
+[E1038]
+when = "[standby] and [primary] are both given"
+text = "[standby] and [primary] are both given."
+cause = "A PC cannot be both the standby and the one the standby watches."
+action = "Keep [standby] on the standby PC and [primary] on the PC it watches, and remove the other."
+
+[E1039]
+when = "A name in [locks] cannot be a lock name"
+text = "{0} in [locks] cannot be used as a lock name."
+cause = "A lock name cannot have characters such as / \\ :."
+action = "Use a name by the same rule as a jobnet's lock."
+
+[E1040]
+when = "The number in [locks] is not valid"
+text = "The number for {0} in [locks] is not valid."
+cause = "The number that can be held at once must be an integer of 1 or more."
+action = "Give an integer of 1 or more, such as \"api\" = 3."
+
+[E1041]
+when = "work_dir is neither the definition folder nor an absolute path"
+text = "The work_dir value {0} is not valid."
+cause = "work_dir is neither the value for the definition's folder nor an absolute path."
+action = "Give \"{1}\" (the definition's folder) or an absolute path, such as work_dir = '{2}'."
+
+[E1042]
+when = "A value in [vars] is not a string"
+text = "{0} in [vars] is not a string."
+cause = "A value in [vars] must be a string."
+action = "Give a string, such as {0} = '\\\\nas\\backup'."
+
+[E1043]
+when = "A value in [vars] has {param:…} or {var:…}"
+text = "{0} in [vars] has {param:…} or {var:…}."
+cause = "A value in [vars] cannot refer to a jobnet's value or to another [vars] entry."
+action = "Remove {param:…} and {var:…}. {date} and the like can be used."
+
+[E1044]
+when = "A date token in a [vars] value is not valid"
+text = "The value of {0} in [vars] is not valid. ({1})"
+cause = "The form of a token such as {date} is not valid."
+action = "Read the reason in the brackets and correct the value."
+
+[E2231]
+when = "role has a value that cannot be used"
+text = "The role value {0} cannot be used."
+cause = "role can only be view, run, edit or admin."
+action = "Give role one of view, run, edit and admin."
+
+[E2232]
+when = "nets is empty"
+text = "nets is empty."
+cause = "nets needs one or more jobnets."
+action = "To reach every jobnet, leave nets out."
+
+[E2233]
+when = "roles is empty"
+text = "roles is empty."
+cause = "roles needs one or more jobnets."
+action = "To apply role to every jobnet, leave roles out."
+
+[E2234]
+when = "A jobnet in nets or roles is not in the form <group>/<name>"
+text = "The {1} given in {0} is not in the form <group>/<name>."
+cause = "A jobnet is given as its group and name separated by /."
+action = "Use the form <group>/<name>. To reach every jobnet of a group, write it like 経理/*."
+
+[E2235]
+when = "A role in roles cannot be used"
+text = "The role {1} given for {0} in roles cannot be used."
+cause = "A role in roles can only be view, run or edit; admin cannot be given per jobnet."
+action = "Give one of view, run and edit."
+
+[E3181]
+when = "A job's executable is not found"
+text = "The executable {1} of job {0} was not found."
+cause = "The executable is not at the given path nor in a folder on PATH."
+action = "Check the path of the executable, or put it in a folder on PATH."
+
+[E3182]
+when = "A job's working folder does not exist"
+text = "The working folder {1} of job {0} does not exist."
+cause = "The folder given as dir does not exist."
+action = "Check dir, or create the folder."
+
+[E3183]
+when = "The folder a job watches does not exist"
+text = "The folder {1} that job {0} watches does not exist."
+cause = "The folder before the wildcard in the path given as file does not exist."
+action = "Check file, or create the folder."
+
+[E3184]
+when = "The work_dir folder does not exist"
+text = "The working folder {0} for jobs without dir does not exist."
+cause = "The folder given as work_dir in koyomi.toml does not exist."
+action = "Check work_dir in koyomi.toml, or create the folder."
+
+[W3185]
+when = "A [[when]] day is a day some months do not have"
+text = "day = {0} in [[when]] does not run in months without a day {0} ({1})."
+cause = "In a month without that day, the jobnet does not run."
+action = "To run on the last day of the month, give day = \"last\"."
+
+[E3186]
+when = "References to a renamed jobnet cannot be followed"
+text = "The references to jobnet {0} cannot be rewritten automatically."
+cause = "The reference is written in a way, such as a string with escapes, that cannot be rewritten."
+action = "Correct use, wait_for and after_jobnet by hand."
+
+[E3370]
+when = "_group.toml has a key that is not known"
+text = "_group.toml has an unknown key {0}."
+cause = "The key is not one this version knows."
+action = "Check the key name and correct it, or remove it."
+
+[E3371]
+when = "_group.toml cannot be read as TOML"
+text = "_group.toml is not valid TOML. ({0})"
+cause = "The syntax of the file is wrong."
+action = "Correct the file."
+
+[E3372]
+when = "_group.toml has no format"
+text = "_group.toml has no format."
+cause = "_group.toml needs a format."
+action = "Add format = {0}."
+
+[E3373]
+when = "The format of _group.toml is a value this version cannot read"
+text = "The format of _group.toml cannot be read by this version."
+cause = "This version reads only a fixed format."
+action = "Change it to format = {0}."
+
+[E3374]
+when = "The calendar in _group.toml is not valid"
+text = "The calendar in _group.toml is not valid."
+cause = "The value cannot be used as a calendar name."
+action = "Give the <name> of calendars/<name>.toml, such as calendar = \"company\"."
+
+[E3375]
+when = "A jobnet needs a calendar and has none"
+text = "The jobnet uses business_day, shift or on_closed, but has no calendar."
+cause = "Business days are decided by a calendar."
+action = "Give calendar in the jobnet or in _group.toml."
+
+[E3376]
+when = "The child jobnet named by use does not exist"
+text = "The child jobnet {0} does not exist."
+cause = "The definition of the jobnet given as use was not found."
+action = "Give an existing jobnet in the form <group>/<name> as use."
+
+[E3377]
+when = "The child jobnet named by use has an error in its definition"
+text = "The definition of child jobnet {0} has an error."
+cause = "The child jobnet cannot be used because of the error."
+action = "Correct the definition of the child jobnet."
+
+[E3378]
+when = "The jobnet named by after_jobnet does not exist"
+text = "The preceding jobnet {0} does not exist."
+cause = "The definition of the jobnet given as after_jobnet was not found."
+action = "Give an existing jobnet as after_jobnet."
+
+[E3379]
+when = "after_jobnet comes round to itself"
+text = "The after_jobnet entries form a loop. ({0})"
+cause = "A jobnet can reach itself by following its preceding jobnets."
+action = "Remove one of the after_jobnet entries in the loop."
+
+[E3380]
+when = "A jobnet definition is not UTF-8"
+text = "Cannot read {0} as UTF-8 text."
+cause = "The file is not saved as UTF-8."
+action = "Save the file as UTF-8."
+
+[E3381]
+when = "The from or to of a [[blackout]] cannot be read"
+text = "Cannot read {0} {1} of [[blackout]] as a date or a time."
+cause = "The value is not in the form of a date or a date and time."
+action = "Give {0} as \"2026-12-29\" or \"2026-12-29 22:00\"."
+
+[E3382]
+when = "The to of a [[blackout]] is before its from"
+text = "to ({0}) of [[blackout]] is before from ({1})."
+cause = "The end of the planned stop is before its start."
+action = "Give to a date or time after from."
+
+[E3383]
+when = "A quiet time span cannot be read"
+text = "Cannot read the time span {0}."
+cause = "The span is not a start time and an end time separated by -."
+action = "Give a start time and an end time separated by -, such as \"12:00-13:00\"."
+
+[E3384]
+when = "A quiet time span starts and ends at the same time"
+text = "The time span {0} starts and ends at the same time."
+cause = "A span cannot start and end at the same time."
+action = "Give different start and end times."
+
+[E3385]
+when = "A deadline cannot be read"
+text = "Cannot read the deadline {0}."
+cause = "The deadline is neither a time nor a length of time."
+action = "Give \"06:00\" (a time) or \"30m\" (a length of time)."
+
+[E3386]
+when = "--only is used on a standby PC"
+text = "--only cannot be used on this PC because it is a standby."
+cause = "Until the standby takes over, the run history is on the primary, so the days cannot be judged here."
+action = "Run it on {0}, which has the history."
+
+[E3387]
+when = "A time cannot be read"
+text = "Cannot read the time {0}."
+cause = "The time is not in the form HH:MM or HH:MM:SS."
+action = "Give a time such as \"02:00\"."
+
+[E3388]
+when = "A day of the week cannot be read"
+text = "Cannot read the day of the week \"{0}\"."
+cause = "The day is not one of mon to sun."
+action = "Give one of mon, tue, wed, thu, fri, sat and sun."
+
+[E3389]
+when = "A date cannot be read"
+text = "Cannot read the date {0}."
+cause = "The date is not in the form year-month-day."
+action = "Give a date such as 2026-11-30."
+
+[E3390]
+when = "A date and time cannot be read"
+text = "Cannot read the date and time {0}."
+cause = "It is not in the form year-month-dayThour:minute:second, or it has an offset."
+action = "Give it without an offset, such as 2026-11-30T21:00:00."
+
+[E3391]
+when = "A month-day cannot be read"
+text = "Cannot read {0} as a month and a day."
+cause = "It is not in the form month-day, or the day does not exist."
+action = "Give a month and a day such as \"04-01\"."
+
+[E3392]
+when = "A mail address is not in the form imaps://user@server/folder"
+text = "The mail value {0} is not valid."
+cause = "mail is not in the form imaps://user@server/folder."
+action = "Use the form \"imaps://user@server/folder\", such as imaps://me@example.com@imap.example.com/INBOX."
+
+[E3393]
+when = "mail is given as imap://"
+text = "mail is given as imap://, which is not encrypted."
+cause = "mail accepts only imaps://, which is encrypted with TLS."
+action = "Give an address starting with imaps://."
+
+[E3394]
+when = "The port in mail is out of range"
+text = "The mail port {0} is out of range."
+cause = "The port is not a number from 1 to 65535."
+action = "Give a port from 1 to 65535."
+
+[E3470]
+when = "A length of time is 0"
+text = "The length of time {0} is 0."
+cause = "A length of time must be longer than 0."
+action = "Give a length of time longer than 0, such as 30m."
+
+[E3471]
+when = "A length of time cannot be read"
+text = "Cannot read the length of time {0}."
+cause = "It is not numbers with units, with h, m and s each at most once and in that order."
+action = "Give a number with a unit, such as 30m, 1h30m or 90s."
+
+[E3472]
+when = "A token moves by business days and no calendar is given"
+text = "{0} moves by business days, but no calendar is given."
+cause = "Moving by bd needs a calendar to decide business days."
+action = "Give calendar in the jobnet or in _group.toml."
+
+[E3473]
+when = "The moved date cannot be found"
+text = "{0} cannot give a date moved from {1}."
+cause = "The result is outside the dates that can be handled, or no business day was found."
+action = "Check the number and unit of the move."
+
+[E3474]
+when = "{var:} has no name"
+text = "{var:} has no name."
+cause = "{var:…} needs a name from [vars]."
+action = "Give the name from [vars] in koyomi.toml, such as {var:share}."
+
+[E3475]
+when = "The name in {var:…} has a character that is not allowed"
+text = "The name {0} in {var:…} cannot be used."
+cause = "A name in [vars] can only have letters, digits and _."
+action = "Use a name of letters, digits and _."
+
+[E3476]
+when = "The value of {param:…} is not in [params]"
+text = "The value of {param:{0}} is not in [params]."
+cause = "The name given in {param:…} is not defined in the jobnet's [params]."
+action = "Add {0} to [params], or correct the name in {param:…}."
+
+[E3477]
+when = "The value of {var:…} is not in [vars]"
+text = "The value of {var:{0}} is not in [vars] of koyomi.toml."
+cause = "The name given in {var:…} is not defined in [vars] of koyomi.toml."
+action = "Add {0} to [vars] in koyomi.toml, or correct the name in {var:…}."
+
+[E3478]
+when = "A value is given to a jobnet with no [params]"
+text = "The value {0} cannot be given. This jobnet has no [params]."
+cause = "The name of the value is not defined in the jobnet's [params]."
+action = "Define [params] in the jobnet, or withdraw the value."
+
+[E3479]
+when = "A value is given under a name not in [params]"
+text = "The value {0} is not in [params]. (Defined: {1})"
+cause = "The name of the value is not defined in the jobnet's [params]."
+action = "Give a name that is in [params]."
+
+[E3480]
+when = "A date token has no number to move by"
+text = "{0} has no number to move by."
+cause = "No number follows + or -."
+action = "Give a number and a unit after + or -, such as {date-1d}."
+
+[E3481]
+when = "A date token has no unit"
+text = "{0} has no unit."
+cause = "Moving {date…} needs a unit."
+action = "Give one of d, bd, m and y as the unit."
+
+[E3482]
+when = "The unit of a date token cannot be read"
+text = "Cannot read the unit {1} of {0}."
+cause = "A unit that cannot be used is given."
+action = "Give a number alone or m for {month}, and d, bd, m or y for {date}."
+
+[E3483]
+when = "The format of a date token cannot be read"
+text = "Cannot read the format {1} of {0}."
+cause = "The date format is empty or not valid."
+action = "Give a date format, such as {date:%Y%m%d}."
+
+[E3484]
+when = "A token in a job could not be filled in"
+text = "Cannot fill in {1} of job {0}. ({2})"
+cause = "A token such as {param:…}, {var:…} or {date…} could not be replaced."
+action = "Read the reason in the brackets and correct the token."
+
+[E3770]
+when = "A state file of the engine is not UTF-8"
+text = "Cannot read {0} as UTF-8 text."
+cause = "The file is not saved as UTF-8."
+action = "Save the file as UTF-8."
+
+[E3771]
+when = "The name of a file to archive is not UTF-8"
+text = "{0} cannot be added to the zip because its name is not UTF-8."
+cause = "A zip cannot hold a file with a name that is not UTF-8 as it is."
+action = "Rename the file to a name that UTF-8 can hold."
+
+[E3772]
+when = "A run ID cannot be read"
+text = "Cannot read {0} as a run ID."
+cause = "The run ID is not in the expected form."
+action = "Check the run ID."
+
+[note]
+list_sep = ", "
+config_at_line = "line {0} of koyomi.toml"
+blackout_reason = "Planned stop ({0})"
+blackout_reason_why = "Planned stop ({0}, {1})"
+ps_warning = "Warning: "
+ps_verbose = "Verbose: "
+ps_debug = "Debug: "
+standby_no_definition = "This PC has no definition it can run."
+standby_not_rerun = "takeover = \"rerun\" is not set."
+standby_all_passed = "Every job had finished."
+lock_shared_held = "Shared lock \"{0}\" is held exclusively by {1}."
+lock_exclusive_by_shared = "Exclusive lock \"{0}\" is held shared by {1}."
+lock_exclusive_by_one = "Exclusive lock \"{0}\" is held by {1}."
+lock_exclusive_full = "Exclusive lock \"{0}\" allows {1} at once. It is held by {2}."
+lock_and_more = "and {0} more"
+months_without_31 = "February, April, June, September and November"
+months_without_30 = "February"
+months_without_29 = "February in a year that is not a leap year"
+new_jobnet_file = "format = 1\nname = {0}\n\n# Add times with [[when]]. Without one, the jobnet runs only by hand.\n# [[when]]\n# every = \"day\"\n# at = [\"02:00\"]\n\n[[job]]\nid = \"job1\"\nname = \"First job\"\n# Give the executable and its arguments one by one (not one shell line).\nrun = [\"cmd.exe\", \"/c\", \"echo hello\"]\n"
+holiday_default = "Public holiday"
+holiday_substitute = "Substitute holiday"
+holiday_citizens = "Citizens' holiday"
+holiday_new_year = "New Year's Day"
+holiday_coming_of_age = "Coming of Age Day"
+holiday_foundation = "National Foundation Day"
+holiday_emperor_birthday = "The Emperor's Birthday"
+holiday_vernal_equinox = "Vernal Equinox Day"
+holiday_showa = "Showa Day"
+holiday_constitution = "Constitution Memorial Day"
+holiday_greenery = "Greenery Day"
+holiday_childrens = "Children's Day"
+holiday_marine = "Marine Day"
+holiday_mountain = "Mountain Day"
+holiday_respect_aged = "Respect for the Aged Day"
+holiday_autumn_equinox = "Autumnal Equinox Day"
+holiday_sports = "Sports Day"
+holiday_culture = "Culture Day"
+holiday_labor_thanks = "Labor Thanksgiving Day"

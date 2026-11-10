@@ -4,6 +4,9 @@ a21 = "接続・認証"
 a22 = "権限"
 a31 = "ジョブネットの保存・確認"
 a32 = "ジョブの実行"
+a33 = "ジョブネットの定義"
+a34 = "ジョブの定義"
+a37 = "エンジンの運用"
 a41 = "カレンダー"
 
 [page]
@@ -666,3 +669,631 @@ when = "祝日の表のパスを指定せずに取り込もうとしたとき"
 text = "取り込む祝日の表のパスが指定されていません。"
 cause = "取り込むファイルのパスが必要です。"
 action = "パスを入力してください。"
+
+[E1001]
+when = "[groups] のグループが PC の配列で指定されていないとき"
+text = "[groups] のグループ {0} が、PC の配列で指定されていません。"
+cause = "グループには、1 台以上の PC の配列を指定する必要があるためです。"
+action = "{0} = [\"ssh://ops@web1\", \"ssh://ops@web2\"] のように、PC を配列で指定してください。"
+
+[E1002]
+when = "[groups] のグループの PC が上限を超えているとき"
+text = "[groups] のグループ {0} の PC が {1} 台を超えています。"
+cause = "1 つのグループに指定できる PC の数には上限があるためです。"
+action = "PC を {1} 台以内にしてください。"
+
+[E1003]
+when = "[groups] の PC に使用できない項目が指定されているとき"
+text = "[groups] のグループ {0} の PC に、使用できない項目 {1} が指定されています。"
+cause = "PC を表の形式で指定するとき、使用できる項目は on、host_key、cert だけであるためです。"
+action = "{1} を削除してください。"
+
+[E1004]
+when = "[groups] の PC の項目が文字列でないとき"
+text = "[groups] のグループ {0} の {1} が、文字列で指定されていません。"
+cause = "PC を表の形式で指定するとき、on、host_key、cert は文字列である必要があるためです。"
+action = "{1} には文字列を指定してください。"
+
+[E1005]
+when = "[groups] の PC に on が指定されていないとき"
+text = "[groups] のグループ {0} の PC に、on が指定されていません。"
+cause = "PC を表の形式で指定するとき、PC のアドレスを on で指定する必要があるためです。"
+action = "{ on = \"ssh://ops@web1\", host_key = \"SHA256:…\" } のように、on を指定してください。"
+
+[E1006]
+when = "[groups] の PC に { を含む値が指定されているとき"
+text = "[groups] のグループ {0} の PC に、{…} を含む値は指定できません。（{1}）"
+cause = "グループの PC の指定には、{ を含む値を使用できないためです。"
+action = "{ を含まないアドレスを指定してください。"
+
+[E1007]
+when = "[groups] の PC のアドレスが ssh:// でも winrm:// でもないとき"
+text = "[groups] のグループ {0} の PC のアドレス {1} が正しくありません。"
+cause = "アドレスが ssh:// でも winrm:// でも始まっていないためです。"
+action = "ssh://[ユーザー@]ホスト[:ポート]、または winrm://ユーザー@ホスト[:ポート] の形式で指定してください。"
+
+[E1008]
+when = "[groups] の PC の指定が正しくないとき"
+text = "[groups] のグループ {0} の PC の指定が正しくありません。（{1}）"
+cause = "PC のアドレス、host_key、または cert の形式が正しくないためです。"
+action = "（）内の理由を確認して、PC の指定を修正してください。"
+
+[E1009]
+when = "[groups] の 1 つのグループに ssh:// と winrm:// の PC が混在しているとき"
+text = "[groups] のグループ {0} に、ssh:// と winrm:// の PC が混在しています。"
+cause = "1 つのグループは、ssh と winrm のどちらか一方の接続にしか使用できないためです。"
+action = "1 つのグループには、ssh:// または winrm:// のどちらかだけを指定してください。"
+
+[E1010]
+when = "[groups] の PC に、接続方式に合わない host_key または cert が指定されているとき"
+text = "[groups] のグループ {0} の PC {3} に、{1} は指定できません。"
+cause = "host_key は ssh:// の PC に、cert は winrm:// の PC にだけ指定できるためです。"
+action = "{1} は {2}:// の PC にだけ指定してください。"
+
+[E1011]
+when = "[groups] の 1 つのグループに同じ PC が重複しているとき"
+text = "[groups] のグループ {0} に、同じ PC が重複して指定されています。（{1}）"
+cause = "同じアドレスの PC を、1 つのグループに 2 回以上指定できないためです。"
+action = "重複している PC を削除してください。"
+
+[E1012]
+when = "[groups] または [vars] の名前に使用できない文字が含まれるとき"
+text = "{0} の名前 {1} は使用できません。"
+cause = "名前には、英数字と _ だけを使用できるためです。"
+action = "{2} として読み込めるように、英数字と _ だけの名前を指定してください。"
+
+[E1013]
+when = "ジョブの on が、[groups] にないグループを指しているとき"
+text = "グループ {0} が、koyomi.toml の [groups] にありません。"
+cause = "on で指定したグループが、koyomi.toml の [groups] に定義されていないためです。"
+action = "[groups] に {0} を追加するか、on = \"group:…\" の名前を修正してください。"
+
+[E1014]
+when = "ジョブの kind と、on で指定したグループの PC の種類が一致しないとき"
+text = "グループ {0} の PC は {1}:// で指定されており、ジョブの kind と一致しません。"
+cause = "ssh には ssh:// の PC のグループを、winrm には winrm:// の PC のグループを指定する必要があるためです。"
+action = "kind = \"{2}\" の on には、{2}:// の PC のグループを指定してください。"
+
+[E1015]
+when = "[standby] または [primary] が、[[remote]] にない接続先を指しているとき"
+text = "[{0}] の {1} に指定された {2} は、[[remote]] の name にありません。"
+cause = "接続先の指定には、[[remote]] で定義した name を使用する必要があるためです。"
+action = "[[remote]] で定義した name を指定するか、[[remote]] を追加してください。"
+
+[E1016]
+when = "every を時間として読み込めないとき"
+text = "[{0}] の every を時間として読み込めません。（{1}）"
+cause = "every が、0 より長い、数値と単位（30s、5m、1h など）の形式の時間になっていないためです。"
+action = "every には 30s、5m のように、数値と単位を指定してください。"
+
+[E1017]
+when = "every が指定できる範囲を外れているとき"
+text = "[{0}] の every が範囲外です。"
+cause = "every に指定できる時間には、下限と上限があるためです。"
+action = "every には {1} から {2} までの時間を指定してください。"
+
+[E1018]
+when = "misses が指定できる範囲を外れているとき"
+text = "[{0}] の misses が範囲外です。"
+cause = "misses に指定できるのは、1 から 20 までの数であるためです。"
+action = "misses には 1 から 20 までの数を指定してください。"
+
+[E1019]
+when = "[ping] の url が正しくないとき"
+text = "[ping] の url が正しくありません。"
+cause = "url が、secret:<名前> でも http:// や https:// で始まるアドレスでもないためです。"
+action = "url には、secret:<名前>、または http:// か https:// で始まるアドレスを指定してください。"
+
+[E1020]
+when = "[[remote]] の name が正しくないとき"
+text = "[[remote]] の name が正しくありません。"
+cause = "name が空、または空白を含んでいるためです。"
+action = "name には、空白を含まない名前を指定してください。"
+
+[E1021]
+when = "[[remote]] の url が正しくないとき"
+text = "[[remote]] {0} の url が正しくありません。"
+cause = "url が、https:// で始まる <PC>:<port> の形式になっていないためです。"
+action = "url は https://<PC>:<port> の形式で指定してください。LAN では TLS のみ使用できます。"
+
+[E1022]
+when = "[[remote]] の fingerprint が SHA-256 の形式でないとき"
+text = "[[remote]] {0} の fingerprint が SHA-256 の形式ではありません。"
+cause = "fingerprint が、64 桁の 16 進数になっていないためです。"
+action = "接続先の PC で koyomi http fingerprint を実行するか、この PC で koyomi remote peek <url> を実行して、フィンガープリントを確認してください。"
+
+[E1023]
+when = "token が secret:<名前> の形式でないとき"
+text = "{0} の token が、secret:<名前> の形式で指定されていません。"
+cause = "token が secret:<名前> の形式でないためです。"
+action = "token には secret:<名前> を指定し、値は koyomi secret set <名前> で OS の資格情報に保存してください。"
+
+[E1024]
+when = "[http] の port が範囲外のとき"
+text = "[http] の port が範囲外です。"
+cause = "port が 0 であるためです。"
+action = "port には 1 から 65535 までの数を指定してください。"
+
+[E1025]
+when = "[http] の tailnet が正しくないとき"
+text = "[http] の tailnet が正しくありません。"
+cause = "tailnet が 0、または port と同じ値であるためです。"
+action = "tailnet には、port とは別の 1 から 65535 までのポートを指定してください。"
+
+[E1026]
+when = "[http] に tailnet があり、tailscale で接続する利用者がいないとき"
+text = "[http] に tailnet が指定されていますが、tailscale で接続する利用者がいません。"
+cause = "[[http.user]] に、tailscale が指定された利用者が 1 人もいないためです。"
+action = "[[http.user]] に tailscale = \"<ログイン名>\" を指定してください。"
+
+[E1027]
+when = "[[http.user]] の name が正しくないとき"
+text = "[[http.user]] の name が正しくありません。"
+cause = "name が、空、空白を含む、または default であるためです。"
+action = "name には、空白を含まず default 以外の名前を指定してください。"
+
+[E1028]
+when = "[[remote]] の name、[[http.user]] の name または tailscale が重複しているとき"
+text = "{0} の {1} {2} が重複しています。"
+cause = "同じ値を持つ項目が 2 つ以上あるためです。"
+action = "{1} が重複しないように指定してください。"
+
+[E1029]
+when = "[[http.user]] の role、nets、roles が正しくないとき"
+text = "[[http.user]] {0} の設定が正しくありません。（{1}）"
+cause = "role、nets、roles のいずれかの指定が正しくないためです。"
+action = "role、nets、roles の指定を確認してください。"
+
+[E1030]
+when = "role = \"admin\" の利用者に nets または roles が指定されているとき"
+text = "[[http.user]] {0} は role = \"admin\" ですが、nets と roles も指定されています。"
+cause = "admin はすべてのジョブネットに適用されるため、nets や roles で対象を絞れないためです。"
+action = "nets と roles を削除してください。"
+
+[E1031]
+when = "[[http.user]] の tailscale が正しくないとき"
+text = "[[http.user]] {0} の tailscale が正しくありません。（{1}）"
+cause = "tailscale が、ログイン名でもタグでもない形式で指定されているためです。"
+action = "tailscale には、Tailscale のログイン名（sato@example.com）またはタグ（tag:koyomi-ha）を指定してください。"
+
+[E1032]
+when = "[[http.user]] に tailscale があり、[http] に tailnet がないとき"
+text = "[[http.user]] {0} に tailscale が指定されていますが、[http] に tailnet がありません。"
+cause = "tailscale での接続は、tailnet で待ち受けるポートを通るためです。"
+action = "[http] の tailnet に、待ち受けるポートを指定してください。"
+
+[E1033]
+when = "koyomi.toml に未知の項目が指定されているとき"
+text = "{0} に、未知の項目 {1} があります。"
+cause = "このバージョンが認識しない項目が、指定されているためです。"
+action = "項目名を確認して修正するか、削除してください。"
+
+[E1034]
+when = "koyomi.toml に必須の項目がないとき"
+text = "{0} に、必須の項目 {1} がありません。"
+cause = "必要な項目が、指定されていないためです。"
+action = "{1} を追加してください。"
+
+[E1035]
+when = "koyomi.toml の値が、指定できる値のどれでもないとき"
+text = "{0} の値 {1} は使用できません。（指定できる値は {2} です）"
+cause = "値が、指定できる値のどれでもないためです。"
+action = "指定できる値のいずれかを指定してください。"
+
+[E1036]
+when = "koyomi.toml の値の型や範囲、書式が正しくないとき"
+text = "{0} を読み込めません。（{1}）"
+cause = "値の型または範囲が正しくない、あるいは TOML の書式に誤りがあるためです。"
+action = "項目の名前と値を確認して、koyomi.toml を修正してください。"
+
+[E1037]
+when = "concurrency、keep_days、log_max_mb に 0 が指定されているとき"
+text = "{0} に 0 が指定されています。"
+cause = "concurrency、keep_days、log_max_mb には、1 以上の数が必要なためです。"
+action = "{0} には 1 以上の数を指定してください。"
+
+[E1038]
+when = "[standby] と [primary] が同時に指定されているとき"
+text = "[standby] と [primary] が同時に指定されています。"
+cause = "1 つの PC が、待機系と、待機系に監視される側の両方にはなれないためです。"
+action = "待機系の PC には [standby] を、監視される側の PC には [primary] を指定し、どちらか一方を削除してください。"
+
+[E1039]
+when = "[locks] の名前がロック名として使用できないとき"
+text = "[locks] の {0} が、ロック名として使用できません。"
+cause = "ロック名には、/ \\ : などの文字を使用できないためです。"
+action = "ジョブネットの lock と同じ規則で、使用できる文字だけの名前を指定してください。"
+
+[E1040]
+when = "[locks] の同時に持てる数が正しくないとき"
+text = "[locks] の {0} の数が正しくありません。"
+cause = "同時に持てる数には、1 以上の整数が必要なためです。"
+action = "\"API枠\" = 3 のように、1 以上の整数を指定してください。"
+
+[E1041]
+when = "work_dir が定義のあるフォルダーでも絶対パスでもないとき"
+text = "work_dir の値 {0} が正しくありません。"
+cause = "work_dir が、定義のあるフォルダーを表す値でも、絶対パスでもないためです。"
+action = "work_dir = '{2}' のように、\"{1}\"（定義のあるフォルダー）か絶対パスを指定してください。"
+
+[E1042]
+when = "[vars] の値が文字列でないとき"
+text = "[vars] の {0} が、文字列で指定されていません。"
+cause = "[vars] の値には、文字列が必要なためです。"
+action = "{0} = '\\\\nas\\backup' のように、文字列を指定してください。"
+
+[E1043]
+when = "[vars] の値に {param:…} または {var:…} が含まれているとき"
+text = "[vars] の {0} に、{param:…} または {var:…} が含まれています。"
+cause = "[vars] の値には、ジョブネットの値や別の [vars] を参照する記述を含められないためです。"
+action = "{param:…} と {var:…} を削除してください。{date} などは使用できます。"
+
+[E1044]
+when = "[vars] の値の日付の書式が正しくないとき"
+text = "[vars] の {0} の値が正しくありません。（{1}）"
+cause = "{date} などの置き換えの書式が、正しくないためです。"
+action = "（）内の理由を確認して、値を修正してください。"
+
+[E2231]
+when = "role に使用できない値が指定されているとき"
+text = "role の値 {0} は使用できません。"
+cause = "role に指定できるのは、view、run、edit、admin だけであるためです。"
+action = "role には view、run、edit、admin のいずれかを指定してください。"
+
+[E2232]
+when = "nets が空のとき"
+text = "nets が空です。"
+cause = "nets には、1 つ以上のジョブネットの指定が必要なためです。"
+action = "すべてのジョブネットを対象にする場合は、nets そのものを指定しないでください。"
+
+[E2233]
+when = "roles が空のとき"
+text = "roles が空です。"
+cause = "roles には、1 つ以上のジョブネットの指定が必要なためです。"
+action = "どのジョブネットにも role を適用する場合は、roles そのものを指定しないでください。"
+
+[E2234]
+when = "nets または roles のジョブネットの指定が <グループ>/<名前> の形式でないとき"
+text = "{0} に指定した {1} が、<グループ>/<名前> の形式ではありません。"
+cause = "ジョブネットの指定は、グループと名前を / で区切った形式である必要があるためです。"
+action = "<グループ>/<名前> の形式で指定してください。グループ内のすべてを対象にする場合は 経理/* のように指定します。"
+
+[E2235]
+when = "roles の role に使用できない値が指定されているとき"
+text = "roles の {0} に指定した role {1} は使用できません。"
+cause = "roles の role に指定できるのは view、run、edit だけで、admin はジョブネットごとには指定できないためです。"
+action = "view、run、edit のいずれかを指定してください。"
+
+[E3181]
+when = "ジョブの実行ファイルが見つからないとき"
+text = "ジョブ {0} の実行ファイル {1} が見つかりません。"
+cause = "実行ファイルが、指定されたパスにも、PATH に含まれるフォルダーにも存在しないためです。"
+action = "実行ファイルのパスを確認するか、PATH に含まれるフォルダーに配置してください。"
+
+[E3182]
+when = "ジョブの作業フォルダーが存在しないとき"
+text = "ジョブ {0} の作業フォルダー {1} が存在しません。"
+cause = "dir に指定したフォルダーが存在しないためです。"
+action = "dir の指定を確認するか、フォルダーを作成してください。"
+
+[E3183]
+when = "ジョブが監視するフォルダーが存在しないとき"
+text = "ジョブ {0} が監視するフォルダー {1} が存在しません。"
+cause = "file に指定したパスの、ワイルドカードより前のフォルダーが存在しないためです。"
+action = "file の指定を確認するか、フォルダーを作成してください。"
+
+[E3184]
+when = "work_dir のフォルダーが存在しないとき"
+text = "dir のないジョブの作業フォルダー {0} が存在しません。"
+cause = "koyomi.toml の work_dir に指定したフォルダーが存在しないためです。"
+action = "koyomi.toml の work_dir の指定を確認するか、フォルダーを作成してください。"
+
+[W3185]
+when = "[[when]] の day が、ない月のある日付を指定しているとき"
+text = "[[when]] の day = {0} は、{0} 日のない月（{1}）には実行されません。"
+cause = "指定した日が存在しない月には、ジョブネットが実行されないためです。"
+action = "月末に実行する場合は、day = \"last\" を指定してください。"
+
+[E3186]
+when = "ジョブネットの名前の変更に、ほかのジョブネットの参照を追従させられないとき"
+text = "ジョブネット {0} を参照している記述を、自動では書き換えられません。"
+cause = "参照が、エスケープを含む文字列などで書かれていて、書き換え方を判断できないためです。"
+action = "use、wait_for、after_jobnet の記述を手動で修正してください。"
+
+[E3370]
+when = "_group.toml に未知の項目が指定されているとき"
+text = "_group.toml に、未知の項目 {0} があります。"
+cause = "このバージョンが認識しない項目が、指定されているためです。"
+action = "項目名を確認して修正するか、削除してください。"
+
+[E3371]
+when = "_group.toml を TOML として読み込めないとき"
+text = "_group.toml の記述が TOML の書式に一致しません。（{0}）"
+cause = "ファイルの書式に誤りがあるためです。"
+action = "ファイルの記述を修正してください。"
+
+[E3372]
+when = "_group.toml に format が指定されていないとき"
+text = "_group.toml に format が指定されていません。"
+cause = "_group.toml には、format の指定が必要なためです。"
+action = "format = {0} を追加してください。"
+
+[E3373]
+when = "_group.toml の format が、このバージョンで読み込めない値のとき"
+text = "_group.toml の format は、このバージョンでは読み込めません。"
+cause = "このバージョンが読み込める format は、決まっているためです。"
+action = "format = {0} に修正してください。"
+
+[E3374]
+when = "_group.toml の calendar が正しくないとき"
+text = "_group.toml の calendar が正しくありません。"
+cause = "calendar の値が、カレンダー名として使用できない形式であるためです。"
+action = "calendar = \"会社\" のように、calendars/<名前>.toml の <名前> を指定してください。"
+
+[E3375]
+when = "calendar が必要な指定があり、calendar が指定されていないとき"
+text = "ジョブネットが business_day、shift、または on_closed を使用していますが、calendar が指定されていません。"
+cause = "営業日の判断には、カレンダーが必要なためです。"
+action = "ジョブネットまたは _group.toml に、calendar を指定してください。"
+
+[E3376]
+when = "use で指定した子ジョブネットが存在しないとき"
+text = "子ジョブネット {0} が存在しません。"
+cause = "use に指定したジョブネットの定義が、見つからないためです。"
+action = "use には、存在するジョブネットを <グループ>/<名前> の形式で指定してください。"
+
+[E3377]
+when = "use で指定した子ジョブネットの定義に誤りがあるとき"
+text = "子ジョブネット {0} の定義に誤りがあります。"
+cause = "子ジョブネットが、定義の誤りのために使用できないためです。"
+action = "子ジョブネットの定義を修正してください。"
+
+[E3378]
+when = "after_jobnet で指定した先行のジョブネットが存在しないとき"
+text = "先行のジョブネット {0} が存在しません。"
+cause = "after_jobnet に指定したジョブネットの定義が、見つからないためです。"
+action = "after_jobnet には、存在するジョブネットを指定してください。"
+
+[E3379]
+when = "after_jobnet の指定が輪になっているとき"
+text = "after_jobnet の指定が輪になっています。（{0}）"
+cause = "ジョブネットが、自分自身を先行のジョブネットとしてたどれるためです。"
+action = "輪になっている after_jobnet のいずれかを削除してください。"
+
+[E3380]
+when = "ジョブネットの定義が UTF-8 でないとき"
+text = "{0} を UTF-8 の文字として読み込めません。"
+cause = "ファイルが、UTF-8 で保存されていないためです。"
+action = "ファイルを UTF-8 で保存し直してください。"
+
+[E3381]
+when = "[[blackout]] の from または to を読み込めないとき"
+text = "[[blackout]] の {0} {1} を日付または日時として読み込めません。"
+cause = "値が、日付または日時の形式になっていないためです。"
+action = "{0} には、\"2026-12-29\" または \"2026-12-29 22:00\" の形式で指定してください。"
+
+[E3382]
+when = "[[blackout]] の to が from より前のとき"
+text = "[[blackout]] の to（{0}）が、from（{1}）より前になっています。"
+cause = "計画停止の終わりが、始まりより前であるためです。"
+action = "to には、from より後の日付または日時を指定してください。"
+
+[E3383]
+when = "静かな時間帯を読み込めないとき"
+text = "時間帯 {0} を読み込めません。"
+cause = "時間帯が、開始時刻と終了時刻を - で区切った形式になっていないためです。"
+action = "\"12:00-13:00\" のように、開始時刻と終了時刻を - で区切って指定してください。"
+
+[E3384]
+when = "静かな時間帯の開始と終了が同じとき"
+text = "時間帯 {0} の開始と終了が同じです。"
+cause = "開始時刻と終了時刻が同じでは、時間帯にならないためです。"
+action = "開始と終了には、異なる時刻を指定してください。"
+
+[E3385]
+when = "期限を読み込めないとき"
+text = "期限 {0} を読み込めません。"
+cause = "期限が、時刻でも長さでもないためです。"
+action = "\"06:00\"（時刻）または \"30m\"（長さ）の形式で指定してください。"
+
+[E3386]
+when = "待機系の PC で --only を指定したとき"
+text = "この PC は待機系のため、--only を使用できません。"
+cause = "待機系が引き継ぐ前は、実行の記録が主系の PC にあり、日ごとの実行状況を判断できないためです。"
+action = "実行の記録がある {0} で実行してください。"
+
+[E3387]
+when = "時刻を読み込めないとき"
+text = "時刻 {0} を読み込めません。"
+cause = "時刻が、HH:MM または HH:MM:SS の形式になっていないためです。"
+action = "\"02:00\" のように、時刻を指定してください。"
+
+[E3388]
+when = "曜日を読み込めないとき"
+text = "曜日 \"{0}\" を読み込めません。"
+cause = "曜日が、mon から sun までのいずれでもないためです。"
+action = "mon、tue、wed、thu、fri、sat、sun のいずれかを指定してください。"
+
+[E3389]
+when = "日付を読み込めないとき"
+text = "日付 {0} を読み込めません。"
+cause = "日付が、年-月-日 の形式になっていないためです。"
+action = "2026-11-30 のように、年-月-日 の形式で指定してください。"
+
+[E3390]
+when = "日時を読み込めないとき"
+text = "日時 {0} を読み込めません。"
+cause = "日時が、年-月-日T時:分:秒 の形式になっていない、または時差が付いているためです。"
+action = "2026-11-30T21:00:00 のように、時差を付けずに指定してください。"
+
+[E3391]
+when = "月-日の指定を読み込めないとき"
+text = "日付 {0} を月-日として読み込めません。"
+cause = "日付が、月-日 の形式になっていない、または存在しない日であるためです。"
+action = "\"04-01\" のように、月-日 の形式で指定してください。"
+
+[E3392]
+when = "mail の指定が imaps://ユーザー@サーバー/フォルダー の形式でないとき"
+text = "mail に指定された {0} が正しくありません。"
+cause = "mail が、imaps:// で始まるユーザー、サーバー、フォルダーの形式になっていないためです。"
+action = "imaps://me@example.com@imap.example.com/INBOX のように、\"imaps://ユーザー@サーバー/フォルダー\" の形式で指定してください。"
+
+[E3393]
+when = "mail に imap:// が指定されているとき"
+text = "mail に、暗号化されない imap:// が指定されています。"
+cause = "mail は、TLS で暗号化された imaps:// だけを受け付けるためです。"
+action = "imaps:// で始まるアドレスを指定してください。"
+
+[E3394]
+when = "mail のポートが範囲外のとき"
+text = "mail のポート {0} が範囲外です。"
+cause = "ポートが、1 から 65535 までの数でないためです。"
+action = "ポートには 1 から 65535 までの数を指定してください。"
+
+[E3470]
+when = "時間が 0 のとき"
+text = "時間 {0} は 0 です。"
+cause = "時間には、0 より長い値が必要なためです。"
+action = "30m のように、0 より長い時間を指定してください。"
+
+[E3471]
+when = "時間を読み込めないとき"
+text = "時間 {0} を読み込めません。"
+cause = "時間が、h、m、s の順に 1 回ずつ並んだ、数値と単位の組み合わせになっていないためです。"
+action = "30m、1h30m、90s のように、数値と単位を指定してください。"
+
+[E3472]
+when = "営業日で日付を移動する指定があり、calendar が指定されていないとき"
+text = "{0} は営業日で日付を移動しますが、calendar が指定されていません。"
+cause = "bd での移動には、営業日を判断するカレンダーが必要なためです。"
+action = "ジョブネットまたは _group.toml に、calendar を指定してください。"
+
+[E3473]
+when = "移動した先の日付を求められないとき"
+text = "{0} で、{1} から移動した先の日付を求められません。"
+cause = "移動した結果が、扱える日付の範囲を超えている、または営業日が見つからないためです。"
+action = "移動する数と単位を確認してください。"
+
+[E3474]
+when = "{var:} に名前が指定されていないとき"
+text = "{var:} に名前が指定されていません。"
+cause = "{var:…} には、[vars] の名前が必要なためです。"
+action = "koyomi.toml の [vars] の名前を、{var:share} のように指定してください。"
+
+[E3475]
+when = "{var:…} の名前に使用できない文字が含まれるとき"
+text = "{var:…} の名前 {0} は使用できません。"
+cause = "[vars] の名前には、英数字と _ だけを使用できるためです。"
+action = "英数字と _ だけの名前を指定してください。"
+
+[E3476]
+when = "{param:…} の値が [params] にないとき"
+text = "{param:{0}} の値が、[params] にありません。"
+cause = "{param:…} に指定した名前が、ジョブネットの [params] に定義されていないためです。"
+action = "[params] に {0} を追加するか、{param:…} の名前を修正してください。"
+
+[E3477]
+when = "{var:…} の値が [vars] にないとき"
+text = "{var:{0}} の値が、koyomi.toml の [vars] にありません。"
+cause = "{var:…} に指定した名前が、koyomi.toml の [vars] に定義されていないためです。"
+action = "koyomi.toml の [vars] に {0} を追加するか、{var:…} の名前を修正してください。"
+
+[E3478]
+when = "[params] のないジョブネットに値が渡されたとき"
+text = "値 {0} を渡せません。このジョブネットには [params] がありません。"
+cause = "渡された値の名前が、ジョブネットの [params] に定義されていないためです。"
+action = "ジョブネットに [params] を定義するか、値の指定を取り消してください。"
+
+[E3479]
+when = "[params] にない名前の値が渡されたとき"
+text = "値 {0} は、[params] にありません。（定義されているのは {1}）"
+cause = "渡された値の名前が、ジョブネットの [params] に定義されていないためです。"
+action = "[params] にある名前を指定してください。"
+
+[E3480]
+when = "日付の置き換えに、移動する数がないとき"
+text = "{0} の、移動する数が指定されていません。"
+cause = "+ または - の後に、数が続いていないためです。"
+action = "{date-1d} のように、+ または - の後に数と単位を指定してください。"
+
+[E3481]
+when = "日付の置き換えに、単位がないとき"
+text = "{0} に、単位が指定されていません。"
+cause = "{date…} の移動には、単位が必要なためです。"
+action = "単位には、d、bd、m、y のいずれかを指定してください。"
+
+[E3482]
+when = "日付の置き換えの単位を読み込めないとき"
+text = "{0} の単位 {1} を読み込めません。"
+cause = "使用できない単位が、指定されているためです。"
+action = "{month} には数のみ、または m を、{date} には d、bd、m、y を指定してください。"
+
+[E3483]
+when = "日付の置き換えの書式を読み込めないとき"
+text = "{0} の書式 {1} を読み込めません。"
+cause = "日付の書式が、空であるか、正しくないためです。"
+action = "{date:%Y%m%d} のように、日付の書式を指定してください。"
+
+[E3484]
+when = "ジョブの項目の置き換えに失敗したとき"
+text = "ジョブ {0} の {1} を展開できません。（{2}）"
+cause = "{param:…}、{var:…}、{date…} などの置き換えに失敗したためです。"
+action = "（）内の理由を確認して、{param:…}、{var:…}、{date…} の指定を修正してください。"
+
+[E3770]
+when = "エンジンの状態ファイルが UTF-8 でないとき"
+text = "{0} を UTF-8 の文字として読み込めません。"
+cause = "ファイルが、UTF-8 で保存されていないためです。"
+action = "ファイルを UTF-8 で保存し直してください。"
+
+[E3771]
+when = "保存するファイルの名前が UTF-8 でないとき"
+text = "{0} の名前が UTF-8 ではないため、zip に追加できません。"
+cause = "zip には、UTF-8 でない名前のファイルを、そのままでは格納できないためです。"
+action = "ファイルの名前を、UTF-8 で表せる名前に変更してください。"
+
+[E3772]
+when = "実行の ID を読み込めないとき"
+text = "{0} を実行の ID として読み込めません。"
+cause = "実行の ID が、決められた形式になっていないためです。"
+action = "実行の ID を確認してください。"
+
+[note]
+list_sep = "、"
+config_at_line = "koyomi.toml の {0} 行目"
+blackout_reason = "計画停止（{0}）"
+blackout_reason_why = "計画停止（{0}、{1}）"
+ps_warning = "警告: "
+ps_verbose = "詳細: "
+ps_debug = "デバッグ: "
+standby_no_definition = "この PC に、実行できる定義がありません。"
+standby_not_rerun = "takeover = \"rerun\" が指定されていません。"
+standby_all_passed = "すべてのジョブが完了していました。"
+lock_shared_held = "共有ロック「{0}」は、{1} が排他で使用しています。"
+lock_exclusive_by_shared = "排他ロック「{0}」は、{1} が共有で使用しています。"
+lock_exclusive_by_one = "排他ロック「{0}」を、{1} が使用しています。"
+lock_exclusive_full = "排他ロック「{0}」は、同時に {1} 本まで使用できます。{2} が使用しています。"
+lock_and_more = "ほか {0} 件"
+months_without_31 = "2・4・6・9・11 月"
+months_without_30 = "2 月"
+months_without_29 = "うるう年でない 2 月"
+new_jobnet_file = "format = 1\nname = {0}\n\n# 時刻は [[when]] で追加します。指定しない場合は、手動で実行するだけになります。\n# [[when]]\n# every = \"day\"\n# at = [\"02:00\"]\n\n[[job]]\nid = \"job1\"\nname = \"最初のジョブ\"\n# 実行ファイルと引数を、1 つずつ指定します（シェルの 1 行ではありません）。\nrun = [\"cmd.exe\", \"/c\", \"echo hello\"]\n"
+holiday_default = "祝日"
+holiday_substitute = "振替休日"
+holiday_citizens = "国民の休日"
+holiday_new_year = "元日"
+holiday_coming_of_age = "成人の日"
+holiday_foundation = "建国記念の日"
+holiday_emperor_birthday = "天皇誕生日"
+holiday_vernal_equinox = "春分の日"
+holiday_showa = "昭和の日"
+holiday_constitution = "憲法記念日"
+holiday_greenery = "みどりの日"
+holiday_childrens = "こどもの日"
+holiday_marine = "海の日"
+holiday_mountain = "山の日"
+holiday_respect_aged = "敬老の日"
+holiday_autumn_equinox = "秋分の日"
+holiday_sports = "スポーツの日"
+holiday_culture = "文化の日"
+holiday_labor_thanks = "勤労感謝の日"

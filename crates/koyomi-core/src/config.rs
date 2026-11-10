@@ -13,6 +13,7 @@
 //! Missing file: the defaults. A file that does not read is an error the
 //! engine shows and does not run with (a typo must not quietly mean "4").
 
+use crate::msg;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -80,13 +81,13 @@ pub struct Member {
 /// The group `name` of `[groups]` as written in `v`: what its PCs are reached by
 /// (`"ssh"` or `"winrm"`, the same for each) and the PCs.
 fn group_of(name: &str, v: &toml::Value) -> Result<(&'static str, Vec<Member>), String> {
-    let example = format!("例: {name} = [\"ssh://ops@web1\", \"ssh://ops@web2\"]");
+    let not_array = || msg::line(msg::CFG_GROUP_NOT_ARRAY, &[name]);
     let list = match v.as_array() {
         Some(l) if !l.is_empty() => l,
-        _ => return Err(format!("[groups] の {name} は PC の配列で書く（{example}）")),
+        _ => return Err(not_array()),
     };
     if list.len() > crate::chore::GROUP_MAX {
-        return Err(format!("[groups] の {name} は {} 台まで", crate::chore::GROUP_MAX));
+        return Err(msg::line(msg::CFG_GROUP_TOO_MANY, &[name, &crate::chore::GROUP_MAX.to_string()]));
     }
     let mut scheme = None;
     let mut members: Vec<Member> = Vec::new();
@@ -95,50 +96,48 @@ fn group_of(name: &str, v: &toml::Value) -> Result<(&'static str, Vec<Member>), 
             toml::Value::String(on) => (on.as_str(), None, None),
             toml::Value::Table(t) => {
                 if let Some(k) = t.keys().find(|k| !["on", "host_key", "cert"].contains(&k.as_str())) {
-                    return Err(format!("[groups] の {name} の PC に {k} は書けない（on・host_key・cert だけ）"));
+                    return Err(msg::line(msg::CFG_GROUP_UNKNOWN_KEY, &[name, k]));
                 }
                 let text = |key: &str| match t.get(key) {
                     None => Ok(None),
                     Some(toml::Value::String(x)) => Ok(Some(x.trim())),
-                    Some(_) => Err(format!("[groups] の {name} の {key} は文字列で書く")),
+                    Some(_) => Err(msg::line(msg::CFG_GROUP_NOT_STRING, &[name, key])),
                 };
                 let Some(on) = text("on")? else {
-                    return Err(format!("[groups] の {name} の PC に on が要る（{{ on = \"ssh://ops@web1\", host_key = \"SHA256:…\" }}）"));
+                    return Err(msg::line(msg::CFG_GROUP_NO_ON, &[name]));
                 };
                 (on, text("host_key")?.filter(|x| !x.is_empty()), text("cert")?.filter(|x| !x.is_empty()))
             }
-            _ => return Err(format!("[groups] の {name} は PC の配列で書く（{example}）")),
+            _ => return Err(not_array()),
         };
         let on = on.trim();
         if [Some(on), host_key, cert].into_iter().flatten().any(|x| x.contains('{')) {
-            return Err(format!("[groups] の {name} に {{…}} は書けない: {on}"));
+            return Err(msg::line(msg::CFG_GROUP_BRACES, &[name, on]));
         }
         let this = match (crate::chore::ssh(on), crate::chore::winrm(on)) {
             (Some(r), _) => r.map(|_| "ssh"),
             (_, Some(r)) => r.map(|_| "winrm"),
-            _ => Err(format!("PC は ssh://[ユーザー@]ホスト[:ポート] か winrm://ユーザー@ホスト[:ポート] で書く: {on}")),
+            _ => return Err(msg::line(msg::CFG_GROUP_ADDRESS, &[name, on])),
         }
-        .map_err(|e| format!("[groups] の {name}: {e}"))?;
+        .map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         match scheme {
-            Some(s) if s != this => {
-                return Err(format!("[groups] の {name} に ssh:// と winrm:// が混ざっている（1 つの組はどちらかだけ）"))
-            }
+            Some(s) if s != this => return Err(msg::line(msg::CFG_GROUP_MIXED, &[name])),
             _ => scheme = Some(this),
         }
         if let Some(h) = host_key {
             if this != "ssh" {
-                return Err(format!("[groups] の {name}: host_key は ssh:// の PC にだけ書く: {on}"));
+                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "host_key", "ssh", on]));
             }
-            crate::chore::host_key_ok(h).map_err(|e| format!("[groups] の {name}: {e}"))?;
+            crate::chore::host_key_ok(h).map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         }
         if let Some(c) = cert {
             if this != "winrm" {
-                return Err(format!("[groups] の {name}: cert は winrm:// の PC にだけ書く: {on}"));
+                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "cert", "winrm", on]));
             }
-            crate::chore::cert_ok(c).map_err(|e| format!("[groups] の {name}: {e}"))?;
+            crate::chore::cert_ok(c).map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         }
         if members.iter().any(|m| m.on.eq_ignore_ascii_case(on)) {
-            return Err(format!("[groups] の {name} に同じ PC が 2 つある: {on}"));
+            return Err(msg::line(msg::CFG_GROUP_DUPLICATE, &[name, on]));
         }
         members.push(Member { on: on.to_owned(), host_key: host_key.map(str::to_owned), cert: cert.map(str::to_owned) });
     }
@@ -204,14 +203,14 @@ fn every_secs(every: &str) -> u64 {
 fn check_poll(section: &str, key: &str, name: &str, every: &str, misses: u32, remotes: &[Remote]) -> Result<(), String> {
     let name = name.trim();
     if !remotes.iter().any(|r| r.name.trim() == name) {
-        return Err(format!("[{section}] の {key} {name:?} は [[remote]] の name で書く"));
+        return Err(msg::line(msg::CFG_POLL_TARGET, &[section, key, name]));
     }
-    let secs = crate::duration::parse(every).map_err(|e| format!("[{section}] の every: {e}"))?;
+    let secs = crate::duration::parse(every).map_err(|e| msg::line(msg::CFG_EVERY_UNREADABLE, &[section, msg::uncoded(&e)]))?;
     if !(5..=600).contains(&secs) {
-        return Err(format!("[{section}] の every は 5s から 10m まで"));
+        return Err(msg::line(msg::CFG_EVERY_RANGE, &[section, "5s", "10m"]));
     }
     if !(1..=20).contains(&misses) {
-        return Err(format!("[{section}] の misses は 1 から 20 まで"));
+        return Err(msg::line(msg::CFG_MISSES_RANGE, &[section]));
     }
     Ok(())
 }
@@ -265,11 +264,11 @@ impl Ping {
         let url = self.url.trim();
         let secret = url.strip_prefix("secret:").is_some_and(|n| !n.trim().is_empty());
         if !secret && !url.starts_with("https://") && !url.starts_with("http://") {
-            return Err("[ping] の url は secret:<名前> か http(s):// で始まるアドレス".to_owned());
+            return Err(msg::line(msg::CFG_PING_URL, &[]));
         }
-        let secs = crate::duration::parse(&self.every).map_err(|e| format!("[ping] の every: {e}"))?;
+        let secs = crate::duration::parse(&self.every).map_err(|e| msg::line(msg::CFG_EVERY_UNREADABLE, &["ping", msg::uncoded(&e)]))?;
         if !(60..=86_400).contains(&secs) {
-            return Err("[ping] の every は 1m から 24h まで".to_owned());
+            return Err(msg::line(msg::CFG_EVERY_RANGE, &["ping", "1m", "24h"]));
         }
         Ok(())
     }
@@ -381,20 +380,18 @@ impl Remote {
     fn check(&self) -> Result<(), String> {
         let name = self.name.trim();
         if name.is_empty() || name.contains(char::is_whitespace) {
-            return Err("[[remote]] の name は空白を含まない名前".to_owned());
+            return Err(msg::line(msg::CFG_REMOTE_NAME, &[]));
         }
         let host = self.url.strip_prefix("https://").unwrap_or_default().trim_end_matches('/');
         if host.is_empty() || host.contains(['/', '?', '#', '@', ' ']) {
-            return Err(format!("[[remote]] {name} の url は https://<PC>:<port> で書く（LAN では TLS だけ）"));
+            return Err(msg::line(msg::CFG_REMOTE_URL, &[name]));
         }
         let hex: Vec<char> = self.fingerprint.chars().filter(|c| !matches!(c, ':' | ' ' | '-')).collect();
         if hex.len() != 64 || !hex.iter().all(char::is_ascii_hexdigit) {
-            return Err(format!(
-                "[[remote]] {name} の fingerprint は SHA-256（向こうで koyomi http fingerprint、こちらで koyomi remote peek <url>）"
-            ));
+            return Err(msg::line(msg::CFG_REMOTE_FINGERPRINT, &[name]));
         }
         if self.secret().is_empty() {
-            return Err(format!("[[remote]] {name} の token は secret:<名前> で書く"));
+            return Err(msg::line(msg::CFG_TOKEN_NOT_SECRET, &[&format!("[[remote]] {name}")]));
         }
         Ok(())
     }
@@ -408,36 +405,34 @@ impl Http {
 
     fn check(&self) -> Result<(), String> {
         if self.port == 0 {
-            return Err("[http] の port は 1 から 65535".to_owned());
+            return Err(msg::line(msg::CFG_HTTP_PORT, &[]));
         }
         if self.secret().is_empty() && (!self.token.trim().is_empty() || self.user.is_empty()) {
-            return Err("[http] の token は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".to_owned());
+            return Err(msg::line(msg::CFG_TOKEN_NOT_SECRET, &["[http]"]));
         }
         if let Some(t) = self.tailnet {
             if t == 0 || t == self.port {
-                return Err("[http] の tailnet は port と別のポート（1 から 65535）".to_owned());
+                return Err(msg::line(msg::CFG_TAILNET_PORT, &[]));
             }
             if !self.user.iter().any(|u| u.tailscale.is_some()) {
-                return Err("[http] の tailnet で通す人がいない（[[http.user]] に tailscale = \"<ログイン名>\" を書く）".to_owned());
+                return Err(msg::line(msg::CFG_TAILNET_NO_USER, &[]));
             }
         }
         let (mut names, mut tailscales) = (std::collections::BTreeSet::new(), std::collections::BTreeSet::new());
         for u in &self.user {
             let name = u.name.trim();
             if name.is_empty() || name.contains(char::is_whitespace) || name == "default" {
-                return Err("[[http.user]] の name は空白を含まない名前（default は使わない）".to_owned());
+                return Err(msg::line(msg::CFG_USER_NAME, &[]));
             }
             if !names.insert(name) {
-                return Err(format!("[[http.user]] の name {name} が 2 つある"));
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[http.user]]", "name", name]));
             }
-            let role = crate::role::Role::parse(u.role.trim()).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+            let role = crate::role::Role::parse(u.role.trim()).map_err(|e| msg::line(msg::CFG_USER_FIELD, &[name, msg::uncoded(&e)]))?;
             if role == crate::role::Role::Admin && (u.nets.is_some() || u.roles.is_some()) {
-                return Err(format!(
-                    "[[http.user]] {name} は role = \"admin\" で、nets と roles は一緒に書けない（admin は全部のネットにかかる）"
-                ));
+                return Err(msg::line(msg::CFG_USER_ADMIN_NARROWED, &[name]));
             }
             if u.secret().is_empty() && (!u.token.trim().is_empty() || u.tailscale.is_none()) {
-                return Err(format!("[[http.user]] {name} の token は secret:<名前> で書く"));
+                return Err(msg::line(msg::CFG_TOKEN_NOT_SECRET, &[&format!("[[http.user]] {name}")]));
             }
             if let Some(t) = &u.tailscale {
                 let t = t.trim();
@@ -446,24 +441,20 @@ impl Http {
                     None => t.contains('@') && !t.starts_with('@'),
                 };
                 if !reads || t.contains(char::is_whitespace) {
-                    return Err(format!(
-                        "[[http.user]] {name} の tailscale は Tailscale のログイン名（sato@example.com）かタグ（tag:koyomi-ha）で書く: {t}"
-                    ));
+                    return Err(msg::line(msg::CFG_TAILSCALE_FORM, &[name, t]));
                 }
                 if self.tailnet.is_none() {
-                    return Err(format!(
-                        "[[http.user]] {name} の tailscale は [http] の tailnet（tailnet で待ち受けるポート）と一緒に書く"
-                    ));
+                    return Err(msg::line(msg::CFG_TAILSCALE_NEEDS_TAILNET, &[name]));
                 }
                 if !tailscales.insert(t.to_lowercase()) {
-                    return Err(format!("[[http.user]] の tailscale {t} が 2 つある"));
+                    return Err(msg::line(msg::CFG_DUPLICATE, &["[[http.user]]", "tailscale", t]));
                 }
             }
             if let Some(p) = &u.nets {
-                crate::role::Nets::parse(p).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+                crate::role::Nets::parse(p).map_err(|e| msg::line(msg::CFG_USER_FIELD, &[name, msg::uncoded(&e)]))?;
             }
             if let Some(r) = &u.roles {
-                crate::role::per_net(r).map_err(|e| format!("[[http.user]] {name} の {e}"))?;
+                crate::role::per_net(r).map_err(|e| msg::line(msg::CFG_USER_FIELD, &[name, msg::uncoded(&e)]))?;
             }
         }
         Ok(())
@@ -497,29 +488,32 @@ impl Config {
     pub fn parse(text: &str) -> Result<Config, String> {
         let c: Config = toml::from_str(text).map_err(|e| {
             let m = e.message();
-            let line =
-                e.span().map(|s| format!("{} 行目: ", text[..s.start.min(text.len())].matches('\n').count() + 1)).unwrap_or_default();
+            let place = e.span().map_or_else(
+                || "koyomi.toml".to_owned(),
+                |s| {
+                    let line = text[..s.start.min(text.len())].matches('\n').count() + 1;
+                    msg::note(msg::N_CONFIG_AT_LINE, &[&line.to_string()])
+                },
+            );
             if let Some(f) = m.strip_prefix("unknown field `").and_then(|r| r.split('`').next()) {
-                format!("{line}知らない欄 {f}")
+                msg::line(msg::CFG_UNKNOWN_KEY, &[&place, f])
             } else if let Some(f) = m.strip_prefix("missing field `").and_then(|r| r.split('`').next()) {
-                format!("{line}欄 {f} が無い")
+                msg::line(msg::CFG_MISSING_KEY, &[&place, f])
             } else if let Some(v) = m.strip_prefix("unknown variant `").and_then(|r| r.split('`').next()) {
                 let ok: Vec<&str> = m.split('`').skip(3).step_by(2).collect();
-                format!("{line}値 {v:?} は書けない（書けるのは {}）", ok.join(" / "))
-            } else if m.starts_with("invalid type") || m.starts_with("invalid value") {
-                format!("{line}値の型か範囲が合わない（{m}）")
+                msg::line(msg::CFG_VALUE_UNKNOWN, &[&place, &format!("{v:?}"), &ok.join(&msg::note(msg::N_LIST_SEP, &[]))])
             } else {
-                format!("{line}{m}")
+                msg::line(msg::CFG_UNREADABLE, &[&place, m])
             }
         })?;
         if c.concurrency == 0 {
-            return Err("concurrency は 1 以上".to_owned());
+            return Err(msg::line(msg::CFG_LIMIT_TOO_LOW, &["concurrency"]));
         }
         if c.keep_days == 0 {
-            return Err("keep_days は 1 以上".to_owned());
+            return Err(msg::line(msg::CFG_LIMIT_TOO_LOW, &["keep_days"]));
         }
         if c.log_max_mb == 0 {
-            return Err("log_max_mb は 1 以上".to_owned());
+            return Err(msg::line(msg::CFG_LIMIT_TOO_LOW, &["log_max_mb"]));
         }
         if let Some(p) = &c.ping {
             p.check()?;
@@ -530,7 +524,7 @@ impl Config {
         for (i, r) in c.remote.iter().enumerate() {
             r.check()?;
             if c.remote[..i].iter().any(|o| o.name.trim() == r.name.trim()) {
-                return Err(format!("[[remote]] の name {} が 2 つある", r.name.trim()));
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[remote]]", "name", r.name.trim()]));
             }
         }
         if let Some(s) = &c.standby {
@@ -538,24 +532,22 @@ impl Config {
         }
         if let Some(p) = &c.primary {
             if c.standby.is_some() {
-                return Err("[standby] と [primary] は一緒に書けない（待つ側か、待たれる側のどちらか）".to_owned());
+                return Err(msg::line(msg::CFG_STANDBY_AND_PRIMARY, &[]));
             }
             p.check(&c.remote)?;
         }
         for (name, n) in &c.locks {
             if !crate::calendar::valid_name(name) {
-                return Err(format!("[locks] の {name:?} は lock の名前で書く（ジョブネットの lock と同じ。/ \\ : などは使えない）"));
+                return Err(msg::line(msg::CFG_LOCK_NAME, &[name]));
             }
             if !n.as_integer().is_some_and(|n| n >= 1) {
-                return Err(format!("[locks] の {name:?} は同時に持てる数で、1 以上（例: \"API枠\" = 3）"));
+                return Err(msg::line(msg::CFG_LOCK_COUNT, &[name]));
             }
         }
         if let Some(w) = &c.work_dir {
             let w = w.trim();
             if w != DEFINITION && !Path::new(w).is_absolute() {
-                return Err(format!(
-                    "work_dir は \"{DEFINITION}\"（定義のあるフォルダー）か絶対パスで書く（例: work_dir = 'D:\\batch'）: {w}"
-                ));
+                return Err(msg::line(msg::CFG_WORK_DIR, &[w, DEFINITION, "D:\\batch"]));
             }
         }
         for b in &c.blackout {
@@ -563,19 +555,19 @@ impl Config {
         }
         for (name, v) in &c.vars {
             if !crate::jobnet::plain_name(name) {
-                return Err(format!("[vars] の名前に使えない: {name}（英数字と _ だけ。{{var:{name}}} で読むので）"));
+                return Err(msg::line(msg::CFG_NAME_NOT_PLAIN, &["[vars]", name, &format!("{{var:{name}}}")]));
             }
             let Some(s) = v.as_str() else {
-                return Err(format!("[vars] の {name} は文字列で書く（例: {name} = '\\\\nas\\backup'）"));
+                return Err(msg::line(msg::CFG_VARS_NOT_STRING, &[name]));
             };
             if !crate::template::param_names(s).is_empty() || !crate::template::var_names(s).is_empty() {
-                return Err(format!("[vars] の {name} に {{param:…}}・{{var:…}} は書けない（{{date}} などは書ける）"));
+                return Err(msg::line(msg::CFG_VARS_NESTED, &[name]));
             }
-            crate::template::check(s).map_err(|e| format!("[vars] の {name}: {e}"))?;
+            crate::template::check(s).map_err(|e| msg::line(msg::CFG_VARS_VALUE, &[name, msg::uncoded(&e)]))?;
         }
         for (name, v) in &c.groups {
             if !crate::jobnet::plain_name(name) {
-                return Err(format!("[groups] の名前に使えない: {name}（英数字と _ だけ。on = \"group:{name}\" で読むので）"));
+                return Err(msg::line(msg::CFG_NAME_NOT_PLAIN, &["[groups]", name, &format!("on = \"group:{name}\"")]));
             }
             group_of(name, v)?;
         }
@@ -586,11 +578,11 @@ impl Config {
     /// `on = "group:name"`.
     pub fn members(&self, name: &str, kind: &str) -> Result<Vec<Member>, String> {
         let Some(v) = self.groups.get(name) else {
-            return Err(format!("組 {name} が koyomi.toml の [groups] にない"));
+            return Err(msg::line(msg::CFG_GROUP_MISSING, &[name]));
         };
         let (scheme, members) = group_of(name, v)?;
         if scheme != kind {
-            return Err(format!("組 {name} の PC は {scheme}:// で書いてある（kind = \"{kind}\" の on には {kind}:// の PC の組を書く）"));
+            return Err(msg::line(msg::CFG_GROUP_WRONG_KIND, &[name, scheme, kind]));
         }
         Ok(members)
     }
@@ -631,6 +623,11 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Whether `said` is the line of `id` and holds `phrase`.
+    fn has(said: impl AsRef<str>, id: msg::Id, phrase: &str) -> bool {
+        id.is_in(said.as_ref()) && said.as_ref().contains(phrase)
+    }
 
     #[test]
     fn missing_fields_are_the_defaults() {
@@ -674,28 +671,28 @@ archive_days = 365
             ]
         );
         assert_eq!(c.members("app", "winrm").unwrap()[0].cert.as_deref(), Some(cert));
-        assert!(c.members("db", "ssh").unwrap_err().contains("組 db が koyomi.toml の [groups] にない"));
-        assert!(c.members("web", "winrm").unwrap_err().contains("組 web の PC は ssh:// で書いてある"));
-        assert!(c.members("app", "ssh").unwrap_err().contains("winrm://"));
+        assert!(has(c.members("db", "ssh").unwrap_err(), msg::CFG_GROUP_MISSING, "グループ db が、koyomi.toml の [groups] にありません"));
+        assert!(has(c.members("web", "winrm").unwrap_err(), msg::CFG_GROUP_WRONG_KIND, "グループ web の PC は ssh:// で指定されており"));
+        assert!(has(c.members("app", "ssh").unwrap_err(), msg::CFG_GROUP_WRONG_KIND, "winrm://"));
         let bad = |t: &str| Config::parse(&format!("[groups]\n{t}\n")).unwrap_err();
-        assert!(bad("\"web-1\" = ['ssh://h']").contains("[groups] の名前に使えない: web-1"));
-        assert!(bad("web = 'ssh://h'").contains("[groups] の web は PC の配列で書く"));
-        assert!(bad("web = []").contains("PC の配列で書く"));
-        assert!(bad("web = [3]").contains("PC の配列で書く"));
-        assert!(bad("web = ['h1']").contains("ssh://[ユーザー@]ホスト[:ポート] か winrm://"));
-        assert!(bad("web = ['ssh://h/tmp']").contains("パスは書かない"));
-        assert!(bad("web = ['winrm://h']").contains("ユーザーが要る"));
-        assert!(bad("web = ['ssh://h', 'winrm://u@h2']").contains("混ざっている"));
-        assert!(bad("web = ['ssh://h', ' SSH://h ']").contains("同じ PC が 2 つある"));
-        assert!(bad("web = ['{var:h}']").contains("{…} は書けない"));
-        assert!(bad("web = [{ host_key = 'x' }]").contains("on が要る"));
-        assert!(bad("web = [{ on = 'ssh://h', user = 'x' }]").contains("user は書けない"));
-        assert!(bad("web = [{ on = 'ssh://h', host_key = 'abc' }]").contains("SHA256:"));
-        assert!(bad("web = [{ on = 'ssh://h', cert = 'AB' }]").contains("cert は winrm:// の PC にだけ"));
-        assert!(bad("web = [{ on = 'winrm://u@h', host_key = 'x' }]").contains("host_key は ssh:// の PC にだけ"));
-        assert!(bad("web = [{ on = 'winrm://u@h', cert = 'AB' }]").contains("AB:CD:…"));
+        assert!(has(bad("\"web-1\" = ['ssh://h']"), msg::CFG_NAME_NOT_PLAIN, "名前 web-1 は使用できません"));
+        assert!(has(bad("web = 'ssh://h'"), msg::CFG_GROUP_NOT_ARRAY, "グループ web が、PC の配列で指定されていません"));
+        assert!(has(bad("web = []"), msg::CFG_GROUP_NOT_ARRAY, "PC の配列で指定されていません"));
+        assert!(has(bad("web = [3]"), msg::CFG_GROUP_NOT_ARRAY, "PC の配列で指定されていません"));
+        assert!(has(bad("web = ['h1']"), msg::CFG_GROUP_ADDRESS, "ssh://[ユーザー@]ホスト[:ポート]、または winrm://"));
+        assert!(has(bad("web = ['ssh://h/tmp']"), msg::CFG_GROUP_MEMBER, "パスは書かない"));
+        assert!(has(bad("web = ['winrm://h']"), msg::CFG_GROUP_MEMBER, "ユーザーが要る"));
+        assert!(has(bad("web = ['ssh://h', 'winrm://u@h2']"), msg::CFG_GROUP_MIXED, "混在しています"));
+        assert!(has(bad("web = ['ssh://h', ' SSH://h ']"), msg::CFG_GROUP_DUPLICATE, "同じ PC が重複して指定されています"));
+        assert!(has(bad("web = ['{var:h}']"), msg::CFG_GROUP_BRACES, "{…} を含む値は指定できません"));
+        assert!(has(bad("web = [{ host_key = 'x' }]"), msg::CFG_GROUP_NO_ON, "on が指定されていません"));
+        assert!(has(bad("web = [{ on = 'ssh://h', user = 'x' }]"), msg::CFG_GROUP_UNKNOWN_KEY, "項目 user"));
+        assert!(has(bad("web = [{ on = 'ssh://h', host_key = 'abc' }]"), msg::CFG_GROUP_MEMBER, "SHA256:"));
+        assert!(has(bad("web = [{ on = 'ssh://h', cert = 'AB' }]"), msg::CFG_GROUP_KEY_SCHEME, "cert は winrm:// の PC にだけ"));
+        assert!(has(bad("web = [{ on = 'winrm://u@h', host_key = 'x' }]"), msg::CFG_GROUP_KEY_SCHEME, "host_key は ssh:// の PC にだけ"));
+        assert!(has(bad("web = [{ on = 'winrm://u@h', cert = 'AB' }]"), msg::CFG_GROUP_MEMBER, "AB:CD:…"));
         let many = (0..=crate::chore::GROUP_MAX).map(|i| format!("'ssh://h{i}'")).collect::<Vec<_>>().join(", ");
-        assert!(bad(&format!("web = [{many}]")).contains("64 台まで"));
+        assert!(has(bad(&format!("web = [{many}]")), msg::CFG_GROUP_TOO_MANY, "64 台を超えています"));
         assert!(Config::default().groups.is_empty());
     }
 
@@ -707,11 +704,15 @@ archive_days = 365
         assert_eq!(c.vars().len(), 2);
         assert!(Config::default().vars().is_empty());
         let bad = |t: &str| Config::parse(&format!("[vars]\n{t}\n")).unwrap_err();
-        assert!(bad("\"共有\" = 'x'").contains("[vars] の名前に使えない: 共有"));
-        assert!(bad("n = 3").contains("[vars] の n は文字列で書く"));
-        assert!(bad("a = '{var:b}'").contains("{param:…}・{var:…} は書けない"));
-        assert!(bad("a = '{param:b}'").contains("{param:…}・{var:…} は書けない"));
-        assert!(bad("a = '{date-1q}'").contains("[vars] の a: {date-1q}: 単位が読めない"));
+        assert!(has(bad("\"共有\" = 'x'"), msg::CFG_NAME_NOT_PLAIN, "名前 共有 は使用できません"));
+        assert!(has(bad("n = 3"), msg::CFG_VARS_NOT_STRING, "[vars] の n が、文字列で指定されていません"));
+        assert!(has(bad("a = '{var:b}'"), msg::CFG_VARS_NESTED, "{param:…} または {var:…} が含まれています"));
+        assert!(has(bad("a = '{param:b}'"), msg::CFG_VARS_NESTED, "{param:…} または {var:…} が含まれています"));
+        assert!(has(
+            bad("a = '{date-1q}'"),
+            msg::CFG_VARS_VALUE,
+            "[vars] の a の値が正しくありません。（{date-1q} の単位 q を読み込めません"
+        ));
     }
 
     /// `[[blackout]]`: read as written, checked, and a typo in one is an error.
@@ -732,11 +733,11 @@ to = \"2026-11-15 06:00\"
         assert_eq!(c.blackout.len(), 2);
         assert_eq!((c.blackout[0].why.as_str(), c.blackout[1].why.as_str()), ("年末年始", ""));
         let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-28\"\n").unwrap_err();
-        assert!(e.contains("[[blackout]] の to（2026-12-28）が from（2026-12-29）より前"), "{e}");
+        assert!(has(&e, msg::BLACKOUT_ORDER, "to（2026-12-28）が、from（2026-12-29）より前になっています"), "{e}");
         let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\n").unwrap_err();
-        assert!(e.contains("欄 to が無い") && e.contains("行目"), "{e}");
+        assert!(has(&e, msg::CFG_MISSING_KEY, "必須の項目 to") && e.contains("行目"), "{e}");
         let e = Config::parse("[[blackout]]\nfrom = \"2026-12-29\"\nto = \"2026-12-30\"\nreason = \"x\"\n").unwrap_err();
-        assert!(e.contains("4 行目: 知らない欄 reason"), "{e}");
+        assert!(has(&e, msg::CFG_UNKNOWN_KEY, "4 行目") && e.contains("未知の項目 reason"), "{e}");
         assert!(Config::default().blackout.is_empty());
     }
 
@@ -753,7 +754,7 @@ to = \"2026-11-15 06:00\"
         assert_eq!((c.work_folder(Some(net)), c.work_dir.as_deref()), (Some(PathBuf::from(&abs)), Some(abs.as_str())));
         for bad in ["batch", "", ".\\batch", "Definition"] {
             let e = Config::parse(&format!("work_dir = '{bad}'\n")).unwrap_err();
-            assert!(e.starts_with("work_dir は \"definition\"（定義のあるフォルダー）か絶対パスで書く"), "{bad}: {e}");
+            assert!(has(&e, msg::CFG_WORK_DIR, "work_dir の値"), "{bad}: {e}");
         }
     }
 
@@ -767,7 +768,10 @@ give_back = \"sometimes\"
 ",
         )
         .unwrap_err();
-        assert!(e.contains("3 行目") && e.contains("\"sometimes\"") && e.contains("manual / auto"), "{e}");
+        assert!(
+            e.contains("3 行目") && e.contains("\"sometimes\"") && e.contains("manual、auto") && msg::CFG_VALUE_UNKNOWN.is_in(&e),
+            "{e}"
+        );
         assert!(!e.is_ascii() && !e.contains("unknown variant"), "{e}");
     }
 
@@ -778,12 +782,12 @@ give_back = \"sometimes\"
         assert_eq!((c.lock_count("API枠"), c.lock_count("販売DB"), c.lock_count("ほか")), (3, 1, 1));
         assert_eq!(Config::default().lock_count("API枠"), 1);
         for (bad, want) in [
-            ("[locks]\n\"API枠\" = 0\n", "[locks] の \"API枠\" は同時に持てる数で、1 以上"),
-            ("[locks]\n\"API枠\" = -2\n", "1 以上"),
-            ("[locks]\n\"API枠\" = \"3\"\n", "1 以上"),
-            ("[locks]\n\"API枠\" = 2.5\n", "1 以上"),
-            ("[locks]\n\"a/b\" = 2\n", "[locks] の \"a/b\" は lock の名前で書く"),
-            ("[locks]\n\"\" = 2\n", "lock の名前で書く"),
+            ("[locks]\n\"API枠\" = 0\n", "[locks] の API枠 の数が正しくありません"),
+            ("[locks]\n\"API枠\" = -2\n", "の数が正しくありません"),
+            ("[locks]\n\"API枠\" = \"3\"\n", "の数が正しくありません"),
+            ("[locks]\n\"API枠\" = 2.5\n", "の数が正しくありません"),
+            ("[locks]\n\"a/b\" = 2\n", "[locks] の a/b が、ロック名として使用できません"),
+            ("[locks]\n\"\" = 2\n", "ロック名として使用できません"),
             ("locks = 3\n", ""),
         ] {
             let e = Config::parse(bad).unwrap_err();
@@ -917,8 +921,15 @@ port = 70000
         assert!(n.reaches("経理/月次") && n.reaches("共通/日次") && !n.reaches("共通/週次"));
         assert_eq!(Config::parse(head).unwrap().http.unwrap().user[0].nets(), None);
         let e = Config::parse(&format!("{head}nets = [\"経理\"]\n")).unwrap_err();
-        assert!(e.contains("[[http.user]] sato の nets は <グループ>/<名前>"), "{e}");
-        assert!(Config::parse(&format!("{head}nets = []\n")).unwrap_err().contains("空にしない"));
+        assert!(
+            has(
+                &e,
+                msg::CFG_USER_FIELD,
+                "[[http.user]] sato の設定が正しくありません。（nets に指定した 経理 が、<グループ>/<名前> の形式ではありません"
+            ),
+            "{e}"
+        );
+        assert!(Config::parse(&format!("{head}nets = []\n")).unwrap_err().contains("nets が空です"));
     }
 
     /// `roles` gives a role per net; without it `role` is on every net, as before.
@@ -933,10 +944,17 @@ port = 70000
         let plain = Config::parse(head).unwrap().http.unwrap().user[0].access();
         assert_eq!(plain, crate::role::Access::all(Role::View));
         let e = Config::parse(&format!("{head}roles = {{ \"経理\" = \"run\" }}\n")).unwrap_err();
-        assert!(e.contains("[[http.user]] sato の roles のキーは <グループ>/<名前>"), "{e}");
+        assert!(
+            has(
+                &e,
+                msg::CFG_USER_FIELD,
+                "[[http.user]] sato の設定が正しくありません。（roles に指定した 経理 が、<グループ>/<名前> の形式ではありません"
+            ),
+            "{e}"
+        );
         let e = Config::parse(&format!("{head}roles = {{ \"経理/*\" = \"admin\" }}\n")).unwrap_err();
-        assert!(e.contains("[[http.user]] sato の roles の 経理/* の role は"), "{e}");
-        assert!(Config::parse(&format!("{head}roles = {{}}\n")).unwrap_err().contains("空にしない"));
+        assert!(has(&e, msg::CFG_USER_FIELD, "roles の 経理/* に指定した role admin は使用できません"), "{e}");
+        assert!(Config::parse(&format!("{head}roles = {{}}\n")).unwrap_err().contains("roles が空です"));
     }
 
     /// `admin` is a role of its own and is not narrowed: `nets` and `roles` are refused with it,
@@ -957,20 +975,20 @@ token = \"secret:boss\"
 "
         ))
         .unwrap_err();
-        assert!(e.contains("[[http.user]] boss は role = \"admin\""), "{e}");
+        assert!(has(&e, msg::CFG_USER_ADMIN_NARROWED, "[[http.user]] boss は role = \"admin\" ですが"), "{e}");
         let e = Config::parse(&format!(
             "{head}roles = {{ \"経理/*\" = \"run\" }}
 "
         ))
         .unwrap_err();
-        assert!(e.contains("[[http.user]] boss は role = \"admin\""), "{e}");
+        assert!(has(&e, msg::CFG_USER_ADMIN_NARROWED, "[[http.user]] boss は role = \"admin\" ですが"), "{e}");
         let low = head.replace("admin", "run");
         let e = Config::parse(&format!(
             "{low}roles = {{ \"経理/*\" = \"admin\" }}
 "
         ))
         .unwrap_err();
-        assert!(e.contains("[[http.user]] boss の roles の 経理/* の role は"), "{e}");
+        assert!(has(&e, msg::CFG_USER_FIELD, "roles の 経理/* に指定した role admin は使用できません"), "{e}");
     }
 
     /// `[http] tailnet` and a person's `tailscale` go together; such a person needs no token.
@@ -990,29 +1008,38 @@ token = \"secret:boss\"
         assert_eq!(h.user[2].tailscale(), None);
         let plain = Config::parse("[http]\nport = 8790\ntoken = \"secret:t\"\n").unwrap().http.unwrap();
         assert_eq!(plain.tailnet, None);
-        for (bad, why) in [
+        for (bad, (id, why)) in [
             (
                 format!("[http]\nport = 8790\n{}", user("sato", "tailscale = \"sato@example.com\"\n")),
-                "tailnet（tailnet で待ち受けるポート）と一緒に",
+                (msg::CFG_TAILSCALE_NEEDS_TAILNET, "[http] に tailnet がありません"),
             ),
-            (format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("ito", "token = \"secret:ito\"\n")), "tailnet で通す人がいない"),
-            (format!("[http]\nport = 8790\ntailnet = 8790\n{}", user("sato", "tailscale = \"sato@example.com\"\n")), "port と別のポート"),
-            (format!("[http]\nport = 8790\ntailnet = 0\n{}", user("sato", "tailscale = \"sato@example.com\"\n")), "port と別のポート"),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("ito", "token = \"secret:ito\"\n")),
+                (msg::CFG_TAILNET_NO_USER, "tailscale で接続する利用者がいません"),
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 8790\n{}", user("sato", "tailscale = \"sato@example.com\"\n")),
+                (msg::CFG_TAILNET_PORT, "tailnet が正しくありません"),
+            ),
+            (
+                format!("[http]\nport = 8790\ntailnet = 0\n{}", user("sato", "tailscale = \"sato@example.com\"\n")),
+                (msg::CFG_TAILNET_PORT, "tailnet が正しくありません"),
+            ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato\"\n")),
-                "ログイン名（sato@example.com）かタグ",
+                (msg::CFG_TAILSCALE_FORM, "tailscale が正しくありません"),
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"tag:\"\n")),
-                "ログイン名（sato@example.com）かタグ",
+                (msg::CFG_TAILSCALE_FORM, "tailscale が正しくありません"),
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato @example.com\"\n")),
-                "ログイン名（sato@example.com）かタグ",
+                (msg::CFG_TAILSCALE_FORM, "tailscale が正しくありません"),
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato@example.com\"\ntoken = \"plain\"\n")),
-                "token は secret:",
+                (msg::CFG_TOKEN_NOT_SECRET, "token が、secret:<名前> の形式で指定されていません"),
             ),
             (
                 format!(
@@ -1020,15 +1047,15 @@ token = \"secret:boss\"
                     user("sato", "tailscale = \"sato@example.com\"\n"),
                     user("kato", "tailscale = \"SATO@example.com\"\n")
                 ),
-                "tailscale SATO@example.com が 2 つある",
+                (msg::CFG_DUPLICATE, "tailscale SATO@example.com が重複しています"),
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}{}", user("sato", "tailscale = \"sato@example.com\"\n"), user("ito", "")),
-                "ito の token は secret:",
+                (msg::CFG_TOKEN_NOT_SECRET, "ito の token が"),
             ),
         ] {
             let e = Config::parse(&bad).unwrap_err();
-            assert!(e.contains(why), "{bad}: {e}");
+            assert!(has(&e, id, why), "{bad}: {e}");
         }
     }
 
@@ -1148,18 +1175,18 @@ token = \"secret:pc2\"
         assert_eq!(s.give_back, GiveBack::Auto);
         let p = Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\n")).unwrap().primary.unwrap();
         assert_eq!((p.standby.as_str(), p.every_secs(), p.misses), ("pc2", 20, 3));
-        assert_eq!(
+        assert!(has(
             Config::parse(&format!("{remote}[primary]\nstandby = \"pc9\"\n")).unwrap_err(),
-            "[primary] の standby \"pc9\" は [[remote]] の name で書く"
-        );
-        assert_eq!(
+            msg::CFG_POLL_TARGET,
+            "[primary] の standby に指定された pc9 は、[[remote]] の name にありません"
+        ));
+        assert!(has(
             Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\nmisses = 30\n")).unwrap_err(),
-            "[primary] の misses は 1 から 20 まで"
-        );
-        assert_eq!(
-            Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\n[standby]\nwatch = \"pc2\"\n")).unwrap_err(),
-            "[standby] と [primary] は一緒に書けない（待つ側か、待たれる側のどちらか）"
-        );
+            msg::CFG_MISSES_RANGE,
+            "[primary] の misses が範囲外です"
+        ));
+        assert!(msg::CFG_STANDBY_AND_PRIMARY
+            .is_in(&Config::parse(&format!("{remote}[primary]\nstandby = \"pc2\"\n[standby]\nwatch = \"pc2\"\n")).unwrap_err()));
         assert!(Config::parse("").unwrap().primary.is_none());
     }
 

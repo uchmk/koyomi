@@ -759,7 +759,7 @@ mod tests {
         let p = plan(&b, &s, Some(Conflict::Overwrite));
         assert_eq!(p.problems(), 2, "{:?}", p.lines());
         assert!(p.lines().iter().any(|l| l.contains("総務/壊れ.toml") && l.contains("rnu")));
-        assert!(p.lines().iter().any(|l| l.contains("子ジョブネットがない: 無い/子")));
+        assert!(p.lines().iter().any(|l| l.contains(&crate::msg::CHILD_MISSING.code()) && l.contains("無い/子")));
     }
 
     #[test]

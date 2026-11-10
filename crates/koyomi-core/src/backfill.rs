@@ -13,6 +13,7 @@ use std::collections::BTreeSet;
 
 use chrono::NaiveDate;
 
+use crate::msg;
 use crate::run::{Run, State, ENGINE_STOPPED};
 
 /// Which days `--only` keeps.
@@ -102,7 +103,7 @@ pub fn look<'a>(
 /// `None` once it has taken over, and on a PC without `[standby]`.
 pub fn refused_on_standby(watch: Option<&str>, taken_over: bool) -> Option<String> {
     let watch = watch.filter(|_| !taken_over)?.trim();
-    Some(format!("待機中の PC では --only を使えない（流しているのは {watch} で、実行の記録もそちらにある）。{watch} で流す"))
+    Some(msg::line(msg::ONLY_ON_STANDBY, &[watch]))
 }
 
 #[cfg(test)]
@@ -262,7 +263,10 @@ mod tests {
     #[test]
     fn a_standby_that_has_not_taken_over_refuses() {
         let said = refused_on_standby(Some(" main-pc "), false).unwrap();
-        assert!(said.contains("待機中の PC では --only を使えない") && said.ends_with("main-pc で流す"), "{said}");
+        assert!(
+            msg::ONLY_ON_STANDBY.is_in(&said) && said.contains("--only を使用できません") && said.ends_with("main-pc で実行してください。"),
+            "{said}"
+        );
         assert_eq!(refused_on_standby(Some("main-pc"), true), None);
         assert_eq!(refused_on_standby(None, false), None);
     }

@@ -11,6 +11,7 @@ use chrono::{NaiveDate, NaiveTime, Timelike, Weekday};
 use crate::chore::{Chore, Pass, SqlTls, WinrmAuth};
 use crate::duration;
 use crate::jobnet::{self, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Takeover, Wait};
+use crate::msg;
 use crate::quiet::OnQuiet;
 use crate::when::{AfterOn, Kind, MonthRule, OnClosed, When};
 
@@ -119,10 +120,7 @@ pub fn check(net: &Jobnet) -> Vec<Found> {
 /// The file `koyomi new` writes: one job that does nothing yet, and no
 /// `[[when]]` (by hand only until a time is put in). It reads as it is.
 pub fn template(name: &str) -> String {
-    format!(
-        "format = 1\nname = {}\n\n# 時刻は [[when]] で足す。無ければ手で流すだけ。\n# [[when]]\n# every = \"day\"\n# at = [\"02:00\"]\n\n[[job]]\nid = \"job1\"\nname = \"最初のジョブ\"\n# 実行ファイルと引数を 1 つずつ（シェルの 1 行ではない）\nrun = [\"cmd.exe\", \"/c\", \"echo hello\"]\n",
-        q(name)
-    )
+    msg::note(msg::N_NEW_JOBNET_FILE, &[&q(name)])
 }
 
 fn push(out: &mut String, key: &str, value: &str) {

@@ -11,6 +11,7 @@ use chrono::{Duration, NaiveDateTime, NaiveTime, Timelike};
 use serde::{Deserialize, Serialize};
 
 use crate::jobnet::Jobnet;
+use crate::msg;
 use crate::run::{Run, State};
 
 /// When a run is late from.
@@ -28,9 +29,7 @@ impl Deadline {
         if text.contains(':') {
             crate::when::time(text).map(Deadline::At)
         } else {
-            crate::duration::parse(text)
-                .map(Deadline::After)
-                .map_err(|_| format!("\"06:00\"（時刻）か \"30m\"（長さ）のように書く: \"{text}\""))
+            crate::duration::parse(text).map(Deadline::After).map_err(|_| msg::line(msg::DEADLINE_BAD, &[text]))
         }
     }
 

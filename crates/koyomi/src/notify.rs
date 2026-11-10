@@ -526,7 +526,7 @@ mod tests {
         let e = super::settings_problem("[notify]\nwebhooks = [\"secret:x\"]\n").unwrap();
         assert!(!e.contains('\n') && !e.is_ascii(), "{e}");
         let e = super::settings_problem("keep_days = 0\n").unwrap();
-        assert_eq!(e, "keep_days は 1 以上");
+        assert!(koyomi_core::msg::CFG_LIMIT_TOO_LOW.is_in(&e) && e.contains("keep_days"), "{e}");
         let src = koyomi_core::bundle::Source { settings: Some("[notify]\nwebhooks = [\"secret:x\"]\n".to_owned()), ..Default::default() };
         let pick = koyomi_core::bundle::Pick { settings: true, ..Default::default() };
         let e = super::export(&src, &pick).unwrap_err();

@@ -2999,8 +2999,8 @@ after = ["extract"]
     fn a_var_needs_a_plain_name_and_nothing_else_here() {
         let net = |param: &str, run: &str| format!("format = 1\n[params]\nat = '{param}'\n[[job]]\nid = \"a\"\nrun = ['{run}']\n");
         assert!(parse(&net(r"{var:share}\in", "copy {var:share} {param:at}")).is_ok());
-        assert!(problems(&net("x", "copy {var:}")).iter().any(|p| p.contains("{var:}: 名前がない")));
-        assert!(problems(&net("{var:共有}", "x")).iter().any(|p| p.contains("params at: {var:共有}: [vars] の名前は英数字と _ だけ")));
+        assert!(problems(&net("x", "copy {var:}")).iter().any(|p| p.contains(&crate::msg::VAR_NAME_EMPTY.code())));
+        assert!(problems(&net("{var:共有}", "x")).iter().any(|p| p.contains(&crate::msg::VAR_NAME_BAD.code()) && p.contains("共有")));
     }
 
     #[test]
@@ -3036,7 +3036,7 @@ after = ["extract"]
             ("env = { KOYOMI_X = \"x\" }", "KOYOMI_"),
             ("env = { A = 1 }", "文字列"),
             ("env = { A = \"secret:\" }", "secret: の後に名前"),
-            ("env = { A = \"{date-1x}\" }", "単位が読めない"),
+            ("env = { A = \"{date-1x}\" }", "の単位 x を読み込めません"),
         ] {
             let p = problems(&format!("{head}{bad}\n"));
             assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
@@ -3105,9 +3105,9 @@ after = ["extract"]
             problems(&format!("{head}run = [\"x.exe\", \"{{month-1}}\", \"{{date-1bd:%Y%m%d}}\"]\ndir = 'D:\\{{date:%Y}}'\n")).is_empty()
         );
         let p = problems(&format!("{head}run = [\"x.exe\", \"{{date-1x}}\"]\n"));
-        assert!(p.len() == 1 && p[0].contains("run: {date-1x}: 単位が読めない"), "{p:?}");
+        assert!(p.len() == 1 && p[0].contains("{date-1x} の単位 x を読み込めません"), "{p:?}");
         let p = problems(&format!("{head}shell = \"powershell\"\nscript = \"Get-Date -f {{date:%Q}}\"\n"));
-        assert!(p.len() == 1 && p[0].contains("script: ") && p[0].contains("書式が読めない"), "{p:?}");
+        assert!(p.len() == 1 && p[0].contains("script: ") && p[0].contains("の書式 %Q を読み込めません"), "{p:?}");
     }
 
     #[test]
@@ -3171,14 +3171,22 @@ id = \"a\"
 run = [\"x\"]
 timeout = \"0m\"
 ";
-        assert_eq!(problems(text), ["a.toml の 5 行目: timeout 0m: 0 より長くする"]);
+        let p = problems(text);
+        assert!(p.len() == 1 && p[0].starts_with("a.toml の 5 行目: timeout") && p[0].contains(&crate::msg::DURATION_ZERO.code()), "{p:?}");
         let text = "format = 1
 [[job]]
 id = \"a\"
 run = [\"x\"]
 timeout = \"30\"
 ";
-        assert_eq!(problems(text), ["a.toml の 5 行目: timeout `30` は単位がありません。30m・1h30m・90s のように書く"]);
+        let p = problems(text);
+        assert!(
+            p.len() == 1
+                && p[0].starts_with("a.toml の 5 行目: timeout")
+                && p[0].contains(&crate::msg::DURATION_UNREADABLE.code())
+                && p[0].contains("時間 30 を読み込めません"),
+            "{p:?}"
+        );
     }
 
     #[test]
@@ -3207,7 +3215,11 @@ timeout = \"30\"
         );
         assert_eq!(problems(&job("retry = { count = 0, wait = \"5m\" }")), [format!("{at}retry の count は 1 から 100 の整数で書く")]);
         assert_eq!(problems(&job("retry = { count = 2, wait = 300 }")), [format!("{at}retry の wait は \"5m\" のように文字列で書く")]);
-        assert_eq!(problems(&job("retry = { count = 2, wait = \"0s\" }")), [format!("{at}retry の wait 0s: 0 より長くする")]);
+        let p = problems(&job("retry = { count = 2, wait = \"0s\" }"));
+        assert!(
+            p.len() == 1 && p[0].starts_with(&format!("{at}retry の wait")) && p[0].contains(&crate::msg::DURATION_ZERO.code()),
+            "{p:?}"
+        );
         assert_eq!(problems(&job("retry = { count = 2, wait = \"5m\", max = 1 }")), [format!("{at}retry に知らない欄 max")]);
     }
 
@@ -3596,7 +3608,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}password = 'hunter2'\n")).contains("secret:<名前>"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}run = ['y']\n")).contains("run"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}encoding = 'utf8'\n")).contains("encoding"));
-        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x {{date+1q}}'\n{hk}")).contains("command: {date+1q}: 単位が読めない"));
+        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x {{date+1q}}'\n{hk}")).contains("{date+1q} の単位 q を読み込めません"));
         // A group of PCs in koyomi.toml: how many at once and when it passes.
         let fan = parse_ssh("on = 'group:web'\ncommand = 'uptime'\nmax = 4\npass = 'any'\n").unwrap();
         assert!(matches!(fan.part, Part::Chore(Chore::Ssh { max: Some(4), pass: Pass::Any, .. })));
@@ -3675,7 +3687,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}key = 'C:\\k'\n")).contains("key は kind"));
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}encoding = 'utf8'\n")).contains("encoding"));
         assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\ncert = '{date+1q}'\npassword = 'secret:ops'\n")
-            .contains("cert: {date+1q}: 単位が読めない"));
+            .contains("{date+1q} の単位 q を読み込めません"));
         for auth in ["'kerberos'", "'NTLM'", "1"] {
             assert!(
                 bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}auth = {auth}\n")).contains("auth は \"basic\"・\"ntlm\" のどれか")
@@ -3731,7 +3743,7 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("to = ['a@x, b@x']\nsubject = 's'\n").contains("アドレスとして読めない: a@x, b@x"));
         assert!(bad("to = ['a@x']\ncc = ['nobody']\nsubject = 's'\n").contains("アドレスとして読めない: nobody"));
         assert!(bad("to = ['a@x']\nsubject = ' '\n").contains("subject が空"));
-        assert!(bad("to = ['a@x']\nsubject = '{date+1q}'\n").contains("subject: {date+1q}: 単位が読めない"));
+        assert!(bad("to = ['a@x']\nsubject = '{date+1q}'\n").contains("{date+1q} の単位 q を読み込めません"));
         assert!(bad("to = ['a@x']\nsubject = 's'\nfiles = [1]\n").contains("files は空でない文字列の配列で書く"));
         assert!(bad("to = ['a@x']\nsubject = 's'\nvia = ''\n").contains("via が空"));
         assert!(bad("to = ['{param:nobody}']\nsubject = 's'\n").contains("nobody"));
@@ -4104,14 +4116,13 @@ after = [{ job = \"way\", code = \"else\" }]
             p("every = \"daily\"\nat = [\"02:00\"]"),
             ["a.toml の 3 行目: every は \"day\"・\"minutes\"・\"hours\"・\"week\"・\"month\"・\"year\" のどれか"]
         );
-        assert_eq!(p("every = \"day\"\nat = [\"2 時\"]"), ["a.toml の 4 行目: 時刻は \"02:00\" のように書く: \"2 時\""]);
+        let t = p("every = \"day\"\nat = [\"2 時\"]");
+        assert!(t.len() == 1 && t[0].contains(&crate::msg::TIME_BAD.code()) && t[0].ends_with("（a.toml の 4 行目）"), "{t:?}");
         assert_eq!(p("every = \"day\"\nat = []"), ["a.toml の 4 行目: at が空"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nday = 3"), ["a.toml の 5 行目: day は day では使わない"]);
         assert_eq!(p("every = \"week\"\nat = [\"02:00\"]"), ["a.toml の 2 行目: days が要る（例: days = [\"mon\", \"fri\"]）"]);
-        assert_eq!(
-            p("every = \"week\"\ndays = [\"火\"]\nat = [\"02:00\"]"),
-            ["a.toml の 4 行目: 曜日は mon・tue・wed・thu・fri・sat・sun のどれか: \"火\""]
-        );
+        let w = p("every = \"week\"\ndays = [\"火\"]\nat = [\"02:00\"]");
+        assert!(w.len() == 1 && w[0].contains("曜日 \"火\" を読み込めません") && w[0].ends_with("（a.toml の 4 行目）"), "{w:?}");
         assert_eq!(p("every = \"minutes\"\nfrom = \"09:00\"\nto = \"10:00\""), ["a.toml の 2 行目: n が要る（例: n = 15）"]);
         assert_eq!(p("every = \"minutes\"\nn = 0\nfrom = \"09:00\"\nto = \"10:00\""), ["a.toml の 4 行目: n は 1 以上の整数で書く"]);
         assert_eq!(p("every = \"hours\"\nn = 1"), ["a.toml の 2 行目: from と to が要る（例: from = \"09:00\", to = \"18:00\"）"]);
@@ -4148,13 +4159,19 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(p("every = \"month\"\nday = 32\nat = [\"09:00\"]"), ["a.toml の 4 行目: day は 1 から 31 の数か \"last\""]);
         assert_eq!(p("every = \"month\"\nnth = 6\nweekday = \"tue\"\nat = [\"09:00\"]"), ["a.toml の 4 行目: nth は 1 から 5 の数"]);
-        assert_eq!(
-            p("every = \"year\"\ndate = \"13-01\"\nat = [\"09:00\"]"),
-            ["a.toml の 4 行目: date は \"04-01\" のように月-日で書く: \"13-01\""]
+        let d = p("every = \"year\"\ndate = \"13-01\"\nat = [\"09:00\"]");
+        assert!(
+            d.len() == 1 && d[0].starts_with("KOYOMI-E3391 ") && d[0].contains("13-01") && d[0].ends_with("（a.toml の 4 行目）"),
+            "{d:?}"
         );
         assert_eq!(p("dates = []\nat = [\"09:00\"]"), ["a.toml の 2 行目: dates が空"]);
-        assert_eq!(p("dates = [\"30 日\"]\nat = [\"09:00\"]"), ["a.toml の 3 行目: 日付は 2026-11-30 のように書く: 30 日"]);
-        assert_eq!(p("once = \"今夜\""), ["a.toml の 3 行目: 日時は 2026-11-30T21:00:00 のように書く（時差はつけない）: 今夜"]);
+        let d = p("dates = [\"30 日\"]\nat = [\"09:00\"]");
+        assert!(
+            d.len() == 1 && d[0].starts_with("KOYOMI-E3389 ") && d[0].contains("30 日") && d[0].ends_with("（a.toml の 3 行目）"),
+            "{d:?}"
+        );
+        let o = p("once = \"今夜\"");
+        assert!(o.len() == 1 && o[0].starts_with("KOYOMI-E") && o[0].contains("今夜") && o[0].ends_with("（a.toml の 3 行目）"), "{o:?}");
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nstart = 2027-01-01\nend = 2026-12-01"), ["a.toml の 5 行目: start は end より前"]);
         assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nfoo = 1"), ["a.toml の 5 行目: 知らない欄 foo"]);
         for f in ["after_jobnet = \"a/b\"", "on = \"ok\""] {
@@ -4338,10 +4355,8 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(p(&format!("{m}password = \"secret:\"\nsender = \"x\"")), ["a.toml の 4 行目: password: secret: の後に名前が要る"]);
         assert_eq!(p(&format!("{m}password = \"secret:m\"\nsender = \"\"")), ["a.toml の 5 行目: sender が空"]);
-        assert_eq!(
-            p("mail = \"imap://a@b\"\npassword = \"secret:m\"\nsender = \"x\""),
-            ["a.toml の 3 行目: mail は imaps:// だけ（暗号化しない imap:// は使えない）"]
-        );
+        let tls = p("mail = \"imap://a@b\"\npassword = \"secret:m\"\nsender = \"x\"");
+        assert!(tls.len() == 1 && crate::msg::MAIL_NOT_TLS.is_in(&tls[0]) && tls[0].ends_with("（a.toml の 3 行目）"), "{tls:?}");
         assert_eq!(
             p(&format!("{m}password = \"secret:m\"\nsender = \"x\"\ncontains = \"E\"")),
             ["a.toml の 6 行目: contains は mail では使わない"]

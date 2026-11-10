@@ -11,6 +11,7 @@ use chrono::NaiveDate;
 
 use crate::calendar::{self, Calendars};
 use crate::jobnet::{Jobnet, Part};
+use crate::msg;
 use crate::when::{Kind, MonthRule};
 
 /// One thing found.
@@ -47,13 +48,13 @@ pub fn check(
         };
         if let Some(exe) = exe.filter(|e| !e.contains('{')) {
             if find_exe(exe, path_var, exts).is_none() {
-                out.push(fault(format!("{} の実行ファイルが見つからない: {exe}", j.id)));
+                out.push(fault(msg::line(msg::PREFLIGHT_EXE_MISSING, &[&j.id, exe])));
             }
         }
         if let Some(dir) = j.dir.as_deref().filter(|d| !d.contains('{')) {
             let at = work.map_or_else(|| PathBuf::from(dir), |w| w.join(dir));
             if !at.is_dir() {
-                out.push(fault(format!("{} の作業フォルダーがない: {}", j.id, at.display())));
+                out.push(fault(msg::line(msg::PREFLIGHT_DIR_MISSING, &[&j.id, &at.display().to_string()])));
             }
         }
         without_dir |= j.dir.is_none() && j.part.runs_process() && !matches!(j.part, Part::Chore(_));
@@ -61,25 +62,22 @@ pub fn check(
             if !file.contains('{') {
                 let dir = watched_dir(file);
                 if !dir.as_os_str().is_empty() && !dir.is_dir() {
-                    out.push(fault(format!("{} が見張るフォルダーがない: {}", j.id, dir.display())));
+                    out.push(fault(msg::line(msg::PREFLIGHT_WATCH_MISSING, &[&j.id, &dir.display().to_string()])));
                 }
             }
         }
     }
     if let Some(w) = work.filter(|w| without_dir && !w.is_dir()) {
-        out.push(fault(format!("dir のないジョブの作業フォルダーがない: {}（koyomi.toml の work_dir）", w.display())));
+        out.push(fault(msg::line(msg::PREFLIGHT_WORK_MISSING, &[&w.display().to_string()])));
     }
     for w in &net.when {
         if let Kind::Month { rule: MonthRule::Day { day: day @ 29..=31, .. }, .. } = &w.kind {
             let months = match *day {
-                31 => "2・4・6・9・11 月",
-                30 => "2 月",
-                _ => "うるう年でない 2 月",
+                31 => msg::note(msg::N_MONTHS_WITHOUT_31, &[]),
+                30 => msg::note(msg::N_MONTHS_WITHOUT_30, &[]),
+                _ => msg::note(msg::N_MONTHS_WITHOUT_29, &[]),
             };
-            out.push(Finding {
-                warn: true,
-                text: format!("注意: [[when]] の day = {day} は {day} 日のない月（{months}）には流れない。月末に流すなら day = \"last\""),
-            });
+            out.push(Finding { warn: true, text: msg::line(msg::PREFLIGHT_DAY_ABSENT, &[&day.to_string(), &months]) });
         }
     }
     if let Some(until) = net.calendar.as_ref().and_then(|n| cals.map.get(n)).and_then(|c| c.until()) {
@@ -142,12 +140,12 @@ mod tests {
         let net = parse(&text).unwrap();
         let got = check(&net, &Calendars::default(), today(), 60, &t, &[".exe"], None);
         let texts: Vec<_> = got.iter().map(|f| f.text.as_str()).collect();
-        assert!(texts.iter().any(|x| x.starts_with("b の実行ファイルが見つからない")), "{texts:?}");
-        assert!(texts.iter().any(|x| x.starts_with("b の作業フォルダーがない")), "{texts:?}");
-        assert!(texts.iter().any(|x| x.starts_with("c が見張るフォルダーがない")), "{texts:?}");
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_EXE_MISSING.is_in(x) && x.contains("ジョブ b の実行ファイル")), "{texts:?}");
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_DIR_MISSING.is_in(x) && x.contains("ジョブ b の作業フォルダー")), "{texts:?}");
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_WATCH_MISSING.is_in(x) && x.contains("ジョブ c が監視するフォルダー")), "{texts:?}");
         // `a` is all there, `d` finds `ok` on PATH only by its suffix (it is not there) but its dir has a token.
-        assert!(!texts.iter().any(|x| x.starts_with("a ")), "{texts:?}");
-        assert!(!texts.iter().any(|x| x.contains("d の作業")), "{texts:?}");
+        assert!(!texts.iter().any(|x| x.contains("ジョブ a ")), "{texts:?}");
+        assert!(!texts.iter().any(|x| x.contains("ジョブ d の作業")), "{texts:?}");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
@@ -161,20 +159,26 @@ mod tests {
                 .unwrap();
         let texts = |work: &Path| -> Vec<String> {
             let found = check(&net, &Calendars::default(), today(), 60, "", &[], Some(work));
-            found.into_iter().map(|f| f.text).filter(|t| !t.contains("実行ファイル")).collect()
+            found.into_iter().map(|f| f.text).filter(|t| !msg::PREFLIGHT_EXE_MISSING.is_in(t)).collect()
         };
         assert_eq!(texts(&tmp), Vec::<String>::new());
         let gone = tmp.join("gone");
-        assert_eq!(
-            texts(&gone),
-            [
-                format!("a の作業フォルダーがない: {}", gone.join("sub").display()),
-                format!("dir のないジョブの作業フォルダーがない: {}（koyomi.toml の work_dir）", gone.display())
-            ]
+        let got = texts(&gone);
+        assert_eq!(got.len(), 2, "{got:?}");
+        assert!(
+            msg::PREFLIGHT_DIR_MISSING.is_in(&got[0])
+                && got[0].contains(&format!("ジョブ a の作業フォルダー {} が存在しません", gone.join("sub").display())),
+            "{got:?}"
+        );
+        assert!(
+            msg::PREFLIGHT_WORK_MISSING.is_in(&got[1]) && got[1].contains(&format!("作業フォルダー {} が存在しません", gone.display())),
+            "{got:?}"
         );
         // Every job has its `dir`: the folder itself is not needed.
         let placed = parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\ndir = \"sub\"\n").unwrap();
-        assert!(check(&placed, &Calendars::default(), today(), 60, "", &[], Some(&tmp)).iter().all(|f| f.text.contains("実行ファイル")));
+        assert!(check(&placed, &Calendars::default(), today(), 60, "", &[], Some(&tmp))
+            .iter()
+            .all(|f| msg::PREFLIGHT_EXE_MISSING.is_in(&f.text)));
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 
@@ -188,10 +192,8 @@ mod tests {
         let w = words("31");
         assert_eq!(w.len(), 1);
         assert!(w[0].warn);
-        assert_eq!(
-            w[0].text,
-            "注意: [[when]] の day = 31 は 31 日のない月（2・4・6・9・11 月）には流れない。月末に流すなら day = \"last\""
-        );
+        assert!(msg::PREFLIGHT_DAY_ABSENT.is_in(&w[0].text));
+        assert!(w[0].text.contains("day = 31 は、31 日のない月（2・4・6・9・11 月）には実行されません"), "{}", w[0].text);
         assert!(words("30")[0].text.contains("（2 月）"));
         assert!(words("29")[0].text.contains("（うるう年でない 2 月）"));
         assert!(words("28").is_empty() && words("\"last\"").is_empty());

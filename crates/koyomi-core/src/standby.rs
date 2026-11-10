@@ -20,6 +20,7 @@
 use std::time::Duration;
 
 use crate::jobnet::{Jobnet, Takeover};
+use crate::msg;
 use crate::run::Run;
 
 /// How often the primary is polled when `[standby]` does not say.
@@ -273,9 +274,9 @@ pub enum Resume {
 /// split line the primary may still be running it, and only the owner knows which nets bear that.
 pub fn resume(theirs: &Run, net: Option<&Jobnet>) -> Resume {
     match net {
-        None => Resume::Leave("この PC に流せる定義がない".to_owned()),
-        Some(n) if n.takeover != Takeover::Rerun => Resume::Leave("takeover = \"rerun\" ではない".to_owned()),
-        Some(_) if theirs.jobs.iter().all(|j| j.state.passed()) => Resume::Leave("ジョブは全部済んでいた".to_owned()),
+        None => Resume::Leave(msg::note(msg::N_STANDBY_NO_DEFINITION, &[])),
+        Some(n) if n.takeover != Takeover::Rerun => Resume::Leave(msg::note(msg::N_STANDBY_NOT_RERUN, &[])),
+        Some(_) if theirs.jobs.iter().all(|j| j.state.passed()) => Resume::Leave(msg::note(msg::N_STANDBY_ALL_PASSED, &[])),
         Some(_) => Resume::Rerun,
     }
 }
@@ -436,8 +437,8 @@ mod tests {
         let r = theirs(RunState::Ok, RunState::Running);
         assert_eq!(resume(&r, Some(&net(Takeover::Rerun))), Resume::Rerun);
         assert!(matches!(resume(&r, Some(&net(Takeover::Leave))), Resume::Leave(w) if w.contains("takeover")));
-        assert!(matches!(resume(&r, None), Resume::Leave(w) if w.contains("定義がない")));
+        assert!(matches!(resume(&r, None), Resume::Leave(w) if w.contains("実行できる定義がありません")));
         let done = theirs(RunState::Ok, RunState::Skipped);
-        assert!(matches!(resume(&done, Some(&net(Takeover::Rerun))), Resume::Leave(w) if w.contains("済んでいた")));
+        assert!(matches!(resume(&done, Some(&net(Takeover::Rerun))), Resume::Leave(w) if w.contains("完了していました")));
     }
 }

@@ -12,6 +12,8 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
+use crate::msg;
+
 /// A caller's role. Ordered: `View < Run < Edit < Admin`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Role {
@@ -31,7 +33,7 @@ impl Role {
             "run" => Ok(Role::Run),
             "edit" => Ok(Role::Edit),
             "admin" => Ok(Role::Admin),
-            _ => Err(format!("role は view・run・edit・admin のどれか: {text}")),
+            _ => Err(msg::line(msg::ROLE_NOT_KNOWN, &[text])),
         }
     }
 
@@ -67,11 +69,11 @@ impl Nets {
     /// every net.
     pub fn parse(patterns: &[String]) -> Result<Nets, String> {
         if patterns.is_empty() {
-            return Err("nets を空にしない（全部のネットなら nets を書かない）".to_owned());
+            return Err(msg::line(msg::NETS_EMPTY, &[]));
         }
         let mut out = Vec::new();
         for p in patterns {
-            out.push(pattern(p).map_err(|e| format!("nets は {e}"))?.to_owned());
+            out.push(pattern(p, "nets")?.to_owned());
         }
         Ok(Nets(out))
     }
@@ -87,11 +89,11 @@ impl Nets {
 }
 
 /// One `<group>/<name>` pattern, trimmed; the error says how to write one.
-fn pattern(p: &str) -> Result<&str, String> {
+fn pattern<'a>(p: &'a str, what: &str) -> Result<&'a str, String> {
     let p = p.trim();
     let parts: Vec<&str> = p.split('/').collect();
     if parts.len() != 2 || parts.iter().any(|s| s.trim().is_empty()) {
-        return Err(format!("<グループ>/<名前> で書く（グループの全部なら 経理/*）: {p}"));
+        return Err(msg::line(msg::NET_PATTERN_BAD, &[what, p]));
     }
     Ok(p)
 }
@@ -148,14 +150,14 @@ impl Access {
 /// error: no `roles` at all means `role` on every net.
 pub fn per_net(roles: &BTreeMap<String, String>) -> Result<Vec<(String, Role)>, String> {
     if roles.is_empty() {
-        return Err("roles を空にしない（どのネットも role なら roles を書かない）".to_owned());
+        return Err(msg::line(msg::ROLES_EMPTY, &[]));
     }
     let mut out = Vec::new();
     for (key, role) in roles {
-        let p = pattern(key).map_err(|e| format!("roles のキーは {e}"))?;
-        let r = Role::parse(role.trim()).map_err(|e| format!("roles の {p} の {e}"))?;
+        let p = pattern(key, "roles")?;
+        let r = Role::parse(role.trim())?;
         if r == Role::Admin {
-            return Err(format!("roles の {p} の role は view・run・edit のどれか（admin は ネットごとには書けない）: admin"));
+            return Err(msg::line(msg::ROLES_VALUE_BAD, &[p, "admin"]));
         }
         out.push((p.to_owned(), r));
     }
@@ -271,10 +273,10 @@ mod tests {
     /// a pattern is `<group>/<name>`, and an empty list is not "every net".
     #[test]
     fn nets_that_do_not_read_are_said() {
-        assert!(nets(&[]).unwrap_err().contains("空にしない"));
+        assert!(msg::NETS_EMPTY.is_in(&nets(&[]).unwrap_err()));
         for bad in ["経理", "経理/", "/日次", "a/b/c", " ", "経理/ "] {
             let e = nets(&["共通/日次", bad]).unwrap_err();
-            assert!(e.starts_with("nets は <グループ>/<名前>"), "{bad}: {e}");
+            assert!(msg::NET_PATTERN_BAD.is_in(&e) && e.contains("nets に指定した"), "{bad}: {e}");
         }
     }
 
@@ -308,9 +310,9 @@ mod tests {
     #[test]
     fn roles_per_net_that_do_not_read_are_said() {
         assert_eq!(per(&[(" 経理/* ", " run ")]).unwrap(), [("経理/*".to_owned(), Role::Run)]);
-        assert!(per(&[]).unwrap_err().contains("空にしない"));
-        assert!(per(&[("経理", "run")]).unwrap_err().starts_with("roles のキーは <グループ>/<名前>"));
+        assert!(msg::ROLES_EMPTY.is_in(&per(&[]).unwrap_err()));
+        assert!(msg::NET_PATTERN_BAD.is_in(&per(&[("経理", "run")]).unwrap_err()));
         let e = per(&[("経理/*", "admin")]).unwrap_err();
-        assert!(e.starts_with("roles の 経理/* の role は view・run・edit"), "{e}");
+        assert!(msg::ROLES_VALUE_BAD.is_in(&e) && e.contains("roles の 経理/* に指定した role admin"), "{e}");
     }
 }

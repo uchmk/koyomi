@@ -7,6 +7,8 @@
 use chrono::{Duration, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
+use crate::msg;
+
 /// One span of quiet hours: from `from`, up to but not at `to`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Span {
@@ -17,11 +19,11 @@ pub struct Span {
 impl Span {
     /// `"12:00-13:00"`.
     pub fn parse(text: &str) -> Result<Span, String> {
-        let bad = || format!("\"12:00-13:00\" のように書く: \"{text}\"");
+        let bad = || msg::line(msg::QUIET_SPAN_BAD, &[text]);
         let (a, b) = text.split_once('-').ok_or_else(bad)?;
         let (from, to) = (crate::when::time(a).map_err(|_| bad())?, crate::when::time(b).map_err(|_| bad())?);
         if from == to {
-            return Err(format!("始まりと終わりが同じ: \"{text}\""));
+            return Err(msg::line(msg::QUIET_SPAN_SAME, &[text]));
         }
         Ok(Span { from, to })
     }

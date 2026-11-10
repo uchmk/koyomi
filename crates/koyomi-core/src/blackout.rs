@@ -18,6 +18,8 @@
 use chrono::{Days, NaiveDate, NaiveDateTime, NaiveTime};
 use serde::{Deserialize, Serialize};
 
+use crate::msg;
+
 /// One planned stop, as written.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -43,13 +45,13 @@ fn moment(text: &str) -> Option<(NaiveDateTime, bool)> {
 impl Blackout {
     /// From when, up to (not at) when.
     pub fn span(&self) -> Result<(NaiveDateTime, NaiveDateTime), String> {
-        let bad = |what: &str, text: &str| format!("[[blackout]] の {what} は \"2026-12-29\" か \"2026-12-29 22:00\" で書く: {text:?}");
+        let bad = |what: &str, text: &str| msg::line(msg::BLACKOUT_TIME_BAD, &[what, text]);
         let (from, _) = moment(&self.from).ok_or_else(|| bad("from", &self.from))?;
         let (to, timed) = moment(&self.to).ok_or_else(|| bad("to", &self.to))?;
         // A day alone is through that day.
         let to = if timed { to } else { to.checked_add_days(Days::new(1)).ok_or_else(|| bad("to", &self.to))? };
         if to <= from {
-            return Err(format!("[[blackout]] の to（{}）が from（{}）より前", self.to.trim(), self.from.trim()));
+            return Err(msg::line(msg::BLACKOUT_ORDER, &[self.to.trim(), self.from.trim()]));
         }
         Ok((from, to))
     }
@@ -86,8 +88,8 @@ impl Blackout {
     /// Why a time in it does not start, for the record: `計画停止（年末年始、2026-12-29〜2027-01-03）`.
     pub fn reason(&self) -> String {
         match self.why.trim() {
-            "" => format!("計画停止（{}）", self.when()),
-            why => format!("計画停止（{why}、{}）", self.when()),
+            "" => msg::note(msg::N_BLACKOUT_REASON, &[&self.when()]),
+            why => msg::note(msg::N_BLACKOUT_REASON_WHY, &[why, &self.when()]),
         }
     }
 }
@@ -185,11 +187,18 @@ mod tests {
     #[test]
     fn a_bad_end_or_a_backward_span_is_an_error() {
         let e = b("2026/12/29", "2027-01-03", "").check().unwrap_err();
-        assert!(e.contains("from は \"2026-12-29\" か \"2026-12-29 22:00\" で書く"), "{e}");
+        assert!(
+            msg::BLACKOUT_TIME_BAD.is_in(&e)
+                && e.contains("from には、\"2026-12-29\" または \"2026-12-29 22:00\" の形式で指定してください"),
+            "{e}"
+        );
         let e = b("2026-12-29", "あした", "").check().unwrap_err();
-        assert!(e.contains("to は"), "{e}");
+        assert!(msg::BLACKOUT_TIME_BAD.is_in(&e) && e.contains("to には"), "{e}");
         let e = b("2026-11-15 06:00", "2026-11-14 22:00", "").check().unwrap_err();
-        assert!(e.contains("to（2026-11-14 22:00）が from（2026-11-15 06:00）より前"), "{e}");
+        assert!(
+            msg::BLACKOUT_ORDER.is_in(&e) && e.contains("to（2026-11-14 22:00）が、from（2026-11-15 06:00）より前になっています"),
+            "{e}"
+        );
         assert!(b("2026-11-14 22:00", "2026-11-14 22:00", "").check().is_err());
         // A whole day ends after a time on it.
         assert!(b("2026-11-14 22:00", "2026-11-14", "").check().is_ok());

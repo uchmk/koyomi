@@ -8,6 +8,8 @@
 //! use`) or information records (`Write-Host`, which are on the standard output as text too).
 //! Text written straight to the error output (`[Console]::Error.WriteLine`) stays as it is.
 
+use crate::msg;
+
 const HEADER: &str = "#< CLIXML";
 
 /// Reads one job's error output line by line: after the header, CLIXML becomes plain lines.
@@ -97,10 +99,10 @@ fn flush(plain: &mut String, out: &mut Vec<String>) {
 /// console marks it. An error's own text says it is one; the `! ` of the error output is enough.
 fn record(kind: &str, text: &str, out: &mut Vec<String>) {
     let mark = match kind.to_ascii_lowercase().as_str() {
-        "warning" => "警告: ",
-        "verbose" => "詳細: ",
-        "debug" => "デバッグ: ",
-        _ => "",
+        "warning" => msg::note(msg::N_PS_WARNING, &[]),
+        "verbose" => msg::note(msg::N_PS_VERBOSE, &[]),
+        "debug" => msg::note(msg::N_PS_DEBUG, &[]),
+        _ => String::new(),
     };
     let text = unescape(&entities(text));
     let mut lines = text.split('\n').map(|l| l.trim_end_matches('\r')).filter(|l| !l.trim().is_empty());

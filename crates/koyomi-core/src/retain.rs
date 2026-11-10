@@ -18,6 +18,7 @@ use chrono::{Datelike, Days, Months, NaiveDate};
 use ito_zip::{OnExisting, Source};
 
 use crate::history::Day;
+use crate::msg;
 use crate::run::Run;
 
 /// What one sweep removed, and what it could not.
@@ -230,7 +231,7 @@ fn files(dir: &Path, prefix: &str, out: &mut Vec<Source>) -> Result<(), String> 
     for e in entries {
         let path = e.path();
         let Some(name) = e.file_name().to_str().map(|n| format!("{prefix}/{n}")) else {
-            return Err(format!("{}: 名前が UTF-8 でないので zip に入れられない", path.display()));
+            return Err(msg::line(msg::RETAIN_NAME_NOT_UTF8, &[&path.display().to_string()]));
         };
         let meta = std::fs::metadata(&path).map_err(|e| at(&path, e))?;
         if meta.is_dir() {
@@ -299,7 +300,7 @@ pub fn archived_day(state_dir: &Path, day: NaiveDate) -> Result<Option<Day>, Str
 
 /// A job's whole log read back from `archive/`.
 pub fn archived_log(state_dir: &Path, run: &str, job: &str) -> Result<Vec<u8>, String> {
-    let (day, name) = log_entry(run, job).ok_or_else(|| format!("実行の ID でない: {run}"))?;
+    let (day, name) = log_entry(run, job).ok_or_else(|| msg::line(msg::RETAIN_RUN_ID_BAD, &[run]))?;
     let zip = archive_dir(state_dir).join(day.format("%Y-%m.zip").to_string());
     ito_zip::read(&zip, &name).map_err(|e| e.to_string())
 }
