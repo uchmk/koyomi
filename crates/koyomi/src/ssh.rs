@@ -23,17 +23,19 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use koyomi_core::chore::{self, Pass, Sftp, GROUP_MAX, NO_EXIT};
 use koyomi_core::config::Member;
-use koyomi_core::msg::{self, line};
+use koyomi_core::msg::{self, line, note};
 
 /// The longest piece of output kept waiting for its line's end: past it, it is
 /// passed on as a line of its own.
 const LINE_MAX: usize = 64 * 1024;
 
-/// Why there is no exit code after a stop: the engine shows it after 強制終了 or
-/// 打ち切り, so it says what was done on the far side. ito-sftp does not say
+/// Why there is no exit code after a stop: the engine shows it after the stop's
+/// own words, so it says what was done on the far side. ito-sftp does not say
 /// whether the command had been sent yet (a stop while connecting sends none),
 /// so this holds either way.
-const STOPPED: &str = "止めた（コマンドが始まっていれば TERM で止まるよう頼んだ）";
+fn stopped() -> String {
+    note(msg::N_STOPPED_SSH, &[])
+}
 
 /// How many failed PCs of a group the job's reason names; the rest are counted.
 const SHOWN: usize = 3;
@@ -62,7 +64,7 @@ pub(crate) fn run(exec: impl FnOnce(&AtomicBool) -> Result<i32, String>) -> i32 
         Ok(code) => code,
         Err(reason) => {
             // To stdout, so the job's log keeps it in order with the rest.
-            crate::say(&if msg::is_coded(&reason) { reason.clone() } else { format!("! {reason}") }, false);
+            crate::say_bad(&reason);
             if let Some(path) = std::env::var_os("KOYOMI_REASON") {
                 let _ = std::fs::write(path, &reason);
             }
@@ -75,23 +77,26 @@ pub(crate) fn run(exec: impl FnOnce(&AtomicBool) -> Result<i32, String>) -> i32 
 /// ends without an exit code, at any step (connecting too), and a far command
 /// that has started is asked to stop too.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
-    let on = var("ON").ok_or("KOYOMI_SSH_ON がない（koyomi ssh run は kind = \"ssh\" のジョブが動かす）")?;
+    let on = var("ON").ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_SSH_ON", "kind = \"ssh\"", "ssh"]))?;
     // As it is written: not trimmed.
-    let command = std::env::var("KOYOMI_SSH_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or("command がない")?;
+    let command =
+        std::env::var("KOYOMI_SSH_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or_else(|| line(msg::CHORE_COMMAND_EMPTY, &[]))?;
     let host_key = var("HOST_KEY");
     let (group_name, max, pass) = fan_of("KOYOMI_SSH_", &on)?;
     if let Some(name) = group_name {
         let members = members(name, "ssh")?;
         return group(name, &members, max, pass, stop, &say, |m, out| {
-            let far = chore::ssh(&m.on).ok_or_else(|| format!("ssh:// の PC ではない: {}", m.on))??;
-            let host_key = m.host_key.clone().or_else(|| host_key.clone()).ok_or(
-                "host_key がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く。koyomi sftp hostkey <ホスト> で調べる）",
-            )?;
+            let far = chore::ssh(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&m.on, "ssh://"]))??;
+            let host_key = m
+                .host_key
+                .clone()
+                .or_else(|| host_key.clone())
+                .ok_or_else(|| line(msg::GROUP_MEMBER_PIN_MISSING, &[&m.on, "host_key", "koyomi sftp hostkey <host>"]))?;
             one(&far, host_key, &command, stop, out)
         });
     }
-    let far = chore::ssh(&on).ok_or_else(|| format!("on は ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く: {on}"))??;
-    let host_key = host_key.ok_or("host_key がない（koyomi sftp hostkey <ホスト> で調べる）")?;
+    let far = chore::ssh(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", &on]))??;
+    let host_key = host_key.ok_or_else(|| line(msg::CHORE_HOST_KEY_MISSING, &["ssh://"]))?;
     // A coded reason already names the host and keeps its ID at the head.
     one(&far, host_key, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })
 }
@@ -117,7 +122,7 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
         }
     }
     let exit = result.map_err(|e| match e {
-        ito_sftp::Error::Stopped => STOPPED.to_owned(),
+        ito_sftp::Error::Stopped => stopped(),
         ito_sftp::Error::Connect(m) => line(msg::SSH_CONNECT, &[&far.host, &connect_text(&m)]),
         ito_sftp::Error::AuthRefused => line(msg::SSH_AUTH_REFUSED, &[&far.host]),
         ito_sftp::Error::HostKeyMismatch { expected, actual } => line(msg::SSH_HOST_KEY_MISMATCH, &[&far.host, &expected, &actual]),
@@ -127,25 +132,25 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
     })?;
     if !exit.env_refused.is_empty() {
         let names = exit.env_refused.join(", ");
-        out(&format!("{}: env を受け付けなかった: {names}（相手の sshd_config の AcceptEnv）", far.host), true);
+        out(&line(msg::SSH_ENV_REFUSED, &[&far.host, &names]), true);
     }
     outcome(exit.status, exit.signal)
 }
 
-/// A connect failure in a few plain Japanese words, for the hole of E2150. ito-sftp passes the library's
+/// A connect failure in a few plain words, for the hole of E2150. ito-sftp passes the library's
 /// Debug text for a refused connection (`Io(Os { code: 10061, kind: ConnectionRefused, .. })`); that is not shown.
 fn connect_text(m: &str) -> String {
     let has = |k: &str| m.contains(k);
     if has("ConnectionRefused") || has("10061") || has("os error 111") {
-        "接続を断られた".to_owned()
+        note(msg::N_NET_REFUSED, &[])
     } else if has("TimedOut") || has("10060") {
-        "時間切れ".to_owned()
+        note(msg::N_NET_NO_ANSWER, &[])
     } else if has("Unreachable") || has("10051") || has("10065") {
-        "ネットワークに届かない".to_owned()
+        note(msg::N_NET_NO_ROUTE, &[])
     } else if has("NotFound") || has("failed to lookup") || has("11001") {
-        "ホスト名が引けない".to_owned()
+        note(msg::N_NET_HOST_NOT_FOUND, &[])
     } else if has("Io(") || has("Os {") || has("kind:") {
-        "接続できなかった".to_owned()
+        note(msg::N_NET_FAILED, &[])
     } else {
         m.to_owned()
     }
@@ -158,7 +163,7 @@ pub(crate) fn fan_of<'a>(prefix: &str, on: &'a str) -> Result<(Option<&'a str>, 
     let pass = crate::sftp::env_var(prefix, "PASS");
     let Some(name) = chore::group(on) else {
         return match max.is_some() || pass.is_some() {
-            true => Err(format!("max・pass は on が PC の組（group:名前）のときだけ使う: {on}")),
+            true => Err(line(msg::CHORE_GROUP_ONLY, &[if max.is_some() { "max" } else { "pass" }])),
             false => Ok((None, 1, Pass::All)),
         };
     };
@@ -168,11 +173,11 @@ pub(crate) fn fan_of<'a>(prefix: &str, on: &'a str) -> Result<(Option<&'a str>, 
             .parse::<usize>()
             .ok()
             .filter(|n| (1..=GROUP_MAX).contains(n))
-            .ok_or_else(|| format!("max は 1 から {GROUP_MAX} までの数で書く: {m}"))?,
+            .ok_or_else(|| line(msg::CHORE_MAX_RANGE, &[&GROUP_MAX.to_string()]))?,
     };
     let pass = match pass {
         None => Pass::All,
-        Some(p) => Pass::of(&p).ok_or_else(|| format!("pass は \"all\" か \"any\": {p}"))?,
+        Some(p) => Pass::of(&p).ok_or_else(|| line(msg::DEF_CHOICE_BAD, &["pass", "\"all\", \"any\""]))?,
     };
     Ok((Some(name), max, pass))
 }
@@ -201,10 +206,10 @@ pub(crate) fn group(
     let labels = labels(members);
     let at_once = max.clamp(1, members.len().max(1));
     let ends = match pass {
-        Pass::All => "いちばん悪い PC",
-        Pass::Any => "いちばん良い PC",
+        Pass::All => note(msg::N_GROUP_WORST, &[]),
+        Pass::Any => note(msg::N_GROUP_BEST, &[]),
     };
-    log(&format!("組 {name} の {} 台で動かす（同時に {at_once} 台まで。ジョブは{ends} に合わせて終わる）", members.len()), false);
+    log(&note(msg::N_GROUP_START, &[name, &members.len().to_string(), &at_once.to_string(), &ends]), false);
     let next = AtomicUsize::new(0);
     let mut results: Vec<Option<Result<i32, String>>> = vec![None; members.len()];
     std::thread::scope(|s| {
@@ -216,11 +221,11 @@ pub(crate) fn group(
                         let i = next.fetch_add(1, Ordering::SeqCst);
                         let (Some(m), Some(tag)) = (members.get(i), labels.get(i)) else { break };
                         let r = match stop.load(Ordering::SeqCst) {
-                            true => Err("止めたので始めなかった".to_owned()),
+                            true => Err(note(msg::N_GROUP_NOT_STARTED, &[])),
                             false => job(m, &|line: &str, stderr: bool| log(&format!("[{tag}] {line}"), stderr)),
                         };
                         match &r {
-                            Ok(code) => log(&format!("[{tag}] 終了コード {code}"), false),
+                            Ok(code) => log(&format!("[{tag}] {}", note(msg::N_RUN_EXIT, &[&code.to_string()])), false),
                             Err(e) => log(&format!("[{tag}] {e}"), true),
                         }
                         done.push((i, r));
@@ -236,7 +241,7 @@ pub(crate) fn group(
             }
         }
     });
-    let results = results.into_iter().map(|r| r.unwrap_or_else(|| Err("koyomi の中で落ちた".into()))).collect();
+    let results = results.into_iter().map(|r| r.unwrap_or_else(|| Err(line(msg::GROUP_WORKER_LOST, &[])))).collect();
     verdict(&labels, results, pass)
 }
 
@@ -280,12 +285,11 @@ fn verdict(labels: &[String], results: Vec<Result<i32, String>>, pass: Pass) -> 
     }
     let failed: Vec<String> =
         labels.iter().zip(&results).filter_map(|(l, r)| r.as_ref().err().map(|e| format!("{l}: {}", msg::uncoded(e)))).collect();
-    let mut why = format!("{} 台のうち {} 台が終了コードなしで終わった: ", results.len(), failed.len());
-    why += &failed.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(" / ");
+    let mut who = failed.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(" / ");
     if failed.len() > SHOWN {
-        why += &format!(" ほか {} 台", failed.len() - SHOWN);
+        who += &format!(" {}", note(msg::N_GROUP_MORE, &[&(failed.len() - SHOWN).to_string()]));
     }
-    Err(why)
+    Err(line(msg::GROUP_NO_EXIT, &[&results.len().to_string(), &failed.len().to_string(), &who]))
 }
 
 /// The exit code to end with, or why the command has none.
@@ -293,8 +297,8 @@ fn outcome(status: Option<u32>, signal: Option<String>) -> Result<i32, String> {
     match (status, signal) {
         // A Windows code such as 0xC0000005 goes through as the same bits.
         (Some(code), _) => Ok(code as i32),
-        (None, Some(sig)) => Err(format!("相手のコマンドがシグナル {sig} で終わった")),
-        (None, None) => Err("終了コードを受け取れなかった".into()),
+        (None, Some(sig)) => Err(line(msg::FAR_SIGNAL, &[&sig])),
+        (None, None) => Err(line(msg::FAR_NO_EXIT_CODE, &[])),
     }
 }
 
@@ -378,9 +382,10 @@ mod tests {
         assert_eq!(verdict(&l, vec![ok(0xC000_0005_u32 as i32), ok(1)], Pass::All), Ok(0xC000_0005_u32 as i32));
         assert_eq!(verdict(&l, vec![ok(3), no("x")], Pass::Any), Ok(3));
         let all = verdict(&l, vec![ok(0), no("つながらない"), ok(0)], Pass::All).unwrap_err();
-        assert_eq!(all, "3 台のうち 1 台が終了コードなしで終わった: b: つながらない");
+        assert_eq!(all, line(msg::GROUP_NO_EXIT, &["3", "1", "b: つながらない"]));
         let any = verdict(&l, ["1", "2", "3", "4", "5"].map(no).to_vec(), Pass::Any).unwrap_err();
-        assert_eq!(any, "5 台のうち 5 台が終了コードなしで終わった: a: 1 / b: 2 / c: 3 ほか 2 台");
+        let more = note(msg::N_GROUP_MORE, &["2"]);
+        assert_eq!(any, line(msg::GROUP_NO_EXIT, &["5", "5", &format!("a: 1 / b: 2 / c: 3 {more}")]));
     }
 
     #[test]
@@ -406,14 +411,15 @@ mod tests {
         assert_eq!(seen, m.iter().map(|p| p.on.clone()).collect::<Vec<_>>());
         {
             let lines = lines.lock().unwrap();
-            assert_eq!(lines[0], "組 web の 7 台で動かす（同時に 3 台まで。ジョブはいちばん悪い PC に合わせて終わる）");
-            assert!(lines.contains(&"[h2] x".to_owned()) && lines.contains(&"[h4] 終了コード 1".to_owned()), "{lines:?}");
+            assert_eq!(lines[0], note(msg::N_GROUP_START, &["web", "7", "3", &note(msg::N_GROUP_WORST, &[])]));
+            let exit1 = format!("[h4] {}", note(msg::N_RUN_EXIT, &["1"]));
+            assert!(lines.contains(&"[h2] x".to_owned()) && lines.contains(&exit1), "{lines:?}");
         }
         // Stopped: none starts.
         lines.lock().unwrap().clear();
         let r = group("web", &m, 2, Pass::Any, &AtomicBool::new(true), &log, |_, _| Ok(0));
-        assert!(r.unwrap_err().starts_with("7 台のうち 7 台が"), "stopped");
-        assert!(lines.lock().unwrap().contains(&"! [h6] 止めたので始めなかった".to_owned()));
+        assert!(msg::GROUP_NO_EXIT.is_in(&r.unwrap_err()), "stopped");
+        assert!(lines.lock().unwrap().contains(&format!("! [h6] {}", note(msg::N_GROUP_NOT_STARTED, &[]))));
     }
 
     #[test]
@@ -424,20 +430,23 @@ mod tests {
         std::env::set_var(format!("{p}MAX"), "4");
         std::env::set_var(format!("{p}PASS"), "any");
         assert_eq!(fan_of(p, " Group:web "), Ok((Some("web"), 4, Pass::Any)));
-        assert!(fan_of(p, "ssh://h").unwrap_err().contains("group:名前"));
+        assert_eq!(fan_of(p, "ssh://h").unwrap_err(), line(msg::CHORE_GROUP_ONLY, &["max"]));
         std::env::set_var(format!("{p}MAX"), "65");
-        assert!(fan_of(p, "group:web").unwrap_err().contains("1 から 64"));
+        assert_eq!(fan_of(p, "group:web").unwrap_err(), line(msg::CHORE_MAX_RANGE, &[&GROUP_MAX.to_string()]));
+        std::env::set_var(format!("{p}MAX"), "2");
+        std::env::set_var(format!("{p}PASS"), "most");
+        assert_eq!(fan_of(p, "group:web").unwrap_err(), line(msg::DEF_CHOICE_BAD, &["pass", "\"all\", \"any\""]));
         std::env::remove_var(format!("{p}MAX"));
         std::env::remove_var(format!("{p}PASS"));
     }
 
     #[test]
-    fn a_refused_connection_is_said_in_plain_japanese() {
+    fn a_refused_connection_is_said_in_plain_words() {
         let debug = "Io(Os { code: 10061, kind: ConnectionRefused, message: \"x\" })";
         let t = connect_text(debug);
-        assert!(t.contains("断られた") && !t.contains("Os {") && !t.contains("Io("), "{t}");
-        assert_eq!(connect_text("時間切れ"), "時間切れ");
-        assert!(connect_text("Io(Weird { kind: Other })").starts_with("接続できなかった"));
+        assert_eq!(t, note(msg::N_NET_REFUSED, &[]));
+        assert_eq!(connect_text("something odd"), "something odd");
+        assert_eq!(connect_text("Io(Weird { kind: Other })"), note(msg::N_NET_FAILED, &[]));
     }
 
     #[test]
@@ -445,7 +454,7 @@ mod tests {
         assert_eq!(outcome(Some(0), None), Ok(0));
         assert_eq!(outcome(Some(3), Some("TERM".into())), Ok(3));
         assert_eq!(outcome(Some(0xC000_0005), None), Ok(0xC000_0005_u32 as i32));
-        assert!(outcome(None, Some("KILL".into())).unwrap_err().contains("シグナル KILL"));
-        assert!(outcome(None, None).unwrap_err().contains("終了コード"));
+        assert_eq!(outcome(None, Some("KILL".into())).unwrap_err(), line(msg::FAR_SIGNAL, &["KILL"]));
+        assert_eq!(outcome(None, None).unwrap_err(), line(msg::FAR_NO_EXIT_CODE, &[]));
     }
 }

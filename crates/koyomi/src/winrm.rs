@@ -15,7 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use koyomi_core::chore::{self, Sftp, WinrmAuth, WINRM_PORT};
-use koyomi_core::msg::{self, line};
+use koyomi_core::msg::{self, line, note};
 
 use crate::ssh::{cut, say, text};
 
@@ -40,7 +40,7 @@ fn cert(at: &str) -> i32 {
     let (host, port) = match place(at) {
         Ok(x) => x,
         Err(e) => {
-            crate::say(&format!("koyomi: {e}"), true);
+            crate::say(&e, true);
             return 2;
         }
     };
@@ -68,7 +68,7 @@ fn probe(place: &str, host: &str, port: u16) -> Result<(), String> {
     use std::net::ToSocketAddrs;
     let refused = |detail: &str| line(msg::WINRM_CONNECT, &[place, detail]);
     let addrs: Vec<_> =
-        (host, port).to_socket_addrs().map_err(|e| refused(&format!("ホストが見つからない: {}", plain(&e.to_string()))))?.collect();
+        (host, port).to_socket_addrs().map_err(|e| refused(&note(msg::N_NET_HOST_NOT_FOUND_WITH, &[&plain(&e.to_string())])))?.collect();
     let mut last = None;
     for a in &addrs {
         match std::net::TcpStream::connect_timeout(a, Duration::from_secs(5)) {
@@ -77,8 +77,8 @@ fn probe(place: &str, host: &str, port: u16) -> Result<(), String> {
         }
     }
     Err(match last {
-        None => refused("ホストにアドレスがない"),
-        Some(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => refused("相手がこのポートで待ち受けていない"),
+        None => refused(&note(msg::N_NET_NO_ADDRESS, &[])),
+        Some(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => refused(&note(msg::N_NET_REFUSED, &[])),
         Some(e) if e.kind() == std::io::ErrorKind::TimedOut => line(msg::LINK_TIMED_OUT, &[place]),
         Some(e) => refused(&plain(&e.to_string())),
     })
@@ -93,13 +93,13 @@ fn plain(text: &str) -> String {
     }
     let code = one.split("code:").nth(1).map(|r| r.trim_start().chars().take_while(char::is_ascii_digit).collect::<String>());
     match code.as_deref() {
-        Some("10061" | "111") => "相手がこのポートで待ち受けていない".to_owned(),
-        Some("10060" | "110") => "相手から答えがない".to_owned(),
-        Some("10054" | "10053" | "104") => "接続が相手に切られた".to_owned(),
-        Some("10051" | "10065" | "101" | "113") => "相手までの道がない".to_owned(),
-        Some("11001" | "11004") => "ホストが見つからない".to_owned(),
-        Some(c) if !c.is_empty() => format!("OS のエラー {c}"),
-        _ => "接続で失敗した".to_owned(),
+        Some("10061" | "111") => note(msg::N_NET_REFUSED, &[]),
+        Some("10060" | "110") => note(msg::N_NET_NO_ANSWER, &[]),
+        Some("10054" | "10053" | "104") => note(msg::N_NET_CUT, &[]),
+        Some("10051" | "10065" | "101" | "113") => note(msg::N_NET_NO_ROUTE, &[]),
+        Some("11001" | "11004") => note(msg::N_NET_HOST_NOT_FOUND, &[]),
+        Some(c) if !c.is_empty() => note(msg::N_NET_OS_ERROR, &[c]),
+        _ => note(msg::N_NET_FAILED, &[]),
     }
 }
 
@@ -110,7 +110,7 @@ fn place(at: &str) -> Result<(String, u16), String> {
     let rest = t.get(..8).filter(|p| p.eq_ignore_ascii_case("winrm://")).map_or(t, |_| &t[8..]);
     match chore::sftp(&format!("sftp://{rest}")) {
         Some(Ok(far)) if !rest.is_empty() => Ok((far.host, far.port.unwrap_or(WINRM_PORT))),
-        _ => Err(format!("ホストを読めない: {at}（<ホスト>[:<ポート>] か winrm://ユーザー@ホスト[:ポート]）")),
+        _ => Err(line(msg::HOST_UNREADABLE, &[at, &note(msg::N_HOST_SHAPE_WINRM, &[])])),
     }
 }
 
@@ -118,30 +118,32 @@ fn place(at: &str) -> Result<(String, u16), String> {
 /// without an exit code, at any step, and a far command that has started is asked
 /// to end.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
-    let on = var("ON").ok_or("KOYOMI_WINRM_ON がない（koyomi winrm run は kind = \"winrm\" のジョブが動かす）")?;
+    let on = var("ON").ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_WINRM_ON", "kind = \"winrm\"", "winrm"]))?;
     // As it is written: not trimmed.
-    let command = std::env::var("KOYOMI_WINRM_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or("command がない")?;
+    let command =
+        std::env::var("KOYOMI_WINRM_COMMAND").ok().filter(|c| !c.trim().is_empty()).ok_or_else(|| line(msg::CHORE_COMMAND_EMPTY, &[]))?;
     let cert = var("CERT");
     let (group_name, max, pass) = crate::ssh::fan_of("KOYOMI_WINRM_", &on)?;
     // Read once, before a group's PCs start.
-    let password = crate::sftp::password(var("PASSWORD").ok_or("password がない（secret:<名前> で書く）")?)?;
+    let password = crate::sftp::password(var("PASSWORD").ok_or_else(|| line(msg::CHORE_PASSWORD_MISSING, &["winrm://"]))?)?;
     let auth = match var("AUTH") {
         None => WinrmAuth::Basic,
-        Some(a) => WinrmAuth::of(&a).ok_or_else(|| format!("auth は \"basic\" か \"ntlm\": {a}"))?,
+        Some(a) => WinrmAuth::of(&a).ok_or_else(|| line(msg::DEF_CHOICE_BAD, &["auth", "\"basic\", \"ntlm\""]))?,
     };
     if let Some(name) = group_name {
         let members = crate::ssh::members(name, "winrm")?;
         return crate::ssh::group(name, &members, max, pass, stop, &say, |m, out| {
-            let far = chore::winrm(&m.on).ok_or_else(|| format!("winrm:// の PC ではない: {}", m.on))??;
-            let cert =
-                m.cert.as_deref().or(cert.as_deref()).ok_or(
-                    "cert がない（koyomi.toml の [groups] でこの PC に書くか、ジョブに書く。koyomi winrm cert <ホスト> で調べる）",
-                )?;
+            let far = chore::winrm(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&m.on, "winrm://"]))??;
+            let cert = m
+                .cert
+                .as_deref()
+                .or(cert.as_deref())
+                .ok_or_else(|| line(msg::GROUP_MEMBER_PIN_MISSING, &[&m.on, "cert", "koyomi winrm cert <host>"]))?;
             one(&far, cert, &password, auth, &command, stop, out)
         });
     }
-    let far = chore::winrm(&on).ok_or_else(|| format!("on は winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く: {on}"))??;
-    let cert = cert.ok_or("cert がない（koyomi winrm cert <ホスト> で調べる）")?;
+    let far = chore::winrm(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", &on]))??;
+    let cert = cert.ok_or_else(|| line(msg::CHORE_WINRM_CERT_MISSING, &[]))?;
     // A coded reason already names the host and keeps its ID at the head.
     one(&far, &cert, &password, auth, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })
 }
@@ -157,8 +159,8 @@ fn one(
     stop: &AtomicBool,
     out: &dyn Fn(&str, bool),
 ) -> Result<i32, String> {
-    let user = far.user.clone().ok_or("winrm:// にはユーザーが要る")?;
-    let pin = ito_winrm::fingerprint::parse(cert).ok_or_else(|| format!("cert が読めない（AB:CD:… の形）: {cert}"))?;
+    let user = far.user.clone().ok_or_else(|| line(msg::CHORE_WINRM_USER, &[&far.host]))?;
+    let pin = ito_winrm::fingerprint::parse(cert).ok_or_else(|| line(msg::CHORE_CERT_BAD, &[cert]))?;
     let mut target = ito_winrm::Target::https(&far.host, &user, password, Some(pin)).with_auth(match auth {
         WinrmAuth::Basic => ito_winrm::Auth::Basic,
         WinrmAuth::Ntlm => ito_winrm::Auth::Ntlm,
@@ -182,14 +184,14 @@ fn one(
     }
     let exit = result.map_err(|e| reason(&e, &far.host, auth))?;
     // A Windows code such as 0xC0000005 goes through as the same bits.
-    exit.status.map(|code| code as i32).ok_or_else(|| "終了コードを受け取れなかった".to_owned())
+    exit.status.map(|code| code as i32).ok_or_else(|| line(msg::FAR_NO_EXIT_CODE, &[]))
 }
 
 /// Why it failed, as the job's ✕ reason: a coded line naming `host` (`host:port` for `cert`).
 fn reason(e: &ito_winrm::Error, host: &str, auth: WinrmAuth) -> String {
     use ito_winrm::Error as E;
     match e {
-        E::Stopped => "止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）".into(),
+        E::Stopped => note(msg::N_STOPPED_WINRM, &[]),
         E::AuthRefused if auth == WinrmAuth::Ntlm => line(msg::WINRM_NTLM_REFUSED, &[host]),
         E::AuthRefused => line(msg::WINRM_BASIC_REFUSED, &[host]),
         E::Fingerprint(got) => line(msg::WINRM_CERT_MISMATCH, &[host, got]),
@@ -213,7 +215,7 @@ mod tests {
         assert_eq!(place("WinRM://CORP\\ops@10.0.0.5:5986"), Ok(("10.0.0.5".into(), 5986)));
         assert_eq!(place("winrm://app01"), Ok(("app01".into(), 5986)));
         for bad in ["", "winrm://", "app01:x", "a b", "-h"] {
-            assert!(place(bad).unwrap_err().contains("ホストを読めない"), "{bad}");
+            assert!(msg::HOST_UNREADABLE.is_in(&place(bad).unwrap_err()), "{bad}");
         }
     }
 
@@ -229,7 +231,7 @@ mod tests {
         assert!(msg::WINRM_CERT_MISMATCH.is_in(&f) && f.contains("AB:CD"), "{f}");
         let c = basic(&E::Connect("refused".into()));
         assert!(msg::WINRM_CONNECT.is_in(&c) && c.contains("5986") && c.contains("refused"), "{c}");
-        assert!(basic(&E::Stopped).starts_with("止めた"));
+        assert_eq!(basic(&E::Stopped), note(msg::N_STOPPED_WINRM, &[]));
         assert_eq!(basic(&E::Other("x".into())), "x");
         assert!(msg::LINK_TIMED_OUT.is_in(&basic(&E::Timeout)));
         assert!(msg::LINK_LOST.is_in(&basic(&E::Lost("x".into()))));
@@ -240,6 +242,6 @@ mod tests {
             let r = basic(&e);
             assert!(!r.contains("HandlerError") && !r.contains("Os {") && !r.contains('\n'), "{r}");
         }
-        assert!(basic(&E::Connect(dump.into())).contains("待ち受けていない"));
+        assert!(basic(&E::Connect(dump.into())).contains(&note(msg::N_NET_REFUSED, &[])));
     }
 }

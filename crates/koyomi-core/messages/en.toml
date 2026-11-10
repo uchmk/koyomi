@@ -2088,6 +2088,468 @@ text = "The job {0} has already ended, so it cannot be skipped."
 cause = "Only a job that has not started can be skipped."
 action = "Give a job that has not started."
 
+[E3210]
+when = "A job's child program (such as koyomi ssh run) is started without the environment variable the engine sets"
+text = "The environment variable {0} is not set."
+cause = "The engine sets {0} when the program runs as a {1} job."
+action = "Run koyomi {2} run from a {1} job."
+
+[E3211]
+when = "A PC of a group is not given as an ssh or winrm address"
+text = "The PC {0} of the group is not a {1} address."
+cause = "The address of the PC in [groups] of koyomi.toml does not start with {1}."
+action = "Give the PCs in [groups] addresses that start with {1}."
+
+[E3212]
+when = "Neither the PC of the group nor the job has a host_key (ssh) or a cert (winrm)"
+text = "{1} is not given for the PC {0} of the group."
+cause = "{1} is given neither to the PC in [groups] of koyomi.toml nor to the job."
+action = "Give it to this PC in [groups] of koyomi.toml, or to the job. {2} shows the value."
+
+[W3213]
+when = "The connection did not accept the environment variables named in the job's env"
+text = "{0} did not accept the environment variables {1}."
+cause = "The sshd of the connection does not allow it to receive these variables."
+action = "Check AcceptEnv in sshd_config of the connection."
+
+[E3214]
+when = "The work running a PC of the group ended without a result"
+text = "An error occurred inside koyomi, and the result of this PC could not be obtained."
+cause = "The work for the PC ended abnormally before it returned a result."
+action = "Check the job's log."
+
+[E3215]
+when = "The group's job cannot settle on an exit code because PCs ended without one"
+text = "{1} of {0} PCs ended without an exit code. ({2})"
+cause = "With pass = \"all\" some PC, and with pass = \"any\" every PC, ended without an exit code."
+action = "Check the reason for each PC in the parentheses."
+
+[E3216]
+when = "The command on the connection ended on a signal"
+text = "The command on the connection ended on the signal {0}."
+cause = "The command ended on a signal without returning an exit code."
+action = "Check on the connection why the command received the signal."
+
+[E3217]
+when = "The exit code of the command on the connection could not be received"
+text = "The exit code of the command on the connection could not be received."
+cause = "The connection returned neither an exit code nor a signal."
+action = "Check on the connection whether the command has ended."
+
+[E3218]
+when = "The host given to koyomi sftp hostkey or koyomi winrm cert cannot be read"
+text = "The host {0} cannot be read."
+cause = "The host is not in the form {1}."
+action = "Give it as {1}."
+
+[E3219]
+when = "The into of a send, or the from of a fetch, is not an sftp:// address"
+text = "The {1} of this {0} job is not an sftp:// address."
+cause = "{1} is not an address that starts with sftp://."
+action = "Give {1} as sftp://[user@]host[:port]/path."
+
+[E3220]
+when = "The user to connect as cannot be settled"
+text = "The user to connect as cannot be determined."
+cause = "The address has no user, and the user name of this PC (the environment variable USERNAME or USER) cannot be obtained."
+action = "Give the user as {0}://user@host."
+
+[E3221]
+when = "Neither key nor password is given, and the home folder cannot be found"
+text = "The home folder cannot be determined."
+cause = "Neither key nor password is given, so the default key was to be looked for in .ssh of the home folder, but the home folder cannot be obtained."
+action = "Give key or password."
+
+[E3222]
+when = "Neither key nor password is given, and there is no default key"
+text = "The default key {0} was not found."
+cause = "Neither key nor password is given, and .ssh of the home folder has neither id_ed25519 nor id_ecdsa."
+action = "Give key or password."
+
+[E3223]
+when = "The secret given is not in the credential store"
+text = "The secret {0} does not exist."
+cause = "{0} is not saved in the credential store."
+action = "Save it with koyomi secret set {0}."
+
+[E3224]
+when = "The secret given cannot be read from the credential store"
+text = "The secret {0} cannot be read. ({1})"
+cause = "Reading from the credential store failed."
+action = "Check the state of the credential store."
+
+[E3225]
+when = "The secret holding the password of run_as is not in the credential store"
+text = "The secret {1} that holds the password of the run-as user {0} does not exist."
+cause = "The secret {1} named in run_as is not saved in the credential store."
+action = "Save it with koyomi secret set {1}."
+
+[E3226]
+when = "A mail job runs, and koyomi.toml has no place to send mail through"
+text = "koyomi.toml has no [[notify.mails]]."
+cause = "No place to send mail through is set."
+action = "Add a mail place on the notification page of the settings."
+
+[E3227]
+when = "The name in the via of a mail job is not the name of any place in koyomi.toml"
+text = "No [[notify.mails]] has name = \"{0}\". ({1})"
+cause = "The place named in via is not in koyomi.toml."
+action = "Change via to the name of a place that exists."
+
+[E3228]
+when = "The host of a mail place is not given"
+text = "The host of [[notify.mails]] is not given."
+cause = "No SMTP server is given."
+action = "Give the SMTP server in host."
+
+[E3229]
+when = "The port of a mail place is not given"
+text = "The port of [[notify.mails]] {0} is not given."
+cause = "The port of the SMTP server is not given."
+action = "Give 465 or 587 in port."
+
+[E3230]
+when = "The from of a mail place cannot be read as an address"
+text = "The from of [[notify.mails]] {0} is not an address. ({1})"
+cause = "The value of from is not in the form of an address."
+action = "Give an address in from."
+
+[E3231]
+when = "A mail place has a login, but its password was not read from the credential store"
+text = "The password of [[notify.mails]] {0} cannot be read from the credential store. ({1})"
+cause = "The secret that password points to was not read from the credential store."
+action = "Enter the password again on the notification page of the settings."
+
+[E3232]
+when = "Nothing matches an entry of the files of a mail job"
+text = "The file to attach, {0}, is not found."
+cause = "No file matches the path or pattern given in files."
+action = "Check what is given in files."
+
+[E3233]
+when = "More files are to be attached than the limit"
+text = "More than {0} files are to be attached."
+cause = "At most {0} files can be attached. Those that * or ? in files adds are counted too."
+action = "Give fewer files in files."
+
+[E3234]
+when = "The attached files together are over the limit"
+text = "The files to attach are too big. ({0} MB in all; at most {1} MB)"
+cause = "Many servers take 25 MB at most for the whole mail. Attached files grow to about 1.3 times their size in the mail."
+action = "Attach fewer files, or smaller ones."
+
+[E3235]
+when = "A file to attach cannot be read"
+text = "The file to attach, {0}, cannot be read. ({1})"
+cause = "An error occurred while reading the file."
+action = "Check the permissions of the file, and that no other program is using it."
+
+[E3236]
+when = "The SMTP server did not take the mail"
+text = "The mail could not be sent to {0}. ({1})"
+cause = "The SMTP server could not be reached, or it did not take the mail."
+action = "Check the server, the port and the login."
+
+[E3237]
+when = "koyomi check finds no place for a mail job to send through"
+text = "The place the job {0} sends mail through cannot be decided. ({1})"
+cause = "No [[notify.mails]] of koyomi.toml is a place this job can use."
+action = "Check [[notify.mails]] of koyomi.toml and the via of the job."
+
+[E3238]
+when = "A sql job cannot connect to the database (not necessarily over the certificate)"
+text = "Cannot connect to {0}. ({1})"
+cause = "The connection to the database failed."
+action = "Check the host, the port, the user and the password."
+
+[E3239]
+when = "A sql job cannot connect to SQL Server, and tls is verify"
+text = "Cannot connect to {0}. ({1})"
+cause = "The connection to the database failed. With tls verify, the certificate of the server is verified."
+action = "If the server uses a certificate it made itself, give tls = \"trust\". Otherwise check the host, the port, the user and the password."
+
+[E3240]
+when = "A sql job cannot connect to PostgreSQL, and tls is verify"
+text = "Cannot connect to {0}. ({1})"
+cause = "The connection to the database failed. With tls verify, the certificate of the server is verified."
+action = "If the server uses a certificate it made itself, give tls = \"trust\"; if it has no TLS, give tls = \"off\". Otherwise check the host, the port, the user and the password."
+
+[E3241]
+when = "The database refused to run the SQL"
+text = "The database of {0} refused the SQL. ({1})"
+cause = "The database returned an error while running the SQL."
+action = "Read the message of the database, and correct the SQL."
+
+[E3242]
+when = "The sql job asks for something that cannot be done on this PC"
+text = "{0} cannot be run on this PC. ({1})"
+cause = "This PC cannot use the way of connecting to the database that is given."
+action = "Run the job on a PC where it can be done."
+
+[E3243]
+when = "The result of the SQL cannot be written to the CSV file"
+text = "The file for the result of {0} cannot be written. ({1})"
+cause = "An error occurred while writing the file of the result."
+action = "Check the permissions and the free space of the folder of out."
+
+[E3244]
+when = "The file named by the db of sqlite:// is not there"
+text = "The database file {0} does not exist."
+cause = "SQLite makes an empty database when the file is not there. So that a path written wrong does not get one, only a file that exists is used."
+action = "Give a database file that exists in db."
+
+[E3245]
+when = "The SQL file named in file cannot be read"
+text = "The SQL file {0} cannot be read. ({1})"
+cause = "An error occurred while reading the file."
+action = "Check the path given in file, and the permissions of the file."
+
+[E3246]
+when = "A sql job has neither sql nor file"
+text = "Neither sql nor file is given."
+cause = "There is no SQL to run."
+action = "Give the SQL in sql, or a file that has it in file."
+
+[E3247]
+when = "The folder of out cannot be made"
+text = "The folder {0} of out cannot be made. ({1})"
+cause = "An error occurred while making the folder."
+action = "Check the path of out, and the permissions of its parent folder."
+
+[E3248]
+when = "The number of rows of the result, or of rows changed, is not within rows"
+text = "{0} is {1} rows, which is not within rows = {2}."
+cause = "The number of rows of the run is not within the range given in rows."
+action = "Check the SQL or rows."
+
+[E3249]
+when = "koyomi sql run is run for a job that is not a sql"
+text = "The job is not kind = \"sql\"."
+cause = "The job that was run is not kind = \"sql\"."
+action = "Run koyomi sql run from a job of kind = \"sql\"."
+
+[W3250]
+when = "out is given, but the SQL gave no result table"
+text = "The SQL gave no result table, so the file of out was not written. ({0})"
+cause = "The SQL returned no result table."
+action = "Give an SQL that returns a result table (such as select)."
+
+[E3251]
+when = "The S3 server refuses the access"
+text = "Access to {0} was refused. ({1})"
+cause = "The server did not accept one of key_id, password and region."
+action = "Check key_id, password and region."
+
+[E3252]
+when = "The bucket or the key of S3 is not there"
+text = "The bucket or the key of {0} does not exist."
+cause = "The bucket or the key that is given is not on the server."
+action = "Check the bucket name and the key of s3://."
+
+[E3253]
+when = "The bytes of a file moved do not agree with its SHA-256 checksum"
+text = "The bytes of {0} do not agree with the checksum. ({1})"
+cause = "The bytes changed on the way, or the stored object does not agree with its checksum."
+action = "Run the job again. If it goes on, check the object on the far side."
+
+[E3254]
+when = "The S3 server cannot be reached"
+text = "The server of {0} cannot be reached. ({1})"
+cause = "An error occurred while connecting to the server."
+action = "Check endpoint, the network and the proxy."
+
+[E3255]
+when = "An error occurs in TLS with the S3 server"
+text = "An error occurred in TLS with the server of {0}. ({1})"
+cause = "An error occurred in the TLS connection."
+action = "Check whether endpoint is https:// or http://, and the certificate of the server."
+
+[E3256]
+when = "The S3 server returns an error status (with no body)"
+text = "The server of {0} returned the status {1}."
+cause = "The server answered the request with an error status."
+action = "Look up the status in the documentation of the server."
+
+[E3257]
+when = "The S3 server returns an error status with a body"
+text = "The server of {0} returned the status {1}. ({2})"
+cause = "The server answered the request with an error status."
+action = "Look up the message of the body and the status in the documentation of the server."
+
+[E3258]
+when = "The reading or writing of a file on this PC fails during a transfer of S3"
+text = "Reading or writing a file failed in the transfer of {0}. ({1})"
+cause = "An error occurred while reading or writing the file."
+action = "Check the permissions of the file and the free space."
+
+[E3259]
+when = "A key of S3 found by a fetch cannot be a file name on this PC"
+text = "The key {0} of S3 cannot be a file name on this PC."
+cause = "The key is . or .., or has a character that a file name cannot have (\\ / : * ? \" < > | and control characters)."
+action = "Give another key in the from of the fetch, or rename the key in the bucket."
+
+[E3260]
+when = "The folder of the into of a fetch cannot be made"
+text = "The folder {0} of into cannot be made. ({1})"
+cause = "An error occurred while making the folder."
+action = "Check the path of into, and the permissions of its parent folder."
+
+[E3261]
+when = "koyomi cloud run is run for a job that is not a send or fetch with s3://"
+text = "The job is not a send or fetch with s3://."
+cause = "The job that was run is not a send or a fetch that uses s3://."
+action = "Run koyomi cloud run from a send or fetch job with s3://."
+
+[E3262]
+when = "The into of a send, or the from of a fetch, is not an s3:// address"
+text = "The {1} of this {0} job is not an s3:// address."
+cause = "{1} is not an address that starts with s3://."
+action = "Give {1} as s3://bucket/key."
+
+[E3263]
+when = "The key_id or the password of S3 is not given"
+text = "{0} is not given."
+cause = "key_id and password are needed to connect to S3."
+action = "Give {0} as secret:<name>. The value is kept in the credentials of the OS with koyomi secret set <name>."
+
+[E3265]
+when = "The webhooks of [notify] of koyomi.toml are not written as tables"
+text = "Each item of webhooks in [notify] of koyomi.toml is not given as a table."
+cause = "An item of webhooks is not in the form of a table of [[notify.webhooks]]."
+action = "Give url = \"…\" and the like in [[notify.webhooks]]. A secret:<name> goes in url."
+
+[E3266]
+when = "The [notify] of koyomi.toml cannot be read"
+text = "The [notify] of koyomi.toml cannot be read. ({0})"
+cause = "The form of [notify] does not match the form of the settings of koyomi."
+action = "Check the items of [notify] and the form of their values."
+
+[W3267]
+when = "The address of a webhook of [notify] of koyomi.toml is given in plain text"
+text = "The address of a webhook of [notify] of koyomi.toml is given in plain text. Nothing is sent to it."
+cause = "While hide_webhooks is on (the default), an address in plain text is not used."
+action = "Keep the address in the credential store of the OS as secret:<name>. To leave it in plain text, give hide_webhooks = false."
+
+[W3268]
+when = "The watch of sign-in and lock could not be started"
+text = "The jobnet {0} cannot tell of a sign-in or a lock. ({1})"
+cause = "The watch of the session could not be started, so a [[when]] with session does not run it."
+action = "Check that the watch of the session can be used on this PC."
+
+[W3269]
+when = "A jobnet has session = \"sign_in\" and the engine is not the service's"
+text = "The jobnet {0} does not run on session = \"sign_in\"."
+cause = "Only the engine of the service can see a sign-in. This engine starts after the sign-in."
+action = "To run it at every sign-in, give on_start = true."
+
+[W3270]
+when = "A jobnet has session = \"sign_out\" and the engine is not the service's"
+text = "The jobnet {0} does not run on session = \"sign_out\"."
+cause = "Only the engine of the service can see a sign-out. This engine stops at the sign-out."
+action = "Run it on the engine of the service."
+
+[W3271]
+when = "A jobnet has the lock or unlock of another user in user and the engine is not the service's"
+text = "The jobnet {0} does not run on the lock or unlock of user = '{2}'."
+cause = "This engine can see only the session of {1}."
+action = "Run it on the engine of the service."
+
+[E3272]
+when = "History or the record of operations is asked for with an end before the start"
+text = "The range {0} → {1} cannot be used because its end is before its start."
+cause = "The end day is before the start day."
+action = "Give an end day that is not before the start day."
+
+[E3273]
+when = "History or the record of operations is asked for over more than a year"
+text = "The range is longer than a year, so it cannot be used."
+cause = "At most a year (366 days) can be taken at once."
+action = "Split the range into parts of a year or less."
+
+[E3275]
+when = "The business day of the record of a run cannot be read"
+text = "The business day of the run {0} cannot be read."
+cause = "The date in the record of the run is not in the form YYYY-MM-DD."
+action = "Check the record of the run (the file of the history)."
+
+[E3276]
+when = "A rerun from the next job is asked for with no job to start from"
+text = "A rerun from the next job needs the job to start from."
+cause = "No job to start from is given."
+action = "Give the job to start from."
+
+[E3277]
+when = "A run that does not exist is given"
+text = "The run {0} does not exist."
+cause = "No run with the ID given is on the engine or in the history."
+action = "Check the ID of the run."
+
+[E3278]
+when = "A jobnet that is running is about to run again"
+text = "{0} is running, so it cannot run again."
+cause = "A run of the same jobnet has not ended yet."
+action = "Run it again after the run has ended."
+
+[E3279]
+when = "A job of a run that has ended is about to be stopped or skipped"
+text = "The run {0} has already ended."
+cause = "A job of a run that has ended cannot be stopped or skipped."
+action = "Give the ID of a run that is still going."
+
+[E3280]
+when = "The log of a job of a run is asked for and there is none"
+text = "The run {0} has no log of the job {1}."
+cause = "The job has not started, or its log was removed after its keeping time."
+action = "Check the ID of the run and the ID of the job."
+
+[E3281]
+when = "The log of a job of a run is asked for and it cannot be read"
+text = "The log of the job {1} of the run {0} cannot be read."
+cause = "An error occurred while reading the file of the log."
+action = "Check the permissions of the folder and the file of the log."
+
+[E3282]
+when = "A job that is not running is about to be stopped"
+text = "{0} is not running."
+cause = "Only a job that is running can be stopped."
+action = "Give a job that is running."
+
+[E3283]
+when = "A job that is not waiting for an answer is about to be approved or rejected"
+text = "The job {1} of the run {0} is not waiting for an answer."
+cause = "Only a job that waits for an answer can be approved or rejected."
+action = "Give a job that waits for an answer."
+
+[E3284]
+when = "The file of the log of a job cannot be made"
+text = "The log file {0} cannot be made. ({1})"
+cause = "An error occurred while making the folder or the file of the log."
+action = "Check the permissions and the free space of the folder of the log."
+
+[E3285]
+when = "A job with no command to run is about to run"
+text = "The command to run is not given."
+cause = "The run of the job is empty."
+action = "Give the command to run in run."
+
+[E3286]
+when = "The program of a job cannot be started"
+text = "{0} cannot be started. ({1})"
+cause = "An error occurred while starting the program."
+action = "Check the path of the program and its permissions."
+
+[E3355]
+when = "A jobnet whose definition has errors is about to run"
+text = "The definition of {0} has errors, so it cannot run."
+cause = "Errors were found when the definition was read, so the jobnet could not be built."
+action = "Find the errors of the definition with koyomi check, and correct them."
+
+[E3617]
+when = "Settings that koyomi check refuses are about to be exported"
+text = "koyomi.toml is not valid, so it cannot be exported. ({0})"
+cause = "Settings that koyomi check refuses are not exported."
+action = "Correct the problem of koyomi.toml found by koyomi check, and export again."
+
 [E3530]
 when = "An item such as path, from, into, url, sql, file or out is empty"
 text = "{0} is not given."
@@ -2583,3 +3045,73 @@ run_line_unmet = "The condition of the line from {0} was not met"
 run_waiting_for = "Waiting for {0} to end"
 run_list_join = ", "
 chore_shared_differs = "The copied content does not match: {0} (source {1}, destination {2})"
+ssh_stopped = "Stopped. (If the command had started, it was asked to stop with TERM.)"
+winrm_stopped = "Stopped. (If the command had started, it was asked to stop, and its shell on the connection was deleted.)"
+group_start = "Running on the {1} PCs of the group {0} ({2} at a time; the job ends as {3} does)."
+group_worst = "the PC with the worst result"
+group_best = "the PC with the best result"
+group_not_started = "Not started because it was stopped"
+group_more = "{0} more"
+net_refused = "The connection is not listening on this port"
+net_no_answer = "The connection does not answer"
+net_cut = "The connection was cut by the far side"
+net_no_route = "There is no route to the connection"
+net_host_not_found = "The host was not found"
+net_os_error = "OS error {0}"
+net_failed = "The connection failed"
+net_host_not_found_with = "The host was not found: {0}"
+net_no_address = "The host has no address"
+mail_stopped = "Stopped. (It was before the send, so nothing was sent.)"
+mail_no_names = "none has a name"
+mail_names = "there are {0}"
+sql_stopped = "Stopped. (The batches before it are already done.)"
+sql_timeout = "Timed out"
+sql_result_rows = "The rows of the result"
+sql_changed_rows = "The rows changed"
+cloud_stopped = "Stopped. (What was being moved is not left behind.)"
+cloud_timeout = "Timed out"
+cloud_unverified = "The far side has no checksum, so it was not compared"
+notify_late = "({0})"
+session_sign_in = "Signed in"
+session_sign_out = "Signed out"
+session_lock = "Locked the screen"
+session_unlock = "Unlocked the screen"
+session_by = "{1} by {0}"
+session_unsupported = "This OS cannot tell"
+session_watch_failed = "error code {0}"
+unmet_ac = "Waiting for the AC power (require = \"ac\")"
+unmet_network = "Waiting for the network (require = \"network\")"
+unmet_idle = "Waiting for the PC to be unused for {0} minutes (require = \"idle\")"
+wait_time_reached = "It is {0}"
+wait_file_arrived = "{0} has arrived"
+wait_for = "Waiting for {0}"
+wait_time_passed = "{0} had passed"
+wait_date_unreadable = "The date cannot be read"
+wait_approval = "Waiting for an answer"
+approved = "Approved"
+rejected = "Rejected"
+approve_done = "Approved {1} of {0}"
+reject_done = "Rejected {1} of {0}"
+skip_done = "Skipped {1} of {0}"
+kill_done = "Stopped {1} of {0}"
+kill_asked_job = "Asked {1} of {0} to stop"
+kill_asked_run = "Asked {0} to stop"
+queue_skipped = "The previous run was still going (the next one is waiting)"
+held_job = "On hold (koyomi release {0} {1})"
+notified = "Notified"
+http_by = "  (HTTP: {0})"
+run_as_log = "Running as {0}"
+no_files_log = "No file matches, so it is not run at all"
+loop_width_log = "Running {0} passes, {1} at a time"
+pass_of = "Pass {0}/{1}"
+pass_of_file = "Pass {0}/{1} ({2})"
+pass_failed_code = "{0} failed: exit code {1}"
+pass_failed_reason = "{0} failed: {1}"
+log_capped = "(The log went over {0} MB, so nothing more is written)"
+retry_log = "Retry ({0}/{1}): waiting {2}"
+output_error_log = "The output matched error_output"
+output_bad_line = "The output had a line of an error: {0}"
+ok_file_log = "{0} is there, so it counts as ok (exit code {1})"
+host_shape_sftp = "<host>[:<port>] or an sftp:// or ssh:// address"
+host_shape_winrm = "<host>[:<port>] or winrm://user@host[:port]"
+pass_failed_coded = "{0} ({1})"

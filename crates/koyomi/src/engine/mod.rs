@@ -3245,7 +3245,11 @@ run = ["x.exe"]
         s.propose("保守/乙", plain, None).unwrap();
         let snap = s.snapshot();
         assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
-        assert!(snap.cautions.iter().any(|c| c.starts_with("保守/他人: ")), "{:?}", snap.cautions);
+        assert!(
+            snap.cautions.iter().any(|c| koyomi_core::msg::SESSION_USER_HIDDEN.is_in(c) && c.contains("保守/他人")),
+            "{:?}",
+            snap.cautions
+        );
         // The window and the CLI ask the snapshot's warnings before they approve: nothing stands in the way.
         assert!(warnings_about(&paths, &snap.warnings, &snap.defs, "保守/乙.toml").is_empty());
         let sha = s.defs.iter().find(|d| d.id == "保守/乙").unwrap().sha256.clone();

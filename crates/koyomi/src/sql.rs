@@ -20,6 +20,7 @@ use std::time::Duration;
 
 use ito_sql::{SqlAuth, Target, Tls};
 use koyomi_core::chore::{sql_db, sql_rows, Chore, SqlDb, SqlTls};
+use koyomi_core::msg::{self, line, note};
 
 /// The most a run may take here: the job's own `timeout` ends it sooner.
 const RUN_MAX: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -47,7 +48,7 @@ fn var(name: &str) -> Option<String> {
 
 /// Reads the job from the environment and runs it.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
-    let db = var("DB").ok_or("KOYOMI_SQL_DB がない（koyomi sql run は kind = \"sql\" のジョブが動かす）")?;
+    let db = var("DB").ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_SQL_DB", "kind = \"sql\"", "sql"]))?;
     let tls = std::env::var("KOYOMI_SQL_TLS").ok().and_then(|t| SqlTls::of(t.trim())).unwrap_or_default();
     // Its value, read from the credential store when the job started; by hand,
     // still `secret:<name>`.
@@ -71,9 +72,9 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
     // Checked again now that each `{…}` is filled in.
     job.check()?;
     let Chore::Sql { db, sql, file, out, rows, tls, .. } = job else {
-        return Err("kind = \"sql\" のジョブではない".into());
+        return Err(line(msg::SQL_NOT_SQL, &[]));
     };
-    let secret = || password.clone().map(crate::sftp::password).unwrap_or_else(|| Err("password がない".into()));
+    let secret = || password.clone().map(crate::sftp::password).unwrap_or_else(|| Err(line(msg::CHORE_PASSWORD_MISSING, &[db])));
     let target = match sql_db(db)? {
         SqlDb::SqlServer { user, host, port, database } => Target::SqlServer {
             host,
@@ -102,7 +103,7 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
             // ito-sql makes a file that is not there: a path written wrong
             // would quietly get an empty database.
             if !path.is_file() {
-                return Err(format!("データベースのファイルがない: {}", path.display()));
+                return Err(line(msg::SQL_DB_FILE_MISSING, &[&path.display().to_string()]));
             }
             Target::Sqlite { path }
         }
@@ -111,16 +112,16 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
         (Some(s), _) => s.clone(),
         (None, Some(f)) => {
             let path = Path::new(f.trim());
-            let bytes = std::fs::read(path).map_err(|e| format!("SQL のファイルを読めない: {}: {e}", path.display()))?;
+            let bytes = std::fs::read(path).map_err(|e| line(msg::SQL_FILE_UNREADABLE, &[&path.display().to_string(), &e.to_string()]))?;
             decode(&bytes)
         }
-        (None, None) => return Err("sql か file がない".into()),
+        (None, None) => return Err(line(msg::SQL_NO_SCRIPT, &[])),
     };
     let (csv, temp) = match out {
         Some(o) => {
             let path = PathBuf::from(o.trim());
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent).map_err(|e| format!("out のフォルダーを作れない: {}: {e}", parent.display()))?;
+                std::fs::create_dir_all(parent).map_err(|e| line(msg::SQL_OUT_DIR, &[&parent.display().to_string(), &e.to_string()]))?;
             }
             (path, false)
         }
@@ -136,22 +137,22 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
     if temp {
         let _ = std::fs::remove_file(&csv);
     }
-    let o = result.map_err(|e| format!("{place}: {}", why(&e, &target, *tls)))?;
+    let o = result.map_err(|e| why(&e, &target, *tls, &place))?;
     crate::say(&format!("ran: {} batches, {} rows changed", o.batches, o.rows_affected), false);
     match o.result_rows {
         Some(n) if temp => crate::say(&format!("result: {n} rows"), false),
         Some(n) => crate::say(&format!("result: {n} rows -> {}", csv.display()), false),
         None if temp => {}
-        None => crate::say(&format!("! 結果の表が無かったので、out は書かなかった: {}", csv.display()), false),
+        None => crate::say_bad(&line(msg::SQL_NO_RESULT, &[&csv.display().to_string()])),
     }
-    for line in shown {
-        crate::say(&format!("  {line}"), false);
+    for row in shown {
+        crate::say(&format!("  {row}"), false);
     }
     if let Some(r) = rows {
         let count = o.result_rows.unwrap_or(o.rows_affected);
-        let what = if o.result_rows.is_some() { "結果の行" } else { "変えた行" };
+        let what = note(if o.result_rows.is_some() { msg::N_SQL_RESULT_ROWS } else { msg::N_SQL_CHANGED_ROWS }, &[]);
         if !sql_rows(r)?.iter().any(|(least, most)| (*least..=*most).contains(&count)) {
-            return Err(format!("{what}が {count} 行で、rows = {r} に合わない"));
+            return Err(line(msg::SQL_ROWS_MISMATCH, &[&what, &count.to_string(), r]));
         }
     }
     Ok(0)
@@ -167,24 +168,23 @@ fn place(target: &Target) -> String {
     }
 }
 
-/// Why the run did not end well, in the words of the log.
-fn why(e: &ito_sql::Error, target: &Target, tls: SqlTls) -> String {
+/// Why the run did not end well, in the words of the log: an error with its ID
+/// that names `place`, or (a stop, a timeout) a note led by it.
+fn why(e: &ito_sql::Error, target: &Target, tls: SqlTls, place: &str) -> String {
     match e {
         ito_sql::Error::Connect(s) => {
-            let hint = match target {
-                Target::SqlServer { .. } if tls == SqlTls::Verify => "（サーバーが自分で作った証明書なら tls = \"trust\"）",
-                Target::Postgres { .. } if tls == SqlTls::Verify => {
-                    "（サーバーが自分で作った証明書なら tls = \"trust\"、TLS の無いサーバーなら tls = \"off\"）"
-                }
-                _ => "",
+            let id = match target {
+                Target::SqlServer { .. } if tls == SqlTls::Verify => msg::SQL_CONNECT_TRUST,
+                Target::Postgres { .. } if tls == SqlTls::Verify => msg::SQL_CONNECT_TLS,
+                _ => msg::SQL_CONNECT,
             };
-            format!("つなげない: {s}{hint}")
+            line(id, &[place, s])
         }
-        ito_sql::Error::Sql(s) => format!("データベースが断った: {s}"),
-        ito_sql::Error::Cancelled => "止めた（それまでのバッチはもう反映している）".into(),
-        ito_sql::Error::Timeout => "時間切れ".into(),
-        ito_sql::Error::Unsupported(s) => format!("この PC からは流せない: {s}"),
-        ito_sql::Error::Io(s) => format!("結果のファイルを書けない: {s}"),
+        ito_sql::Error::Sql(s) => line(msg::SQL_REFUSED, &[place, s]),
+        ito_sql::Error::Cancelled => format!("{place}: {}", note(msg::N_STOPPED_SQL, &[])),
+        ito_sql::Error::Timeout => format!("{place}: {}", note(msg::N_SQL_TIMEOUT, &[])),
+        ito_sql::Error::Unsupported(s) => line(msg::SQL_UNSUPPORTED, &[place, s]),
+        ito_sql::Error::Io(s) => line(msg::SQL_OUT_WRITE, &[place, s]),
     }
 }
 
@@ -266,13 +266,13 @@ mod tests {
         let no = AtomicBool::new(false);
         // A file that is not there is not made.
         let e = go(&lite(&db, Some("select 1"), None, None, None), None, &no).unwrap_err();
-        assert!(e.contains("データベースのファイルがない"), "{e}");
+        assert!(msg::SQL_DB_FILE_MISSING.is_in(&e), "{e}");
         std::fs::write(&db, b"").unwrap();
         let make = "create table log (id integer, msg text);\ninsert into log values (1, 'a'), (2, 'b'), (3, 'c');";
         assert_eq!(go(&lite(&db, Some(make), None, None, Some("3")), None, &no), Ok(0));
         // The rows changed are judged when there is no result.
         let e = go(&lite(&db, Some("delete from log where id > 5"), None, None, Some("1..")), None, &no).unwrap_err();
-        assert!(e.contains("変えた行が 0 行") && e.contains("rows = 1.."), "{e}");
+        assert!(msg::SQL_ROWS_MISMATCH.is_in(&e) && e.contains(&note(msg::N_SQL_CHANGED_ROWS, &[])) && e.contains("rows = 1.."), "{e}");
         // A result goes to out, its folder made; its rows are judged.
         let out = dir.0.join("deep").join("log.csv");
         let file = dir.0.join("q.sql");
@@ -282,13 +282,13 @@ mod tests {
         assert!(csv.contains("id,msg\r\n1,a\r\n2,b\r\n3,c"), "{csv:?}");
         assert_eq!(preview(&out), ["id,msg", "1,a", "2,b", "3,c"]);
         let e = go(&lite(&db, Some("select * from log"), None, None, Some("..2")), None, &no).unwrap_err();
-        assert!(e.contains("結果の行が 3 行"), "{e}");
+        assert!(msg::SQL_ROWS_MISMATCH.is_in(&e) && e.contains(&note(msg::N_SQL_RESULT_ROWS, &[])) && e.contains("3 行"), "{e}");
         // The database's own words.
         let e = go(&lite(&db, Some("select * from nowhere"), None, None, None), None, &no).unwrap_err();
-        assert!(e.contains("データベースが断った") && e.contains("nowhere"), "{e}");
+        assert!(msg::SQL_REFUSED.is_in(&e) && e.contains("nowhere"), "{e}");
         // A stop before it runs.
         let stop = AtomicBool::new(true);
-        assert!(go(&lite(&db, Some("select 1"), None, None, None), None, &stop).unwrap_err().contains("止めた"));
+        assert!(go(&lite(&db, Some("select 1"), None, None, None), None, &stop).unwrap_err().contains(&note(msg::N_STOPPED_SQL, &[])));
         // Checked again as filled in.
         assert!(go(&lite(&db, Some(" "), None, None, None), None, &no)
             .unwrap_err()
@@ -323,8 +323,10 @@ mod tests {
     fn a_failure_to_connect_says_what_tls_to_try() {
         let server = Target::SqlServer { host: "db01".into(), port: 1433, database: "x".into(), auth: SqlAuth::Windows, trust_cert: false };
         let e = ito_sql::Error::Connect("certificate".into());
-        assert!(why(&e, &server, SqlTls::Verify).contains("tls = \"trust\""));
-        assert!(!why(&e, &server, SqlTls::Trust).contains("tls ="));
+        let said = why(&e, &server, SqlTls::Verify, "db01");
+        assert!(msg::SQL_CONNECT_TRUST.is_in(&said) && said.contains("tls = \"trust\""), "{said}");
+        let said = why(&e, &server, SqlTls::Trust, "db01");
+        assert!(msg::SQL_CONNECT.is_in(&said) && !said.contains("tls ="), "{said}");
         let pg = Target::Postgres {
             host: "pg".into(),
             port: 5432,
@@ -333,8 +335,9 @@ mod tests {
             password: "pw".into(),
             tls: Tls::Verify,
         };
-        assert!(why(&e, &pg, SqlTls::Verify).contains("tls = \"off\""));
+        let said = why(&e, &pg, SqlTls::Verify, "pg");
+        assert!(msg::SQL_CONNECT_TLS.is_in(&said) && said.contains("tls = \"off\""), "{said}");
         assert_eq!(place(&pg), "pg:5432/app");
-        assert_eq!(why(&ito_sql::Error::Timeout, &pg, SqlTls::Off), "時間切れ");
+        assert_eq!(why(&ito_sql::Error::Timeout, &pg, SqlTls::Off, "pg"), format!("pg: {}", note(msg::N_SQL_TIMEOUT, &[])));
     }
 }

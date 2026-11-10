@@ -7,6 +7,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use koyomi_core::chore::{self, Sftp, Verify};
+use koyomi_core::msg::{self, line, note};
 use koyomi_core::run::Moved;
 
 /// The exit code of a run that found nothing to move: the chore judges it a warning.
@@ -30,10 +31,13 @@ pub fn cmd(args: &[String]) -> i32 {
 /// to put in the job.
 fn hostkey(at: &str) -> i32 {
     let addr = if chore::sftp(at).or_else(|| chore::ssh(at)).is_some() { at.to_owned() } else { format!("sftp://{at}") };
-    let far = match chore::sftp(&addr).or_else(|| chore::ssh(&addr)).unwrap_or_else(|| Err(format!("ホストを読めない: {at}"))) {
+    let far = match chore::sftp(&addr)
+        .or_else(|| chore::ssh(&addr))
+        .unwrap_or_else(|| Err(line(msg::HOST_UNREADABLE, &[at, &note(msg::N_HOST_SHAPE_SFTP, &[])])))
+    {
         Ok(f) => f,
         Err(e) => {
-            crate::say(&format!("koyomi: {e}"), true);
+            crate::say(&e, true);
             return 2;
         }
     };
@@ -67,7 +71,7 @@ fn run() -> i32 {
         Ok(_) => 0,
         Err(e) => {
             // To stdout, so the job's log keeps it in order with the rest.
-            crate::say(&format!("! {e}"), false);
+            crate::say_bad(&e);
             2
         }
     }
@@ -75,15 +79,16 @@ fn run() -> i32 {
 
 /// Moves the files and says how many.
 fn transfer() -> Result<usize, String> {
-    let op = var("OP").ok_or("KOYOMI_SFTP_OP がない（koyomi sftp run は send か fetch のジョブが動かす）")?;
+    let op = var("OP").ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_SFTP_OP", "kind = \"send\" or kind = \"fetch\"", "sftp"]))?;
     let (from, into) = (var("FROM").unwrap_or_default(), var("INTO").unwrap_or_default());
     let send = match op.as_str() {
         "send" => true,
         "fetch" => false,
-        _ => return Err(format!("KOYOMI_SFTP_OP は send か fetch: {op}")),
+        _ => return Err(line(msg::DEF_CHOICE_BAD, &["KOYOMI_SFTP_OP", "\"send\", \"fetch\""])),
     };
-    let far = chore::sftp(if send { &into } else { &from }).ok_or("sftp:// の相手がない")??;
-    let host_key = var("HOST_KEY").ok_or("host_key がない")?;
+    let far = chore::sftp(if send { &into } else { &from })
+        .ok_or_else(|| line(msg::SFTP_PEER_MISSING, &[&op, if send { "into" } else { "from" }]))??;
+    let host_key = var("HOST_KEY").ok_or_else(|| line(msg::CHORE_HOST_KEY_MISSING, &["sftp://"]))?;
     let session = ito_sftp::Session::connect(&target(&far, host_key, "sftp")?).map_err(|e| format!("{}: {e}", far.host))?;
     let never = AtomicBool::new(false);
     let opts = ito_sftp::Options { overwrite: true, verify: verify(var("VERIFY").as_deref()) };
@@ -210,18 +215,18 @@ pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_s
         .clone()
         .or_else(|| std::env::var("USERNAME").ok())
         .or_else(|| std::env::var("USER").ok())
-        .ok_or_else(|| format!("ユーザーがわからない（{scheme}://ユーザー@ホスト と書く）"))?;
+        .ok_or_else(|| line(msg::SFTP_USER_UNKNOWN, &[scheme]))?;
     let auth = if let Some(k) = env_var(&prefix, "KEY") {
         ito_sftp::Auth::Key { path: PathBuf::from(k), passphrase: None }
     } else if let Some(p) = env_var(&prefix, "PASSWORD") {
         ito_sftp::Auth::Password(password(p)?)
     } else {
-        let ssh = ito_common::home_dir().map(|h| h.join(".ssh")).ok_or("ホームフォルダーがわからない")?;
+        let ssh = ito_common::home_dir().map(|h| h.join(".ssh")).ok_or_else(|| line(msg::HOME_UNKNOWN, &[]))?;
         let key = ["id_ed25519", "id_ecdsa"]
             .iter()
             .map(|n| ssh.join(n))
             .find(|p| p.is_file())
-            .ok_or_else(|| format!("鍵がない: {}（key か password を書く）", ssh.join("id_ed25519").display()))?;
+            .ok_or_else(|| line(msg::DEFAULT_KEY_MISSING, &[&ssh.join("id_ed25519").display().to_string()]))?;
         ito_sftp::Auth::Key { path: key, passphrase: None }
     };
     let mut t = ito_sftp::Target::new(far.host.clone(), user, auth, host_key);
@@ -235,8 +240,8 @@ pub(crate) fn target(far: &Sftp, host_key: String, scheme: &str) -> Result<ito_s
 pub(crate) fn password(p: String) -> Result<String, String> {
     match p.strip_prefix("secret:") {
         Some(name) => ito_secret::get("koyomi", name.trim())
-            .map_err(|e| format!("秘密を読めない: {name}: {e}"))?
-            .ok_or_else(|| format!("秘密がない: {name}（koyomi secret set {name}）")),
+            .map_err(|e| line(msg::SECRET_UNREADABLE, &[name, &e.to_string()]))?
+            .ok_or_else(|| line(msg::SECRET_MISSING, &[name])),
         None => Ok(p),
     }
 }

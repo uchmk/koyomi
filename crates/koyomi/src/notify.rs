@@ -33,7 +33,9 @@ pub const QUIET: &str = "failed";
 /// Where `[notify]` is read from, as the notes name it.
 const PATH: &str = "koyomi.toml";
 /// Said of a plain-text webhook address while `hide_webhooks` is on.
-pub const PLAIN: &str = "koyomi.toml: [notify] の webhook のアドレスが平文で書かれている。既定では OS の資格情報ストアに置く（`secret:<名前>`）。平文のままにするなら `hide_webhooks = false` と書く。それまでそこには送らない";
+pub fn plain() -> String {
+    koyomi_core::msg::line(koyomi_core::msg::NOTIFY_PLAIN, &[])
+}
 
 fn icon(side: u32) -> Vec<u8> {
     crate::icon::pixels(side)
@@ -52,7 +54,7 @@ pub fn settings_problem(text: &str) -> Option<String> {
 pub fn export(src: &koyomi_core::bundle::Source, pick: &koyomi_core::bundle::Pick) -> Result<koyomi_core::bundle::Bundle, String> {
     if pick.settings || pick.all {
         if let Some(e) = src.settings.as_deref().and_then(settings_problem) {
-            return Err(format!("書き出せない: koyomi.toml が正しくない（{e}）"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::NOTIFY_EXPORT_BAD, &[koyomi_core::msg::uncoded(&e)]));
         }
     }
     koyomi_core::bundle::export(src, pick)
@@ -86,12 +88,11 @@ pub fn parse(config: &Config) -> (NotifyCfg, Vec<String>) {
         Ok(n) => n,
         Err(e) => {
             let m = e.message();
-            let what = if m.contains("expected struct HookCfg") {
-                "の webhooks の各項目は表で書く（[[notify.webhooks]] に url = \"…\" など。`secret:<名前>` は url に書く）".to_owned()
+            notes.push(if m.contains("expected struct HookCfg") {
+                koyomi_core::msg::line(koyomi_core::msg::NOTIFY_WEBHOOK_SHAPE, &[])
             } else {
-                format!("の書き方が合わない（{m}）")
-            };
-            notes.push(format!("{PATH}: [notify] {what}"));
+                koyomi_core::msg::line(koyomi_core::msg::NOTIFY_SHAPE, &[m])
+            });
             NotifyCfg::default()
         }
     };
@@ -107,7 +108,7 @@ pub fn parse(config: &Config) -> (NotifyCfg, Vec<String>) {
     n.hide_webhooks.get_or_insert(true);
     n.check(&EVENTS, PATH, &mut notes);
     if n.hide_webhooks() && n.places.iter().any(|p| ito_notify::is_http(&p.url)) {
-        notes.push(PLAIN.to_owned());
+        notes.push(plain());
     }
     (n, notes)
 }
@@ -123,7 +124,11 @@ pub fn test(p: &ito_prefs::Notify, what: ito_prefs::Test, title: &str, body: &st
 /// (or the run's line when none did), the id and the business day.
 pub fn words(t: &Table, r: &Run) -> (&'static str, String, String) {
     let event = if r.state.is_error() { "failed" } else { "done" };
-    let late = if r.is_late() { format!("（{}）", koyomi_core::run::late_word()) } else { String::new() };
+    let late = if r.is_late() {
+        koyomi_core::msg::note(koyomi_core::msg::N_NOTIFY_LATE, &[&koyomi_core::run::late_word()])
+    } else {
+        String::new()
+    };
     let title = format!("{}{late}  {}", show::tag(t, r.state), r.title);
     let mut lines: Vec<String> = r.jobs.iter().filter(|j| j.state.is_error()).map(|j| show::job_line(t, j)).collect();
     if lines.is_empty() {
@@ -525,12 +530,13 @@ mod tests {
         assert_eq!(super::settings_problem("keep_days = 30\n"), None);
         let e = super::settings_problem("[notify]\nwebhooks = [\"secret:x\"]\n").unwrap();
         assert!(!e.contains('\n') && !e.is_ascii(), "{e}");
+        assert!(koyomi_core::msg::NOTIFY_WEBHOOK_SHAPE.is_in(&e), "{e}");
         let e = super::settings_problem("keep_days = 0\n").unwrap();
         assert!(koyomi_core::msg::CFG_LIMIT_TOO_LOW.is_in(&e) && e.contains("keep_days"), "{e}");
         let src = koyomi_core::bundle::Source { settings: Some("[notify]\nwebhooks = [\"secret:x\"]\n".to_owned()), ..Default::default() };
         let pick = koyomi_core::bundle::Pick { settings: true, ..Default::default() };
         let e = super::export(&src, &pick).unwrap_err();
-        assert!(e.starts_with("書き出せない: koyomi.toml が正しくない（"), "{e}");
+        assert!(koyomi_core::msg::NOTIFY_EXPORT_BAD.is_in(&e), "{e}");
     }
 
     use super::*;
@@ -592,7 +598,7 @@ mod tests {
     #[test]
     fn a_plain_text_address_is_noted_and_not_sent_to_until_the_switch_is_off() {
         let (n, notes) = read(&cfg("webhook = \"https://ntfy.sh/koyomi\"\n"));
-        assert_eq!(notes, vec![PLAIN.to_owned()]);
+        assert_eq!(notes, vec![plain()]);
         assert_eq!(n.places.len(), 1);
         assert!(n.places[0].url.is_empty());
         let (n, notes) = read(&cfg("webhook = \"https://ntfy.sh/koyomi\"\nhide_webhooks = false\n"));
@@ -602,7 +608,7 @@ mod tests {
         // The settings page keeps the address, so it can show it and
         // move it to the store; it is noted all the same.
         let (n, notes) = parse(&cfg("webhook = \"https://ntfy.sh/koyomi\"\n"));
-        assert_eq!(notes, vec![PLAIN.to_owned()]);
+        assert_eq!(notes, vec![plain()]);
         assert_eq!(n.places[0].url, "https://ntfy.sh/koyomi");
     }
 
@@ -624,7 +630,7 @@ mod tests {
         assert_eq!(n.system, Some(vec!["failed".to_owned()]));
         let (_, notes) = read(&cfg("system = \"failed\"\n"));
         assert_eq!(notes.len(), 1, "{notes:?}");
-        assert!(notes[0].starts_with("koyomi.toml: [notify] の書き方が合わない（"), "{notes:?}");
+        assert!(koyomi_core::msg::NOTIFY_SHAPE.is_in(&notes[0]), "{notes:?}");
     }
 
     #[test]

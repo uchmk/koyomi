@@ -1095,6 +1095,15 @@ fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<Option<Vec<u8>>
     rx
 }
 
+/// A problem on standard output, led by `! ` unless it already leads with its ID.
+fn say_bad(line: &str) {
+    if koyomi_core::msg::is_coded(line) {
+        say(line, false);
+    } else {
+        say(&format!("! {line}"), false);
+    }
+}
+
 /// Puts a line where whoever typed the command is looking, on standard error
 /// when `err`. A release build on Windows has no console of its own;
 /// `ito_console` writes to the console it was started from, or to the pipe

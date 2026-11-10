@@ -17,6 +17,7 @@ use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex};
 
 use ito_power::{SessionEvent, SessionWatch, WhyNot};
+use koyomi_core::msg::{self, line, note};
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when::{Kind, Session};
 
@@ -37,15 +38,15 @@ fn session_of(e: SessionEvent) -> Session {
 /// What the reason of a run says happened, and who did it when that is known.
 pub fn what(s: Session, who: &str) -> String {
     let did = match s {
-        Session::SignIn => "サインインした",
-        Session::SignOut => "サインアウトした",
-        Session::Lock => "画面をロックした",
-        Session::Unlock => "画面のロックを解いた",
+        Session::SignIn => note(msg::N_SESSION_SIGN_IN, &[]),
+        Session::SignOut => note(msg::N_SESSION_SIGN_OUT, &[]),
+        Session::Lock => note(msg::N_SESSION_LOCK, &[]),
+        Session::Unlock => note(msg::N_SESSION_UNLOCK, &[]),
     };
     if who.is_empty() {
-        did.to_owned()
+        did
     } else {
-        format!("{who} が{did}")
+        note(msg::N_SESSION_BY, &[who, &did])
     }
 }
 
@@ -170,16 +171,13 @@ fn step(rules: &[Rule], events: &[Event]) -> Vec<Hit> {
 fn problems(rules: &[Rule], failed: Option<&WhyNot>, service: bool, me: &str) -> Vec<String> {
     if let Some(e) = failed {
         let why = match e {
-            WhyNot::Unsupported => "この OS では見えない".to_owned(),
-            WhyNot::Failed(n) => format!("見張りを始められなかった（{n}）"),
+            WhyNot::Unsupported => note(msg::N_SESSION_UNSUPPORTED, &[]),
+            WhyNot::Failed(n) => note(msg::N_SESSION_WATCH_FAILED, &[&n.to_string()]),
             other => other.to_string(),
         };
         let mut ids: Vec<&str> = rules.iter().map(|r| r.id.as_str()).collect();
         ids.dedup();
-        return ids
-            .into_iter()
-            .map(|id| format!("{id}: サインイン・ロックが分からない（{why}）ので、session の [[when]] では流れない"))
-            .collect();
+        return ids.into_iter().map(|id| line(msg::SESSION_WATCH_FAILED, &[id, &why])).collect();
     }
     if service {
         return Vec::new();
@@ -189,15 +187,11 @@ fn problems(rules: &[Rule], failed: Option<&WhyNot>, service: bool, me: &str) ->
         .filter_map(|r| {
             let id = &r.id;
             match (r.session, r.user.as_deref()) {
-                (Session::SignIn, _) => Some(format!(
-                    "{id}: サインインはサービスのエンジンにしか見えない（このエンジンはサインインの後に始まる）ので、session = \"sign_in\" では流れない。サインインのたびに流すなら on_start = true"
-                )),
-                (Session::SignOut, _) => Some(format!(
-                    "{id}: サインアウトはサービスのエンジンにしか見えない（このエンジンはサインアウトで止まる）ので、session = \"sign_out\" では流れない"
-                )),
-                (Session::Lock | Session::Unlock, Some(u)) if !me.is_empty() && !ito_power::same_user(u, me) => Some(format!(
-                    "{id}: このエンジンには {me} のセッションしか見えないので、user = '{u}' のロック・解除では流れない。サービスのエンジンで動かす"
-                )),
+                (Session::SignIn, _) => Some(line(msg::SESSION_SIGN_IN_HIDDEN, &[id])),
+                (Session::SignOut, _) => Some(line(msg::SESSION_SIGN_OUT_HIDDEN, &[id])),
+                (Session::Lock | Session::Unlock, Some(u)) if !me.is_empty() && !ito_power::same_user(u, me) => {
+                    Some(line(msg::SESSION_USER_HIDDEN, &[id, me, u]))
+                }
                 (Session::Lock | Session::Unlock, _) => None,
             }
         })
@@ -288,8 +282,8 @@ mod tests {
         assert_eq!(session_of(SessionEvent::SignOut), Session::SignOut);
         assert_eq!(session_of(SessionEvent::Lock), Session::Lock);
         assert_eq!(session_of(SessionEvent::Unlock), Session::Unlock);
-        assert_eq!(what(Session::Lock, ""), "画面をロックした");
-        assert_eq!(what(Session::SignIn, "PC\\taro"), "PC\\taro がサインインした");
+        assert_eq!(what(Session::Lock, ""), note(msg::N_SESSION_LOCK, &[]));
+        assert_eq!(what(Session::SignIn, "PC\\taro"), note(msg::N_SESSION_BY, &["PC\\taro", &note(msg::N_SESSION_SIGN_IN, &[])]));
     }
 
     #[test]
@@ -298,8 +292,8 @@ mod tests {
             vec![rule("g/a", Session::SignIn, None), rule("g/b", Session::SignOut, Some("PC\\taro")), rule("g/c", Session::Lock, None)];
         let p = problems(&rules, None, false, "PC\\taro");
         assert_eq!(p.len(), 2);
-        assert!(p[0].starts_with("g/a: サインインはサービスのエンジンにしか見えない") && p[0].ends_with("on_start = true"), "{p:?}");
-        assert!(p[1].starts_with("g/b: サインアウトはサービスのエンジンにしか見えない"), "{p:?}");
+        assert_eq!(p[0], line(msg::SESSION_SIGN_IN_HIDDEN, &["g/a"]));
+        assert_eq!(p[1], line(msg::SESSION_SIGN_OUT_HIDDEN, &["g/b"]));
         assert!(problems(&rules, None, true, "PC\\taro").is_empty());
     }
 
@@ -311,10 +305,7 @@ mod tests {
             rule("g/c", Session::Lock, Some("pc\\TARO")),
             rule("g/d", Session::Unlock, None),
         ];
-        assert_eq!(
-            problems(&rules, None, false, "PC\\taro"),
-            ["g/a: このエンジンには PC\\taro のセッションしか見えないので、user = 'PC\\hanako' のロック・解除では流れない。サービスのエンジンで動かす"]
-        );
+        assert_eq!(problems(&rules, None, false, "PC\\taro"), [line(msg::SESSION_USER_HIDDEN, &["g/a", "PC\\taro", "PC\\hanako"])]);
         assert!(problems(&rules, None, true, "PC\\taro").is_empty());
         assert!(problems(&rules, None, false, "").is_empty());
     }
@@ -325,11 +316,11 @@ mod tests {
         assert_eq!(
             problems(&rules, Some(&WhyNot::Unsupported), true, "PC\\taro"),
             [
-                "g/a: サインイン・ロックが分からない（この OS では見えない）ので、session の [[when]] では流れない",
-                "g/b: サインイン・ロックが分からない（この OS では見えない）ので、session の [[when]] では流れない",
+                line(msg::SESSION_WATCH_FAILED, &["g/a", &note(msg::N_SESSION_UNSUPPORTED, &[])]),
+                line(msg::SESSION_WATCH_FAILED, &["g/b", &note(msg::N_SESSION_UNSUPPORTED, &[])]),
             ]
         );
-        assert!(problems(&rules, Some(&WhyNot::Failed(5)), false, "PC\\taro")[0].contains("見張りを始められなかった（5）"));
+        assert!(problems(&rules, Some(&WhyNot::Failed(5)), false, "PC\\taro")[0].contains(&note(msg::N_SESSION_WATCH_FAILED, &["5"])));
     }
 
     #[test]

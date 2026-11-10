@@ -28,6 +28,7 @@ use std::time::Duration;
 
 use ito_cloud::{Error, Options, Target};
 use koyomi_core::chore::{self, Chore, Verify, NOTHING, S3};
+use koyomi_core::msg::{self, line, note};
 use koyomi_core::run::Moved;
 
 /// The most a run may take here: the job's own `timeout` ends it sooner.
@@ -59,7 +60,8 @@ fn var(name: &str) -> Option<String> {
 
 /// Reads the job from the environment and runs it.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
-    let op = var("OP").ok_or("KOYOMI_CLOUD_OP がない（koyomi cloud run は s3:// の send か fetch のジョブが動かす）")?;
+    let op = var("OP")
+        .ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_CLOUD_OP", "kind = \"send\" or kind = \"fetch\" with s3://", "cloud"]))?;
     let (from, into) = (var("FROM").unwrap_or_default(), var("INTO").unwrap_or_default());
     // Their values, read from the credential store when the job started; by hand,
     // still `secret:<name>`.
@@ -74,7 +76,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
         "fetch" => {
             Chore::Fetch { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint, verify }
         }
-        _ => return Err(format!("KOYOMI_CLOUD_OP は send か fetch: {op}")),
+        _ => return Err(line(msg::DEF_CHOICE_BAD, &["KOYOMI_CLOUD_OP", "\"send\", \"fetch\""])),
     };
     go(&job, key_id, password, stop)
 }
@@ -88,13 +90,14 @@ fn go(job: &Chore, key_id: Option<String>, password: Option<String>, stop: &Atom
     let (send, from, into, region, endpoint, verify) = match job {
         Chore::Send { from, into, region, endpoint, verify, .. } if job.cloud() => (true, from, into, region, endpoint, verify),
         Chore::Fetch { from, into, region, endpoint, verify, .. } if job.cloud() => (false, from, into, region, endpoint, verify),
-        _ => return Err("s3:// の send か fetch のジョブではない".into()),
+        _ => return Err(line(msg::CLOUD_NOT_JOB, &[])),
     };
     // The store checks the SHA-256 only when asked: some S3-compatible ones refuse it.
     let opts = Options { timeout: RUN_MAX, checksum: verify.is_some(), ..Options::default() };
-    let at = chore::s3(if send { into } else { from }).ok_or("s3:// の相手がない")??;
+    let at = chore::s3(if send { into } else { from })
+        .ok_or_else(|| line(msg::CLOUD_PEER_MISSING, &[if send { "send" } else { "fetch" }, if send { "into" } else { "from" }]))??;
     let read = |v: Option<String>, name: &str| -> Result<String, String> {
-        let v = crate::sftp::password(v.ok_or_else(|| format!("{name} がない"))?)?;
+        let v = crate::sftp::password(v.ok_or_else(|| line(msg::CLOUD_CRED_MISSING, &[name]))?)?;
         Ok(v.trim().to_owned())
     };
     let endpoint = endpoint.as_deref().map(|e| e.trim().trim_end_matches('/').to_owned()).filter(|e| !e.is_empty());
@@ -149,10 +152,10 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &Atomi
     }
     // Before any is fetched: a name such as `..\x.csv` would land outside `into`.
     if let Some(bad) = found.iter().find(|e| !file_name(&e.key[dir.len()..])) {
-        return Err(format!("このマシンのファイルの名前にできないキー: s3://{}/{}", at.bucket, bad.key));
+        return Err(line(msg::CLOUD_KEY_UNSAFE, &[&format!("s3://{}/{}", at.bucket, bad.key)]));
     }
     let into = PathBuf::from(into);
-    std::fs::create_dir_all(&into).map_err(|e| format!("into のフォルダーを作れない: {}: {e}", into.display()))?;
+    std::fs::create_dir_all(&into).map_err(|e| line(msg::CLOUD_INTO_DIR, &[&into.display().to_string(), &e.to_string()]))?;
     for e in &found {
         let name = &e.key[dir.len()..];
         let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..*opts };
@@ -171,7 +174,7 @@ fn said(verb: &str, at: &S3, key: &str, m: ito_cloud::Moved, verify: bool) {
     let hash = if verify { format!(" (sha256 {})", m.sha256) } else { String::new() };
     crate::say(&format!("{verb}: {name} ({} bytes){hash}", m.bytes), false);
     if verify && !m.verified {
-        crate::say(&format!("  {name}: 相手にチェックサムがなく、照らし合わせていない"), false);
+        crate::say(&format!("  {name}: {}", note(msg::N_CLOUD_UNVERIFIED, &[])), false);
     }
     let matched = (verify && m.verified).then_some(true);
     crate::sftp::keep(&Moved { name, bytes: m.bytes, sha256: verify.then_some(m.sha256), matched });
@@ -211,16 +214,16 @@ fn progress(name: &str) -> impl FnMut(u64, u64) + '_ {
 fn why(e: &Error, bucket: &str, key: &str) -> String {
     let at = format!("s3://{bucket}/{key}");
     match e {
-        Error::Auth(s) => format!("{at}: 断られた: {s}（key_id・password・region を確かめる）"),
-        Error::NotFound => format!("{at}: バケットかキーがない"),
-        Error::Mismatch(s) => format!("{at}: 届いたバイトが合わない: {s}"),
-        Error::Cancelled => format!("{at}: 止めた（送りかけ・受けかけのものは残していない）"),
-        Error::Timeout => format!("{at}: 時間切れ"),
-        Error::Network(s) => format!("{at}: つなげない: {s}"),
-        Error::Tls(s) => format!("{at}: TLS: {s}"),
-        Error::Status { code, body } if body.is_empty() => format!("{at}: サーバーが {code} を返した"),
-        Error::Status { code, body } => format!("{at}: サーバーが {code} を返した: {body}"),
-        Error::Io(s) => format!("{at}: ファイル: {s}"),
+        Error::Auth(s) => line(msg::CLOUD_AUTH, &[&at, s]),
+        Error::NotFound => line(msg::CLOUD_NOT_FOUND, &[&at]),
+        Error::Mismatch(s) => line(msg::CLOUD_MISMATCH, &[&at, s]),
+        Error::Cancelled => format!("{at}: {}", note(msg::N_STOPPED_CLOUD, &[])),
+        Error::Timeout => format!("{at}: {}", note(msg::N_CLOUD_TIMEOUT, &[])),
+        Error::Network(s) => line(msg::CLOUD_NETWORK, &[&at, s]),
+        Error::Tls(s) => line(msg::CLOUD_TLS, &[&at, s]),
+        Error::Status { code, body } if body.is_empty() => line(msg::CLOUD_STATUS, &[&at, &code.to_string()]),
+        Error::Status { code, body } => line(msg::CLOUD_STATUS_BODY, &[&at, &code.to_string(), body]),
+        Error::Io(s) => line(msg::CLOUD_IO, &[&at, s]),
     }
 }
 
@@ -315,10 +318,10 @@ mod tests {
         // Refused: says what to look at.
         s3.fail("PUT", 403, 1);
         let e = run(&send(&s3, &out.join("a.csv"), "s3://bucket/no/"), false).unwrap_err();
-        assert!(e.starts_with("s3://bucket/no/a.csv: 断られた") && e.contains("key_id・password"), "{e}");
+        assert!(msg::CLOUD_AUTH.is_in(&e) && e.contains("s3://bucket/no/a.csv") && e.contains("key_id"), "{e}");
         // A stop before it starts.
         let e = run(&send(&s3, &out.join("a.csv"), "s3://bucket/no/"), true).unwrap_err();
-        assert!(e.contains("止めた"), "{e}");
+        assert!(e.contains(&note(msg::N_STOPPED_CLOUD, &[])), "{e}");
         assert!(s3.object("no/a.csv").is_none());
     }
 
@@ -347,15 +350,16 @@ mod tests {
         s3.put_object("bad/ok.csv", b"y");
         let far = dir.0.join("far");
         let e = run(&fetch(&s3, "s3://bucket/bad/*.csv", &far), false).unwrap_err();
-        assert!(e.contains("ファイルの名前にできないキー") && e.contains("up.csv"), "{e}");
+        assert!(msg::CLOUD_KEY_UNSAFE.is_in(&e) && e.contains("up.csv"), "{e}");
         assert!(!far.exists() && !dir.0.join("up.csv").exists());
         // A failed download leaves no `.part`.
         s3.fail("GET /bucket/in/a.csv", 500, 10);
         let e = run(&fetch(&s3, "s3://bucket/in/a.csv", &dir.0.join("again")), false).unwrap_err();
-        assert!(e.starts_with("s3://bucket/in/a.csv: サーバーが 500 を返した"), "{e}");
+        assert!(msg::CLOUD_STATUS_BODY.is_in(&e), "{e}");
+        assert!(e.contains("s3://bucket/in/a.csv") && e.contains("500"), "{e}");
         assert!(!dir.0.join("again").join("a.csv.part").exists() && !dir.0.join("again").join("a.csv").exists());
         // A stop.
-        assert!(run(&fetch(&s3, "s3://bucket/in/*.csv", &into), true).unwrap_err().contains("止めた"));
+        assert!(run(&fetch(&s3, "s3://bucket/in/*.csv", &into), true).unwrap_err().contains(&note(msg::N_STOPPED_CLOUD, &[])));
     }
 
     #[test]
@@ -374,7 +378,7 @@ mod tests {
         // Bytes changed on the way: the store refuses them and the job fails.
         s3.damage_in_transit(true);
         let e = run(&checked(send(&s3, &out.join("a.csv"), "s3://bucket/bad/")), false).unwrap_err();
-        assert!(e.contains("届いたバイトが合わない"), "{e}");
+        assert!(msg::CLOUD_MISMATCH.is_in(&e), "{e}");
         s3.damage_in_transit(false);
         // A stored object that no longer agrees with its checksum fails a checked fetch,
         // and leaves no file.
@@ -384,7 +388,7 @@ mod tests {
         s3.corrupt_object("in/a.csv");
         let again = dir.0.join("again");
         let e = run(&checked(fetch(&s3, "s3://bucket/in/a.csv", &again)), false).unwrap_err();
-        assert!(e.contains("届いたバイトが合わない"), "{e}");
+        assert!(msg::CLOUD_MISMATCH.is_in(&e), "{e}");
         assert!(!again.join("a.csv").exists() && !again.join("a.csv.part").exists());
         // Unchecked, the same fetch takes what is there.
         assert_eq!(run(&fetch(&s3, "s3://bucket/in/a.csv", &again), false), Ok(0));
@@ -401,9 +405,9 @@ mod tests {
         }
         assert!(koyomi_core::msg::CHORE_S3_REGION_BAD.is_in(&run(&job, false).unwrap_err()));
         let none = go(&send(&s3, &dir.0, "s3://bucket/x/"), None, None, &AtomicBool::new(false));
-        assert_eq!(none, Err("key_id がない".into()));
+        assert_eq!(none, Err(line(msg::CLOUD_CRED_MISSING, &["key_id"])));
         let copy = Chore::Copy { from: "a".into(), into: "b".into(), pattern: None };
-        assert!(run(&copy, false).unwrap_err().contains("s3:// の send か fetch"));
+        assert!(msg::CLOUD_NOT_JOB.is_in(&run(&copy, false).unwrap_err()));
     }
 
     #[test]
@@ -412,7 +416,7 @@ mod tests {
         for bad in ["", ".", "..", "a\\b", "a:b", "a?b", "a\nb"] {
             assert!(!file_name(bad), "{bad:?}");
         }
-        assert_eq!(why(&Error::NotFound, "logs", "in/a.csv"), "s3://logs/in/a.csv: バケットかキーがない");
+        assert_eq!(why(&Error::NotFound, "logs", "in/a.csv"), line(msg::CLOUD_NOT_FOUND, &["s3://logs/in/a.csv"]));
         // Small files say nothing; a big one, each tenth once.
         let mut p = progress("a.zip");
         p(10, 20);

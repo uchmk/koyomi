@@ -15,6 +15,7 @@ use std::time::{Duration, SystemTime};
 
 use ito_notify::mail::{address, Mail};
 use koyomi_core::chore::{Chore, FILES_MAX, MAIL_TEXT};
+use koyomi_core::msg::{self, line, note};
 
 /// The most the attached files may come to together. Many servers take 25 MB
 /// in all, and the message grows by a third in base64.
@@ -52,34 +53,37 @@ fn lines(v: &str) -> Vec<String> {
 /// The `[[notify.mails]]` place to send through: the one named `via`, or the first.
 fn pick<'a>(places: &'a [Mail], via: Option<&str>) -> Result<&'a Mail, String> {
     if places.is_empty() {
-        return Err("koyomi.toml に [[notify.mails]] がない（設定の通知のページでメールの送り先を足す）".into());
+        return Err(line(msg::MAIL_PLACE_NONE, &[]));
     }
     match via.map(str::trim).filter(|v| !v.is_empty()) {
         None => Ok(&places[0]),
         Some(v) => places.iter().find(|p| p.name == v).ok_or_else(|| {
             let names: Vec<&str> = places.iter().map(|p| p.name.as_str()).filter(|n| !n.is_empty()).collect();
-            let have =
-                if names.is_empty() { "名前のあるものはない".to_owned() } else { format!("あるのは {}", names.join("・")) };
-            format!("[[notify.mails]] に name = \"{v}\" がない（{have}）")
+            let have = if names.is_empty() {
+                note(msg::N_MAIL_NO_NAMES, &[])
+            } else {
+                note(msg::N_MAIL_NAMES, &[&names.join(&note(msg::N_RUN_LIST_JOIN, &[]))])
+            };
+            line(msg::MAIL_PLACE_NAME, &[v, &have])
         }),
     }
 }
 
 /// Whether `m` can send: a server, a sender, and the password when it logs in.
 fn ready(m: &Mail) -> Result<(), String> {
-    let place = if m.name.is_empty() { format!("[[notify.mails]] の {}", m.host) } else { format!("[[notify.mails]] の {}", m.name) };
+    let place = if m.name.is_empty() { &m.host } else { &m.name };
     if m.host.is_empty() {
-        return Err("[[notify.mails]] の host が空（SMTP のサーバーを書く）".into());
+        return Err(line(msg::MAIL_HOST_EMPTY, &[]));
     }
     if m.port == 0 {
-        return Err(format!("{place}: port がない（465 か 587）"));
+        return Err(line(msg::MAIL_PORT_MISSING, &[place]));
     }
     if address(&m.from).is_none() {
-        return Err(format!("{place}: from がアドレスでない: {}", m.from));
+        return Err(line(msg::MAIL_FROM_BAD, &[place, &m.from]));
     }
     let secret = m.secret.as_deref().is_some_and(|s| !s.is_empty() && !s.contains(['\r', '\n']));
     if !m.user.is_empty() && !secret {
-        return Err(format!("{place}: パスワードを資格情報ストアから読めない（{}。設定の通知のページで入れ直す）", m.password));
+        return Err(line(msg::MAIL_PASSWORD_UNREADABLE, &[place, &m.password]));
     }
     Ok(())
 }
@@ -91,20 +95,16 @@ fn found(patterns: &[String]) -> Result<Vec<(std::path::PathBuf, u64)>, String> 
     for p in patterns {
         let hits = crate::engine::files::find_files(p);
         if hits.is_empty() {
-            return Err(format!("添付するファイルがない: {p}"));
+            return Err(line(msg::MAIL_FILES_NONE, &[p]));
         }
         out.extend(hits.into_iter().map(|(path, size, _)| (path, size)));
         if out.len() > FILES_MAX {
-            return Err(format!("添付するファイルが {FILES_MAX} 個を超える（files の * で増えたものも数える）"));
+            return Err(line(msg::MAIL_FILES_MANY, &[&FILES_MAX.to_string()]));
         }
     }
     let total: u64 = out.iter().map(|(_, size)| size).sum();
     if total > SIZE_MAX {
-        return Err(format!(
-            "添付するファイルが大きすぎる（合わせて {} MB。{} MB まで）",
-            total.div_ceil(1024 * 1024),
-            SIZE_MAX / 1024 / 1024
-        ));
+        return Err(line(msg::MAIL_FILES_BIG, &[&total.div_ceil(1024 * 1024).to_string(), &(SIZE_MAX / 1024 / 1024).to_string()]));
     }
     Ok(out)
 }
@@ -112,7 +112,7 @@ fn found(patterns: &[String]) -> Result<Vec<(std::path::PathBuf, u64)>, String> 
 /// Sends the mail: 0 once the server took it, or why not. `stop` set before it
 /// sends: nothing is sent.
 fn exec(stop: &AtomicBool) -> Result<i32, String> {
-    let to = var("TO").map(|v| lines(&v)).ok_or("KOYOMI_MAIL_TO がない（koyomi mail run は kind = \"mail\" のジョブが動かす）")?;
+    let to = var("TO").map(|v| lines(&v)).ok_or_else(|| line(msg::JOB_ENV_MISSING, &["KOYOMI_MAIL_TO", "kind = \"mail\"", "mail"]))?;
     let cc = var("CC").map(|v| lines(&v)).unwrap_or_default();
     let subject = var("SUBJECT").unwrap_or_default().trim().to_owned();
     let body = var("BODY");
@@ -127,7 +127,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let config = koyomi_core::config::Config::load(&paths.config)?;
     let (mut n, _) = crate::notify::read(&config);
     for w in n.reveal("koyomi") {
-        crate::say(&format!("! {w}"), false);
+        crate::say_bad(&w);
     }
     let place = pick(&n.mail_places, via.as_deref())?;
     ready(place)?;
@@ -135,7 +135,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let found = found(&files)?;
     let mut read = Vec::with_capacity(found.len());
     for (path, _) in &found {
-        let bytes = std::fs::read(path).map_err(|e| format!("添付するファイルを読めない: {}: {e}", path.display()))?;
+        let bytes = std::fs::read(path).map_err(|e| line(msg::MAIL_FILE_UNREADABLE, &[&path.display().to_string(), &e.to_string()]))?;
         read.push((name_of(path), bytes));
     }
     let attachments: Vec<ito_mail::Attachment> =
@@ -153,10 +153,11 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
         SystemTime::now(),
     );
     if stop.load(Ordering::SeqCst) {
-        return Err("止めた（送る前だったので、何も送っていない）".into());
+        return Err(note(msg::N_STOPPED_MAIL, &[]));
     }
     let all: Vec<String> = to.iter().chain(&cc).cloned().collect();
-    ito_notify::mail::send_message(place, &all, &message, SEND_TIMEOUT).map_err(|e| format!("{}: 送れなかった: {e}", place.host))?;
+    ito_notify::mail::send_message(place, &all, &message, SEND_TIMEOUT)
+        .map_err(|e| line(msg::MAIL_SEND_FAILED, &[&place.host, &e.to_string()]))?;
     for (path, size) in &found {
         crate::say(&format!("attached: {} ({size} bytes)", path.display()), false);
     }
@@ -171,7 +172,7 @@ pub fn unknown(places: &[Mail], net: &koyomi_core::jobnet::Jobnet) -> Vec<String
         .iter()
         .filter_map(|j| match &j.part {
             koyomi_core::jobnet::Part::Chore(Chore::Mail { via, .. }) => {
-                pick(places, via.as_deref()).err().map(|e| format!("{}: {e}", j.id))
+                pick(places, via.as_deref()).err().map(|e| line(msg::MAIL_JOB_PLACE, &[&j.id, msg::uncoded(&e)]))
             }
             _ => None,
         })
@@ -217,8 +218,8 @@ mod tests {
         assert_eq!(pick(&places, Some(" ")).unwrap().name, "");
         assert_eq!(pick(&places, Some("ops")).unwrap().name, "ops");
         let e = pick(&places, Some("経理")).unwrap_err();
-        assert!(e.contains("\"経理\"") && e.contains("ops"), "{e}");
-        assert!(pick(&[], None).unwrap_err().contains("[[notify.mails]] がない"));
+        assert!(msg::MAIL_PLACE_NAME.is_in(&e) && e.contains("\"経理\"") && e.contains("ops"), "{e}");
+        assert!(msg::MAIL_PLACE_NONE.is_in(&pick(&[], None).unwrap_err()));
     }
 
     #[test]
@@ -230,7 +231,7 @@ mod tests {
         .unwrap();
         let said = unknown(&[place("ops")], &net);
         assert_eq!(said.len(), 1);
-        assert!(said[0].starts_with("m: ") && said[0].contains("\"経理\""), "{said:?}");
+        assert!(msg::MAIL_JOB_PLACE.is_in(&said[0]) && said[0].contains("ジョブ m が使う") && said[0].contains("\"経理\""), "{said:?}");
         assert!(unknown(&[place("経理")], &net).is_empty());
         assert_eq!(unknown(&[], &net).len(), 2);
     }
@@ -243,16 +244,17 @@ mod tests {
         assert_eq!(ready(&open), Ok(()));
         let mut m = place("ops");
         m.secret = None;
-        assert!(ready(&m).unwrap_err().contains("secret:mail"));
+        let e = ready(&m).unwrap_err();
+        assert!(msg::MAIL_PASSWORD_UNREADABLE.is_in(&e) && e.contains("secret:mail"), "{e}");
         let mut m = place("ops");
         m.from = "jobs".into();
-        assert!(ready(&m).unwrap_err().contains("from"));
+        assert!(msg::MAIL_FROM_BAD.is_in(&ready(&m).unwrap_err()));
         let mut m = place("ops");
         m.port = 0;
-        assert!(ready(&m).unwrap_err().contains("port"));
+        assert!(msg::MAIL_PORT_MISSING.is_in(&ready(&m).unwrap_err()));
         let mut m = place("ops");
         m.host.clear();
-        assert!(ready(&m).unwrap_err().contains("host"));
+        assert!(msg::MAIL_HOST_EMPTY.is_in(&ready(&m).unwrap_err()));
     }
 
     #[test]
@@ -266,8 +268,8 @@ mod tests {
         let got = found(&[pat("*.csv"), pat("c.log")]).unwrap();
         assert_eq!(got.iter().map(|(p, _)| name_of(p)).collect::<Vec<_>>(), ["a.csv", "b.csv", "c.log"]);
         assert_eq!(got[0].1, 4);
-        assert!(found(&[pat("none.txt")]).unwrap_err().contains("添付するファイルがない"));
-        assert!(found(&vec![pat("*.csv"); FILES_MAX / 2 + 1]).unwrap_err().contains("個を超える"));
+        assert!(msg::MAIL_FILES_NONE.is_in(&found(&[pat("none.txt")]).unwrap_err()));
+        assert!(msg::MAIL_FILES_MANY.is_in(&found(&vec![pat("*.csv"); FILES_MAX / 2 + 1]).unwrap_err()));
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

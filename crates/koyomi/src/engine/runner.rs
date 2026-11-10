@@ -40,6 +40,7 @@ use koyomi_core::history::{self, Day};
 use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
 use koyomi_core::lock::{admit, Holder};
+use koyomi_core::msg;
 use koyomi_core::run::{verdict, How, JobRun, Moved, Outcome, Run, State};
 use koyomi_core::scan::Def;
 use koyomi_core::template;
@@ -117,14 +118,14 @@ fn unmet(req: &koyomi_core::jobnet::Require) -> Option<String> {
 /// [`unmet`] for the PC's state as given; a state that is `None` cannot be known and counts as met.
 fn unmet_by(req: &koyomi_core::jobnet::Require, ac: Option<bool>, network: Option<bool>, idle: Option<Duration>) -> Option<String> {
     if req.ac && ac == Some(false) {
-        return Some("AC 電源につながるのを待っています（require = \"ac\"）".to_owned());
+        return Some(msg::note(msg::N_UNMET_AC, &[]));
     }
     if req.network && network == Some(false) {
-        return Some("ネットワークにつながるのを待っています（require = \"network\"）".to_owned());
+        return Some(msg::note(msg::N_UNMET_NETWORK, &[]));
     }
     if let Some(s) = req.idle {
         if idle.is_some_and(|d| d.as_secs() < s) {
-            return Some(format!("PC が {} 分使われなくなるのを待っています（require = \"idle\"）", s.div_ceil(60)));
+            return Some(msg::note(msg::N_UNMET_IDLE, &[&s.div_ceil(60).to_string()]));
         }
     }
     None
@@ -159,7 +160,7 @@ impl Due {
     fn check(&mut self, now: NaiveDateTime) -> Option<(State, String, Option<String>)> {
         match self {
             Due::Person => None,
-            Due::Time { at, text } => (now >= *at).then(|| (State::Ok, format!("{text} になった"), None)),
+            Due::Time { at, text } => (now >= *at).then(|| (State::Ok, msg::note(msg::N_WAIT_TIME_REACHED, &[text.as_str()]), None)),
             Due::File { pattern, settle, timeout, since, seen } => {
                 let found = super::files::find_file(pattern);
                 let arrived = match (found, *settle) {
@@ -181,11 +182,11 @@ impl Due {
                 };
                 if arrived {
                     let path = seen.as_ref().map(|s| s.0.display().to_string())?;
-                    return Some((State::Ok, format!("{path} が来た"), Some(path)));
+                    return Some((State::Ok, msg::note(msg::N_WAIT_FILE_ARRIVED, &[&path]), Some(path)));
                 }
                 match *timeout {
                     Some(t) if since.elapsed() >= Duration::from_secs(t) => {
-                        Some((State::Timeout, format!("打ち切り（{} を超えた）", koyomi_core::duration::text(t)), None))
+                        Some((State::Timeout, msg::note(msg::N_RUN_TIMEOUT_OVER, &[&koyomi_core::duration::text(t)]), None))
                     }
                     _ => None,
                 }
@@ -325,15 +326,16 @@ impl Runner {
             .waits
             .iter()
             .position(|w| w.run == run && w.job == job && matches!(w.due, Due::Person))
-            .ok_or_else(|| format!("{run} の {job}: 確認を待っていない"))?;
+            .ok_or_else(|| msg::line(msg::APPROVAL_NOT_WAITING, &[run, job]))?;
         self.waits.remove(i);
         let now = ito_common::now::now_local().naive_local();
-        let (state, reason) = if yes { (State::Ok, "承認された") } else { (State::Error, "却下された") };
-        if let Some(r) = self.end_part(run, job, state, reason, None, now) {
+        let (state, reason) =
+            if yes { (State::Ok, msg::note(msg::N_APPROVED, &[])) } else { (State::Error, msg::note(msg::N_REJECTED, &[])) };
+        if let Some(r) = self.end_part(run, job, state, &reason, None, now) {
             self.ended(r);
         }
         self.start_ready();
-        Ok(format!("{run} の {job} を{}", if yes { "承認した" } else { "却下した" }))
+        Ok(msg::note(if yes { msg::N_APPROVE_DONE } else { msg::N_REJECT_DONE }, &[run, job]))
     }
 
     pub fn take_notices(&mut self) -> Vec<(String, String)> {
@@ -351,7 +353,7 @@ impl Runner {
     /// (koyomi.toml's `[vars]`) and `{date}` in its jobs written out for the business day `date`;
     /// each job in the folder `work_dir` gives.
     fn expand(&self, jobnet: &str, net: &Jobnet, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<Jobnet, String> {
-        let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(format!("子ジョブネットがない: {u}"))))?;
+        let net = jobnet::expand(net, &|u| self.children.get(u).cloned().unwrap_or_else(|| Err(msg::line(msg::CHILD_MISSING, &[u]))))?;
         let cal = self.calendar_of.get(jobnet).and_then(|c| self.calendars.get(c));
         let values = template::values(&net, set)?;
         let mut net = template::expand_net(&net, date, cal, &values, &self.config.vars())?;
@@ -366,7 +368,7 @@ impl Runner {
     /// Each job of `def` as it would run for the business day `date`, one per line
     /// (`job: command`, the folder after `@`); nothing starts.
     pub fn dry(&self, def: &Def, date: NaiveDate, set: &BTreeMap<String, String>) -> Result<String, String> {
-        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| msg::line(msg::DEF_NET_MISSING, &[&def.file]))?, date, set)?;
         let mut out = String::new();
         for j in &net.jobs {
             let what = match (&j.script, j.run.is_empty()) {
@@ -409,10 +411,10 @@ impl Runner {
     /// At most a year, so a reply stays a reply.
     pub fn history(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<Run>, String> {
         if to < from {
-            return Err(format!("範囲が逆: {from} → {to}"));
+            return Err(msg::line(msg::RANGE_REVERSED, &[&from.to_string(), &to.to_string()]));
         }
         if (to - from).num_days() > 366 {
-            return Err("範囲は 1 年まで".to_owned());
+            return Err(msg::line(msg::RANGE_TOO_LONG, &[]));
         }
         let mut out = Vec::new();
         let mut day = from;
@@ -479,7 +481,7 @@ impl Runner {
         from: Option<&str>,
         set: &BTreeMap<String, String>,
     ) -> Result<Run, String> {
-        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?, date, set)?;
+        let net = self.expand(&def.id, def.net.as_ref().ok_or_else(|| msg::line(msg::DEF_NET_MISSING, &[&def.file]))?, date, set)?;
         self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
         let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
@@ -503,7 +505,7 @@ impl Runner {
     pub fn rerun(&mut self, previous: &str, from: Option<&str>, next: Option<State>) -> Result<String, String> {
         let prev = self.previous(previous)?;
         if !prev.is_over() {
-            return Err(format!("{}: まだ終わっていない", prev.id));
+            return Err(msg::line(msg::RUN_NOT_OVER, &[&prev.id]));
         }
         let (lock, shared) = std::fs::read_to_string(self.run_dir(previous).join("definition.toml"))
             .ok()
@@ -517,12 +519,13 @@ impl Runner {
             jobnet::parse(&text).map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
         // The values a person gave the first time go again (`params.toml` beside the definition).
         let set: BTreeMap<String, String> = kept::read(&self.run_dir(previous).join(PARAMS)).unwrap_or_default();
-        let net = self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| format!("{}: 業務日が読めない", prev.id))?, &set)?;
+        let net =
+            self.expand(&prev.jobnet, &net, prev.date.parse().map_err(|_| msg::line(msg::RUN_DATE_UNREADABLE, &[&prev.id]))?, &set)?;
         let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let mut run = match (from, next) {
             (Some(job), Some(mark)) => Run::rerun_after(&id, &prev, &net, job, mark, now)?,
-            (None, Some(_)) => return Err("次から流すにはジョブが要る".to_owned()),
+            (None, Some(_)) => return Err(msg::line(msg::RERUN_NEXT_NEEDS_JOB, &[])),
             _ => Run::rerun(&id, &prev, &net, from, now)?,
         };
         run.lock = net.lock.clone();
@@ -537,8 +540,8 @@ impl Runner {
     /// here with `def` from the first job that had not ended ok ([`Run::taken_over`]), with the
     /// values it was given.
     pub fn resume(&mut self, def: &Def, theirs: &Run, from: &str) -> Result<String, String> {
-        let net = def.net.as_ref().ok_or_else(|| format!("{}: 定義の誤り", def.file))?;
-        let date: NaiveDate = theirs.date.parse().map_err(|_| format!("{}: 業務日が読めない", theirs.id))?;
+        let net = def.net.as_ref().ok_or_else(|| msg::line(msg::DEF_NET_MISSING, &[&def.file]))?;
+        let date: NaiveDate = theirs.date.parse().map_err(|_| msg::line(msg::RUN_DATE_UNREADABLE, &[&theirs.id]))?;
         let net = self.expand(&def.id, net, date, &theirs.params)?;
         self.not_running(&def.id, def.label(), net.lock.as_deref(), net.lock_shared)?;
         let now = ito_common::now::now_local().naive_local();
@@ -581,16 +584,17 @@ impl Runner {
         if let Some(r) = self.runs.iter().find(|r| r.id == id) {
             return Ok(r.clone());
         }
-        let day = id.get(0..8).and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok()).ok_or_else(|| format!("実行がない: {id}"))?;
+        let day =
+            id.get(0..8).and_then(|d| NaiveDate::parse_from_str(d, "%Y%m%d").ok()).ok_or_else(|| msg::line(msg::RUN_NOT_FOUND, &[id]))?;
         let loaded = Day::load(&history::path(&self.history, day)).unwrap_or_default();
-        loaded.runs().into_iter().find(|r| r.id == id).ok_or_else(|| format!("実行がない: {id}"))
+        loaded.runs().into_iter().find(|r| r.id == id).ok_or_else(|| msg::line(msg::RUN_NOT_FOUND, &[id]))
     }
 
     /// No other run of `jobnet` is going, and the net may take its `lock` (`shared` or not)
     /// beside the runs that hold it now ([`admit`], `[locks]`'s count).
     fn not_running(&self, jobnet: &str, label: &str, lock: Option<&str>, shared: bool) -> Result<(), String> {
         if self.runs.iter().any(|r| r.jobnet == jobnet && !r.is_over()) {
-            return Err(format!("{label}: 動いている間はもう一度は流せない"));
+            return Err(msg::line(msg::RUN_STILL_GOING, &[label]));
         }
         if let Some(l) = lock {
             let holders: Vec<Holder> = self
@@ -643,7 +647,7 @@ impl Runner {
     /// no run to wait for, it starts now.
     pub fn queue(&mut self, def: &Def, planned: NaiveDateTime, late: bool) {
         if self.queue.iter().any(|q| q.def.id == def.id) {
-            self.not_run(def, planned, State::Skipped, "前の回がまだ動いていました（その次の回が待っています）");
+            self.not_run(def, planned, State::Skipped, &msg::note(msg::N_QUEUE_SKIPPED, &[]));
         } else if self.runs.iter().any(|r| r.jobnet == def.id && !r.is_over()) {
             self.queue.push(Queued { def: def.clone(), planned, late, since: ito_common::now::now_local().naive_local() });
         } else {
@@ -717,9 +721,9 @@ impl Runner {
     /// A person skips `job` of `run` before it starts: it ends ⊘, and the jobs after it go on.
     pub fn skip(&mut self, run: &str, job: &str) -> Result<String, String> {
         let now = ito_common::now::now_local().naive_local();
-        let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| format!("実行がない: {run}"))?;
+        let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| msg::line(msg::RUN_NOT_FOUND, &[run]))?;
         if r.is_over() {
-            return Err(format!("{run}: もう終わっている"));
+            return Err(msg::line(msg::RUN_OVER, &[run]));
         }
         r.skip(job, now)?;
         let r = r.clone();
@@ -730,7 +734,7 @@ impl Runner {
             self.ended(r);
         }
         self.start_ready();
-        Ok(format!("{run} の {job} を飛ばした"))
+        Ok(msg::note(msg::N_SKIP_DONE, &[run, job]))
     }
 
     /// Starts the schedule's time `planned` of `def`, late or not; what
@@ -790,8 +794,8 @@ impl Runner {
                 let archived = self.logs.parent().and_then(|s| koyomi_core::retain::archived_log(s, run, job).ok());
                 // No path in the message: it reaches HTTP callers.
                 archived.ok_or_else(|| match e.kind() {
-                    std::io::ErrorKind::NotFound => format!("{run} にジョブ {job} のログはない"),
-                    _ => format!("{run} のジョブ {job} のログを読めない"),
+                    std::io::ErrorKind::NotFound => msg::line(msg::LOG_NOT_FOUND, &[run, job]),
+                    _ => msg::line(msg::LOG_UNREADABLE, &[run, job]),
                 })?
             }
         };
@@ -801,27 +805,27 @@ impl Runner {
     /// Stops one job, or every job of the run; the ones not started will not start.
     pub fn kill(&mut self, run: &str, job: Option<&str>) -> Result<String, String> {
         let now = ito_common::now::now_local().naive_local();
-        let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| format!("実行がない: {run}"))?;
+        let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| msg::line(msg::RUN_NOT_FOUND, &[run]))?;
         if r.is_over() {
-            return Err(format!("{run}: もう終わっている"));
+            return Err(msg::line(msg::RUN_OVER, &[run]));
         }
         match job {
             Some(job) => {
-                let j = r.job(job).ok_or_else(|| format!("{run} にジョブ {job} はない"))?;
+                let j = r.job(job).ok_or_else(|| msg::line(msg::RUN_JOB_NONE, &[job]))?;
                 if j.state != State::Running {
-                    return Err(format!("{}: 動いていない", j.label()));
+                    return Err(msg::line(msg::JOB_NOT_RUNNING, &[j.label()]));
                 }
                 if j.part.waits() {
                     // A wait has no process: it ends here.
                     self.waits.retain(|w| !(w.run == run && w.job == job));
-                    if let Some(r) = self.end_part(run, job, State::Killed, "強制終了", None, now) {
+                    if let Some(r) = self.end_part(run, job, State::Killed, &msg::note(msg::N_RUN_KILLED, &[]), None, now) {
                         self.ended(r);
                     }
-                    return Ok(format!("{run} の {job} を止めた"));
+                    return Ok(msg::note(msg::N_KILL_DONE, &[run, job]));
                 }
-                let a = self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| format!("{job}: 動いていない"))?;
+                let a = self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| msg::line(msg::JOB_NOT_RUNNING, &[job]))?;
                 ask_stop(&a.why, &a.stop, WHY_KILLED);
-                Ok(format!("{run} の {job} を止める"))
+                Ok(msg::note(msg::N_KILL_ASKED_JOB, &[run, job]))
             }
             None => {
                 r.kill_pending(now);
@@ -834,7 +838,7 @@ impl Runner {
                     // Nothing was running: the run ends here.
                     self.ended(r);
                 }
-                Ok(format!("{run} を止める"))
+                Ok(msg::note(msg::N_KILL_ASKED_RUN, &[run]))
             }
         }
     }
@@ -908,7 +912,7 @@ impl Runner {
         for r in self.runs.iter_mut() {
             for job in r.ready() {
                 if let Some(by) = self.held.job_held_by(&r.jobnet, &job) {
-                    let reason = format!("保留中（koyomi release {} {by}）", r.jobnet);
+                    let reason = msg::note(msg::N_HELD_JOB, &[&r.jobnet, by]);
                     r.hold_job(&job, &reason);
                 }
             }
@@ -945,7 +949,7 @@ impl Runner {
                 Part::Job | Part::Loop { .. } | Part::Chore(_) => self.start_job(&run_id, &job_id, now, width),
                 Part::Notify => {
                     self.notices.push((run_id.clone(), job_id.clone()));
-                    over.extend(self.end_part(&run_id, &job_id, State::Ok, "通知した", None, now));
+                    over.extend(self.end_part(&run_id, &job_id, State::Ok, &msg::note(msg::N_NOTIFIED, &[]), None, now));
                 }
                 Part::Time { at, days } => {
                     let date = self.runs.iter().find(|r| r.id == run_id).and_then(|r| NaiveDate::parse_from_str(&r.date, "%Y-%m-%d").ok());
@@ -953,23 +957,30 @@ impl Runner {
                     match due {
                         Some(due) if due > now => {
                             let text = time_text(due, days);
-                            let reason = format!("{text} を待っています");
+                            let reason = msg::note(msg::N_WAIT_FOR, &[&text]);
                             self.wait_on(&run_id, &job_id, &reason, Due::Time { at: due, text }, now);
                         }
                         Some(due) => {
-                            let reason = format!("{} を過ぎていた", time_text(due, days));
+                            let reason = msg::note(msg::N_WAIT_TIME_PASSED, &[&time_text(due, days)]);
                             over.extend(self.end_part(&run_id, &job_id, State::Ok, &reason, None, now));
                         }
-                        None => over.extend(self.end_part(&run_id, &job_id, State::Error, "日付が読めない", None, now)),
+                        None => over.extend(self.end_part(
+                            &run_id,
+                            &job_id,
+                            State::Error,
+                            &msg::note(msg::N_WAIT_DATE_UNREADABLE, &[]),
+                            None,
+                            now,
+                        )),
                     }
                 }
                 Part::Approval => {
-                    self.wait_on(&run_id, &job_id, "確認を待っています", Due::Person, now);
+                    self.wait_on(&run_id, &job_id, &msg::note(msg::N_WAIT_APPROVAL, &[]), Due::Person, now);
                     self.asks.push((run_id.clone(), job_id.clone()));
                 }
                 Part::File { file, settle } => {
                     let due = Due::File { pattern: file.clone(), settle, timeout, since: Instant::now(), seen: None };
-                    self.wait_on(&run_id, &job_id, &format!("{file} を待っています"), due, now);
+                    self.wait_on(&run_id, &job_id, &msg::note(msg::N_WAIT_FOR, &[&file]), due, now);
                 }
                 // 分岐・待ち合わせ・子ジョブネット end in `Run::settle`, never here.
                 Part::Branch | Part::Join { .. } | Part::Jobnet { .. } => {}
@@ -1105,10 +1116,10 @@ impl Runner {
     /// The things done by hand from `from` to `to` (both days), oldest first, one line each.
     pub fn ops(&self, from: NaiveDate, to: NaiveDate) -> Result<Vec<String>, String> {
         if to < from {
-            return Err(format!("範囲が逆: {from} → {to}"));
+            return Err(msg::line(msg::RANGE_REVERSED, &[&from.to_string(), &to.to_string()]));
         }
         if (to - from).num_days() > 366 {
-            return Err("範囲は 1 年まで".to_owned());
+            return Err(msg::line(msg::RANGE_TOO_LONG, &[]));
         }
         let mut out = Vec::new();
         let mut day = from;
@@ -1124,7 +1135,7 @@ impl Runner {
             for e in events {
                 if let history::Event::Op { at, op, target, detail, by } = e {
                     let sep = if detail.is_empty() { "" } else { "  " };
-                    let by = if by.is_empty() { String::new() } else { format!("  （HTTP: {by}）") };
+                    let by = if by.is_empty() { String::new() } else { msg::note(msg::N_HTTP_BY, &[by]) };
                     out.push(format!("{}  {op:<8} {target}{sep}{detail}{by}", at.format("%Y-%m-%d %H:%M:%S")));
                 }
             }
@@ -1283,14 +1294,14 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
         moved: Vec::new(),
     };
     let Some((exe, args)) = job.command.split_first() else {
-        return done(Outcome::Failed, "run が空".to_owned(), 0);
+        return done(Outcome::Failed, msg::line(msg::RUN_COMMAND_EMPTY, &[]), 0);
     };
     if let Some(dir) = job.log.parent() {
         let _ = std::fs::create_dir_all(dir);
     }
     let mut file = match std::fs::File::create(&job.log) {
         Ok(f) => f,
-        Err(e) => return done(Outcome::Failed, format!("ログを作れない: {}: {e}", job.log.display()), 0),
+        Err(e) => return done(Outcome::Failed, msg::line(msg::LOG_CREATE_FAILED, &[&job.log.display().to_string(), &e.to_string()]), 0),
     };
     let mut size = LogSize { written: 0, capped: false };
     let get = |name: &str| ito_secret::get("koyomi", name);
@@ -1302,7 +1313,7 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
         }
     };
     if let Some(r) = &job.run_as {
-        let _ = writeln!(file, "▶ {} として動かす", r.user);
+        let _ = writeln!(file, "▶ {}", msg::note(msg::N_RUN_AS_LOG, &[&r.user]));
     }
     let Some(each) = &job.each else {
         let (outcome, reason, retried) = tries(job, (exe, args), &env, stop, why, &mut file, &mut size);
@@ -1318,7 +1329,7 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
     };
     let total = passes.len();
     if total == 0 {
-        let _ = writeln!(file, "! 合うファイルが無いので、1 回も動かさない");
+        let _ = writeln!(file, "! {}", msg::note(msg::N_NO_FILES_LOG, &[]));
         return done(Outcome::Exited(0), String::new(), 0);
     }
     if job.width > 1 && total > 1 {
@@ -1329,7 +1340,7 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
     let mut warned = None;
     for (i, f) in passes {
         if stop.load(Ordering::SeqCst) {
-            let _ = writeln!(file, "! 強制終了");
+            let _ = writeln!(file, "! {}", msg::note(msg::N_RUN_KILLED, &[]));
             return done(Outcome::Killed, String::new(), retried);
         }
         let mut pass = job.clone();
@@ -1341,14 +1352,14 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
         let _ = writeln!(file, "▶ {i}/{total}{what}");
         let (outcome, reason, r) = tries(&pass, (exe, args), &env, stop, why, &mut file, &mut size);
         retried += r;
-        let of = format!("{i}/{total} 回目{}", f.as_deref().map(|f| format!("（{f}）")).unwrap_or_default());
+        let of = pass_of(i, total, f.as_deref());
         match outcome {
             Outcome::Exited(code) => match verdict(job.judge.as_ref(), code) {
-                State::Error => return done(Outcome::Failed, format!("{of}で異常: 終了コード {code}"), retried),
+                State::Error => return done(Outcome::Failed, msg::note(msg::N_PASS_FAILED_CODE, &[&of, &code.to_string()]), retried),
                 State::Ok => {}
                 _ => warned = warned.or(Some(code)),
             },
-            Outcome::Failed | Outcome::NoExit => return done(outcome, format!("{of}で異常: {reason}"), retried),
+            Outcome::Failed | Outcome::NoExit => return done(outcome, pass_failed(&of, &reason), retried),
             Outcome::Killed | Outcome::Timeout => return done(outcome, String::new(), retried),
         }
     }
@@ -1374,7 +1385,7 @@ fn side_by_side(
     let total = passes.len();
     let _ = std::fs::remove_file(out_path(&job.log, &job.id));
     let _ = std::fs::write(job.log.with_file_name(format!("{}.in.toml", job.id)), gather_outputs(&job.log, &job.id));
-    let _ = writeln!(file, "▶ {total} 回を {} つずつ並べて動かす", job.width);
+    let _ = writeln!(file, "▶ {}", msg::note(msg::N_LOOP_WIDTH_LOG, &[&total.to_string(), &job.width.to_string()]));
     let workers: Vec<_> =
         (0..job.width.min(total)).map(|_| (Arc::new(AtomicBool::new(false)), Arc::new(AtomicU8::new(WHY_NONE)))).collect();
     let next = AtomicUsize::new(0);
@@ -1425,17 +1436,17 @@ fn side_by_side(
             text.extend_from_slice(&lines);
             append(file, size, &text, job.cap);
             retried += r;
-            let of = format!("{i}/{total} 回目{}", f.as_deref().map(|f| format!("（{f}）")).unwrap_or_default());
+            let of = pass_of(*i, total, f.as_deref());
             let bad = match outcome {
                 Outcome::Exited(code) => match verdict(job.judge.as_ref(), code) {
-                    State::Error => Some((Outcome::Failed, format!("{of}で異常: 終了コード {code}"))),
+                    State::Error => Some((Outcome::Failed, msg::note(msg::N_PASS_FAILED_CODE, &[&of, &code.to_string()]))),
                     State::Ok => None,
                     _ => {
                         warned = warned.or(Some(code));
                         None
                     }
                 },
-                Outcome::Failed | Outcome::NoExit => Some((outcome, format!("{of}で異常: {reason}"))),
+                Outcome::Failed | Outcome::NoExit => Some((outcome, pass_failed(&of, &reason))),
                 Outcome::Killed | Outcome::Timeout => Some((outcome, String::new())),
             };
             if first.is_none() {
@@ -1452,6 +1463,25 @@ fn side_by_side(
     }
 }
 
+/// Why a pass failed. A reason that already leads with its ID keeps the ID at the head,
+/// and the pass goes after it; any other reason follows the pass.
+fn pass_failed(of: &str, reason: &str) -> String {
+    if msg::is_coded(reason) {
+        msg::note(msg::N_PASS_FAILED_CODED, &[reason, of])
+    } else {
+        msg::note(msg::N_PASS_FAILED_REASON, &[of, reason])
+    }
+}
+
+/// How pass `i` of `total` is called in a reason: with the file it ran for, when there is one.
+fn pass_of(i: u32, total: usize, file: Option<&str>) -> String {
+    let (i, total) = (i.to_string(), total.to_string());
+    match file {
+        Some(f) => msg::note(msg::N_PASS_OF_FILE, &[&i, &total, f]),
+        None => msg::note(msg::N_PASS_OF, &[&i, &total]),
+    }
+}
+
 /// Puts `text` at the end of the log while it is under `cap`.
 fn append(file: &mut std::fs::File, size: &mut LogSize, text: &[u8], cap: u64) {
     if size.capped {
@@ -1460,7 +1490,7 @@ fn append(file: &mut std::fs::File, size: &mut LogSize, text: &[u8], cap: u64) {
     size.written += text.len() as u64;
     if size.written > cap {
         size.capped = true;
-        let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", cap / (1024 * 1024));
+        let _ = writeln!(file, "{}", msg::note(msg::N_LOG_CAPPED, &[&(cap / (1024 * 1024)).to_string()]));
     } else {
         let _ = file.write_all(text);
     }
@@ -1486,12 +1516,13 @@ fn tries(
         if !abnormal || retried >= count {
             return (outcome, reason, retried);
         }
-        let _ = writeln!(file, "! やり直し ({}/{count}): {} 待つ", retried + 1, koyomi_core::duration::text(wait));
+        let again = msg::note(msg::N_RETRY_LOG, &[&(retried + 1).to_string(), &count.to_string(), &koyomi_core::duration::text(wait)]);
+        let _ = writeln!(file, "! {again}");
         // The wait, unless a person stops the job during it.
         let until = Instant::now() + Duration::from_secs(wait);
         loop {
             if stop.load(Ordering::SeqCst) {
-                let _ = writeln!(file, "! 強制終了");
+                let _ = writeln!(file, "! {}", msg::note(msg::N_RUN_KILLED, &[]));
                 return (Outcome::Killed, String::new(), retried);
             }
             let now = Instant::now();
@@ -1516,8 +1547,8 @@ fn resolve_env(env: &BTreeMap<String, String>, get: &dyn Fn(&str) -> std::io::Re
                     out.vars.push((k.clone(), s.clone()));
                     out.secrets.push(s);
                 }
-                Ok(None) => return Err(format!("秘密がない: {name}（koyomi secret set {name}）")),
-                Err(e) => return Err(format!("秘密を読めない: {name}: {e}")),
+                Ok(None) => return Err(msg::line(msg::SECRET_MISSING, &[name])),
+                Err(e) => return Err(msg::line(msg::SECRET_UNREADABLE, &[name, &e.to_string()])),
             },
         }
     }
@@ -1539,8 +1570,8 @@ fn resolve_logon(
             env.logon = Some((r.clone(), password));
             Ok(env)
         }
-        Ok(None) => Err(format!("{} のパスワードの秘密がない: {name}（koyomi secret set {name}）", r.user)),
-        Err(e) => Err(format!("秘密を読めない: {name}: {e}")),
+        Ok(None) => Err(msg::line(msg::RUN_AS_SECRET_MISSING, &[&r.user, name])),
+        Err(e) => Err(msg::line(msg::SECRET_UNREADABLE, &[name, &e.to_string()])),
     }
 }
 
@@ -1733,7 +1764,7 @@ fn attempt(
             size.written += text.len() as u64;
             if size.written > job.cap {
                 size.capped = true;
-                let _ = writeln!(file, "（ログが {} MB を超えたので、この先は書かない）", job.cap / (1024 * 1024));
+                let _ = writeln!(file, "{}", msg::note(msg::N_LOG_CAPPED, &[&(job.cap / (1024 * 1024)).to_string()]));
             } else {
                 let _ = file.write_all(text.as_bytes());
             }
@@ -1763,10 +1794,10 @@ fn attempt(
             };
             if why.load(Ordering::SeqCst) == WHY_TIMEOUT {
                 let text = koyomi_core::duration::text(job.timeout.unwrap_or(0));
-                let _ = writeln!(file, "! 打ち切り（{text} を超えた）");
+                let _ = writeln!(file, "! {}", msg::note(msg::N_RUN_TIMEOUT_OVER, &[&text]));
                 (Outcome::Timeout, note)
             } else {
-                let _ = writeln!(file, "! 強制終了");
+                let _ = writeln!(file, "! {}", msg::note(msg::N_RUN_KILLED, &[]));
                 (Outcome::Killed, note)
             }
         }
@@ -1777,19 +1808,19 @@ fn attempt(
                 return (Outcome::NoExit, why);
             }
             if let Some(line) = bad_line {
-                let _ = writeln!(file, "! 出力が error_output に合った");
-                return (Outcome::Failed, format!("出力に異常の行があった: {}", line.trim()));
+                let _ = writeln!(file, "! {}", msg::note(msg::N_OUTPUT_ERROR_LOG, &[]));
+                return (Outcome::Failed, msg::note(msg::N_OUTPUT_BAD_LINE, &[line.trim()]));
             }
             let found = job.judge.as_ref().and_then(|g| g.ok_file.as_deref()).filter(|f| ok_file_exists(f, job.dir.as_deref()));
             if let (Some(f), true) = (found, verdict(job.judge.as_ref(), code) != State::Ok) {
-                let _ = writeln!(file, "! {f} があるので正常（終了コード {code}）");
+                let _ = writeln!(file, "! {}", msg::note(msg::N_OK_FILE_LOG, &[f, &code.to_string()]));
                 return (Outcome::Exited(0), String::new());
             }
             (Outcome::Exited(code), String::new())
         }
         Err(e) => {
             let _ = writeln!(file, "! {exe}: {e}");
-            (Outcome::Failed, format!("{exe} を起動できない: {e}"))
+            (Outcome::Failed, msg::line(msg::EXE_START_FAILED, &[exe, &e.to_string()]))
         }
     }
 }
@@ -1801,6 +1832,16 @@ mod tests {
     use koyomi_core::chore::Chore;
     use koyomi_core::scan::Standing;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn a_coded_reason_keeps_its_id_at_the_head() {
+        let coded = msg::line(msg::HOST_UNREADABLE, &["x", "y"]);
+        let said = pass_failed("pass 2", &coded);
+        assert!(said.starts_with(&coded), "{said}");
+        assert!(msg::is_coded(&said) && said.contains("pass 2"), "{said}");
+        let plain = pass_failed("pass 2", "exit 3");
+        assert!(!msg::is_coded(&plain) && plain.contains("pass 2") && plain.contains("exit 3"), "{plain}");
+    }
 
     fn def(id: &str, text: &str) -> Def {
         let net = koyomi_core::jobnet::parse(text).unwrap();
@@ -1918,7 +1959,7 @@ mod tests {
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("動いている間は"));
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("KOYOMI-E3278"));
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let (a, b) = (run.job("a").unwrap(), run.job("b").unwrap());
@@ -2008,7 +2049,7 @@ mod tests {
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let first = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        assert!(r.rerun(&first, None, None).unwrap_err().contains("まだ終わっていない"));
+        assert!(msg::RUN_NOT_OVER.is_in(&r.rerun(&first, None, None).unwrap_err()));
         assert_eq!(wait_over(&mut r, &first).state, State::Error);
         let second = r.rerun(&first, None, None).unwrap();
         assert_ne!(second, first);
@@ -2041,9 +2082,9 @@ mod tests {
             r.rerun(&first, Some("b"), Some(State::Warn)).unwrap_err(),
             koyomi_core::msg::line(koyomi_core::msg::RUN_NOTHING_AFTER, &[&first, "b"])
         );
-        assert!(r.rerun(&first, None, Some(State::Skipped)).unwrap_err().contains("ジョブが要る"));
+        assert!(msg::RERUN_NEXT_NEEDS_JOB.is_in(&r.rerun(&first, None, Some(State::Skipped)).unwrap_err()));
         assert_eq!(r.rerun(&first, Some("x"), None).unwrap_err(), koyomi_core::msg::line(koyomi_core::msg::RUN_JOB_NONE, &["x"]));
-        assert!(r.rerun("20200101-000000-00", None, None).unwrap_err().contains("実行がない"));
+        assert!(msg::RUN_NOT_FOUND.is_in(&r.rerun("20200101-000000-00", None, None).unwrap_err()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2114,8 +2155,8 @@ id = \"side\"
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         assert!(koyomi_core::msg::RUN_SKIP_RUNNING.is_in(&r.skip(&id, "a").unwrap_err()));
         assert_eq!(r.skip(&id, "x").unwrap_err(), koyomi_core::msg::line(koyomi_core::msg::RUN_JOB_NONE, &["x"]));
-        assert!(r.skip("20200101-000000-00", "a").unwrap_err().contains("実行がない"));
-        assert_eq!(r.skip(&id, "b").unwrap(), format!("{id} の b を飛ばした"));
+        assert!(msg::RUN_NOT_FOUND.is_in(&r.skip("20200101-000000-00", "a").unwrap_err()));
+        assert_eq!(r.skip(&id, "b").unwrap(), msg::note(msg::N_SKIP_DONE, &[&id, "b"]));
         let b = r.run(&id).unwrap().job("b").unwrap().clone();
         assert_eq!((b.state, b.reason.as_str()), (State::Skipped, koyomi_core::run::skipped_word().as_str()));
         // A time that waits for this net is taken out of the queue when asked.
@@ -2130,7 +2171,7 @@ id = \"side\"
         assert_eq!(run.job("c").unwrap().state, State::Ok);
         assert!(!r.log_path(&id, "b").exists(), "b must not run");
         assert_eq!(r.log_tail(&id, "c").unwrap().trim(), "three");
-        assert!(r.skip(&id, "c").unwrap_err().contains("もう終わっている"));
+        assert!(msg::RUN_OVER.is_in(&r.skip(&id, "c").unwrap_err()));
         // The history has b's skip: a new runner reads the run as it was.
         r.flush();
         let back = Runner::new(&dir, Config::default());
@@ -2184,7 +2225,7 @@ id = \"side\"
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Error);
-        assert!(run.job("a").unwrap().reason.contains("起動できない"), "{}", run.job("a").unwrap().reason);
+        assert!(msg::EXE_START_FAILED.is_in(&run.job("a").unwrap().reason), "{}", run.job("a").unwrap().reason);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2306,7 +2347,7 @@ id = \"a\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
+        assert!(msg::JOB_NOT_RUNNING.is_in(&r.kill(&id, Some("b")).unwrap_err()));
         let asked = Instant::now();
         r.kill(&id, None).unwrap();
         let run = wait_over(&mut r, &id);
@@ -2320,7 +2361,7 @@ id = \"a\"
         assert_eq!(over, vec![id.clone()]);
         assert!(r.take_over().is_empty());
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
-        assert!(r.kill(&id, None).unwrap_err().contains("もう終わっている"));
+        assert!(msg::RUN_OVER.is_in(&r.kill(&id, None).unwrap_err()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2378,7 +2419,7 @@ id = \"a\"
         assert_eq!(a.state, State::Timeout);
         assert_eq!(a.reason, "打ち切り（1s を超えました）");
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
-        assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えた）\n"));
+        assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えました）\n"));
         // A job that ends in time is not touched by its timer.
         let text = format!("format = 1\n[[job]]\nid = \"a\"\n{}\ntimeout = \"1h\"\n", echo("quick"));
         let id = r.start(&def("quick", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
@@ -2415,7 +2456,7 @@ id = \"a\"
         assert_eq!(a.retried, 1);
         assert_eq!(a.reason, "やり直し 1 回");
         let log = r.log_tail(&id, "a").unwrap();
-        assert!(log.contains("! やり直し (1/2): 1s 待つ"), "{log}");
+        assert!(log.contains(&format!("! {}", msg::note(msg::N_RETRY_LOG, &["1", "2", "1s"]))), "{log}");
         assert!(!log.contains("(2/2)"), "{log}");
         // The count is in the history too.
         r.flush();
@@ -2549,7 +2590,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let run = wait_over(&mut r, &id);
         let a = run.job("a").unwrap();
         assert_eq!(a.state, State::Error, "{a:?}");
-        assert!(a.reason.starts_with("出力に異常の行があった: Get-Item"), "{a:?}");
+        assert!(a.reason.starts_with("出力に異常の行がありました: Get-Item"), "{a:?}");
         let log = r.log_tail(&id, "a").unwrap();
         assert!(!log.contains("CLIXML") && !log.contains("<Objs") && !log.contains("_x000D_"), "{log}");
         assert!(log.lines().any(|l| l == "! 警告: careful"), "{log}");
@@ -2830,7 +2871,7 @@ id = \"a\"
         assert_eq!(r.queued().len(), 1);
         let skipped = r.runs().iter().find(|x| x.planned == Some(p3)).unwrap();
         assert_eq!(skipped.state, State::Skipped);
-        assert_eq!(skipped.reason, "前の回がまだ動いていました（その次の回が待っています）");
+        assert_eq!(skipped.reason, msg::note(msg::N_QUEUE_SKIPPED, &[]));
         let t0 = Instant::now();
         loop {
             r.tick();
@@ -2943,7 +2984,7 @@ id = \"a\"
         assert!(tail.starts_with("line ") && tail.ends_with("line 04999 ............................\n"));
         assert!(tail.len() as u64 <= TAIL);
         // In neither place: the error names where logs/ would have it.
-        assert!(r.log_tail(id, "b").unwrap_err().contains("ジョブ b のログはない"));
+        assert!(msg::LOG_NOT_FOUND.is_in(&r.log_tail(id, "b").unwrap_err()));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2975,8 +3016,8 @@ id = \"a\"
         assert_eq!(run.state, State::Ok);
         let t = run.job("t").unwrap();
         assert_eq!(t.state, State::Ok);
-        assert!(t.reason.ends_with("00:00 を過ぎていた"), "{:?}", t.reason);
-        assert_eq!(run.job("n").unwrap().reason, "通知した");
+        assert!(t.reason.ends_with("00:00 を過ぎていました"), "{:?}", t.reason);
+        assert_eq!(run.job("n").unwrap().reason, msg::note(msg::N_NOTIFIED, &[]));
         assert_eq!(r.take_notices(), vec![(id.clone(), "n".to_owned())]);
         assert!(r.take_notices().is_empty());
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), "two");
@@ -3010,7 +3051,7 @@ id = \"a\"
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         let f = run.job("f").unwrap();
-        assert!(f.reason.ends_with("が来た"), "{:?}", f.reason);
+        assert!(f.reason.ends_with("が到着しました"), "{:?}", f.reason);
         let got = f.file.clone().unwrap();
         assert!(got.ends_with("Sales.csv"), "{got}");
         assert_eq!(r.log_tail(&id, "b").unwrap().trim(), got);
@@ -3091,7 +3132,7 @@ after = [\"none\"]
         // An abnormal pass ends the loop as 異常 and says which pass.
         let bad = run.job("bad").unwrap();
         assert_eq!(bad.state, State::Error);
-        assert!(bad.reason.contains("2/3 回目で異常: 終了コード 3"), "{:?}", bad.reason);
+        assert!(bad.reason.contains("2/3 番目の実行で異常です: 終了コード 3"), "{:?}", bad.reason);
         assert!(!r.log_tail(&id, "bad").unwrap().contains("▶ 3/3"));
         assert_eq!(run.state, State::Error);
         let _ = std::fs::remove_dir_all(&dir);
@@ -3147,7 +3188,7 @@ after = [\"none\"]
         };
         assert_eq!(run.state, State::Ok);
         let log = r.log_tail(&id, "many").unwrap();
-        assert!(log.contains("4 回を 2 つずつ並べて動かす"), "{log}");
+        assert!(log.contains(&msg::note(msg::N_LOOP_WIDTH_LOG, &["4", "2"])), "{log}");
         let mut lines: Vec<&str> = log.lines().filter(|l| !l.starts_with('▶')).map(str::trim).collect();
         lines.sort_unstable();
         assert_eq!(lines, ["1", "2", "3", "4"], "{log}");
@@ -3177,7 +3218,7 @@ after = [\"none\"]
         let run = wait_over(&mut r, &id);
         let bad = run.job("bad").unwrap();
         assert_eq!(bad.state, State::Error);
-        assert!(bad.reason.contains("1/5 回目で異常: 終了コード 3"), "{:?}", bad.reason);
+        assert!(bad.reason.contains("1/5 番目の実行で異常です: 終了コード 3"), "{:?}", bad.reason);
         // The pass running beside it ends as it would; no more start.
         let log = r.log_tail(&id, "bad").unwrap();
         assert!(log.contains("▶ 2/5"), "{log}");
@@ -3385,7 +3426,7 @@ after = [\"a\"]
         let hidden: Vec<&str> = got.secrets.iter().map(String::as_str).collect();
         assert_eq!(ito_secret::mask("pw=hunter2!", &hidden), "pw=***!");
         env.insert("C".into(), "secret:no".into());
-        assert!(resolve_env(&env, &store).err().unwrap().contains("秘密がない: no"));
+        assert!(msg::SECRET_MISSING.is_in(&resolve_env(&env, &store).err().unwrap()));
     }
 
     #[cfg(windows)]
@@ -3517,8 +3558,8 @@ id = \"b\"
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         wait_running(&mut r, &id, "t");
-        assert!(r.kill(&id, Some("b")).unwrap_err().contains("動いていない"));
-        assert!(r.kill(&id, Some("t")).unwrap().contains("止めた"));
+        assert!(msg::JOB_NOT_RUNNING.is_in(&r.kill(&id, Some("b")).unwrap_err()));
+        assert_eq!(r.kill(&id, Some("t")).unwrap(), msg::note(msg::N_KILL_DONE, &[&id, "t"]));
         let run = r.run(&id).unwrap().clone();
         assert!(run.is_over());
         assert_eq!(run.job("t").unwrap().state, State::Killed);
@@ -3539,7 +3580,7 @@ id = \"b\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         // Not known yet: the start is refused, not run half.
-        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("子ジョブネットがない"));
+        assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("KOYOMI-E3376"));
         r.set_children(BTreeMap::from([("g/child".to_owned(), Err("子ジョブネット g/child が未確認".to_owned()))]));
         assert!(r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap_err().contains("未確認"));
         r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));

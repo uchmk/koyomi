@@ -43,15 +43,17 @@ def left(path: pathlib.Path, words: list[str]) -> list[tuple[int, str]]:
     if m:
         text = text[: m.start()]
     out = []
-    in_test_item = False
+    test_indent = None
     for n, line in enumerate(text.splitlines(), 1):
-        if line.strip() == "#[cfg(test)]":
-            in_test_item = True
+        stripped = line.strip()
+        indent = len(line) - len(line.lstrip())
+        if stripped == "#[cfg(test)]":
+            test_indent = indent
             continue
-        if in_test_item:
-            # A test-only item (a const list, a helper): to its end, the first line that is only `];` or `}` at column 0.
-            if line.rstrip() in ("];", "}") or line.rstrip().endswith(";") and not line.startswith(" "):
-                in_test_item = False
+        if test_indent is not None:
+            # A test-only item (a const list, a helper, a method): to its end, the first line at the attribute's own indent that closes it.
+            if indent == test_indent and stripped.endswith(("}", ";")):
+                test_indent = None
             continue
         code = code_of(line)
         for w in words:
