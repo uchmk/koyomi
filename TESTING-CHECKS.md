@@ -1516,7 +1516,7 @@
 
 ## 124. The link list in the status bar (`ui/hosts.rs`)
 
-- [ ] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar shows the link button `この PC ▴` (see 124.19) 〔未訳〕
+- [~] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar shows the link button `この PC ▴` (see 124.19) 〔未訳〕
 - [ ] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `つなぎ先`, the rows `この PC` and `kei`, then a line, then `つなぎ先を管理…`; the button's dot is green 〔未訳〕
 - [ ] **124.3** kei: with the list open, click outside it; open it again and press Esc → Each closes the list; the window stays on `この PC` 〔未訳〕
 - [ ] **124.4** kei: with the list open, click the button → The list closes 〔未訳〕
@@ -1534,7 +1534,7 @@
 - [ ] **124.16** kei: press `つなぎ先を管理…` → The list closes and the box `つなぎ先の管理` opens (§125) 〔未訳〕
 - [ ] **124.17** kei, the engine of `この PC` stopped (and no service starts it): the window shows `エンジンに繋がりません`; open the list from the status-bar button → The tree has no button of its own; the list is there; the button's dot is red and the `この PC` row reads `応答なし` 〔未訳〕
 - [ ] **124.18** kei: with the language set to English (Settings → General) → The heading reads `Connections`; the second lines read `Connected`, `This PC's engine`, `Remote · answering`, `Remote · no answer`, `Remote · connected`, `Remote · checking`; the buttons read `Connect` and `Disconnect` 〔未訳〕
-- [ ] **124.19** This PC, no `[[remote]]` in koyomi.toml: open the window, then press `この PC ▴` in the status bar → The status bar shows `この PC ▴`; the list has the row `この PC` and `つなぎ先を管理…`; pressing `つなぎ先を管理…` opens the box `つなぎ先の管理`, which says `つなぎ先はまだない` and offers `つなぎ先を足す…` 〔未訳〕
+- [~] **124.19** This PC, no `[[remote]]` in koyomi.toml: open the window, then press `この PC ▴` in the status bar → The status bar shows `この PC ▴`; the list has the row `この PC` and `つなぎ先を管理…`; pressing `つなぎ先を管理…` opens the box `つなぎ先の管理`, which says `つなぎ先はまだない` and offers `つなぎ先を足す…` 〔未訳〕
 
 ## 125. Renaming and deleting a connection (`ui/manage.rs`, `remote.rs`)
 
@@ -1550,7 +1550,7 @@
 - [ ] **125.10** Press `消す` on `works` → A question `つなぎ先を消す` opens: `works を消す。この PC の koyomi.toml から [[remote]] を消す。koyomi が作った秘密 works-token は、ほかから使われていなければ消す。向こうの PC には何もしない。` with `消す` (red) and `やめる`; the focus is on `やめる` 〔未訳〕
 - [ ] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `消す`, Shift+Tab back; Esc closes the question 〔未訳〕
 - [ ] **125.12** In the question press Tab, then Enter → The status line reads `works を消した` with a note about the secret as it was handled; the row is gone from the box and the status-bar list; koyomi.toml has no `works` block and its other lines and comments are as before 〔未訳〕
-- [ ] **125.13** Delete the last connection → The box reads `つなぎ先はまだない`; the status-bar link button stays as `この PC ▴`, and its list holds `この PC` and `つなぎ先を管理…` 〔未訳〕
+- [~] **125.13** Delete the last connection → The box reads `つなぎ先はまだない`; the status-bar link button stays as `この PC ▴`, and its list holds `この PC` and `つなぎ先を管理…` 〔未訳〕
 - [ ] **125.14** Put a `.toml` file in the settings folder (a job net or calendar) with a string `secret:works-token` in it, then delete `works` → The status line says the secret `works-token` was kept, with `koyomi secret delete works-token` to remove it; `koyomi secret check works-token` prints `秘密 works-token はある` 〔未訳〕
 - [ ] **125.15** Rename `works` to `factory`, then delete `factory` → The secret `works-token` is not deleted with the connection: the token still reads `secret:works-token`, so the status line names it as kept (its name is not `factory-token`) 〔未訳〕
 - [ ] **125.16** Delete `works` (its `works-token` is deleted with it); in the credential manager create a secret `works-token` by hand; then add a connection named `works`, to a PC that answers and with its token (the check comes after those) → The add box stops with `秘密 works-token がもうある。koyomi secret delete works-token で消すか、別の名前にする`; nothing is written 〔未訳〕
@@ -1561,8 +1561,8 @@
 
 ## 126. Top tabs and the calendar switcher
 
-- [ ] **126.1** Open the window → The tabs at the top read `ジョブネット`, `カレンダー`, `今日`, `履歴` in that order; the window opens on `今日` 〔未訳〕
-- [ ] **126.2** Press each tab in turn → `ジョブネット` shows the net view, `カレンダー` the calendar page, `今日` the chart, `履歴` the history; the lit tab is the one pressed 〔未訳〕
-- [ ] **126.3** Two or more calendars: open the `カレンダー` tab → Beside the calendar's name there is a small down mark; pressing it lists every calendar by name, the current one lit 〔未訳〕
-- [ ] **126.4** Press another calendar's name in that list → The list closes and the page shows that calendar; the left list lights the same one. Pressing the current one changes nothing 〔未訳〕
-- [ ] **126.5** Only one calendar: open the `カレンダー` tab → No mark beside the name 〔未訳〕
+- [~] **126.1** Open the window → The tabs at the top read `ジョブネット`, `カレンダー`, `今日`, `履歴` in that order; the window opens on `今日` 〔未訳〕
+- [~] **126.2** Press each tab in turn → `ジョブネット` shows the net view, `カレンダー` the calendar page, `今日` the chart, `履歴` the history; the lit tab is the one pressed 〔未訳〕
+- [~] **126.3** Two or more calendars: open the `カレンダー` tab → Beside the calendar's name there is a small down mark; pressing it lists every calendar by name, the current one lit 〔未訳〕
+- [~] **126.4** Press another calendar's name in that list → The list closes and the page shows that calendar; the left list lights the same one. Pressing the current one changes nothing 〔未訳〕
+- [x] **126.5** Only one calendar: open the `カレンダー` tab → No mark beside the name 〔未訳〕
