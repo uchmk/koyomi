@@ -32,6 +32,7 @@ pub mod graph;
 pub mod whens;
 
 mod ha;
+mod hosts;
 mod net_side;
 
 /// How long a window waits to ask another PC again after its list could not be read.
@@ -738,6 +739,8 @@ pub struct Browser {
     editors: Vec<canvas::Editor>,
     /// Another PC's engine, when the PC list at the top picks one (TODO 80).
     far: far::Far,
+    /// The list of links in the status bar.
+    hosts: hosts::Hosts,
     /// The engine's `"ha"` (the status bar's HA words).
     ha: Option<serde_json::Value>,
 }
@@ -765,6 +768,7 @@ impl Browser {
         let far = far::Far::start(&io.1);
         Browser {
             far,
+            hosts: hosts::Hosts::new(&io.1),
             rx,
             io,
             want_link: None,
@@ -892,33 +896,16 @@ impl Browser {
         self.save_kept();
     }
 
-    /// The picker of the link: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
+    /// The link button and its list: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
     pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         if !self.link.is_far() && self.far.names().is_empty() && self.down.is_none() {
             return;
         }
-        let this_pc = t.tr("link.this_pc").to_owned();
-        let current = self.link.far().map_or_else(|| this_pc.clone(), str::to_owned);
-        let mut pick: Option<Link> = None;
-        let combo = egui::ComboBox::from_id_salt("link_picker").selected_text(&current).show_ui(ui, |ui| {
-            if ui.selectable_label(!self.link.is_far(), &this_pc).clicked() {
-                pick = Some(Link::Local);
-            }
-            for name in self.far.names() {
-                if ui.selectable_label(self.link.far() == Some(name.as_str()), name).clicked() {
-                    pick = Some(Link::Far(name.clone()));
-                }
-            }
-            ui.separator();
-            let add = t.tr("link.add");
-            let r = ui.selectable_label(false, add);
-            ito_a11y::say(&r, Role::Button, add);
-            if r.clicked() {
-                self.far.open_add();
-            }
-        });
-        ito_a11y::say(&combo.response, Role::Button, &format!("{} {current}", t.tr("link.pick")));
-        if let Some(l) = pick.filter(|l| *l != self.link) {
+        let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names());
+        if out.add {
+            self.far.open_add();
+        }
+        if let Some(l) = out.pick.filter(|l| *l != self.link) {
             self.want_link = Some(l);
         }
     }
@@ -2295,9 +2282,6 @@ impl Browser {
                 (None, _) => t.tr("tree.starting").to_owned(),
             };
             ui.label(text);
-            if self.down.is_some() {
-                self.link_picker(ui, t);
-            }
             return;
         };
         if snap.defs.is_empty() {
@@ -5381,6 +5365,7 @@ mod tests {
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
             far: far::Far::idle(&egui::Context::default()),
+            hosts: hosts::Hosts::new(&egui::Context::default()),
             rx,
             io: (tx_msg, egui::Context::default()),
             out: Outbox { tx, pending: Arc::default(), switching: Cell::new(false), refused: Cell::new(false) },

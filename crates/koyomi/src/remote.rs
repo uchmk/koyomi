@@ -149,6 +149,19 @@ pub fn ask(name: &str, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) 
     with(name, |r| call(r, f))
 }
 
+/// [`ask`] with the request cut off after `deadline`, counted from when it goes out. It blocks.
+pub fn ask_within(
+    name: &str,
+    deadline: Duration,
+    f: impl FnOnce(&Client) -> Result<Reply, client::Error>,
+) -> Result<serde_json::Value, String> {
+    with(name, |r| {
+        let mut c = client(r)?;
+        c.deadline = Some(deadline);
+        answer(r, f(&c).map_err(|e| why(r, &e))?)
+    })
+}
+
 pub(crate) fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) -> Result<T, String> {
     let all = remotes()?;
     let r = all.iter().find(|r| r.name.trim() == name).ok_or_else(|| {
