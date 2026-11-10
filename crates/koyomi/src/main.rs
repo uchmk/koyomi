@@ -156,6 +156,7 @@ enum Command {
     NewJobnet,
     NewCalendar,
     AddRemote,
+    ManageRemotes,
     Guide,
     Versions,
     Export,
@@ -746,6 +747,7 @@ impl App {
             ito_palette::Entry::new(t.tr("palette.new_jobnet"), self.keys.label("new_jobnet"), Command::NewJobnet),
             ito_palette::Entry::new(t.tr("palette.new_calendar"), "", Command::NewCalendar),
             ito_palette::Entry::new(t.tr("palette.add_remote"), "", Command::AddRemote),
+            ito_palette::Entry::new(t.tr("palette.manage_remotes"), "", Command::ManageRemotes),
             ito_palette::Entry::new(t.tr("palette.guide"), "", Command::Guide),
             ito_palette::Entry::new(t.tr("palette.versions"), "", Command::Versions),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
@@ -783,6 +785,7 @@ impl App {
             Some(ito_palette::Answer::Pick(Command::NewJobnet)) => self.browser.new_box(None),
             Some(ito_palette::Answer::Pick(Command::NewCalendar)) => self.browser.new_cal_box(),
             Some(ito_palette::Answer::Pick(Command::AddRemote)) => self.browser.add_remote_box(),
+            Some(ito_palette::Answer::Pick(Command::ManageRemotes)) => self.browser.manage_remotes_box(),
             Some(ito_palette::Answer::Pick(Command::Guide)) => {
                 self.guide_problems();
                 self.guide.reopen();

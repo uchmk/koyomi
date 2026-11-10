@@ -18,6 +18,7 @@ use koyomi_core::run::{Run, State};
 use serde::Deserialize;
 
 use super::graph;
+use super::manage::{self, Manage, Pressed};
 use crate::remote::query;
 use crate::show;
 
@@ -52,6 +53,16 @@ enum Got {
     Peeked(u64, Result<String, String>),
     /// The add box: its ticket, the name, and whether the check passed and the connection was written.
     Joined(u64, String, Result<(), String>),
+    /// The manage box: its ticket, what was asked, and the outcome line (or why not).
+    Managed(u64, Change, Result<String, String>),
+}
+
+/// What the manage box asked a thread to do to koyomi.toml.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Change {
+    /// The name it had, and the one it is to have.
+    Rename(String, String),
+    Delete(String),
 }
 
 /// Where the add-a-connection box is. Nothing is written before the last step has passed.
@@ -102,6 +113,7 @@ impl Add {
 /// The check, then the writing: the PC answers, the token drives a window, and only then the token goes to the
 /// credential store and the `[[remote]]` to koyomi.toml. Nothing is written when the check fails, and the token is
 /// not stored until koyomi.toml is known to take the connection; a koyomi.toml that cannot be written gives it back.
+/// The check stays outside the lock (a slow PC must not hold up the others); the writing is under it.
 fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), String> {
     crate::link::probe(name, url, fingerprint, token)?;
     let secret = format!("{name}-token");
@@ -111,21 +123,9 @@ fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), Str
         fingerprint: fingerprint.to_owned(),
         token: format!("secret:{secret}"),
     };
+    let _held = crate::remote::edits();
     let (path, text) = crate::remote::prepare_add(&new).map_err(|e| format!("{name}: {e}"))?;
-    ito_secret::set("koyomi", &secret, token).map_err(|e| format!("{name}: {e}"))?;
-    ito_common::write_atomic(&path, text).map_err(|e| {
-        let undone = ito_secret::delete("koyomi", &secret).map_err(|d| d.to_string());
-        write_failed(name, &e, undone)
-    })
-}
-
-/// What the box says when koyomi.toml could not be written: the write's reason, and, if the token that was
-/// stored for it could not be taken out again, that it is still in the credential store. Never the token.
-fn write_failed(name: &str, write: &str, undone: Result<(), String>) -> String {
-    match undone {
-        Ok(()) => format!("{name}: {write}"),
-        Err(d) => format!("{name}: {write}（資格情報ストアに入れたトークンも消せず、残っている: {d}）"),
-    }
+    crate::remote::finish_add(name, &secret, token, &path, text, &crate::remote::Keyring, ito_common::write_atomic)
 }
 
 /// Whether Enter presses the button that goes on at this step. Not at the fingerprint: 同じだった is the person
@@ -187,6 +187,10 @@ pub struct Far {
     pub(super) add: Option<Add>,
     /// The connection just added: the window goes to it (taken by [`Far::take_joined`]).
     joined: Option<String>,
+    /// The manage box (rename and delete), while it is open.
+    pub(super) manage: Option<Manage>,
+    /// The state folder: a rename moves the acknowledgement file there.
+    state: Option<std::path::PathBuf>,
 }
 
 impl Far {
@@ -211,12 +215,15 @@ impl Far {
             ctx: ctx.clone(),
             add: None,
             joined: None,
+            manage: None,
+            state: None,
         }
     }
 
-    /// Reads the `[[remote]]` names off the UI thread.
-    pub fn start(ctx: &egui::Context) -> Far {
-        let far = Far::idle(ctx);
+    /// Reads the `[[remote]]` names off the UI thread. `state` is the state folder (`None`: nothing is moved there).
+    pub fn start(ctx: &egui::Context, state: Option<std::path::PathBuf>) -> Far {
+        let mut far = Far::idle(ctx);
+        far.state = state;
         let (tx, ctx) = (far.tx.clone(), far.ctx.clone());
         std::thread::spawn(move || {
             if let Ok(names) = crate::remote::names() {
@@ -329,6 +336,30 @@ impl Far {
                     Err(_) => {}
                 }
             }
+            Got::Managed(ticket, change, r) => {
+                // It is written, so it is so, even if the box was given up meanwhile.
+                if r.is_ok() {
+                    match &change {
+                        Change::Rename(old, new) => {
+                            if let Some(n) = self.names.iter_mut().find(|n| *n == old) {
+                                n.clone_from(new);
+                            }
+                        }
+                        Change::Delete(name) => self.names.retain(|n| n != name),
+                    }
+                }
+                if let Some(m) = self.manage.as_mut().filter(|m| m.ticket == ticket && m.busy) {
+                    m.busy = false;
+                    match r {
+                        Ok(line) => {
+                            m.editing = None;
+                            m.asking = None;
+                            m.line = Some(Ok(line));
+                        }
+                        Err(e) => m.line = Some(Err(e)),
+                    }
+                }
+            }
             Got::Did(pc, said) if here(&pc) => {
                 self.said = Some(said);
                 // What was done shows at once, not at the next round.
@@ -340,19 +371,118 @@ impl Far {
 
     /// Shows `pc` (`None`: this one), from a clean page.
     fn switch(&mut self, pc: Option<String>) {
-        if pc == self.on {
+        // A change to koyomi.toml is being carried out: the page stays where it is until it is done.
+        if pc == self.on || self.manage_busy() {
             return;
         }
         let names = std::mem::take(&mut self.names);
         let (tx, rx, ctx) = (self.tx.clone(), std::mem::replace(&mut self.rx, mpsc::channel().1), self.ctx.clone());
-        let (add, joined) = (self.add.take(), self.joined.take());
-        *self = Far { names, on: pc, tx, rx, add, joined, ..Far::idle(&ctx) };
+        let (add, joined, manage, state) = (self.add.take(), self.joined.take(), self.manage.take(), self.state.take());
+        *self = Far { names, on: pc, tx, rx, add, joined, manage, state, ..Far::idle(&ctx) };
     }
 
-    /// Opens the add-a-connection box.
+    /// Opens the add-a-connection box (and closes the manage box, unless it is busy).
     pub fn open_add(&mut self) {
+        if self.manage_busy() {
+            return;
+        }
+        self.manage = None;
         if self.add.is_none() {
             self.add = Some(Add::new());
+        }
+    }
+
+    /// Opens the manage box (and closes the add box).
+    pub fn open_manage(&mut self) {
+        self.add = None;
+        if self.manage.is_none() {
+            self.manage = Some(Manage::new());
+        }
+    }
+
+    /// Closes the manage box, unless a change is being carried out. A pick of another link does this: the box goes
+    /// with this browser anyway, and its Enter must not rename anything while the switch waits behind a question.
+    pub fn close_manage(&mut self) {
+        if !self.manage_busy() {
+            self.manage = None;
+        }
+    }
+
+    /// Whether the manage box is open.
+    #[cfg(test)]
+    pub fn managing(&self) -> bool {
+        self.manage.is_some()
+    }
+
+    /// Whether a rename or a delete is being carried out: the link is not switched and the box not closed meanwhile.
+    pub fn manage_busy(&self) -> bool {
+        self.manage.as_ref().is_some_and(|m| m.busy)
+    }
+
+    /// 変える: the typed name is judged against the other names, and a free one is written on a thread. The same
+    /// name writes nothing. `link` is the window's current link (`None`: this PC).
+    pub(super) fn manage_rename(&mut self, t: &ito_i18n::Table, link: Option<&str>, old: &str, new: &str) {
+        use crate::remote::NameWhy;
+        let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
+        let (old, new) = (old.trim().to_owned(), new.trim().to_owned());
+        if new == old {
+            m.editing = None;
+            m.line = None;
+            return;
+        }
+        let others: Vec<String> = self.names.iter().filter(|n| **n != old).cloned().collect();
+        let bad = match crate::remote::check_name(&new, &others) {
+            Err(NameWhy::Empty) => Some(t.tr("far.add_name_empty").to_owned()),
+            Err(NameWhy::Taken) => Some(t.trf("far.add_name_taken", &[&new])),
+            Err(NameWhy::Bad) => Some(t.tr("far.add_name_bad").to_owned()),
+            Ok(()) if manage::in_use(link, self.on.as_deref(), &old) => Some(t.tr("far.manage_in_use").to_owned()),
+            Ok(()) => None,
+        };
+        if bad.is_some() {
+            m.line = bad.map(Err);
+            return;
+        }
+        m.busy = true;
+        m.line = None;
+        let (ticket, state) = (m.ticket, self.state.clone());
+        self.spawn(move || {
+            let r = crate::remote::rename(&old, &new, state.as_deref());
+            Got::Managed(ticket, Change::Rename(old, new), r)
+        });
+    }
+
+    /// 消す on the question: written on a thread, unless the connection is in use.
+    pub(super) fn manage_delete(&mut self, t: &ito_i18n::Table, link: Option<&str>, name: &str) {
+        let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
+        let name = name.trim().to_owned();
+        if manage::in_use(link, self.on.as_deref(), &name) {
+            m.line = Some(Err(t.tr("far.manage_in_use").to_owned()));
+            return;
+        }
+        m.busy = true;
+        m.line = None;
+        let ticket = m.ticket;
+        self.spawn(move || {
+            let r = crate::remote::remove(&name);
+            Got::Managed(ticket, Change::Delete(name), r)
+        });
+    }
+
+    /// The manage box. `link` is the window's current link (`None`: this PC).
+    pub fn manage_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, link: Option<&str>) {
+        let Some(m) = self.manage.as_mut() else { return };
+        let on = self.on.clone();
+        let used = |n: &str| manage::in_use(link, on.as_deref(), n);
+        match manage::show(m, ctx, t, &self.names, &used) {
+            Pressed::Nothing => {}
+            Pressed::Close => {
+                if !m.busy {
+                    self.manage = None;
+                }
+            }
+            Pressed::Add => self.open_add(),
+            Pressed::Rename(old, new) => self.manage_rename(t, link, &old, &new),
+            Pressed::Delete(name) => self.manage_delete(t, link, &name),
         }
     }
 
@@ -1068,8 +1198,8 @@ mod tests {
 
     #[test]
     fn a_failed_write_says_why_and_whether_the_token_is_left_and_never_the_token() {
-        assert_eq!(write_failed("pc", "読み取り専用", Ok(())), "pc: 読み取り専用");
-        let w = write_failed("pc", "読み取り専用", Err("アクセス拒否".into()));
+        assert_eq!(crate::remote::write_failed("pc", "読み取り専用", Ok(())), "pc: 読み取り専用");
+        let w = crate::remote::write_failed("pc", "読み取り専用", Err("アクセス拒否".into()));
         assert!(w.starts_with("pc: 読み取り専用") && w.contains("資格情報ストア") && w.contains("アクセス拒否"), "{w}");
     }
 
@@ -1140,5 +1270,159 @@ mod tests {
         let mut f = adding();
         f.switch(Some("old".into()));
         assert!(f.adding());
+    }
+
+    fn managing() -> Far {
+        let mut f = Far::idle(&egui::Context::default());
+        f.names = vec!["kei".to_owned(), "works".to_owned()];
+        f.open_manage();
+        f
+    }
+
+    fn mticket(f: &Far) -> u64 {
+        f.manage.as_ref().unwrap().ticket
+    }
+
+    fn mline(f: &Far) -> Option<Result<String, String>> {
+        f.manage.as_ref().unwrap().line.clone()
+    }
+
+    #[test]
+    fn a_pick_closes_the_manage_box_unless_it_is_busy() {
+        let mut f = managing();
+        f.manage.as_mut().unwrap().busy = true;
+        f.close_manage();
+        assert!(f.managing(), "a box that is writing stays");
+        f.manage.as_mut().unwrap().busy = false;
+        f.close_manage();
+        assert!(!f.managing(), "an idle box goes with the pick");
+    }
+
+    #[test]
+    fn one_box_at_a_time_and_a_busy_manage_box_stays() {
+        let mut f = adding();
+        f.open_manage();
+        assert!(f.managing() && !f.adding(), "opening the manage box closes the add box");
+        f.open_add();
+        assert!(f.adding() && !f.managing(), "opening the add box closes the manage box");
+        f.open_manage();
+        f.manage.as_mut().unwrap().busy = true;
+        f.open_add();
+        assert!(f.managing() && !f.adding(), "a busy manage box is not closed");
+        f.switch(Some("kei".into()));
+        assert!(!f.shown(), "the page does not switch while busy");
+        f.manage.as_mut().unwrap().busy = false;
+        f.switch(Some("kei".into()));
+        assert!(f.shown() && f.managing(), "the box is kept through a switch");
+    }
+
+    #[test]
+    fn a_rename_to_the_same_name_writes_nothing() {
+        let t = ja();
+        let mut f = managing();
+        f.manage.as_mut().unwrap().edit("kei");
+        f.manage_rename(&t, None, "kei", "  kei ");
+        let m = f.manage.as_ref().unwrap();
+        assert!(m.editing.is_none() && !m.busy && m.line.is_none());
+        assert_eq!(f.pending, 0);
+    }
+
+    #[test]
+    fn a_refused_name_is_said_on_the_status_line_and_the_editing_stays() {
+        let t = ja();
+        for (new, why) in
+            [("", "far.add_name_empty"), ("   ", "far.add_name_empty"), ("works", "far.add_name_taken"), ("a b", "far.add_name_bad")]
+        {
+            let mut f = managing();
+            f.manage.as_mut().unwrap().edit("kei");
+            f.manage_rename(&t, None, "kei", new);
+            let m = f.manage.as_ref().unwrap();
+            assert!(m.editing.is_some() && !m.busy, "{new:?}");
+            let want = if why == "far.add_name_taken" { t.trf(why, &["works"]) } else { t.tr(why).to_owned() };
+            assert_eq!(m.line, Some(Err(want)), "{new:?}");
+            assert_eq!(f.pending, 0, "no thread for {new:?}");
+        }
+    }
+
+    #[test]
+    fn a_connection_in_use_is_neither_renamed_nor_deleted() {
+        let t = ja();
+        // The window's link, even when it does not answer.
+        let mut f = managing();
+        f.manage_rename(&t, Some("kei"), "kei", "keiba");
+        assert_eq!(mline(&f), Some(Err(t.tr("far.manage_in_use").to_owned())));
+        f.manage_delete(&t, Some("kei"), "kei");
+        assert_eq!(mline(&f), Some(Err(t.tr("far.manage_in_use").to_owned())));
+        assert!(!f.manage_busy());
+        assert_eq!(f.pending, 0);
+        // The PC its page shows.
+        let mut f = managing();
+        f.on = Some("works".into());
+        f.manage_delete(&t, None, "works");
+        assert_eq!(mline(&f), Some(Err(t.tr("far.manage_in_use").to_owned())));
+        assert_eq!(f.pending, 0);
+    }
+
+    #[test]
+    fn an_answer_changes_the_names_and_the_box_that_asked() {
+        let mut f = managing();
+        f.manage.as_mut().unwrap().edit("kei");
+        f.manage.as_mut().unwrap().busy = true;
+        f.pending = 1;
+        let t = mticket(&f);
+        f.take(Got::Managed(t, Change::Rename("kei".into(), "keiba".into()), Ok("kei の名前を keiba に変えた".into())));
+        assert_eq!(f.names, ["keiba", "works"], "renamed in place");
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && m.editing.is_none());
+        assert_eq!(m.line, Some(Ok("kei の名前を keiba に変えた".into())));
+        assert_eq!(f.pending, 0);
+        // A failure keeps the editing and shows the error; the names stay.
+        f.manage.as_mut().unwrap().edit("works");
+        f.manage.as_mut().unwrap().busy = true;
+        f.take(Got::Managed(t, Change::Rename("works".into(), "x".into()), Err("書けない".into())));
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && m.editing.is_some());
+        assert_eq!(m.line, Some(Err("書けない".into())));
+        assert_eq!(f.names, ["keiba", "works"]);
+        // A delete leaves the list.
+        f.manage.as_mut().unwrap().busy = true;
+        f.take(Got::Managed(t, Change::Delete("keiba".into()), Ok("keiba を消した".into())));
+        assert_eq!(f.names, ["works"]);
+        f.manage.as_mut().unwrap().busy = true;
+        f.take(Got::Managed(t, Change::Delete("works".into()), Ok("works を消した".into())));
+        assert!(f.names.is_empty() && !f.any());
+    }
+
+    #[test]
+    fn a_late_answer_of_an_earlier_box_changes_the_names_but_not_a_new_box() {
+        let mut f = managing();
+        f.manage.as_mut().unwrap().busy = true;
+        let old = mticket(&f);
+        f.manage = None;
+        f.open_manage();
+        f.manage.as_mut().unwrap().busy = true;
+        f.take(Got::Managed(old, Change::Delete("kei".into()), Ok("kei を消した".into())));
+        assert_eq!(f.names, ["works"], "it was written, so it is so");
+        let m = f.manage.as_ref().unwrap();
+        assert!(m.busy && m.line.is_none(), "the new box waits for its own answer");
+    }
+
+    #[test]
+    fn the_manage_box_draws_in_each_state() {
+        let t = ja();
+        let ctx = egui::Context::default();
+        let mut f = managing();
+        let frame = |f: &mut Far, link: Option<&str>| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| f.manage_box(ui.ctx(), &t, link));
+            out.textures_delta.clear();
+        };
+        frame(&mut f, Some("kei"));
+        f.manage.as_mut().unwrap().edit("works");
+        frame(&mut f, None);
+        f.manage.as_mut().unwrap().ask("works");
+        frame(&mut f, None);
+        f.names.clear();
+        frame(&mut f, None);
+        assert!(f.managing());
     }
 }

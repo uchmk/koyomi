@@ -33,6 +33,7 @@ pub mod whens;
 
 mod ha;
 mod hosts;
+mod manage;
 mod net_side;
 
 /// How long a window waits to ask another PC again after its list could not be read.
@@ -757,7 +758,7 @@ impl Browser {
         let ctx = ctx.clone();
         let thread_link = link.clone();
         std::thread::spawn(move || worker(&thread_link, &rx_req, &tx_msg, &ctx, &seen));
-        let path = state.map(|d| d.join("state.toml"));
+        let path = state.as_ref().map(|d| d.join("state.toml"));
         let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
         let vertical = kept.flow.as_deref() == Some("vertical");
         let inspector = kept.inspector != Some(false);
@@ -765,7 +766,7 @@ impl Browser {
         let cal_view = calendar::CalView::kept(kept.calendar_view.as_deref(), kept.calendar_week);
         let net_pane = kept.net_pane != Some(false);
         let flow = writer;
-        let far = far::Far::start(&io.1);
+        let far = far::Far::start(&io.1, state);
         Browser {
             far,
             hosts: hosts::Hosts::new(&io.1),
@@ -902,10 +903,12 @@ impl Browser {
             return;
         }
         let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names());
-        if out.add {
-            self.far.open_add();
+        if out.manage {
+            self.far.open_manage();
         }
-        if let Some(l) = out.pick.filter(|l| *l != self.link) {
+        // A change to koyomi.toml is being carried out: the link stays where it is until it is done.
+        if let Some(l) = out.pick.filter(|l| *l != self.link).filter(|_| !self.far.manage_busy()) {
+            self.far.close_manage();
             self.want_link = Some(l);
         }
     }
@@ -946,6 +949,11 @@ impl Browser {
     /// Opens the box that adds a `[[remote]]` (the command palette uses it).
     pub fn add_remote_box(&mut self) {
         self.far.open_add();
+    }
+
+    /// Opens the box that renames and deletes a `[[remote]]` (the command palette uses it).
+    pub fn manage_remotes_box(&mut self) {
+        self.far.open_manage();
     }
 
     pub fn drain(&mut self) {
@@ -1955,6 +1963,7 @@ impl Browser {
         }
         let ctx = ui.ctx().clone();
         self.far.add_box(&ctx, t);
+        self.far.manage_box(&ctx, t, self.link.far());
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;

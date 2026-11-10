@@ -19,6 +19,21 @@ pub fn file_name(far: Option<&str>) -> String {
     }
 }
 
+/// Moves the acknowledgement file of the `[[remote]]` `old` to the name `new` under `dir`, when one is renamed. A
+/// missing file is fine, the same path is left alone, and a file already at the new name is replaced: the connection
+/// now called that carries its own acknowledgements.
+pub fn move_file(dir: &std::path::Path, old: &str, new: &str) -> Result<(), String> {
+    let (from, to) = (dir.join(file_name(Some(old))), dir.join(file_name(Some(new))));
+    if from == to {
+        return Ok(());
+    }
+    match std::fs::rename(&from, &to) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Older acknowledgements are dropped past this many (the runs themselves go with keep_days).
 const KEEP: usize = 2000;
 
@@ -100,6 +115,33 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, file_name(Some("kei")));
         assert!(a.starts_with("acked-") && a.ends_with(".toml") && a.len() == "acked-.toml".len() + 16, "{a}");
+    }
+
+    fn temp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("koyomi-acked-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn the_file_follows_the_name_and_a_missing_one_or_the_same_path_is_fine() {
+        let d = temp("move");
+        std::fs::write(d.join(file_name(Some("kei"))), "acked = [\"r1\"]\n").unwrap();
+        move_file(&d, "kei", "keiba").unwrap();
+        assert!(!d.join(file_name(Some("kei"))).exists());
+        assert_eq!(std::fs::read_to_string(d.join(file_name(Some("keiba")))).unwrap(), "acked = [\"r1\"]\n");
+        // Nothing to move: fine, and nothing appears.
+        move_file(&d, "none", "other").unwrap();
+        assert!(!d.join(file_name(Some("other"))).exists());
+        // The same path is left alone.
+        move_file(&d, "keiba", "keiba").unwrap();
+        assert!(d.join(file_name(Some("keiba"))).exists());
+        // A file at the new name is replaced.
+        std::fs::write(d.join(file_name(Some("old"))), "acked = [\"r9\"]\n").unwrap();
+        move_file(&d, "old", "keiba").unwrap();
+        assert_eq!(std::fs::read_to_string(d.join(file_name(Some("keiba")))).unwrap(), "acked = [\"r9\"]\n");
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]

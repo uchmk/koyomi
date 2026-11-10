@@ -1,6 +1,6 @@
 # Checklist
 
-1181 checks in TESTING.md, 1175 left for a person.
+1201 checks in TESTING.md, 1195 left for a person.
 
 ## 1. Start
 
@@ -1520,7 +1520,7 @@
 - [ ] **123.17** kei, `admin` token: as 123.16, then 消す… on 会社 with はい → The line reads `暦を消した: 会社（前の中身は versions/_calendars/会社 に残した）`; kei's `versions/_calendars/会社/` holds the file with the hand-made day 〔未訳〕
 - [ ] **123.18** kei, `admin` token: create `calendars/工場.toml` by hand on kei; in the window, at once (before the list shows it) ＋ 新しいカレンダー, name 工場, 作る → The box shows `置けない: 暦 工場 はほかで変わっています（もうある）` and stays open with the name. If it shows `もうあります: 工場` instead, the list had already updated: record as not reached 〔未訳〕
 - [ ] **123.19** This PC, no `[[remote]]` in koyomi.toml (or a copy of it without kei): palette → 別の PC のエンジンをつなぐ → The status bar has no link button; the box titled `別の PC のエンジンをつなぐ` opens with the lead `つなぎ先の名前と、向こうの koyomi の URL（https://…）。確かめ終わるまで、何も書かない。`, fields 名前 (hint `例: 工場`) and URL, and the buttons つぎへ and やめる 〔未訳〕
-- [ ] **123.20** This PC, with kei in koyomi.toml: the status-bar list, last row つなぎ先を足す… → The same box opens 〔未訳〕
+- [ ] **123.20** This PC, with kei in koyomi.toml: the status-bar list, last row つなぎ先を管理…; in the box 「つなぎ先の管理」 press つなぎ先を足す…. Then close the box and open the palette → 別の PC のエンジンをつなぐ → From the manage box: it closes and the same add box opens. The palette route opens the add box directly 〔未訳〕
 - [ ] **123.21** This PC: in the add box, one at a time: empty name and つぎへ; name `kei`; name `a b`; name `factory` with URL `http://x:8443`; name `factory` with URL `https://` alone; URL `https://a b` → The box shows `名前を入れてください`; `kei はもうつないである`; `名前に空白と / \ " ' : は使えない`; `URL は https:// で始まる 1 つの語にする` for the last three; `向こうの指紋を読んでいます…` does not appear; koyomi.toml is unchanged 〔未訳〕
 - [ ] **123.22** kei: name `factory`; URL of the other PC's engine (https://host:port); つぎへ → The box shows `向こうの指紋を読んでいます…`, then the fingerprint in bold, and `向こうの PC で `koyomi http fingerprint` を実行して、同じものが出るのを確かめる。違うなら別の PC につながっている`, with the buttons 同じだった and やめる. There is no token field yet. Esc closes the box; koyomi.toml is unchanged (sha256 before and after) 〔未訳〕
 - [ ] **123.23** kei: as 123.22, but press Enter at the fingerprint step, then click 同じだった → Enter does nothing; the click brings the masked token field; nothing is written yet 〔未訳〕
@@ -1539,7 +1539,7 @@
 ## 124. The link list in the status bar (`ui/hosts.rs`)
 
 - [ ] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar has no link button 〔未訳〕
-- [ ] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `つなぎ先`, the rows `この PC` and `kei`, then a line, then `つなぎ先を足す…`; the button's dot is green 〔未訳〕
+- [ ] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `つなぎ先`, the rows `この PC` and `kei`, then a line, then `つなぎ先を管理…`; the button's dot is green 〔未訳〕
 - [ ] **124.3** kei: with the list open, click outside it; open it again and press Esc → Each closes the list; the window stays on `この PC` 〔未訳〕
 - [ ] **124.4** kei: with the list open, click the button → The list closes 〔未訳〕
 - [ ] **124.5** kei, the engine of kei answering: open the list → `この PC` reads `接続中` with a green dot and has no button; `kei` shows a grey dot and `リモート · 確認中`, then within a few seconds a green dot and `リモート · 応答あり`, with the button 接続 〔未訳〕
@@ -1552,7 +1552,30 @@
 - [ ] **124.12** kei, on `この PC`, kei answering: open the list and leave it; stop kei's engine; wait about 40 seconds → The `kei` row changes to `リモート · 応答なし` by itself, without closing the list; start the engine and wait about 40 seconds again: it goes back to `リモート · 応答あり` 〔未訳〕
 - [ ] **124.13** kei, on `この PC`: close the list; stop kei's engine; wait 40 seconds; open the list → The row is `リモート · 応答なし` within about 5 seconds of opening (a check runs on opening) 〔未訳〕
 - [ ] **124.14** two: open the list on `この PC` → Both `kei` and `works` get their dot and second line within about 5 seconds each; one that is off does not hold up the other 〔未訳〕
-- [ ] **124.15** kei, with 10 or more `[[remote]]` blocks in koyomi.toml (copies of kei's under other names): open the list → The rows scroll inside the list (the list stops at about 420 px high); `つなぎ先を足す…` stays in view at the bottom while the rows scroll; the window does not freeze while the dead ones are asked 〔未訳〕
-- [ ] **124.16** kei: press `つなぎ先を足す…` → The list closes and the box `別の PC のエンジンをつなぐ` opens 〔未訳〕
+- [ ] **124.15** kei, with 10 or more `[[remote]]` blocks in koyomi.toml (copies of kei's under other names): open the list → The rows scroll inside the list (the list stops at about 420 px high); `つなぎ先を管理…` stays in view at the bottom while the rows scroll; the window does not freeze while the dead ones are asked 〔未訳〕
+- [ ] **124.16** kei: press `つなぎ先を管理…` → The list closes and the box `つなぎ先の管理` opens (§125) 〔未訳〕
 - [ ] **124.17** kei, the engine of `この PC` stopped (and no service starts it): the window shows `エンジンに繋がりません`; open the list from the status-bar button → The tree has no button of its own; the list is there; the button's dot is red and the `この PC` row reads `応答なし` 〔未訳〕
 - [ ] **124.18** kei: with the language set to English (Settings → General) → The heading reads `Connections`; the second lines read `Connected`, `This PC's engine`, `Remote · answering`, `Remote · no answer`, `Remote · connected`, `Remote · checking`; the buttons read `Connect` and `Disconnect` 〔未訳〕
+
+## 125. Renaming and deleting a connection (`ui/manage.rs`, `remote.rs`)
+
+- [ ] **125.1** Open the status-bar list, press `つなぎ先を管理…` → The list closes; the box `つなぎ先の管理` opens in the middle with one row per `[[remote]]` in the order of koyomi.toml, each with `名前を変える` and `消す`, and at the bottom `つなぎ先を足す…` at the left and `閉じる` at the right 〔未訳〕
+- [ ] **125.2** Palette → `つなぎ先を管理する` → The same box opens. Esc closes it 〔未訳〕
+- [ ] **125.3** In the box press `名前を変える` on `works` → The row turns into a field holding `works` with the focus in it, and `変える` and `やめる`; the other rows are unchanged. Esc leaves the editing and keeps the box; Esc again closes the box 〔未訳〕
+- [ ] **125.4** Rename `works` to `factory`: type it and press Enter → The status line reads `works の名前を factory に変えた`; the row now reads `factory`; koyomi.toml has `name = "factory"` in that block and every other line of the block (url, fingerprint, token) as before; the window's PC list shows `factory` 〔未訳〕
+- [ ] **125.5** Rename `factory` to `Factory` (a case change) → The rename is accepted and written as typed 〔未訳〕
+- [ ] **125.6** Rename to the same text (with spaces around it) → The editing closes and koyomi.toml is not written (its timestamp is unchanged) 〔未訳〕
+- [ ] **125.7** Rename to an empty name; to `kei` (another connection); to `a b` → One at a time, the status line reads `名前を入れてください`, `kei はもうつないである`, `名前に空白と / \ " ' : は使えない`; the field stays and nothing is written 〔未訳〕
+- [ ] **125.8** With the window on `kei` (press 接続 on its row in the list) open the box → The `kei` row shows the dim text `接続中なので変えられない` and both of its buttons are disabled; the other rows work. Stop kei's engine: the row stays locked while the window is still on kei 〔未訳〕
+- [ ] **125.9** Add `[standby]` with `watch = "works"` to koyomi.toml, then rename `works` to `factory` → The status line reads `[standby] の watch が works を指している。先に koyomi.toml で直してから`; koyomi.toml is as before; the row keeps its name. The same for delete, and for `[primary]` `standby` 〔未訳〕
+- [ ] **125.10** Press `消す` on `works` → A question `つなぎ先を消す` opens: `works を消す。この PC の koyomi.toml から [[remote]] を消す。koyomi が作った秘密 works-token は、ほかから使われていなければ消す。向こうの PC には何もしない。` with `消す` (red) and `やめる`; the focus is on `やめる` 〔未訳〕
+- [ ] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `消す`, Shift+Tab back; Esc closes the question 〔未訳〕
+- [ ] **125.12** In the question press Tab, then Enter → The status line reads `works を消した` with a note about the secret as it was handled; the row is gone from the box and the PC list; koyomi.toml has no `works` block and its other lines and comments are as before 〔未訳〕
+- [ ] **125.13** Delete the last connection → The box reads `つなぎ先はまだない`; the status-bar link button is gone once nothing is left and the window is on this PC 〔未訳〕
+- [ ] **125.14** Put a `.toml` file in the settings folder (a job net or calendar) with a string `secret:works-token` in it, then delete `works` → The status line says the secret `works-token` was kept, with `koyomi secret delete works-token` to remove it; `koyomi secret check works-token` prints `秘密 works-token はある` 〔未訳〕
+- [ ] **125.15** Rename `works` to `factory`, then delete `factory` → The secret `works-token` is not deleted with the connection: the token still reads `secret:works-token`, so the status line names it as kept (its name is not `factory-token`) 〔未訳〕
+- [ ] **125.16** Delete `works` (its `works-token` is deleted with it); in the credential manager create a secret `works-token` by hand; then add a connection named `works`, to a PC that answers and with its token (the check comes after those) → The add box stops with `秘密 works-token がもうある。koyomi secret delete works-token で消すか、別の名前にする`; nothing is written 〔未訳〕
+- [ ] **125.17** While a delete or rename is carried out (a slow disk, or press and watch), look at the box → A spinner shows, every button is disabled, Esc does nothing, and the list's other connection buttons do not switch the link until it is done 〔未訳〕
+- [ ] **125.18** Rename `works` after it had acknowledged failures (`確認済み` in its window) → After the rename the acknowledgements of the new name are those of the old one 〔未訳〕
+- [ ] **125.19** Open the add box, then the manage box through the palette; then the reverse → Only one of the two is open at a time 〔未訳〕
+- [ ] **125.20** With the box open and a row's name being typed, pick another connection in the status-bar list → The box closes and the window switches; nothing is renamed 〔未訳〕

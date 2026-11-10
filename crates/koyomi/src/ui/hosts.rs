@@ -84,8 +84,8 @@ pub fn row(link: &Link, down: bool, name: Option<&str>, seen: Option<&Seen>) -> 
 pub struct Outcome {
     /// The link a button picked.
     pub pick: Option<Link>,
-    /// The add-a-connection row was pressed.
-    pub add: bool,
+    /// The manage-the-connections row was pressed.
+    pub manage: bool,
 }
 
 /// One check: `GET /health` of the `[[remote]]` of that name. It blocks.
@@ -229,11 +229,12 @@ impl Hosts {
                     }
                 });
                 ui.separator();
-                let add = t.tr("link.add");
-                let r = ui.selectable_label(false, add);
-                ito_a11y::say(&r, Role::Button, add);
+                let manage = t.tr("link.manage");
+                let r = ui.selectable_label(false, manage);
+                ito_a11y::say(&r, Role::Button, manage);
+                ito_a11y::test_id(&r, "link.manage");
                 if r.clicked() {
-                    out.add = true;
+                    out.manage = true;
                     close = true;
                 }
             });
@@ -415,6 +416,25 @@ mod tests {
         assert!(h.plan(&names(&["a"]), Some("a"), Instant::now()).is_empty());
         assert_eq!(h.in_flight, 0);
         assert!(h.done_at.is_some());
+    }
+
+    #[test]
+    fn the_manage_row_is_in_the_list_and_the_add_row_is_gone() {
+        let (t, _) = crate::i18n::table("ja");
+        assert_eq!(t.tr("link.manage"), "つなぎ先を管理…");
+        let ctx = egui::Context::default();
+        let mut h = Hosts::new(&ctx);
+        h.toggle();
+        let list = names(&["kei"]);
+        let mut out = None;
+        for _ in 0..3 {
+            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                out = Some(h.show(ui, &t, &Link::Local, false, &list));
+            });
+            full.textures_delta.clear();
+        }
+        let out = out.unwrap();
+        assert!(!out.manage && out.pick.is_none(), "nothing is pressed by drawing");
     }
 
     #[test]

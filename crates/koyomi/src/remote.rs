@@ -12,6 +12,7 @@
 //!   `koyomi remote send <name> <net>`.
 
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
 use ito_http::client::{self, Client, Reply};
@@ -137,6 +138,283 @@ pub fn prepare_add(new: &Remote) -> Result<(PathBuf, String), String> {
     let remotes = koyomi_core::config::Config::parse(&text)?.remote;
     let out = with_remote(&text, &remotes, new)?;
     Ok((path, out))
+}
+
+/// The one lock for this process's changes to koyomi.toml (add, rename, delete, and a settings save). `write_atomic`
+/// replaces a whole file but does not serialise a read-modify-write, and each press runs on a thread of its own that
+/// outlives the box.
+static EDITS: Mutex<()> = Mutex::new(());
+
+/// Takes [`EDITS`]; held from the read of koyomi.toml through the last clean-up. A poisoned lock is taken anyway:
+/// what it guards is not in memory.
+pub fn edits() -> MutexGuard<'static, ()> {
+    EDITS.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+/// The OS credential store as far as a change to `[[remote]]` needs it (a fake stands in for it in tests).
+pub trait SecretStore {
+    fn get(&self, name: &str) -> Result<Option<String>, String>;
+    fn set(&self, name: &str, value: &str) -> Result<(), String>;
+    fn delete(&self, name: &str) -> Result<(), String>;
+}
+
+/// koyomi's own secrets in the OS credential store.
+pub struct Keyring;
+
+impl SecretStore for Keyring {
+    fn get(&self, name: &str) -> Result<Option<String>, String> {
+        ito_secret::get("koyomi", name).map_err(|e| e.to_string())
+    }
+    fn set(&self, name: &str, value: &str) -> Result<(), String> {
+        ito_secret::set("koyomi", name, value).map_err(|e| e.to_string())
+    }
+    fn delete(&self, name: &str) -> Result<(), String> {
+        ito_secret::delete("koyomi", name).map_err(|e| e.to_string())
+    }
+}
+
+/// Every remote of `remotes` as the `[[remote]]` blocks `set_tables` takes.
+fn blocks_of(remotes: &[&Remote]) -> Vec<Vec<(&'static str, String)>> {
+    let quote = |s: &str| toml::Value::String(s.to_owned()).to_string();
+    remotes
+        .iter()
+        .map(|r| vec![("name", quote(&r.name)), ("url", quote(&r.url)), ("fingerprint", quote(&r.fingerprint)), ("token", quote(&r.token))])
+        .collect()
+}
+
+/// Refuses when `[standby] watch` or `[primary] standby` names `name` (compared as `Config::parse` does).
+fn not_named_by_tables(cfg: &koyomi_core::config::Config, name: &str) -> Result<(), String> {
+    if cfg.standby.as_ref().is_some_and(|s| s.watch.trim() == name) {
+        return Err(format!("[standby] の watch が {name} を指している。先に koyomi.toml で直してから"));
+    }
+    if cfg.primary.as_ref().is_some_and(|p| p.standby.trim() == name) {
+        return Err(format!("[primary] の standby が {name} を指している。先に koyomi.toml で直してから"));
+    }
+    Ok(())
+}
+
+/// `set_tables` with `after`, then the result must read as a koyomi.toml holding exactly those remotes.
+fn rewrite(text: &str, after: &[&Remote]) -> Result<String, String> {
+    let out = ito_common::set_tables(text, "remote", &blocks_of(after))?;
+    let now = koyomi_core::config::Config::parse(&out)?.remote;
+    let same = now.len() == after.len()
+        && now.iter().zip(after).all(|(a, b)| a.name == b.name && a.url == b.url && a.fingerprint == b.fingerprint && a.token == b.token);
+    if !same {
+        return Err("koyomi.toml の [[remote]] を書き直せなかった（読み戻すと違う）".to_owned());
+    }
+    Ok(out)
+}
+
+/// `text` (koyomi.toml) with the `[[remote]]` called `old` called `new` instead. Only its `name` changes: the token
+/// line stays, and so does the credential store (a name-derived secret may be used by another connection, a job or a
+/// mail setting). Comments and the other tables stay.
+pub fn plan_rename(text: &str, old: &str, new: &str) -> Result<String, String> {
+    let (old, new) = (old.trim(), new.trim());
+    let cfg = koyomi_core::config::Config::parse(text)?;
+    if !cfg.remote.iter().any(|r| r.name.trim() == old) {
+        return Err(format!("{old} はもう koyomi.toml にない"));
+    }
+    not_named_by_tables(&cfg, old)?;
+    let others: Vec<String> = cfg.remote.iter().filter(|r| r.name.trim() != old).map(|r| r.name.clone()).collect();
+    match check_name(new, &others) {
+        Ok(()) => {}
+        Err(NameWhy::Taken) => return Err(format!("{new} はもう koyomi.toml にある")),
+        Err(_) => return Err(format!("{new:?} はつなぎ先の名前に使えない")),
+    }
+    let renamed: Vec<Remote> =
+        cfg.remote.iter().map(|r| if r.name.trim() == old { Remote { name: new.to_owned(), ..r.clone() } } else { r.clone() }).collect();
+    rewrite(text, &renamed.iter().collect::<Vec<_>>())
+}
+
+/// What becomes of the secret of a connection that is deleted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SecretFate {
+    /// koyomi made it (`<name>-token`) and nothing else names it.
+    Delete(String),
+    /// Left in the credential store (empty when the connection named none).
+    Keep(String),
+}
+
+/// koyomi.toml without a `[[remote]]`, and what to do with its secret.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemovePlan {
+    pub text: String,
+    pub secret: SecretFate,
+}
+
+/// `text` (koyomi.toml) without the `[[remote]]` called `name`. The secret is `Delete` only when it is the generated
+/// `<name>-token` and no string left in the file refers to it.
+pub fn plan_remove(text: &str, name: &str) -> Result<RemovePlan, String> {
+    let name = name.trim();
+    let cfg = koyomi_core::config::Config::parse(text)?;
+    let Some(gone) = cfg.remote.iter().find(|r| r.name.trim() == name) else {
+        return Err(format!("{name} はもう koyomi.toml にない"));
+    };
+    not_named_by_tables(&cfg, name)?;
+    let secret = gone.secret().to_owned();
+    let left: Vec<&Remote> = cfg.remote.iter().filter(|r| r.name.trim() != name).collect();
+    let out = rewrite(text, &left)?;
+    let generated = !secret.is_empty() && secret.eq_ignore_ascii_case(&format!("{name}-token"));
+    let fate = if generated && !refers(&out, &secret)? { SecretFate::Delete(secret) } else { SecretFate::Keep(secret) };
+    Ok(RemovePlan { text: out, secret: fate })
+}
+
+/// Whether any string in `toml_text` (read as TOML, so `secret: x` and `\u` escapes count as what they spell) refers
+/// to `secret`: with its whitespace removed and in ASCII lower case it contains `secret:<secret>`. Over-matching
+/// is fine, under-matching is not.
+pub fn refers(toml_text: &str, secret: &str) -> Result<bool, String> {
+    fn squash(s: &str) -> String {
+        s.chars().filter(|c| !c.is_whitespace()).collect::<String>().to_ascii_lowercase()
+    }
+    fn walk(v: &toml::Value, want: &str) -> bool {
+        match v {
+            toml::Value::String(s) => squash(s).contains(want),
+            toml::Value::Array(a) => a.iter().any(|v| walk(v, want)),
+            toml::Value::Table(t) => t.iter().any(|(k, v)| squash(k).contains(want) || walk(v, want)),
+            _ => false,
+        }
+    }
+    let value: toml::Value = toml::from_str(toml_text).map_err(|e| e.to_string())?;
+    Ok(walk(&value, &format!("secret:{}", squash(secret))))
+}
+
+/// Whether a file on this PC other than koyomi.toml may refer to `secret`: every `*.toml` under the settings folder
+/// (job nets, calendars, …) and the staged `next.toml`. A file that cannot be read or parsed counts as a yes: it cannot
+/// be ruled out. Only this PC's definitions matter, a credential store is per PC.
+pub fn used_elsewhere(paths: &Paths, secret: &str) -> bool {
+    fn files(dir: &std::path::Path, out: &mut Vec<PathBuf>) -> bool {
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) => return e.kind() == std::io::ErrorKind::NotFound,
+        };
+        for entry in entries {
+            let Ok(entry) = entry else { return false };
+            let (path, Ok(kind)) = (entry.path(), entry.file_type()) else { return false };
+            if kind.is_dir() {
+                if !files(&path, out) {
+                    return false;
+                }
+            } else if path.extension().is_some_and(|x| x.eq_ignore_ascii_case("toml")) {
+                out.push(path);
+            }
+        }
+        true
+    }
+    let mut list = Vec::new();
+    if !files(&paths.app, &mut list) {
+        return true;
+    }
+    list.retain(|p| !p.as_os_str().eq_ignore_ascii_case(paths.config.as_os_str()));
+    if paths.next.exists() && !list.iter().any(|p| p.as_os_str().eq_ignore_ascii_case(paths.next.as_os_str())) {
+        list.push(paths.next.clone());
+    }
+    list.iter().any(|p| match std::fs::read_to_string(p) {
+        Ok(text) => refers(&text, secret).unwrap_or(true),
+        Err(_) => true,
+    })
+}
+
+/// Renames in `text` (the read of koyomi.toml at `path`), writes it with `write`, and moves the acknowledgement file
+/// in `state`. The caller holds [`edits`]. The token and the credential store are not touched.
+fn carry_rename(
+    path: &std::path::Path,
+    text: &str,
+    old: &str,
+    new: &str,
+    state: Option<&std::path::Path>,
+    write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
+) -> Result<String, String> {
+    let (old, new) = (old.trim(), new.trim());
+    let out = plan_rename(text, old, new)?;
+    write(path, out)?;
+    let mut line = format!("{old} の名前を {new} に変えた");
+    if let Some(dir) = state {
+        if let Err(e) = crate::acked::move_file(dir, old, new) {
+            line.push_str(&format!("。確認済みの印は新しい名前に移せなかった（{e}）"));
+        }
+    }
+    Ok(line)
+}
+
+/// 名前を変える: `old` is `new` in this PC's koyomi.toml. It blocks: not on the UI thread.
+pub fn rename(old: &str, new: &str, state: Option<&std::path::Path>) -> Result<String, String> {
+    let _held = edits();
+    let paths = Paths::find()?;
+    let text = ito_common::read_or_empty(&paths.config)?;
+    carry_rename(&paths.config, &text, old, new, state, ito_common::write_atomic)
+}
+
+/// Deletes in `text`: `elsewhere` says whether a file other than koyomi.toml refers to a secret that would go. Writes
+/// first, and only then touches the credential store. The caller holds [`edits`].
+fn carry_remove(
+    path: &std::path::Path,
+    text: &str,
+    name: &str,
+    elsewhere: impl FnOnce(&str) -> bool,
+    store: &dyn SecretStore,
+    write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
+) -> Result<String, String> {
+    let name = name.trim();
+    let plan = plan_remove(text, name)?;
+    let fate = match plan.secret {
+        SecretFate::Delete(s) if elsewhere(&s) => SecretFate::Keep(s),
+        other => other,
+    };
+    write(path, plan.text)?;
+    let mut line = format!("{name} を消した");
+    match fate {
+        SecretFate::Delete(s) => {
+            if let Err(e) = store.delete(&s) {
+                line.push_str(&format!("。秘密 {s} は消せずに残っている（{e}）"));
+            }
+        }
+        SecretFate::Keep(s) if !s.is_empty() => {
+            line.push_str(&format!("。秘密 {s} は残した（ほかで使っていなければ koyomi secret delete {s} で消せる）"));
+        }
+        SecretFate::Keep(_) => {}
+    }
+    Ok(line)
+}
+
+/// 消す: the `[[remote]]` called `name` leaves this PC's koyomi.toml. It blocks: not on the UI thread.
+pub fn remove(name: &str) -> Result<String, String> {
+    let _held = edits();
+    let paths = Paths::find()?;
+    let text = ito_common::read_or_empty(&paths.config)?;
+    carry_remove(&paths.config, &text, name, |s| used_elsewhere(&paths, s), &Keyring, ito_common::write_atomic)
+}
+
+/// What the add box says when koyomi.toml could not be written: the write's reason, and, if the token that was
+/// stored for it could not be taken out again, that it is still in the credential store. Never the token.
+pub(crate) fn write_failed(name: &str, write: &str, undone: Result<(), String>) -> String {
+    match undone {
+        Ok(()) => format!("{name}: {write}"),
+        Err(d) => format!("{name}: {write}（資格情報ストアに入れたトークンも消せず、残っている: {d}）"),
+    }
+}
+
+/// The last steps of adding a connection, after the check passed and `prepare_add` made `text`: the token goes to the
+/// credential store, then koyomi.toml is written; a koyomi.toml that cannot be written gives the token back. A secret
+/// that is there already is never overwritten (a delete may have left `<name>-token` on purpose). The caller holds
+/// [`edits`].
+pub(crate) fn finish_add(
+    name: &str,
+    secret: &str,
+    token: &str,
+    path: &std::path::Path,
+    text: String,
+    store: &dyn SecretStore,
+    write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
+) -> Result<(), String> {
+    match store.get(secret) {
+        Err(e) => return Err(format!("{name}: {e}")),
+        Ok(Some(_)) => {
+            return Err(format!("秘密 {secret} がもうある。koyomi secret delete {secret} で消すか、別の名前にする"));
+        }
+        Ok(None) => {}
+    }
+    store.set(secret, token).map_err(|e| format!("{name}: {e}"))?;
+    write(path, text).map_err(|e| write_failed(name, &e, store.delete(secret)))
 }
 
 /// The `[[remote]]` names, for the window's PC list. It reads koyomi.toml: not on the UI thread.
@@ -514,5 +792,302 @@ mod tests {
         }
         assert_eq!(check_name("office-2", &have), Ok(()));
         assert_eq!(check_name("工場", &have), Ok(()));
+    }
+
+    const FP: &str = "abababababababababababababababababababababababababababababababab";
+
+    /// A koyomi.toml with a comment, another table, and the given `[[remote]]` names (token `secret:<name>-token`).
+    fn file_with(names: &[&str], tail: &str) -> String {
+        let mut t = "# my settings\nkeep_days = 30 # keep\n\n[vars]\nplace = \"x\"\n\n".to_owned();
+        for n in names {
+            t += &format!("# the {n}\n[[remote]]\nname = \"{n}\"\nurl = \"https://{n}:8443\"\nfingerprint = \"{FP}\"\ntoken = \"secret:{n}-token\"\n\n");
+        }
+        t + tail
+    }
+
+    fn names_in(text: &str) -> Vec<String> {
+        koyomi_core::config::Config::parse(text).unwrap().remote.into_iter().map(|r| r.name).collect()
+    }
+
+    #[test]
+    fn a_rename_changes_the_name_only_and_keeps_the_rest() {
+        let text = file_with(&["fact", "office"], "");
+        let out = plan_rename(&text, "fact", "works").unwrap();
+        for kept in ["# my settings", "keep_days = 30 # keep", "[vars]", "place = \"x\"", "# the fact", "# the office"] {
+            assert!(out.contains(kept), "{kept} lost:\n{out}");
+        }
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        assert_eq!(now.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(), ["works", "office"]);
+        assert_eq!(now[0].token, "secret:fact-token", "the token line stays as it was");
+        assert_eq!(now[0].url, "https://fact:8443");
+        assert_eq!(now[1].token, "secret:office-token");
+    }
+
+    #[test]
+    fn a_change_of_case_only_is_allowed_and_leaves_the_token() {
+        let text = file_with(&["fact"], "");
+        let out = plan_rename(&text, "fact", "Fact").unwrap();
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        assert_eq!((now[0].name.as_str(), now[0].token.as_str()), ("Fact", "secret:fact-token"));
+    }
+
+    #[test]
+    fn a_rename_is_refused_for_a_taken_bad_or_empty_name_or_one_not_in_the_file() {
+        let text = file_with(&["fact", "office"], "");
+        for new in ["OFFICE", "office", "", "  ", "a b", "a:b"] {
+            assert!(plan_rename(&text, "fact", new).is_err(), "{new:?}");
+        }
+        let e = plan_rename(&text, "ghost", "x").unwrap_err();
+        assert_eq!(e, "ghost はもう koyomi.toml にない");
+    }
+
+    #[test]
+    fn a_connection_named_by_standby_or_primary_cannot_be_renamed_or_removed() {
+        let standby = file_with(&["fact", "office"], "[standby]\nwatch = \"fact\"\n");
+        let primary = file_with(&["fact", "office"], "[primary]\nstandby = \"fact\"\n");
+        for (text, table) in [(&standby, "[standby]"), (&primary, "[primary]")] {
+            let e = plan_rename(text, "fact", "works").unwrap_err();
+            assert!(e.contains(table), "{e}");
+            let e = plan_remove(text, "fact").unwrap_err();
+            assert!(e.contains(table), "{e}");
+            // The other one is free.
+            assert!(plan_rename(text, "office", "works").is_ok());
+            assert!(plan_remove(text, "office").is_ok());
+        }
+    }
+
+    #[test]
+    fn removing_the_last_one_leaves_a_file_that_parses_with_the_rest() {
+        let text = file_with(&["fact"], "");
+        let plan = plan_remove(&text, "fact").unwrap();
+        assert!(names_in(&plan.text).is_empty());
+        assert!(!plan.text.contains("[[remote]]"), "{}", plan.text);
+        for kept in ["# my settings", "keep_days = 30 # keep", "[vars]", "place = \"x\""] {
+            assert!(plan.text.contains(kept), "{kept} lost:\n{}", plan.text);
+        }
+        assert_eq!(plan.secret, SecretFate::Delete("fact-token".into()));
+    }
+
+    #[test]
+    fn removing_a_middle_one_keeps_the_others_and_their_comments() {
+        let text = file_with(&["a", "b", "c"], "");
+        let plan = plan_remove(&text, "b").unwrap();
+        assert_eq!(names_in(&plan.text), ["a", "c"]);
+        assert!(plan.text.contains("# the a") && plan.text.contains("# the c") && plan.text.contains("[vars]"));
+        assert!(plan_remove(&text, "ghost").is_err());
+    }
+
+    #[test]
+    fn a_generated_secret_goes_a_custom_one_stays_and_one_still_named_stays() {
+        let text = file_with(&["fact", "office"], "");
+        assert_eq!(plan_remove(&text, "fact").unwrap().secret, SecretFate::Delete("fact-token".into()));
+        let custom = text.replace("secret:fact-token", "secret:shared");
+        assert_eq!(plan_remove(&custom, "fact").unwrap().secret, SecretFate::Keep("shared".into()));
+        // Another remote names the generated secret: plainly, with a space after the colon, and by a `\u` escape.
+        for spelling in ["secret:fact-token", "secret: fact-token", "secret:\\u0066act-token", "secret:Fact-Token"] {
+            let other = text.replace("secret:office-token", spelling);
+            assert_eq!(plan_remove(&other, "fact").unwrap().secret, SecretFate::Keep("fact-token".into()), "{spelling}");
+        }
+        // Another table names it.
+        let table = file_with(&["fact"], "[ping]\nurl = \"secret: fact-token\"\n");
+        assert_eq!(plan_remove(&table, "fact").unwrap().secret, SecretFate::Keep("fact-token".into()));
+        // The generated name in another case still counts as generated.
+        let upper = file_with(&["fact"], "").replace("secret:fact-token", "secret:FACT-token");
+        assert_eq!(plan_remove(&upper, "fact").unwrap().secret, SecretFate::Delete("FACT-token".into()));
+    }
+
+    #[test]
+    fn refers_reads_values_through_nested_tables_and_arrays() {
+        let t = "[a.b]\nlist = [1, [\"x\", { deep = \"use secret: Tok-1 here\" }]]\n";
+        assert!(refers(t, "tok-1").unwrap());
+        assert!(refers(t, "TOK-1").unwrap());
+        assert!(!refers(t, "tok-2").unwrap());
+        assert!(!refers("a = \"tok-1\"\n", "tok-1").unwrap(), "the word alone is not a reference");
+        assert!(refers("a = \"secret:\\u0074ok\"\n", "tok").unwrap());
+        assert!(refers("not toml [", "x").is_err());
+    }
+
+    fn paths_in(dir: &std::path::Path) -> Paths {
+        let (app, state) = (dir.join("app"), dir.join("state"));
+        std::fs::create_dir_all(app.join("jobnets/g")).unwrap();
+        std::fs::create_dir_all(&state).unwrap();
+        Paths {
+            jobnets: app.join("jobnets"),
+            calendars: app.join("calendars"),
+            config: app.join("koyomi.toml"),
+            approved: state.join("approved.toml"),
+            held: state.join("held.toml"),
+            next: state.join("next.toml"),
+            app,
+            state,
+        }
+    }
+
+    fn temp(tag: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("koyomi-remote-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    #[test]
+    fn a_secret_used_by_a_file_other_than_koyomi_toml_is_found() {
+        let d = temp("elsewhere");
+        let p = paths_in(&d);
+        std::fs::write(&p.config, "[mail]\npassword = \"secret:fact-token\"\n").unwrap();
+        assert!(!used_elsewhere(&p, "fact-token"), "koyomi.toml itself is left out, and a next file that is not there is fine");
+        let net = p.jobnets.join("g/a.toml");
+        std::fs::write(&net, "token = \"secret:other\"\n").unwrap();
+        assert!(!used_elsewhere(&p, "fact-token"));
+        std::fs::write(&net, "token = \"secret: fact-token\"\n").unwrap();
+        assert!(used_elsewhere(&p, "fact-token"), "a space after the colon counts");
+        std::fs::write(&net, "this does not parse [\n").unwrap();
+        assert!(used_elsewhere(&p, "fact-token"), "a file that does not read cannot be ruled out");
+        std::fs::remove_file(&net).unwrap();
+        std::fs::write(&p.next, "x = \"secret:fact-token\"\n").unwrap();
+        assert!(used_elsewhere(&p, "fact-token"), "the staged definitions count");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Records the calls made; never a value.
+    #[derive(Default)]
+    struct Fake {
+        calls: std::cell::RefCell<Vec<String>>,
+        has: Option<String>,
+        get_fails: bool,
+        delete_fails: bool,
+    }
+
+    impl SecretStore for Fake {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.calls.borrow_mut().push(format!("get {name}"));
+            if self.get_fails {
+                Err("store down".into())
+            } else {
+                Ok(self.has.clone())
+            }
+        }
+        fn set(&self, name: &str, _value: &str) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("set {name}"));
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("delete {name}"));
+            if self.delete_fails {
+                Err("denied".into())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn a_rename_writes_the_file_and_moves_the_acknowledgements_and_makes_no_store_call() {
+        let d = temp("rename");
+        let text = file_with(&["fact"], "");
+        let path = d.join("koyomi.toml");
+        std::fs::write(d.join(crate::acked::file_name(Some("fact"))), "acked = [\"r1\"]\n").unwrap();
+        let wrote = std::cell::RefCell::new(None);
+        let line = carry_rename(&path, &text, "fact", "works", Some(&d), |p, t| {
+            *wrote.borrow_mut() = Some((p.to_path_buf(), t));
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(line, "fact の名前を works に変えた");
+        let (p, t) = wrote.into_inner().expect("written");
+        assert_eq!(p, path);
+        assert_eq!(names_in(&t), ["works"]);
+        assert!(d.join(crate::acked::file_name(Some("works"))).exists());
+        assert!(!d.join(crate::acked::file_name(Some("fact"))).exists());
+        // A refused plan or a failed write changes nothing: no move.
+        std::fs::write(d.join(crate::acked::file_name(Some("fact"))), "acked = []\n").unwrap();
+        assert!(carry_rename(&path, &text, "fact", "a b", Some(&d), |_, _| panic!("no write")).is_err());
+        let e = carry_rename(&path, &text, "fact", "works2", Some(&d), |_, _| Err("read only".into())).unwrap_err();
+        assert_eq!(e, "read only");
+        assert!(d.join(crate::acked::file_name(Some("fact"))).exists(), "the file did not move");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_delete_writes_before_it_touches_the_store_and_keeps_what_it_should() {
+        let text = file_with(&["fact", "office"], "");
+        let path = std::path::Path::new("koyomi.toml");
+        let order = std::cell::RefCell::new(Vec::<String>::new());
+        let store = Fake::default();
+        let write = |_: &std::path::Path, _: String| {
+            order.borrow_mut().push("write".into());
+            Ok(())
+        };
+        let line = carry_remove(path, &text, "fact", |_| false, &store, write).unwrap();
+        order.borrow_mut().extend(store.calls.borrow().iter().cloned());
+        assert_eq!(*order.borrow(), ["write", "delete fact-token"]);
+        assert_eq!(line, "fact を消した");
+
+        // A write error leaves the secret, and makes no call.
+        let store = Fake::default();
+        let e = carry_remove(path, &text, "fact", |_| false, &store, |_, _| Err("read only".into())).unwrap_err();
+        assert_eq!(e, "read only");
+        assert!(store.calls.borrow().is_empty());
+
+        // A delete error is a success with a note that names the secret.
+        let store = Fake { delete_fails: true, ..Fake::default() };
+        let line = carry_remove(path, &text, "fact", |_| false, &store, |_, _| Ok(())).unwrap();
+        assert!(line.starts_with("fact を消した") && line.contains("fact-token") && line.contains("denied"), "{line}");
+
+        // Used elsewhere, or not generated: Keep, no delete call, and it says how to remove it.
+        let store = Fake::default();
+        let line = carry_remove(path, &text, "fact", |_| true, &store, |_, _| Ok(())).unwrap();
+        assert!(store.calls.borrow().is_empty());
+        assert_eq!(line, "fact を消した。秘密 fact-token は残した（ほかで使っていなければ koyomi secret delete fact-token で消せる）");
+        let custom = text.replace("secret:fact-token", "secret:shared");
+        let line = carry_remove(path, &custom, "fact", |_| false, &store, |_, _| Ok(())).unwrap();
+        assert!(store.calls.borrow().is_empty());
+        assert!(line.contains("shared"), "{line}");
+    }
+
+    #[test]
+    fn the_edit_lock_makes_a_second_taker_wait() {
+        use std::sync::mpsc;
+        use std::time::Duration;
+        let first = edits();
+        let (tx, rx) = mpsc::channel::<()>();
+        let t = std::thread::spawn(move || {
+            let _second = edits();
+            tx.send(()).unwrap();
+        });
+        // Without the lock the thread would answer long before this runs out.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err(), "the second taker is held up while the first holds it");
+        drop(first);
+        rx.recv_timeout(Duration::from_secs(10)).expect("the second taker gets it once the first lets go");
+        t.join().unwrap();
+    }
+
+    /// A new connection's secret: the add box's last steps (`finish_add`).
+    #[test]
+    fn adding_never_overwrites_a_secret_that_is_there_and_takes_its_own_back() {
+        let path = std::path::Path::new("koyomi.toml");
+        // Free: get, set, write, in that order.
+        let store = Fake::default();
+        finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| Ok(())).unwrap();
+        assert_eq!(*store.calls.borrow(), ["get kei-token", "set kei-token"]);
+        // A value already there: no set, no write.
+        let store = Fake { has: Some("old".into()), ..Fake::default() };
+        let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| panic!("no write")).unwrap_err();
+        assert!(e.contains("kei-token") && e.contains("koyomi secret delete kei-token"), "{e}");
+        assert_eq!(*store.calls.borrow(), ["get kei-token"]);
+        // A get that fails: no set, no write.
+        let store = Fake { get_fails: true, ..Fake::default() };
+        let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| panic!("no write")).unwrap_err();
+        assert!(e.contains("store down"), "{e}");
+        assert_eq!(*store.calls.borrow(), ["get kei-token"]);
+        // A write that fails takes the new secret back.
+        let store = Fake::default();
+        let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| Err("read only".into())).unwrap_err();
+        assert_eq!(e, "kei: read only");
+        assert_eq!(*store.calls.borrow(), ["get kei-token", "set kei-token", "delete kei-token"]);
+        // ... and says so when it cannot.
+        let store = Fake { delete_fails: true, ..Fake::default() };
+        let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| Err("read only".into())).unwrap_err();
+        assert!(e.contains("残っている") && e.contains("denied") && !e.contains("tok)"), "{e}");
     }
 }

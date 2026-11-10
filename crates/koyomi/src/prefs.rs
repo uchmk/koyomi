@@ -69,6 +69,7 @@ pub fn write_config(
     mails: Option<&[Mail]>,
 ) -> Result<(), String> {
     let at = |e: String| format!("{}: {e}", path.display());
+    let _held = crate::remote::edits();
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
