@@ -40,6 +40,7 @@ use std::time::{Duration, Instant};
 use ito_common::kept;
 use ito_http::client::{self, Client};
 use koyomi_core::config;
+use koyomi_core::msg::{self, line};
 use koyomi_core::run::Run;
 use koyomi_core::standby::{Refusal, Seen, State, Step, Watch};
 use serde::{Deserialize, Serialize};
@@ -508,7 +509,12 @@ impl Standby {
     /// What a person should see: the poll's trouble.
     pub fn notes(&self) -> Vec<String> {
         let name = self.cfg.as_ref().map(|c| c.watch.trim()).unwrap_or_default();
-        self.note.iter().chain(&self.runs_note).chain(&self.copy_note).map(|n| format!("[standby] {name}: {n}")).collect()
+        self.note
+            .iter()
+            .chain(&self.runs_note)
+            .chain(&self.copy_note)
+            .map(|n| if msg::is_coded(n) { n.clone() } else { format!("[standby] {name}: {n}") })
+            .collect()
     }
 }
 
@@ -530,22 +536,28 @@ fn last_back(log: &[String]) -> Option<String> {
     log.iter().rev().find(|l| l.contains(" に戻した（")).and_then(|l| l.get(..16)).map(str::to_owned)
 }
 
+const COPY: &str = "定義を写せない";
+
 /// One copy from `r`: the confirmed definitions there whose file differs from `here`.
 fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
     let name = r.secret();
     let token = match ito_secret::get("koyomi", name) {
         Ok(Some(t)) => t,
-        Ok(None) => return Err(format!("定義を写せない: token の秘密 {name} がない")),
-        Err(e) => return Err(format!("定義を写せない: token の秘密 {name} が読めない（{e}）")),
+        Ok(None) => return Err(line(msg::TOKEN_SECRET_MISSING, &[&r.name, name])),
+        Err(e) => return Err(line(msg::TOKEN_SECRET_UNREADABLE, &[&r.name, name, &e.to_string()])),
     };
-    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| format!("定義を写せない: {e}"))?;
-    let list = c.get("/nets").map_err(|e| format!("定義を写せない: {e}"))?;
+    let reason = |e: client::Error| crate::remote::reason(&r.name, &e);
+    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(reason)?;
+    let list = c.get("/nets").map_err(reason)?;
+    if list.status == 401 {
+        return Err(line(msg::TOKEN_REFUSED, &[&r.name, name]));
+    }
     if list.status != 200 {
-        return Err(format!("定義を写せない: /nets が {} を返した", list.status));
+        return Err(line(msg::UNEXPECTED_STATUS, &[&r.name, &format!("/nets {}", list.status)]));
     }
     let mut out = Vec::new();
     for id in wanted(&list.json, here)? {
-        let reply = c.get(&format!("/nets/text?net={}", crate::remote::query(&id))).map_err(|e| format!("定義を写せない: {e}"))?;
+        let reply = c.get(&format!("/nets/text?net={}", crate::remote::query(&id))).map_err(reason)?;
         match reply.status {
             200 => {
                 if let Some(text) = reply.json["text"].as_str() {
@@ -554,10 +566,8 @@ fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
             }
             // Gone there since the list.
             404 => {}
-            403 => {
-                return Err("定義を写せない: 向こうでこの token に edit のロールが要る（向こうの [http] の利用者とロールを見る）".to_owned())
-            }
-            s => return Err(format!("定義を写せない: /nets/text が {s} を返した（{id}）")),
+            403 => return Err(line(msg::HANDOVER_REFUSED, &[&r.name, "edit"])),
+            s => return Err(line(msg::UNEXPECTED_STATUS, &[&r.name, &format!("/nets/text {s} ({id})")])),
         }
     }
     Ok(out)
@@ -566,12 +576,12 @@ fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
 /// The ids to fetch from a `GET /nets` answer: confirmed there, and with a file hash that is
 /// not the one in `here`.
 fn wanted(list: &serde_json::Value, here: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
-    let nets = list["nets"].as_array().ok_or("定義を写せない: /nets の答えが読めない")?;
+    let nets = list["nets"].as_array().ok_or(format!("{COPY}: /nets の答えが読めない"))?;
     let mut out = Vec::new();
     for n in nets {
         let Some(id) = n["id"].as_str() else { continue };
         let Some(sha) = n["sha256"].as_str() else {
-            return Err("定義を写せない: 向こうの koyomi が古い（/nets にハッシュがない）。写すには向こうを新しくする".to_owned());
+            return Err(format!("{COPY}: 向こうの koyomi が古い（/nets にハッシュがない）。写すには向こうを新しくする"));
         };
         if n["standing"] == "confirmed" && here.get(id).map(String::as_str) != Some(sha) {
             out.push(id.to_owned());
@@ -585,19 +595,19 @@ fn poll(r: &config::Remote, runs: bool) -> Poll {
     let name = r.secret();
     let token = match ito_secret::get("koyomi", name) {
         Ok(Some(t)) => t,
-        Ok(None) => return Poll::Unknown(format!("token の秘密 {name} がない（koyomi secret set {name}）。見張れていない")),
-        Err(e) => return Poll::Unknown(format!("token の秘密 {name} が読めない（{e}）。見張れていない")),
+        Ok(None) => return Poll::Unknown(line(msg::TOKEN_SECRET_MISSING, &[&r.name, name])),
+        Err(e) => return Poll::Unknown(line(msg::TOKEN_SECRET_UNREADABLE, &[&r.name, name, &e.to_string()])),
     };
     let c = match Client::new(r.url.trim(), r.fingerprint.trim(), token) {
         Ok(c) => c,
-        Err(e) => return judge(Err(e), name),
+        Err(e) => return judge(Err(e), &r.name, name),
     };
     match c.get("/health") {
         Ok(reply) if reply.status == 200 => {
-            Poll::Answered { seen: seen_of(&reply.json), note: None, running: runs.then(|| running_of(&c)) }
+            Poll::Answered { seen: seen_of(&reply.json), note: None, running: runs.then(|| running_of(&r.name, &c)) }
         }
-        Ok(reply) => judge(Ok(reply.status), name),
-        Err(e) => judge(Err(e), name),
+        Ok(reply) => judge(Ok(reply.status), &r.name, name),
+        Err(e) => judge(Err(e), &r.name, name),
     }
 }
 
@@ -606,25 +616,23 @@ fn runs_poll(r: &config::Remote) -> Result<Vec<Run>, String> {
     let name = r.secret();
     let token = match ito_secret::get("koyomi", name) {
         Ok(Some(t)) => t,
-        _ => return Err(format!("動いている回が読めない: token の秘密 {name} がない")),
+        Ok(None) => return Err(line(msg::TOKEN_SECRET_MISSING, &[&r.name, name])),
+        Err(e) => return Err(line(msg::TOKEN_SECRET_UNREADABLE, &[&r.name, name, &e.to_string()])),
     };
-    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| format!("動いている回が読めない: {e}"))?;
-    running_of(&c)
+    let c = Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| crate::remote::reason(&r.name, &e))?;
+    running_of(&r.name, &c)
 }
 
-/// What a `/health` reply (its status) or failure says.
-fn judge(got: Result<u16, client::Error>, secret: &str) -> Poll {
+/// What a `/health` reply (its status) or failure of the connection `name` (its token in `secret`) says.
+fn judge(got: Result<u16, client::Error>, name: &str, secret: &str) -> Poll {
     let answered = |note: Option<String>| Poll::Answered { seen: Seen::Running, note, running: None };
     match got {
         Ok(200) => answered(None),
-        Ok(401) => answered(Some(format!("token が合わない（向こうの [http] の token と koyomi secret set {secret} を見る）"))),
-        Ok(s) => answered(Some(format!("/health が {s} を返した"))),
-        Err(client::Error::Connect(s)) => Poll::Missed(format!("つながらない: {s}")),
-        Err(client::Error::Tls(s)) => Poll::Missed(format!("TLS が通らない: {s}")),
-        Err(client::Error::Fingerprint(got)) => {
-            Poll::Unknown(format!("証明書が fingerprint と違う（今見えたのは {got}）。別の PC かもしれないので、答えなかったとは数えない"))
-        }
-        Err(e) => Poll::Unknown(format!("{e}。見張れていない")),
+        Ok(401) => answered(Some(line(msg::TOKEN_REFUSED, &[name, secret]))),
+        Ok(s) => answered(Some(line(msg::UNEXPECTED_STATUS, &[name, &format!("/health {s}")]))),
+        Err(e @ (client::Error::Connect(_) | client::Error::Tls(_))) => Poll::Missed(crate::remote::reason(name, &e)),
+        // Another PC may answer: it is not counted as no answer.
+        Err(e) => Poll::Unknown(crate::remote::reason(name, &e)),
     }
 }
 
@@ -644,17 +652,17 @@ fn seen_of(health: &serde_json::Value) -> Seen {
 
 /// The runs going on there (`GET /runs?running=1`), for a takeover to start from. A koyomi too
 /// old for `running` answers with all of today's: the ones over are dropped here.
-fn running_of(c: &Client) -> Result<Vec<Run>, String> {
+fn running_of(name: &str, c: &Client) -> Result<Vec<Run>, String> {
+    const READ: &str = "動いている回が読めない";
     // One more try: a reply that fails right after /health must not leave a takeover with no runs.
-    let reply = c.get("/runs?running=1").or_else(|_| c.get("/runs?running=1")).map_err(|e| format!("動いている回が読めない: {e}"))?;
+    let reply = c.get("/runs?running=1").or_else(|_| c.get("/runs?running=1")).map_err(|e| crate::remote::reason(name, &e))?;
     if reply.status != 200 {
-        return Err(format!("動いている回が読めない: /runs が {} を返した", reply.status));
+        return Err(line(msg::UNEXPECTED_STATUS, &[name, &format!("/runs {}", reply.status)]));
     }
-    let list = reply.json["runs"].as_array().ok_or("動いている回が読めない: /runs の答えが読めない")?;
+    let list = reply.json["runs"].as_array().ok_or(format!("{READ}: /runs の答えが読めない"))?;
     let mut out = Vec::new();
     for v in list {
-        let r: Run = serde_json::from_value(v.clone())
-            .map_err(|e| format!("動いている回が読めない（向こうの koyomi と版が違うかもしれない）: {e}"))?;
+        let r: Run = serde_json::from_value(v.clone()).map_err(|e| format!("{READ}（向こうの koyomi と版が違うかもしれない）: {e}"))?;
         if !r.is_over() {
             out.push(r);
         }
@@ -699,11 +707,11 @@ mod tests {
     /// only nobody there is a miss; a wrong certificate or a wrong token is not.
     #[test]
     fn only_nobody_there_is_a_miss() {
-        assert_eq!(judge(Ok(200), "t"), answered(Seen::Running));
-        assert!(matches!(judge(Ok(401), "t"), Poll::Answered { note: Some(_), .. }));
-        assert!(matches!(judge(Err(client::Error::Connect("refused".into())), "t"), Poll::Missed(_)));
-        assert!(matches!(judge(Err(client::Error::Tls("eof".into())), "t"), Poll::Missed(_)));
-        assert!(matches!(judge(Err(client::Error::Fingerprint("x".into())), "t"), Poll::Unknown(_)));
+        assert_eq!(judge(Ok(200), "pc1", "t"), answered(Seen::Running));
+        assert!(matches!(judge(Ok(401), "pc1", "t"), Poll::Answered { note: Some(_), .. }));
+        assert!(matches!(judge(Err(client::Error::Connect("refused".into())), "pc1", "t"), Poll::Missed(_)));
+        assert!(matches!(judge(Err(client::Error::Tls("eof".into())), "pc1", "t"), Poll::Missed(_)));
+        assert!(matches!(judge(Err(client::Error::Fingerprint("x".into())), "pc1", "t"), Poll::Unknown(_)));
     }
 
     /// a primary with `[primary]` says in `"ha"` whether it waits; one without runs on its own.

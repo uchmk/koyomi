@@ -3244,6 +3244,7 @@ version = "0.35.0"
 dependencies = [
  "chrono",
  "ito-common",
+ "ito-i18n",
  "ito-match",
  "ito-proc",
  "ito-zip",

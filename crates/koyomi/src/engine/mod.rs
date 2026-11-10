@@ -823,7 +823,7 @@ impl State {
                         crate::say(&format!("koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: {}", c.id), false)
                     }
                     Err(e) => {
-                        refused.push(format!("{}: {e}", c.id));
+                        refused.push(format!("{}: {}", c.id, koyomi_core::msg::uncoded(&e)));
                         next.push(c);
                     }
                 }
@@ -1659,7 +1659,7 @@ impl State {
         if let Some(dir) = self.paths.approved.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
+        ito_common::write_atomic(&self.paths.approved, next.to_toml()).map_err(|e| write_failed(&self.paths.approved, &e))?;
         self.store = next;
         self.rescan();
         Ok(format!("確認した: {id}"))
@@ -1688,21 +1688,21 @@ impl State {
     /// whole; with `approve`, confirms it too.
     fn write_def(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool, approve: bool) -> Result<(), String> {
         if !self.warnings.is_empty() {
-            return Err(format!("保存できない: {}", self.warnings.join(" / ")));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&self.warnings.join(" / ")]));
         }
         let (group, name) = split_id(id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
         // The file as it is now, not as the last scan saw it: an edit by hand a moment ago counts.
         let now = std::fs::read(&path).ok().map(|b| approved::hash(&b));
         if !force && now.as_deref() != base_sha256 {
-            return Err(format!("ほかで変わっています: {id}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &[id]));
         }
-        let def = self.checked_def(id, text, "保存できない")?;
+        let def = self.checked_def(id, text, koyomi_core::msg::DEF_INVALID_SAVE)?;
         self.keep_version(&path, group, name)?;
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+            std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         }
-        ito_common::write_atomic(&path, text)?;
+        ito_common::write_atomic(&path, text).map_err(|e| write_failed(&path, &e))?;
         if approve {
             let mut next = self.store.clone();
             next.approve(id, &def.sha256, text);
@@ -1717,8 +1717,9 @@ impl State {
     }
 
     /// `text` as the definition of `id` it would be once written, checked as a file is (with its
-    /// group's `_group.toml` and against the other nets); refused, `doing` first, with an error.
-    fn checked_def(&self, id: &str, text: &str, doing: &str) -> Result<Def, String> {
+    /// group's `_group.toml` and against the other nets); refused with the message `doing` (holes: the id and the
+    /// problems), so the ID is at its head.
+    fn checked_def(&self, id: &str, text: &str, doing: koyomi_core::msg::Id) -> Result<Def, String> {
         let (group, name) = split_id(id)?;
         let shared = group::load(&self.paths.jobnets.join(group).join("_group.toml"));
         let def = def_of_text(text, group, name, &self.store, shared.as_ref(), &self.calendars);
@@ -1727,15 +1728,17 @@ impl State {
         link(&mut all);
         let def = all.pop().expect("pushed");
         if def.standing == Standing::Invalid {
-            let why: Vec<String> = def.problems.iter().map(|p| p.in_file(&def.file)).collect();
-            return Err(format!("{doing}:\n{}", why.join("\n")));
+            // One line, one ID: a problem with its own ID gives it up to the entry that holds it.
+            let why: Vec<String> = def.problems.iter().map(|p| koyomi_core::msg::uncoded(&p.in_file(&def.file)).to_owned()).collect();
+            return Err(koyomi_core::msg::line(doing, &[id, &why.join(" / ")]));
         }
         Ok(def)
     }
 
     /// See [`Request::Stage`].
     fn stage(&mut self, id: &str, text: &str, from: &str, expect: Option<&proto::StageExpect>) -> Result<String, String> {
-        let from = NaiveDate::parse_from_str(from, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {from}"))?;
+        let from =
+            NaiveDate::parse_from_str(from, "%Y-%m-%d").map_err(|_| koyomi_core::msg::line(koyomi_core::msg::STAGE_DATE_BAD, &[from]))?;
         self.stage_expecting(id, text, from, ito_common::now::now_local().date_naive(), expect)
     }
 
@@ -1757,28 +1760,28 @@ impl State {
         expect: Option<&proto::StageExpect>,
     ) -> Result<String, String> {
         if !self.warnings.is_empty() {
-            return Err(format!("置けない: {}", self.warnings.join(" / ")));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&self.warnings.join(" / ")]));
         }
         // `next.toml` as it is now, not as the last scan saw it: a hand edit a moment ago counts. When it no
         // longer reads, `staged` is empty and `warnings` is stale, so the write is refused here.
         self.reload_staged();
         self.staged_writable()?;
         if from <= today {
-            return Err(format!("{from} は今日か過ぎた日。今日から使うなら、ふつうに保存する"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::STAGE_DATE_PAST, &[&from.to_string()]));
         }
         let (group, name) = split_id(id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
-        let live = std::fs::read(&path).map_err(|_| format!("定義がない: {id}（新しいジョブネットは今作って保留にしておく）"))?;
+        let live = std::fs::read(&path).map_err(|_| koyomi_core::msg::line(koyomi_core::msg::STAGE_NO_LIVE, &[id]))?;
         if let Some(e) = expect {
             let here = self.staged.get(id).map(koyomi_core::next::Entry::seal);
             if e.live != approved::hash(&live) || e.staged != here {
-                return Err(format!("置けない: {id} はほかで変わっています（読み直してから、もう一度置く）"));
+                return Err(koyomi_core::msg::line(koyomi_core::msg::STAGE_CHANGED_ELSEWHERE, &[id]));
             }
         }
         if live == text.as_bytes() {
-            return Err(format!("今の定義と同じ中身: {id}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::STAGE_SAME, &[id]));
         }
-        self.checked_def(id, text, "置けない")?;
+        self.checked_def(id, text, koyomi_core::msg::DEF_INVALID_STAGE)?;
         let mut staged = self.staged.clone();
         staged.set(koyomi_core::next::Entry {
             id: id.to_owned(),
@@ -1874,7 +1877,7 @@ impl State {
         let (group, name) = split_id(&e.id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
         let live = std::fs::read(&path).map_err(|_| "今の定義のファイルがない".to_owned())?;
-        self.checked_def(&e.id, &e.text, "定義の誤り")?;
+        self.checked_def(&e.id, &e.text, koyomi_core::msg::DEF_INVALID_SWITCH)?;
         let changed = e.base.as_deref().is_some_and(|b| b != approved::hash(&live));
         let approved = e.approved();
         // The file first: a switch cut short is done again, never lost.
@@ -1918,12 +1921,13 @@ impl State {
         let old = match std::fs::read(path) {
             Ok(old) => old,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(format!("{} を読めない: {e}", shown(path))),
+            Err(e) => return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(path), &e.to_string()])),
         };
-        std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+        std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
         let version = free_version(dir, &stamp, ext);
-        ito_common::write_atomic(&dir.join(format!("{version}.{ext}")), old)
+        let to = dir.join(format!("{version}.{ext}"));
+        ito_common::write_atomic(&to, old).map_err(|e| write_failed(&to, &e))
     }
 
     /// Brings a bundle in. The plan is answered whatever happens; it is carried
@@ -2015,10 +2019,10 @@ impl State {
     fn calendar_file(&self, name: &str) -> Result<(String, PathBuf), String> {
         let n = name.trim();
         if n.is_empty() {
-            return Err("暦の名前が空".to_owned());
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_NAME_EMPTY, &[]));
         }
         if !koyomi_core::calendar::valid_name(n) {
-            return Err(format!("暦の名前に使えない文字がある: {n}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_NAME_BAD, &[n]));
         }
         Ok((n.to_owned(), self.paths.calendars.join(format!("{n}.toml"))))
     }
@@ -2031,7 +2035,7 @@ impl State {
     /// See [`Request::CalendarText`].
     fn calendar_text(&self, name: &str) -> Result<String, String> {
         let (n, path) = self.calendar_file(name)?;
-        let text = std::fs::read_to_string(&path).map_err(|_| format!("暦がない: {n}"))?;
+        let text = std::fs::read_to_string(&path).map_err(|_| koyomi_core::msg::line(koyomi_core::msg::CAL_MISSING, &[&n]))?;
         Ok(proto::CalendarBody { sha256: approved::hash(text.as_bytes()), text }.to_toml())
     }
 
@@ -2039,22 +2043,21 @@ impl State {
     /// otherwise the text of the one with that hash; the old text is kept under `versions/_calendars/`.
     fn calendar_put(&mut self, name: &str, text: &str, base_sha256: Option<&str>) -> Result<String, String> {
         let (n, path) = self.calendar_file(name)?;
-        koyomi_core::calendar::Calendar::parse(&n, text).map_err(|e| format!("暦の中身が読めない: {e}"))?;
+        koyomi_core::calendar::Calendar::parse(&n, text)?;
         let there = match std::fs::read(&path) {
             Ok(old) => Some(old),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(format!("暦を読めない: {}: {e}", shown(&path))),
+            Err(e) => return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(&path), &e.to_string()])),
         };
         match (there, base_sha256) {
             (None, None) => {}
             (Some(old), Some(base)) if approved::hash(&old) == base => {}
-            (None, Some(_)) => return Err(format!("置けない: 暦 {n} はほかで変わっています（もうない）")),
-            (Some(_), None) => return Err(format!("置けない: 暦 {n} はほかで変わっています（もうある）")),
-            (Some(_), Some(_)) => return Err(format!("置けない: 暦 {n} はほかで変わっています（読み直してから、もう一度）")),
+            (None, Some(_)) | (Some(_), Some(_)) => return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_CHANGED_ELSEWHERE, &[&n])),
+            (Some(_), None) => return Err(koyomi_core::msg::line(koyomi_core::msg::CALENDAR_EXISTS, &[&n])),
         }
         self.keep_version_in(&path, &self.calendar_versions(&n))?;
-        std::fs::create_dir_all(&self.paths.calendars).map_err(|e| format!("{} を作れない: {e}", shown(&self.paths.calendars)))?;
-        ito_common::write_atomic(&path, text)?;
+        std::fs::create_dir_all(&self.paths.calendars).map_err(|e| dir_failed(&self.paths.calendars, &e))?;
+        ito_common::write_atomic(&path, text).map_err(|e| write_failed(&path, &e))?;
         self.rescan();
         Ok(format!("暦を書いた: calendars/{n}.toml"))
     }
@@ -2066,19 +2069,19 @@ impl State {
         let (f, from_path) = self.calendar_file(from)?;
         let (t, to_path) = self.calendar_file(to)?;
         if f == t {
-            return Err(format!("名前が同じ: {f}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_SAME_NAME, &[&f]));
         }
         if !from_path.exists() {
-            return Err(format!("暦がない: {f}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_MISSING, &[&f]));
         }
         let same_file = matches!(
             (std::fs::canonicalize(&from_path), std::fs::canonicalize(&to_path)),
             (Ok(a), Ok(b)) if a == b
         );
         if to_path.exists() && !same_file {
-            return Err(format!("移し先の暦がもうある: {t}"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CALENDAR_EXISTS, &[&t]));
         }
-        std::fs::rename(&from_path, &to_path).map_err(|e| format!("calendars/{f}.toml の名前を変えられない: {e}"))?;
+        std::fs::rename(&from_path, &to_path).map_err(|e| write_failed(&to_path, &e))?;
         self.rescan();
         Ok(format!("暦の名前を変えた: {f} → {t}"))
     }
@@ -2086,12 +2089,13 @@ impl State {
     /// See [`Request::CalendarDelete`]: the file kept under `versions/_calendars/` first.
     fn calendar_delete(&mut self, name: &str, base_sha256: &str) -> Result<String, String> {
         let (n, path) = self.calendar_file(name)?;
-        let old = std::fs::read(&path).map_err(|_| format!("暦がない: {n}"))?;
+        let old = std::fs::read(&path).map_err(|_| koyomi_core::msg::line(koyomi_core::msg::CAL_MISSING, &[&n]))?;
         if approved::hash(&old) != base_sha256 {
-            return Err(format!("消せない: 暦 {n} はほかで変わっています（読み直してから、もう一度）"));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::CAL_CHANGED_ELSEWHERE, &[&n]));
         }
         self.keep_version_in(&path, &self.calendar_versions(&n))?;
-        std::fs::remove_file(&path).map_err(|e| format!("{} を消せない: {e}", shown(&path)))?;
+        std::fs::remove_file(&path)
+            .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_DELETE_FAILED, &[&shown(&path), &e.to_string()]))?;
         self.rescan();
         Ok(format!("暦を消した: {n}（前の中身は versions/_calendars/{n} に残した）"))
     }
@@ -2102,8 +2106,8 @@ impl State {
         let table = koyomi_core::calendar::Table::parse(&koyomi_core::calendar::Table::decode(bytes))?;
         let dest = self.paths.calendars.join(koyomi_core::calendar::TABLE_FILE);
         self.keep_copy(&dest, &self.calendar_versions("syukujitsu"), "csv")?;
-        std::fs::create_dir_all(&self.paths.calendars).map_err(|e| format!("{} を作れない: {e}", shown(&self.paths.calendars)))?;
-        ito_common::write_atomic(&dest, bytes)?;
+        std::fs::create_dir_all(&self.paths.calendars).map_err(|e| dir_failed(&self.paths.calendars, &e))?;
+        ito_common::write_atomic(&dest, bytes).map_err(|e| write_failed(&dest, &e))?;
         self.rescan();
         Ok(format!(
             "祝日の表を取り込んだ: calendars/{}（{} 年から {} 年）",
@@ -2608,12 +2612,22 @@ fn diff_lines(old: &str, new: &str) -> Vec<String> {
     out
 }
 
+/// A folder that cannot be made, as a coded line.
+fn dir_failed(dir: &Path, e: &dyn std::fmt::Display) -> String {
+    koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&shown(dir), &e.to_string()])
+}
+
+/// A file that cannot be written, as a coded line.
+fn write_failed(path: &Path, e: &dyn std::fmt::Display) -> String {
+    koyomi_core::msg::line(koyomi_core::msg::FILE_WRITE_FAILED, &[&shown(path), &e.to_string()])
+}
+
 /// `グループ/名前` as its two parts, or why it is not one.
 fn split_id(id: &str) -> Result<(&str, &str), String> {
     if !koyomi_core::jobnet::is_id(id) {
-        return Err(format!("グループ/名前 の形で書く: {id}"));
+        return Err(koyomi_core::msg::line(koyomi_core::msg::JOBNET_ID_FORM, &[id]));
     }
-    id.split_once('/').ok_or_else(|| format!("グループ/名前 の形で書く: {id}"))
+    id.split_once('/').ok_or_else(|| koyomi_core::msg::line(koyomi_core::msg::JOBNET_ID_FORM, &[id]))
 }
 
 /// How many days before the holiday table ends the window's band and `koyomi check` start to say so.
@@ -2692,6 +2706,10 @@ fn why_key(why: ito_power::WhyNot) -> Option<&'static str> {
 /// Without `own_tray` (`koyomi engine --no-tray`) there is no icon here, and the
 /// system's notifications and the sounds are kept for `koyomi tray` to show.
 pub fn run(own_tray: bool) -> i32 {
+    // The engine answers in common.toml's language, else Japanese (not the OS's: a service often runs
+    // with `LANG=C`). This overrides the CLI's value; foreground, `--no-tray` and the service all pass here.
+    let common = ito_common::base_dir().and_then(|b| ito_common::Common::read(&b).ok()).map(|(c, _)| c).unwrap_or_default();
+    koyomi_core::msg::set_language(crate::i18n::engine_language(common.language.as_deref()));
     // SIGTERM and SIGINT (systemd's stop) set a flag the loop below watches, so the engine ends the way
     // `Stop` does and no job's process outlives it. Windows keeps its own ending (a console close or a
     // logoff); the handler is not installed there.
@@ -3250,8 +3268,14 @@ run = ["x.exe"]
         assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 0);
         // Saved again on a stale base: refused; on the right base: the old file is kept.
         let hash = approved::hash(one.as_bytes());
-        assert_eq!(s.save("経理/集計", two, Some("stale"), false), Err("ほかで変わっています: 経理/集計".to_owned()));
-        assert_eq!(s.save("経理/集計", two, None, false), Err("ほかで変わっています: 経理/集計".to_owned()));
+        assert_eq!(
+            s.save("経理/集計", two, Some("stale"), false),
+            Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &["経理/集計"]))
+        );
+        assert_eq!(
+            s.save("経理/集計", two, None, false),
+            Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &["経理/集計"]))
+        );
         assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
         assert!(s.save("経理/集計", two, Some(&hash), false).is_ok());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
@@ -3260,7 +3284,7 @@ run = ["x.exe"]
         assert_eq!(std::fs::read_to_string(paths.state.join("versions/経理/集計").join(format!("{}.toml", versions[0]))).unwrap(), one);
         // What does not read is not saved, whatever the base.
         let err = s.save("経理/集計", "format = 1\n[[job]]\nid = \"a\"\n", Some("x"), true).unwrap_err();
-        assert!(err.starts_with("保存できない:"), "{err}");
+        assert!(koyomi_core::msg::DEF_INVALID_SAVE.is_in(&err) && err.contains("経理/集計"), "{err}");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
         // A loop through a child net is caught against the other nets too.
         let child = "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"経理/集計\"\n";
@@ -3310,14 +3334,17 @@ run = ["x.exe"]
         assert!(s.save("経理/集計", one, Some(&approved::hash(one.as_bytes())), false).is_ok());
         assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
         let hash = approved::hash(one.as_bytes());
-        assert_eq!(s.propose("経理/集計", two, Some("stale")), Err("ほかで変わっています: 経理/集計".to_owned()));
+        assert_eq!(
+            s.propose("経理/集計", two, Some("stale")),
+            Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &["経理/集計"]))
+        );
         assert!(s.propose("経理/集計", two, Some(&hash)).is_ok());
         assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
         assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Unconfirmed));
         assert_eq!(Versions::parse(&s.versions("経理/集計").unwrap()).unwrap().versions.len(), 2);
         // What does not read is not written.
         let two_hash = approved::hash(two.as_bytes());
-        assert!(s.propose("経理/集計", "format = 1\n[[job]]\nid = \"a\"\n", Some(&two_hash)).unwrap_err().starts_with("保存できない:"));
+        assert!(s.propose("経理/集計", "format = 1\n[[job]]\nid = \"a\"\n", Some(&two_hash)).unwrap_err().contains("KOYOMI-E3106"));
         assert_eq!(std::fs::read_to_string(&file).unwrap(), two);
         // It comes over HTTP; a forced save does not (an approval only through the door, for an admin).
         assert!(over_http(&Request::Propose { id: "経理/集計".into(), text: two.into(), base_sha256: None }));
@@ -3381,6 +3408,23 @@ run = ["x.exe"]
         NaiveDate::parse_from_str(text, "%Y-%m-%d").unwrap()
     }
 
+    /// One line, one ID: a net naming a missing calendar is refused with E3106 at the head and no second ID inside.
+    #[test]
+    fn a_refused_save_carries_one_id_only() {
+        let paths = temp_paths("one-id");
+        let mut s = State::new(paths);
+        let text = "format = 1
+calendar = \"無い\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        let err = s.save("経理/締め", text, None, false).unwrap_err();
+        assert!(koyomi_core::msg::DEF_INVALID_SAVE.is_in(&err), "{err}");
+        assert_eq!(err.matches("KOYOMI-").count(), 1, "{err}");
+        assert!(err.contains("無い"), "{err}");
+    }
+
     /// TODO 110: a definition staged for a day takes over on it, approved, the old one kept.
     #[test]
     fn a_staged_definition_takes_over_on_its_day_and_not_before() {
@@ -3392,12 +3436,12 @@ run = ["x.exe"]
         assert!(s.save("経理/締め", now, None, false).is_ok());
         let today = day("2026-11-02");
         // Refused: a day not after today, a net not there, the same text, a text with a fault.
-        assert!(s.stage_on("経理/締め", next, today, today).unwrap_err().contains("今日か過ぎた日"));
-        assert!(s.stage_on("経理/無い", next, day("2026-12-01"), today).unwrap_err().contains("定義がない"));
-        assert!(s.stage_on("経理/締め", now, day("2026-12-01"), today).unwrap_err().contains("同じ中身"));
+        assert!(s.stage_on("経理/締め", next, today, today).unwrap_err().contains("KOYOMI-E3108"));
+        assert!(s.stage_on("経理/無い", next, day("2026-12-01"), today).unwrap_err().contains("KOYOMI-E3110"));
+        assert!(s.stage_on("経理/締め", now, day("2026-12-01"), today).unwrap_err().contains("KOYOMI-E3112"));
         let err = s.stage_on("経理/締め", "format = [\n", day("2026-12-01"), today).unwrap_err();
-        assert!(err.starts_with("置けない:"), "{err}");
-        assert!(s.stage("経理/締め", next, "12/1", None).unwrap_err().contains("YYYY-MM-DD"));
+        assert!(koyomi_core::msg::DEF_INVALID_STAGE.is_in(&err), "{err}");
+        assert!(s.stage("経理/締め", next, "12/1", None).unwrap_err().contains("KOYOMI-E3109"));
         assert!(!paths.next.exists());
         // Staged: kept in next.toml and shown; the net runs as it is.
         assert!(s.stage_on("経理/締め", next, day("2026-12-01"), today).unwrap().contains("2026-12-01 から使う"));
@@ -3645,15 +3689,15 @@ run = [\"x.exe\"]
             |s: &mut State, text: String, from: &str, e: &proto::StageExpect| s.stage_expecting("経理/a", &text, day(from), today, Some(e));
         // The live definition changed after the window read it.
         let stale = stage(&mut s, net("a2.exe"), "2026-12-01", &seen(&approved::hash(b"old"), None)).unwrap_err();
-        assert!(stale.contains("ほかで変わっています"), "{stale}");
+        assert!(koyomi_core::msg::STAGE_CHANGED_ELSEWHERE.is_in(&stale), "{stale}");
         assert!(!paths.next.exists());
         // Nothing staged when it saw one, and one staged when it saw none.
         let ghost = Some("0".repeat(64));
-        assert!(stage(&mut s, net("a2.exe"), "2026-12-01", &seen(&live, ghost)).unwrap_err().contains("ほかで変わっています"));
+        assert!(stage(&mut s, net("a2.exe"), "2026-12-01", &seen(&live, ghost)).unwrap_err().contains("KOYOMI-E3111"));
         // The first goes in; the second, who saw nothing staged, is refused.
         assert!(stage(&mut s, net("a2.exe"), "2026-12-01", &seen(&live, None)).is_ok());
         let second = stage(&mut s, net("a3.exe"), "2026-12-05", &seen(&live, None)).unwrap_err();
-        assert!(second.contains("ほかで変わっています"), "{second}");
+        assert!(koyomi_core::msg::STAGE_CHANGED_ELSEWHERE.is_in(&second), "{second}");
         assert_eq!(s.staged.get("経理/a").unwrap().text, net("a2.exe"));
         // Saw it, and replaces it.
         let first = s.staged.get("経理/a").unwrap().clone();
@@ -3688,11 +3732,11 @@ run = [\"x.exe\"]
         assert!(s.calendar_put("会社", one, None).is_ok());
         assert_eq!(std::fs::read_to_string(paths.calendars.join("会社.toml")).unwrap(), one);
         assert!(s.calendars.get("会社").is_some(), "read again after the change");
-        assert!(s.calendar_put("会社", two, None).unwrap_err().contains("ほかで変わっています"));
+        assert!(s.calendar_put("会社", two, None).unwrap_err().contains("KOYOMI-E4101"));
         let body = proto::CalendarBody::parse(&s.calendar_text("会社").unwrap()).unwrap();
         assert_eq!((body.text.as_str(), body.sha256.as_str()), (one, approved::hash(one.as_bytes()).as_str()));
         // A replace needs the hash it saw; the old text is kept.
-        assert!(s.calendar_put("会社", two, Some(&approved::hash(b"other"))).unwrap_err().contains("ほかで変わっています"));
+        assert!(s.calendar_put("会社", two, Some(&approved::hash(b"other"))).unwrap_err().contains("KOYOMI-E4105"));
         assert_eq!(versions("会社"), 0);
         assert!(s.calendar_put("会社", two, Some(&body.sha256)).is_ok());
         assert_eq!(versions("会社"), 1);
@@ -3701,18 +3745,18 @@ run = [\"x.exe\"]
         assert!(s.calendar_put("会社", "format = [\n", Some(&approved::hash(two.as_bytes()))).is_err());
         // A rename does not take over a calendar there.
         assert!(s.calendar_put("工場", one, None).is_ok());
-        assert!(s.calendar_rename("会社", "工場").unwrap_err().contains("もうある"));
-        assert!(s.calendar_rename("無い", "新").unwrap_err().contains("暦がない"));
+        assert!(s.calendar_rename("会社", "工場").unwrap_err().contains("KOYOMI-E4101"));
+        assert!(s.calendar_rename("無い", "新").unwrap_err().contains("KOYOMI-E4104"));
         assert!(s.calendar_rename("会社", "本社").is_ok());
         assert!(!paths.calendars.join("会社.toml").exists() && paths.calendars.join("本社.toml").exists());
         assert!(s.calendars.get("本社").is_some() && s.calendars.get("会社").is_none());
         // A delete needs the hash too, and keeps the file.
-        assert!(s.calendar_delete("本社", &approved::hash(b"other")).unwrap_err().contains("ほかで変わっています"));
+        assert!(s.calendar_delete("本社", &approved::hash(b"other")).unwrap_err().contains("KOYOMI-E4105"));
         assert!(paths.calendars.join("本社.toml").exists());
         assert!(s.calendar_delete("本社", &approved::hash(two.as_bytes())).is_ok());
         assert!(!paths.calendars.join("本社.toml").exists());
         assert_eq!(versions("本社"), 1);
-        assert!(s.calendar_delete("本社", &approved::hash(two.as_bytes())).unwrap_err().contains("暦がない"));
+        assert!(s.calendar_delete("本社", &approved::hash(two.as_bytes())).unwrap_err().contains("KOYOMI-E4104"));
         // A name that is not a file name is refused whatever the request.
         for bad in ["../x", "a/b", "a\\b", "", "  ", "..", "a."] {
             assert!(s.calendar_put(bad, one, None).is_err(), "{bad:?}");
@@ -3774,7 +3818,7 @@ run = [\"x.exe\"]
         let not_a_file = paths.app.join("is-a-folder.toml");
         std::fs::create_dir_all(&not_a_file).unwrap();
         let e = s.keep_copy(&not_a_file, &dir, "toml").unwrap_err();
-        assert!(e.contains("を読めない") && e.contains("is-a-folder.toml"), "{e}");
+        assert!(koyomi_core::msg::FILE_READ_FAILED.is_in(&e) && e.contains("is-a-folder.toml"), "{e}");
         assert!(!dir.exists(), "nothing is created in the versions folder");
         // No file at all is nothing to keep.
         assert!(s.keep_copy(&paths.app.join("none.toml"), &dir, "toml").is_ok());
@@ -3869,7 +3913,7 @@ run = [\"x.exe\"]
         st.next[0].text = net("a3.exe");
         std::fs::write(&paths.next, st.to_toml()).unwrap();
         let err = s.stage_expecting("経理/a", &net("a4.exe"), day("2026-12-02"), today, Some(&seen(Some(first.clone())))).unwrap_err();
-        assert!(err.contains("ほかで変わっています"), "{err}");
+        assert!(koyomi_core::msg::STAGE_CHANGED_ELSEWHERE.is_in(&err), "{err}");
         assert_eq!(std::fs::read_to_string(&paths.next).unwrap(), st.to_toml());
         // `next.toml` that no longer reads: refused with and without `expect`, the file untouched.
         std::fs::write(&paths.next, "next = [\n").unwrap();
@@ -3934,7 +3978,7 @@ run = [\"x.exe\"]
         let mut s = State::new(paths.clone());
         std::fs::create_dir_all(paths.calendars.join("x.toml")).unwrap();
         let err = s.calendar_put("x", "format = 1\n", None).unwrap_err();
-        assert!(err.contains("暦を読めない"), "{err}");
+        assert!(koyomi_core::msg::FILE_READ_FAILED.is_in(&err) && err.contains("x.toml"), "{err}");
         assert!(paths.calendars.join("x.toml").is_dir());
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }

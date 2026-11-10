@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 
 use ito_a11y::Role;
+use koyomi_core::msg;
 
 use super::manage::{self, Manage, Pressed};
 
@@ -278,7 +279,7 @@ impl Far {
 
     /// 変える: the typed name is judged against the other names, and a free one is written on a thread. The same
     /// name writes nothing. `link` is the window's current link (`None`: this PC).
-    pub(super) fn manage_rename(&mut self, t: &ito_i18n::Table, link: Option<&str>, old: &str, new: &str) {
+    pub(super) fn manage_rename(&mut self, _t: &ito_i18n::Table, link: Option<&str>, old: &str, new: &str) {
         use crate::remote::NameWhy;
         let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
         let (old, new) = (old.trim().to_owned(), new.trim().to_owned());
@@ -289,10 +290,10 @@ impl Far {
         }
         let others: Vec<String> = self.names.iter().filter(|n| **n != old).cloned().collect();
         let bad = match crate::remote::check_name(&new, &others) {
-            Err(NameWhy::Empty) => Some(t.tr("far.add_name_empty").to_owned()),
-            Err(NameWhy::Taken) => Some(t.trf("far.add_name_taken", &[&new])),
-            Err(NameWhy::Bad) => Some(t.tr("far.add_name_bad").to_owned()),
-            Ok(()) if manage::in_use(link, &old) => Some(t.tr("far.manage_in_use").to_owned()),
+            Err(NameWhy::Empty) => Some(msg::line(msg::NAME_EMPTY, &[])),
+            Err(NameWhy::Taken) => Some(msg::line(msg::NAME_TAKEN, &[&new])),
+            Err(NameWhy::Bad) => Some(msg::line(msg::NAME_UNUSABLE, &[&new])),
+            Ok(()) if manage::in_use(link, &old) => Some(msg::line(msg::CONNECTION_IN_USE, &[&old])),
             Ok(()) => None,
         };
         if bad.is_some() {
@@ -309,11 +310,11 @@ impl Far {
     }
 
     /// 消す on the question: written on a thread, unless the connection is in use.
-    pub(super) fn manage_delete(&mut self, t: &ito_i18n::Table, link: Option<&str>, name: &str) {
+    pub(super) fn manage_delete(&mut self, _t: &ito_i18n::Table, link: Option<&str>, name: &str) {
         let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
         let name = name.trim().to_owned();
         if manage::in_use(link, &name) {
-            m.line = Some(Err(t.tr("far.manage_in_use").to_owned()));
+            m.line = Some(Err(msg::line(msg::CONNECTION_IN_USE, &[&name])));
             return;
         }
         m.busy = true;
@@ -354,16 +355,16 @@ impl Far {
     }
 
     /// The name and the URL are checked: what cannot be used is said in the box, else the fingerprint is fetched.
-    pub(super) fn add_name_go(&mut self, t: &ito_i18n::Table) {
+    pub(super) fn add_name_go(&mut self, _t: &ito_i18n::Table) {
         use crate::remote::NameWhy;
         let Some(a) = self.add.as_mut().filter(|a| a.step == AddStep::Form) else { return };
         let (name, url) = (a.name.trim().to_owned(), a.url.trim().to_owned());
         let bad = match crate::remote::check_name(&name, &self.names) {
-            Err(NameWhy::Empty) => Some(t.tr("far.add_name_empty").to_owned()),
-            Err(NameWhy::Taken) => Some(t.trf("far.add_name_taken", &[&name])),
-            Err(NameWhy::Bad) => Some(t.tr("far.add_name_bad").to_owned()),
+            Err(NameWhy::Empty) => Some(msg::line(msg::NAME_EMPTY, &[])),
+            Err(NameWhy::Taken) => Some(msg::line(msg::NAME_TAKEN, &[&name])),
+            Err(NameWhy::Bad) => Some(msg::line(msg::NAME_UNUSABLE, &[&name])),
             Ok(()) if url.len() <= "https://".len() || !url.starts_with("https://") || url.contains(char::is_whitespace) => {
-                Some(t.tr("far.add_url_bad").to_owned())
+                Some(msg::line(msg::URL_BAD, &[]))
             }
             Ok(()) => None,
         };
@@ -387,10 +388,10 @@ impl Far {
 
     /// つなぐ: the typed token leaves the box here (the box is left holding none) with what the check needs, and
     /// the box goes to its waiting step. `None`: the token is empty, or this is not the step for it.
-    pub(super) fn add_hand_off(&mut self, t: &ito_i18n::Table) -> Option<(String, String, String, String)> {
+    pub(super) fn add_hand_off(&mut self, _t: &ito_i18n::Table) -> Option<(String, String, String, String)> {
         let a = self.add.as_mut().filter(|a| a.step == AddStep::Token)?;
         if a.token.trim().is_empty() {
-            a.error = Some(t.tr("far.add_token_empty").to_owned());
+            a.error = Some(msg::line(msg::TOKEN_EMPTY, &[]));
             return None;
         }
         let fingerprint = a.fp.clone()?;
@@ -416,7 +417,8 @@ impl Far {
     }
 
     /// The add-a-connection box. Esc closes it; Enter presses the button that goes on, except at the fingerprint.
-    pub fn add_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table) {
+    /// `under_card`: the troubleshooting card is open over the page, so the box does not take the focus from its field.
+    pub fn add_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, under_card: bool) {
         let Some(step) = self.add.as_ref().map(|a| a.step) else { return };
         let (esc, enter) = ctx.input_mut(|i| {
             (i.consume_key(egui::Modifiers::NONE, egui::Key::Escape), i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
@@ -451,7 +453,7 @@ impl Far {
                                         egui::TextEdit::singleline(&mut a.name).hint_text(t.tr("far.add_name_hint")).desired_width(300.0),
                                     );
                                     ito_a11y::say(&r, Role::Label, t.tr("far.add_name"));
-                                    if a.name.is_empty() && a.url.is_empty() {
+                                    if a.name.is_empty() && a.url.is_empty() && !under_card {
                                         r.request_focus();
                                     }
                                     ui.end_row();
@@ -474,7 +476,7 @@ impl Far {
                                     ui.label(t.tr("far.add_token"));
                                     let r = ui.add(egui::TextEdit::singleline(&mut a.token).password(true).desired_width(300.0));
                                     ito_a11y::say(&r, Role::Label, t.tr("far.add_token"));
-                                    if step == AddStep::Token && a.token.is_empty() {
+                                    if step == AddStep::Token && a.token.is_empty() && !under_card {
                                         r.request_focus();
                                     }
                                 });
@@ -640,9 +642,10 @@ mod tests {
 
     #[test]
     fn a_failed_write_says_why_and_whether_the_token_is_left_and_never_the_token() {
-        assert_eq!(crate::remote::write_failed("pc", "読み取り専用", Ok(())), "pc: 読み取り専用");
+        let w = crate::remote::write_failed("pc", "読み取り専用", Ok(()));
+        assert!(msg::CONFIG_WRITE_FAILED.is_in(&w) && w.contains("pc") && w.contains("読み取り専用"), "{w}");
         let w = crate::remote::write_failed("pc", "読み取り専用", Err("アクセス拒否".into()));
-        assert!(w.starts_with("pc: 読み取り専用") && w.contains("資格情報ストア") && w.contains("アクセス拒否"), "{w}");
+        assert!(msg::CONFIG_WRITE_FAILED_TOKEN_LEFT.is_in(&w) && w.contains("読み取り専用") && w.contains("アクセス拒否"), "{w}");
     }
 
     #[test]
@@ -760,15 +763,17 @@ mod tests {
     #[test]
     fn a_refused_name_is_said_on_the_status_line_and_the_editing_stays() {
         let t = ja();
-        for (new, why) in
-            [("", "far.add_name_empty"), ("   ", "far.add_name_empty"), ("works", "far.add_name_taken"), ("a b", "far.add_name_bad")]
-        {
+        for (new, why) in [("", msg::NAME_EMPTY), ("   ", msg::NAME_EMPTY), ("works", msg::NAME_TAKEN), ("a b", msg::NAME_UNUSABLE)] {
             let mut f = managing();
             f.manage.as_mut().unwrap().edit("kei");
             f.manage_rename(&t, None, "kei", new);
             let m = f.manage.as_ref().unwrap();
             assert!(m.editing.is_some() && !m.busy, "{new:?}");
-            let want = if why == "far.add_name_taken" { t.trf(why, &["works"]) } else { t.tr(why).to_owned() };
+            let want = match why {
+                msg::NAME_TAKEN => msg::line(why, &["works"]),
+                msg::NAME_UNUSABLE => msg::line(why, &["a b"]),
+                _ => msg::line(why, &[]),
+            };
             assert_eq!(m.line, Some(Err(want)), "{new:?}");
         }
     }
@@ -779,9 +784,9 @@ mod tests {
         // The window's link, even when it does not answer.
         let mut f = managing();
         f.manage_rename(&t, Some("kei"), "kei", "keiba");
-        assert_eq!(mline(&f), Some(Err(t.tr("far.manage_in_use").to_owned())));
+        assert_eq!(mline(&f), Some(Err(msg::line(msg::CONNECTION_IN_USE, &["kei"]))));
         f.manage_delete(&t, Some("kei"), "kei");
-        assert_eq!(mline(&f), Some(Err(t.tr("far.manage_in_use").to_owned())));
+        assert_eq!(mline(&f), Some(Err(msg::line(msg::CONNECTION_IN_USE, &["kei"]))));
         assert!(!f.manage_busy());
     }
 

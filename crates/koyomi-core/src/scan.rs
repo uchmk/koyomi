@@ -362,7 +362,9 @@ mod tests {
         assert_eq!(by("経理/a").calendar.as_deref(), Some("会社"), "the group's calendar");
         assert_eq!(by("経理/a").standing, Standing::Unconfirmed);
         assert_eq!(by("経理/b").standing, Standing::Invalid);
-        assert_eq!(by("経理/b").problems[0].in_file("経理/b.toml"), "経理/b.toml: カレンダーがない: calendars/工場.toml");
+        let shown = by("経理/b").problems[0].in_file("経理/b.toml");
+        // The calendar's own coded line stays at the head, the file it was found in goes last.
+        assert_eq!(shown, format!("{}（経理/b.toml）", crate::msg::line(crate::msg::CAL_MISSING, &["工場"])));
         assert_eq!(by("営業/c").problems[0].message, "calendar が要る（business_day・shift・on_closed を使うとき）");
         assert_eq!(by("営業/d").standing, Standing::Unconfirmed);
         assert_eq!(by("壊れ/e").standing, Standing::Invalid);

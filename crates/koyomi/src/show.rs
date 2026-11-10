@@ -142,8 +142,8 @@ pub fn next_rows(
         if let Some(b) = koyomi_core::blackout::find(stops, at) {
             return format!("{row}  {}", stop_mark(t, b));
         }
-        if cal.is_some_and(|c| c.stale(at.date())) {
-            row = format!("{row}  {}", t.tr("calendar.stale"));
+        if let Some(c) = cal.filter(|c| c.stale(at.date())) {
+            row = format!("{row}  {}", stale_mark(c));
         }
         if let Some(mark) = sleep.and_then(|s| sleep_mark(t, s, at, now)) {
             row = format!("{row}  {mark}");
@@ -234,7 +234,13 @@ pub fn day_name(t: &Table, day: &Day) -> Option<String> {
 pub fn until_line(t: &Table, cal: &Calendar, today: chrono::NaiveDate) -> Option<String> {
     let until = cal.until()?;
     let line = t.trf("calendar.until", &[&until.to_string()]);
-    Some(if cal.stale(today) { format!("{line}  {}", t.tr("calendar.stale")) } else { line })
+    Some(if cal.stale(today) { format!("{line}  {}", stale_mark(cal)) } else { line })
+}
+
+/// The mark for a run or a table past the holiday table's end: the "out of date" caution, in one row.
+fn stale_mark(cal: &Calendar) -> String {
+    let until = cal.until().map(|u| u.to_string()).unwrap_or_default();
+    koyomi_core::msg::say(koyomi_core::msg::TABLE_STALE, &[&until]).short()
 }
 
 /// What `koyomi calendar` prints: the heading, a week per row (a closed day
@@ -531,7 +537,8 @@ run = [\"x\"]
         assert_eq!(rows, vec!["2026-11-02（月）02:00", "2026-11-04（水）02:00"], "the weekend and 文化の日 are skipped");
         let late = NaiveDateTime::parse_from_str("2027-12-30 09:00:00", "%Y-%m-%d %H:%M:%S").unwrap();
         let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), Some(&cal), late, 2, None, &[]);
-        assert_eq!(rows, vec!["2027-12-31（金）02:00", "2028-01-03（月）02:00  祝日の表が古い"]);
+        let stale = koyomi_core::msg::say(koyomi_core::msg::TABLE_STALE, &["2027-12-31"]).short();
+        assert_eq!(rows, vec!["2027-12-31（金）02:00".to_owned(), format!("2028-01-03（月）02:00  {stale}")]);
     }
 
     /// a time later than the PC stays awake is marked: asleep, woken, or why it cannot be.
@@ -598,7 +605,13 @@ run = [\"x\"]
         let late = chrono::NaiveDate::from_ymd_opt(2028, 1, 5).unwrap();
         assert_eq!(
             month_lines(&en, &cal, 2026, 11, late).last().map(String::as_str),
-            Some("Holiday table: until 2027-12-31  holiday table out of date")
+            Some(
+                format!(
+                    "Holiday table: until 2027-12-31  {}",
+                    koyomi_core::msg::say(koyomi_core::msg::TABLE_STALE, &["2027-12-31"]).short()
+                )
+                .as_str()
+            )
         );
     }
 

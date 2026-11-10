@@ -62,9 +62,14 @@ pub(super) enum CalendarChange {
     Delete,
 }
 
-/// The words every failure before the write ends with: nothing was changed.
+/// The words every failure before the write ends with: nothing was changed. A coded line goes through as it is,
+/// so its ID stays at the head; it comes from before the write, so nothing was written either way.
 fn unchanged(why: &str) -> String {
-    format!("{why}。変えていない")
+    if koyomi_core::msg::is_coded(why) {
+        why.to_owned()
+    } else {
+        format!("{why}。変えていない")
+    }
 }
 
 /// One calendar change: ask for the calendar's text, change it, and write it back with the hash it was read
@@ -162,11 +167,22 @@ fn force_save(far: bool, answer: usize, id: &str, text: String, base_sha256: Opt
 }
 
 /// The conflict box's body: on another PC's engine there is no overwrite button, so its text does not offer one.
-fn conflict_body_key(far: bool) -> &'static str {
-    if far {
-        "canvas.conflict_body_far"
+fn conflict_body(far: bool) -> String {
+    conflict_body_in(&koyomi_core::msg::language(), far)
+}
+
+/// [`conflict_body`] in the language `code`.
+fn conflict_body_in(code: &str, far: bool) -> String {
+    let id = if far { koyomi_core::msg::CONFLICT_FAR } else { koyomi_core::msg::CONFLICT_NEAR };
+    koyomi_core::msg::say_in(code, id, &[]).line()
+}
+
+/// The list of jobnets that could not be fetched: a coded cause goes through, a bare one is told as the list's.
+fn list_unavailable(e: &str) -> String {
+    if koyomi_core::msg::is_coded(e) {
+        e.to_owned()
     } else {
-        "canvas.conflict_body"
+        koyomi_core::msg::line(koyomi_core::msg::LIST_UNAVAILABLE, &[e])
     }
 }
 
@@ -175,7 +191,7 @@ fn conflict_body_key(far: bool) -> &'static str {
 fn stage_request(id: &str, base: Option<String>, staged: Option<String>, text: String, from: String) -> Result<Request, String> {
     match base {
         Some(live) => Ok(Request::Stage { id: id.to_owned(), text, from, expect: Some(proto::StageExpect { live, staged }) }),
-        None => Err("まだ保存していないので、日付で切り替える先が決められない".to_owned()),
+        None => Err(koyomi_core::msg::line(koyomi_core::msg::STAGE_NO_LIVE, &[id])),
     }
 }
 
@@ -733,6 +749,9 @@ pub struct Browser {
     back: Vec<Place>,
     /// 戻る just came back: the picked row is scrolled into sight on the next frame.
     reveal: bool,
+    /// The troubleshooting card is open over the page: the page takes no key, and no box takes egui's focus
+    /// from the card's field. Set by the window every frame.
+    pub under_card: bool,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -848,6 +867,7 @@ impl Browser {
             nets_pick: None,
             back: Vec::new(),
             reveal: false,
+            under_card: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1066,10 +1086,10 @@ impl Browser {
                         match r {
                             Ok(said) => e.saved(&text, said),
                             // A net made here met a file made elsewhere: not this one's to overwrite.
-                            Err(m) if m.starts_with("ほかで変わっています") && e.base.is_none() => {
-                                e.result = Some(Err(format!("もうある（ほかで作られた）: {}。閉じて、別の名前で作り直す", e.id)))
+                            Err(m) if is_changed_elsewhere(&m) && e.base.is_none() => {
+                                e.result = Some(Err(koyomi_core::msg::line(koyomi_core::msg::CREATED_ELSEWHERE, &[&e.id])))
                             }
-                            Err(m) if m.starts_with("ほかで変わっています") => e.conflict = Some(text),
+                            Err(m) if is_changed_elsewhere(&m) => e.conflict = Some(text),
                             Err(m) => e.result = Some(Err(m)),
                         }
                     }
@@ -1413,14 +1433,14 @@ impl Browser {
 
     /// The box's 作る: the template (the one `koyomi new` writes) in a new editor. Nothing is
     /// written until it is saved.
-    fn make_go(&mut self, t: &ito_i18n::Table) {
+    fn make_go(&mut self) {
         let Some(m) = &mut self.make else { return };
         let unsaved = self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty);
         let ids = self.snap.iter().flat_map(|s| s.defs.iter().map(|d| d.id.as_str()));
         let made = match new_id(&m.group, &m.name, ids) {
-            Err(Why::Empty) => Err(t.tr("make.empty").to_owned()),
-            Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
-            Err(Why::Exists(id)) => Err(t.trf("make.exists", &[id.as_str()])),
+            Err(Why::Empty) => Err(koyomi_core::msg::line(koyomi_core::msg::JOBNET_NAME_EMPTY, &[])),
+            Err(Why::Bad) => Err(koyomi_core::msg::line(koyomi_core::msg::JOBNET_NAME_BAD, &[])),
+            Err(Why::Exists(id)) => Err(koyomi_core::msg::line(koyomi_core::msg::JOBNET_EXISTS, &[id.as_str()])),
             Ok(to) if m.from.is_some() => {
                 // A rename or a copy: the engine does it, and its answer is the result line.
                 let (id, re) = m.from.clone().expect("checked");
@@ -1434,7 +1454,7 @@ impl Browser {
                 self.send(req);
                 return;
             }
-            Ok(_) if unsaved => Err(t.tr("make.unsaved").to_owned()),
+            Ok(_) if unsaved => Err(koyomi_core::msg::line(koyomi_core::msg::UNSAVED_EDITS, &[])),
             Ok(id) => koyomi_core::jobnet::parse(&koyomi_core::write::template(m.name.trim()))
                 .map(|net| (id, net))
                 .map_err(|p| p.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join("\n")),
@@ -1536,7 +1556,7 @@ impl Browser {
                 pressed = box_answer(ui, mark, go, t.tr("make.cancel"));
             });
         match pressed.or(key) {
-            Some(0) => self.make_go(t),
+            Some(0) => self.make_go(),
             Some(_) => self.make = None,
             None => {}
         }
@@ -1639,9 +1659,10 @@ impl Browser {
         let (tx, ctx) = self.io.clone();
         std::thread::spawn(move || {
             let read = std::fs::read(&path)
-                .map_err(|e| e.to_string())
-                .and_then(|b| crate::cli::port_text(&b).ok_or_else(|| "UTF-8 でも UTF-16 でもない".to_owned()))
-                .map_err(|e| format!("{path} を読めない: {e}"));
+                .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&path, &e.to_string()]))
+                .and_then(|b| {
+                    crate::cli::port_text(&b).ok_or_else(|| koyomi_core::msg::line(koyomi_core::msg::FILE_ENCODING_UNKNOWN, &[&path]))
+                });
             let _ = tx.send(Msg::PortText(path, read));
             ctx.request_repaint();
         });
@@ -1725,7 +1746,7 @@ impl Browser {
                 body.push(t.trf("port.more", &[&(plan.lines.len() - MOST).to_string()]));
             }
             if plan.problems > 0 {
-                notes.push(t.trf("port.problems", &[&plan.problems.to_string()]));
+                notes.push(koyomi_core::msg::line(koyomi_core::msg::IMPORT_PROBLEMS, &[&plan.problems.to_string()]));
             } else if !plan.writes {
                 body.push(t.tr("port.nothing").to_owned());
             } else if plan.undecided {
@@ -1864,7 +1885,7 @@ impl Browser {
             let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
             // Another PC's engine takes no forced save: the box only reloads or cancels.
             let far = self.link.is_far();
-            let body = [t.tr(conflict_body_key(far)).to_owned()];
+            let body = [conflict_body(far)];
             let buttons = [t.tr("canvas.reload").to_owned(), t.tr("canvas.cancel").to_owned(), t.tr("canvas.overwrite").to_owned()];
             let buttons = &buttons[..if far { 2 } else { 3 }];
             let q = ito_confirm::Question {
@@ -1974,10 +1995,10 @@ impl Browser {
             self.result = Some(done.map(words).map_err(words));
         }
         if self.out.refused.take() {
-            self.result = Some(Err(t.tr("link.switching_refused").to_owned()));
+            self.result = Some(Err(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[])));
         }
         let ctx = ui.ctx().clone();
-        self.far.add_box(&ctx, t);
+        self.far.add_box(&ctx, t, self.under_card);
         self.far.manage_box(&ctx, t, self.link.far());
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
@@ -2236,7 +2257,7 @@ impl Browser {
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
         self.confirm_send(&ctx, t, key_for(12));
-        if modal && !making && !port.is_some_and(|(_, typing)| typing) {
+        if modal && !making && !self.under_card && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
             ctx.memory_mut(|m| {
@@ -2294,7 +2315,7 @@ impl Browser {
         }
         let Some(snap) = &self.snap else {
             let text = match (&self.down, self.starting) {
-                (Some(e), _) => t.trf("tree.failed", &[e]),
+                (Some(e), _) => list_unavailable(e),
                 (None, _) => t.tr("tree.starting").to_owned(),
             };
             ui.label(text);
@@ -2305,7 +2326,7 @@ impl Browser {
             return;
         }
         if let Some(e) = &self.down {
-            ui.label(egui::RichText::new(t.trf("tree.failed", &[e])).color(c.err));
+            ui.label(egui::RichText::new(list_unavailable(e)).color(c.err));
         }
         let mut pick = None;
         let mut make_in = None;
@@ -4606,7 +4627,7 @@ impl Browser {
         let rows = [(t.tr("versions.net").to_owned(), id.clone())];
         let mut body = vec![t.trf("delete.ask", &[&id])];
         if !users.is_empty() {
-            body.push(t.trf("delete.users", &[&users.join(", ")]));
+            body.push(koyomi_core::msg::line(koyomi_core::msg::DELETE_BLOCKED, &[&users.join(", ")]));
         }
         let buttons = [t.tr("delete.yes").to_owned(), t.tr("make.cancel").to_owned()];
         let q = ito_confirm::Question {
@@ -5211,12 +5232,31 @@ fn pill_tab(ui: &mut egui::Ui, c: &ito_theme::Colors, on: bool, label: &str) -> 
 /// Everything in the settings folder, as one file under `exports/` in the
 /// state folder: its path and how many things it carries.
 /// A caution without the part that moves each day, so the band opens for a new caution and not
-/// for the same one a day older.
+/// for the same one a day older. The cautions cross the wire as the engine's own text, in its language, so the key
+/// is made from the ID: the "table ends soon" caution is its ID and the date it ends (whatever the days left and
+/// the language); the "out of date" caution has another ID, and any other line is its own key.
 fn caution_key(line: &str) -> String {
+    let soon = koyomi_core::msg::TABLE_ENDING_SOON;
+    if soon.is_in(line) {
+        let until = line
+            .as_bytes()
+            .windows(10)
+            .position(|w| w.iter().enumerate().all(|(i, b)| if i == 4 || i == 7 { *b == b'-' } else { b.is_ascii_digit() }));
+        if let Some(at) = until {
+            return format!("{} {}", soon.code(), &line[at..at + 10]);
+        }
+    }
+    // An engine from before the IDs: the Japanese text, with 「（あと N 日）」 cut out.
     match (line.find("（あと"), line.find('）')) {
         (Some(a), Some(b)) if a < b => format!("{}{}", &line[..a], &line[b + '）'.len_utf8()..]),
         _ => line.to_owned(),
     }
+}
+
+/// Whether an engine's refusal says the file was changed elsewhere.
+fn is_changed_elsewhere(m: &str) -> bool {
+    koyomi_core::msg::SAVE_CHANGED_ELSEWHERE.is_in(m) || m.starts_with("ほかで変わっています")
+    // an engine from before the IDs
 }
 
 /// Everything the engine of `link` has, written to `exports/<YYYYMMDD-HHMMSS>.toml` in this PC's state folder.
@@ -5260,9 +5300,9 @@ fn plain(e: String) -> Said {
     ("port.plain", vec![e])
 }
 
-/// A folder that could not be made, worded when shown.
+/// A folder that could not be made, as a coded line.
 fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
-    ("port.no_dir", vec![dir.display().to_string(), e.to_string()])
+    plain(koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]))
 }
 
 /// A section's heading (15px bold, D12), told to a reader as a heading. It wraps rather than run past
@@ -5290,13 +5330,13 @@ mod tests {
     #[test]
     fn the_far_conflict_body_does_not_offer_an_overwrite() {
         for code in ["en", "ja"] {
-            let (t, errs) = crate::i18n::table(code);
-            assert!(errs.is_empty(), "{errs:?}");
-            let far = t.tr(conflict_body_key(true));
-            assert_ne!(far, "canvas.conflict_body_far", "{code}: key missing");
+            let far = conflict_body_in(code, true);
+            assert!(koyomi_core::msg::CONFLICT_FAR.is_in(&far), "{code}: {far}");
             assert!(!far.contains("上書き") && !far.to_lowercase().contains("overwrit"), "{code}: {far}");
             // The near body still does (the button exists there).
-            assert_ne!(t.tr(conflict_body_key(false)), far);
+            let near = conflict_body_in(code, false);
+            assert!(koyomi_core::msg::CONFLICT_NEAR.is_in(&near), "{code}: {near}");
+            assert!(near.contains("上書き") || near.to_lowercase().contains("overwrit"), "{code}: {near}");
         }
     }
 
@@ -5459,6 +5499,7 @@ mod tests {
             nets_pick: None,
             back: Vec::new(),
             reveal: false,
+            under_card: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -5632,7 +5673,11 @@ run = [\"x.exe\"]
         assert!(shown(&s, "jobnets/試験/bom.toml, jobnets/試験/_group.toml"));
         assert!(shown(&s, "会社 のファイルの名前を変えます"), "a rename says the content stays");
         s.show(key(egui::Key::Enter), &mut b);
-        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("もうあります: 会社"), "the name it has is no rename");
+        assert_eq!(
+            b.new_cal.as_ref().and_then(|m| m.error.as_deref()),
+            Some(koyomi_core::msg::line(koyomi_core::msg::CAL_SAME_NAME, &["会社"]).as_str()),
+            "the name it has is no rename"
+        );
         s.show(key(egui::Key::Escape), &mut b);
         assert!(b.new_cal.is_none());
         s.click("消す…", &mut b);
@@ -5702,7 +5747,7 @@ run = [\"x.exe\"]
         s.click("祝日の表を取り込む…", &mut b);
         assert!(matches!(b.cal_inline, Some(calendar::Inline::Table { .. })));
         s.click("決める", &mut b);
-        assert_eq!(b.cal_result, Some(Err("パスを入れてください".to_owned())));
+        assert_eq!(b.cal_result, Some(Err(koyomi_core::msg::line(koyomi_core::msg::TABLE_PATH_EMPTY, &[]))));
         assert!(b.cal_inline.is_none());
         b.cal_inline = Some(calendar::Inline::Name { cal: "工場".into(), day, text: String::new(), fresh: true });
         s.settle(&mut b);
@@ -5723,7 +5768,10 @@ run = [\"x.exe\"]
         assert!(b.new_cal.is_some(), "the button opens the box");
         assert!(shown(&s, "日本の祝日を休みにする"));
         s.show(key(egui::Key::Enter), &mut b);
-        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("名前を入れてください"));
+        assert_eq!(
+            b.new_cal.as_ref().and_then(|m| m.error.as_deref()),
+            Some(koyomi_core::msg::line(koyomi_core::msg::CAL_NAME_EMPTY, &[]).as_str())
+        );
         b.snap
             .as_mut()
             .unwrap()
@@ -5731,9 +5779,32 @@ run = [\"x.exe\"]
             .insert("会社".into(), koyomi_core::calendar::Calendar { name: "会社".into(), ..Default::default() });
         b.new_cal.as_mut().unwrap().name = "会社".into();
         s.show(key(egui::Key::Enter), &mut b);
-        assert_eq!(b.new_cal.as_ref().and_then(|m| m.error.as_deref()), Some("もうあります: 会社"));
+        assert_eq!(
+            b.new_cal.as_ref().and_then(|m| m.error.as_deref()),
+            Some(koyomi_core::msg::line(koyomi_core::msg::CALENDAR_EXISTS, &["会社"]).as_str())
+        );
         s.show(key(egui::Key::Escape), &mut b);
         assert!(b.new_cal.is_none(), "Esc closes it");
+    }
+
+    /// The band's key ignores the days left, in either language and in an older engine's Japanese, and changes with the
+    /// date the table ends, with the "out of date" caution and with the calendar.
+    #[test]
+    fn the_caution_key_ignores_the_days_left_in_both_languages() {
+        use koyomi_core::msg::{say_in, CAL_HOLIDAYS_VALUE, TABLE_ENDING_SOON, TABLE_STALE};
+        for code in ["ja", "en"] {
+            let soon = |until: &str, left: &str| caution_key(&say_in(code, TABLE_ENDING_SOON, &[until, left]).line());
+            assert_eq!(soon("2027-12-31", "60"), soon("2027-12-31", "59"), "{code}: a day older is the same caution");
+            assert_ne!(soon("2027-12-31", "60"), soon("2028-12-31", "60"), "{code}: another end is another caution");
+            let stale = caution_key(&say_in(code, TABLE_STALE, &["2027-12-31"]).line());
+            assert_ne!(soon("2027-12-31", "1"), stale, "{code}: out of date is another caution");
+            let bad = |name: &str| caution_key(&say_in(code, CAL_HOLIDAYS_VALUE, &[name]).line());
+            assert_ne!(bad("会社"), bad("工場"), "{code}: another calendar is another caution");
+        }
+        // An older engine's Japanese text, with no ID.
+        let old = |left: u32| caution_key(&format!("祝日の表は 2027-12-31 までの分です（あと {left} 日）。置けば延びる"));
+        assert_eq!(old(60), old(59));
+        assert_ne!(old(60), caution_key("祝日の表は 2028-12-31 までの分です（あと 60 日）。置けば延びる"));
     }
 
     /// A line that was not in the band opens it once (not the ones there at start, and not only by
@@ -6230,9 +6301,10 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         assert!(matches!(&b.result, Some(Ok(m)) if m == "書いた: C:/x.csv"), "{:?}", b.result);
         // A failure is worded the same way.
-        b.io.0.send(Msg::Done(Err(("port.no_dir", vec!["C:/e".to_owned(), "denied".to_owned()])))).unwrap();
+        b.io.0.send(Msg::Done(Err(no_dir(std::path::Path::new("C:/e"), std::io::Error::other("denied"))))).unwrap();
         s.settle(&mut b);
-        assert!(matches!(&b.result, Some(Err(m)) if m == "C:/e を作れない: denied"), "{:?}", b.result);
+        let want = koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &["C:/e", "denied"]);
+        assert!(matches!(&b.result, Some(Err(m)) if *m == want), "{:?}", b.result);
     }
 
     /// A right click on a row of 今日 holds or releases its net without leaving the page.
@@ -6897,12 +6969,11 @@ run = [\"x.exe\"]
         b.out.tx = tx;
         b.new_cal_box();
         b.new_cal.as_mut().unwrap().name = "工場".into();
-        let t = crate::i18n::table("ja").0;
-        b.new_cal_go(&t);
+        b.new_cal_go();
         assert!(b.new_cal.as_ref().unwrap().waiting, "waits for the answer");
         assert!(matches!(rx.try_recv(), Ok(Request::CalendarPut { name, base_sha256: None, .. }) if name == "工場"));
         // A second press while waiting sends nothing.
-        b.new_cal_go(&t);
+        b.new_cal_go();
         assert!(rx.try_recv().is_err());
         // The engine says no: the box stays open with the words, ready for another go.
         b.io.0.send(Msg::Answer(put_of("工場"), Err("もうある".into()))).unwrap();
@@ -6911,7 +6982,7 @@ run = [\"x.exe\"]
         assert!(!m.waiting);
         assert_eq!(m.error.as_deref(), Some("もうある"));
         // A yes closes it and shows the calendar with the engine's own words.
-        b.new_cal_go(&t);
+        b.new_cal_go();
         assert!(b.new_cal.as_ref().unwrap().waiting);
         b.io.0.send(Msg::Answer(put_of("工場"), Ok("暦を書いた: calendars/工場.toml".into()))).unwrap();
         b.drain();
@@ -6929,7 +7000,7 @@ run = [\"x.exe\"]
         b.editor = Some(canvas::Editor::new_net("試験/a", net));
         b.new_cal_box_for_net();
         b.new_cal.as_mut().unwrap().name = "工場".into();
-        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.new_cal_go();
         b.io.0.send(Msg::Answer(put_of("工場"), Ok("暦を書いた: calendars/工場.toml".into()))).unwrap();
         b.drain();
         assert!(b.new_cal.is_none());
@@ -6946,10 +7017,10 @@ run = [\"x.exe\"]
         b.new_cal_box();
         b.new_cal.as_mut().unwrap().name = "工場".into();
         b.out.switching.set(true);
-        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.new_cal_go();
         let m = b.new_cal.as_ref().expect("stays open");
         assert!(!m.waiting);
-        assert_eq!(m.error.as_deref(), Some("送っていない。もう一度押す"));
+        assert_eq!(m.error.as_deref(), Some(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[]).as_str()));
     }
 
     #[test]
@@ -6961,7 +7032,7 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         s.click("＋ 新しいカレンダー", &mut b);
         b.new_cal.as_mut().unwrap().name = "工場".into();
-        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.new_cal_go();
         assert!(b.new_cal.as_ref().unwrap().waiting);
         s.settle(&mut b);
         s.click("やめる", &mut b);
@@ -6978,7 +7049,7 @@ run = [\"x.exe\"]
         b.out.tx = tx;
         b.new_cal_box();
         b.new_cal.as_mut().unwrap().name = "工場".into();
-        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.new_cal_go();
         b.new_cal.as_mut().unwrap().name = "別".into();
         b.io.0.send(Msg::Answer(put_of("工場"), Ok("ok".into()))).unwrap();
         b.drain();

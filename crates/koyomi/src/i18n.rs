@@ -11,6 +11,15 @@ pub fn resolve(common: Option<&str>) -> String {
     ito_i18n::resolve(None, common, ito_common::os_language().as_deref(), &["en", "ja"])
 }
 
+/// What the engine answers in: common.toml's language when one is named, otherwise Japanese.
+/// A service often runs with `LANG=C`, and its refusals are read in a window elsewhere.
+pub fn engine_language(common: Option<&str>) -> &'static str {
+    match common {
+        Some("en") => "en",
+        _ => "ja",
+    }
+}
+
 /// The table for `code`, and what in the files does not read.
 pub fn table(code: &str) -> (Table, Vec<String>) {
     Table::new(TABLES, code)
@@ -31,5 +40,14 @@ mod tests {
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(ja.tr("app.title"), "koyomi");
         assert_eq!(ja.tr("standing.unconfirmed"), "未確認");
+    }
+
+    #[test]
+    fn the_engine_answers_in_japanese_unless_common_names_english() {
+        assert_eq!(engine_language(None), "ja");
+        assert_eq!(engine_language(Some("auto")), "ja");
+        assert_eq!(engine_language(Some("fr")), "ja");
+        assert_eq!(engine_language(Some("ja")), "ja");
+        assert_eq!(engine_language(Some("en")), "en");
     }
 }

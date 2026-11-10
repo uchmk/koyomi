@@ -20,6 +20,7 @@ use std::path::Path;
 use chrono::{Datelike, Days, NaiveDate, Weekday};
 use serde::{Deserialize, Serialize};
 
+use crate::msg::{self, line};
 use crate::when::OnClosed;
 
 /// The `format` this version reads.
@@ -43,7 +44,7 @@ pub struct Table {
 }
 
 impl Table {
-    /// Reads the table's text. The message names the line that is wrong.
+    /// Reads the table's text. The message (coded) names the line that is wrong.
     pub fn parse(text: &str) -> Result<Table, String> {
         let mut days = BTreeMap::new();
         for (i, line) in text.trim_start_matches('\u{feff}').lines().enumerate() {
@@ -59,13 +60,13 @@ impl Table {
                 if i == 0 {
                     continue;
                 }
-                return Err(format!("{} 行目: 日付が読めない: {date}", i + 1));
+                return Err(msg::line(msg::TABLE_DATE_UNREADABLE, &[&(i + 1).to_string(), date]));
             };
             let name = name.trim().trim_matches('"');
             days.insert(d, if name.is_empty() { "祝日".to_owned() } else { name.to_owned() });
         }
         let (Some(first), Some(last)) = (days.keys().next(), days.keys().next_back()) else {
-            return Err("祝日が 1 つもない".to_owned());
+            return Err(line(msg::TABLE_EMPTY, &[]));
         };
         Ok(Table { years: (first.year(), last.year()), days })
     }
@@ -83,7 +84,7 @@ impl Table {
         match std::fs::read(path) {
             Ok(b) => Table::parse(&Table::decode(&b)).map(Some),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(format!("読めない: {e}")),
+            Err(e) => Err(line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()])),
         }
     }
 
@@ -103,16 +104,13 @@ pub fn until(table: Option<&Table>) -> NaiveDate {
     table.map_or(japan::UNTIL, |t| t.until().max(japan::UNTIL))
 }
 
-/// Where a newer holiday table comes from, said with the caution.
-pub const TABLE_HINT: &str = "内閣府の「国民の祝日」の syukujitsu.csv を calendars/ に置けば延びる";
-
-/// The caution about the age of a holiday table that lasts `until`, when there is one.
+/// The caution (coded) about the age of a holiday table that lasts `until`, when there is one.
 pub fn caution(until: NaiveDate, today: NaiveDate, warn_days: i64) -> Option<String> {
     let left = (until - today).num_days();
     if left < 0 {
-        Some(format!("祝日の表が古い（{until} まで）。それより後の日は流さない。{TABLE_HINT}"))
+        Some(line(msg::TABLE_STALE, &[&until.to_string()]))
     } else if left < warn_days {
-        Some(format!("祝日の表は {until} までの分です（あと {left} 日）。{TABLE_HINT}"))
+        Some(line(msg::TABLE_ENDING_SOON, &[&until.to_string(), &left.to_string()]))
     } else {
         None
     }
@@ -185,32 +183,37 @@ struct Named {
 }
 
 impl Calendar {
-    /// Reads a calendar file's text. The message names what is wrong.
+    /// Reads a calendar file's text. The message (coded) names the calendar and what is wrong.
     pub fn parse(name: &str, text: &str) -> Result<Calendar, String> {
         let raw: Raw = toml::from_str(text).map_err(|e| {
             let m = e.message();
             match m.strip_prefix("unknown field `").and_then(|r| r.split('`').next()) {
-                Some(f) => format!("知らない欄 {f}"),
-                None => format!("TOML の書き方が違う: {m}"),
+                Some(f) => line(msg::CAL_UNKNOWN_FIELD, &[name, f]),
+                None => line(msg::CAL_TOML_SYNTAX, &[name, m]),
             }
         })?;
         match raw.format {
-            None => return Err(format!("format = {FORMAT} が要る")),
-            Some(f) if f != FORMAT => return Err(format!("この版が読める format は {FORMAT} だけ")),
+            None => return Err(line(msg::CAL_FORMAT_MISSING, &[name])),
+            Some(f) if f != FORMAT => return Err(line(msg::CAL_FORMAT_UNSUPPORTED, &[name])),
             Some(_) => {}
         }
         let holidays = match raw.holidays.as_deref() {
             None | Some("none") => false,
             Some("japan") => true,
-            Some(_) => return Err("holidays は \"japan\" か \"none\"".to_owned()),
+            Some(_) => return Err(line(msg::CAL_HOLIDAYS_VALUE, &[name])),
         };
-        let weekly_off = raw.weekly_off.unwrap_or_default().iter().map(|s| crate::when::weekday(s)).collect::<Result<Vec<_>, _>>()?;
+        let weekly_off = raw
+            .weekly_off
+            .unwrap_or_default()
+            .iter()
+            .map(|s| crate::when::weekday(s).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, "weekly_off", &e])))
+            .collect::<Result<Vec<_>, _>>()?;
         Ok(Calendar {
             name: name.to_owned(),
             holidays,
             weekly_off,
-            closed: days(raw.closed, "closed")?,
-            open: days(raw.open, "open")?,
+            closed: days(name, raw.closed, "closed")?,
+            open: days(name, raw.open, "open")?,
             table: None,
         })
     }
@@ -218,7 +221,8 @@ impl Calendar {
     /// Reads the file at `path`, named by its stem.
     pub fn load(path: &Path) -> Result<Calendar, String> {
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-        let text = std::fs::read_to_string(path).map_err(|e| format!("読めない: {e}"))?;
+        let text =
+            std::fs::read_to_string(path).map_err(|e| line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()]))?;
         Calendar::parse(&name, &text)
     }
 
@@ -365,16 +369,15 @@ fn ito_quote(s: &str) -> String {
     out
 }
 
-fn days(list: Option<Vec<toml::Value>>, field: &str) -> Result<BTreeMap<NaiveDate, String>, String> {
+fn days(name: &str, list: Option<Vec<toml::Value>>, field: &str) -> Result<BTreeMap<NaiveDate, String>, String> {
     let mut out = BTreeMap::new();
     for v in list.unwrap_or_default() {
         let (date, name) = match &v {
             toml::Value::Table(_) => {
-                let n: Named =
-                    v.clone().try_into().map_err(|_| format!("{field} の項目は日付か {{ date = 2026-11-20, name = \"創立記念日\" }}"))?;
-                (crate::when::date(&n.date).map_err(|e| format!("{field}: {e}"))?, n.name)
+                let n: Named = v.clone().try_into().map_err(|_| line(msg::CAL_ENTRY_SHAPE, &[name, field]))?;
+                (crate::when::date(&n.date).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, &e]))?, n.name)
             }
-            _ => (crate::when::date(&v).map_err(|e| format!("{field}: {e}"))?, String::new()),
+            _ => (crate::when::date(&v).map_err(|e| line(msg::CAL_DAY_VALUE, &[name, field, &e]))?, String::new()),
         };
         out.insert(date, name);
     }
@@ -392,12 +395,21 @@ pub fn valid_name(name: &str) -> bool {
         && !name.chars().any(|c| matches!(c, '/' | '\\' | ':' | '*' | '?' | '"' | '<' | '>' | '|') || c.is_control())
 }
 
+/// A file in `calendars/` that did not read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Bad {
+    /// The calendar it would have been, or `None` for the holiday table.
+    pub calendar: Option<String>,
+    /// Why, as a coded line.
+    pub line: String,
+}
+
 /// Every calendar in `calendars/`, by name, and the files that did not read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Calendars {
     pub map: BTreeMap<String, Calendar>,
-    /// `calendars/<name>.toml: <why>`, in name order.
-    pub bad: Vec<String>,
+    /// The files that did not read, in name order, the holiday table's last.
+    pub bad: Vec<Bad>,
     /// `calendars/syukujitsu.csv`, when there is one and it read.
     pub table: Option<Table>,
 }
@@ -416,12 +428,12 @@ impl Calendars {
                 Ok(c) => {
                     out.map.insert(name, c);
                 }
-                Err(e) => out.bad.push(format!("calendars/{name}.toml: {e}")),
+                Err(e) => out.bad.push(Bad { calendar: Some(name), line: e }),
             }
         }
         match Table::load(&dir.join(TABLE_FILE)) {
             Ok(table) => out.set_table(table),
-            Err(e) => out.bad.push(format!("calendars/{TABLE_FILE}: {e}")),
+            Err(e) => out.bad.push(Bad { calendar: None, line: e }),
         }
         out
     }
@@ -438,15 +450,14 @@ impl Calendars {
         self.map.get(name)
     }
 
-    /// Why `name` cannot be used, when it cannot: the file is missing or did not read.
+    /// Why `name` cannot be used, when it cannot (a coded line): the file is missing or did not read.
     pub fn problem(&self, name: &str) -> Option<String> {
         if self.map.contains_key(name) {
             return None;
         }
-        let head = format!("calendars/{name}.toml: ");
-        match self.bad.iter().find_map(|b| b.strip_prefix(&head)) {
-            Some(why) => Some(format!("calendars/{name}.toml が読めない（{why}）")),
-            None => Some(format!("カレンダーがない: calendars/{name}.toml")),
+        match self.bad.iter().find(|b| b.calendar.as_deref() == Some(name)) {
+            Some(b) => Some(b.line.clone()),
+            None => Some(line(msg::CAL_MISSING, &[name])),
         }
     }
 
@@ -454,7 +465,7 @@ impl Calendars {
     /// table's age, for the calendars that use it: a line when fewer than
     /// `warn_days` days are left, another when it is past. Each once.
     pub fn cautions(&self, today: NaiveDate, warn_days: i64) -> Vec<String> {
-        let mut out = self.bad.clone();
+        let mut out: Vec<String> = self.bad.iter().map(|b| b.line.clone()).collect();
         if self.map.values().any(|c| c.holidays) {
             out.extend(caution(until(self.table.as_ref()), today, warn_days));
         }
@@ -466,8 +477,8 @@ impl Calendars {
     pub fn cautions_by_calendar(&self, today: NaiveDate, warn_days: i64) -> std::collections::BTreeMap<String, Vec<String>> {
         let mut out: std::collections::BTreeMap<String, Vec<String>> = std::collections::BTreeMap::new();
         for b in &self.bad {
-            if let Some(name) = b.strip_prefix("calendars/").and_then(|r| r.split_once(".toml: ")).map(|(n, _)| n) {
-                out.entry(name.to_owned()).or_default().push(b.clone());
+            if let Some(name) = &b.calendar {
+                out.entry(name.clone()).or_default().push(b.line.clone());
             }
         }
         if let Some(line) = caution(until(self.table.as_ref()), today, warn_days) {
@@ -650,23 +661,25 @@ mod tests {
         assert_eq!(Calendar::parse("x", "format = 1\n").unwrap().until(), None);
         let u = japan::UNTIL;
         assert_eq!(caution(u, d("2027-01-01"), 90), None);
-        assert_eq!(caution(u, d("2027-11-01"), 90), Some(format!("祝日の表は 2027-12-31 までの分です（あと 60 日）。{TABLE_HINT}")));
-        assert_eq!(
-            caution(u, d("2028-01-02"), 90),
-            Some(format!("祝日の表が古い（2027-12-31 まで）。それより後の日は流さない。{TABLE_HINT}"))
-        );
+        assert_eq!(caution(u, d("2027-11-01"), 90), Some(line(msg::TABLE_ENDING_SOON, &["2027-12-31", "60"])));
+        assert_eq!(caution(u, d("2028-01-02"), 90), Some(line(msg::TABLE_STALE, &["2027-12-31"])));
+        assert!(msg::TABLE_ENDING_SOON.is_warning() && msg::TABLE_STALE.is_warning());
     }
 
     #[test]
     fn a_file_that_does_not_read_says_why() {
         let p = |t: &str| Calendar::parse("x", t).unwrap_err();
-        assert_eq!(p("holidays = \"japan\"\n"), "format = 1 が要る");
-        assert_eq!(p("format = 2\n"), "この版が読める format は 1 だけ");
-        assert_eq!(p("format = 1\nholidays = \"us\"\n"), "holidays は \"japan\" か \"none\"");
-        assert_eq!(p("format = 1\nweekly_off = [\"土\"]\n"), "曜日は mon・tue・wed・thu・fri・sat・sun のどれか: \"土\"");
-        assert_eq!(p("format = 1\nclosed = [1]\n"), "closed: 日付は 2026-11-30 のように書く");
-        assert_eq!(p("format = 1\nopen = [{ day = 2026-11-20 }]\n"), "open の項目は日付か { date = 2026-11-20, name = \"創立記念日\" }");
-        assert_eq!(p("format = 1\nfoo = 1\n"), "知らない欄 foo");
+        // Each is coded, with the calendar's name ("x") and what is wrong in the holes.
+        assert_eq!(p("holidays = \"japan\"\n"), line(msg::CAL_FORMAT_MISSING, &["x"]));
+        assert_eq!(p("format = 2\n"), line(msg::CAL_FORMAT_UNSUPPORTED, &["x"]));
+        assert_eq!(p("format = 1\nholidays = \"us\"\n"), line(msg::CAL_HOLIDAYS_VALUE, &["x"]));
+        let bad_day = p("format = 1\nweekly_off = [\"土\"]\n");
+        assert!(msg::CAL_DAY_VALUE.is_in(&bad_day) && bad_day.contains("weekly_off") && bad_day.contains("\"土\""), "{bad_day}");
+        let bad_closed = p("format = 1\nclosed = [1]\n");
+        assert!(msg::CAL_DAY_VALUE.is_in(&bad_closed) && bad_closed.contains("closed"), "{bad_closed}");
+        assert_eq!(p("format = 1\nopen = [{ day = 2026-11-20 }]\n"), line(msg::CAL_ENTRY_SHAPE, &["x", "open"]));
+        assert_eq!(p("format = 1\nfoo = 1\n"), line(msg::CAL_UNKNOWN_FIELD, &["x", "foo"]));
+        assert!(msg::CAL_TOML_SYNTAX.is_in(&p("format = [\n")));
         assert!(valid_name("会社") && valid_name("本社 2026"));
         assert!(!valid_name("") && !valid_name("..") && !valid_name("a/b") && !valid_name("a\\b") && !valid_name("_x"));
         assert!(!valid_name("NUL") && !valid_name("com1") && !valid_name("a.") && !valid_name("a "));
@@ -693,14 +706,14 @@ mod tests {
         std::fs::write(dir.join("memo.txt"), "x").unwrap();
         let cals = Calendars::load(&dir);
         assert_eq!(cals.map.keys().collect::<Vec<_>>(), ["会社"]);
-        assert_eq!(cals.bad, ["calendars/壊れ.toml: holidays は \"japan\" か \"none\""]);
+        assert_eq!(cals.bad, [Bad { calendar: Some("壊れ".to_owned()), line: line(msg::CAL_HOLIDAYS_VALUE, &["壊れ"]) }]);
         assert_eq!(cals.problem("会社"), None);
-        assert_eq!(cals.problem("壊れ").unwrap(), "calendars/壊れ.toml が読めない（holidays は \"japan\" か \"none\"）");
-        assert_eq!(cals.problem("本社").unwrap(), "カレンダーがない: calendars/本社.toml");
+        assert_eq!(cals.problem("壊れ").unwrap(), line(msg::CAL_HOLIDAYS_VALUE, &["壊れ"]));
+        assert_eq!(cals.problem("本社").unwrap(), line(msg::CAL_MISSING, &["本社"]));
         assert_eq!(cals.cautions(d("2027-12-01"), 90).len(), 2);
         let by = cals.cautions_by_calendar(d("2027-12-01"), 90);
         assert_eq!(by.keys().collect::<Vec<_>>(), ["会社", "壊れ"]);
-        assert!(by["会社"].len() == 1 && by["壊れ"][0].starts_with("calendars/壊れ.toml: "));
+        assert!(by["会社"].len() == 1 && by["壊れ"][0] == line(msg::CAL_HOLIDAYS_VALUE, &["壊れ"]));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -713,8 +726,11 @@ mod tests {
         // As the Cabinet Office writes it: Shift_JIS.
         let sjis = b"2028/1/1,\x8c\xb3\x93\xfa\r\n";
         assert_eq!(Table::parse(&Table::decode(sjis)).unwrap().days[&d("2028-01-01")], "元日");
-        assert!(Table::parse("日付,名前\n2028/1/1,元日\n2028/13/1,x\n").unwrap_err().starts_with("3 行目"));
-        assert_eq!(Table::parse("日付,名前\n").unwrap_err(), "祝日が 1 つもない");
+        assert!(
+            Table::parse("日付,名前\n2028/1/1,元日\n2028/13/1,x\n").unwrap_err()
+                == msg::line(msg::TABLE_DATE_UNREADABLE, &["3", "2028/13/1"])
+        );
+        assert_eq!(Table::parse("日付,名前\n").unwrap_err(), line(msg::TABLE_EMPTY, &[]));
         assert_eq!(Table::parse("\u{feff}2028-01-01,\n").unwrap().days[&d("2028-01-01")], "祝日");
 
         let mut c = Calendar::parse("会社", "format = 1\nholidays = \"japan\"\n").unwrap();
@@ -742,7 +758,7 @@ mod tests {
         assert!(cals.cautions(d("2027-12-01"), 90).is_empty());
         std::fs::write(dir.join(TABLE_FILE), "日付,名前\nx,y\n").unwrap();
         let cals = Calendars::load(&dir);
-        assert_eq!(cals.bad, [format!("calendars/{TABLE_FILE}: 2 行目: 日付が読めない: x")]);
+        assert_eq!(cals.bad, [Bad { calendar: None, line: msg::line(msg::TABLE_DATE_UNREADABLE, &["2", "x"]) }]);
         assert_eq!(cals.map["会社"].until(), Some(japan::UNTIL));
         let _ = std::fs::remove_dir_all(&dir);
     }

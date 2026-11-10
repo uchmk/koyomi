@@ -40,6 +40,7 @@ mod sheet;
 mod show;
 mod sql;
 mod ssh;
+mod troubleshoot;
 mod ui;
 mod winrm;
 
@@ -92,6 +93,8 @@ struct App {
     keep_ask: Option<(u32, usize)>,
     /// The key help (F1 or `?`) while it is open.
     help: help::Help,
+    /// こんな時はどうする: the message list while it is open.
+    troubleshoot: troubleshoot::Troubleshoot,
     /// The first-run guide (an empty tree), and whether it has been offered this run.
     guide: ito_guide::Guide,
     guide_offered: bool,
@@ -158,6 +161,7 @@ enum Command {
     AddRemote,
     ManageRemotes,
     Guide,
+    Troubleshoot,
     Versions,
     Export,
     Import,
@@ -190,6 +194,7 @@ impl App {
         let mut prefs = prefs::Prefs::load(base.clone());
         let mut warnings: Vec<String> = prefs.common_warn.iter().chain(&prefs.theme_warn).cloned().collect();
         let lang = i18n::resolve(prefs.common.language.as_deref());
+        koyomi_core::msg::set_language(&lang);
         let (table, errors) = i18n::table(&lang);
         warnings.extend(errors);
         let own = base.as_deref().map(prefs::keymap_path);
@@ -216,6 +221,7 @@ impl App {
             settings_open: false,
             keep_ask: None,
             help: help::Help::default(),
+            troubleshoot: troubleshoot::Troubleshoot::default(),
             guide: ito_guide::Guide::default(),
             guide_offered: false,
             startup: None,
@@ -411,6 +417,7 @@ impl App {
     /// The settings cover the tree; the help, if open, goes with it.
     fn open_settings(&mut self) {
         self.help.close();
+        self.troubleshoot.close();
         self.settings_open = true;
     }
 
@@ -431,6 +438,8 @@ impl App {
             Some("settings")
         } else if self.help.open {
             Some("help")
+        } else if self.troubleshoot.open {
+            Some("troubleshoot")
         } else {
             None
         };
@@ -612,6 +621,7 @@ impl App {
             return Vec::new();
         }
         let (table, errors) = i18n::table(&lang);
+        koyomi_core::msg::set_language(&lang);
         self.lang = lang;
         self.table = table;
         errors
@@ -749,6 +759,7 @@ impl App {
             ito_palette::Entry::new(t.tr("palette.add_remote"), "", Command::AddRemote),
             ito_palette::Entry::new(t.tr("palette.manage_remotes"), "", Command::ManageRemotes),
             ito_palette::Entry::new(t.tr("palette.guide"), "", Command::Guide),
+            ito_palette::Entry::new(t.tr("palette.troubleshoot"), "", Command::Troubleshoot),
             ito_palette::Entry::new(t.tr("palette.versions"), "", Command::Versions),
             ito_palette::Entry::new(t.tr("palette.export"), "", Command::Export),
             ito_palette::Entry::new(t.tr("palette.import"), "", Command::Import),
@@ -790,13 +801,20 @@ impl App {
                 self.guide_problems();
                 self.guide.reopen();
             }
+            Some(ito_palette::Answer::Pick(Command::Troubleshoot)) => {
+                self.help.close();
+                self.troubleshoot.open();
+            }
             Some(ito_palette::Answer::Pick(Command::Versions)) => self.browser.open_versions(),
             Some(ito_palette::Answer::Pick(Command::Export)) => self.browser.export(&self.table),
             Some(ito_palette::Answer::Pick(Command::Import)) => self.browser.import_box(),
             Some(ito_palette::Answer::Pick(Command::ReportBug)) => self.report_bug(ctx),
             Some(ito_palette::Answer::Pick(Command::ResetScale)) => self.scale_to(ctx, ito_common::ScaleTo::Reset),
             Some(ito_palette::Answer::Pick(Command::Settings)) => self.open_settings(),
-            Some(ito_palette::Answer::Pick(Command::Help)) => self.help.toggle(),
+            Some(ito_palette::Answer::Pick(Command::Help)) => {
+                self.troubleshoot.close();
+                self.help.toggle();
+            }
             Some(ito_palette::Answer::Pick(Command::Quit)) => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
             Some(ito_palette::Answer::Pick(Command::Edit(c))) => self.browser.edit(c),
             Some(_) => {}
@@ -960,10 +978,28 @@ impl eframe::App for App {
                 // Esc and the scrolling keys are the help's before the keymap reads them.
                 self.help.keys(&ctx);
             }
-            self.read_keys(&ctx);
+            let card = self.troubleshoot.open;
+            let held = if card {
+                // Only Esc is the card's; the search field takes every other key, so the keymap is not read.
+                self.troubleshoot.keys(&ctx);
+                // The page under the card reads no key at all: Enter in the search field must not press a box's
+                // button, nor Backspace delete a part in the editor. The events are put back before the card draws.
+                // Pointer input is read from egui's pointer state, not from these events, so the page still draws.
+                ctx.input_mut(|i| std::mem::take(&mut i.events))
+            } else {
+                self.read_keys(&ctx);
+                Vec::new()
+            };
+            self.browser.under_card = card;
             self.browser.show(ui, &self.table);
+            if card {
+                ctx.input_mut(|i| i.events = held);
+            }
             if self.help.open {
                 help::show(ui, self, r);
+            }
+            if self.troubleshoot.open {
+                troubleshoot::show(ui, self, r);
             }
         }
         self.script(&ctx);

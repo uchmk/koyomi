@@ -263,6 +263,10 @@ pub fn run(args: &[String]) -> Option<i32> {
         say(&help_for(first), false);
         return Some(0);
     }
+    {
+        let common = ito_common::base_dir().and_then(|b| ito_common::Common::read(&b).ok()).map(|(c, _)| c).unwrap_or_default();
+        koyomi_core::msg::set_language(&catalogue_language(first, rest, common.language.as_deref()));
+    }
     if bare.len() != args.len() {
         CAPTURE.with(|c| *c.borrow_mut() = Some(Vec::new()));
     }
@@ -327,6 +331,22 @@ pub fn run(args: &[String]) -> Option<i32> {
         _ => return None,
     };
     Some(finish(code))
+}
+
+/// Whether `first rest` is a job's child: `<kind> run`, started by the engine for a job.
+/// Its reason is read together with the engine's own messages.
+fn is_job_child(first: &str, rest: &[String]) -> bool {
+    matches!(first, "ssh" | "winrm" | "sftp" | "mail" | "sql" | "cloud") && matches!(rest, [op] if op == "run")
+}
+
+/// The language of the message catalogue for this command: a job's child speaks the engine's
+/// (so a service with `LANG=C` does not mix two languages in one reason), anything else follows the OS.
+fn catalogue_language(first: &str, rest: &[String], common: Option<&str>) -> String {
+    if is_job_child(first, rest) {
+        crate::i18n::engine_language(common).to_owned()
+    } else {
+        crate::i18n::resolve(common)
+    }
 }
 
 /// The usage's lines for `cmd`: the line naming it, the ones that go on under it, and the note.
@@ -546,7 +566,8 @@ fn check_calendar(name: &str, text: &str, path: &std::path::Path) -> i32 {
     let mut cal = match Calendar::parse(stem, text) {
         Ok(c) => c,
         Err(e) => {
-            out(&format!("{name}: {e}"), true);
+            // A calendar's refusal is a coded line that already names the calendar.
+            out(&e, true);
             return 1;
         }
     };
@@ -554,14 +575,14 @@ fn check_calendar(name: &str, text: &str, path: &std::path::Path) -> i32 {
     if cal.holidays {
         match Table::load(&path.with_file_name(TABLE_FILE)) {
             Ok(t) => cal.table = t,
-            Err(e) => out(&format!("{TABLE_FILE}: {e}"), true),
+            Err(e) => out(&e, true),
         }
     }
     let today = ito_common::now::now_local().date_naive();
     let mut bad = false;
     if let Some(until) = cal.until() {
         if let Some(line) = koyomi_core::calendar::caution(until, today, engine::CAUTION_DAYS) {
-            out(&format!("{name}: {line}"), true);
+            out(&line, true);
             // Past the table: the days after it will not run. Before: a word in time, not a fault.
             bad = cal.stale(today);
             if bad {
@@ -584,11 +605,11 @@ fn check_table(name: &str, path: &std::path::Path) -> i32 {
             0
         }
         Ok(None) => {
-            out(&format!("{name}: 読めない: ファイルがない"), true);
+            out(&koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&path.display().to_string(), "not found"]), true);
             1
         }
         Err(e) => {
-            out(&format!("{name}: {e}"), true);
+            out(&e, true);
             1
         }
     }
@@ -1019,10 +1040,10 @@ fn calendar(args: &[String]) -> i32 {
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
     let Some(cal) = snap.calendars.get(&name) else {
-        for c in snap.cautions.iter().filter(|c| c.starts_with(&format!("calendars/{name}.toml"))) {
+        for c in snap.calendar_cautions.get(&name).into_iter().flatten() {
             out(c, true);
         }
-        return fail(&t.trf("calendar.missing", &[&name]));
+        return fail(&koyomi_core::msg::line(koyomi_core::msg::CAL_MISSING, &[&name]));
     };
     let today = ito_common::now::now_local().date_naive();
     let (y, m) = month.unwrap_or((today.year(), today.month()));
@@ -2116,6 +2137,19 @@ fn startup_cmd(args: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_jobs_child_uses_the_engines_language() {
+        let run = ["run".to_owned()];
+        for kind in ["ssh", "winrm", "sftp", "mail", "sql", "cloud"] {
+            assert_eq!(catalogue_language(kind, &run, None), "ja", "{kind}");
+            assert_eq!(catalogue_language(kind, &run, Some("en")), "en", "{kind}");
+        }
+        // Not a job's child: `ssh` with another word, and any other command, follow the OS.
+        assert!(!is_job_child("sftp", &["hostkey".to_owned()]));
+        assert!(!is_job_child("check", &run));
+        assert_eq!(catalogue_language("check", &run, Some("en")), "en");
+    }
+
     /// `koyomi status` shows the engine's HTTP line when it listens.
     #[test]
     fn status_picks_the_http_line() {
@@ -2124,7 +2158,7 @@ mod tests {
         assert_eq!(super::http_line("koyomi engine pid 1"), None);
     }
 
-    use super::day_range;
+    use super::{catalogue_language, day_range, is_job_child};
 
     /// an exe in Temp is refused with where to put it instead, unless KOYOMI_ALLOW_TEMP lets a test through.
     #[test]

@@ -17,6 +17,7 @@ use std::time::Duration;
 
 use ito_http::client::{self, Client, Reply};
 use koyomi_core::config::Remote;
+use koyomi_core::msg::{self, line};
 use koyomi_core::scan::{Def, Standing};
 
 use crate::engine::Paths;
@@ -62,7 +63,8 @@ fn finish(res: Result<String, String>) -> i32 {
             0
         }
         Err(e) => {
-            crate::say(&format!("koyomi: {e}"), true);
+            // A coded line keeps its ID at the head.
+            crate::say(&if msg::is_coded(&e) { e } else { format!("koyomi: {e}") }, true);
             1
         }
     }
@@ -112,12 +114,13 @@ pub fn with_remote(text: &str, remotes: &[Remote], new: &Remote) -> Result<Strin
     let have: Vec<String> = remotes.iter().map(|r| r.name.clone()).collect();
     match check_name(&new.name, &have) {
         Ok(()) => {}
-        Err(NameWhy::Taken) => return Err(format!("{} はもう koyomi.toml にある", new.name.trim())),
-        Err(_) => return Err(format!("{:?} はつなぎ先の名前に使えない", new.name.trim())),
+        Err(NameWhy::Taken) => return Err(line(msg::NAME_TAKEN, &[new.name.trim()])),
+        Err(NameWhy::Empty) => return Err(line(msg::NAME_EMPTY, &[])),
+        Err(NameWhy::Bad) => return Err(line(msg::NAME_UNUSABLE, &[new.name.trim()])),
     }
     let secret = new.secret();
     if !secret.is_empty() && remotes.iter().any(|r| r.secret().eq_ignore_ascii_case(secret)) {
-        return Err(format!("{secret} はほかのつなぎ先が使っている"));
+        return Err(line(msg::SECRET_IN_USE, &[secret]));
     }
     let quote = |s: &str| toml::Value::String(s.to_owned()).to_string();
     let block = |r: &Remote| -> Vec<(&'static str, String)> {
@@ -185,10 +188,10 @@ fn blocks_of(remotes: &[&Remote]) -> Vec<Vec<(&'static str, String)>> {
 /// Refuses when `[standby] watch` or `[primary] standby` names `name` (compared as `Config::parse` does).
 fn not_named_by_tables(cfg: &koyomi_core::config::Config, name: &str) -> Result<(), String> {
     if cfg.standby.as_ref().is_some_and(|s| s.watch.trim() == name) {
-        return Err(format!("[standby] の watch が {name} を指している。先に koyomi.toml で直してから"));
+        return Err(line(msg::NAMED_BY_TABLE, &[name, "[standby] の watch"]));
     }
     if cfg.primary.as_ref().is_some_and(|p| p.standby.trim() == name) {
-        return Err(format!("[primary] の standby が {name} を指している。先に koyomi.toml で直してから"));
+        return Err(line(msg::NAMED_BY_TABLE, &[name, "[primary] の standby"]));
     }
     Ok(())
 }
@@ -200,7 +203,7 @@ fn rewrite(text: &str, after: &[&Remote]) -> Result<String, String> {
     let same = now.len() == after.len()
         && now.iter().zip(after).all(|(a, b)| a.name == b.name && a.url == b.url && a.fingerprint == b.fingerprint && a.token == b.token);
     if !same {
-        return Err("koyomi.toml の [[remote]] を書き直せなかった（読み戻すと違う）".to_owned());
+        return Err(line(msg::REWRITE_MISMATCH, &[]));
     }
     Ok(out)
 }
@@ -212,14 +215,15 @@ pub fn plan_rename(text: &str, old: &str, new: &str) -> Result<String, String> {
     let (old, new) = (old.trim(), new.trim());
     let cfg = koyomi_core::config::Config::parse(text)?;
     if !cfg.remote.iter().any(|r| r.name.trim() == old) {
-        return Err(format!("{old} はもう koyomi.toml にない"));
+        return Err(line(msg::REMOTE_GONE, &[old]));
     }
     not_named_by_tables(&cfg, old)?;
     let others: Vec<String> = cfg.remote.iter().filter(|r| r.name.trim() != old).map(|r| r.name.clone()).collect();
     match check_name(new, &others) {
         Ok(()) => {}
-        Err(NameWhy::Taken) => return Err(format!("{new} はもう koyomi.toml にある")),
-        Err(_) => return Err(format!("{new:?} はつなぎ先の名前に使えない")),
+        Err(NameWhy::Taken) => return Err(line(msg::NAME_TAKEN, &[new])),
+        Err(NameWhy::Empty) => return Err(line(msg::NAME_EMPTY, &[])),
+        Err(NameWhy::Bad) => return Err(line(msg::NAME_UNUSABLE, &[new])),
     }
     let renamed: Vec<Remote> =
         cfg.remote.iter().map(|r| if r.name.trim() == old { Remote { name: new.to_owned(), ..r.clone() } } else { r.clone() }).collect();
@@ -248,7 +252,7 @@ pub fn plan_remove(text: &str, name: &str) -> Result<RemovePlan, String> {
     let name = name.trim();
     let cfg = koyomi_core::config::Config::parse(text)?;
     let Some(gone) = cfg.remote.iter().find(|r| r.name.trim() == name) else {
-        return Err(format!("{name} はもう koyomi.toml にない"));
+        return Err(line(msg::REMOTE_GONE, &[name]));
     };
     not_named_by_tables(&cfg, name)?;
     let secret = gone.secret().to_owned();
@@ -388,8 +392,8 @@ pub fn remove(name: &str) -> Result<String, String> {
 /// stored for it could not be taken out again, that it is still in the credential store. Never the token.
 pub(crate) fn write_failed(name: &str, write: &str, undone: Result<(), String>) -> String {
     match undone {
-        Ok(()) => format!("{name}: {write}"),
-        Err(d) => format!("{name}: {write}（資格情報ストアに入れたトークンも消せず、残っている: {d}）"),
+        Ok(()) => line(msg::CONFIG_WRITE_FAILED, &[name, write]),
+        Err(d) => line(msg::CONFIG_WRITE_FAILED_TOKEN_LEFT, &[name, write, &d]),
     }
 }
 
@@ -407,13 +411,11 @@ pub(crate) fn finish_add(
     write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
 ) -> Result<(), String> {
     match store.get(secret) {
-        Err(e) => return Err(format!("{name}: {e}")),
-        Ok(Some(_)) => {
-            return Err(format!("秘密 {secret} がもうある。koyomi secret delete {secret} で消すか、別の名前にする"));
-        }
+        Err(e) => return Err(line(msg::TOKEN_SECRET_UNREADABLE, &[name, secret, &e])),
+        Ok(Some(_)) => return Err(line(msg::SECRET_EXISTS, &[secret])),
         Ok(None) => {}
     }
-    store.set(secret, token).map_err(|e| format!("{name}: {e}"))?;
+    store.set(secret, token).map_err(|e| line(msg::TOKEN_STORE_FAILED, &[name, &e]))?;
     write(path, text).map_err(|e| write_failed(name, &e, store.delete(secret)))
 }
 
@@ -440,9 +442,9 @@ pub(crate) fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) 
     let r = all.iter().find(|r| r.name.trim() == name).ok_or_else(|| {
         let names: Vec<_> = all.iter().map(|r| r.name.trim()).collect();
         if names.is_empty() {
-            format!("{name}: koyomi.toml に [[remote]] がない")
+            line(msg::NO_REMOTE, &[name])
         } else {
-            format!("{name}: [[remote]] にない（あるのは {}）", names.join("・"))
+            line(msg::UNKNOWN_REMOTE, &[name, &names.join("・")])
         }
     })?;
     f(r)
@@ -451,8 +453,8 @@ pub(crate) fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) 
 pub(crate) fn client(r: &Remote) -> Result<Client, String> {
     let name = r.secret();
     let token = ito_secret::get("koyomi", name)
-        .map_err(|e| format!("{}: token の秘密 {name}: {e}", r.name))?
-        .ok_or_else(|| format!("{}: token の秘密 {name} がない（koyomi secret set {name} に向こうの [http] の token を置く）", r.name))?;
+        .map_err(|e| line(msg::TOKEN_SECRET_UNREADABLE, &[&r.name, name, &e.to_string()]))?
+        .ok_or_else(|| line(msg::TOKEN_SECRET_MISSING, &[&r.name, name]))?;
     Client::new(r.url.trim(), r.fingerprint.trim(), token).map_err(|e| why(r, &e))
 }
 
@@ -466,20 +468,34 @@ fn call(r: &Remote, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) -> 
 fn answer(r: &Remote, reply: Reply) -> Result<serde_json::Value, String> {
     match reply.status {
         200..=299 => Ok(reply.json),
-        401 => Err(format!("{}: token が合わない（向こうの [http] の token と koyomi secret set {} を見る）", r.name, r.secret())),
-        s => Err(format!("{}: {s} {}", r.name, reply.json["error"].as_str().unwrap_or_default())),
+        401 => Err(line(msg::TOKEN_REFUSED, &[&r.name, r.secret()])),
+        s => Err(unexpected_status(&r.name, s, &reply.json)),
     }
 }
 
+/// What a status the caller does not know is, in the person's words. The engine's own coded line (a 403 for a
+/// role) goes through as it is.
+pub(crate) fn unexpected_status(name: &str, status: u16, json: &serde_json::Value) -> String {
+    let error = json["error"].as_str().unwrap_or_default();
+    if msg::is_coded(error) {
+        return error.to_owned();
+    }
+    line(msg::UNEXPECTED_STATUS, &[name, format!("{status} {error}").trim_end()])
+}
+
 pub(crate) fn why(r: &Remote, e: &client::Error) -> String {
+    reason(&r.name, e)
+}
+
+/// What went wrong with a call to `name` (a `[[remote]]` name, or the URL when none is registered yet).
+pub(crate) fn reason(name: &str, e: &client::Error) -> String {
     match e {
-        client::Error::Fingerprint(got) => format!(
-            "{}: 証明書が koyomi.toml の fingerprint と違う（今見えたのは {got}）。向こうで koyomi http fingerprint を見て、同じなら書き直す。違えば別の PC につながっている",
-            r.name
-        ),
-        client::Error::Connect(s) => format!("{}: つながらない（{s}）。向こうのエンジンと [http] の lan = true、ファイアウォールを見る", r.name),
-        client::Error::Deadline => format!("{}: 時間内に終わらなかった（通信が遅いか、向こうが混んでいる）", r.name),
-        e => format!("{}: {e}", r.name),
+        client::Error::Fingerprint(got) => line(msg::CERT_MISMATCH, &[name, got]),
+        client::Error::Connect(s) => line(msg::CONNECT_FAILED, &[name, s]),
+        client::Error::Deadline => line(msg::TIMED_OUT, &[name]),
+        client::Error::Tls(s) => line(msg::TLS_FAILED, &[name, s]),
+        client::Error::Url(s) => line(msg::ADDRESS_UNREADABLE, &[s]),
+        client::Error::Bad(s) => line(msg::REPLY_UNREADABLE, &[name, s]),
     }
 }
 
@@ -492,7 +508,9 @@ fn list() -> Result<String, String> {
         .iter()
         .map(|r| match call(r, |c| c.get("/health")) {
             Ok(j) => format!("{}  {}  {}", r.name, r.url, j["status"].as_str().unwrap_or("答えた")),
-            Err(e) => format!("{}  {}  ✕ {}", r.name, r.url, e.strip_prefix(&format!("{}: ", r.name)).unwrap_or(&e)),
+            // A coded line already names the connection and keeps its ID at the head.
+            Err(e) if msg::is_coded(&e) => e,
+            Err(e) => format!("{}  {}  ✕ {}", r.name, r.url, e),
         })
         .collect();
     Ok(lines.join("\n"))
@@ -500,26 +518,12 @@ fn list() -> Result<String, String> {
 
 /// The fingerprint the PC at `url` shows, or why not in the person's words. It blocks: not on the UI thread.
 pub(crate) fn peek_fingerprint(url: &str) -> Result<String, String> {
-    client::peek_fingerprint(url.trim(), PEEK_WAIT).map_err(|e| format!("{url}: {}", peek_why(&e)))
+    client::peek_fingerprint(url.trim(), PEEK_WAIT).map_err(|e| reason(url.trim(), &e))
 }
 
 fn peek(url: &str) -> Result<String, String> {
     let fp = peek_fingerprint(url)?;
     Ok(format!("fingerprint = \"{fp}\"\n向こうの PC で koyomi http fingerprint が同じものを出すのを確かめてから、[[remote]] に書く"))
-}
-
-/// What `peek` could not do, in Japanese (ito-http's own texts are English).
-pub(crate) fn peek_why(e: &client::Error) -> String {
-    match e {
-        client::Error::Url(s) => format!("アドレスが読めない: {s}（https://ホスト[:ポート] で書く）"),
-        client::Error::Connect(s) => {
-            format!("つながらない（{s}）。向こうのエンジンと [http] の lan = true、ポート、ファイアウォールを見る")
-        }
-        client::Error::Tls(s) => format!("TLS が通らない: {s}"),
-        client::Error::Fingerprint(got) => format!("証明書が信頼したものと違う（{got}）"),
-        client::Error::Bad(s) => format!("答えが読めない: {s}"),
-        client::Error::Deadline => "時間内に終わらなかった".to_owned(),
-    }
 }
 
 fn status(r: &Remote) -> Result<String, String> {
@@ -679,9 +683,9 @@ fn sent_line(name: &str, net: &str, same: bool) -> String {
 #[cfg(test)]
 mod tests {
     #[test]
-    fn peek_errors_are_japanese() {
-        let t = super::peek_why(&ito_http::client::Error::Connect("os error 10061".into()));
-        assert!(t.starts_with("つながらない") && !t.contains("cannot reach"), "{t}");
+    fn a_peek_error_is_coded_and_names_the_address() {
+        let t = super::reason("https://h:8443", &ito_http::client::Error::Connect("os error 10061".into()));
+        assert!(msg::CONNECT_FAILED.is_in(&t) && t.contains("https://h:8443") && t.contains("os error 10061"), "{t}");
     }
 
     use super::*;
@@ -765,12 +769,12 @@ mod tests {
         let have = vec![remote_of("Fact")];
         let text = with_remote("", &[], &have[0]).unwrap();
         let e = with_remote(&text, &have, &remote_of("fact")).unwrap_err();
-        assert!(e.contains("fact"), "{e}");
+        assert!(msg::NAME_TAKEN.is_in(&e) && e.contains("fact"), "{e}");
         assert!(with_remote(&text, &have, &remote_of("FACT")).is_err());
         let mut other = remote_of("new");
         other.token = "secret:FACT-token".into();
         let e = with_remote(&text, &have, &other).unwrap_err();
-        assert_eq!(e, "FACT-token はほかのつなぎ先が使っている");
+        assert!(msg::SECRET_IN_USE.is_in(&e) && e.contains("FACT-token"), "{e}");
         // Nothing of either was written, and a fresh name and secret still go in.
         assert!(with_remote(&text, &have, &remote_of("new")).is_ok());
     }
@@ -840,7 +844,7 @@ mod tests {
             assert!(plan_rename(&text, "fact", new).is_err(), "{new:?}");
         }
         let e = plan_rename(&text, "ghost", "x").unwrap_err();
-        assert_eq!(e, "ghost はもう koyomi.toml にない");
+        assert!(msg::REMOTE_GONE.is_in(&e) && e.contains("ghost"), "{e}");
     }
 
     #[test]
@@ -849,9 +853,9 @@ mod tests {
         let primary = file_with(&["fact", "office"], "[primary]\nstandby = \"fact\"\n");
         for (text, table) in [(&standby, "[standby]"), (&primary, "[primary]")] {
             let e = plan_rename(text, "fact", "works").unwrap_err();
-            assert!(e.contains(table), "{e}");
+            assert!(msg::NAMED_BY_TABLE.is_in(&e) && e.contains(table), "{e}");
             let e = plan_remove(text, "fact").unwrap_err();
-            assert!(e.contains(table), "{e}");
+            assert!(msg::NAMED_BY_TABLE.is_in(&e) && e.contains(table), "{e}");
             // The other one is free.
             assert!(plan_rename(text, "office", "works").is_ok());
             assert!(plan_remove(text, "office").is_ok());
@@ -1075,21 +1079,21 @@ mod tests {
         // A value already there: no set, no write.
         let store = Fake { has: Some("old".into()), ..Fake::default() };
         let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| panic!("no write")).unwrap_err();
-        assert!(e.contains("kei-token") && e.contains("koyomi secret delete kei-token"), "{e}");
+        assert!(msg::SECRET_EXISTS.is_in(&e) && e.contains("kei-token") && e.contains("koyomi secret delete kei-token"), "{e}");
         assert_eq!(*store.calls.borrow(), ["get kei-token"]);
         // A get that fails: no set, no write.
         let store = Fake { get_fails: true, ..Fake::default() };
         let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| panic!("no write")).unwrap_err();
-        assert!(e.contains("store down"), "{e}");
+        assert!(msg::TOKEN_SECRET_UNREADABLE.is_in(&e) && e.contains("store down"), "{e}");
         assert_eq!(*store.calls.borrow(), ["get kei-token"]);
         // A write that fails takes the new secret back.
         let store = Fake::default();
         let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| Err("read only".into())).unwrap_err();
-        assert_eq!(e, "kei: read only");
+        assert!(msg::CONFIG_WRITE_FAILED.is_in(&e) && e.contains("kei") && e.contains("read only"), "{e}");
         assert_eq!(*store.calls.borrow(), ["get kei-token", "set kei-token", "delete kei-token"]);
         // ... and says so when it cannot.
         let store = Fake { delete_fails: true, ..Fake::default() };
         let e = finish_add("kei", "kei-token", "tok", path, "text".into(), &store, |_, _| Err("read only".into())).unwrap_err();
-        assert!(e.contains("残っている") && e.contains("denied") && !e.contains("tok)"), "{e}");
+        assert!(msg::CONFIG_WRITE_FAILED_TOKEN_LEFT.is_in(&e) && e.contains("denied") && !e.contains("tok)"), "{e}");
     }
 }

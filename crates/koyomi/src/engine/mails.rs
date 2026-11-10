@@ -14,6 +14,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::Duration;
 
+use koyomi_core::msg::{self, line};
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when::{self, Kind, Mailbox};
 
@@ -37,8 +38,8 @@ pub trait Inbox: Send {
     fn poll(&mut self) -> Result<Vec<Mail>, String>;
 }
 
-/// Opens a mailbox with the password kept as the named secret.
-type OpenFn = dyn Fn(&Mailbox, &str) -> Result<Box<dyn Inbox>, String> + Send + Sync;
+/// Opens a mailbox (named by the jobnet whose rule reads it) with the password kept as the named secret.
+type OpenFn = dyn Fn(&str, &Mailbox, &str) -> Result<Box<dyn Inbox>, String> + Send + Sync;
 pub type Open = Arc<OpenFn>;
 
 enum Msg {
@@ -91,11 +92,11 @@ impl Mails {
             let Ok(mailbox) = when::mailbox(mail) else { continue };
             let (tx, rx) = mpsc::channel();
             let (stop, stopped) = mpsc::channel();
-            let (open, every, secret) = (Arc::clone(&self.open), self.every, secret.clone());
+            let (open, every, secret, jobnet) = (Arc::clone(&self.open), self.every, secret.clone(), def_id.clone());
             let spawned = std::thread::Builder::new()
                 .name("mail".into())
-                .spawn(move || read_on(&mailbox, &secret, open.as_ref(), every, &tx, &stopped));
-            let problem = spawned.err().map(|e| format!("読む糸を起こせない（{e}）"));
+                .spawn(move || read_on(&jobnet, &mailbox, &secret, open.as_ref(), every, &tx, &stopped));
+            let problem = spawned.err().map(|e| e.to_string());
             self.watches.push(Watch { def_id, kind, rx, _stop: stop, problem });
         }
     }
@@ -126,7 +127,9 @@ impl Mails {
             .iter()
             .filter_map(|w| {
                 let Kind::Mail { mail, .. } = &w.kind else { return None };
-                Some(format!("{}: メールボックス {mail} を読めない（{}）", w.def_id, w.problem.as_ref()?))
+                let p = w.problem.as_ref()?;
+                // A coded line already names the mailbox and keeps its ID at the head.
+                Some(if msg::is_coded(p) { p.clone() } else { line(msg::MAIL_UNREADABLE, &[&w.def_id, mail, p]) })
             })
             .collect()
     }
@@ -140,11 +143,11 @@ fn matches(m: &Mail, sender: Option<&str>, subject: Option<&str>) -> bool {
 
 /// A watch's thread: opens the mailbox (again, until it opens), reads it every
 /// `every`, and ends when the watch is dropped.
-fn read_on(mailbox: &Mailbox, secret: &str, open: &OpenFn, every: Duration, tx: &Sender<Msg>, stop: &Receiver<()>) {
+fn read_on(jobnet: &str, mailbox: &Mailbox, secret: &str, open: &OpenFn, every: Duration, tx: &Sender<Msg>, stop: &Receiver<()>) {
     let mut inbox: Option<Box<dyn Inbox>> = None;
     loop {
         let msg = match &mut inbox {
-            None => match open(mailbox, secret) {
+            None => match open(jobnet, mailbox, secret) {
                 Ok(i) => {
                     inbox = Some(i);
                     Msg::Problem(None)
@@ -172,24 +175,29 @@ fn read_on(mailbox: &Mailbox, secret: &str, open: &OpenFn, every: Duration, tx: 
 }
 
 /// Opens the mailbox over IMAP with the password from the OS credential store.
-fn imap(mailbox: &Mailbox, secret: &str) -> Result<Box<dyn Inbox>, String> {
+fn imap(jobnet: &str, mailbox: &Mailbox, secret: &str) -> Result<Box<dyn Inbox>, String> {
     let password = match ito_secret::get("koyomi", secret) {
         Ok(Some(p)) => p,
-        Ok(None) => return Err(format!("秘密 {secret} が資格情報ストアに無い。koyomi secret set {secret} で置く")),
-        Err(e) => return Err(format!("秘密 {secret} が読めない（{e}）")),
+        Ok(None) => return Err(line(msg::MAIL_SECRET_MISSING, &[jobnet, &label(mailbox), secret])),
+        Err(e) => return Err(line(msg::MAIL_SECRET_UNREADABLE, &[jobnet, &label(mailbox), secret, &e.to_string()])),
     };
     let account =
         ito_mail::Account { host: mailbox.host.clone(), port: mailbox.port, user: mailbox.user.clone(), folder: mailbox.folder.clone() };
-    let inbox = ito_mail::Inbox::open(&account, &password, ito_mail::From::End).map_err(|e| why(&e))?;
-    Ok(Box::new(Imap(inbox)))
+    let inbox = ito_mail::Inbox::open(&account, &password, ito_mail::From::End).map_err(|e| why(jobnet, mailbox, secret, &e))?;
+    Ok(Box::new(Imap { inbox, jobnet: jobnet.to_owned(), mailbox: mailbox.clone(), secret: secret.to_owned() }))
 }
 
 /// A mailbox read over IMAP by ito-mail; it connects again by itself after a drop.
-struct Imap(ito_mail::Inbox);
+struct Imap {
+    inbox: ito_mail::Inbox,
+    jobnet: String,
+    mailbox: Mailbox,
+    secret: String,
+}
 
 impl Inbox for Imap {
     fn poll(&mut self) -> Result<Vec<Mail>, String> {
-        let mails = self.0.poll().map_err(|e| why(&e))?;
+        let mails = self.inbox.poll().map_err(|e| why(&self.jobnet, &self.mailbox, &self.secret, &e))?;
         Ok(mails
             .into_iter()
             .map(|m| Mail {
@@ -203,13 +211,21 @@ impl Inbox for Imap {
     }
 }
 
+/// The mailbox as a rule names it: `imaps://user@host[:port][/folder]`.
+fn label(m: &Mailbox) -> String {
+    let port = if m.port == 993 { String::new() } else { format!(":{}", m.port) };
+    let folder = if m.folder.eq_ignore_ascii_case("INBOX") { String::new() } else { format!("/{}", m.folder) };
+    format!("imaps://{}@{}{port}{folder}", m.user, m.host)
+}
+
 /// Why a mailbox cannot be read, for the cautions (never with the password).
-fn why(e: &ito_mail::Error) -> String {
+fn why(jobnet: &str, m: &Mailbox, secret: &str, e: &ito_mail::Error) -> String {
+    let label = label(m);
     match e {
-        ito_mail::Error::Connect(s) => format!("サーバーにつながらない: {s}"),
-        ito_mail::Error::Tls(s) => format!("TLS でつながらない: {s}"),
-        ito_mail::Error::Login => "ユーザーかパスワードが違う".to_owned(),
-        ito_mail::Error::NoFolder => "そのフォルダーが無い".to_owned(),
+        ito_mail::Error::Connect(s) => line(msg::MAIL_CONNECT, &[jobnet, &label, s]),
+        ito_mail::Error::Tls(s) => line(msg::MAIL_TLS, &[jobnet, &label, s]),
+        ito_mail::Error::Login => line(msg::MAIL_LOGIN, &[jobnet, &label, secret]),
+        ito_mail::Error::NoFolder => line(msg::MAIL_NO_FOLDER, &[jobnet, &label]),
         ito_mail::Error::Other(s) => s.clone(),
     }
 }
@@ -271,7 +287,7 @@ mod tests {
         let queue = Arc::new(Mutex::new(Vec::new()));
         let seen = Arc::new(Mutex::new(Vec::new()));
         let (q, s) = (Arc::clone(&queue), Arc::clone(&seen));
-        let open: Open = Arc::new(move |m: &Mailbox, secret: &str| {
+        let open: Open = Arc::new(move |_: &str, m: &Mailbox, secret: &str| {
             s.lock().unwrap().push((m.user.clone(), m.host.clone(), secret.to_owned()));
             Ok(Box::new(Fake(Arc::clone(&q))) as Box<dyn Inbox>)
         });
@@ -302,7 +318,7 @@ mod tests {
     fn a_mailbox_that_cannot_be_opened_is_a_warning_and_tried_again() {
         let tries = Arc::new(Mutex::new(0));
         let t = Arc::clone(&tries);
-        let open: Open = Arc::new(move |_: &Mailbox, _: &str| {
+        let open: Open = Arc::new(move |_: &str, _: &Mailbox, _: &str| {
             let mut n = t.lock().unwrap();
             *n += 1;
             if *n < 3 {
@@ -318,7 +334,13 @@ mod tests {
             mails.due();
             std::thread::sleep(Duration::from_millis(2));
         }
-        assert_eq!(mails.problems(), ["g/m: メールボックス imaps://me@example.com@imap.example.com を読めない（ログインできない）"]);
+        let problems = mails.problems();
+        assert_eq!(problems.len(), 1);
+        assert!(msg::MAIL_UNREADABLE.is_in(&problems[0]), "{problems:?}");
+        assert!(problems[0].contains("imaps://me@example.com@imap.example.com"), "{problems:?}");
+        // The jobnet whose rule reads the mailbox comes first, then the mailbox.
+        let (at_jobnet, at_mailbox) = (problems[0].find("g/m"), problems[0].find("imaps://"));
+        assert!(at_jobnet.is_some() && at_jobnet < at_mailbox, "{problems:?}");
         assert_eq!(wait(&mut mails).len(), 1);
         assert!(mails.problems().is_empty());
     }

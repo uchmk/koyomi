@@ -1,0 +1,668 @@
+[area]
+a10 = "Settings and startup"
+a21 = "Connection and authentication"
+a22 = "Permissions"
+a31 = "Saving and checking jobnets"
+a32 = "Running jobs"
+a41 = "Calendars"
+
+[page]
+title = "Troubleshooting"
+intro = "The errors and warnings koyomi shows, by message ID. Search for the ID at the start of a message (for example KOYOMI-E2101)."
+blanks = "Where you see …, the message shows a specific value such as the name of a connection."
+area_head = "{0} ({1}xx)"
+field = "{0}: {1}"
+kind = "Kind"
+error = "Error"
+warning = "Warning"
+message = "Message"
+cause = "Cause"
+action = "Action"
+
+[E2101]
+when = "The engine at a connection cannot be reached"
+text = "Cannot connect to {0}. ({1})"
+cause = "The engine may be stopped, may not accept HTTP connections, or a firewall may be blocking it."
+action = "Check that the engine is running, that [http] has lan = true, and the firewall settings."
+
+[E2102]
+when = "It is not known whether a request arrived"
+text = "It is not known whether the request reached the connection. ({0})"
+cause = "The connection broke after the request was sent, or the answer could not be understood, so it may have been carried out."
+action = "Check the history and run it again if needed."
+
+[E2103]
+when = "The certificate of a connection does not match the registered fingerprint"
+text = "The certificate of {0} does not match the registered fingerprint. (It showed {1})"
+cause = "The certificate of the connection may have been replaced, or this may be a different PC."
+action = "Run koyomi http fingerprint on the connection and compare the value. If it matches, rewrite the fingerprint in koyomi.toml."
+
+[E2104]
+when = "A connection did not answer in time"
+text = "{0} did not answer in time."
+cause = "The network may be slow, or the engine of the connection may be busy."
+action = "Check the network and the load of the connection, then run it again."
+
+[E2105]
+when = "The secret that holds a connection's token is not stored"
+text = "The secret {1} that holds the token of {0} does not exist."
+cause = "The credential store has no secret of the name the token of the [[remote]] refers to."
+action = "Run koyomi secret set {1} and store the token of [http] of the connection."
+
+[E2106]
+when = "The secret that holds a connection's token cannot be read from the credential store"
+text = "Cannot read the secret {1} that holds the token of {0}. ({2})"
+cause = "The credential store may be unavailable, or it may have refused to read the secret."
+action = "Check the credential store, then store the token again with koyomi secret set {1}."
+
+[E2107]
+when = "A connection does not accept the token"
+text = "{0} does not accept the token."
+cause = "The stored token may not match a token registered in [http] of the connection."
+action = "Check the token in [http] of the connection and store it again with koyomi secret set {1}."
+
+[E2108]
+when = "The screen and the engine speak different versions of the protocol"
+text = "The versions of the screen and the engine do not match. (screen {0}, engine {1})"
+cause = "The protocol number the screen sent differs from the one of the engine of the connection."
+action = "Update koyomi on the screen and on the engine to the same version."
+
+[E2109]
+when = "The answer of a connection cannot be read"
+text = "Cannot read the answer of {0}. ({1})"
+cause = "The answer is not in the expected form. The koyomi of the connection may be of another version, or the connection may have broken."
+action = "Check the version of koyomi on the connection, then run it again."
+
+[E2110]
+when = "The engine of a connection does not support actions from this screen"
+text = "The engine of {0} does not support actions from this screen."
+cause = "The engine of the connection has no /door. It may be an older version."
+action = "Update koyomi on the connection to a newer version."
+
+[E2111]
+when = "TLS to a connection fails"
+text = "TLS to {0} failed. ({1})"
+cause = "There may be a problem with the certificate or the TLS settings of the connection."
+action = "Check [http] of the engine of the connection and its address."
+
+[E2112]
+when = "The address of a connection cannot be read"
+text = "Cannot read the address of the connection. ({0})"
+cause = "The address is not in the form https://host[:port]."
+action = "Write the address as https://host[:port]."
+
+[E2113]
+when = "A connection gives an unexpected answer"
+text = "{0} gave an unexpected answer. ({1})"
+cause = "The engine of the connection answered with an error or an unexpected state."
+action = "Check the state and the log of the engine of the connection."
+
+[E2114]
+when = "The token of a connection cannot drive this screen"
+text = "The token of {0} cannot be used to drive this screen."
+cause = "The role of the user of the token is lower than edit, or the user is narrowed by nets or roles."
+action = "Use the token of a user who has the edit role or higher and is not narrowed by nets or roles."
+
+[E2115]
+when = "koyomi.toml has no connection at all"
+text = "{0} cannot be used: koyomi.toml has no [[remote]]."
+cause = "koyomi.toml does not hold a single [[remote]]."
+action = "Add a [[remote]] with name, url, fingerprint and token to koyomi.toml."
+
+[E2116]
+when = "The named connection is not registered"
+text = "{0} is not a [[remote]] of koyomi.toml. (Registered: {1})"
+cause = "koyomi.toml has no [[remote]] of that name."
+action = "Give the name of a registered connection, or add a [[remote]]."
+
+[E2117]
+when = "A request is sent while the connection is being switched"
+text = "The request was not sent because the connection is being switched."
+cause = "The screen does not send requests while it switches to another connection."
+action = "Run it again after the switch has finished."
+
+[E2120]
+when = "The token of a connection cannot be stored in the credential store"
+text = "Cannot store the token of {0} in the credential store. ({1})"
+cause = "The credential store may be unavailable, or it may have refused to write."
+action = "Check the credential store, then run it again."
+
+[E2121]
+when = "A connection cannot be written to koyomi.toml"
+text = "Cannot write {0} to koyomi.toml. ({1})"
+cause = "There may be no permission to write koyomi.toml, or the disk may have a problem. The stored token has been removed from the credential store."
+action = "Check the location and the write permission of koyomi.toml, then run it again."
+
+[E2122]
+when = "A connection cannot be written to koyomi.toml and its stored token cannot be removed"
+text = "Cannot write {0} to koyomi.toml. ({1}) The token in the credential store could not be removed either. ({2})"
+cause = "Writing koyomi.toml failed, and removing the token from the credential store afterwards failed too."
+action = "Check the write permission of koyomi.toml and remove the token you do not need with koyomi secret delete."
+
+[E2123]
+when = "A connection in use is changed"
+text = "{0} is in use, so it cannot be changed."
+cause = "The screen is connected to this connection now."
+action = "Switch to another connection, then run it again."
+
+[E2130]
+when = "The name of a connection is empty"
+text = "The name of the connection is empty."
+cause = "The name field is empty."
+action = "Enter a name for the connection."
+
+[E2131]
+when = "A connection of that name already exists"
+text = "{0} already exists."
+cause = "A connection of that name is already registered as a [[remote]] of koyomi.toml."
+action = "Choose a different name."
+
+[E2132]
+when = "The name of a connection holds a character that cannot be used"
+text = "The connection name {0} cannot be used."
+cause = "The name holds a space, a control character, or one of / \\ \" ' :"
+action = "Use a name without spaces and without / \\ \" ' :"
+
+[E2133]
+when = "The URL of a connection is not valid"
+text = "The URL of the connection is not valid."
+cause = "The URL does not start with https://, or it holds a space."
+action = "Enter a URL that starts with https:// and has no spaces."
+
+[E2134]
+when = "The token of a connection is empty"
+text = "The token of the connection is empty."
+cause = "The token field is empty."
+action = "Enter the token issued on the connection."
+
+[E2135]
+when = "The secret of a connection's token is used by another connection"
+text = "The secret {0} is used by another connection."
+cause = "Another [[remote]] uses the same secret name as the connection being added."
+action = "Choose a different name."
+
+[E2136]
+when = "The secret of a connection's token already exists"
+text = "The secret {0} already exists."
+cause = "The credential store has a secret of the same name, and koyomi never overwrites it."
+action = "Delete the secret with koyomi secret delete {0}, or choose a different name."
+
+[E2137]
+when = "The connection to change is not in koyomi.toml"
+text = "{0} is not in koyomi.toml."
+cause = "koyomi.toml may have been changed elsewhere while you worked."
+action = "Reopen the list of connections and run it again."
+
+[E2138]
+when = "The connection to change is named by [standby] or [primary]"
+text = "{0} cannot be changed because {1} names it."
+cause = "The watch of [standby] or the standby of [primary] in koyomi.toml names this connection."
+action = "Change {1} in koyomi.toml to another connection first."
+
+[E2139]
+when = "koyomi.toml does not read as intended after a connection is changed"
+text = "The [[remote]] of koyomi.toml could not be rewritten."
+cause = "The rewritten text, read back, did not match what was intended."
+action = "Check the contents of koyomi.toml and run it again."
+
+[W2140]
+when = "The standby of [primary] is not a [[remote]]"
+text = "The connection {0} named by the standby of [primary] is not a [[remote]]."
+cause = "The standby cannot be asked, so this PC goes on running."
+action = "Add the connection to [[remote]], or correct the standby of [primary]."
+
+[W2141]
+when = "A connection has no [standby]"
+text = "{0} has no [standby]."
+cause = "koyomi.toml on the connection may have no [standby], or its koyomi may be old."
+action = "Set [standby] in koyomi.toml on the connection and update its koyomi to the latest version."
+
+[W2142]
+when = "The standby state of a connection cannot be read"
+text = "Cannot read the standby state (ha) of {0}."
+cause = "The answer of the engine of the connection does not hold the standby state in the expected form."
+action = "Check the version of koyomi on the connection."
+
+[E2150]
+when = "An SSH target cannot be reached"
+text = "Cannot connect to {0} over SSH. ({1})"
+cause = "sshd may not be running on the target, the port may be closed, or the host address may not resolve."
+action = "Check the host name and port, that sshd is running, and the firewall settings."
+
+[E2151]
+when = "An SSH target refuses the user, the password or the key"
+text = "{0} does not accept the user name, the password or the key."
+cause = "The SSH authentication was refused by the target."
+action = "Check the user name in on of the job, and the password or key setting."
+
+[E2152]
+when = "The host key of an SSH target does not match the registered one"
+text = "The host key of {0} does not match host_key. (Registered: {1}, shown: {2})"
+cause = "The host key of the target may have changed, or this may be a different PC."
+action = "Check the host key of the target with koyomi sftp hostkey and, if it is right, rewrite host_key."
+
+[E2153]
+when = "The connection to a target broke in the middle"
+text = "The connection to {0} broke. ({1})"
+cause = "The target may have closed the connection, or the network may have been cut."
+action = "Check the target and the network, then run it again."
+
+[E2154]
+when = "An SSH or WinRM target did not answer in time"
+text = "{0} did not answer in time."
+cause = "The target may be unreachable or slow to answer."
+action = "Check the host name and port, the network, and the listener and firewall of the target."
+
+[E2160]
+when = "A WinRM target cannot be reached"
+text = "Cannot connect to {0} over WinRM. ({1})"
+cause = "The WinRM HTTPS listener of the target may not be running, a firewall may block the port, or the host address may not resolve."
+action = "Check the WinRM HTTPS listener of the target and the WinRM port (5986 by default) on the firewall."
+
+[E2161]
+when = "A WinRM target refuses the user name or password of Basic authentication"
+text = "{0} does not accept the user name or the password. (Basic authentication)"
+cause = "The user name or password may be wrong, or Basic authentication may be off on the target. Only local accounts of the target can sign in with Basic."
+action = "Turn on Basic authentication in WinRM on the target, or set auth = \"ntlm\" for a domain account."
+
+[E2162]
+when = "A WinRM target refuses the user name or password of NTLM authentication"
+text = "{0} does not accept the user name or the password. (NTLM authentication)"
+cause = "The user name or password may be wrong, or Negotiate authentication may be off on the target."
+action = "Write a domain account in on as winrm://CORP\\name@host, and check that Negotiate authentication is on in WinRM on the target."
+
+[E2163]
+when = "The certificate of a WinRM target does not match the registered cert"
+text = "The certificate of {0} does not match cert. (It showed {1})"
+cause = "The certificate of the target may have been replaced, or this may be a different PC."
+action = "Check the certificate of the target with koyomi winrm cert and, if it is right, rewrite cert."
+
+[E2164]
+when = "TLS to a WinRM target fails"
+text = "TLS to {0} failed. ({1})"
+cause = "There may be a problem with the certificate or the TLS settings of the target."
+action = "Check the settings of the WinRM HTTPS listener of the target."
+
+[E2165]
+when = "A WinRM target answers with an error"
+text = "WinRM on {0} answered with an error. ({1})"
+cause = "WinRM on the target refused the request."
+action = "Check the WinRM log of the target and the permissions of the user."
+
+[E2170]
+when = "The server of a mailbox cannot be reached"
+text = "Jobnet {0}, mailbox {1}: cannot connect to the server. ({2})"
+cause = "The address or port of the mail server may be wrong, or the network may have a problem."
+action = "Check the address and port of the mail server and the network."
+
+[E2171]
+when = "TLS to the server of a mailbox fails"
+text = "Jobnet {0}, mailbox {1}: TLS to the server failed. ({2})"
+cause = "There may be a problem with the certificate or the TLS settings of the mail server."
+action = "Check the address and port of the mail server and its certificate."
+
+[E2172]
+when = "Signing in to a mailbox fails"
+text = "Jobnet {0}, mailbox {1}: cannot sign in."
+cause = "The user name or the password may be wrong."
+action = "Check the user name and store the password again with koyomi secret set {2}."
+
+[E2173]
+when = "The folder of a mailbox does not exist"
+text = "Jobnet {0}, mailbox {1}: the folder does not exist."
+cause = "The mail server has no folder of that name."
+action = "Check the name of the folder in mail."
+
+[E2174]
+when = "The secret that holds the password of a mailbox is not stored"
+text = "Jobnet {0}, mailbox {1}: the secret {2} that holds the password does not exist."
+cause = "The credential store has no secret that password refers to."
+action = "Run koyomi secret set {2} and store the password."
+
+[E2175]
+when = "The secret that holds the password of a mailbox cannot be read from the credential store"
+text = "Jobnet {0}, mailbox {1}: cannot read the secret {2} that holds the password. ({3})"
+cause = "The credential store may be unavailable, or it may have refused to read the secret."
+action = "Check the credential store, then store the password again with koyomi secret set {2}."
+
+[E2176]
+when = "A mailbox cannot be read"
+text = "Jobnet {0}, mailbox {1}: cannot read the mailbox. ({2})"
+cause = "Reading the mailbox failed with an error that is not one of the above."
+action = "Check the state of the mail server and the settings of the mailbox."
+
+[E2201]
+when = "Your role does not allow an action"
+text = "User {0} has the {1} role. This action needs the {2} role."
+cause = "The role assigned to the user does not allow this action."
+action = "Ask the administrator of the connection to change the role."
+
+[E2202]
+when = "The role on a jobnet does not allow an action"
+text = "User {0} has the {2} role on jobnet {1}. This action needs the {3} role."
+cause = "The role assigned to the user does not allow this action on this jobnet."
+action = "Ask the administrator of the connection to change the role."
+
+[E2203]
+when = "The user of a token is not in [[http.user]]"
+text = "User {0} is not registered in [[http.user]]."
+cause = "The user of the token is not registered in koyomi.toml of the connection."
+action = "Ask the administrator of the connection to register the user in [[http.user]]."
+
+[E2204]
+when = "A request arrives without a token"
+text = "This request needs a token."
+cause = "The request has no Authorization: Bearer token."
+action = "Give the token of the connection and run it again."
+
+[E2205]
+when = "/door is used in a way other than a token"
+text = "User {0} cannot use /door other than with a token."
+cause = "/door accepts only connections with an Authorization: Bearer token."
+action = "Connect with a token."
+
+[E2206]
+when = "A narrowed user tries to use /door"
+text = "User {0} is narrowed by nets or roles, so cannot use /door."
+cause = "/door cannot cut its answers per jobnet, so it is not allowed to a narrowed user."
+action = "Use the token of a user who is not narrowed."
+
+[E2207]
+when = "An action that /door does not allow is requested"
+text = "User {0} cannot do this through /door."
+cause = "This action is not allowed through /door."
+action = "Do it directly on the PC of the connection."
+
+[E2208]
+when = "A narrowed user asks for an action that covers every jobnet"
+text = "User {0} is narrowed by nets, so cannot do an action that covers every jobnet."
+cause = "This action cannot be limited to certain jobnets, so it is not allowed to a user narrowed by nets."
+action = "Ask the administrator of the connection to have it done by a user who is not narrowed."
+
+[E2209]
+when = "A jobnet outside the nets of a user is proposed"
+text = "User {0} cannot propose jobnet {1}. (Allowed: {2})"
+cause = "The jobnet is outside the nets that the user is allowed."
+action = "Give a jobnet inside the allowed nets."
+
+[E2210]
+when = "Taking over or copying definitions from a connection lacks a role"
+text = "{0} refused the request. The user of the token needs the {1} role."
+cause = "The role of the user of the token is lower than {1}, or the user is narrowed by nets."
+action = "In [http] of the connection, give a user who is not narrowed by nets the {1} role or higher."
+
+[E4101]
+when = "A calendar of that name already exists"
+text = "Calendar {0} already exists."
+cause = "A calendar with that name is already registered."
+action = "Choose a different name."
+
+[E3101]
+when = "A definition is saved or staged while a startup warning is showing"
+text = "The definition cannot be written because a startup warning has not been resolved. ({0})"
+cause = "The engine does not accept writes to definitions while it holds a startup warning."
+action = "Check the warning, resolve it, and try again."
+
+[E3102]
+when = "The jobnet being saved was changed elsewhere after it was opened"
+text = "Jobnet {0} was changed elsewhere."
+cause = "The content of the definition file differs from what the screen opened."
+action = "Load the latest content again, then save again."
+
+[E3103]
+when = "The file open in the editor was changed elsewhere after it was opened (this engine)"
+text = "This file was changed elsewhere since it was opened."
+cause = "Another user or a manual edit rewrote the same file."
+action = "Reloading discards the changes made here. Overwriting discards the other change (what is discarded is kept as a version)."
+
+[E3104]
+when = "The file open in the editor was changed elsewhere after it was opened (another connection)"
+text = "This file was changed elsewhere since it was opened."
+cause = "Another user or a manual edit rewrote the same file."
+action = "Reloading discards the changes made here."
+
+[E3105]
+when = "A new jobnet is saved and a jobnet of the same name was created elsewhere first"
+text = "Jobnet {0} was created elsewhere first."
+cause = "A definition file of that name already exists."
+action = "Close this screen and create the jobnet again under a different name."
+
+[E3106]
+when = "A definition with errors is saved"
+text = "Jobnet {0} has errors in its definition and cannot be saved. ({1})"
+cause = "Checking the definition as a file found errors."
+action = "Fix the errors, then save again."
+
+[E3107]
+when = "A definition with errors is staged as a switch-over"
+text = "Jobnet {0} has errors in its definition and the switch-over cannot be placed. ({1})"
+cause = "Checking the definition as a file found errors."
+action = "Fix the errors, then place it again."
+
+[E3108]
+when = "A switch-over is placed for today or a past date"
+text = "The switch-over date {0} is today or in the past."
+cause = "Only a date after today can be given for a switch-over."
+action = "To use the definition from today, save it normally."
+
+[E3109]
+when = "The switch-over date is not in the right form"
+text = "The switch-over date {0} is not in the right form."
+cause = "The date is not written as YYYY-MM-DD."
+action = "Write the date as YYYY-MM-DD."
+
+[E3110]
+when = "A switch-over is placed for a jobnet that has not been saved (no definition file)"
+text = "Jobnet {0} has no saved definition, so a switch-over cannot be placed."
+cause = "A switch-over can only be placed over a definition that is already saved. A new jobnet has no definition file yet."
+action = "Save the jobnet first, and hold it if needed."
+
+[E3111]
+when = "The jobnet for a switch-over was changed elsewhere after the screen opened it"
+text = "Jobnet {0} was changed elsewhere."
+cause = "The current definition or the staged switch-over differs from what the screen opened."
+action = "Load the latest content again, then place it again."
+
+[E3112]
+when = "A switch-over is placed with the same content as the current definition"
+text = "The content of jobnet {0} is the same as the current definition."
+cause = "The content to switch to has not changed from the current definition."
+action = "Change the definition, then place it again."
+
+[E3113]
+when = "The content to import has problems"
+text = "{0} problems were found, so nothing can be imported."
+cause = "Checking the import plan found problems."
+action = "Check the problems and correct the content to import."
+
+[E3114]
+when = "The definition being edited has errors"
+text = "The definition has errors and cannot be saved."
+cause = "Checking the definition being edited found errors."
+action = "Fix the errors in the list, then save again."
+
+[E3115]
+when = "A staged switch-over cannot be carried out because its definition has errors"
+text = "The staged definition of jobnet {0} has errors, so the switch-over cannot be carried out. ({1})"
+cause = "The definition was checked as a file when the switch-over came due, and errors were found."
+action = "Cancel the staged switch-over, or correct the errors and stage it again."
+
+[E3150]
+when = "A jobnet is created or moved to the group and name of an existing jobnet"
+text = "Jobnet {0} already exists."
+cause = "A jobnet with that group and name is already registered."
+action = "Choose a different name."
+
+[E3151]
+when = "A jobnet is created without a group or a name"
+text = "The group or the name is not given."
+cause = "Both a group and a name are required."
+action = "Enter a group and a name."
+
+[E3152]
+when = "A group or name contains a character that cannot be used"
+text = "The group or the name contains a character that cannot be used."
+cause = "It contains a character a file name cannot hold."
+action = 'Use a name without / \ : * ? " < > | and not ending in a dot.'
+
+[E3153]
+when = "A jobnet is not given in the form group/name"
+text = "The jobnet {0} is not written as group/name."
+cause = "A jobnet is given as the group and the name separated by a /."
+action = "Write it as group/name."
+
+[E3154]
+when = "A jobnet is created while edits in the editor are unsaved"
+text = "A jobnet cannot be created because the edits in progress are not saved."
+cause = "Opening a new jobnet would lose the edits in progress."
+action = "Save or close the edits in progress, then create it again."
+
+[E3155]
+when = "A jobnet used by other jobnets is deleted"
+text = "The jobnet cannot be deleted because other jobnets use it. ({0})"
+cause = "Deleting it would stop the jobnets that use it."
+action = "Fix the jobnets that use it first."
+
+[E3156]
+when = "A file cannot be written from the screen"
+text = "Cannot write to {0}. ({1})"
+cause = "The location may not be writable, or the disk may be full."
+action = "Check the location and its permissions, then try again."
+
+[E3157]
+when = "A folder cannot be created from the screen"
+text = "Cannot create the folder {0}. ({1})"
+cause = "The location may not be writable, or a file of the same name may exist."
+action = "Check the location and its permissions, then try again."
+
+[E3158]
+when = "A file cannot be read"
+text = "Cannot read {0}. ({1})"
+cause = "The file may not exist, or it may not be readable."
+action = "Check the location and permissions of the file, then try again."
+
+[E3159]
+when = "A file cannot be deleted"
+text = "Cannot delete {0}. ({1})"
+cause = "The file may not be deletable, or another program may be using it."
+action = "Check the permissions and use of the file, then try again."
+
+[E3160]
+when = "A file of unknown encoding is read"
+text = "{0} is neither UTF-8 nor UTF-16 and cannot be read."
+cause = "Only UTF-8 and UTF-16 files can be read."
+action = "Save the file as UTF-8 again."
+
+[E3161]
+when = "The list of jobnets cannot be fetched"
+text = "The list of jobnets cannot be fetched. ({0})"
+cause = "The engine may not be running, or the connection may have failed."
+action = "Check that the engine of the connection is running."
+
+[E4102]
+when = "A calendar is created or handled without a name"
+text = "The name of the calendar is not given."
+cause = "Every calendar action needs a name."
+action = "Enter a name."
+
+[E4103]
+when = "A calendar name contains a character that cannot be used"
+text = "The calendar name {0} contains a character that cannot be used."
+cause = "It contains a character a file name cannot hold."
+action = 'Use a name without / \ : * ? " < > | and not ending in a dot.'
+
+[E4104]
+when = "A calendar that does not exist is named"
+text = "Calendar {0} does not exist."
+cause = "The calendars folder has no file of that name."
+action = "Check the name, or create the calendar."
+
+[E4105]
+when = "A calendar was changed or deleted elsewhere after it was read"
+text = "Calendar {0} was changed elsewhere."
+cause = "The content of the calendar file differs from what was read."
+action = "Load the latest content again, then try again."
+
+[E4106]
+when = "A calendar holds a field that is not known"
+text = "Calendar {0} has an unknown field {1}."
+cause = "The calendar file holds a field this version does not know."
+action = "Check the field name and correct it."
+
+[E4107]
+when = "A calendar file cannot be read as TOML"
+text = "The text of calendar {0} is not valid TOML. ({1})"
+cause = "The file has a syntax error."
+action = "Correct the text of the file."
+
+[E4108]
+when = "A calendar has no format"
+text = "Calendar {0} has no format."
+cause = "A calendar file needs the line format = 1."
+action = "Add format = 1 at the top of the file."
+
+[E4109]
+when = "The format of a calendar is one this version cannot read"
+text = "The format of calendar {0} cannot be read by this version."
+cause = "The only format this version reads is 1."
+action = "Change it to format = 1."
+
+[E4110]
+when = "The holidays of a calendar holds a value that cannot be used"
+text = "The holidays of calendar {0} holds a value that cannot be used."
+cause = "Only japan or none can be given for holidays."
+action = 'Change it to "japan" or "none".'
+
+[E4111]
+when = "A weekday or a date of a calendar cannot be read"
+text = "Cannot read {1} of calendar {0}. ({2})"
+cause = "A weekday name or a date is not written correctly."
+action = "Write a weekday as one of mon, tue, wed, thu, fri, sat, sun, and a date as 2026-11-30."
+
+[E4112]
+when = "An item of closed or open is neither a date nor a table with date"
+text = "An item of {1} in calendar {0} is not valid."
+cause = "An item can only be a date or a table with date. The name is optional, and no other key is allowed."
+action = 'Write a date, or { date = 2026-11-20, name = "Founding day" }.'
+
+[E4113]
+when = "A calendar is renamed to the name it already has"
+text = "The old and the new name of calendar {0} are the same."
+cause = "The new name is the same as the current name."
+action = "Choose a different name."
+
+[W4114]
+when = "A calendar is deleted or renamed while jobnets refer to it"
+text = "Jobnets that say calendar = \"{0}\" are not changed, and stay invalid until you fix them. ({1})"
+cause = "The calendar named in a jobnet's file is not rewritten automatically."
+action = "In the files of those jobnets, correct the calendar setting."
+
+[E4150]
+when = "The holiday table has a date that cannot be read"
+text = "Cannot read the date {1} on line {0} of the holiday table."
+cause = "The date in the holiday table is not written as year/month/day."
+action = "Place syukujitsu.csv of the Cabinet Office's 'National Holidays' as it is."
+
+[E4151]
+when = "A table with no holidays is imported"
+text = "The holiday table has no holidays."
+cause = "The file read has no line with a date."
+action = "Give syukujitsu.csv of the Cabinet Office's 'National Holidays'."
+
+[W4152]
+when = "The holiday table is about to end"
+text = "The holiday table covers up to {0} ({1} days left)."
+cause = "The last date in the table is near."
+action = "Place syukujitsu.csv of the Cabinet Office's 'National Holidays' in calendars/ to renew the table."
+
+[W4153]
+when = "The holiday table is past its end"
+text = "The holiday table is out of date (up to {0}). Days after that are not run."
+cause = "The last date in the table has passed."
+action = "Place syukujitsu.csv of the Cabinet Office's 'National Holidays' in calendars/ to renew the table."
+
+[E4154]
+when = "A holiday table is imported without a path"
+text = "The path of the holiday table to import is not given."
+cause = "The path of the file to import is required."
+action = "Enter the path."

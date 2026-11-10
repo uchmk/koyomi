@@ -506,6 +506,8 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
             Ok(parsed) => {
                 cals.map.insert(c.name.clone(), parsed);
             }
+            // A coded line stays first (as `Problem::in_file` does), the place goes last.
+            Err(e) if crate::msg::is_coded(&e) => problems.push(format!("{e}（calendars/{}.toml）", c.name)),
             Err(e) => problems.push(format!("calendars/{}.toml: {e}", c.name)),
         }
         let old = current.calendars.get(&c.name).cloned();
@@ -758,6 +760,21 @@ mod tests {
         assert_eq!(p.problems(), 2, "{:?}", p.lines());
         assert!(p.lines().iter().any(|l| l.contains("総務/壊れ.toml") && l.contains("rnu")));
         assert!(p.lines().iter().any(|l| l.contains("子ジョブネットがない: 無い/子")));
+    }
+
+    #[test]
+    fn a_calendar_that_does_not_read_keeps_its_id_first_and_its_file_last() {
+        let s = src();
+        let mut b = export(&s, &Pick { all: true, ..Default::default() }).unwrap();
+        b.calendars[0].text = "format = 1
+rnu = 1
+"
+        .to_owned();
+        let name = b.calendars[0].name.clone();
+        let p = plan(&b, &s, Some(Conflict::Overwrite));
+        let line = p.items.iter().flat_map(|i| &i.problems).find(|l| l.contains(&format!("calendars/{name}.toml"))).expect("a problem");
+        assert!(crate::msg::is_coded(line), "{line}");
+        assert!(line.ends_with(&format!("（calendars/{name}.toml）")), "{line}");
     }
 
     #[test]

@@ -23,6 +23,7 @@ use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use koyomi_core::chore::{self, Pass, Sftp, GROUP_MAX, NO_EXIT};
 use koyomi_core::config::Member;
+use koyomi_core::msg::{self, line};
 
 /// The longest piece of output kept waiting for its line's end: past it, it is
 /// passed on as a line of its own.
@@ -61,7 +62,7 @@ pub(crate) fn run(exec: impl FnOnce(&AtomicBool) -> Result<i32, String>) -> i32 
         Ok(code) => code,
         Err(reason) => {
             // To stdout, so the job's log keeps it in order with the rest.
-            crate::say(&format!("! {reason}"), false);
+            crate::say(&if msg::is_coded(&reason) { reason.clone() } else { format!("! {reason}") }, false);
             if let Some(path) = std::env::var_os("KOYOMI_REASON") {
                 let _ = std::fs::write(path, &reason);
             }
@@ -91,7 +92,8 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     }
     let far = chore::ssh(&on).ok_or_else(|| format!("on は ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く: {on}"))??;
     let host_key = host_key.ok_or("host_key がない（koyomi sftp hostkey <ホスト> で調べる）")?;
-    one(&far, host_key, &command, stop, &say).map_err(|e| format!("{}: {e}", far.host))
+    // A coded reason already names the host and keeps its ID at the head.
+    one(&far, host_key, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })
 }
 
 /// Runs `command` on `far`, its lines to `out`: its exit code, or why there is
@@ -116,7 +118,11 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
     }
     let exit = result.map_err(|e| match e {
         ito_sftp::Error::Stopped => STOPPED.to_owned(),
-        ito_sftp::Error::Connect(m) => format!("接続できません: {}", connect_text(&m)),
+        ito_sftp::Error::Connect(m) => line(msg::SSH_CONNECT, &[&far.host, &connect_text(&m)]),
+        ito_sftp::Error::AuthRefused => line(msg::SSH_AUTH_REFUSED, &[&far.host]),
+        ito_sftp::Error::HostKeyMismatch { expected, actual } => line(msg::SSH_HOST_KEY_MISMATCH, &[&far.host, &expected, &actual]),
+        ito_sftp::Error::Lost(m) => line(msg::LINK_LOST, &[&far.host, &m]),
+        ito_sftp::Error::Timeout => line(msg::LINK_TIMED_OUT, &[&far.host]),
         e => e.to_string(),
     })?;
     if !exit.env_refused.is_empty() {
@@ -126,20 +132,20 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
     outcome(exit.status, exit.signal)
 }
 
-/// A connect failure in one plain Japanese line. ito-sftp passes the library's Debug text for a
-/// refused connection (`Io(Os { code: 10061, kind: ConnectionRefused, .. })`); that is not shown.
+/// A connect failure in a few plain Japanese words, for the hole of E2150. ito-sftp passes the library's
+/// Debug text for a refused connection (`Io(Os { code: 10061, kind: ConnectionRefused, .. })`); that is not shown.
 fn connect_text(m: &str) -> String {
     let has = |k: &str| m.contains(k);
     if has("ConnectionRefused") || has("10061") || has("os error 111") {
-        "相手が断った（ポートが閉じている、または sshd が動いていない）".to_owned()
+        "接続を断られた".to_owned()
     } else if has("TimedOut") || has("10060") {
-        "時間切れ（相手に届かない）".to_owned()
+        "時間切れ".to_owned()
     } else if has("Unreachable") || has("10051") || has("10065") {
-        "相手までの道がない（ネットワークを見る）".to_owned()
+        "ネットワークに届かない".to_owned()
     } else if has("NotFound") || has("failed to lookup") || has("11001") {
         "ホスト名が引けない".to_owned()
     } else if has("Io(") || has("Os {") || has("kind:") {
-        "つながらなかった（相手のアドレスとポート、sshd を見る）".to_owned()
+        "接続できなかった".to_owned()
     } else {
         m.to_owned()
     }
@@ -272,7 +278,8 @@ fn verdict(labels: &[String], results: Vec<Result<i32, String>>, pass: Pass) -> 
     if let Some(Ok(code)) = pick {
         return Ok(*code);
     }
-    let failed: Vec<String> = labels.iter().zip(&results).filter_map(|(l, r)| r.as_ref().err().map(|e| format!("{l}: {e}"))).collect();
+    let failed: Vec<String> =
+        labels.iter().zip(&results).filter_map(|(l, r)| r.as_ref().err().map(|e| format!("{l}: {}", msg::uncoded(e)))).collect();
     let mut why = format!("{} 台のうち {} 台が終了コードなしで終わった: ", results.len(), failed.len());
     why += &failed.iter().take(SHOWN).cloned().collect::<Vec<_>>().join(" / ");
     if failed.len() > SHOWN {
@@ -428,9 +435,9 @@ mod tests {
     fn a_refused_connection_is_said_in_plain_japanese() {
         let debug = "Io(Os { code: 10061, kind: ConnectionRefused, message: \"x\" })";
         let t = connect_text(debug);
-        assert!(t.contains("断った") && !t.contains("Os {") && !t.contains("Io("), "{t}");
+        assert!(t.contains("断られた") && !t.contains("Os {") && !t.contains("Io("), "{t}");
         assert_eq!(connect_text("時間切れ"), "時間切れ");
-        assert!(connect_text("Io(Weird { kind: Other })").starts_with("つながらなかった"));
+        assert!(connect_text("Io(Weird { kind: Other })").starts_with("接続できなかった"));
     }
 
     #[test]

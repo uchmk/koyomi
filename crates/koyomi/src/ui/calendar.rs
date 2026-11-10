@@ -178,7 +178,7 @@ impl Browser {
                 // Just made, renamed or deleted: what was done; a file there is one the engine has
                 // not read yet.
                 Some(Ok(done)) => ui.label(egui::RichText::new(done).color(c.dim)),
-                _ => ui.label(egui::RichText::new(t.trf("calendar.missing", &[&name])).color(c.err)),
+                _ => ui.label(egui::RichText::new(koyomi_core::msg::line(koyomi_core::msg::CAL_MISSING, &[&name])).color(c.err)),
             };
             return;
         };
@@ -1155,7 +1155,7 @@ impl Browser {
                         let change = CalendarChange::Edit(name_edit(name.to_owned(), day, cal.day(day), text.trim().to_owned()));
                         self.send_calendar(name, change);
                     }
-                    Inline::Table { path, .. } => match import_table(t, &path) {
+                    Inline::Table { path, .. } => match import_table(&path) {
                         Ok(request) => {
                             self.send(request);
                         }
@@ -1227,7 +1227,7 @@ impl Browser {
         let rows = [(t.tr("calendar.heading").to_owned(), format!("calendars/{name}.toml"))];
         let mut body = vec![t.trf("newcal.delete_ask", &[&name])];
         if !users.is_empty() {
-            body.push(t.trf("calendar.users_left", &[&name, &users.join(", ")]));
+            body.push(koyomi_core::msg::line(koyomi_core::msg::CAL_USERS_LEFT, &[&name, &users.join(", ")]));
         }
         let buttons = [t.tr("delete.yes").to_owned(), t.tr("make.cancel").to_owned()];
         let q = ito_confirm::Question {
@@ -1304,7 +1304,7 @@ impl Browser {
                     });
                 });
                 if let (Some(from), false) = (&m.from, users.is_empty()) {
-                    let line = t.trf("calendar.users_left", &[from, &users.join(", ")]);
+                    let line = koyomi_core::msg::line(koyomi_core::msg::CAL_USERS_LEFT, &[from, &users.join(", ")]);
                     ui.add(egui::Label::new(egui::RichText::new(line).color(c.wait_text())).wrap());
                 }
                 if let Some(e) = &m.error {
@@ -1317,7 +1317,7 @@ impl Browser {
             return;
         }
         match pressed.or(key) {
-            Some(0) => self.new_cal_go(t),
+            Some(0) => self.new_cal_go(),
             Some(_) => self.new_cal = None,
             None => {}
         }
@@ -1325,7 +1325,7 @@ impl Browser {
 
     /// The box's 作る: asks the engine to write the file (or rename it). Nothing is overwritten: the engine
     /// refuses a name that is there. The box stays open, with its button off, until the answer comes.
-    pub(super) fn new_cal_go(&mut self, t: &ito_i18n::Table) {
+    pub(super) fn new_cal_go(&mut self) {
         let Some(m) = &mut self.new_cal else { return };
         if m.waiting {
             return;
@@ -1335,11 +1335,11 @@ impl Browser {
         let from = m.from.clone();
         let have = have.filter(|h| from.as_deref().is_none_or(|f| !f.eq_ignore_ascii_case(h)));
         let request = match new_name(&m.name, have) {
-            Err(Why::Empty) => Err(t.tr("newcal.empty").to_owned()),
-            Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
-            Err(Why::Exists(n)) => Err(t.trf("make.exists", &[n.as_str()])),
+            Err(Why::Empty) => Err(koyomi_core::msg::line(koyomi_core::msg::CAL_NAME_EMPTY, &[])),
+            Err(Why::Bad) => Err(koyomi_core::msg::line(koyomi_core::msg::CAL_NAME_BAD, &[m.name.trim()])),
+            Err(Why::Exists(n)) => Err(koyomi_core::msg::line(koyomi_core::msg::CALENDAR_EXISTS, &[n.as_str()])),
             Ok(name) => match &from {
-                Some(f) if *f == name => Err(t.trf("make.exists", &[&name])),
+                Some(f) if *f == name => Err(koyomi_core::msg::line(koyomi_core::msg::CAL_SAME_NAME, &[&name])),
                 Some(f) => Ok(Request::CalendarRename { from: f.clone(), to: name }),
                 None => Ok(Request::CalendarPut { name, text: new_text(m.holidays, &days_off(m.off)), base_sha256: None }),
             },
@@ -1352,7 +1352,7 @@ impl Browser {
                 if let Some(m) = &mut self.new_cal {
                     m.waiting = sent;
                     if !sent {
-                        m.error = Some(t.tr("newcal.not_sent").to_owned());
+                        m.error = Some(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[]));
                     }
                 }
             }
@@ -1562,14 +1562,14 @@ fn name_edit(name: String, d: NaiveDate, shown: Day, label: String) -> EditFn {
 
 /// 祝日の表を取り込む: the file at `path` (quotes from コピー as path are taken off) is read here and must
 /// read as a table; the request that makes the engine write it.
-fn import_table(t: &ito_i18n::Table, path: &str) -> Result<Request, String> {
+fn import_table(path: &str) -> Result<Request, String> {
     let path = path.trim().trim_matches('"');
-    let failed = |e: &str| t.trf("calendar.table_failed", &[path, e]);
     if path.is_empty() {
-        return Err(t.tr("calendar.table_empty").to_owned());
+        return Err(koyomi_core::msg::line(koyomi_core::msg::TABLE_PATH_EMPTY, &[]));
     }
-    let bytes = std::fs::read(path).map_err(|e| failed(&e.to_string()))?;
-    Table::parse(&Table::decode(&bytes)).map_err(|e| failed(&e))?;
+    let bytes = std::fs::read(path).map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[path, &e.to_string()]))?;
+    // The table's own refusal is already a coded line.
+    Table::parse(&Table::decode(&bytes))?;
     Ok(Request::HolidayTable { bytes })
 }
 

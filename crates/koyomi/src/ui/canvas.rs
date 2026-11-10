@@ -1664,7 +1664,7 @@ impl Editor {
                 }
             }
             if !self.problems.is_empty() {
-                let head = t.tr("canvas.problems");
+                let head = &koyomi_core::msg::say(koyomi_core::msg::EDITOR_PROBLEMS, &[]).short();
                 let r = ui.colored_label(c.err, Mark::Error.marked(head));
                 ito_a11y::say(&r, Role::Label, head);
                 let mut go = None;
@@ -2390,7 +2390,10 @@ mod tests {
         e.net.calendar = Some("会社".into());
         let found = e.check(&[], &BTreeMap::new());
         assert_eq!(found.len(), 1, "{found:?}");
-        assert!(found[0].starts_with("経理/集計.toml") && found[0].contains("会社"), "{found:?}");
+        assert!(
+            koyomi_core::msg::CAL_MISSING.is_in(&found[0]) && found[0].contains("会社") && found[0].ends_with("（経理/集計.toml）"),
+            "{found:?}"
+        );
         let cals = BTreeMap::from([("会社".to_owned(), Calendar::default())]);
         assert!(e.check(&[], &cals).is_empty());
         let mut e = two();

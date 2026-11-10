@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use ito_http::client::{self, Client};
 use koyomi_core::config;
+use koyomi_core::msg::{self, line};
 use koyomi_core::standby::{Ask, Heard, Hold};
 
 /// What one ask heard, and what a person should see.
@@ -64,7 +65,7 @@ impl Primary {
             self.note = None;
         }
         self.note = match (cfg, &remote) {
-            (Some(c), None) => Some(format!("[[remote]] に {} がない。聞けないので、この PC で流す", c.standby.trim())),
+            (Some(c), None) => Some(line(msg::PRIMARY_STANDBY_UNKNOWN, &[c.standby.trim()])),
             _ => self.note.take().filter(|_| remote.is_some()),
         };
         self.cfg = cfg.cloned();
@@ -148,7 +149,8 @@ impl Primary {
 
     pub fn notes(&self) -> Vec<String> {
         let name = self.cfg.as_ref().map(|c| c.standby.trim()).unwrap_or_default();
-        self.note.iter().map(|n| format!("[primary] {name}: {n}")).collect()
+        // A coded note names the connection and keeps its ID at the head.
+        self.note.iter().map(|n| if msg::is_coded(n) { n.clone() } else { format!("[primary] {name}: {n}") }).collect()
     }
 
     /// Why a time or an event does not start here while the standby runs them.
@@ -186,16 +188,16 @@ enum Said {
     Unclear(String),
 }
 
-fn said(health: &serde_json::Value) -> Said {
+fn said(name: &str, health: &serde_json::Value) -> Said {
     let ha = &health["ha"];
     if ha["role"] != "standby" {
-        return Said::Unclear("向こうに [standby] がない（または koyomi が古い）".to_owned());
+        return Said::Unclear(line(msg::NO_STANDBY_THERE, &[name]));
     }
     match (ha["active"].as_bool(), ha["ready"].as_bool()) {
         (Some(false), _) => Said::Idle,
         (Some(true), Some(true)) => Said::Ready,
         (Some(true), _) => Said::Active(ha["why"].as_str().map(str::to_owned)),
-        (None, _) => Said::Unclear("向こうの ha が読めない".to_owned()),
+        (None, _) => Said::Unclear(line(msg::HA_UNREADABLE, &[name])),
     }
 }
 
@@ -203,22 +205,20 @@ fn ask(r: &config::Remote) -> Asked {
     let name = r.secret();
     let token = match ito_secret::get("koyomi", name) {
         Ok(Some(t)) => t,
-        Ok(None) => return (Heard::Unclear, Some(format!("token の秘密 {name} がない（koyomi secret set {name}）。聞けていない"))),
-        Err(e) => return (Heard::Unclear, Some(format!("token の秘密 {name} が読めない（{e}）。聞けていない"))),
+        Ok(None) => return (Heard::Unclear, Some(line(msg::TOKEN_SECRET_MISSING, &[&r.name, name]))),
+        Err(e) => return (Heard::Unclear, Some(line(msg::TOKEN_SECRET_UNREADABLE, &[&r.name, name, &e.to_string()]))),
     };
     let c = match Client::new(r.url.trim(), r.fingerprint.trim(), token) {
         Ok(c) => c,
-        Err(e) => return failed(e, Heard::Unclear),
+        Err(e) => return failed(&r.name, e, Heard::Unclear),
     };
     let health = match c.get("/health") {
         Ok(h) if h.status == 200 => h,
-        Ok(h) if h.status == 401 => {
-            return (Heard::Unclear, Some(format!("token が合わない（向こうの [http] の利用者と koyomi secret set {name} を見る）")))
-        }
-        Ok(h) => return (Heard::Unclear, Some(format!("/health が {} を返した", h.status))),
-        Err(e) => return failed(e, Heard::Unclear),
+        Ok(h) if h.status == 401 => return (Heard::Unclear, Some(line(msg::TOKEN_REFUSED, &[&r.name, name]))),
+        Ok(h) => return (Heard::Unclear, Some(line(msg::UNEXPECTED_STATUS, &[&r.name, &format!("/health {}", h.status)]))),
+        Err(e) => return failed(&r.name, e, Heard::Unclear),
     };
-    match said(&health.json) {
+    match said(&r.name, &health.json) {
         Said::Idle => (Heard::Idle, None),
         Said::Active(why) => (Heard::Active, why),
         Said::Unclear(why) => (Heard::Unclear, Some(why)),
@@ -226,26 +226,27 @@ fn ask(r: &config::Remote) -> Asked {
         // waits, so the schedules never run on both.
         Said::Ready => match c.post_json("/standby/release", &serde_json::json!({})) {
             Ok(reply) if reply.status == 200 => (Heard::Idle, None),
-            Ok(reply) if reply.status == 403 => {
-                (Heard::Active, Some("引き取れない: 向こうでこの token に run のロールが要る（nets のない利用者で）".to_owned()))
-            }
+            Ok(reply) if reply.status == 403 => (Heard::Active, Some(line(msg::HANDOVER_REFUSED, &[&r.name, "run"]))),
             Ok(reply) => (
                 Heard::Active,
-                Some(reply.json["error"].as_str().map_or_else(|| format!("引き取れない（{}）", reply.status), str::to_owned)),
+                // The standby's own line (an engine from before the IDs sends plain text) goes through as it is.
+                Some(reply.json["error"].as_str().map_or_else(
+                    || line(msg::UNEXPECTED_STATUS, &[&r.name, &format!("/standby/release {}", reply.status)]),
+                    str::to_owned,
+                )),
             ),
-            Err(e) => failed(e, Heard::Active),
+            Err(e) => failed(&r.name, e, Heard::Active),
         },
     }
 }
 
 /// No connection, or TLS that does not finish: nobody there. Anything else is `otherwise`.
-fn failed(e: client::Error, otherwise: Heard) -> Asked {
-    match e {
-        client::Error::Connect(s) => (Heard::Nobody, Some(format!("つながらない: {s}"))),
-        client::Error::Tls(s) => (Heard::Nobody, Some(format!("TLS が通らない: {s}"))),
-        client::Error::Fingerprint(got) => (otherwise, Some(format!("証明書が fingerprint と違う（今見えたのは {got}）"))),
-        e => (otherwise, Some(e.to_string())),
-    }
+fn failed(name: &str, e: client::Error, otherwise: Heard) -> Asked {
+    let heard = match e {
+        client::Error::Connect(_) | client::Error::Tls(_) => Heard::Nobody,
+        _ => otherwise,
+    };
+    (heard, Some(crate::remote::reason(name, &e)))
 }
 
 #[cfg(test)]
@@ -254,8 +255,8 @@ mod tests {
 
     #[test]
     fn the_standby_says_whether_it_lets_go() {
-        let ha = |v: serde_json::Value| said(&serde_json::json!({ "ok": true, "ha": v }));
-        assert!(matches!(said(&serde_json::json!({ "ok": true })), Said::Unclear(_)));
+        let ha = |v: serde_json::Value| said("pc2", &serde_json::json!({ "ok": true, "ha": v }));
+        assert!(matches!(said("pc2", &serde_json::json!({ "ok": true })), Said::Unclear(_)));
         assert!(matches!(ha(serde_json::json!({ "role": "primary", "hold": "running" })), Said::Unclear(_)));
         assert_eq!(ha(serde_json::json!({ "role": "standby", "active": false, "ready": false })), Said::Idle);
         assert_eq!(ha(serde_json::json!({ "role": "standby", "active": true, "ready": true })), Said::Ready);
@@ -267,10 +268,10 @@ mod tests {
 
     #[test]
     fn only_no_answer_is_nobody() {
-        assert_eq!(failed(client::Error::Connect("refused".into()), Heard::Active).0, Heard::Nobody);
-        assert_eq!(failed(client::Error::Tls("eof".into()), Heard::Unclear).0, Heard::Nobody);
-        assert_eq!(failed(client::Error::Fingerprint("x".into()), Heard::Active).0, Heard::Active);
-        assert_eq!(failed(client::Error::Fingerprint("x".into()), Heard::Unclear).0, Heard::Unclear);
+        assert_eq!(failed("pc2", client::Error::Connect("refused".into()), Heard::Active).0, Heard::Nobody);
+        assert_eq!(failed("pc2", client::Error::Tls("eof".into()), Heard::Unclear).0, Heard::Nobody);
+        assert_eq!(failed("pc2", client::Error::Fingerprint("x".into()), Heard::Active).0, Heard::Active);
+        assert_eq!(failed("pc2", client::Error::Fingerprint("x".into()), Heard::Unclear).0, Heard::Unclear);
     }
 
     #[test]
@@ -292,7 +293,7 @@ mod tests {
         let cfg = config::Primary { standby: "pc2".into(), every: "20s".into(), misses: 3 };
         p.set(Some(&cfg), &[]);
         assert_eq!(p.hold(), None);
-        assert!(p.notes()[0].contains("[[remote]] に pc2 がない"));
+        assert!(msg::PRIMARY_STANDBY_UNKNOWN.is_in(&p.notes()[0]) && p.notes()[0].contains("pc2"), "{:?}", p.notes());
         let r =
             config::Remote { name: "pc2".into(), url: "https://pc2:8790".into(), fingerprint: "AB".repeat(32), token: "secret:pc2".into() };
         p.set(Some(&cfg), std::slice::from_ref(&r));

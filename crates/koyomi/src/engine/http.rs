@@ -51,6 +51,7 @@ use std::time::{Duration, Instant};
 
 use ito_http::{Response, Server};
 use koyomi_core::config;
+use koyomi_core::msg::{self, line};
 use koyomi_core::role::{self, Access, Nets, Role};
 use koyomi_core::run::{Run, State};
 use serde::Deserialize;
@@ -382,8 +383,9 @@ fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap
 fn within(req: &ito_http::Request, access: &Access, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let needs = role::needs(&req.method, &req.path);
     let refused = RefCell::new(None);
+    let who = req.who.as_deref().unwrap_or_default();
     let narrowed = |r: &Request| {
-        narrow(r, access, needs, &ask).unwrap_or_else(|e| {
+        narrow(r, who, access, needs, &ask).unwrap_or_else(|e| {
             *refused.borrow_mut() = Some(e.clone());
             Err(e)
         })
@@ -407,6 +409,7 @@ fn within(req: &ito_http::Request, access: &Access, ask: impl Fn(&Request) -> Re
 /// role there must reach `needs`; what is no one net's needs it of `role`.
 fn narrow(
     r: &Request,
+    who: &str,
     access: &Access,
     needs: Role,
     ask: &impl Fn(&Request) -> Result<String, String>,
@@ -416,7 +419,7 @@ fn narrow(
         if has.allows(needs) {
             Ok(())
         } else {
-            Err(format!("{id} では {has} のロール。これには {needs} が要る"))
+            Err(line(msg::ROLE_TOO_LOW_ON_NET, &[who, id, has.name(), needs.name()]))
         }
     };
     let all = access.nets.is_none();
@@ -460,7 +463,7 @@ fn narrow(
         }
         Request::Propose { id, .. } => {
             let within = access.nets.as_ref().map(|n| n.patterns().join("・")).unwrap_or_default();
-            return Err(format!("nets の外なので出せない: {id}（出せるのは {within}）"));
+            return Err(line(msg::OUTSIDE_NETS, &[who, id, &within]));
         }
         Request::Kill { run, .. } | Request::Rerun { run, .. } | Request::Skip { run, .. } | Request::Log { run, .. } => {
             match run_net(run, ask) {
@@ -471,9 +474,9 @@ fn narrow(
                 _ => Err(format!("実行がない: {run}")),
             }
         }
-        _ if !all => return Err("nets で絞った利用者にはできない（全部のネットにかかる）".to_owned()),
+        _ if !all => return Err(line(msg::NARROWED_ALL_NETS, &[who])),
         _ if access.role.allows(needs) => ask(r),
-        _ => return Err(format!("ネットごとでないものは {} のロール。これには {needs} が要る", access.role)),
+        _ => return Err(line(msg::ROLE_TOO_LOW, &[who, access.role.name(), needs.name()])),
     })
 }
 
@@ -503,10 +506,10 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
     }
     let who = req.who.as_deref().unwrap_or_default();
     if !bearer_of(req, &gate.tokens) {
-        return Some(Response::error(403, &format!("{who}: /door は token（Authorization: Bearer）でだけ使える")));
+        return Some(Response::error(403, &line(msg::DOOR_NEEDS_TOKEN, &[who])));
     }
     if gate.access.contains_key(who) {
-        return Some(Response::error(403, &format!("{who}: nets か roles で絞った利用者は /door を使えない")));
+        return Some(Response::error(403, &line(msg::DOOR_REFUSED_NARROWED, &[who])));
     }
     let body = match req.json::<serde_json::Value>() {
         Ok(Some(v)) => v,
@@ -520,7 +523,7 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
         return Some(Response::new(
             409,
             serde_json::json!({
-                "error": format!("窓とエンジンの版が違う（窓 {sent}、エンジン {}）", proto::PROTO),
+                "error": line(msg::PROTOCOL_MISMATCH, &[&sent.to_string(), &proto::PROTO.to_string()]),
                 "proto": proto::PROTO,
                 "version": env!("CARGO_PKG_VERSION"),
             }),
@@ -534,12 +537,12 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
         Err(e) => return Some(Response::error(400, &format!("request が読めない: {e}"))),
     };
     let Some(needs) = proto::door_needs(&request) else {
-        return Some(Response::error(403, &format!("{who}: これは /door からはできない")));
+        return Some(Response::error(403, &line(msg::DOOR_NOT_ALLOWED, &[who])));
     };
     match gate.roles.get(who).copied() {
         Some(has) if has.allows(needs) => {}
-        Some(has) => return Some(Response::error(403, &format!("{who} は {has} のロール。これには {needs} が要る"))),
-        None => return Some(Response::error(403, &format!("{who} は [[http.user]] にない"))),
+        Some(has) => return Some(Response::error(403, &line(msg::ROLE_TOO_LOW, &[who, has.name(), needs.name()]))),
+        None => return Some(Response::error(403, &line(msg::USER_UNKNOWN, &[who]))),
     }
     Some(Response::ok(match ask(&request) {
         Ok(text) => serde_json::json!({ "ok": true, "text": text }),
@@ -564,7 +567,7 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 /// A refusal when the caller's role does not reach what the request needs; `None` lets it through.
 fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Response> {
     let Some(who) = req.who.as_deref() else {
-        return Some(Response::error(401, "token が要る"));
+        return Some(Response::error(401, &line(msg::TOKEN_REQUIRED, &[])));
     };
     let has = roles.get(who).copied();
     // A wrong method on a known path is 405 whatever the role: [`handle`] answers it.
@@ -574,8 +577,8 @@ fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Re
     let needs = role::needs(&req.method, &req.path);
     match has {
         Some(has) if has.allows(needs) => None,
-        Some(has) => Some(Response::error(403, &format!("{who} は {has} のロール。これには {needs} が要る"))),
-        None => Some(Response::error(403, &format!("{who} は [[http.user]] にない"))),
+        Some(has) => Some(Response::error(403, &line(msg::ROLE_TOO_LOW, &[who, has.name(), needs.name()]))),
+        None => Some(Response::error(403, &line(msg::USER_UNKNOWN, &[who]))),
     }
 }
 
@@ -962,7 +965,7 @@ fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Str
             let confirmed = text.starts_with("置いた（確認済み");
             Response::ok(serde_json::json!({ "net": id, "confirmed": confirmed, "said": text.trim() }))
         }
-        Err(e) if e.starts_with("ほかで変わっています") => Response::error(409, &e),
+        Err(e) if koyomi_core::msg::SAVE_CHANGED_ELSEWHERE.is_in(&e) => Response::error(409, &e),
         Err(e) => Response::error(422, &e),
     }
 }
@@ -1110,7 +1113,7 @@ mod tests {
         // What this does not name, or what is about every net, is refused.
         for r in [Request::Pause, Request::Stop, Request::Delete { id: "経理/a".into() }, Request::Ops { from: "a".into(), to: "b".into() }]
         {
-            assert!(narrow(&r, &nets, Role::Edit, &ask).is_err(), "{r:?}");
+            assert!(narrow(&r, "sato", &nets, Role::Edit, &ask).is_err(), "{r:?}");
         }
         // With no `nets`, every net, as before, and no role per net.
         let all = handle(&req("GET", "/nets", ""), ask);
@@ -1235,7 +1238,8 @@ mod tests {
         assert_eq!(go(&sato, "POST", "/runs", r#"{"net": "経理/a"}"#, &[]).status, 202);
         let r = go(&sato, "POST", "/runs", r#"{"net": "人事/b"}"#, &[]);
         assert_eq!(r.status, 403, "{:?}", r.json);
-        assert!(r.json["error"].as_str().unwrap_or_default().contains("人事/b では view のロール"), "{:?}", r.json);
+        let said = r.json["error"].as_str().unwrap_or_default();
+        assert!(msg::ROLE_TOO_LOW_ON_NET.is_in(said) && said.contains("人事/b") && said.contains("view"), "{:?}", r.json);
         assert_eq!(go(&sato, "GET", "/nets/text", "", &[("net", "経理/a")]).status, 403);
         assert_eq!(go(&sato, "POST", "/nets/hold", r#"{"net": "人事/b"}"#, &[]).status, 403);
         assert_eq!(go(&sato, "POST", "/runs/20261031-090000-02/stop", "", &[]).status, 403);
@@ -1338,7 +1342,9 @@ mod tests {
                     };
                     Ok(toml::to_string(&def).expect("def"))
                 }
-                Request::Propose { base_sha256: Some(b), .. } if b == "old" => Err("ほかで変わっています: g/a".to_owned()),
+                Request::Propose { base_sha256: Some(b), .. } if b == "old" => {
+                    Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &["g/a"]))
+                }
                 Request::Propose { text, .. } if text.contains("bad") => Err("保存できない:\nx".to_owned()),
                 Request::Propose { text, .. } if text.contains("same") => Ok("置いた（確認済みと同じ中身）: g/a\n".to_owned()),
                 Request::Propose { .. } => Ok("置いた（未確認。この PC の窓で確認するまで動かない）: g/a\n".to_owned()),
@@ -1853,7 +1859,7 @@ high_contrast = true
         let (code, json, seen) = through(&g, &at_door("root", true, &old));
         assert_eq!(code, 409);
         assert_eq!(json["proto"], serde_json::json!(proto::PROTO));
-        assert!(json["error"].as_str().is_some_and(|e| e.contains("版が違う")) && json["version"].is_string());
+        assert!(json["error"].as_str().is_some_and(|e| msg::PROTOCOL_MISMATCH.is_in(e)) && json["version"].is_string());
         assert!(seen.is_empty());
         for body in
             ["", "{", "{\"request\": \"Status\"}", &format!("{{\"proto\": {}}}", proto::PROTO), &door_body(serde_json::json!("Nope"))]

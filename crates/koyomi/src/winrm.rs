@@ -15,6 +15,7 @@ use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
 use koyomi_core::chore::{self, Sftp, WinrmAuth, WINRM_PORT};
+use koyomi_core::msg::{self, line};
 
 use crate::ssh::{cut, say, text};
 
@@ -45,8 +46,9 @@ fn cert(at: &str) -> i32 {
     };
     // The connection is tried here first: a refused port must not wait out the time limit
     // (Windows takes about a second to refuse, longer than the short tries below).
-    if let Err(why) = probe(&host, port) {
-        crate::say(&format!("koyomi: {host}:{port}: {why}"), true);
+    let place = format!("{host}:{port}");
+    if let Err(why) = probe(&place, &host, port) {
+        crate::say(&why, true);
         return 1;
     }
     match ito_winrm::peek_fingerprint(&host, port, Duration::from_secs(15), &AtomicBool::new(false)) {
@@ -55,23 +57,18 @@ fn cert(at: &str) -> i32 {
             0
         }
         Err(e) => {
-            let why = match e {
-                ito_winrm::Error::Timeout => format!("時間切れ（15 秒たっても証明書が来なかった。{LISTENER}）"),
-                e => reason(&e, WinrmAuth::Basic),
-            };
-            crate::say(&format!("koyomi: {host}:{port}: {why}"), true);
+            crate::say(&reason(&e, &place, WinrmAuth::Basic), true);
             1
         }
     }
 }
 
-const LISTENER: &str = "相手の WinRM の HTTPS のリスナーとファイアウォールのポートを確かめる";
-
-/// Whether `host:port` takes a connection, and if not, why in one line of Japanese.
-fn probe(host: &str, port: u16) -> Result<(), String> {
+/// Whether `host:port` takes a connection, and if not, why as a coded line naming `place`.
+fn probe(place: &str, host: &str, port: u16) -> Result<(), String> {
     use std::net::ToSocketAddrs;
+    let refused = |detail: &str| line(msg::WINRM_CONNECT, &[place, detail]);
     let addrs: Vec<_> =
-        (host, port).to_socket_addrs().map_err(|e| format!("つながらない（ホストが見つからない）: {}", plain(&e.to_string())))?.collect();
+        (host, port).to_socket_addrs().map_err(|e| refused(&format!("ホストが見つからない: {}", plain(&e.to_string()))))?.collect();
     let mut last = None;
     for a in &addrs {
         match std::net::TcpStream::connect_timeout(a, Duration::from_secs(5)) {
@@ -80,12 +77,10 @@ fn probe(host: &str, port: u16) -> Result<(), String> {
         }
     }
     Err(match last {
-        None => "つながらない（ホストにアドレスがない）".to_owned(),
-        Some(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => {
-            format!("つながらない（相手がこのポートで待ち受けていない。{LISTENER}）")
-        }
-        Some(e) if e.kind() == std::io::ErrorKind::TimedOut => format!("時間切れ（5 秒たっても答えがない。{LISTENER}）"),
-        Some(e) => format!("つながらない（{}）", plain(&e.to_string())),
+        None => refused("ホストにアドレスがない"),
+        Some(e) if e.kind() == std::io::ErrorKind::ConnectionRefused => refused("相手がこのポートで待ち受けていない"),
+        Some(e) if e.kind() == std::io::ErrorKind::TimedOut => line(msg::LINK_TIMED_OUT, &[place]),
+        Some(e) => refused(&plain(&e.to_string())),
     })
 }
 
@@ -147,7 +142,8 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     }
     let far = chore::winrm(&on).ok_or_else(|| format!("on は winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く: {on}"))??;
     let cert = cert.ok_or("cert がない（koyomi winrm cert <ホスト> で調べる）")?;
-    one(&far, &cert, &password, auth, &command, stop, &say).map_err(|e| format!("{}: {e}", far.host))
+    // A coded reason already names the host and keeps its ID at the head.
+    one(&far, &cert, &password, auth, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })
 }
 
 /// Runs `command` on `far`, its lines to `out`: its exit code, or why there is
@@ -184,24 +180,24 @@ fn one(
             out(&text(&buf), stderr);
         }
     }
-    let exit = result.map_err(|e| reason(&e, auth))?;
+    let exit = result.map_err(|e| reason(&e, &far.host, auth))?;
     // A Windows code such as 0xC0000005 goes through as the same bits.
     exit.status.map(|code| code as i32).ok_or_else(|| "終了コードを受け取れなかった".to_owned())
 }
 
-/// Why it failed, as the job's ✕ reason: what to look at on which side.
-fn reason(e: &ito_winrm::Error, auth: WinrmAuth) -> String {
+/// Why it failed, as the job's ✕ reason: a coded line naming `host` (`host:port` for `cert`).
+fn reason(e: &ito_winrm::Error, host: &str, auth: WinrmAuth) -> String {
     use ito_winrm::Error as E;
     match e {
         E::Stopped => "止めた（コマンドが始まっていれば止まるよう頼み、相手のシェルを消した）".into(),
-        E::AuthRefused if auth == WinrmAuth::Ntlm => "ユーザーかパスワードを断られた（NTLM。ドメインのアカウントは on に winrm://CORP\\名前@ホスト と書く。相手の WinRM で Negotiate が有効か: winrm get winrm/config/service/auth）".into(),
-        E::AuthRefused => "ユーザーかパスワードを断られた（相手の WinRM で Basic が有効か: winrm set winrm/config/service/auth @{Basic=\"true\"}。Basic で入れるのは相手の PC のローカルのアカウントだけ。ドメインのアカウントなら auth = \"ntlm\"）".into(),
-        E::Fingerprint(got) => format!("証明書が cert と違う（相手が出したのは {got}。証明書を入れ替えたのなら koyomi winrm cert で確かめて cert を直す）"),
-        E::Connect(e) => format!("つながらない（WinRM の HTTPS のリスナーとファイアウォールの 5986）: {}", plain(e)),
-        E::Tls(e) => format!("TLS で失敗した: {}", plain(e)),
-        E::Lost(e) => format!("接続が切れた: {}", plain(e)),
-        E::Timeout => "時間切れ".into(),
-        E::Fault(e) => format!("相手の WinRM が断った: {}", plain(e)),
+        E::AuthRefused if auth == WinrmAuth::Ntlm => line(msg::WINRM_NTLM_REFUSED, &[host]),
+        E::AuthRefused => line(msg::WINRM_BASIC_REFUSED, &[host]),
+        E::Fingerprint(got) => line(msg::WINRM_CERT_MISMATCH, &[host, got]),
+        E::Connect(e) => line(msg::WINRM_CONNECT, &[host, &plain(e)]),
+        E::Tls(e) => line(msg::WINRM_TLS, &[host, &plain(e)]),
+        E::Lost(e) => line(msg::LINK_LOST, &[host, &plain(e)]),
+        E::Timeout => line(msg::LINK_TIMED_OUT, &[host]),
+        E::Fault(e) => line(msg::WINRM_FAULT, &[host, &plain(e)]),
         E::Other(e) => plain(e),
     }
 }
@@ -224,15 +220,21 @@ mod tests {
     #[test]
     fn each_failure_says_what_to_look_at() {
         use ito_winrm::Error as E;
-        let basic = |e: &E| reason(e, WinrmAuth::Basic);
-        assert!(basic(&E::AuthRefused).contains("Basic=\"true\"") && basic(&E::AuthRefused).contains("auth = \"ntlm\""));
-        let ntlm = reason(&E::AuthRefused, WinrmAuth::Ntlm);
-        assert!(ntlm.contains("CORP\\名前") && !ntlm.contains("Basic"), "{ntlm}");
-        let fp = "AB:CD";
-        assert!(basic(&E::Fingerprint(fp.into())).contains("相手が出したのは AB:CD"));
-        assert!(basic(&E::Connect("refused".into())).contains("5986"));
+        let basic = |e: &E| reason(e, "app01", WinrmAuth::Basic);
+        let b = basic(&E::AuthRefused);
+        assert!(msg::WINRM_BASIC_REFUSED.is_in(&b) && b.contains("app01") && b.contains("auth = \"ntlm\""), "{b}");
+        let ntlm = reason(&E::AuthRefused, "app01", WinrmAuth::Ntlm);
+        assert!(msg::WINRM_NTLM_REFUSED.is_in(&ntlm) && ntlm.contains("CORP\\名前") && !ntlm.contains("Basic"), "{ntlm}");
+        let f = basic(&E::Fingerprint("AB:CD".into()));
+        assert!(msg::WINRM_CERT_MISMATCH.is_in(&f) && f.contains("AB:CD"), "{f}");
+        let c = basic(&E::Connect("refused".into()));
+        assert!(msg::WINRM_CONNECT.is_in(&c) && c.contains("5986") && c.contains("refused"), "{c}");
         assert!(basic(&E::Stopped).starts_with("止めた"));
         assert_eq!(basic(&E::Other("x".into())), "x");
+        assert!(msg::LINK_TIMED_OUT.is_in(&basic(&E::Timeout)));
+        assert!(msg::LINK_LOST.is_in(&basic(&E::Lost("x".into()))));
+        assert!(msg::WINRM_TLS.is_in(&basic(&E::Tls("x".into()))));
+        assert!(msg::WINRM_FAULT.is_in(&basic(&E::Fault("x".into()))));
         let dump = "HandlerError(IO(Os { code: 10061, kind: ConnectionRefused, message: \"x\" }))";
         for e in [E::Connect(dump.into()), E::Tls(dump.into()), E::Lost(dump.into()), E::Other(dump.into())] {
             let r = basic(&e);

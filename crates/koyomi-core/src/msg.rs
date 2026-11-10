@@ -1,0 +1,481 @@
+//! The message catalogue: every error and warning koyomi raises has an ID
+//! (`KOYOMI-E2101`), and its words live in `messages/en.toml` and `ja.toml`.
+//!
+//! **An ID is never removed and never reused.** A stored run reason or an old
+//! log can still name it. A message nobody raises any more stays in the list
+//! and in the catalogue. When a message's meaning changes or it splits, it
+//! gets a new ID.
+//!
+//! The number is a letter (`E` error, `W` warning) and four digits: the first
+//! two are the area (see `[area]` in the catalogue), the last two count within
+//! it. The same catalogue makes the troubleshooting page (`docs/troubleshooting.md`,
+//! written by `cargo run -p koyomi-core --example make-messages`) and the
+//! window's card.
+
+use std::sync::{LazyLock, RwLock};
+
+use ito_i18n::Table;
+
+const TABLES: &[(&str, &str)] = &[("en", include_str!("../messages/en.toml")), ("ja", include_str!("../messages/ja.toml"))];
+
+/// Words a Japanese message must not use. A later spec can add to the list.
+#[cfg(test)]
+const RETIRED_WORDS: &[&str] = &[
+    "つなぎ先",
+    "向こう",
+    "流す",
+    "つながらない",
+    "見る。",
+    "確かめて",
+    "秘密",
+    "窓",
+    "暦",
+    "もうある",
+    "時間切れ",
+    "ほかで変わって",
+    "読めない",
+    "書けない",
+];
+
+/// A message's ID, such as `E2101`.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Id(&'static str);
+
+impl Id {
+    /// `KOYOMI-E2101`.
+    pub fn code(self) -> String {
+        format!("KOYOMI-{}", self.0)
+    }
+
+    /// Whether `s` starts with this ID's code (`KOYOMI-E2101`).
+    pub fn is_in(self, s: &str) -> bool {
+        s.starts_with(&self.code())
+    }
+
+    /// `E2101`.
+    pub fn number(self) -> &'static str {
+        self.0
+    }
+
+    /// Whether the letter is `W`.
+    pub fn is_warning(self) -> bool {
+        self.0.starts_with('W')
+    }
+
+    /// The first two digits: `21`.
+    pub fn area(self) -> &'static str {
+        &self.0[1..3]
+    }
+}
+
+macro_rules! ids {
+    ($($name:ident = $code:literal),* $(,)?) => {
+        $(pub const $name: Id = Id($code);)*
+        /// Every ID there is.
+        pub const ALL: &[Id] = &[$($name),*];
+    }
+}
+
+ids! {
+    CONNECT_FAILED = "E2101",
+    MAY_HAVE_ARRIVED = "E2102",
+    CERT_MISMATCH = "E2103",
+    TIMED_OUT = "E2104",
+    TOKEN_SECRET_MISSING = "E2105",
+    TOKEN_SECRET_UNREADABLE = "E2106",
+    TOKEN_REFUSED = "E2107",
+    PROTOCOL_MISMATCH = "E2108",
+    REPLY_UNREADABLE = "E2109",
+    ENGINE_TOO_OLD = "E2110",
+    TLS_FAILED = "E2111",
+    ADDRESS_UNREADABLE = "E2112",
+    UNEXPECTED_STATUS = "E2113",
+    NOT_ADMITTED = "E2114",
+    NO_REMOTE = "E2115",
+    UNKNOWN_REMOTE = "E2116",
+    LINK_SWITCHING = "E2117",
+    TOKEN_STORE_FAILED = "E2120",
+    CONFIG_WRITE_FAILED = "E2121",
+    CONFIG_WRITE_FAILED_TOKEN_LEFT = "E2122",
+    CONNECTION_IN_USE = "E2123",
+    NAME_EMPTY = "E2130",
+    NAME_TAKEN = "E2131",
+    NAME_UNUSABLE = "E2132",
+    URL_BAD = "E2133",
+    TOKEN_EMPTY = "E2134",
+    SECRET_IN_USE = "E2135",
+    SECRET_EXISTS = "E2136",
+    REMOTE_GONE = "E2137",
+    NAMED_BY_TABLE = "E2138",
+    REWRITE_MISMATCH = "E2139",
+    PRIMARY_STANDBY_UNKNOWN = "W2140",
+    NO_STANDBY_THERE = "W2141",
+    HA_UNREADABLE = "W2142",
+    SSH_CONNECT = "E2150",
+    SSH_AUTH_REFUSED = "E2151",
+    SSH_HOST_KEY_MISMATCH = "E2152",
+    LINK_LOST = "E2153",
+    LINK_TIMED_OUT = "E2154",
+    WINRM_CONNECT = "E2160",
+    WINRM_BASIC_REFUSED = "E2161",
+    WINRM_NTLM_REFUSED = "E2162",
+    WINRM_CERT_MISMATCH = "E2163",
+    WINRM_TLS = "E2164",
+    WINRM_FAULT = "E2165",
+    MAIL_CONNECT = "E2170",
+    MAIL_TLS = "E2171",
+    MAIL_LOGIN = "E2172",
+    MAIL_NO_FOLDER = "E2173",
+    MAIL_SECRET_MISSING = "E2174",
+    MAIL_SECRET_UNREADABLE = "E2175",
+    MAIL_UNREADABLE = "E2176",
+    ROLE_TOO_LOW = "E2201",
+    ROLE_TOO_LOW_ON_NET = "E2202",
+    USER_UNKNOWN = "E2203",
+    TOKEN_REQUIRED = "E2204",
+    DOOR_NEEDS_TOKEN = "E2205",
+    DOOR_REFUSED_NARROWED = "E2206",
+    DOOR_NOT_ALLOWED = "E2207",
+    NARROWED_ALL_NETS = "E2208",
+    OUTSIDE_NETS = "E2209",
+    HANDOVER_REFUSED = "E2210",
+    SAVE_BLOCKED = "E3101",
+    SAVE_CHANGED_ELSEWHERE = "E3102",
+    CONFLICT_NEAR = "E3103",
+    CONFLICT_FAR = "E3104",
+    CREATED_ELSEWHERE = "E3105",
+    DEF_INVALID_SAVE = "E3106",
+    DEF_INVALID_STAGE = "E3107",
+    STAGE_DATE_PAST = "E3108",
+    STAGE_DATE_BAD = "E3109",
+    STAGE_NO_LIVE = "E3110",
+    STAGE_CHANGED_ELSEWHERE = "E3111",
+    STAGE_SAME = "E3112",
+    IMPORT_PROBLEMS = "E3113",
+    EDITOR_PROBLEMS = "E3114",
+    DEF_INVALID_SWITCH = "E3115",
+    JOBNET_EXISTS = "E3150",
+    JOBNET_NAME_EMPTY = "E3151",
+    JOBNET_NAME_BAD = "E3152",
+    JOBNET_ID_FORM = "E3153",
+    UNSAVED_EDITS = "E3154",
+    DELETE_BLOCKED = "E3155",
+    FILE_WRITE_FAILED = "E3156",
+    DIR_CREATE_FAILED = "E3157",
+    FILE_READ_FAILED = "E3158",
+    FILE_DELETE_FAILED = "E3159",
+    FILE_ENCODING_UNKNOWN = "E3160",
+    LIST_UNAVAILABLE = "E3161",
+    CALENDAR_EXISTS = "E4101",
+    CAL_NAME_EMPTY = "E4102",
+    CAL_NAME_BAD = "E4103",
+    CAL_MISSING = "E4104",
+    CAL_CHANGED_ELSEWHERE = "E4105",
+    CAL_UNKNOWN_FIELD = "E4106",
+    CAL_TOML_SYNTAX = "E4107",
+    CAL_FORMAT_MISSING = "E4108",
+    CAL_FORMAT_UNSUPPORTED = "E4109",
+    CAL_HOLIDAYS_VALUE = "E4110",
+    CAL_DAY_VALUE = "E4111",
+    CAL_ENTRY_SHAPE = "E4112",
+    CAL_SAME_NAME = "E4113",
+    CAL_USERS_LEFT = "W4114",
+    TABLE_DATE_UNREADABLE = "E4150",
+    TABLE_EMPTY = "E4151",
+    TABLE_ENDING_SOON = "W4152",
+    TABLE_STALE = "W4153",
+    TABLE_PATH_EMPTY = "E4154",
+}
+
+/// A message filled in for a language. Text and action stay apart until a surface joins them.
+pub struct Said {
+    pub id: Id,
+    pub text: String,
+    pub action: String,
+}
+
+impl Said {
+    /// `KOYOMI-E2101 <text> <action>`.
+    pub fn line(&self) -> String {
+        format!("{} {} {}", self.id.code(), self.text, self.action)
+    }
+
+    /// `KOYOMI-E2101 <text>`, for a surface with one fixed-height row.
+    pub fn short(&self) -> String {
+        format!("{} {}", self.id.code(), self.text)
+    }
+}
+
+impl std::fmt::Display for Said {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.line())
+    }
+}
+
+static EN: LazyLock<Table> = LazyLock::new(|| Table::new(TABLES, "en").0);
+static JA: LazyLock<Table> = LazyLock::new(|| Table::new(TABLES, "ja").0);
+static LANGUAGE: RwLock<&'static str> = RwLock::new("ja");
+
+/// The table for `code`: `en`, else Japanese.
+fn table(code: &str) -> &'static Table {
+    if code == "en" {
+        &EN
+    } else {
+        &JA
+    }
+}
+
+/// The message in the process's language.
+pub fn say(id: Id, args: &[&str]) -> Said {
+    say_in(&language(), id, args)
+}
+
+/// The message in `code`'s language; no global state is read.
+pub fn say_in(code: &str, id: Id, args: &[&str]) -> Said {
+    let t = table(code);
+    let n = id.number();
+    Said { id, text: t.trf(&format!("{n}.text"), args), action: t.trf(&format!("{n}.action"), args) }
+}
+
+/// `say(id, args).line()`.
+pub fn line(id: Id, args: &[&str]) -> String {
+    say(id, args).line()
+}
+
+/// Whether `s` starts with an ID (`KOYOMI-` a letter E or W, four digits) and then a space or the end.
+pub fn is_coded(s: &str) -> bool {
+    let Some(rest) = s.strip_prefix("KOYOMI-") else { return false };
+    let b = rest.as_bytes();
+    b.len() >= 5 && matches!(b[0], b'E' | b'W') && b[1..5].iter().all(u8::is_ascii_digit) && (b.len() == 5 || b[5] == b' ')
+}
+
+/// `s` without its leading ID, for a coded line that goes inside another message: one line, one ID.
+pub fn uncoded(s: &str) -> &str {
+    if !is_coded(s) {
+        return s;
+    }
+    // "KOYOMI-E2101" is 12 bytes; a following space is dropped too.
+    let rest = &s[12..];
+    rest.strip_prefix(' ').unwrap_or(rest)
+}
+
+/// The language `say` and `line` use, process-wide: `en` or `ja`; anything else means `ja`.
+pub fn set_language(code: &str) {
+    let l = if code == "en" { "en" } else { "ja" };
+    if let Ok(mut g) = LANGUAGE.write() {
+        *g = l;
+    }
+}
+
+/// The language `say` uses now.
+pub fn language() -> String {
+    LANGUAGE.read().map_or("ja", |g| *g).to_owned()
+}
+
+/// One catalogue entry, for the troubleshooting page and the window's card.
+pub struct Entry {
+    pub id: Id,
+    pub area_name: String,
+    pub when: String,
+    pub text: String,
+    pub cause: String,
+    pub action: String,
+}
+
+/// `{0}` … `{9}` shown as `…`.
+fn blanked(s: &str) -> String {
+    let mut s = s.to_owned();
+    for i in 0..10 {
+        s = s.replace(&format!("{{{i}}}"), "…");
+    }
+    s
+}
+
+/// Every entry in `ALL`'s order; the holes of `text` and `action` are shown as `…`.
+pub fn entries(code: &str) -> Vec<Entry> {
+    let t = table(code);
+    ALL.iter()
+        .map(|&id| {
+            let n = id.number();
+            Entry {
+                id,
+                area_name: t.tr(&format!("area.a{}", id.area())).to_owned(),
+                when: t.tr(&format!("{n}.when")).to_owned(),
+                text: blanked(t.tr(&format!("{n}.text"))),
+                cause: t.tr(&format!("{n}.cause")).to_owned(),
+                action: blanked(t.tr(&format!("{n}.action"))),
+            }
+        })
+        .collect()
+}
+
+/// The troubleshooting page, sorted by ID and grouped by area.
+pub fn troubleshooting_markdown(code: &str) -> String {
+    let t = table(code);
+    let mut list = entries(code);
+    list.sort_by(|a, b| (a.id.area(), a.id.number()).cmp(&(b.id.area(), b.id.number())));
+    let field = |label: &str, value: &str| format!("- {}\n", t.trf("page.field", &[t.tr(label), value]));
+    let mut out = format!("# {}\n\n{}\n{}\n", t.tr("page.title"), t.tr("page.intro"), t.tr("page.blanks"));
+    let mut area = "";
+    for e in &list {
+        if e.id.area() != area {
+            area = e.id.area();
+            out.push_str(&format!("\n## {}\n", t.trf("page.area_head", &[&e.area_name, area])));
+        }
+        out.push_str(&format!("\n### {} {}\n\n", e.id.code(), e.when));
+        let kind = if e.id.is_warning() { "page.warning" } else { "page.error" };
+        out.push_str(&field("page.kind", t.tr(kind)));
+        out.push_str(&field("page.message", &e.text));
+        out.push_str(&field("page.cause", &e.cause));
+        out.push_str(&field("page.action", &e.action));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn uncoded_drops_only_a_leading_id() {
+        assert_eq!(uncoded("KOYOMI-E2101 x"), "x");
+        assert_eq!(uncoded("plain text"), "plain text");
+        assert_eq!(uncoded("KOYOMI-E2101"), "");
+        assert_eq!(uncoded("a KOYOMI-E2101 b"), "a KOYOMI-E2101 b");
+    }
+
+    fn tables_parse() {
+        for (code, _) in TABLES {
+            assert!(Table::new(TABLES, code).1.is_empty(), "{code} does not parse");
+        }
+    }
+
+    #[test]
+    fn every_id_has_all_four_fields_in_both_languages_and_the_catalogue_has_no_stray_table() {
+        tables_parse();
+        for code in ["en", "ja"] {
+            let t = table(code);
+            for id in ALL {
+                for k in ["when", "text", "cause", "action"] {
+                    let key = format!("{}.{k}", id.number());
+                    assert!(t.contains(&key) && !t.tr(&key).trim().is_empty(), "{code}: {key} is missing or empty");
+                }
+            }
+            let known: Vec<&str> = ALL.iter().map(|i| i.number()).collect();
+            for key in t.keys() {
+                let head = key.split('.').next().unwrap_or("");
+                assert!(matches!(head, "area" | "page") || known.contains(&head), "{code}: {key} is not in ALL");
+            }
+        }
+    }
+
+    #[test]
+    fn ids_are_unique_well_formed_and_have_an_area_name() {
+        for (i, id) in ALL.iter().enumerate() {
+            assert!(!ALL[..i].contains(id), "{} twice", id.number());
+            let b = id.number().as_bytes();
+            assert!(b.len() == 5 && matches!(b[0], b'E' | b'W') && b[1..].iter().all(u8::is_ascii_digit), "{}", id.number());
+            for code in ["en", "ja"] {
+                assert!(table(code).contains(&format!("area.a{}", id.area())), "{code}: no area name for {}", id.area());
+            }
+        }
+    }
+
+    #[test]
+    fn the_four_digits_are_unique_across_letters() {
+        for (i, id) in ALL.iter().enumerate() {
+            assert!(ALL[..i].iter().all(|o| o.number()[1..] != id.number()[1..]), "{} shares its digits", id.number());
+        }
+    }
+
+    #[test]
+    fn is_in_wants_the_code_at_the_head() {
+        assert!(CONNECT_FAILED.is_in("KOYOMI-E2101 x"));
+        assert!(!CONNECT_FAILED.is_in("x KOYOMI-E2101"));
+    }
+
+    #[test]
+    fn the_doc_is_sorted_by_id() {
+        let md = troubleshooting_markdown("ja");
+        let mut seen: Vec<(&str, &str)> = Vec::new();
+        for l in md.lines().filter_map(|l| l.strip_prefix("### KOYOMI-")) {
+            let n = l.split(' ').next().unwrap_or("");
+            seen.push((&n[1..3], n));
+        }
+        assert_eq!(seen.len(), ALL.len());
+        assert!(seen.windows(2).all(|w| w[0] <= w[1]), "{seen:?}");
+    }
+
+    #[test]
+    fn the_translation_has_every_english_key_and_hole() {
+        assert_eq!(ito_i18n::check::translations(TABLES), Vec::<String>::new());
+    }
+
+    #[test]
+    fn japanese_text_and_action_read_as_sentences() {
+        for e in entries("ja") {
+            let n = e.id.number();
+            let raw = |k: &str| JA.tr(&format!("{n}.{k}")).to_owned();
+            let (text, action) = (raw("text"), raw("action"));
+            assert!(["ます", "ません", "です", "ました"].iter().any(|w| text.contains(w)), "{n}: {text}");
+            assert!(text.ends_with('。') || text.ends_with('）'), "{n}: {text}");
+            assert!(["ください。", "ます。", "ません。", "です。"].iter().any(|w| action.ends_with(w)), "{n}: {action}");
+        }
+    }
+
+    #[test]
+    fn no_japanese_field_uses_a_retired_word() {
+        for key in JA.keys() {
+            let v = JA.tr(key);
+            for w in RETIRED_WORDS {
+                assert!(!v.contains(w), "{key} uses {w}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_line_and_the_short_form() {
+        let s = say_in("ja", CALENDAR_EXISTS, &["週次"]);
+        assert_eq!(s.text, "カレンダー 週次 はすでに存在します。");
+        assert_eq!(s.line(), format!("KOYOMI-E4101 {} {}", s.text, s.action));
+        assert_eq!(s.short(), format!("KOYOMI-E4101 {}", s.text));
+        assert_eq!(s.to_string(), s.line());
+        assert!(!s.short().contains(&s.action));
+        assert_eq!(CONNECT_FAILED.code(), "KOYOMI-E2101");
+        assert_eq!(CONNECT_FAILED.area(), "21");
+        assert!(!CONNECT_FAILED.is_warning());
+    }
+
+    #[test]
+    fn is_coded_wants_the_prefix_a_letter_four_digits_then_a_space_or_the_end() {
+        for yes in ["KOYOMI-E2101 x", "KOYOMI-W4101", "KOYOMI-E2101 "] {
+            assert!(is_coded(yes), "{yes}");
+        }
+        for no in ["xKOYOMI-E2101", "KOYOMI-E21 x", "KOYOMI-X2101 x", "KOYOMI-E2101x", "", "KOYOMI-"] {
+            assert!(!is_coded(no), "{no}");
+        }
+    }
+
+    #[test]
+    fn the_two_languages_differ_without_the_global_one() {
+        let (en, ja) = (say_in("en", CONNECT_FAILED, &["a", "b"]), say_in("ja", CONNECT_FAILED, &["a", "b"]));
+        assert_eq!(en.text, "Cannot connect to a. (b)");
+        assert_ne!(en.text, ja.text);
+        assert_ne!(en.action, ja.action);
+    }
+
+    #[test]
+    fn entries_show_the_holes_as_dots() {
+        let e = entries("ja");
+        assert_eq!(e.len(), ALL.len());
+        assert_eq!(e[0].text, "接続先 … に接続できません。（…）");
+        assert_eq!(e[0].area_name, "接続・認証");
+    }
+
+    #[test]
+    fn docs_troubleshooting_is_up_to_date() {
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/troubleshooting.md");
+        let on_disk = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
+        assert_eq!(on_disk, troubleshooting_markdown("ja"), "run: cargo run -p koyomi-core --example make-messages");
+    }
+}

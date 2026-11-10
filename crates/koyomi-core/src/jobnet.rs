@@ -27,11 +27,16 @@ pub struct Problem {
 }
 
 impl Problem {
-    /// `月次締め.toml の 12 行目: 知らない欄 rnu`.
+    /// `月次締め.toml の 12 行目: 知らない欄 rnu`. A message with an ID keeps it at the head, the place goes last.
     pub fn in_file(&self, file: &str) -> String {
-        match self.line {
-            0 => format!("{file}: {}", self.message),
-            n => format!("{file} の {n} 行目: {}", self.message),
+        let place = match self.line {
+            0 => file.to_owned(),
+            n => format!("{file} の {n} 行目"),
+        };
+        if crate::msg::is_coded(&self.message) {
+            format!("{}（{place}）", self.message)
+        } else {
+            format!("{place}: {}", self.message)
         }
     }
 }
