@@ -1738,7 +1738,7 @@ Two nets with one job each, approved: 保守/ロック with `[[when]] session = 
 
 ## 121. Engine on Debian, operated from Windows
 
-Run on a Debian 12 or 13 machine or VM with systemd, reachable over TCP from this PC, with the package from `scripts/package-linux.sh` unpacked there. The `view`, `run` and `edit` tokens are added by hand as in `packaging/linux/README.md` (人を足す). 保守/夜間 is an approved net with one job, `sleep 600`. `<addr>` is one address of the machine; the port is 8790 unless a row says otherwise.
+Run on a Debian 12 or 13 machine or VM with systemd, reachable over TCP from this PC, with the package from `scripts/package-linux.sh` unpacked there. The `view`, `run` and `edit` tokens are added by hand as in `packaging/linux/README.md` (人を足す). 保守/夜間 is an approved net with one job, `sleep 600`. `<addr>` is one address of the machine; the port is 8790 unless a row says otherwise. `koyomi list` and `koyomi history` print in the language of common.toml, else the OS's: on a machine set to English, run them with `LC_ALL=ja_JP.UTF-8` to read the words quoted below.
 
 | # | Do | Expect |
 |---|---|---|
