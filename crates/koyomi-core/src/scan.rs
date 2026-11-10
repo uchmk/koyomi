@@ -327,7 +327,8 @@ mod tests {
         put(&d, "経理", "壊れ.toml", "format = 1\n[[job]]\nid = \"a\"\nrnu = []\n");
         let defs = scan(&d, &Store::default());
         assert_eq!(defs[0].standing, Standing::Invalid);
-        assert_eq!(defs[0].problems[0].in_file(&defs[0].file), "経理/壊れ.toml の 4 行目: 知らない欄 rnu");
+        let got = defs[0].problems[0].in_file(&defs[0].file);
+        assert!(crate::msg::DEF_FIELD_UNKNOWN.is_in(&got) && got.contains("rnu") && got.ends_with("（経理/壊れ.toml の 4 行目）"), "{got}");
         let _ = std::fs::remove_dir_all(&d);
     }
 

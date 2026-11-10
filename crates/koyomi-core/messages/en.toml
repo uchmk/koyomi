@@ -1000,6 +1000,330 @@ text = "The references to jobnet {0} cannot be rewritten automatically."
 cause = "The reference is written in a way, such as a string with escapes, that cannot be rewritten."
 action = "Correct use, wait_for and after_jobnet by hand."
 
+[E3301]
+when = "A definition has an unknown key"
+text = "The unknown key {0} is given."
+cause = "The key is not one a definition can have."
+action = "Check the spelling of the key, and delete it if it is not needed."
+
+[E3302]
+when = "The same key is given twice in a definition"
+text = "The same key is given twice. ({0})"
+cause = "TOML does not allow the same key twice in one table."
+action = "Keep only one of the duplicated keys."
+
+[E3303]
+when = "A definition cannot be read as TOML"
+text = "The TOML is not written correctly. ({0})"
+cause = "The content of the file does not follow the TOML syntax."
+action = "Check the reason in the parentheses and fix the line."
+
+[E3304]
+when = "A definition has no format"
+text = "format is not given."
+cause = "The definition has no format key."
+action = "Give format = {0}."
+
+[E3305]
+when = "The value of format is not one this version reads"
+text = "The value of format is not correct."
+cause = "The value of format is not the format number this version reads."
+action = "Change it to format = {0}."
+
+[E3306]
+when = "A key that takes one of a few values has another value"
+text = "The value of {0} is not correct."
+cause = "The value is not one of the values the key takes, or it is not a string."
+action = "Give {0} one of {1}."
+
+[E3307]
+when = "A key that takes a string has another type of value"
+text = "{0} is not a string."
+cause = "The value is not of the string type."
+action = "Give {0} a string."
+
+[E3308]
+when = "A key that takes a string has another type of value (with an example)"
+text = "{0} is not a string."
+cause = "The value is not of the string type."
+action = "Give {0} as a string, such as {1}."
+
+[E3309]
+when = "A key that needs a value is empty"
+text = "{0} is empty."
+cause = "The key is an empty string, a string of spaces, or an empty array."
+action = "Give {0} a value."
+
+[E3310]
+when = "A key that takes a table has another type of value"
+text = "{0} is not a table."
+cause = "The value is not a table written as { name = value }."
+action = "Give {0} as a table, such as {1}."
+
+[E3311]
+when = "A key that takes an array does not have a correct array"
+text = "{0} is not a correct array."
+cause = "The value is not an array, or an element has a wrong type or content."
+action = "Give {0} as an array, such as {1}."
+
+[E3312]
+when = "The name in params or env has a character that cannot be used"
+text = "The name {1} in {0} cannot be used."
+cause = "The name is empty, has a character other than letters, digits and _, or starts with a digit."
+action = "Use only letters, digits and _ in the name, and do not start it with a digit."
+
+[E3313]
+when = "The name in env starts with KOYOMI_"
+text = "The env name {0} cannot be used."
+cause = "Names that start with KOYOMI_ (in any case) are kept for the variables given to a job at run time."
+action = "Use a name that does not start with KOYOMI_."
+
+[E3314]
+when = "A value in params, env or headers is not a string"
+text = "The value of {1} in {0} is not a string."
+cause = "The value is not of the string type."
+action = "Give the value of {1} as a string."
+
+[E3315]
+when = "No secret name follows secret:"
+text = "No secret name follows secret: in {0}."
+cause = "Nothing follows secret: in the value."
+action = "Give the name of the secret as secret:<name>."
+
+[E3316]
+when = "password is not given as secret:<name>"
+text = "{0} is not given as secret:<name>."
+cause = "A password is not written in the file: it is given as the name of a secret kept in the credential store of the OS."
+action = "Store the password with koyomi secret set <name>, and give {0} as \"secret:<name>\"."
+
+[E3317]
+when = "A replacement such as {date…} or {param:…} in a value is not correct"
+text = "The replacements in {0} cannot be read. ({1})"
+cause = "A replacement in the value is not written correctly."
+action = "Check the reason in the parentheses and fix {0}."
+
+[E3318]
+when = "A time, a length of time or a range cannot be read"
+text = "The value of {0} cannot be read. ({1})"
+cause = "The form of the value is not correct."
+action = "Check the reason in the parentheses and fix the value of {0}."
+
+[E3319]
+when = "A key that takes a whole number has another value or a value out of range"
+text = "{0} is not a whole number from {1} to {2}."
+cause = "The value is not a whole number, or it is out of the range the key takes."
+action = "Give {0} a whole number from {1} to {2}."
+
+[E3320]
+when = "priority is not a whole number from 1 to 5"
+text = "priority is not a whole number from 1 to 5."
+cause = "The value is not a whole number, or it is out of the range 1 to 5."
+action = "Give priority a whole number from 1 to 5. A larger number runs first, and 3 is used when it is not given."
+
+[E3321]
+when = "wake is neither true nor false"
+text = "wake is neither true nor false."
+cause = "The value is something other than true and false."
+action = "Give wake true or false. With true, the PC is woken to run even when it is asleep."
+
+[E3322]
+when = "late_slow is neither true nor false"
+text = "late_slow is neither true nor false."
+cause = "The value is something other than true and false."
+action = "Give late_slow true or false. With false, no notice is sent even when a run takes twice as long as usual."
+
+[E3323]
+when = "require is not correct"
+text = "require is not written correctly."
+cause = "require is not an array, or it has an element that is not \"ac\", \"network\" or \"idle:<time>\"."
+action = "Give require as in [\"ac\", \"network\", \"idle:10m\"]. ac runs on AC power, network runs while connected to a network, and idle:10m runs after 10 minutes without use."
+
+[E3324]
+when = "A name of a place to notify is given twice"
+text = "The same name {1} is given twice in {0}."
+cause = "The same place is given more than once."
+action = "Delete the duplicated name."
+
+[E3325]
+when = "calendar has a value that cannot be a calendar name"
+text = "The calendar name in calendar is not correct."
+cause = "The value is not a string, is empty, starts with _, ends with . or a space, is a name Windows keeps, or has one of / \\ : * ? \" < > |."
+action = "Give calendar the <name> of calendars/<name>.toml."
+
+[E3326]
+when = "lock is not written in a correct form"
+text = "lock is not written correctly."
+cause = "lock is neither a string with a name nor a table with name and shared."
+action = "Give lock as \"salesdb\" (exclusive) or { name = \"salesdb\", shared = true } (shared). With shared, job nets that only read run at the same time."
+
+[E3327]
+when = "lock has a name that cannot be used"
+text = "The name of lock is not correct."
+cause = "The name is not a string, is empty, starts with _, ends with . or a space, is a name Windows keeps, or has one of / \\ : * ? \" < > |."
+action = "Give lock a name, as in lock = \"salesdb\". Jobnets that give lock the same name do not run at the same time."
+
+[E3328]
+when = "A table lacks a key it needs"
+text = "{1} is not given in {0}."
+cause = "The table has no such key."
+action = "Give {0} in the form {2}."
+
+[E3329]
+when = "A table has an unknown key"
+text = "The unknown key {1} is given in {0}."
+cause = "The key is not one the table can have."
+action = "Give only {2} in {0}."
+
+[E3330]
+when = "shared of lock is neither true nor false"
+text = "shared of lock is neither true nor false."
+cause = "The value is something other than true and false."
+action = "Give shared true or false. With true the lock is a shared lock for reading only: shared locks run at the same time, but not with an exclusive lock."
+
+[E3331]
+when = "A [[when]] has no key that tells when to run"
+text = "The [[when]] has no key that tells when to run."
+cause = "The [[when]] has none of the keys that tell when to run."
+action = "Give one of once, every, dates, file, log, eventlog, mail, on_start, after_jobnet, idle and session."
+
+[E3332]
+when = "A [[when]] has a key its kind does not use"
+text = "{0} cannot be given in a [[when]] of {1}."
+cause = "The key is not one this kind of [[when]] uses."
+action = "Delete {0}."
+
+[E3333]
+when = "on_closed has prev or next in a [[when]] that has no day to move to"
+text = "\"prev\" and \"next\" cannot be given to on_closed in a [[when]] of {0}."
+cause = "This kind of [[when]] has no day to move to."
+action = "Give on_closed \"skip\" or \"run\"."
+
+[E3334]
+when = "use, after_jobnet or wait_for is not in the form group/name"
+text = "{0} is not in the form group/name."
+cause = "The value is not a group and a name divided by one /."
+action = "Give {0} as \"group/name\"."
+
+[E3335]
+when = "A [[when]] lacks a key it needs"
+text = "{0} is not given in the [[when]]."
+cause = "The [[when]] of this kind lacks a key it needs."
+action = "Give {0} as in {1}."
+
+[E3336]
+when = "Neither of two keys is given where one of them is needed"
+text = "{0} needs {1} or {2}."
+cause = "Neither key is given."
+action = "Give one of them, as in {3}."
+
+[E3337]
+when = "The day in a [[when]] of every = \"month\" is not correct"
+text = "The day in a [[when]] of every = \"month\" is not correct."
+cause = "It is none of day, nth with weekday, and business_day."
+action = "Give one of day = 25, day = \"last\", nth = 2 with weekday = \"tue\", and business_day = 5."
+
+[E3338]
+when = "on_start has a value other than true"
+text = "on_start has a value other than true."
+cause = "on_start takes true only."
+action = "Give on_start = true. If you do not use it, delete that [[when]]."
+
+[E3339]
+when = "idle is shorter than 1 minute"
+text = "idle is shorter than 1 minute."
+cause = "idle takes a time of 60 seconds or more."
+action = "Give idle 1m or longer."
+
+[E3340]
+when = "wait_until is given without wait_for"
+text = "wait_for for wait_until is not given."
+cause = "wait_until is a key given together with wait_for."
+action = "Give wait_for, or delete wait_until."
+
+[E3341]
+when = "start is later than end"
+text = "start is later than end."
+cause = "The first day of the period is after its last day."
+action = "Give start a date that is not after end."
+
+[E3342]
+when = "log or file of a [[when]] is not an absolute path"
+text = "{0} is not an absolute path."
+cause = "The value is not in the form of an absolute path."
+action = "Give {0} as an absolute path, such as {1}."
+
+[E3343]
+when = "log of a [[when]] is not the path of one file"
+text = "log is not the path of one file."
+cause = "The path has * or ?, or it ends with / or \\."
+action = "Give log the absolute path of one file."
+
+[E3344]
+when = "file of a [[when]] has no file name"
+text = "file has no file name."
+cause = "The path ends with / or \\."
+action = "Give file down to the file name, as in 'D:\\recv\\*.csv'."
+
+[E3345]
+when = "The folder part of file in a [[when]] has * or ?"
+text = "The folder part of file has * or ?."
+cause = "* and ? can be used in the file name part only."
+action = "Delete * and ? from the folder part."
+
+[E3346]
+when = "ids of a [[when]] is not an array of event IDs"
+text = "ids is not an array of whole numbers from 0 to 65535."
+cause = "The value is not an array, or it has an element that is not a whole number from 0 to 65535."
+action = "Give ids as an array of event IDs, such as [4625]."
+
+[E3347]
+when = "user of a [[when]] is not in a correct form"
+text = "The form of user is not correct."
+cause = "The account name is empty, or has a space, a control character, @, or one of \" / [ ] : ; | = , + * ? < >."
+action = "Give user as 'PC\\taro', 'CORP\\taro' or \"taro\". @ and spaces cannot be used."
+
+[E3348]
+when = "A key that cannot go with business_day is given"
+text = "{0} cannot be given together with business_day."
+cause = "In a [[when]] with business_day, business_day alone decides the day."
+action = "Delete either {0} or business_day."
+
+[E3349]
+when = "business_day is not a whole number in range"
+text = "business_day is not a whole number from 1 to 31 or from -1 to -31."
+cause = "The value is not a whole number, or it is out of range."
+action = "Give business_day a whole number from 1 to 31 or from -1 to -31."
+
+[E3350]
+when = "shift is given without a number in day"
+text = "The number in day for shift is not given."
+cause = "shift can be used only when day is a number."
+action = "Give shift together with a number in day, as in day = 20, shift = -3."
+
+[E3351]
+when = "day is neither a whole number from 1 to 31 nor \"last\""
+text = "day is neither a whole number from 1 to 31 nor \"last\"."
+cause = "The value is neither a whole number in range nor the string \"last\"."
+action = "Give day a whole number from 1 to 31, or \"last\"."
+
+[E3352]
+when = "from is later than to"
+text = "from is later than to."
+cause = "The start of the time span is after its end."
+action = "Give from a time that is not after to."
+
+[E3353]
+when = "Child jobnets call each other round"
+text = "Child jobnets call each other in a loop. ({0})"
+cause = "A jobnet calls itself by following use."
+action = "Delete one of the use that make the loop."
+
+[E3354]
+when = "judge.error_output cannot be read as a regular expression"
+text = "{0} cannot be read as a regular expression. ({1})"
+cause = "The value is not a correct regular expression."
+action = "Check the reason in the parentheses and give {0} a regular expression."
+
 [E3370]
 when = "_group.toml has a key that is not known"
 text = "_group.toml has an unknown key {0}."
@@ -1150,6 +1474,186 @@ text = "The mail port {0} is out of range."
 cause = "The port is not a number from 1 to 65535."
 action = "Give a port from 1 to 65535."
 
+[E3401]
+when = "A job has a key its kind does not use"
+text = "{0} can be given only to a job of kind = {1}."
+cause = "The key is not one the kind of this job uses."
+action = "Delete {0}, or change kind."
+
+[E3402]
+when = "A job lacks a key its kind needs"
+text = "kind = \"{0}\" needs {1}."
+cause = "The job lacks a key this kind needs."
+action = "Give {1}, as in {2}."
+
+[E3403]
+when = "A job lacks a key its kind needs (without an example)"
+text = "kind = \"{0}\" needs {1}."
+cause = "The job lacks a key this kind needs."
+action = "Give {1} a value."
+
+[E3404]
+when = "A kind = \"loop\" job has both file and count"
+text = "Both file and count are given to kind = \"loop\"."
+cause = "A loop repeats over either file or count, not both."
+action = "Give only one of file and count."
+
+[E3405]
+when = "keep_days is not a whole number from 1 to 36500"
+text = "keep_days is not a whole number from 1 to 36500."
+cause = "The value is not a whole number, or it is out of range."
+action = "Give keep_days a whole number from 1 to 36500. To delete every file, use kind = \"empty\"."
+
+[E3406]
+when = "rows of an sql job is neither a string nor a whole number"
+text = "rows is not correct."
+cause = "The value is neither a string nor a whole number from 0."
+action = "Give rows as a string such as \"1..\", or as a whole number from 0."
+
+[E3407]
+when = "expect of an http job is not an array of status codes"
+text = "expect is not an array of status codes from 100 to 599."
+cause = "The value is empty, is not an array, or has an element that is not a whole number from 100 to 599."
+action = "Give expect as an array of status codes, such as [200, 201]."
+
+[E3408]
+when = "user of run_as cannot be an account name"
+text = "user of run_as is not correct."
+cause = "The account name is not a string, is empty, or has a space, a control character, or one of \" / [ ] : ; | = , + * ? < >."
+action = "Give user as CORP\\batch, batch@corp.local or batch."
+
+[E3409]
+when = "A range of exit codes is empty"
+text = "The range of exit codes is empty."
+cause = "The range is an empty string, or a string of spaces."
+action = "Give exit codes, such as \"1\", \"2..\" or \"1..3\"."
+
+[E3410]
+when = "A range of exit codes has a value that is not a whole number"
+text = "\"{0}\" is not a whole number for an exit code."
+cause = "The range has a value that cannot be read as a whole number."
+action = "Give exit codes, such as \"1\", \"2..\" or \"1..3\"."
+
+[E3411]
+when = "The start of a range of exit codes is greater than its end"
+text = "The start of the range \"{0}\" of exit codes is greater than its end."
+cause = "The first value of the range is greater than the last."
+action = "Fix the range so that its start is not greater than its end."
+
+[E3412]
+when = "A line of after has both on and code"
+text = "Both on and code are given to a line of after."
+cause = "A line splits by either the way the job ended or its exit code, not both."
+action = "Give only one of on and code."
+
+[E3413]
+when = "judge has no condition"
+text = "No condition is given in judge."
+cause = "The table has no condition."
+action = "Give judge in the form { warn = \"1\", error = \"2..\" }, with at least one condition."
+
+[E3414]
+when = "A [[job]] has no id"
+text = "id is not given in the [[job]]."
+cause = "The job has no id key."
+action = "Give id a name that no other job in the jobnet has."
+
+[E3415]
+when = "id is not a string that is not empty"
+text = "id is not a string that is not empty."
+cause = "The value is an empty string, or not a string."
+action = "Give id a string that is not empty."
+
+[E3416]
+when = "The same id is given twice in a jobnet"
+text = "The id {0} is given twice."
+cause = "Two jobs in the jobnet have the same id."
+action = "Change the id to a name that no other job in the jobnet has."
+
+[E3417]
+when = "Both run and shell are given"
+text = "Both run and shell are given."
+cause = "What to run is given by either run, or shell with script, not both."
+action = "Give either run, or shell with script."
+
+[E3418]
+when = "shell is given without script"
+text = "script for shell is not given."
+cause = "shell needs a script to run."
+action = "Give script the script to run."
+
+[E3419]
+when = "script is given without shell"
+text = "shell for script is not given."
+cause = "script is a key given together with shell."
+action = "Give shell."
+
+[E3420]
+when = "A job has no run"
+text = "run is not given."
+cause = "The job has no run key that names what to run."
+action = "Give run the file to run and its arguments as an array, as in run = ['C:\\batch\\a.exe', '--x']."
+
+[E3421]
+when = "The first element of run is empty"
+text = "The file to run is not given at the head of run."
+cause = "The first element of run is an empty string, or a string of spaces."
+action = "Give the path of the file to run at the head of run."
+
+[E3422]
+when = "An element of after is neither an id nor a table of a line"
+text = "An element of after is not correct."
+cause = "The element is neither a string with an id nor a table of a line."
+action = "Give an element of after as a string with an id, such as \"extract\", or as a table, such as { job = \"extract\", on = \"error\" }."
+
+[E3423]
+when = "after of a kind = \"branch\" job is not exactly one"
+text = "after of kind = \"branch\" is not exactly one."
+cause = "A branch splits by the exit code of the one job before it."
+action = "Give after exactly one job to branch on."
+
+[E3424]
+when = "after has an id that no job in the jobnet has"
+text = "after names the id {0}, which does not exist."
+cause = "No job in the same jobnet has that id."
+action = "Give after the id of a job in the same jobnet."
+
+[E3425]
+when = "A code or else line comes from a job that is not kind = \"branch\""
+text = "A code or else line comes from {0}, which is not kind = \"branch\"."
+cause = "A code or else line can come from a branch job only."
+action = "Use code and else only when after names a job of kind = \"branch\"."
+
+[E3426]
+when = "A job that needs a job before it has no after"
+text = "after is not given to the job {0}."
+cause = "No job before it leads to a job of this kind."
+action = "Give after the id of the job before it."
+
+[E3427]
+when = "A job that needs a job after it has none"
+text = "No job follows the job {0}."
+cause = "No job is connected after a job of this kind."
+action = "Add a job that names this job in after, or delete this job."
+
+[E3428]
+when = "after makes a loop of jobs"
+text = "after makes a loop. ({0})"
+cause = "A job comes back to itself by following after."
+action = "Delete one of the after that make the loop."
+
+[E3429]
+when = "pos is not an array of two numbers"
+text = "pos is not an array of two numbers."
+cause = "The value is not an array, or it does not have two numbers."
+action = "Give pos two numbers, as in [x, y]."
+
+[E3430]
+when = "on of an ssh or a winrm is empty"
+text = "on is empty."
+cause = "on is an empty string, or a string of spaces."
+action = "Give on the PC to run the command on, in the form {0}."
+
 [E3470]
 when = "A length of time is 0"
 text = "The length of time {0} is 0."
@@ -1261,6 +1765,9 @@ action = "Check the run ID."
 [note]
 list_sep = ", "
 config_at_line = "line {0} of koyomi.toml"
+file_at_line = "line {1} of {0}"
+problem_coded_at = "{0} ({1})"
+problem_at = "{0}: {1}"
 blackout_reason = "Planned stop ({0})"
 blackout_reason_why = "Planned stop ({0}, {1})"
 ps_warning = "Warning: "

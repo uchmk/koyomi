@@ -256,6 +256,9 @@ run = [\"x\"]
         .unwrap_err();
         let msgs: Vec<_> = bad.iter().map(|p| p.message.as_str()).collect();
         assert_eq!(msgs.len(), 3, "{msgs:?}");
-        assert!(msgs.iter().all(|m| m.starts_with("quiet: ") || m.starts_with("on_quiet ")), "{msgs:?}");
+        assert!(msgs.iter().all(|m| crate::msg::is_coded(m) && m.contains("quiet")), "{msgs:?}");
+        // The bad time, the bad element and the bad `on_quiet` are each told, `on_quiet` by its own name.
+        assert!(msgs.iter().any(|m| crate::msg::DEF_CHOICE_BAD.is_in(m) && m.contains("on_quiet")), "{msgs:?}");
+        assert!(msgs.iter().any(|m| crate::msg::DEF_VALUE_UNREADABLE.is_in(m) && m.contains("12:00")), "{msgs:?}");
     }
 }

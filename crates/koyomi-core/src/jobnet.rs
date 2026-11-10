@@ -13,6 +13,7 @@ use toml::Spanned;
 
 use crate::chore::{Chore, Pass, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use crate::late::Deadline;
+use crate::msg;
 use crate::quiet::{OnQuiet, Span};
 use crate::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When};
 
@@ -31,12 +32,12 @@ impl Problem {
     pub fn in_file(&self, file: &str) -> String {
         let place = match self.line {
             0 => file.to_owned(),
-            n => format!("{file} の {n} 行目"),
+            n => msg::note(msg::N_FILE_AT_LINE, &[file, &n.to_string()]),
         };
-        if crate::msg::is_coded(&self.message) {
-            format!("{}（{place}）", self.message)
+        if msg::is_coded(&self.message) {
+            msg::note(msg::N_PROBLEM_CODED_AT, &[&self.message, &place])
         } else {
-            format!("{place}: {}", self.message)
+            msg::note(msg::N_PROBLEM_AT, &[&place, &self.message])
         }
     }
 }
@@ -371,13 +372,13 @@ impl<'de> Deserialize<'de> for Line {
 /// `{ job, on }` or `{ job, code }` as a line; the message says what is wrong.
 fn line_of_parts(job: String, on: Option<&str>, code: Option<&str>) -> Result<Line, String> {
     let on = match (on, code) {
-        (Some(_), Some(_)) => return Err("after の線には on と code のどちらか 1 つを書く".to_owned()),
+        (Some(_), Some(_)) => return Err(msg::line(msg::DEF_LINE_BOTH, &[])),
         (None, None) | (Some("ok"), None) => On::Ok,
         (Some("error"), None) => On::Error,
         (Some("any"), None) => On::Any,
-        (Some(_), None) => return Err("after の線の on は \"ok\"・\"error\"・\"any\" のどれか".to_owned()),
+        (Some(_), None) => return Err(msg::line(msg::DEF_CHOICE_BAD, &["after.on", "\"ok\", \"error\", \"any\""])),
         (None, Some("else")) => On::Else,
-        (None, Some(c)) => On::Code(ranges(c).map_err(|e| format!("after の線の code {e}"))?),
+        (None, Some(c)) => On::Code(ranges(c).map_err(|e| msg::line(msg::DEF_VALUE_UNREADABLE, &["after.code", msg::uncoded(&e)]))?),
     };
     Ok(Line { job, on })
 }
@@ -525,11 +526,10 @@ impl Range {
 
 /// `"1"`, `"2.."`, `"..-1"`, `"1..3"`, or several with commas: `"1,3..5"`.
 pub fn ranges(text: &str) -> Result<Vec<Range>, String> {
-    const HOW: &str = "は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）";
     if text.trim().is_empty() {
-        return Err("が空".to_owned());
+        return Err(msg::line(msg::DEF_RANGE_EMPTY, &[]));
     }
-    let code = |s: &str| s.trim().parse::<i32>().map_err(|_| format!("\"{}\" {HOW}", s.trim()));
+    let code = |s: &str| s.trim().parse::<i32>().map_err(|_| msg::line(msg::DEF_RANGE_CODE_BAD, &[s.trim()]));
     let mut out = Vec::new();
     for part in text.split(',') {
         let part = part.trim();
@@ -542,7 +542,7 @@ pub fn ranges(text: &str) -> Result<Vec<Range>, String> {
                 let from = if a.trim().is_empty() { i32::MIN } else { code(a)? };
                 let to = if b.trim().is_empty() { i32::MAX } else { code(b)? };
                 if from > to {
-                    return Err(format!("\"{part}\": 始まりが終わりより大きい"));
+                    return Err(msg::line(msg::DEF_RANGE_REVERSED, &[part]));
                 }
                 (from, to)
             }
@@ -802,12 +802,17 @@ pub fn parse(text: &str) -> Result<Jobnet, Vec<Problem>> {
 /// The reader's words for the toml crate's.
 fn explain(message: &str, at: Option<&str>) -> String {
     if let Some(name) = message.strip_prefix("unknown field `").and_then(|r| r.split('`').next()) {
-        return format!("知らない欄 {name}");
+        return msg::line(msg::DEF_FIELD_UNKNOWN, &[name]);
     }
     if message.starts_with("duplicate key") {
-        return format!("同じ欄が 2 つある {}", at.unwrap_or("").trim()).trim_end().to_string();
+        let place = at.unwrap_or("").trim();
+        return msg::line(msg::DEF_KEY_DUPLICATE, &[if place.is_empty() { message } else { place }]);
     }
-    format!("TOML の書き方が違う: {message}")
+    if msg::is_coded(message) {
+        // an error of ours that serde carried through the toml crate
+        return message.to_owned();
+    }
+    msg::line(msg::DEF_TOML_SYNTAX, &[message])
 }
 
 struct Checker<'a> {
@@ -829,7 +834,7 @@ impl Checker<'_> {
         crate::template::check(text)?;
         crate::template::check_vars(text)?;
         match crate::template::param_names(text).into_iter().find(|n| !self.params.contains_key(*n)) {
-            Some(n) => Err(format!("{{param:{n}}}: [params] にない")),
+            Some(n) => Err(msg::line(msg::PARAM_MISSING, &[n])),
             None => Ok(()),
         }
     }
@@ -840,19 +845,19 @@ impl Checker<'_> {
         let Some(f) = field.as_ref() else { return out };
         let at = f.span().start;
         let Some(t) = f.get_ref().as_table() else {
-            self.add(at, "params は表で書く（[params] の下に month = \"2026-09\"）");
+            self.add(at, msg::line(msg::DEF_TABLE_BAD, &["params", "{ month = \"2026-09\" }"]));
             return out;
         };
         for (k, v) in t {
             if !plain_name(k) {
-                self.add(at, format!("params の名前に使えない: {k}（英数字と _ だけ）"));
+                self.add(at, msg::line(msg::DEF_NAME_BAD, &["params", k]));
             }
             let Some(s) = v.as_str() else {
-                self.add(at, format!("params の値は文字列で書く: {k}"));
+                self.add(at, msg::line(msg::DEF_VALUE_STRING_BAD, &["params", k]));
                 continue;
             };
             if let Err(e) = crate::template::check(s).and_then(|()| crate::template::check_vars(s)) {
-                self.add(at, format!("params {k}: {e}"));
+                self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &[&format!("params.{k}"), msg::uncoded(&e)]));
             }
             out.insert(k.clone(), s.to_owned());
         }
@@ -869,7 +874,7 @@ impl Checker<'_> {
         let max = j.max.as_ref().and_then(|f| match f.get_ref().as_integer() {
             Some(n) if (1..=GROUP_MAX as i64).contains(&n) => Some(n as u32),
             _ => {
-                self.add(f.span().start, format!("max は 1 から {GROUP_MAX} までの整数で書く（組の PC をいくつ同時に動かすか）"));
+                self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["max", "1", &GROUP_MAX.to_string()]));
                 None
             }
         });
@@ -883,8 +888,8 @@ impl Checker<'_> {
         match f.get_ref().as_str().and_then(|s| choices.iter().copied().find(|c| *c == s)) {
             Some(c) => Some(c),
             None => {
-                let list = choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join("・");
-                self.add(f.span().start, format!("{name} は {list} のどれか"));
+                let list = choices.iter().map(|c| format!("\"{c}\"")).collect::<Vec<_>>().join(", ");
+                self.add(f.span().start, msg::line(msg::DEF_CHOICE_BAD, &[name, &list]));
                 None
             }
         }
@@ -895,7 +900,7 @@ impl Checker<'_> {
         match f.get_ref() {
             toml::Value::String(s) => Some(s.clone()),
             _ => {
-                self.add(f.span().start, format!("{name} は文字列で書く"));
+                self.add(f.span().start, msg::line(msg::DEF_STRING_BAD, &[name]));
                 None
             }
         }
@@ -907,25 +912,25 @@ impl Checker<'_> {
         let Some(f) = field else { return out };
         let at = f.span().start;
         let toml::Value::Table(t) = f.get_ref() else {
-            self.add(at, "env は表で書く（例: env = { DB_PASS = \"secret:db\" }）");
+            self.add(at, msg::line(msg::DEF_TABLE_BAD, &["env", "{ DB_PASS = \"secret:db\" }"]));
             return out;
         };
         for (k, v) in t {
             if !plain_name(k) {
-                self.add(at, format!("env の名前に使えない: {k}（英数字と _ だけ）"));
+                self.add(at, msg::line(msg::DEF_NAME_BAD, &["env", k]));
             } else if k.to_ascii_uppercase().starts_with("KOYOMI_") {
-                self.add(at, format!("env の名前に使えない: {k}（KOYOMI_ は koyomi が渡す）"));
+                self.add(at, msg::line(msg::DEF_ENV_RESERVED, &[k]));
             }
             let Some(s) = v.as_str() else {
-                self.add(at, format!("env の値は文字列で書く: {k}"));
+                self.add(at, msg::line(msg::DEF_VALUE_STRING_BAD, &["env", k]));
                 continue;
             };
             match s.strip_prefix("secret:") {
-                Some("") => self.add(at, format!("env {k}: secret: の後に名前が要る")),
+                Some("") => self.add(at, msg::line(msg::DEF_SECRET_NAME_EMPTY, &[&format!("env.{k}")])),
                 Some(_) => {}
                 None => {
                     if let Err(e) = self.template(s) {
-                        self.add(at, format!("env {k}: {e}"));
+                        self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &[&format!("env.{k}"), msg::uncoded(&e)]));
                     }
                 }
             }
@@ -937,52 +942,49 @@ impl Checker<'_> {
     /// `run_as = { user = 'CORP\batch', password = "secret:batch" }`: both are
     /// required, and the password only as a secret's name.
     fn run_as(&mut self, field: &Field) -> Option<RunAs> {
-        const SHAPE: &str = "run_as は { user = 'CORP\\batch', password = \"secret:batch\" } の形で書く";
+        const SHAPE: &str = "{ user = 'CORP\\batch', password = \"secret:batch\" }";
         let f = field.as_ref()?;
         let at = f.span().start;
         let toml::Value::Table(t) = f.get_ref() else {
-            self.add(at, SHAPE);
+            self.add(at, msg::line(msg::DEF_TABLE_BAD, &["run_as", SHAPE]));
             return None;
         };
         let mut ok = true;
         for k in t.keys() {
             if k != "user" && k != "password" {
-                self.add(at, format!("run_as に知らない欄 {k}"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_UNKNOWN, &["run_as", k, "user, password"]));
                 ok = false;
             }
         }
         let user = match t.get("user").map(|v| v.as_str()) {
             None => {
-                self.add(at, format!("run_as に user が無い（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "user", SHAPE]));
                 None
             }
             Some(Some(u)) if valid_account(u) => Some(u.to_owned()),
             Some(_) => {
-                self.add(at, "run_as の user は CORP\\batch・batch@corp.local・batch のように書く（空白や \" は使えない）");
+                self.add(at, msg::line(msg::DEF_RUN_AS_USER_BAD, &[]));
                 None
             }
         };
         let secret = match t.get("password").map(|v| v.as_str()) {
             None => {
-                self.add(at, format!("run_as に password が無い（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "password", SHAPE]));
                 None
             }
             Some(Some(p)) => match p.strip_prefix("secret:") {
                 Some(name) if !name.trim().is_empty() => Some(name.to_owned()),
                 Some(_) => {
-                    self.add(at, "run_as の password: secret: の後に名前が要る");
+                    self.add(at, msg::line(msg::DEF_SECRET_NAME_EMPTY, &["run_as.password"]));
                     None
                 }
                 None => {
-                    self.add(
-                        at,
-                        "run_as の password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）",
-                    );
+                    self.add(at, msg::line(msg::DEF_PASSWORD_NOT_SECRET, &["run_as.password"]));
                     None
                 }
             },
             Some(None) => {
-                self.add(at, "run_as の password は文字列で書く");
+                self.add(at, msg::line(msg::DEF_STRING_BAD, &["run_as.password"]));
                 None
             }
         };
@@ -1002,14 +1004,14 @@ impl Checker<'_> {
         let text = match f.get_ref() {
             toml::Value::String(s) => s.clone(),
             _ => {
-                self.add(f.span().start, format!("{name} は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"));
+                self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &[name, "\"30m\""]));
                 return None;
             }
         };
         match crate::duration::parse(&text) {
             Ok(secs) => Some(secs),
             Err(e) => {
-                self.add(f.span().start, format!("{name} {e}"));
+                self.add(f.span().start, msg::line(msg::DEF_VALUE_UNREADABLE, &[name, msg::uncoded(&e)]));
                 None
             }
         }
@@ -1018,7 +1020,7 @@ impl Checker<'_> {
     /// A field that only some kinds of `[[job]]` may have: `wait は kind = "join" にだけ書く`.
     fn only(&mut self, field: &Field, name: &str, kinds: &str) {
         if let Some(f) = field {
-            self.add(f.span().start, format!("{name} は kind = {kinds} にだけ書く"));
+            self.add(f.span().start, msg::line(msg::DEF_ONLY_FOR_KINDS, &[name, kinds]));
         }
     }
 
@@ -1035,34 +1037,34 @@ impl Checker<'_> {
             )
             .unwrap_or("job");
         if kind != "delete" && kind != "empty" {
-            self.only(&j.path, "path", "\"delete\" か \"empty\"");
+            self.only(&j.path, "path", "\"delete\", \"empty\"");
         }
         if kind != "delete" && kind != "copy" {
-            self.only(&j.pattern, "match", "\"delete\" か \"copy\"");
+            self.only(&j.pattern, "match", "\"delete\", \"copy\"");
         }
         if kind != "delete" {
             self.only(&j.keep_days, "keep_days", "\"delete\"");
         }
         if !["zip", "copy", "send", "fetch"].contains(&kind) {
-            self.only(&j.from, "from", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
-            self.only(&j.into, "into", "\"zip\"・\"copy\"・\"send\"・\"fetch\"");
+            self.only(&j.from, "from", "\"zip\", \"copy\", \"send\", \"fetch\"");
+            self.only(&j.into, "into", "\"zip\", \"copy\", \"send\", \"fetch\"");
         }
         if !["send", "fetch", "ssh"].contains(&kind) {
-            self.only(&j.key, "key", "\"send\"・\"fetch\"・\"ssh\"");
-            self.only(&j.host_key, "host_key", "\"send\"・\"fetch\"・\"ssh\"");
+            self.only(&j.key, "key", "\"send\", \"fetch\", \"ssh\"");
+            self.only(&j.host_key, "host_key", "\"send\", \"fetch\", \"ssh\"");
         }
         if kind != "send" && kind != "fetch" {
             for (field, name) in [(&j.key_id, "key_id"), (&j.region, "region"), (&j.endpoint, "endpoint"), (&j.verify, "verify")] {
-                self.only(field, name, "\"send\" か \"fetch\"");
+                self.only(field, name, "\"send\", \"fetch\"");
             }
         }
         if !["send", "fetch", "ssh", "winrm", "sql"].contains(&kind) {
-            self.only(&j.password, "password", "\"send\"・\"fetch\"・\"ssh\"・\"winrm\"・\"sql\"");
+            self.only(&j.password, "password", "\"send\", \"fetch\", \"ssh\", \"winrm\", \"sql\"");
         }
         if kind != "ssh" && kind != "winrm" {
-            self.only(&j.on, "on", "\"ssh\" か \"winrm\"");
-            self.only(&j.command, "command", "\"ssh\" か \"winrm\"");
-            self.only(&j.pass, "pass", "\"ssh\" か \"winrm\"");
+            self.only(&j.on, "on", "\"ssh\", \"winrm\"");
+            self.only(&j.command, "command", "\"ssh\", \"winrm\"");
+            self.only(&j.pass, "pass", "\"ssh\", \"winrm\"");
         }
         if kind != "winrm" {
             self.only(&j.cert, "cert", "\"winrm\"");
@@ -1076,7 +1078,7 @@ impl Checker<'_> {
             }
         }
         if kind != "http" && kind != "mail" {
-            self.only(&j.body, "body", "\"http\" か \"mail\"");
+            self.only(&j.body, "body", "\"http\", \"mail\"");
         }
         if kind != "mail" {
             for (field, name) in [(&j.cc, "cc"), (&j.subject, "subject"), (&j.files, "files"), (&j.via, "via")] {
@@ -1096,7 +1098,7 @@ impl Checker<'_> {
             self.only(&j.days, "days", "\"time\"");
         }
         if !["file", "loop", "sql"].contains(&kind) {
-            self.only(&j.file, "file", "\"file\"・\"loop\"・\"sql\"");
+            self.only(&j.file, "file", "\"file\", \"loop\", \"sql\"");
         }
         if kind != "file" {
             self.only(&j.settle, "settle", "\"file\"");
@@ -1105,7 +1107,7 @@ impl Checker<'_> {
             self.only(&j.count, "count", "\"loop\"");
         }
         if !["loop", "ssh", "winrm"].contains(&kind) {
-            self.only(&j.max, "max", "\"loop\"・\"ssh\"・\"winrm\"");
+            self.only(&j.max, "max", "\"loop\", \"ssh\", \"winrm\"");
         }
         if kind != "jobnet" {
             self.only(&j.use_, "use", "\"jobnet\"");
@@ -1115,28 +1117,29 @@ impl Checker<'_> {
                 let file = self.string(&j.file, "file").filter(|f| {
                     let ok = !f.trim().is_empty();
                     if !ok {
-                        self.add(j.file.as_ref().map_or(start, |f| f.span().start), "file が空");
+                        self.add(j.file.as_ref().map_or(start, |f| f.span().start), msg::line(msg::DEF_VALUE_EMPTY, &["file"]));
                     }
                     ok
                 });
                 let count = j.count.as_ref().and_then(|f| match f.get_ref().as_integer() {
                     Some(n) if (1..=10_000).contains(&n) => Some(n as u32),
                     _ => {
-                        self.add(f.span().start, "count は 1 から 10000 までの整数で書く（何回くり返すか）");
+                        self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["count", "1", "10000"]));
                         None
                     }
                 });
                 let max = j.max.as_ref().and_then(|f| match f.get_ref().as_integer() {
                     Some(n) if (1..=i64::from(LOOP_MAX)).contains(&n) => Some(n as u32),
                     _ => {
-                        self.add(f.span().start, format!("max は 1 から {LOOP_MAX} までの整数で書く（いくつの回を並べて動かすか）"));
+                        self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["max", "1", &LOOP_MAX.to_string()]));
                         None
                     }
                 });
                 match (&j.file, &j.count) {
-                    (Some(_), Some(f)) => self.add(f.span().start, "kind = \"loop\" には file か count のどちらか 1 つだけ書く"),
+                    (Some(_), Some(f)) => self.add(f.span().start, msg::line(msg::DEF_LOOP_BOTH, &[])),
                     (None, None) => {
-                        self.add(start, "kind = \"loop\" には file（例: file = 'C:\\in\\*.csv'）か count（例: count = 3）が要る")
+                        let shape = "file = 'C:\\in\\*.csv' / count = 3";
+                        self.add(start, msg::line(msg::DEF_EITHER_REQUIRED, &["kind = \"loop\"", "file", "count", shape]))
                     }
                     _ => {}
                 }
@@ -1154,7 +1157,7 @@ impl Checker<'_> {
                 let at = match &j.at {
                     Some(f) => self.time_of(f, "at"),
                     None => {
-                        self.add(start, "kind = \"time\" には at が要る（例: at = \"06:00\"）");
+                        self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["time", "at", "at = \"06:00\""]));
                         None
                     }
                 };
@@ -1163,7 +1166,7 @@ impl Checker<'_> {
                     Some(f) => match f.get_ref().as_integer() {
                         Some(n) if (0..=366).contains(&n) => n as u32,
                         _ => {
-                            self.add(f.span().start, "days は 0 以上の整数で書く（何日後の at か）");
+                            self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["days", "0", "366"]));
                             0
                         }
                     },
@@ -1175,12 +1178,12 @@ impl Checker<'_> {
                     Some(_) => self.string(&j.file, "file").filter(|f| {
                         let ok = !f.trim().is_empty();
                         if !ok {
-                            self.add(j.file.as_ref().map_or(start, |f| f.span().start), "file が空");
+                            self.add(j.file.as_ref().map_or(start, |f| f.span().start), msg::line(msg::DEF_VALUE_EMPTY, &["file"]));
                         }
                         ok
                     }),
                     None => {
-                        self.add(start, "kind = \"file\" には file が要る（例: file = 'C:\\in\\*.csv'）");
+                        self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]));
                         None
                     }
                 };
@@ -1194,12 +1197,12 @@ impl Checker<'_> {
                     Some(f) => self.string(&j.use_, "use").filter(|u| {
                         let ok = is_id(u);
                         if !ok {
-                            self.add(f.span().start, "use は \"グループ/名前\" で書く（例: use = \"共通/バックアップ\"）");
+                            self.add(f.span().start, msg::line(msg::DEF_JOBNET_REF_BAD, &["use"]));
                         }
                         ok
                     }),
                     None => {
-                        self.add(start, "kind = \"jobnet\" には use が要る（例: use = \"共通/バックアップ\"）");
+                        self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["jobnet", "use", "use = \"common/backup\""]));
                         None
                     }
                 };
@@ -1216,14 +1219,14 @@ impl Checker<'_> {
     fn chore(&mut self, j: &RawJob, kind: &str, start: usize) -> Chore {
         let path_of = |c: &mut Self, field: &Field, name: &str| -> String {
             let Some(f) = field else {
-                c.add(start, format!("kind = \"{kind}\" には {name} が要る"));
+                c.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED_PLAIN, &[kind, name]));
                 return String::new();
             };
             let s = c.string(field, name).unwrap_or_default();
             if s.trim().is_empty() {
-                c.add(f.span().start, format!("{name} が空"));
+                c.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &[name]));
             } else if let Err(e) = c.template(&s) {
-                c.add(f.span().start, format!("{name}: {e}"));
+                c.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
             }
             s
         };
@@ -1233,13 +1236,13 @@ impl Checker<'_> {
                 let path = path_of(self, &j.path, "path");
                 let keep_days = match &j.keep_days {
                     None => {
-                        self.add(start, "kind = \"delete\" には keep_days が要る（何日より古いファイルを消すか。例: keep_days = 30）");
+                        self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["delete", "keep_days", "keep_days = 30"]));
                         1
                     }
                     Some(f) => match f.get_ref().as_integer() {
                         Some(n) if (1..=36_500).contains(&n) => n as u32,
                         _ => {
-                            self.add(f.span().start, "keep_days は 1 以上の整数で書く（全部を消すなら kind = \"empty\"）");
+                            self.add(f.span().start, msg::line(msg::DEF_KEEP_DAYS_BAD, &[]));
                             1
                         }
                     },
@@ -1258,7 +1261,7 @@ impl Checker<'_> {
                 for (value, field, name) in [(&key, &j.key, "key"), (&host_key, &j.host_key, "host_key")] {
                     if let (Some(v), Some(f)) = (value, field) {
                         if let Err(e) = self.template(v) {
-                            self.add(f.span().start, format!("{name}: {e}"));
+                            self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
                         }
                     }
                 }
@@ -1271,7 +1274,7 @@ impl Checker<'_> {
                 for (value, field, name) in [(&region, &j.region, "region"), (&endpoint, &j.endpoint, "endpoint")] {
                     if let (Some(v), Some(f)) = (value, field) {
                         if let Err(e) = self.template(v) {
-                            self.add(f.span().start, format!("{name}: {e}"));
+                            self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
                         }
                     }
                 }
@@ -1293,7 +1296,7 @@ impl Checker<'_> {
                 let cert = self.string(&j.cert, "cert").map(|c| c.trim().to_owned()).filter(|c| !c.is_empty());
                 if let (Some(v), Some(f)) = (&cert, &j.cert) {
                     if let Err(e) = self.template(v) {
-                        self.add(f.span().start, format!("cert: {e}"));
+                        self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["cert", msg::uncoded(&e)]));
                     }
                 }
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
@@ -1320,18 +1323,18 @@ impl Checker<'_> {
     /// `winrm://user@host[:port]` (a template).
     fn far_on(&mut self, j: &RawJob, kind: &str, start: usize) -> String {
         let (example, form) = match kind {
-            "winrm" => ("winrm://ops@server", "winrm://ユーザー@ホスト[:ポート]"),
-            _ => ("ssh://user@server", "ssh://[ユーザー@]ホスト[:ポート]"),
+            "winrm" => ("on = \"winrm://ops@server\"", "winrm://user@host[:port]"),
+            _ => ("on = \"ssh://user@server\"", "ssh://[user@]host[:port]"),
         };
         let Some(f) = &j.on else {
-            self.add(start, format!("kind = \"{kind}\" には on が要る（動かす PC。例: on = \"{example}\"）"));
+            self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &[kind, "on", example]));
             return String::new();
         };
         let s = self.string(&j.on, "on").unwrap_or_default();
         if s.trim().is_empty() {
-            self.add(f.span().start, format!("on が空（動かす PC を {form} で書く）"));
+            self.add(f.span().start, msg::line(msg::DEF_ON_EMPTY, &[form]));
         } else if let Err(e) = self.template(&s) {
-            self.add(f.span().start, format!("on: {e}"));
+            self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["on", msg::uncoded(&e)]));
         }
         s
     }
@@ -1340,15 +1343,15 @@ impl Checker<'_> {
     /// written (a template).
     fn far_command(&mut self, j: &RawJob, kind: &str, start: usize) -> String {
         let Some(f) = &j.command else {
-            let example = if kind == "winrm" { "ipconfig /all" } else { "df -h" };
-            self.add(start, format!("kind = \"{kind}\" には command が要る（相手の PC で動かすコマンド。例: command = \"{example}\"）"));
+            let example = if kind == "winrm" { "command = \"ipconfig /all\"" } else { "command = \"df -h\"" };
+            self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &[kind, "command", example]));
             return String::new();
         };
         let s = self.string(&j.command, "command").unwrap_or_default();
         if s.trim().is_empty() {
-            self.add(f.span().start, "command が空（相手の PC で動かすコマンドを書く）");
+            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["command"]));
         } else if let Err(e) = self.template(&s) {
-            self.add(f.span().start, format!("command: {e}"));
+            self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["command", msg::uncoded(&e)]));
         }
         s
     }
@@ -1360,7 +1363,7 @@ impl Checker<'_> {
         let before = self.problems.len();
         let to = match &j.to {
             None => {
-                self.add(start, "kind = \"mail\" には to が要る（送り先のアドレスの配列。例: to = [\"ops@example.com\"]）");
+                self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["mail", "to", "to = [\"ops@example.com\"]"]));
                 Vec::new()
             }
             Some(_) => self.texts(&j.to, "to", "to = [\"ops@example.com\"]"),
@@ -1368,15 +1371,15 @@ impl Checker<'_> {
         let cc = self.texts(&j.cc, "cc", "cc = [\"boss@example.com\"]");
         let subject = match &j.subject {
             None => {
-                self.add(start, "kind = \"mail\" には subject が要る（件名。例: subject = \"売上の集計 {date}\"）");
+                self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["mail", "subject", "subject = \"Sales {date}\""]));
                 String::new()
             }
             Some(f) => {
                 let s = self.string(&j.subject, "subject").unwrap_or_default();
                 if s.trim().is_empty() {
-                    self.add(f.span().start, "subject が空（メールの件名を書く）");
+                    self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["subject"]));
                 } else if let Err(e) = self.template(&s) {
-                    self.add(f.span().start, format!("subject: {e}"));
+                    self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["subject", msg::uncoded(&e)]));
                 }
                 s
             }
@@ -1384,13 +1387,13 @@ impl Checker<'_> {
         let body = self.string(&j.body, "body");
         if let (Some(b), Some(f)) = (&body, &j.body) {
             if let Err(e) = self.template(b) {
-                self.add(f.span().start, format!("body: {e}"));
+                self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["body", msg::uncoded(&e)]));
             }
         }
-        let files = self.texts(&j.files, "files", "files = ['D:\\out\\売上.csv']");
+        let files = self.texts(&j.files, "files", "files = ['D:\\out\\sales.csv']");
         let via = self.string(&j.via, "via").map(|v| v.trim().to_owned());
         if let (Some(""), Some(f)) = (via.as_deref(), &j.via) {
-            self.add(f.span().start, "via が空（[[notify.mails]] の name を書く。書かなければ最初のもの）");
+            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["via"]));
         }
         let chore = Chore::Mail { to, cc, subject, body, files, via: via.filter(|v| !v.is_empty()) };
         if self.problems.len() == before {
@@ -1407,7 +1410,7 @@ impl Checker<'_> {
         let before = self.problems.len();
         let db = match &j.db {
             None => {
-                self.add(start, "kind = \"sql\" には db が要る（流す先。例: db = \"sqlserver://db01/売上\"）");
+                self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["sql", "db", "db = \"sqlserver://db01/sales\""]));
                 String::new()
             }
             Some(_) => self.sql_text(&j.db, "db").unwrap_or_default(),
@@ -1429,7 +1432,7 @@ impl Checker<'_> {
                 toml::Value::String(s) => s.trim().to_owned(),
                 toml::Value::Integer(n) if *n >= 0 => n.to_string(),
                 _ => {
-                    self.add(f.span().start, "rows は \"1..\" のような文字列か 0 以上の整数で書く（正常とする行の数）");
+                    self.add(f.span().start, msg::line(msg::DEF_ROWS_BAD, &[]));
                     return None;
                 }
             };
@@ -1453,9 +1456,9 @@ impl Checker<'_> {
         let at = field.as_ref()?.span().start;
         let s = self.string(field, name)?;
         if s.trim().is_empty() {
-            self.add(at, format!("{name} が空"));
+            self.add(at, msg::line(msg::DEF_VALUE_EMPTY, &[name]));
         } else if let Err(e) = self.template(&s) {
-            self.add(at, format!("{name}: {e}"));
+            self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
         }
         Some(s)
     }
@@ -1464,7 +1467,7 @@ impl Checker<'_> {
     fn texts(&mut self, field: &Field, name: &str, example: &str) -> Vec<String> {
         let Some(f) = field.as_ref() else { return Vec::new() };
         let at = f.span().start;
-        let shape = format!("{name} は空でない文字列の配列で書く（例: {example}）");
+        let shape = msg::line(msg::DEF_ARRAY_BAD, &[name, example]);
         let Some(list) = f.get_ref().as_array() else {
             self.add(at, shape);
             return Vec::new();
@@ -1474,7 +1477,7 @@ impl Checker<'_> {
             match v.as_str().map(str::trim) {
                 Some(s) if !s.is_empty() => {
                     if let Err(e) = self.template(s) {
-                        self.add(at, format!("{name}: {e}"));
+                        self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
                     }
                     out.push(s.to_owned());
                 }
@@ -1492,19 +1495,19 @@ impl Checker<'_> {
         let template = |c: &mut Self, field: &Field, name: &str| -> Option<String> {
             let s = c.string(field, name)?;
             if let Err(e) = c.template(&s) {
-                c.add(field.as_ref().map_or(start, |f| f.span().start), format!("{name}: {e}"));
+                c.add(field.as_ref().map_or(start, |f| f.span().start), msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
             }
             Some(s)
         };
         let url = match &j.url {
             None => {
-                self.add(start, "kind = \"http\" には url が要る（例: url = \"https://api.example.com/jobs\"）");
+                self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["http", "url", "url = \"https://api.example.com/jobs\""]));
                 String::new()
             }
             Some(f) => {
                 let s = template(self, &j.url, "url").unwrap_or_default();
                 if s.trim().is_empty() {
-                    self.add(f.span().start, "url が空");
+                    self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["url"]));
                 }
                 s.trim().to_owned()
             }
@@ -1516,16 +1519,16 @@ impl Checker<'_> {
         if let Some(f) = &j.headers {
             let at = f.span().start;
             match f.get_ref().as_table() {
-                None => self.add(at, "headers は表で書く（例: headers = { Authorization = \"secret:api\" }）"),
+                None => self.add(at, msg::line(msg::DEF_TABLE_BAD, &["headers", "{ Authorization = \"secret:api\" }"])),
                 Some(t) => {
                     for (k, v) in t {
                         if let Err(e) = crate::chore::header_name(k) {
                             self.add(at, e);
                         }
                         match v.as_str() {
-                            None => self.add(at, format!("headers の値は文字列で書く: {k}")),
+                            None => self.add(at, msg::line(msg::DEF_VALUE_STRING_BAD, &["headers", k])),
                             Some(s) if s.strip_prefix("secret:") == Some("") => {
-                                self.add(at, format!("headers {k}: secret: の後に名前が要る"))
+                                self.add(at, msg::line(msg::DEF_SECRET_NAME_EMPTY, &[&format!("headers.{k}")]))
                             }
                             Some(s) => {
                                 headers.insert(k.clone(), s.to_owned());
@@ -1537,20 +1540,19 @@ impl Checker<'_> {
         }
         let mut expect = Vec::new();
         if let Some(f) = &j.expect {
-            const SHAPE: &str = "expect は状態コード（100〜599）の配列で書く（例: expect = [200, 201]）";
             match f.get_ref().as_array() {
                 Some(a) if !a.is_empty() => {
                     for v in a {
                         match v.as_integer() {
                             Some(n) if (100..=599).contains(&n) => expect.push(n as u16),
                             _ => {
-                                self.add(f.span().start, SHAPE);
+                                self.add(f.span().start, msg::line(msg::DEF_EXPECT_BAD, &[]));
                                 break;
                             }
                         }
                     }
                 }
-                _ => self.add(f.span().start, SHAPE),
+                _ => self.add(f.span().start, msg::line(msg::DEF_EXPECT_BAD, &[])),
             }
         }
         Chore::Http { url, method, body, content_type, headers, expect }
@@ -1558,48 +1560,50 @@ impl Checker<'_> {
 
     /// `retry = { count = 2, wait = "5m" }`: both are required.
     fn retry(&mut self, field: &Field) -> Option<Retry> {
-        const SHAPE: &str = "retry は { count = 2, wait = \"5m\" } の形で書く";
+        const SHAPE: &str = "{ count = 2, wait = \"5m\" }";
         let f = field.as_ref()?;
         let at = f.span().start;
         let toml::Value::Table(t) = f.get_ref() else {
-            self.add(at, SHAPE);
+            self.add(at, msg::line(msg::DEF_TABLE_BAD, &["retry", SHAPE]));
             return None;
         };
         let mut ok = true;
         for k in t.keys() {
             if k != "count" && k != "wait" {
-                self.add(at, format!("retry に知らない欄 {k}"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_UNKNOWN, &["retry", k, "count, wait"]));
                 ok = false;
             }
         }
         let count = match t.get("count") {
             None => {
-                self.add(at, format!("retry に count が無い（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_MISSING, &["retry", "count", SHAPE]));
                 None
             }
             Some(v) => match v.as_integer() {
                 Some(n) if (1..=100).contains(&n) => Some(n as u32),
                 _ => {
-                    self.add(at, "retry の count は 1 から 100 の整数で書く");
+                    self.add(at, msg::line(msg::DEF_INT_RANGE, &["retry.count", "1", "100"]));
                     None
                 }
             },
         };
         let wait = match t.get("wait") {
             None => {
-                self.add(at, format!("retry に wait が無い（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_MISSING, &["retry", "wait", SHAPE]));
                 None
             }
-            Some(v) => match v
-                .as_str()
-                .ok_or_else(|| " は \"5m\" のように文字列で書く".to_owned())
-                .and_then(|s| crate::duration::parse(s).map_err(|e| format!(" {e}")))
-            {
-                Ok(secs) => Some(secs),
-                Err(e) => {
-                    self.add(at, format!("retry の wait{e}"));
+            Some(v) => match v.as_str() {
+                None => {
+                    self.add(at, msg::line(msg::DEF_STRING_BAD_E, &["retry.wait", "\"5m\""]));
                     None
                 }
+                Some(s) => match crate::duration::parse(s) {
+                    Ok(secs) => Some(secs),
+                    Err(e) => {
+                        self.add(at, msg::line(msg::DEF_VALUE_UNREADABLE, &["retry.wait", msg::uncoded(&e)]));
+                        None
+                    }
+                },
             },
         };
         match (count, wait) {
@@ -1610,9 +1614,9 @@ impl Checker<'_> {
 
     fn top(&mut self, raw: &RawNet) -> (Missed, Overlap) {
         match &raw.format {
-            None => self.problems.push(Problem { line: 1, message: format!("format = {FORMAT} が要る") }),
+            None => self.problems.push(Problem { line: 1, message: msg::line(msg::DEF_FORMAT_MISSING, &[&FORMAT.to_string()]) }),
             Some(f) if f.get_ref().as_integer() != Some(FORMAT) => {
-                self.add(f.span().start, format!("この版が読める format は {FORMAT} だけ"));
+                self.add(f.span().start, msg::line(msg::DEF_FORMAT_UNSUPPORTED, &[&FORMAT.to_string()]));
             }
             Some(_) => {}
         }
@@ -1634,7 +1638,7 @@ impl Checker<'_> {
         match f.get_ref().as_str() {
             Some(s) if crate::calendar::valid_name(s) => Some(s.to_owned()),
             _ => {
-                self.add(f.span().start, "calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）");
+                self.add(f.span().start, msg::line(msg::DEF_CALENDAR_NAME_BAD, &[]));
                 None
             }
         }
@@ -1643,38 +1647,36 @@ impl Checker<'_> {
     /// `lock = "販売DB"` (exclusive) or `lock = { name = "販売DB", shared = true }`: the name
     /// and whether it is shared. The name has the same rules as a calendar's (a file name, no path).
     fn lock(&mut self, field: &Field) -> Option<(String, bool)> {
-        const NAME: &str = "lock は名前（例: lock = \"販売DB\"）。同じ名前のジョブネットは同時に動かさない";
-        const SHAPE: &str =
-            "lock は \"販売DB\"（排他）か { name = \"販売DB\", shared = true }（共有: 読むだけのネットどうしは一緒に動く）の形で書く";
+        const SHAPE: &str = "{ name = \"salesdb\", shared = true }";
         let f = field.as_ref()?;
         let at = f.span().start;
         let t = match f.get_ref() {
             toml::Value::String(s) if crate::calendar::valid_name(s) => return Some((s.to_owned(), false)),
             toml::Value::String(_) => {
-                self.add(at, NAME);
+                self.add(at, msg::line(msg::DEF_LOCK_NAME_BAD, &[]));
                 return None;
             }
             toml::Value::Table(t) => t,
             _ => {
-                self.add(at, SHAPE);
+                self.add(at, msg::line(msg::DEF_LOCK_SHAPE, &[]));
                 return None;
             }
         };
         let mut ok = true;
         for k in t.keys() {
             if k != "name" && k != "shared" {
-                self.add(at, format!("lock に知らない欄 {k}（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_UNKNOWN, &["lock", k, "name, shared"]));
                 ok = false;
             }
         }
         let name = match t.get("name").map(|v| v.as_str()) {
             None => {
-                self.add(at, format!("lock に name が無い（{SHAPE}）"));
+                self.add(at, msg::line(msg::DEF_SUBKEY_MISSING, &["lock", "name", SHAPE]));
                 None
             }
             Some(Some(s)) if crate::calendar::valid_name(s) => Some(s.to_owned()),
             Some(_) => {
-                self.add(at, "lock の name は名前（例: name = \"販売DB\"。/ \\ : などは使えない）");
+                self.add(at, msg::line(msg::DEF_LOCK_NAME_BAD, &[]));
                 None
             }
         };
@@ -1682,7 +1684,7 @@ impl Checker<'_> {
             None => false,
             Some(Some(b)) => b,
             Some(None) => {
-                self.add(at, "lock の shared は true か false（true: 読むだけ。共有どうしは一緒に動き、排他とは一緒に動かない）");
+                self.add(at, msg::line(msg::DEF_LOCK_SHARED_BAD, &[]));
                 ok = false;
                 false
             }
@@ -1700,7 +1702,7 @@ impl Checker<'_> {
         match f.get_ref().as_bool() {
             Some(b) => b,
             None => {
-                self.add(f.span().start, "wake は true か false（true: PC が眠っていても起こして流す）");
+                self.add(f.span().start, msg::line(msg::DEF_WAKE_BAD, &[]));
                 false
             }
         }
@@ -1709,11 +1711,14 @@ impl Checker<'_> {
     /// `late_start` / `late_end`: a time of day (`"06:00"`) or a length (`"30m"`).
     fn deadline(&mut self, field: &Field, name: &str) -> Option<Deadline> {
         let f = field.as_ref()?;
-        match f.get_ref().as_str().ok_or_else(|| "\"06:00\"（時刻）か \"30m\"（長さ）の文字列で書く".to_owned()).and_then(Deadline::parse)
-        {
+        let Some(s) = f.get_ref().as_str() else {
+            self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &[name, "\"06:00\" / \"30m\""]));
+            return None;
+        };
+        match Deadline::parse(s) {
             Ok(d) => Some(d),
             Err(e) => {
-                self.add(f.span().start, format!("{name}: {e}"));
+                self.add(f.span().start, msg::line(msg::DEF_VALUE_UNREADABLE, &[name, msg::uncoded(&e)]));
                 None
             }
         }
@@ -1725,7 +1730,7 @@ impl Checker<'_> {
         match f.get_ref().as_integer() {
             Some(n) if (1..=5).contains(&n) => Some(n as u8),
             _ => {
-                self.add(f.span().start, "priority は 1 から 5 の整数（5 が先に流れる。書かなければ 3）");
+                self.add(f.span().start, msg::line(msg::DEF_PRIORITY_BAD, &[]));
                 None
             }
         }
@@ -1735,7 +1740,7 @@ impl Checker<'_> {
     fn require(&mut self, field: &Field) -> Require {
         let mut out = Require::default();
         let Some(f) = field.as_ref() else { return out };
-        let shape = "require は [\"ac\", \"network\", \"idle:10m\"] のように書く（ac: AC 電源のとき・network: つながっているとき・idle:10m: 10 分使われていないとき）";
+        let shape = msg::line(msg::DEF_REQUIRE_BAD, &[]);
         let Some(list) = f.get_ref().as_array() else {
             self.add(f.span().start, shape);
             return out;
@@ -1761,7 +1766,7 @@ impl Checker<'_> {
         let f = field.as_ref()?;
         let b = f.get_ref().as_bool();
         if b.is_none() {
-            self.add(f.span().start, "late_slow は true か false（false: いつもの 2 倍かかっても知らせない）");
+            self.add(f.span().start, msg::line(msg::DEF_LATE_SLOW_BAD, &[]));
         }
         b
     }
@@ -1771,14 +1776,18 @@ impl Checker<'_> {
         let Some(f) = field.as_ref() else { return Vec::new() };
         let at = f.span().start;
         let Some(list) = f.get_ref().as_array() else {
-            self.add(at, "quiet は文字列の配列で書く（例: quiet = [\"12:00-13:00\"]）");
+            self.add(at, msg::line(msg::DEF_ARRAY_BAD, &["quiet", "quiet = [\"12:00-13:00\"]"]));
             return Vec::new();
         };
         let mut out = Vec::new();
         for v in list {
-            match v.as_str().ok_or_else(|| "\"12:00-13:00\" のような文字列で書く".to_owned()).and_then(Span::parse) {
+            let Some(s) = v.as_str() else {
+                self.add(at, msg::line(msg::DEF_ARRAY_BAD, &["quiet", "quiet = [\"12:00-13:00\"]"]));
+                continue;
+            };
+            match Span::parse(s) {
                 Ok(s) => out.push(s),
-                Err(e) => self.add(at, format!("quiet: {e}")),
+                Err(e) => self.add(at, msg::line(msg::DEF_VALUE_UNREADABLE, &["quiet", msg::uncoded(&e)])),
             }
         }
         out
@@ -1789,7 +1798,7 @@ impl Checker<'_> {
     fn names(&mut self, field: &Field, name: &str) -> Vec<String> {
         let Some(f) = field.as_ref() else { return Vec::new() };
         let at = f.span().start;
-        let shape = format!("{name} は通知の場所の名前の配列で書く（例: {name} = [\"経理\"]）");
+        let shape = msg::line(msg::DEF_ARRAY_BAD, &[name, &format!("{name} = [\"accounting\"]")]);
         let Some(list) = f.get_ref().as_array() else {
             self.add(at, shape);
             return Vec::new();
@@ -1799,7 +1808,7 @@ impl Checker<'_> {
             match v.as_str().map(str::trim) {
                 Some(s) if !s.is_empty() => {
                     if out.iter().any(|o| o == s) {
-                        self.add(at, format!("{name}: 同じ名前が 2 つある: {s}"));
+                        self.add(at, msg::line(msg::DEF_NAMES_DUPLICATE, &[name, s]));
                     } else {
                         out.push(s.to_owned());
                     }
@@ -1825,7 +1834,10 @@ impl Checker<'_> {
                 match f.get_ref().as_str() {
                     Some(s @ ("day" | "minutes" | "hours" | "week" | "month" | "year")) => s,
                     _ => {
-                        self.add(f.span().start, "every は \"day\"・\"minutes\"・\"hours\"・\"week\"・\"month\"・\"year\" のどれか");
+                        self.add(
+                            f.span().start,
+                            msg::line(msg::DEF_CHOICE_BAD, &["every", "\"day\", \"minutes\", \"hours\", \"week\", \"month\", \"year\""]),
+                        );
                         continue;
                     }
                 }
@@ -1848,10 +1860,7 @@ impl Checker<'_> {
             } else if w.session.is_some() {
                 "session"
             } else {
-                self.add(
-                    head,
-                    "[[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る",
-                );
+                self.add(head, msg::line(msg::DEF_WHEN_KIND_MISSING, &[]));
                 continue;
             };
             let allowed: &[&str] = match kind {
@@ -1908,7 +1917,7 @@ impl Checker<'_> {
             ] {
                 if let Some(f) = field {
                     if !allowed.contains(&name) {
-                        self.add(f.span().start, format!("{name} は {kind} では使わない"));
+                        self.add(f.span().start, msg::line(msg::DEF_WHEN_KEY_UNUSED, &[name, kind]));
                     }
                 }
             }
@@ -1931,11 +1940,11 @@ impl Checker<'_> {
                     "session" => "session",
                     _ => "file / on_start",
                 };
-                self.add(pos, format!("{what} では on_closed は \"skip\" か \"run\""));
+                self.add(pos, msg::line(msg::DEF_ON_CLOSED_BAD, &[what]));
             }
             if kind == "after_jobnet" && matches!(on_closed, Some(OnClosed::Prev | OnClosed::Next)) {
                 let pos = w.on_closed.as_ref().map_or(head, |f| f.span().start);
-                self.add(pos, "after_jobnet では on_closed は \"skip\" か \"run\"");
+                self.add(pos, msg::line(msg::DEF_ON_CLOSED_BAD, &["after_jobnet"]));
             }
             let before = self.problems.len();
             let kind = match kind {
@@ -1950,11 +1959,11 @@ impl Checker<'_> {
                     let contains = match (self.string(&w.contains, "contains"), &w.contains) {
                         (Some(c), _) if !c.is_empty() => Some(c),
                         (Some(_), Some(f)) => {
-                            self.add(f.span().start, "contains が空");
+                            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["contains"]));
                             None
                         }
                         (_, None) => {
-                            self.add(head, "contains が要る（例: contains = \"ERROR\"）");
+                            self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["contains", "contains = \"ERROR\""]));
                             None
                         }
                         _ => None,
@@ -1973,7 +1982,7 @@ impl Checker<'_> {
                         Some(u) if is_id(&u) => Some(Kind::AfterJobnet { jobnet: u, on }),
                         Some(_) => {
                             let pos = w.after_jobnet.as_ref().map_or(head, |f| f.span().start);
-                            self.add(pos, "after_jobnet は \"グループ/名前\" で書く（例: after_jobnet = \"経理/売上取込\"）");
+                            self.add(pos, msg::line(msg::DEF_JOBNET_REF_BAD, &["after_jobnet"]));
                             None
                         }
                         None => None,
@@ -1983,14 +1992,14 @@ impl Checker<'_> {
                     Some(true) => Some(Kind::OnStart),
                     _ => {
                         let pos = w.on_start.as_ref().map_or(head, |f| f.span().start);
-                        self.add(pos, "on_start は true だけ（使わないなら [[when]] ごと消す）");
+                        self.add(pos, msg::line(msg::DEF_ON_START_BAD, &[]));
                         None
                     }
                 },
                 "idle" => match self.duration_of(&w.idle, "idle") {
                     Some(s) if s < 60 => {
                         let pos = w.idle.as_ref().map_or(head, |f| f.span().start);
-                        self.add(pos, "idle は 1m 以上（それより短いと、手を止めるたびに流れる）");
+                        self.add(pos, msg::line(msg::DEF_IDLE_SHORT, &[]));
                         None
                     }
                     Some(s) => Some(Kind::Idle { idle: s }),
@@ -2018,7 +2027,7 @@ impl Checker<'_> {
                 }
                 "week" => {
                     let days = if w.days.is_none() {
-                        self.add(head, "days が要る（例: days = [\"mon\", \"fri\"]）");
+                        self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["days", "days = [\"mon\", \"fri\"]"]));
                         None
                     } else {
                         self.weekdays(&w.days)
@@ -2034,20 +2043,21 @@ impl Checker<'_> {
                 "year" => {
                     let md = match &w.date {
                         None => {
-                            self.add(head, "date が要る（例: date = \"04-01\"）");
+                            self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["date", "date = \"04-01\""]));
                             None
                         }
-                        Some(f) => match f
-                            .get_ref()
-                            .as_str()
-                            .ok_or_else(|| "date は \"04-01\" のように文字列で書く".to_owned())
-                            .and_then(when::month_day)
-                        {
-                            Ok(md) => Some(md),
-                            Err(e) => {
-                                self.add(f.span().start, e);
+                        Some(f) => match f.get_ref().as_str() {
+                            None => {
+                                self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &["date", "\"04-01\""]));
                                 None
                             }
+                            Some(s) => match when::month_day(s) {
+                                Ok(md) => Some(md),
+                                Err(e) => {
+                                    self.add(f.span().start, e);
+                                    None
+                                }
+                            },
                         },
                     };
                     let at = self.at(&w.at, head);
@@ -2056,7 +2066,7 @@ impl Checker<'_> {
                 _ => {
                     let dates = self.dates(&w.dates, "dates");
                     if dates.is_empty() && self.problems.len() == before {
-                        self.add(head, "dates が空");
+                        self.add(head, msg::line(msg::DEF_VALUE_EMPTY, &["dates"]));
                     }
                     let at = self.at(&w.at, head);
                     (!dates.is_empty()).then_some(dates).zip(at).map(|(dates, at)| Kind::Dates { dates, at })
@@ -2069,7 +2079,7 @@ impl Checker<'_> {
                 Some(u) if is_id(&u) => Some(u),
                 Some(_) => {
                     let pos = w.wait_for.as_ref().map_or(head, |f| f.span().start);
-                    self.add(pos, "wait_for は \"グループ/名前\" で書く（例: wait_for = \"経理/売上取込\"）");
+                    self.add(pos, msg::line(msg::DEF_JOBNET_REF_BAD, &["wait_for"]));
                     None
                 }
                 None => None,
@@ -2087,11 +2097,11 @@ impl Checker<'_> {
             };
             if wait_until.is_some() && wait_for.is_none() && w.wait_for.is_none() {
                 let pos = w.wait_until.as_ref().map_or(head, |f| f.span().start);
-                self.add(pos, "wait_until は wait_for と一緒に書く");
+                self.add(pos, msg::line(msg::DEF_WAIT_UNTIL_ALONE, &[]));
             }
             if let (Some(s), Some(e)) = (start, end) {
                 if s > e {
-                    self.add(w.start.as_ref().map_or(head, |f| f.span().start), "start は end より前");
+                    self.add(w.start.as_ref().map_or(head, |f| f.span().start), msg::line(msg::DEF_PERIOD_ORDER, &[]));
                 }
             }
             if let Some(kind) = kind {
@@ -2109,15 +2119,15 @@ impl Checker<'_> {
         let pos = f.span().start;
         let text = self.string(field, "log")?;
         if text.trim().is_empty() {
-            self.add(pos, "log が空");
+            self.add(pos, msg::line(msg::DEF_VALUE_EMPTY, &["log"]));
             return None;
         }
         if !absolute(&text) {
-            self.add(pos, "log は絶対パスで書く（例: log = 'D:\\app\\app.log'）");
+            self.add(pos, msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["log", "log = 'D:\\app\\app.log'"]));
             return None;
         }
         if text.contains(['*', '?']) || text.ends_with(['/', '\\']) {
-            self.add(pos, "log は 1 つのファイルのパス（* / ? は使えない）");
+            self.add(pos, msg::line(msg::DEF_LOG_PATH_BAD, &[]));
             return None;
         }
         Some(text)
@@ -2128,7 +2138,7 @@ impl Checker<'_> {
         let pos = w.eventlog.as_ref().map_or(head, |f| f.span().start);
         let eventlog = self.string(&w.eventlog, "eventlog")?;
         if eventlog.trim().is_empty() {
-            self.add(pos, "eventlog が空（例: eventlog = \"Application\"）");
+            self.add(pos, msg::line(msg::DEF_VALUE_EMPTY, &["eventlog"]));
             return None;
         }
         let mut ids = Vec::new();
@@ -2142,7 +2152,7 @@ impl Checker<'_> {
             match read {
                 Some(read) => ids = read,
                 None => {
-                    self.add(f.span().start, "ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）");
+                    self.add(f.span().start, msg::line(msg::DEF_IDS_BAD, &[]));
                     return None;
                 }
             }
@@ -2150,12 +2160,12 @@ impl Checker<'_> {
         let source = self.string(&w.source, "source");
         if let (Some(s), Some(f)) = (&source, &w.source) {
             if s.trim().is_empty() {
-                self.add(f.span().start, "source が空");
+                self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["source"]));
                 return None;
             }
         }
         if ids.is_empty() && source.is_none() {
-            self.add(head, "eventlog には ids か source が要る（例: ids = [4625]）");
+            self.add(head, msg::line(msg::DEF_EITHER_REQUIRED, &["eventlog", "ids", "source", "ids = [4625]"]));
             return None;
         }
         Some(Kind::EventLog { eventlog, ids, source })
@@ -2172,20 +2182,17 @@ impl Checker<'_> {
         }
         let secret = match (&w.password, self.string(&w.password, "password")) {
             (None, _) => {
-                self.add(head, "mail には password = \"secret:<名前>\" が要る（koyomi secret set <名前> で OS の資格情報に置く）");
+                self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["password", "password = \"secret:mailpass\""]));
                 None
             }
             (Some(f), Some(p)) => match p.strip_prefix("secret:") {
                 Some(name) if !name.trim().is_empty() => Some(name.to_owned()),
                 Some(_) => {
-                    self.add(f.span().start, "password: secret: の後に名前が要る");
+                    self.add(f.span().start, msg::line(msg::DEF_SECRET_NAME_EMPTY, &["password"]));
                     None
                 }
                 None => {
-                    self.add(
-                        f.span().start,
-                        "password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）",
-                    );
+                    self.add(f.span().start, msg::line(msg::DEF_PASSWORD_NOT_SECRET, &["password"]));
                     None
                 }
             },
@@ -2197,7 +2204,7 @@ impl Checker<'_> {
             return None;
         }
         if sender.is_none() && subject.is_none() {
-            self.add(head, "mail には sender か subject が要る（例: subject = \"請求書\"）");
+            self.add(head, msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
             return None;
         }
         Some(Kind::Mail { mail, secret: secret?, sender, subject })
@@ -2211,7 +2218,7 @@ impl Checker<'_> {
         if when::valid_session_user(&s) {
             return Some(Some(s));
         }
-        self.add(f.span().start, "user は 'PC\\taro'・'CORP\\taro'・\"taro\" のように書く（@ や空白は書かない）");
+        self.add(f.span().start, msg::line(msg::DEF_SESSION_USER_BAD, &[]));
         None
     }
 
@@ -2219,7 +2226,7 @@ impl Checker<'_> {
     fn mail_text(&mut self, field: &Field, name: &str) -> Option<String> {
         let s = self.string(field, name)?;
         if s.trim().is_empty() {
-            self.add(field.as_ref().map_or(0, |f| f.span().start), format!("{name} が空"));
+            self.add(field.as_ref().map_or(0, |f| f.span().start), msg::line(msg::DEF_VALUE_EMPTY, &[name]));
             return None;
         }
         Some(s)
@@ -2231,21 +2238,21 @@ impl Checker<'_> {
         let pos = f.span().start;
         let text = self.string(field, "file")?;
         if text.trim().is_empty() {
-            self.add(pos, "file が空");
+            self.add(pos, msg::line(msg::DEF_VALUE_EMPTY, &["file"]));
             return None;
         }
         // Split by either separator: the check reads the same on every OS.
         let (dir, name) = text.rsplit_once(['/', '\\']).unwrap_or(("", text.as_str()));
         if !absolute(&text) {
-            self.add(pos, "file は絶対パスで書く（例: file = 'D:\\受信\\*.csv'）");
+            self.add(pos, msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["file", "file = 'D:\\recv\\*.csv'"]));
             return None;
         }
         if name.is_empty() {
-            self.add(pos, "file はファイル名まで書く（例: file = 'D:\\受信\\*.csv'）");
+            self.add(pos, msg::line(msg::DEF_FILE_NAME_MISSING, &[]));
             return None;
         }
         if dir.contains(['*', '?']) {
-            self.add(pos, "file の * / ? はファイル名の部分だけ（フォルダーには使えない）");
+            self.add(pos, msg::line(msg::DEF_FILE_WILDCARD_DIR, &[]));
             return None;
         }
         Some(text)
@@ -2253,20 +2260,24 @@ impl Checker<'_> {
 
     fn at(&mut self, field: &Field, head: usize) -> Option<Vec<NaiveTime>> {
         let Some(f) = field else {
-            self.add(head, "at が要る（例: at = [\"02:00\"]）");
+            self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["at", "at = [\"02:00\"]"]));
             return None;
         };
         let toml::Value::Array(items) = f.get_ref() else {
-            self.add(f.span().start, "at は時刻の配列で書く（例: at = [\"02:00\", \"14:00\"]）");
+            self.add(f.span().start, msg::line(msg::DEF_ARRAY_BAD, &["at", "at = [\"02:00\", \"14:00\"]"]));
             return None;
         };
         if items.is_empty() {
-            self.add(f.span().start, "at が空");
+            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["at"]));
             return None;
         }
         let mut out = Vec::new();
         for v in items {
-            match v.as_str().ok_or_else(|| "at の要素は \"02:00\" のような文字列で書く".to_owned()).and_then(when::time) {
+            let Some(s) = v.as_str() else {
+                self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &["at", "\"02:00\""]));
+                continue;
+            };
+            match when::time(s) {
                 Ok(t) => out.push(t),
                 Err(e) => self.add(f.span().start, e),
             }
@@ -2275,7 +2286,11 @@ impl Checker<'_> {
     }
 
     fn time_of(&mut self, f: &Spanned<toml::Value>, name: &str) -> Option<NaiveTime> {
-        match f.get_ref().as_str().ok_or_else(|| format!("{name} は \"09:00\" のような文字列で書く")).and_then(when::time) {
+        let Some(s) = f.get_ref().as_str() else {
+            self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &[name, "\"09:00\""]));
+            return None;
+        };
+        match when::time(s) {
             Ok(t) => Some(t),
             Err(e) => {
                 self.add(f.span().start, e);
@@ -2288,16 +2303,20 @@ impl Checker<'_> {
     fn weekdays(&mut self, field: &Field) -> Option<Vec<Weekday>> {
         let Some(f) = field else { return Some(Vec::new()) };
         let toml::Value::Array(items) = f.get_ref() else {
-            self.add(f.span().start, "days は曜日の配列で書く（例: days = [\"mon\", \"fri\"]）");
+            self.add(f.span().start, msg::line(msg::DEF_ARRAY_BAD, &["days", "days = [\"mon\", \"fri\"]"]));
             return None;
         };
         if items.is_empty() {
-            self.add(f.span().start, "days が空");
+            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["days"]));
             return None;
         }
         let mut out = Vec::new();
         for v in items {
-            match v.as_str().ok_or_else(|| "days の要素は \"mon\" のような文字列で書く".to_owned()).and_then(when::weekday) {
+            let Some(s) = v.as_str() else {
+                self.add(f.span().start, msg::line(msg::DEF_STRING_BAD_E, &["days", "\"mon\""]));
+                continue;
+            };
+            match when::weekday(s) {
                 Ok(d) => out.push(d),
                 Err(e) => self.add(f.span().start, e),
             }
@@ -2307,13 +2326,13 @@ impl Checker<'_> {
 
     fn n(&mut self, field: &Field, head: usize) -> Option<u32> {
         let Some(f) = field else {
-            self.add(head, "n が要る（例: n = 15）");
+            self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["n", "n = 15"]));
             return None;
         };
         match f.get_ref().as_integer() {
             Some(n) if (1..=1440).contains(&n) => Some(n as u32),
             _ => {
-                self.add(f.span().start, "n は 1 以上の整数で書く");
+                self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["n", "1", "1440"]));
                 None
             }
         }
@@ -2321,14 +2340,19 @@ impl Checker<'_> {
 
     fn span_of(&mut self, from: &Field, to: &Field, head: usize) -> Option<(NaiveTime, NaiveTime)> {
         let (Some(a), Some(b)) = (from, to) else {
-            self.add(head, "from と to が要る（例: from = \"09:00\", to = \"18:00\"）");
+            if from.is_none() {
+                self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["from", "from = \"09:00\""]));
+            }
+            if to.is_none() {
+                self.add(head, msg::line(msg::DEF_WHEN_KEY_MISSING, &["to", "to = \"18:00\""]));
+            }
             return None;
         };
         let from = self.time_of(a, "from");
         let to = self.time_of(b, "to");
         let (from, to) = from.zip(to)?;
         if from > to {
-            self.add(a.span().start, "from は to より前");
+            self.add(a.span().start, msg::line(msg::DEF_TIME_ORDER, &[]));
             return None;
         }
         Some((from, to))
@@ -2338,13 +2362,13 @@ impl Checker<'_> {
         if let Some(b) = &w.business_day {
             for (field, name) in [(&w.day, "day"), (&w.nth, "nth"), (&w.weekday, "weekday"), (&w.shift, "shift")] {
                 if let Some(f) = field {
-                    self.add(f.span().start, format!("{name} は business_day と一緒に使わない"));
+                    self.add(f.span().start, msg::line(msg::DEF_BUSINESS_DAY_CONFLICT, &[name]));
                 }
             }
             return match b.get_ref().as_integer() {
                 Some(n) if (1..=31).contains(&n) || (-31..=-1).contains(&n) => Some(MonthRule::BusinessDay { n: n as i32 }),
                 _ => {
-                    self.add(b.span().start, "business_day は 1 から 31 か -1 から -31 の数");
+                    self.add(b.span().start, msg::line(msg::DEF_BUSINESS_DAY_BAD, &[]));
                     None
                 }
             };
@@ -2352,13 +2376,13 @@ impl Checker<'_> {
         let shift = match &w.shift {
             None => Some(0),
             Some(f) if !matches!(w.day.as_ref().map(|d| d.get_ref()), Some(toml::Value::Integer(_))) => {
-                self.add(f.span().start, "shift は day の数と使う（例: day = 20, shift = -3）");
+                self.add(f.span().start, msg::line(msg::DEF_SHIFT_NEEDS_DAY, &[]));
                 None
             }
             Some(f) => match f.get_ref().as_integer() {
                 Some(n) if (-31..=31).contains(&n) => Some(n as i32),
                 _ => {
-                    self.add(f.span().start, "shift は -31 から 31 の数");
+                    self.add(f.span().start, msg::line(msg::DEF_INT_RANGE, &["shift", "-31", "31"]));
                     None
                 }
             },
@@ -2368,7 +2392,7 @@ impl Checker<'_> {
                 toml::Value::Integer(n) if (1..=31).contains(n) => shift.map(|shift| MonthRule::Day { day: *n as u32, shift }),
                 toml::Value::String(s) if s == "last" => Some(MonthRule::Last),
                 _ => {
-                    self.add(d.span().start, "day は 1 から 31 の数か \"last\"");
+                    self.add(d.span().start, msg::line(msg::DEF_DAY_BAD, &[]));
                     None
                 }
             },
@@ -2376,26 +2400,27 @@ impl Checker<'_> {
                 let nth = match n.get_ref().as_integer() {
                     Some(n) if (1..=5).contains(&n) => Some(n as u32),
                     _ => {
-                        self.add(n.span().start, "nth は 1 から 5 の数");
+                        self.add(n.span().start, msg::line(msg::DEF_INT_RANGE, &["nth", "1", "5"]));
                         None
                     }
                 };
-                let weekday =
-                    match wd.get_ref().as_str().ok_or_else(|| "weekday は \"tue\" のような文字列で書く".to_owned()).and_then(when::weekday)
-                    {
+                let weekday = match wd.get_ref().as_str() {
+                    None => {
+                        self.add(wd.span().start, msg::line(msg::DEF_STRING_BAD_E, &["weekday", "\"tue\""]));
+                        None
+                    }
+                    Some(s) => match when::weekday(s) {
                         Ok(d) => Some(d),
                         Err(e) => {
                             self.add(wd.span().start, e);
                             None
                         }
-                    };
+                    },
+                };
                 nth.zip(weekday).map(|(nth, weekday)| MonthRule::Nth { nth, weekday })
             }
             _ => {
-                self.add(
-                    head,
-                    "month には day か、nth と weekday か、business_day が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"、business_day = 5）",
-                );
+                self.add(head, msg::line(msg::DEF_MONTH_RULE_BAD, &[]));
                 None
             }
         }
@@ -2404,7 +2429,7 @@ impl Checker<'_> {
     fn dates(&mut self, field: &Field, name: &str) -> Vec<NaiveDate> {
         let Some(f) = field else { return Vec::new() };
         let toml::Value::Array(items) = f.get_ref() else {
-            self.add(f.span().start, format!("{name} は日付の配列で書く（例: {name} = [2026-12-30]）"));
+            self.add(f.span().start, msg::line(msg::DEF_ARRAY_BAD, &[name, &format!("{name} = [2026-12-30]")]));
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -2441,11 +2466,11 @@ impl Checker<'_> {
 
     /// `judge = { warn = "1", error = "2.." }`: either may be left out, not both.
     fn judge(&mut self, field: &Field) -> Option<Judge> {
-        const SHAPE: &str = "judge は { warn = \"1\", error = \"2..\" } の形で書く";
+        const SHAPE: &str = "{ warn = \"1\", error = \"2..\" }";
         let f = field.as_ref()?;
         let at = f.span().start;
         let toml::Value::Table(t) = f.get_ref() else {
-            self.add(at, SHAPE);
+            self.add(at, msg::line(msg::DEF_TABLE_BAD, &["judge", SHAPE]));
             return None;
         };
         let mut ok = true;
@@ -2456,19 +2481,19 @@ impl Checker<'_> {
                 "error" => &mut judge.error,
                 "error_output" | "ok_file" => {
                     let toml::Value::String(s) = v else {
-                        self.add(at, format!("judge の {k} は文字列で書く"));
+                        self.add(at, msg::line(msg::DEF_STRING_BAD, &[&format!("judge.{k}")]));
                         ok = false;
                         continue;
                     };
                     if k == "error_output" {
                         if let Err(e) = ito_match::Matcher::new(s) {
-                            self.add(at, format!("judge の error_output が正規表現として読めない: {e}"));
+                            self.add(at, msg::line(msg::DEF_REGEX_BAD, &["judge.error_output", &e.to_string()]));
                             ok = false;
                         }
                         judge.error_output = Some(s.clone());
                     } else {
                         if let Err(e) = self.template(s) {
-                            self.add(at, format!("judge の ok_file: {e}"));
+                            self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &["judge.ok_file", msg::uncoded(&e)]));
                             ok = false;
                         }
                         judge.ok_file = Some(s.clone());
@@ -2476,7 +2501,7 @@ impl Checker<'_> {
                     continue;
                 }
                 _ => {
-                    self.add(at, format!("judge に知らない欄 {k}"));
+                    self.add(at, msg::line(msg::DEF_SUBKEY_UNKNOWN, &["judge", k, "warn, error, error_output, ok_file"]));
                     ok = false;
                     continue;
                 }
@@ -2485,7 +2510,7 @@ impl Checker<'_> {
                 toml::Value::String(s) => s.clone(),
                 toml::Value::Integer(n) => n.to_string(),
                 _ => {
-                    self.add(at, format!("judge の {k} は \"1\" や \"2..\" のように文字列で書く"));
+                    self.add(at, msg::line(msg::DEF_STRING_BAD_E, &[&format!("judge.{k}"), "\"2..\""]));
                     ok = false;
                     continue;
                 }
@@ -2493,13 +2518,13 @@ impl Checker<'_> {
             match ranges(&text) {
                 Ok(r) => *into = r,
                 Err(e) => {
-                    self.add(at, format!("judge の {k} {e}"));
+                    self.add(at, msg::line(msg::DEF_VALUE_UNREADABLE, &[&format!("judge.{k}"), msg::uncoded(&e)]));
                     ok = false;
                 }
             }
         }
         if ok && judge.warn.is_empty() && judge.error.is_empty() && judge.error_output.is_none() && judge.ok_file.is_none() {
-            self.add(at, format!("judge が空（{SHAPE}）"));
+            self.add(at, msg::line(msg::DEF_JUDGE_EMPTY, &[]));
             ok = false;
         }
         ok.then_some(judge)
@@ -2514,18 +2539,18 @@ impl Checker<'_> {
             let part = self.part(j, start);
             let id = match &j.id {
                 None => {
-                    self.add(start, "id が無い");
+                    self.add(start, msg::line(msg::DEF_ID_MISSING, &[]));
                     String::new()
                 }
                 Some(f) => match f.get_ref() {
                     toml::Value::String(s) if !s.is_empty() => {
                         if !seen.insert(s.clone()) {
-                            self.add(f.span().start, format!("同じ id が 2 つある: {s}"));
+                            self.add(f.span().start, msg::line(msg::DEF_ID_DUPLICATE, &[s]));
                         }
                         s.clone()
                     }
                     _ => {
-                        self.add(f.span().start, "id は空でない文字列で書く");
+                        self.add(f.span().start, msg::line(msg::DEF_ID_BAD, &[]));
                         String::new()
                     }
                 },
@@ -2537,17 +2562,17 @@ impl Checker<'_> {
                 let run = match (&j.shell, &j.script) {
                     (Some(s), _) => {
                         if let Some(f) = &j.run {
-                            self.add(f.span().start, "run と shell は両方書けない（run か、shell と script か）");
+                            self.add(f.span().start, msg::line(msg::DEF_RUN_SHELL_BOTH, &[]));
                         }
                         if j.script.is_none() {
-                            self.add(s.span().start, "shell には script が要る");
+                            self.add(s.span().start, msg::line(msg::DEF_SHELL_NEEDS_SCRIPT, &[]));
                         } else if script.as_deref().is_some_and(|t| t.trim().is_empty()) {
-                            self.add(s.span().start, "script が空");
+                            self.add(s.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["script"]));
                         }
                         Vec::new()
                     }
                     (None, Some(f)) => {
-                        self.add(f.span().start, "script には shell = \"powershell\" が要る");
+                        self.add(f.span().start, msg::line(msg::DEF_SCRIPT_NEEDS_SHELL, &[]));
                         self.run(&j.run, start)
                     }
                     // A refused `kind` is one problem, not two.
@@ -2572,7 +2597,13 @@ impl Checker<'_> {
                         self.only(
                             field,
                             name,
-                            if name == "judge" { "\"job\"・\"loop\"・\"ssh\"・\"winrm\"" } else { "\"job\" か \"loop\"" },
+                            match name {
+                                "judge" => "\"job\", \"loop\", \"ssh\", \"winrm\"",
+                                "retry" => {
+                                    "\"job\", \"loop\", \"delete\", \"zip\", \"copy\", \"empty\", \"send\", \"fetch\", \"http\", \"ssh\", \"winrm\", \"mail\", \"sql\""
+                                }
+                                _ => "\"job\", \"loop\"",
+                            },
                         );
                     }
                 }
@@ -2584,7 +2615,7 @@ impl Checker<'_> {
                 run.iter().map(|t| (t, "run")).chain(script.iter().map(|t| (t, "script"))).chain(dir.iter().map(|t| (t, "dir")))
             {
                 if let Err(e) = self.template(text) {
-                    self.add(start, format!("{name}: {e}"));
+                    self.add(start, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
                 }
             }
             let (env, encoding) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
@@ -2593,11 +2624,11 @@ impl Checker<'_> {
             } else if matches!(&part, Part::Chore(c) if c.far()) {
                 // Asked of the far side (an sshd_config's AcceptEnv; WinRM's shell takes
                 // them all); its output is read as it comes.
-                self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
+                self.only(&j.encoding, "encoding", "\"job\", \"loop\"");
                 (self.env(&j.env), Encoding::Auto)
             } else {
-                self.only(&j.env, "env", "\"job\"・\"loop\"・\"ssh\"・\"winrm\"");
-                self.only(&j.encoding, "encoding", "\"job\" か \"loop\"");
+                self.only(&j.env, "env", "\"job\", \"loop\", \"ssh\", \"winrm\"");
+                self.only(&j.encoding, "encoding", "\"job\", \"loop\"");
                 (BTreeMap::new(), Encoding::Auto)
             };
             // A `mail` reads the settings and the password of this account.
@@ -2605,18 +2636,22 @@ impl Checker<'_> {
             let run_as = if part.runs_process() && !mail {
                 self.run_as(&j.run_as)
             } else {
-                self.only(&j.run_as, "run_as", "\"job\"・\"loop\"・作業の部品（\"mail\" のほか）");
+                self.only(&j.run_as, "run_as", "\"job\", \"loop\", \"delete\", \"zip\", \"copy\", \"empty\", \"send\", \"fetch\", \"http\", \"ssh\", \"winrm\", \"sql\"");
                 None
             };
             let timeout = if part.runs_process() || matches!(part, Part::File { .. }) {
                 self.timeout(&j.timeout)
             } else {
-                self.only(&j.timeout, "timeout", "\"job\"・\"loop\"・\"file\"");
+                self.only(
+                    &j.timeout,
+                    "timeout",
+                    "\"job\", \"loop\", \"file\", \"delete\", \"zip\", \"copy\", \"empty\", \"send\", \"fetch\", \"http\", \"ssh\", \"winrm\", \"mail\", \"sql\"",
+                );
                 None
             };
             let after = self.after(&j.after);
             if part == Part::Branch && after.len() != 1 {
-                self.add(start, "kind = \"branch\" には after を 1 つ書く（その終了コードで分ける）");
+                self.add(start, msg::line(msg::DEF_BRANCH_AFTER_COUNT, &[]));
             }
             let name = self.string(&j.name, "name");
             let note = self.string(&j.note, "note");
@@ -2626,7 +2661,7 @@ impl Checker<'_> {
                 self.names(&j.to, "to")
             } else {
                 if !mail {
-                    self.only(&j.to, "to", "\"notify\" か \"mail\"");
+                    self.only(&j.to, "to", "\"notify\", \"mail\"");
                 }
                 Vec::new()
             };
@@ -2637,9 +2672,9 @@ impl Checker<'_> {
             let at = entry.get_ref().after.as_ref().map_or(entry.span().start, |f| f.span().start);
             for l in &job.after {
                 if !seen.contains(l.job.as_str()) {
-                    self.add(at, format!("after が無い id を指している: {}", l.job));
+                    self.add(at, msg::line(msg::DEF_AFTER_UNKNOWN_ID, &[&l.job]));
                 } else if matches!(l.on, On::Code(_) | On::Else) && !jobs.iter().any(|p| p.id == l.job && p.part == Part::Branch) {
-                    self.add(at, format!("code の線は kind = \"branch\" の部品からだけ引ける: {}", l.job));
+                    self.add(at, msg::line(msg::DEF_CODE_LINE_NOT_BRANCH, &[&l.job]));
                 }
             }
             // A part that nothing leads to, or that leads nowhere, does nothing: a mistake, not a quiet no-op.
@@ -2650,36 +2685,36 @@ impl Checker<'_> {
                 Part::Job | Part::Loop { .. } | Part::Jobnet { .. } | Part::Chore(_) => (false, false),
             };
             if needs_after && job.after.is_empty() {
-                self.add(entry.span().start, format!("孤立した部品: {}（after が無い）", job.id));
+                self.add(entry.span().start, msg::line(msg::DEF_JOB_NO_BEFORE, &[&job.id]));
             }
             if needs_next && !followed.contains(job.id.as_str()) {
-                self.add(entry.span().start, format!("孤立した部品: {}（後に続くものが無い）", job.id));
+                self.add(entry.span().start, msg::line(msg::DEF_JOB_NO_NEXT, &[&job.id]));
             }
         }
         if let Some(cycle) = find_cycle(&jobs) {
             let first = jobs.iter().position(|j| j.id == cycle[0]).unwrap_or(0);
-            self.add(raw[first].span().start, format!("after が輪になっている: {}", cycle.join(" → ")));
+            self.add(raw[first].span().start, msg::line(msg::DEF_AFTER_CYCLE, &[&cycle.join(" -> ")]));
         }
         jobs
     }
 
     fn run(&mut self, field: &Field, job_start: usize) -> Vec<String> {
         let Some(f) = field else {
-            self.add(job_start, "run が無い");
+            self.add(job_start, msg::line(msg::DEF_RUN_MISSING, &[]));
             return Vec::new();
         };
         let at = f.span().start;
         let toml::Value::Array(items) = f.get_ref() else {
-            self.add(at, "run は文字列の配列で書く（例: run = ['C:\\batch\\a.exe', '--x']）");
+            self.add(at, msg::line(msg::DEF_ARRAY_BAD, &["run", "run = ['C:\\batch\\a.exe', '--x']"]));
             return Vec::new();
         };
         let strings: Vec<String> = items.iter().filter_map(|v| v.as_str().map(str::to_owned)).collect();
         if strings.len() != items.len() {
-            self.add(at, "run の要素は全部文字列で書く");
+            self.add(at, msg::line(msg::DEF_ARRAY_BAD, &["run", "run = ['C:\\batch\\a.exe', '--x']"]));
         } else if strings.is_empty() {
-            self.add(at, "run が空");
+            self.add(at, msg::line(msg::DEF_VALUE_EMPTY, &["run"]));
         } else if strings[0].trim().is_empty() {
-            self.add(at, "run の先頭（実行ファイル）が空");
+            self.add(at, msg::line(msg::DEF_RUN_PROGRAM_EMPTY, &[]));
         }
         strings
     }
@@ -2688,7 +2723,7 @@ impl Checker<'_> {
         let Some(f) = field else { return Vec::new() };
         let at = f.span().start;
         let toml::Value::Array(items) = f.get_ref() else {
-            self.add(at, "after は id の配列で書く（例: after = [\"extract\"]）");
+            self.add(at, msg::line(msg::DEF_ARRAY_BAD, &["after", "after = [\"extract\"]"]));
             return Vec::new();
         };
         let mut out = Vec::new();
@@ -2699,7 +2734,7 @@ impl Checker<'_> {
                     Ok(l) => out.push(l),
                     Err(e) => self.add(at, e),
                 },
-                _ => self.add(at, "after の要素は id の文字列か { job, on } の表で書く"),
+                _ => self.add(at, msg::line(msg::DEF_AFTER_ELEMENT_BAD, &[])),
             }
         }
         out
@@ -2709,14 +2744,17 @@ impl Checker<'_> {
     fn line(&mut self, t: &toml::Table) -> Result<Line, String> {
         for k in t.keys() {
             if !matches!(k.as_str(), "job" | "on" | "code") {
-                return Err(format!("after の線に知らない欄 {k}（job・on・code）"));
+                return Err(msg::line(msg::DEF_SUBKEY_UNKNOWN, &["after", k, "job, on, code"]));
             }
         }
-        let job = t.get("job").and_then(|v| v.as_str()).filter(|s| !s.is_empty()).ok_or("after の線には job（id）が要る")?.to_owned();
+        let Some(job) = t.get("job").and_then(|v| v.as_str()).filter(|s| !s.is_empty()) else {
+            return Err(msg::line(msg::DEF_SUBKEY_MISSING, &["after", "job", "{ job = \"extract\", on = \"error\" }"]));
+        };
+        let job = job.to_owned();
         let text = |k: &str| match t.get(k) {
             None => Ok(None),
             Some(toml::Value::String(s)) => Ok(Some(s.clone())),
-            Some(_) => Err(format!("after の線の {k} は文字列で書く")),
+            Some(_) => Err(msg::line(msg::DEF_STRING_BAD, &[&format!("after.{k}")])),
         };
         let on = text("on")?;
         let code = text("code")?;
@@ -2733,7 +2771,7 @@ impl Checker<'_> {
                 }
             }
         }
-        self.add(f.span().start, "pos は [x, y] の数 2 つで書く");
+        self.add(f.span().start, msg::line(msg::DEF_POS_BAD, &[]));
         None
     }
 }
@@ -2878,7 +2916,7 @@ fn expand_in(net: &Jobnet, lookup: &dyn Fn(&str) -> Result<Jobnet, String>, stac
             continue;
         };
         if stack.contains(use_) {
-            return Err(format!("子ジョブネットの呼び合いが輪になっている: {} → {use_}", stack.join(" → ")));
+            return Err(msg::line(msg::DEF_CHILD_LOOP, &[&format!("{} -> {use_}", stack.join(" -> "))]));
         }
         let child = lookup(use_)?;
         stack.push(use_.clone());
@@ -2987,6 +3025,11 @@ run = ["zip.exe", "a b"]
 after = ["extract"]
 "#;
 
+    /// A problem as the user reads it now: the message with its ID at the head, the place last.
+    fn placed(message: String, line: u32) -> String {
+        format!("{message}（a.toml の {line} 行目）")
+    }
+
     fn problems(text: &str) -> Vec<String> {
         match parse(text) {
             Ok(_) => Vec::new(),
@@ -2999,8 +3042,10 @@ after = ["extract"]
     fn a_var_needs_a_plain_name_and_nothing_else_here() {
         let net = |param: &str, run: &str| format!("format = 1\n[params]\nat = '{param}'\n[[job]]\nid = \"a\"\nrun = ['{run}']\n");
         assert!(parse(&net(r"{var:share}\in", "copy {var:share} {param:at}")).is_ok());
-        assert!(problems(&net("x", "copy {var:}")).iter().any(|p| p.contains(&crate::msg::VAR_NAME_EMPTY.code())));
-        assert!(problems(&net("{var:共有}", "x")).iter().any(|p| p.contains(&crate::msg::VAR_NAME_BAD.code()) && p.contains("共有")));
+        let empty_line = msg::line(msg::VAR_NAME_EMPTY, &[]);
+        let empty = msg::uncoded(&empty_line);
+        assert!(problems(&net("x", "copy {var:}")).iter().any(|p| msg::DEF_TEMPLATE_BAD.is_in(p) && p.contains(empty)));
+        assert!(problems(&net("{var:共有}", "x")).iter().any(|p| msg::DEF_TEMPLATE_BAD.is_in(p) && p.contains("共有")));
     }
 
     #[test]
@@ -3016,14 +3061,14 @@ after = ["extract"]
     #[test]
     fn an_unknown_field_is_named_with_its_line() {
         let text = GOOD.replace("run = [\"zip.exe\", \"a b\"]", "rnu = [\"zip.exe\"]");
-        assert_eq!(problems(&text), ["a.toml の 13 行目: 知らない欄 rnu"]);
+        assert_eq!(problems(&text), [placed(msg::line(msg::DEF_FIELD_UNKNOWN, &["rnu"]), 13)]);
     }
 
     #[test]
     fn toml_syntax_errors_name_a_line() {
         let p = problems("format = 1\nname = \n");
         assert_eq!(p.len(), 1);
-        assert!(p[0].starts_with("a.toml の 2 行目: TOML の書き方が違う"), "{p:?}");
+        assert!(msg::DEF_TOML_SYNTAX.is_in(&p[0]) && p[0].ends_with("（a.toml の 2 行目）"), "{p:?}");
     }
 
     #[test]
@@ -3032,15 +3077,17 @@ after = ["extract"]
         let net = parse(&format!("{head}env = {{ DB_PASS = \"secret:db\", OUT = \"{{month-1}}\" }}\n")).unwrap();
         assert_eq!(net.jobs[0].env["DB_PASS"], "secret:db");
         for (bad, want) in [
-            ("env = { 1A = \"x\" }", "env の名前に使えない"),
-            ("env = { KOYOMI_X = \"x\" }", "KOYOMI_"),
-            ("env = { A = 1 }", "文字列"),
-            ("env = { A = \"secret:\" }", "secret: の後に名前"),
-            ("env = { A = \"{date-1x}\" }", "の単位 x を読み込めません"),
+            ("env = { 1A = \"x\" }", msg::DEF_NAME_BAD),
+            ("env = { KOYOMI_X = \"x\" }", msg::DEF_ENV_RESERVED),
+            ("env = { A = 1 }", msg::DEF_VALUE_STRING_BAD),
+            ("env = { A = \"secret:\" }", msg::DEF_SECRET_NAME_EMPTY),
+            ("env = { A = \"{date-1x}\" }", msg::DEF_TEMPLATE_BAD),
         ] {
             let p = problems(&format!("{head}{bad}\n"));
-            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+            assert!(p.len() == 1 && want.is_in(&p[0]), "{bad}: {p:?}");
         }
+        let p = problems(&format!("{head}env = {{ A = \"{{date-1x}}\" }}\n"));
+        assert!(p[0].contains("{date-1x} の単位 x を読み込めません"), "{p:?}");
     }
 
     #[test]
@@ -3056,21 +3103,21 @@ after = ["extract"]
         let chore = "format = 1\n[[job]]\nid = \"a\"\nkind = \"copy\"\nfrom = 'D:\\a'\ninto = '\\\\nas\\b'\n";
         assert!(parse(&format!("{chore}run_as = {{ user = \"batch\", password = \"secret:b\" }}\n")).unwrap().jobs[0].run_as.is_some());
         for (bad, want) in [
-            ("run_as = { user = \"batch\", password = \"hunter2\" }", "\"secret:<名前>\" で書く"),
-            ("run_as = { user = \"batch\", password = \"secret:\" }", "secret: の後に名前"),
-            ("run_as = { user = \"batch\" }", "password が無い"),
-            ("run_as = { password = \"secret:b\" }", "user が無い"),
-            ("run_as = { user = \"a b\", password = \"secret:b\" }", "空白や"),
-            ("run_as = { user = '\\batch', password = \"secret:b\" }", "空白や"),
-            ("run_as = { user = 'A\\B\\c', password = \"secret:b\" }", "空白や"),
-            ("run_as = { user = \"b\", password = \"secret:b\", shell = \"x\" }", "知らない欄 shell"),
-            ("run_as = \"batch\"", "の形で書く"),
+            ("run_as = { user = \"batch\", password = \"hunter2\" }", msg::DEF_PASSWORD_NOT_SECRET),
+            ("run_as = { user = \"batch\", password = \"secret:\" }", msg::DEF_SECRET_NAME_EMPTY),
+            ("run_as = { user = \"batch\" }", msg::DEF_SUBKEY_MISSING),
+            ("run_as = { password = \"secret:b\" }", msg::DEF_SUBKEY_MISSING),
+            ("run_as = { user = \"a b\", password = \"secret:b\" }", msg::DEF_RUN_AS_USER_BAD),
+            ("run_as = { user = '\\batch', password = \"secret:b\" }", msg::DEF_RUN_AS_USER_BAD),
+            ("run_as = { user = 'A\\B\\c', password = \"secret:b\" }", msg::DEF_RUN_AS_USER_BAD),
+            ("run_as = { user = \"b\", password = \"secret:b\", shell = \"x\" }", msg::DEF_SUBKEY_UNKNOWN),
+            ("run_as = \"batch\"", msg::DEF_TABLE_BAD),
         ] {
             let p = problems(&format!("{head}{bad}\n"));
-            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+            assert!(p.len() == 1 && want.is_in(&p[0]), "{bad}: {p:?}");
         }
         let p = problems("format = 1\n[[job]]\nid = \"a\"\nkind = \"notify\"\nrun_as = { user = \"b\", password = \"secret:b\" }\n");
-        assert!(p.iter().any(|m| m.contains("run_as は kind = ")), "{p:?}");
+        assert!(p.iter().any(|m| msg::DEF_ONLY_FOR_KINDS.is_in(m) && m.contains("run_as")), "{p:?}");
     }
 
     /// `lock` is a name (exclusive, as before) or `{ name, shared }`.
@@ -3086,15 +3133,15 @@ after = ["extract"]
         let net = parse(&format!("format = 1{job}")).unwrap();
         assert_eq!((net.lock, net.lock_shared), (None, false));
         for (bad, want) in [
-            ("lock = \"a/b\"", "lock は名前"),
-            ("lock = 3", "の形で書く"),
-            ("lock = { shared = true }", "lock に name が無い"),
-            ("lock = { name = \"a/b\", shared = true }", "lock の name は名前"),
-            ("lock = { name = \"db\", shared = \"yes\" }", "lock の shared は true か false"),
-            ("lock = { name = \"db\", count = 3 }", "lock に知らない欄 count"),
+            ("lock = \"a/b\"", msg::DEF_LOCK_NAME_BAD),
+            ("lock = 3", msg::DEF_LOCK_SHAPE),
+            ("lock = { shared = true }", msg::DEF_SUBKEY_MISSING),
+            ("lock = { name = \"a/b\", shared = true }", msg::DEF_LOCK_NAME_BAD),
+            ("lock = { name = \"db\", shared = \"yes\" }", msg::DEF_LOCK_SHARED_BAD),
+            ("lock = { name = \"db\", count = 3 }", msg::DEF_SUBKEY_UNKNOWN),
         ] {
             let p = problems(&format!("format = 1\n{bad}{job}"));
-            assert!(p.len() == 1 && p[0].contains(want), "{bad}: {p:?}");
+            assert!(p.len() == 1 && want.is_in(&p[0]), "{bad}: {p:?}");
         }
     }
 
@@ -3105,19 +3152,25 @@ after = ["extract"]
             problems(&format!("{head}run = [\"x.exe\", \"{{month-1}}\", \"{{date-1bd:%Y%m%d}}\"]\ndir = 'D:\\{{date:%Y}}'\n")).is_empty()
         );
         let p = problems(&format!("{head}run = [\"x.exe\", \"{{date-1x}}\"]\n"));
-        assert!(p.len() == 1 && p[0].contains("{date-1x} の単位 x を読み込めません"), "{p:?}");
+        assert!(p.len() == 1 && msg::DEF_TEMPLATE_BAD.is_in(&p[0]) && p[0].contains("{date-1x} の単位 x を読み込めません"), "{p:?}");
         let p = problems(&format!("{head}shell = \"powershell\"\nscript = \"Get-Date -f {{date:%Q}}\"\n"));
-        assert!(p.len() == 1 && p[0].contains("script: ") && p[0].contains("の書式 %Q を読み込めません"), "{p:?}");
+        assert!(
+            p.len() == 1 && msg::DEF_TEMPLATE_BAD.is_in(&p[0]) && p[0].contains("script") && p[0].contains("の書式 %Q を読み込めません"),
+            "{p:?}"
+        );
     }
 
     #[test]
     fn run_must_be_a_non_empty_array_of_strings() {
         let head = "format = 1\n[[job]]\nid = \"a\"\n";
-        assert_eq!(problems(head), ["a.toml の 2 行目: run が無い"]);
-        assert_eq!(problems(&format!("{head}run = []\n")), ["a.toml の 4 行目: run が空"]);
-        assert!(problems(&format!("{head}run = \"x.exe --a\"\n"))[0].starts_with("a.toml の 4 行目: run は文字列の配列で書く"));
-        assert_eq!(problems(&format!("{head}run = [\"\"]\n")), ["a.toml の 4 行目: run の先頭（実行ファイル）が空"]);
-        assert_eq!(problems(&format!("{head}run = [\"x\", 1]\n")), ["a.toml の 4 行目: run の要素は全部文字列で書く"]);
+        assert_eq!(problems(head), [placed(msg::line(msg::DEF_RUN_MISSING, &[]), 2)]);
+        assert_eq!(problems(&format!("{head}run = []\n")), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["run"]), 4)]);
+        assert!(problems(&format!("{head}run = \"x.exe --a\"\n"))[0].starts_with(&msg::DEF_ARRAY_BAD.code()));
+        assert_eq!(problems(&format!("{head}run = [\"\"]\n")), [placed(msg::line(msg::DEF_RUN_PROGRAM_EMPTY, &[]), 4)]);
+        assert_eq!(
+            problems(&format!("{head}run = [\"x\", 1]\n")),
+            [placed(msg::line(msg::DEF_ARRAY_BAD, &["run", "run = ['C:\\batch\\a.exe', '--x']"]), 4)]
+        );
     }
 
     #[test]
@@ -3126,15 +3179,15 @@ after = ["extract"]
             format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{after_a}\n[[job]]\nid = \"b\"\nrun = [\"x\"]\nafter = [\"a\"]\n")
         };
         assert!(problems(&t("")).is_empty());
-        assert_eq!(problems(&t("after = [\"zzz\"]")), ["a.toml の 5 行目: after が無い id を指している: zzz"]);
-        assert_eq!(problems(&t("after = [\"b\"]")), ["a.toml の 2 行目: after が輪になっている: a → b → a"]);
-        assert_eq!(problems(&t("after = [\"a\"]")), ["a.toml の 2 行目: after が輪になっている: a → a"]);
+        assert_eq!(problems(&t("after = [\"zzz\"]")), [placed(msg::line(msg::DEF_AFTER_UNKNOWN_ID, &["zzz"]), 5)]);
+        assert_eq!(problems(&t("after = [\"b\"]")), [placed(msg::line(msg::DEF_AFTER_CYCLE, &["a -> b -> a"]), 2)]);
+        assert_eq!(problems(&t("after = [\"a\"]")), [placed(msg::line(msg::DEF_AFTER_CYCLE, &["a -> a"]), 2)]);
     }
 
     #[test]
     fn a_repeated_id_is_named_at_its_second_use() {
         let text = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n";
-        assert_eq!(problems(text), ["a.toml の 6 行目: 同じ id が 2 つある: a"]);
+        assert_eq!(problems(text), [placed(msg::line(msg::DEF_ID_DUPLICATE, &["a"]), 6)]);
     }
 
     #[test]
@@ -3164,7 +3217,7 @@ id = \"a\"
 run = [\"x\"]
 timeout = 30
 ";
-        assert_eq!(problems(text), ["a.toml の 5 行目: timeout は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]);
+        assert_eq!(problems(text), [placed(msg::line(msg::DEF_STRING_BAD_E, &["timeout", "\"30m\""]), 5)]);
         let text = "format = 1
 [[job]]
 id = \"a\"
@@ -3172,7 +3225,14 @@ run = [\"x\"]
 timeout = \"0m\"
 ";
         let p = problems(text);
-        assert!(p.len() == 1 && p[0].starts_with("a.toml の 5 行目: timeout") && p[0].contains(&crate::msg::DURATION_ZERO.code()), "{p:?}");
+        assert!(
+            p.len() == 1
+                && msg::DEF_VALUE_UNREADABLE.is_in(&p[0])
+                && p[0].contains("timeout")
+                && p[0].ends_with("（a.toml の 5 行目）")
+                && p[0].contains(msg::uncoded(&msg::line(msg::DURATION_ZERO, &["0m"]))),
+            "{p:?}"
+        );
         let text = "format = 1
 [[job]]
 id = \"a\"
@@ -3182,8 +3242,9 @@ timeout = \"30\"
         let p = problems(text);
         assert!(
             p.len() == 1
-                && p[0].starts_with("a.toml の 5 行目: timeout")
-                && p[0].contains(&crate::msg::DURATION_UNREADABLE.code())
+                && msg::DEF_VALUE_UNREADABLE.is_in(&p[0])
+                && p[0].contains("timeout")
+                && p[0].ends_with("（a.toml の 5 行目）")
                 && p[0].contains("時間 30 を読み込めません"),
             "{p:?}"
         );
@@ -3203,24 +3264,30 @@ timeout = \"30\"
         let net = parse(&job("retry = { count = 2, wait = \"5m\" }")).unwrap();
         assert_eq!(net.jobs[0].retry, Some(Retry { count: 2, wait: 300 }));
         assert_eq!(parse(&job("")).unwrap().jobs[0].retry, None);
-        let at = "a.toml の 5 行目: ";
-        assert_eq!(problems(&job("retry = 2")), [format!("{at}retry は {{ count = 2, wait = \"5m\" }} の形で書く")]);
-        assert_eq!(
-            problems(&job("retry = { count = 2 }")),
-            [format!("{at}retry に wait が無い（retry は {{ count = 2, wait = \"5m\" }} の形で書く）")]
-        );
+        let shape = "{ count = 2, wait = \"5m\" }";
+        assert_eq!(problems(&job("retry = 2")), [placed(msg::line(msg::DEF_TABLE_BAD, &["retry", shape]), 5)]);
+        assert_eq!(problems(&job("retry = { count = 2 }")), [placed(msg::line(msg::DEF_SUBKEY_MISSING, &["retry", "wait", shape]), 5)]);
         assert_eq!(
             problems(&job("retry = { wait = \"5m\" }")),
-            [format!("{at}retry に count が無い（retry は {{ count = 2, wait = \"5m\" }} の形で書く）")]
+            [placed(msg::line(msg::DEF_SUBKEY_MISSING, &["retry", "count", shape]), 5)]
         );
-        assert_eq!(problems(&job("retry = { count = 0, wait = \"5m\" }")), [format!("{at}retry の count は 1 から 100 の整数で書く")]);
-        assert_eq!(problems(&job("retry = { count = 2, wait = 300 }")), [format!("{at}retry の wait は \"5m\" のように文字列で書く")]);
+        assert_eq!(
+            problems(&job("retry = { count = 0, wait = \"5m\" }")),
+            [placed(msg::line(msg::DEF_INT_RANGE, &["retry.count", "1", "100"]), 5)]
+        );
+        assert_eq!(
+            problems(&job("retry = { count = 2, wait = 300 }")),
+            [placed(msg::line(msg::DEF_STRING_BAD_E, &["retry.wait", "\"5m\""]), 5)]
+        );
         let p = problems(&job("retry = { count = 2, wait = \"0s\" }"));
         assert!(
-            p.len() == 1 && p[0].starts_with(&format!("{at}retry の wait")) && p[0].contains(&crate::msg::DURATION_ZERO.code()),
+            p.len() == 1 && msg::DEF_VALUE_UNREADABLE.is_in(&p[0]) && p[0].contains("retry.wait") && p[0].ends_with("（a.toml の 5 行目）"),
             "{p:?}"
         );
-        assert_eq!(problems(&job("retry = { count = 2, wait = \"5m\", max = 1 }")), [format!("{at}retry に知らない欄 max")]);
+        assert_eq!(
+            problems(&job("retry = { count = 2, wait = \"5m\", max = 1 }")),
+            [placed(msg::line(msg::DEF_SUBKEY_UNKNOWN, &["retry", "max", "count, wait"]), 5)]
+        );
     }
 
     #[test]
@@ -3238,7 +3305,10 @@ run = [\"x\"]
         let g =
             parse(&job("judge = { error_output = \"ERROR\", ok_file = \"C:/out/{date}.csv\" }")).unwrap().jobs[0].judge.clone().unwrap();
         assert_eq!((g.error_output.as_deref(), g.ok_file.as_deref()), (Some("ERROR"), Some("C:/out/{date}.csv")));
-        assert!(problems(&job("judge = { error_output = \"(\" }"))[0].contains("正規表現"));
+        {
+            let s = ToString::to_string(&(problems(&job("judge = { error_output = \"(\" }"))[0]));
+            assert!(msg::DEF_REGEX_BAD.is_in(&s) && s.contains("judge.error_output") && s.contains("正規表現"), "{s}");
+        }
         assert!(problems(&job("judge = { ok_file = \"{date-}\" }"))[0].contains("ok_file"));
         assert!(problems(&job("judge = { ok_file = 1 }"))[0].contains("文字列"));
     }
@@ -3256,18 +3326,31 @@ run = [\"x\"]
         assert_eq!(Judge::list(&[r(i32::MIN, i32::MAX), r(2, i32::MAX)]), "..,2..");
         assert_eq!(parse(&job("judge = { error = 1 }")).unwrap().jobs[0].judge, Some(Judge { error: vec![r(1, 1)], ..Judge::default() }));
         assert_eq!(parse(&job("")).unwrap().jobs[0].judge, None);
-        let at = "a.toml の 5 行目: ";
-        let shape = "judge は { warn = \"1\", error = \"2..\" } の形で書く";
-        assert_eq!(problems(&job("judge = \"1\"")), [format!("{at}{shape}")]);
-        assert_eq!(problems(&job("judge = {}")), [format!("{at}judge が空（{shape}）")]);
-        assert_eq!(problems(&job("judge = { ok = \"0\" }")), [format!("{at}judge に知らない欄 ok")]);
-        assert_eq!(problems(&job("judge = { warn = true }")), [format!("{at}judge の warn は \"1\" や \"2..\" のように文字列で書く")]);
-        assert_eq!(problems(&job("judge = { warn = \"\" }")), [format!("{at}judge の warn が空")]);
+        assert_eq!(
+            problems(&job("judge = \"1\"")),
+            [placed(msg::line(msg::DEF_TABLE_BAD, &["judge", "{ warn = \"1\", error = \"2..\" }"]), 5)]
+        );
+        assert_eq!(problems(&job("judge = {}")), [placed(msg::line(msg::DEF_JUDGE_EMPTY, &[]), 5)]);
+        assert_eq!(
+            problems(&job("judge = { ok = \"0\" }")),
+            [placed(msg::line(msg::DEF_SUBKEY_UNKNOWN, &["judge", "ok", "warn, error, error_output, ok_file"]), 5)]
+        );
+        assert_eq!(problems(&job("judge = { warn = true }")), [placed(msg::line(msg::DEF_STRING_BAD_E, &["judge.warn", "\"2..\""]), 5)]);
+        assert_eq!(
+            problems(&job("judge = { warn = \"\" }")),
+            [placed(msg::line(msg::DEF_VALUE_UNREADABLE, &["judge.warn", msg::uncoded(&msg::line(msg::DEF_RANGE_EMPTY, &[]))]), 5)]
+        );
         assert_eq!(
             problems(&job("judge = { warn = \"x\" }")),
-            [format!("{at}judge の warn \"x\" は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）")]
+            [placed(msg::line(msg::DEF_VALUE_UNREADABLE, &["judge.warn", msg::uncoded(&msg::line(msg::DEF_RANGE_CODE_BAD, &["x"]))]), 5)]
         );
-        assert_eq!(problems(&job("judge = { error = \"5..2\" }")), [format!("{at}judge の error \"5..2\": 始まりが終わりより大きい")]);
+        assert_eq!(
+            problems(&job("judge = { error = \"5..2\" }")),
+            [placed(
+                msg::line(msg::DEF_VALUE_UNREADABLE, &["judge.error", msg::uncoded(&msg::line(msg::DEF_RANGE_REVERSED, &["5..2"]))]),
+                5
+            )]
+        );
     }
 
     #[test]
@@ -3286,15 +3369,12 @@ exit 1'''
         let j = &net.jobs[0];
         assert_eq!((j.shell.as_deref(), j.script.as_deref(), j.run.as_slice()), (Some("powershell"), Some("Get-Date\nexit 1"), &[][..]));
         let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
-        assert_eq!(p("shell = \"powershell\""), ["a.toml の 4 行目: shell には script が要る"]);
-        assert_eq!(p("shell = \"powershell\"\nscript = \" \""), ["a.toml の 4 行目: script が空"]);
-        assert_eq!(p("shell = \"cmd\"\nscript = \"x\""), ["a.toml の 4 行目: shell は \"powershell\" のどれか"]);
-        assert_eq!(p("run = [\"x\"]\nscript = \"x\""), ["a.toml の 5 行目: script には shell = \"powershell\" が要る"]);
-        assert_eq!(
-            p("run = [\"x\"]\nshell = \"powershell\"\nscript = \"x\""),
-            ["a.toml の 4 行目: run と shell は両方書けない（run か、shell と script か）"]
-        );
-        assert_eq!(p("shell = \"powershell\"\nscript = 1"), ["a.toml の 5 行目: script は文字列で書く"]);
+        assert_eq!(p("shell = \"powershell\""), [placed(msg::line(msg::DEF_SHELL_NEEDS_SCRIPT, &[]), 4)]);
+        assert_eq!(p("shell = \"powershell\"\nscript = \" \""), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["script"]), 4)]);
+        assert_eq!(p("shell = \"cmd\"\nscript = \"x\""), [placed(msg::line(msg::DEF_CHOICE_BAD, &["shell", "\"powershell\""]), 4)]);
+        assert_eq!(p("run = [\"x\"]\nscript = \"x\""), [placed(msg::line(msg::DEF_SCRIPT_NEEDS_SHELL, &[]), 5)]);
+        assert_eq!(p("run = [\"x\"]\nshell = \"powershell\"\nscript = \"x\""), [placed(msg::line(msg::DEF_RUN_SHELL_BOTH, &[]), 4)]);
+        assert_eq!(p("shell = \"powershell\"\nscript = 1"), [placed(msg::line(msg::DEF_STRING_BAD, &["script"]), 5)]);
     }
 
     #[test]
@@ -3305,21 +3385,27 @@ exit 1'''
         assert_eq!(enc("encoding = \"utf8\""), Encoding::Utf8);
         assert_eq!(enc("encoding = \"auto\""), Encoding::Auto);
         let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
-        assert_eq!(p("run = [\"x\"]\nencoding = \"cp932\""), ["a.toml の 5 行目: encoding は \"auto\"・\"sjis\"・\"utf8\" のどれか"]);
+        assert_eq!(
+            p("run = [\"x\"]\nencoding = \"cp932\""),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["encoding", "\"auto\", \"sjis\", \"utf8\""]), 5)]
+        );
         assert!(p("kind = \"notify\"\nencoding = \"sjis\"")
-            .contains(&"a.toml の 5 行目: encoding は kind = \"job\" か \"loop\" にだけ書く".to_owned()));
+            .contains(&placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["encoding", "\"job\", \"loop\""]), 5)));
     }
 
     #[test]
     fn the_top_level_fields_read() {
         assert_eq!(parse("format = 1\ncalendar = \"会社\"\n").unwrap().calendar.as_deref(), Some("会社"));
         assert_eq!(parse("format = 1\n").unwrap().calendar, None);
-        let bad = "a.toml の 2 行目: calendar は calendars/<名前>.toml の <名前>（例: calendar = \"会社\"）";
-        assert_eq!(problems("format = 1\ncalendar = \"a/b\"\n"), [bad]);
+        let bad = placed(msg::line(msg::DEF_CALENDAR_NAME_BAD, &[]), 2);
+        assert_eq!(problems("format = 1\ncalendar = \"a/b\"\n"), std::slice::from_ref(&bad));
         assert_eq!(problems("format = 1\ncalendar = 1\n"), [bad]);
         assert!(problems("format = 1\nmissed = \"skip\"\noverlap = \"skip\"\n").is_empty());
-        assert_eq!(problems("format = 1\nmissed = \"later\"\n"), ["a.toml の 2 行目: missed は \"skip\"・\"once\" のどれか"]);
-        assert_eq!(problems("format = 1\noverlap = 1\n"), ["a.toml の 2 行目: overlap は \"skip\"・\"queue\" のどれか"]);
+        assert_eq!(
+            problems("format = 1\nmissed = \"later\"\n"),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["missed", "\"skip\", \"once\""]), 2)]
+        );
+        assert_eq!(problems("format = 1\noverlap = 1\n"), [placed(msg::line(msg::DEF_CHOICE_BAD, &["overlap", "\"skip\", \"queue\""]), 2)]);
     }
 
     #[test]
@@ -3342,13 +3428,16 @@ to = [\"夜間\"]
         assert_eq!(n.jobs[1].to, ["夜間"]);
         assert_eq!(parse(&crate::write::text(&n)).unwrap(), n);
         assert!(parse("format = 1\n").unwrap().notify_to.is_empty());
-        let shape = "a.toml の 2 行目: notify_to は通知の場所の名前の配列で書く（例: notify_to = [\"経理\"]）";
-        assert_eq!(problems("format = 1\nnotify_to = \"経理\"\n"), [shape]);
+        let shape = placed(msg::line(msg::DEF_ARRAY_BAD, &["notify_to", "notify_to = [\"accounting\"]"]), 2);
+        assert_eq!(problems("format = 1\nnotify_to = \"経理\"\n"), std::slice::from_ref(&shape));
         assert_eq!(problems("format = 1\nnotify_to = [\"\"]\n"), [shape]);
-        assert_eq!(problems("format = 1\nnotify_to = [\"a\", \"a\"]\n"), ["a.toml の 2 行目: notify_to: 同じ名前が 2 つある: a"]);
+        assert_eq!(
+            problems("format = 1\nnotify_to = [\"a\", \"a\"]\n"),
+            [placed(msg::line(msg::DEF_NAMES_DUPLICATE, &["notify_to", "a"]), 2)]
+        );
         assert_eq!(
             problems("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nto = [\"c\"]\n"),
-            ["a.toml の 5 行目: to は kind = \"notify\" か \"mail\" にだけ書く"]
+            [placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["to", "\"notify\", \"mail\""]), 5)]
         );
     }
 
@@ -3361,7 +3450,10 @@ to = [\"夜間\"]
         assert_eq!(crate::write::text(&n), text);
         assert_eq!(parse("format = 1\n").unwrap().takeover, Takeover::Leave);
         assert_eq!(parse("format = 1\ntakeover = \"leave\"\n").unwrap().takeover, Takeover::Leave);
-        assert_eq!(problems("format = 1\ntakeover = \"yes\"\n"), ["a.toml の 2 行目: takeover は \"leave\"・\"rerun\" のどれか"]);
+        assert_eq!(
+            problems("format = 1\ntakeover = \"yes\"\n"),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["takeover", "\"leave\", \"rerun\""]), 2)]
+        );
     }
 
     const FLOW: &str = r#"format = 1
@@ -3421,16 +3513,22 @@ after = [{ job = \"way\", code = \"else\" }]
         let p = |l: &str| {
             problems(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nrun = [\"y\"]\nafter = [{l}]\n"))
         };
-        assert_eq!(p("{ job = \"a\", on = \"bad\" }"), ["a.toml の 8 行目: after の線の on は \"ok\"・\"error\"・\"any\" のどれか"]);
-        assert_eq!(p("{ job = \"a\", on = \"ok\", code = \"1\" }"), ["a.toml の 8 行目: after の線には on と code のどちらか 1 つを書く"]);
-        assert_eq!(p("{ on = \"ok\" }"), ["a.toml の 8 行目: after の線には job（id）が要る"]);
-        assert_eq!(p("{ job = \"a\", when = 1 }"), ["a.toml の 8 行目: after の線に知らない欄 when（job・on・code）"]);
+        assert_eq!(
+            p("{ job = \"a\", on = \"bad\" }"),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["after.on", "\"ok\", \"error\", \"any\""]), 8)]
+        );
+        assert_eq!(p("{ job = \"a\", on = \"ok\", code = \"1\" }"), [placed(msg::line(msg::DEF_LINE_BOTH, &[]), 8)]);
+        assert_eq!(
+            p("{ on = \"ok\" }"),
+            [placed(msg::line(msg::DEF_SUBKEY_MISSING, &["after", "job", "{ job = \"extract\", on = \"error\" }"]), 8)]
+        );
+        assert_eq!(p("{ job = \"a\", when = 1 }"), [placed(msg::line(msg::DEF_SUBKEY_UNKNOWN, &["after", "when", "job, on, code"]), 8)]);
         assert_eq!(
             p("{ job = \"a\", code = \"x\" }"),
-            ["a.toml の 8 行目: after の線の code \"x\" は終了コードで書く（\"1\"・\"2..\"・\"1..3\" のように）"]
+            [placed(msg::line(msg::DEF_VALUE_UNREADABLE, &["after.code", msg::uncoded(&msg::line(msg::DEF_RANGE_CODE_BAD, &["x"]))]), 8)]
         );
-        assert_eq!(p("{ job = \"a\", code = \"1\" }"), ["a.toml の 8 行目: code の線は kind = \"branch\" の部品からだけ引ける: a"]);
-        assert_eq!(p("1"), ["a.toml の 8 行目: after の要素は id の文字列か { job, on } の表で書く"]);
+        assert_eq!(p("{ job = \"a\", code = \"1\" }"), [placed(msg::line(msg::DEF_CODE_LINE_NOT_BRANCH, &["a"]), 8)]);
+        assert_eq!(p("1"), [placed(msg::line(msg::DEF_AFTER_ELEMENT_BAD, &[]), 8)]);
     }
 
     /// each kind of part reads with its own fields, and refuses a job's fields.
@@ -3460,11 +3558,20 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(net("empty", "path = 'D:\\tmp'\n").map(|p| p.0), Ok(Part::Chore(Chore::Empty { path: "D:\\tmp".into() })));
         let bad = |kind: &str, extra: &str| net(kind, extra).unwrap_err().join("\n");
-        assert!(bad("empty", "").contains("kind = \"empty\" には path が要る"));
+        {
+            let s = ToString::to_string(&(bad("empty", "")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED_PLAIN.is_in(&s) && s.contains("empty"), "{s}");
+        }
         assert!(bad("empty", "path = 'C:\\'\n").contains("ドライブや共有の一番上は扱わない"));
         assert!(bad("empty", "path = ''\n").contains("path"), "{}", bad("empty", "path = ''\n"));
-        assert!(bad("delete", "path = 'D:\\logs'\n").contains("keep_days が要る"));
-        assert!(bad("delete", "path = 'D:\\logs'\nkeep_days = 0\n").contains("keep_days は 1 以上"));
+        {
+            let s = ToString::to_string(&(bad("delete", "path = 'D:\\logs'\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("keep_days"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("delete", "path = 'D:\\logs'\nkeep_days = 0\n")));
+            assert!(msg::DEF_KEEP_DAYS_BAD.is_in(&s) && s.contains("keep_days"), "{s}");
+        }
         assert!(bad("zip", "from = 'a'\ninto = 'b.7z'\n").contains(".zip"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nrun = [\"x\"]\n").contains("run"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\npath = 'c'\n").contains("path"));
@@ -3488,8 +3595,14 @@ after = [{ job = \"way\", code = \"else\" }]
                 verify: Some(Verify::Readback),
             }))
         );
-        assert!(bad("send", "from = 'a'\ninto = 'b'\nverify = \"md5\"\n").contains("verify は \"sha256\"・\"readback\" のどれか"));
-        assert!(bad("copy", "from = 'a'\ninto = 'b'\nverify = \"sha256\"\n").contains("verify は kind = \"send\" か \"fetch\" にだけ書く"));
+        {
+            let s = ToString::to_string(&(bad("send", "from = 'a'\ninto = 'b'\nverify = \"md5\"\n")));
+            assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("verify"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("copy", "from = 'a'\ninto = 'b'\nverify = \"sha256\"\n")));
+            assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("verify"), "{s}");
+        }
         assert!(bad("ssh", "from = 'h'\ninto = 'ls'\nverify = \"sha256\"\n").contains("verify は kind"));
         assert_eq!(
             net("fetch", "from = '\\\\nas\\share\\out\\*.csv'\ninto = 'D:\\in'\n").map(|p| p.0),
@@ -3511,7 +3624,10 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nkey = 'c'\n").contains("key"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\npassword = 'secret:c'\n").contains("password"));
         assert!(bad("send", "from = 'a'\ninto = 'sftp://h/in'\n").contains("host_key が要る"));
-        assert!(bad("send", "from = 'a'\n").contains("kind = \"send\" には into が要る"));
+        {
+            let s = ToString::to_string(&(bad("send", "from = 'a'\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED_PLAIN.is_in(&s) && s.contains("send"), "{s}");
+        }
         assert_eq!(
             net(
                 "fetch",
@@ -3531,9 +3647,16 @@ after = [{ job = \"way\", code = \"else\" }]
             }))
         );
         assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n").contains("key_id が要る"));
-        assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\nkey_id = 'k'\npassword = 'secret:s3'\nregion = '{param:r}'\n")
-            .contains("region: {param:r}: [params] にない"));
-        assert!(bad("ssh", "from = 'h'\ninto = 'ls'\nkey_id = 'k'\n").contains("key_id は kind = \"send\" か \"fetch\" にだけ書く"));
+        {
+            let s = ToString::to_string(
+                &(bad("send", "from = 'a'\ninto = 's3://logs/in/'\nkey_id = 'k'\npassword = 'secret:s3'\nregion = '{param:r}'\n")),
+            );
+            assert!(msg::DEF_TEMPLATE_BAD.is_in(&s) && s.contains("region"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("ssh", "from = 'h'\ninto = 'ls'\nkey_id = 'k'\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains(&msg::DEF_ONLY_FOR_KINDS.code()) && s.contains("key_id"), "{s}");
+        }
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nregion = 'us-east-1'\n").contains("region は kind"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nendpoint = 'http://nas:9000'\n").contains("endpoint は kind"));
         assert_eq!(
@@ -3553,17 +3676,35 @@ after = [{ job = \"way\", code = \"else\" }]
                 Some(Retry { count: 1, wait: 60 })
             ))
         );
-        assert!(bad("http", "").contains("kind = \"http\" には url が要る"));
+        {
+            let s = ToString::to_string(&(bad("http", "")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("http"), "{s}");
+        }
         assert!(bad("http", "url = 'ftp://x'\n").contains("http:// か https://"));
-        assert!(bad("http", "url = 'https://x'\nmethod = \"get\"\n").contains("method は"));
+        {
+            let s = ToString::to_string(&(bad("http", "url = 'https://x'\nmethod = \"get\"\n")));
+            assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("method"), "{s}");
+        }
         assert!(bad("http", "url = 'https://x'\nbody = 'a'\n").contains("body を書けない"));
-        assert!(bad("http", "url = 'https://x'\nexpect = [200, 99]\n").contains("expect は状態コード"));
-        assert!(bad("http", "url = 'https://x'\nexpect = []\n").contains("expect は状態コード"));
+        {
+            let s = ToString::to_string(&(bad("http", "url = 'https://x'\nexpect = [200, 99]\n")));
+            assert!(msg::DEF_EXPECT_BAD.is_in(&s) && s.contains("expect"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("http", "url = 'https://x'\nexpect = []\n")));
+            assert!(msg::DEF_EXPECT_BAD.is_in(&s) && s.contains("expect"), "{s}");
+        }
         assert!(bad("http", "url = 'https://x'\nheaders = { Content-Type = \"a\" }\n").contains("content_type に書く"));
-        assert!(bad("http", "url = 'https://x'\nheaders = { A = \"secret:\" }\n").contains("secret: の後に名前"));
+        {
+            let s = ToString::to_string(&(bad("http", "url = 'https://x'\nheaders = { A = \"secret:\" }\n")));
+            assert!(msg::DEF_SECRET_NAME_EMPTY.is_in(&s) && s.contains("secret"), "{s}");
+        }
         assert!(bad("http", "url = 'https://x'\ncontent_type = 'text/plain'\n").contains("body を書いたときだけ"));
         assert!(bad("http", "url = 'https://x'\nenv = { A = \"b\" }\n").contains("env"));
-        assert!(bad("copy", "from = 'a'\ninto = 'b'\nurl = 'https://x'\n").contains("url は kind = \"http\" にだけ書く"));
+        {
+            let s = ToString::to_string(&(bad("copy", "from = 'a'\ninto = 'b'\nurl = 'https://x'\n")));
+            assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("url"), "{s}");
+        }
     }
 
     /// `kind = "ssh"` takes its PC, its command as written, the login of send and
@@ -3597,8 +3738,14 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
         assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
         let bad = |extra: &str| parse_ssh(extra).unwrap_err();
-        assert!(bad(&format!("command = 'df -h'\n{hk}")).contains("kind = \"ssh\" には on が要る"));
-        assert!(bad(&format!("on = 'ssh://h'\n{hk}")).contains("kind = \"ssh\" には command が要る"));
+        {
+            let s = ToString::to_string(&(bad(&format!("command = 'df -h'\n{hk}"))));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("ssh"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad(&format!("on = 'ssh://h'\n{hk}"))));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("ssh"), "{s}");
+        }
         assert!(bad(&format!("on = ''\ncommand = 'x'\n{hk}")).contains("on が空"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = ' '\n{hk}")).contains("command が空"));
         assert!(bad("on = 'ssh://h'\ncommand = 'x'\n").contains("ssh:// には host_key が要る"));
@@ -3612,9 +3759,18 @@ after = [{ job = \"way\", code = \"else\" }]
         // A group of PCs in koyomi.toml: how many at once and when it passes.
         let fan = parse_ssh("on = 'group:web'\ncommand = 'uptime'\nmax = 4\npass = 'any'\n").unwrap();
         assert!(matches!(fan.part, Part::Chore(Chore::Ssh { max: Some(4), pass: Pass::Any, .. })));
-        assert!(bad("on = 'group:web'\ncommand = 'x'\nmax = 0\n").contains("max は 1 から 64 までの整数"));
-        assert!(bad("on = 'group:web'\ncommand = 'x'\nmax = 'all'\n").contains("max は 1 から 64 までの整数"));
-        assert!(bad("on = 'group:web'\ncommand = 'x'\npass = 'some'\n").contains("pass は \"all\"・\"any\" のどれか"));
+        {
+            let s = ToString::to_string(&(bad("on = 'group:web'\ncommand = 'x'\nmax = 0\n")));
+            assert!(msg::DEF_INT_RANGE.is_in(&s) && s.contains("max"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("on = 'group:web'\ncommand = 'x'\nmax = 'all'\n")));
+            assert!(msg::DEF_INT_RANGE.is_in(&s) && s.contains("max"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("on = 'group:web'\ncommand = 'x'\npass = 'some'\n")));
+            assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("pass"), "{s}");
+        }
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}max = 2\n")).contains("max は on が PC の組（group:名前）のときだけ書く"));
         let other = parse(
             "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\non = 'ssh://h'\ncommand = 'y'\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\njudge = { warn = \"1\" }\nafter = [\"a\"]\n",
@@ -3624,17 +3780,18 @@ after = [{ job = \"way\", code = \"else\" }]
         .map(|p| p.in_file("a.toml"))
         .collect::<Vec<_>>()
         .join("\n");
-        assert!(other.contains("on は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
-        assert!(other.contains("command は kind = \"ssh\" か \"winrm\" にだけ書く"), "{other}");
+        for key in ["on", "command"] {
+            assert!(other.contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &[key, "\"ssh\", \"winrm\""])), "{other}");
+        }
         let copy = parse("format = 1\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\nmax = 2\npass = 'any'\n")
             .unwrap_err()
             .iter()
             .map(|p| p.in_file("a.toml"))
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(copy.contains("max は kind = \"loop\"・\"ssh\"・\"winrm\" にだけ書く"), "{copy}");
-        assert!(copy.contains("pass は kind = \"ssh\" か \"winrm\" にだけ書く"), "{copy}");
-        assert!(other.contains("judge は kind = \"job\"・\"loop\"・\"ssh\"・\"winrm\" にだけ書く"), "{other}");
+        assert!(copy.contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &["max", "\"loop\", \"ssh\", \"winrm\""])), "{copy}");
+        assert!(copy.contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &["pass", "\"ssh\", \"winrm\""])), "{copy}");
+        assert!(other.contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &["judge", "\"job\", \"loop\", \"ssh\", \"winrm\""])), "{other}");
     }
 
     /// `kind = "winrm"` takes its PC with a user, its command as written, the
@@ -3675,23 +3832,34 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(j.env.get("DAY").map(String::as_str), Some("{date}"));
         assert_eq!(j.retry, Some(Retry { count: 1, wait: 60 }));
         let bad = |extra: &str| parse_winrm(extra).unwrap_err();
-        assert!(bad(&format!("command = 'x'\n{login}"))
-            .contains("kind = \"winrm\" には on が要る（動かす PC。例: on = \"winrm://ops@server\"）"));
-        assert!(bad(&format!("on = 'winrm://u@h'\n{login}")).contains("kind = \"winrm\" には command が要る"));
-        assert!(bad(&format!("on = ''\ncommand = 'x'\n{login}")).contains("winrm://ユーザー@ホスト[:ポート]"));
+        {
+            let s = ToString::to_string(&(bad(&format!("command = 'x'\n{login}"))));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("winrm"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad(&format!("on = 'winrm://u@h'\n{login}"))));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("winrm"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad(&format!("on = ''\ncommand = 'x'\n{login}"))));
+            assert!(msg::DEF_ON_EMPTY.is_in(&s) && s.contains("winrm"), "{s}");
+        }
         assert!(bad(&format!("on = 'winrm://h'\ncommand = 'x'\n{login}")).contains("ユーザーが要る"));
         assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\npassword = 'secret:ops'\n").contains("winrm:// には cert が要る"));
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\ncert = \"{cert}\"\n")).contains("winrm:// には password が要る"));
-        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}host_key = 'SHA256:x'\n"))
-            .contains("host_key は kind = \"send\"・\"fetch\"・\"ssh\" にだけ書く"));
+        {
+            let s = ToString::to_string(&(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}host_key = 'SHA256:x'\n"))));
+            assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("host_key"), "{s}");
+        }
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}key = 'C:\\k'\n")).contains("key は kind"));
         assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}encoding = 'utf8'\n")).contains("encoding"));
         assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\ncert = '{date+1q}'\npassword = 'secret:ops'\n")
             .contains("{date+1q} の単位 q を読み込めません"));
         for auth in ["'kerberos'", "'NTLM'", "1"] {
-            assert!(
-                bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}auth = {auth}\n")).contains("auth は \"basic\"・\"ntlm\" のどれか")
-            );
+            {
+                let s = ToString::to_string(&(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}auth = {auth}\n"))));
+                assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("auth"), "{s}");
+            }
         }
         let other = parse(&format!(
             "format = 1\n[[job]]\nid = \"s\"\nkind = \"ssh\"\non = 'ssh://h'\ncommand = 'y'\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\ncert = \"{cert}\"\n"
@@ -3701,9 +3869,15 @@ after = [{ job = \"way\", code = \"else\" }]
         .map(|p| p.in_file("a.toml"))
         .collect::<Vec<_>>()
         .join("\n");
-        assert!(other.contains("cert は kind = \"winrm\" にだけ書く"), "{other}");
+        assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&other) && other.contains("cert") && other.contains("\"winrm\""), "{other}");
         let other = parse("format = 1\n[[job]]\nid = \"j\"\nrun = [\"x\"]\nauth = \"ntlm\"\n").unwrap_err();
-        assert!(other.iter().any(|p| p.in_file("a.toml").contains("auth は kind = \"winrm\" にだけ書く")), "{other:?}");
+        assert!(
+            other.iter().any(|p| {
+                let s = p.in_file("a.toml");
+                msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("auth") && s.contains("\"winrm\"")
+            }),
+            "{other:?}"
+        );
     }
 
     /// `kind = "mail"` takes its addresses, subject, body, files and place, and
@@ -3735,16 +3909,31 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(j.to.is_empty());
         assert_eq!(j.retry, Some(Retry { count: 2, wait: 60 }));
         let bad = |extra: &str| parse_mail(extra).unwrap_err();
-        assert!(bad("subject = 's'\n").contains("kind = \"mail\" には to が要る"));
-        assert!(bad("to = ['a@x']\n").contains("kind = \"mail\" には subject が要る"));
-        assert!(bad("to = 'a@x'\nsubject = 's'\n").contains("to は空でない文字列の配列で書く"));
-        assert!(bad("to = ['a@x', '']\nsubject = 's'\n").contains("to は空でない文字列の配列で書く"));
+        {
+            let s = ToString::to_string(&(bad("subject = 's'\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("mail"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("to = ['a@x']\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("mail"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("to = 'a@x'\nsubject = 's'\n")));
+            assert!(msg::DEF_ARRAY_BAD.is_in(&s) && s.contains("to"), "{s}");
+        }
+        {
+            let s = ToString::to_string(&(bad("to = ['a@x', '']\nsubject = 's'\n")));
+            assert!(msg::DEF_ARRAY_BAD.is_in(&s) && s.contains("to"), "{s}");
+        }
         assert!(bad("to = []\nsubject = 's'\n").contains("to が空"));
         assert!(bad("to = ['a@x, b@x']\nsubject = 's'\n").contains("アドレスとして読めない: a@x, b@x"));
         assert!(bad("to = ['a@x']\ncc = ['nobody']\nsubject = 's'\n").contains("アドレスとして読めない: nobody"));
         assert!(bad("to = ['a@x']\nsubject = ' '\n").contains("subject が空"));
         assert!(bad("to = ['a@x']\nsubject = '{date+1q}'\n").contains("{date+1q} の単位 q を読み込めません"));
-        assert!(bad("to = ['a@x']\nsubject = 's'\nfiles = [1]\n").contains("files は空でない文字列の配列で書く"));
+        {
+            let s = ToString::to_string(&(bad("to = ['a@x']\nsubject = 's'\nfiles = [1]\n")));
+            assert!(msg::DEF_ARRAY_BAD.is_in(&s) && s.contains("files"), "{s}");
+        }
         assert!(bad("to = ['a@x']\nsubject = 's'\nvia = ''\n").contains("via が空"));
         assert!(bad("to = ['{param:nobody}']\nsubject = 's'\n").contains("nobody"));
         for (extra, name) in [("run_as = 'ops'\n", "run_as"), ("env = { A = 'b' }\n", "env"), ("judge = { warn = '1' }\n", "judge")] {
@@ -3760,9 +3949,16 @@ after = [{ job = \"way\", code = \"else\" }]
         };
         for field in ["cc = ['a@x']", "subject = 's'", "files = ['a']", "via = 'x'"] {
             let name = field.split(' ').next().unwrap();
-            assert!(other("run = [\"x\"]\n", &format!("{field}\n")).contains(&format!("{name} は kind = \"mail\" にだけ書く")), "{field}");
+            let s = other("run = [\"x\"]\n", &format!("{field}\n"));
+            assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains(name) && s.contains("\"mail\""), "{field}");
         }
-        assert!(other("run = [\"x\"]\n", "body = 'x'\n").contains("body は kind = \"http\" か \"mail\" にだけ書く"));
+        assert!(other(
+            "run = [\"x\"]
+",
+            "body = 'x'
+"
+        )
+        .contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &["body", "\"http\", \"mail\""])));
     }
 
     /// `kind = "sql"` takes its database, SQL or file, out file, rows and tls,
@@ -3799,17 +3995,24 @@ after = [{ job = \"way\", code = \"else\" }]
         let Part::Chore(Chore::Sql { file, rows, tls, .. }) = &j.part else { panic!("{:?}", j.part) };
         assert_eq!((file.as_deref(), rows.as_deref(), *tls), (Some("D:\\sql\\clean.sql"), Some("0"), SqlTls::Verify));
         let bad = |extra: &str| parse_sql(extra).unwrap_err();
-        assert!(bad("sql = 'select 1'\n").contains("kind = \"sql\" には db が要る"));
+        {
+            let s = ToString::to_string(&(bad("sql = 'select 1'\n")));
+            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("sql"), "{s}");
+        }
         assert!(bad("db = 'mysql://x/y'\nsql = 'select 1'\n").contains("sqlserver://・postgres://・sqlite:// のどれか"));
         assert!(bad("db = 'sqlite://C:\\a.db'\n").contains("sql か file のどちらか"));
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = ' '\n").contains("sql が空"));
-        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 1\n").contains("sql は文字列で書く"));
+        {
+            let s = ToString::to_string(&(bad("db = 'sqlite://C:\\a.db'\nsql = 1\n")));
+            assert!(msg::DEF_STRING_BAD.is_in(&s) && s.contains("sql"), "{s}");
+        }
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select {param:nobody}'\n").contains("nobody"));
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = -1\n").contains("0 以上の整数"));
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = '5..1'\n").contains("rows は 0・1..・1..100"));
-        assert!(
-            bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\ntls = 'none'\n").contains("tls は \"verify\"・\"trust\"・\"off\" のどれか")
-        );
+        {
+            let s = ToString::to_string(&(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\ntls = 'none'\n")));
+            assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("tls"), "{s}");
+        }
         assert!(bad("db = 'postgres://app@pg/app'\nsql = 'select 1'\n").contains("password が要る"));
         for (extra, name) in [("env = { A = 'b' }\n", "env"), ("judge = { warn = '1' }\n", "judge")] {
             assert!(bad(&format!("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\n{extra}")).contains(name), "{extra}");
@@ -3824,10 +4027,13 @@ after = [{ job = \"way\", code = \"else\" }]
         };
         for field in ["db = 'x'", "sql = 's'", "out = 'a'", "rows = '1'", "tls = 'off'"] {
             let name = field.split(' ').next().unwrap();
-            assert!(other("run = [\"x\"]\n", &format!("{field}\n")).contains(&format!("{name} は kind = \"sql\" にだけ書く")), "{field}");
+            let s = other("run = [\"x\"]\n", &format!("{field}\n"));
+            assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains(name) && s.contains("\"sql\""), "{field}");
         }
-        assert!(other("run = [\"x\"]\n", "file = 'a'\n").contains("file は kind = \"file\"・\"loop\"・\"sql\" にだけ書く"));
-        assert!(other("run = [\"x\"]\n", "password = 'secret:a'\n").contains("\"winrm\"・\"sql\" にだけ書く"));
+        let s = other("run = [\"x\"]\n", "file = 'a'\n");
+        assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("file") && s.contains("\"loop\", \"sql\""), "{s}");
+        let s = other("run = [\"x\"]\n", "password = 'secret:a'\n");
+        assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("password") && s.contains("\"sql\""), "{s}");
     }
 
     #[test]
@@ -3842,14 +4048,11 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(net("branch", ""), Ok(Part::Branch));
         assert_eq!(net("join", ""), Ok(Part::Join { wait: Wait::All }));
         assert_eq!(net("join", "wait = \"any\"\n"), Ok(Part::Join { wait: Wait::Any }));
-        assert_eq!(net("join", "wait = \"one\"\n"), Err(vec!["a.toml の 8 行目: wait は \"all\"・\"any\" のどれか".to_owned()]));
+        assert_eq!(net("join", "wait = \"one\"\n"), Err(vec![placed(msg::line(msg::DEF_CHOICE_BAD, &["wait", "\"all\", \"any\""]), 8)]));
         assert_eq!(net("time", "at = \"06:00\"\n"), Ok(Part::Time { at: when::time("06:00").unwrap(), days: 0 }));
         assert_eq!(net("time", "at = \"06:00\"\ndays = 1\n"), Ok(Part::Time { at: when::time("06:00").unwrap(), days: 1 }));
-        assert_eq!(net("time", ""), Err(vec!["a.toml の 5 行目: kind = \"time\" には at が要る（例: at = \"06:00\"）".to_owned()]));
-        assert_eq!(
-            net("time", "at = \"06:00\"\ndays = -1\n"),
-            Err(vec!["a.toml の 9 行目: days は 0 以上の整数で書く（何日後の at か）".to_owned()])
-        );
+        assert_eq!(net("time", ""), Err(vec![placed(msg::line(msg::DEF_JOB_KEY_REQUIRED, &["time", "at", "at = \"06:00\""]), 5)]));
+        assert_eq!(net("time", "at = \"06:00\"\ndays = -1\n"), Err(vec![placed(msg::line(msg::DEF_INT_RANGE, &["days", "0", "366"]), 9)]));
         assert_eq!(net("file", "file = 'C:\\in\\*.csv'\n"), Ok(Part::File { file: "C:\\in\\*.csv".into(), settle: None }));
         assert_eq!(
             net("file", "file = 'C:\\in\\a.csv'\nsettle = \"10s\"\ntimeout = \"1h\"\n"),
@@ -3857,12 +4060,12 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         assert_eq!(
             net("file", ""),
-            Err(vec!["a.toml の 5 行目: kind = \"file\" には file が要る（例: file = 'C:\\in\\*.csv'）".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]), 5)])
         );
-        assert_eq!(net("file", "file = \" \"\n"), Err(vec!["a.toml の 8 行目: file が空".to_owned()]));
+        assert_eq!(net("file", "file = \" \"\n"), Err(vec![placed(msg::line(msg::DEF_VALUE_EMPTY, &["file"]), 8)]));
         assert_eq!(
             net("file", "file = \"a\"\nsettle = 10\n"),
-            Err(vec!["a.toml の 9 行目: settle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_STRING_BAD_E, &["settle", "\"30m\""]), 9)])
         );
         assert_eq!(net("notify", ""), Ok(Part::Notify));
         assert_eq!(
@@ -3876,61 +4079,62 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(net("loop", "count = 3\nmax = 2\nrun = [\"x\"]\n"), Ok(Part::Loop { file: None, count: Some(3), max: Some(2) }));
         assert_eq!(
             net("loop", "count = 3\nmax = 17\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 9 行目: max は 1 から 16 までの整数で書く（いくつの回を並べて動かすか）".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_INT_RANGE, &["max", "1", "16"]), 9)])
         );
         assert_eq!(
             net("job", "max = 2\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 8 行目: max は kind = \"loop\"・\"ssh\"・\"winrm\" にだけ書く".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["max", "\"loop\", \"ssh\", \"winrm\""]), 8)])
         );
         assert_eq!(
             net("loop", "run = [\"x\"]\n"),
-            Err(
-                vec!["a.toml の 5 行目: kind = \"loop\" には file（例: file = 'C:\\in\\*.csv'）か count（例: count = 3）が要る".to_owned()]
-            )
+            Err(vec![placed(
+                msg::line(msg::DEF_EITHER_REQUIRED, &["kind = \"loop\"", "file", "count", "file = 'C:\\in\\*.csv' / count = 3"]),
+                5
+            )])
         );
-        assert_eq!(
-            net("loop", "file = \"a\"\ncount = 2\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 9 行目: kind = \"loop\" には file か count のどちらか 1 つだけ書く".to_owned()])
-        );
+        assert_eq!(net("loop", "file = \"a\"\ncount = 2\nrun = [\"x\"]\n"), Err(vec![placed(msg::line(msg::DEF_LOOP_BOTH, &[]), 9)]));
         assert_eq!(
             net("loop", "count = 0\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 8 行目: count は 1 から 10000 までの整数で書く（何回くり返すか）".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_INT_RANGE, &["count", "1", "10000"]), 8)])
         );
-        assert_eq!(net("loop", "count = 2\n"), Err(vec!["a.toml の 5 行目: run が無い".to_owned()]));
-        assert_eq!(net("job", "count = 2\nrun = [\"x\"]\n"), Err(vec!["a.toml の 8 行目: count は kind = \"loop\" にだけ書く".to_owned()]));
+        assert_eq!(net("loop", "count = 2\n"), Err(vec![placed(msg::line(msg::DEF_RUN_MISSING, &[]), 5)]));
+        assert_eq!(
+            net("job", "count = 2\nrun = [\"x\"]\n"),
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["count", "\"loop\""]), 8)])
+        );
         assert_eq!(net("jobnet", "use = \"共通/バックアップ\"\n"), Ok(Part::Jobnet { use_: "共通/バックアップ".into() }));
         assert_eq!(
             net("jobnet", ""),
-            Err(vec!["a.toml の 5 行目: kind = \"jobnet\" には use が要る（例: use = \"共通/バックアップ\"）".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_JOB_KEY_REQUIRED, &["jobnet", "use", "use = \"common/backup\""]), 5)])
         );
         for u in ["a", "a/b/c", "/b", "a/", "../b", "a/..", "a\\b/c"] {
             assert_eq!(
                 net("jobnet", &format!("use = \"{}\"\n", u.replace('\\', "\\\\"))),
-                Err(vec!["a.toml の 8 行目: use は \"グループ/名前\" で書く（例: use = \"共通/バックアップ\"）".to_owned()]),
+                Err(vec![placed(msg::line(msg::DEF_JOBNET_REF_BAD, &["use"]), 8)]),
                 "{u}"
             );
         }
         assert_eq!(
             net("branch", "run = [\"x\"]\n"),
-            Err(vec!["a.toml の 8 行目: run は kind = \"job\" か \"loop\" にだけ書く".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["run", "\"job\", \"loop\""]), 8)])
         );
         assert_eq!(
             net("branch", "timeout = \"1m\"\n"),
-            Err(vec!["a.toml の 8 行目: timeout は kind = \"job\"・\"loop\"・\"file\" にだけ書く".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["timeout", "\"job\", \"loop\", \"file\", \"delete\", \"zip\", \"copy\", \"empty\", \"send\", \"fetch\", \"http\", \"ssh\", \"winrm\", \"mail\", \"sql\""]), 8)])
         );
-        assert_eq!(net("branch", "wait = \"any\"\n"), Err(vec!["a.toml の 8 行目: wait は kind = \"join\" にだけ書く".to_owned()]));
+        assert_eq!(net("branch", "wait = \"any\"\n"), Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["wait", "\"join\""]), 8)]));
         assert_eq!(
             net("job", "use = \"a/b\"\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 8 行目: use は kind = \"jobnet\" にだけ書く".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["use", "\"jobnet\""]), 8)])
         );
         assert_eq!(
             net("job", "at = \"06:00\"\nrun = [\"x\"]\n"),
-            Err(vec!["a.toml の 8 行目: at は kind = \"time\" にだけ書く".to_owned()])
+            Err(vec![placed(msg::line(msg::DEF_ONLY_FOR_KINDS, &["at", "\"time\""]), 8)])
         );
         assert_eq!(
             net("step", ""),
             Err(vec![
-                "a.toml の 7 行目: kind は \"job\"・\"loop\"・\"branch\"・\"join\"・\"time\"・\"file\"・\"notify\"・\"approval\"・\"jobnet\"・\"delete\"・\"zip\"・\"copy\"・\"empty\"・\"send\"・\"fetch\"・\"http\"・\"ssh\"・\"winrm\"・\"mail\"・\"sql\" のどれか".to_owned()
+                placed(msg::line(msg::DEF_CHOICE_BAD, &["kind", "\"job\", \"loop\", \"branch\", \"join\", \"time\", \"file\", \"notify\", \"approval\", \"jobnet\", \"delete\", \"zip\", \"copy\", \"empty\", \"send\", \"fetch\", \"http\", \"ssh\", \"winrm\", \"mail\", \"sql\""]), 7)
             ])
         );
         // A part of the flow ends at once (no process): the TOML of a run keeps its kind.
@@ -3950,21 +4154,18 @@ after = [{ job = \"way\", code = \"else\" }]
         let p = |body: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n{body}"));
         assert_eq!(
             p("[[job]]\nid = \"j\"\nkind = \"join\"\n"),
-            ["a.toml の 5 行目: 孤立した部品: j（after が無い）", "a.toml の 5 行目: 孤立した部品: j（後に続くものが無い）"]
+            [placed(msg::line(msg::DEF_JOB_NO_BEFORE, &["j"]), 5), placed(msg::line(msg::DEF_JOB_NO_NEXT, &["j"]), 5)]
         );
-        assert_eq!(
-            p("[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"06:00\"\n"),
-            ["a.toml の 5 行目: 孤立した部品: t（後に続くものが無い）"]
-        );
-        assert_eq!(p("[[job]]\nid = \"n\"\nkind = \"notify\"\n"), ["a.toml の 5 行目: 孤立した部品: n（after が無い）"]);
+        assert_eq!(p("[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"06:00\"\n"), [placed(msg::line(msg::DEF_JOB_NO_NEXT, &["t"]), 5)]);
+        assert_eq!(p("[[job]]\nid = \"n\"\nkind = \"notify\"\n"), [placed(msg::line(msg::DEF_JOB_NO_BEFORE, &["n"]), 5)]);
         assert_eq!(
             p("[[job]]\nid = \"b\"\nkind = \"branch\"\nafter = [\"a\", \"a\"]\n[[job]]\nid = \"z\"\nrun = [\"y\"]\nafter = [\"b\"]\n"),
-            ["a.toml の 5 行目: kind = \"branch\" には after を 1 つ書く（その終了コードで分ける）"]
+            [placed(msg::line(msg::DEF_BRANCH_AFTER_COUNT, &[]), 5)]
         );
         assert!(p("[[job]]\nid = \"n\"\nkind = \"jobnet\"\nuse = \"x/y\"\n").is_empty());
         assert_eq!(
             p("[[job]]\nid = \"b\"\nrun = [\"y\"]\nafter = [{ job = \"c\", on = \"any\" }]\n[[job]]\nid = \"c\"\nrun = [\"y\"]\nafter = [{ job = \"b\", on = \"error\" }]\n"),
-            ["a.toml の 5 行目: after が輪になっている: b → c → b"]
+            [placed(msg::line(msg::DEF_AFTER_CYCLE, &["b -> c -> b"]), 5)]
         );
     }
 
@@ -3980,7 +4181,7 @@ after = [{ job = \"way\", code = \"else\" }]
             if u == "共通/バックアップ" {
                 Ok(child.clone())
             } else {
-                Err(format!("子ジョブネットがない: {u}"))
+                Err(msg::line(msg::CHILD_MISSING, &[u]))
             }
         };
         let net = expand(&parent, &lookup).unwrap();
@@ -3995,10 +4196,10 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(net.jobs[5].after, [Line::ok("bk")]);
         assert!(net.when.is_empty() && net.jobs.iter().all(|j| j.pos.is_none()));
         let missing = parse("format = 1\n[[job]]\nid = \"bk\"\nkind = \"jobnet\"\nuse = \"x/y\"\n").unwrap();
-        assert_eq!(expand(&missing, &lookup).unwrap_err(), "子ジョブネットがない: x/y");
+        assert_eq!(expand(&missing, &lookup).unwrap_err(), msg::line(msg::CHILD_MISSING, &["x/y"]));
         let myself = parse("format = 1\n[[job]]\nid = \"me\"\nkind = \"jobnet\"\nuse = \"a/b\"\n").unwrap();
         let loop_ = |u: &str| if u == "a/b" { Ok(myself.clone()) } else { Err(String::new()) };
-        assert_eq!(expand(&myself, &loop_).unwrap_err(), "子ジョブネットの呼び合いが輪になっている: a/b → a/b");
+        assert_eq!(expand(&myself, &loop_).unwrap_err(), msg::line(msg::DEF_CHILD_LOOP, &["a/b -> a/b"]));
     }
 
     /// each job goes to the folder of the net it came from, a child's (and its child's) to theirs;
@@ -4018,7 +4219,7 @@ after = [{ job = \"way\", code = \"else\" }]
         let lookup = |u: &str| match u {
             "共通/控え" => Ok(child.clone()),
             "共通/奥" => Ok(inner.clone()),
-            _ => Err(format!("子ジョブネットがない: {u}")),
+            _ => Err(msg::line(msg::CHILD_MISSING, &[u])),
         };
         let mut net = expand(&parent, &lookup).unwrap();
         let root = std::env::temp_dir().join("jobnets");
@@ -4107,64 +4308,76 @@ after = [{ job = \"way\", code = \"else\" }]
     #[test]
     fn a_when_names_its_mistake_with_its_line() {
         let p = |when: &str| problems(&format!("format = 1\n[[when]]\n{when}\n"));
-        assert_eq!(p("every = \"day\""), ["a.toml の 2 行目: at が要る（例: at = [\"02:00\"]）"]);
-        assert_eq!(
-            p("at = [\"02:00\"]"),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
-        );
+        assert_eq!(p("every = \"day\""), [placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["at", "at = [\"02:00\"]"]), 2)]);
+        assert_eq!(p("at = [\"02:00\"]"), [placed(msg::line(msg::DEF_WHEN_KIND_MISSING, &[]), 2)]);
         assert_eq!(
             p("every = \"daily\"\nat = [\"02:00\"]"),
-            ["a.toml の 3 行目: every は \"day\"・\"minutes\"・\"hours\"・\"week\"・\"month\"・\"year\" のどれか"]
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["every", "\"day\", \"minutes\", \"hours\", \"week\", \"month\", \"year\""]), 3)]
         );
         let t = p("every = \"day\"\nat = [\"2 時\"]");
         assert!(t.len() == 1 && t[0].contains(&crate::msg::TIME_BAD.code()) && t[0].ends_with("（a.toml の 4 行目）"), "{t:?}");
-        assert_eq!(p("every = \"day\"\nat = []"), ["a.toml の 4 行目: at が空"]);
-        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nday = 3"), ["a.toml の 5 行目: day は day では使わない"]);
-        assert_eq!(p("every = \"week\"\nat = [\"02:00\"]"), ["a.toml の 2 行目: days が要る（例: days = [\"mon\", \"fri\"]）"]);
+        assert_eq!(p("every = \"day\"\nat = []"), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["at"]), 4)]);
+        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nday = 3"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["day", "day"]), 5)]);
+        assert_eq!(
+            p("every = \"week\"\nat = [\"02:00\"]"),
+            [placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["days", "days = [\"mon\", \"fri\"]"]), 2)]
+        );
         let w = p("every = \"week\"\ndays = [\"火\"]\nat = [\"02:00\"]");
         assert!(w.len() == 1 && w[0].contains("曜日 \"火\" を読み込めません") && w[0].ends_with("（a.toml の 4 行目）"), "{w:?}");
-        assert_eq!(p("every = \"minutes\"\nfrom = \"09:00\"\nto = \"10:00\""), ["a.toml の 2 行目: n が要る（例: n = 15）"]);
-        assert_eq!(p("every = \"minutes\"\nn = 0\nfrom = \"09:00\"\nto = \"10:00\""), ["a.toml の 4 行目: n は 1 以上の整数で書く"]);
-        assert_eq!(p("every = \"hours\"\nn = 1"), ["a.toml の 2 行目: from と to が要る（例: from = \"09:00\", to = \"18:00\"）"]);
-        assert_eq!(p("every = \"hours\"\nn = 1\nfrom = \"18:00\"\nto = \"09:00\""), ["a.toml の 5 行目: from は to より前"]);
         assert_eq!(
-            p("every = \"month\"\nat = [\"09:00\"]"),
-            ["a.toml の 2 行目: month には day か、nth と weekday か、business_day が要る（例: day = 25、day = \"last\"、nth = 2 と weekday = \"tue\"、business_day = 5）"]
+            p("every = \"minutes\"\nfrom = \"09:00\"\nto = \"10:00\""),
+            [placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["n", "n = 15"]), 2)]
         );
         assert_eq!(
-            p("every = \"month\"\nbusiness_day = 0\nat = [\"09:00\"]"),
-            ["a.toml の 4 行目: business_day は 1 から 31 か -1 から -31 の数"]
+            p("every = \"minutes\"\nn = 0\nfrom = \"09:00\"\nto = \"10:00\""),
+            [placed(msg::line(msg::DEF_INT_RANGE, &["n", "1", "1440"]), 4)]
         );
         assert_eq!(
-            p("every = \"month\"\nbusiness_day = 32\nat = [\"09:00\"]"),
-            ["a.toml の 4 行目: business_day は 1 から 31 か -1 から -31 の数"]
+            p("every = \"hours\"\nn = 1"),
+            [
+                placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["from", "from = \"09:00\""]), 2),
+                placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["to", "to = \"18:00\""]), 2)
+            ]
         );
+        assert_eq!(p("every = \"hours\"\nn = 1\nfrom = \"18:00\"\nto = \"09:00\""), [placed(msg::line(msg::DEF_TIME_ORDER, &[]), 5)]);
+        assert_eq!(p("every = \"month\"\nat = [\"09:00\"]"), [placed(msg::line(msg::DEF_MONTH_RULE_BAD, &[]), 2)]);
+        assert_eq!(p("every = \"month\"\nbusiness_day = 0\nat = [\"09:00\"]"), [placed(msg::line(msg::DEF_BUSINESS_DAY_BAD, &[]), 4)]);
+        assert_eq!(p("every = \"month\"\nbusiness_day = 32\nat = [\"09:00\"]"), [placed(msg::line(msg::DEF_BUSINESS_DAY_BAD, &[]), 4)]);
         assert_eq!(
             p("every = \"month\"\nbusiness_day = 1\nday = 2\nat = [\"09:00\"]"),
-            ["a.toml の 5 行目: day は business_day と一緒に使わない"]
+            [placed(msg::line(msg::DEF_BUSINESS_DAY_CONFLICT, &["day"]), 5)]
         );
-        assert_eq!(p("every = \"month\"\nday = 20\nshift = 40\nat = [\"09:00\"]"), ["a.toml の 5 行目: shift は -31 から 31 の数"]);
+        assert_eq!(
+            p("every = \"month\"\nday = 20\nshift = 40\nat = [\"09:00\"]"),
+            [placed(msg::line(msg::DEF_INT_RANGE, &["shift", "-31", "31"]), 5)]
+        );
         assert_eq!(
             p("every = \"month\"\nnth = 2\nweekday = \"tue\"\nshift = 1\nat = [\"09:00\"]"),
-            ["a.toml の 6 行目: shift は day の数と使う（例: day = 20, shift = -3）"]
+            [placed(msg::line(msg::DEF_SHIFT_NEEDS_DAY, &[]), 6)]
         );
         assert_eq!(
             p("every = \"month\"\nday = \"last\"\nshift = -1\nat = [\"09:00\"]"),
-            ["a.toml の 5 行目: shift は day の数と使う（例: day = 20, shift = -3）"]
+            [placed(msg::line(msg::DEF_SHIFT_NEEDS_DAY, &[]), 5)]
         );
-        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nbusiness_day = 1"), ["a.toml の 5 行目: business_day は day では使わない"]);
+        assert_eq!(
+            p("every = \"day\"\nat = [\"02:00\"]\nbusiness_day = 1"),
+            [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["business_day", "day"]), 5)]
+        );
         assert_eq!(
             p("every = \"day\"\nat = [\"02:00\"]\non_closed = \"before\""),
-            ["a.toml の 5 行目: on_closed は \"prev\"・\"next\"・\"skip\"・\"run\" のどれか"]
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["on_closed", "\"prev\", \"next\", \"skip\", \"run\""]), 5)]
         );
-        assert_eq!(p("every = \"month\"\nday = 32\nat = [\"09:00\"]"), ["a.toml の 4 行目: day は 1 から 31 の数か \"last\""]);
-        assert_eq!(p("every = \"month\"\nnth = 6\nweekday = \"tue\"\nat = [\"09:00\"]"), ["a.toml の 4 行目: nth は 1 から 5 の数"]);
+        assert_eq!(p("every = \"month\"\nday = 32\nat = [\"09:00\"]"), [placed(msg::line(msg::DEF_DAY_BAD, &[]), 4)]);
+        assert_eq!(
+            p("every = \"month\"\nnth = 6\nweekday = \"tue\"\nat = [\"09:00\"]"),
+            [placed(msg::line(msg::DEF_INT_RANGE, &["nth", "1", "5"]), 4)]
+        );
         let d = p("every = \"year\"\ndate = \"13-01\"\nat = [\"09:00\"]");
         assert!(
             d.len() == 1 && d[0].starts_with("KOYOMI-E3391 ") && d[0].contains("13-01") && d[0].ends_with("（a.toml の 4 行目）"),
             "{d:?}"
         );
-        assert_eq!(p("dates = []\nat = [\"09:00\"]"), ["a.toml の 2 行目: dates が空"]);
+        assert_eq!(p("dates = []\nat = [\"09:00\"]"), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["dates"]), 2)]);
         let d = p("dates = [\"30 日\"]\nat = [\"09:00\"]");
         assert!(
             d.len() == 1 && d[0].starts_with("KOYOMI-E3389 ") && d[0].contains("30 日") && d[0].ends_with("（a.toml の 3 行目）"),
@@ -4172,13 +4385,16 @@ after = [{ job = \"way\", code = \"else\" }]
         );
         let o = p("once = \"今夜\"");
         assert!(o.len() == 1 && o[0].starts_with("KOYOMI-E") && o[0].contains("今夜") && o[0].ends_with("（a.toml の 3 行目）"), "{o:?}");
-        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nstart = 2027-01-01\nend = 2026-12-01"), ["a.toml の 5 行目: start は end より前"]);
-        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nfoo = 1"), ["a.toml の 5 行目: 知らない欄 foo"]);
+        assert_eq!(
+            p("every = \"day\"\nat = [\"02:00\"]\nstart = 2027-01-01\nend = 2026-12-01"),
+            [placed(msg::line(msg::DEF_PERIOD_ORDER, &[]), 5)]
+        );
+        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nfoo = 1"), [placed(msg::line(msg::DEF_FIELD_UNKNOWN, &["foo"]), 5)]);
         for f in ["after_jobnet = \"a/b\"", "on = \"ok\""] {
             let name = f.split(' ').next().unwrap();
             assert_eq!(
                 p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),
-                [format!("a.toml の 5 行目: {name} は day では使わない")],
+                [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &[name, "day"]), 5)],
                 "{f}"
             );
         }
@@ -4195,21 +4411,18 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(net.when[0].is_event());
         assert_eq!(net.when[1].kind, Kind::AfterJobnet { jobnet: "経理/売上取込".to_owned(), on: AfterOn::Error });
         assert_eq!(net.when[1].on_closed, Some(OnClosed::Run));
+        assert_eq!(p("after_jobnet = \"売上取込\""), [placed(msg::line(msg::DEF_JOBNET_REF_BAD, &["after_jobnet"]), 3)]);
+        assert_eq!(p("after_jobnet = 1"), [placed(msg::line(msg::DEF_STRING_BAD, &["after_jobnet"]), 3)]);
         assert_eq!(
-            p("after_jobnet = \"売上取込\""),
-            ["a.toml の 3 行目: after_jobnet は \"グループ/名前\" で書く（例: after_jobnet = \"経理/売上取込\"）"]
-        );
-        assert_eq!(p("after_jobnet = 1"), ["a.toml の 3 行目: after_jobnet は文字列で書く"]);
-        assert_eq!(p("after_jobnet = \"a/b\"\non = \"sometimes\""), ["a.toml の 4 行目: on は \"ok\"・\"error\"・\"any\" のどれか"]);
-        assert_eq!(p("after_jobnet = \"a/b\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は after_jobnet では使わない"]);
-        assert_eq!(
-            p("after_jobnet = \"a/b\"\non_closed = \"next\""),
-            ["a.toml の 4 行目: after_jobnet では on_closed は \"skip\" か \"run\""]
+            p("after_jobnet = \"a/b\"\non = \"sometimes\""),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["on", "\"ok\", \"error\", \"any\""]), 4)]
         );
         assert_eq!(
-            p("on = \"ok\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
+            p("after_jobnet = \"a/b\"\nat = [\"02:00\"]"),
+            [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["at", "after_jobnet"]), 4)]
         );
+        assert_eq!(p("after_jobnet = \"a/b\"\non_closed = \"next\""), [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["after_jobnet"]), 4)]);
+        assert_eq!(p("on = \"ok\""), [placed(msg::line(msg::DEF_WHEN_KIND_MISSING, &[]), 2)]);
     }
 
     #[test]
@@ -4226,28 +4439,22 @@ after = [{ job = \"way\", code = \"else\" }]
         // A UNC path and a plain file (no wildcard) are fine; the settle may be left out.
         let net = parse("format = 1\n[[when]]\nfile = '\\\\nas\\in\\done.flag'\n").unwrap();
         assert_eq!(net.when[0].kind, Kind::File { file: "\\\\nas\\in\\done.flag".to_owned(), settle: None });
-        assert_eq!(p("file = 'in\\*.csv'"), ["a.toml の 3 行目: file は絶対パスで書く（例: file = 'D:\\受信\\*.csv'）"]);
-        assert_eq!(p("file = 'D:\\受信\\'"), ["a.toml の 3 行目: file はファイル名まで書く（例: file = 'D:\\受信\\*.csv'）"]);
-        assert_eq!(p("file = 'D:\\*\\a.csv'"), ["a.toml の 3 行目: file の * / ? はファイル名の部分だけ（フォルダーには使えない）"]);
-        assert_eq!(p("file = ''"), ["a.toml の 3 行目: file が空"]);
-        assert_eq!(
-            p("file = 'D:\\in\\a.csv'\nsettle = 10"),
-            ["a.toml の 4 行目: settle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]
-        );
-        assert_eq!(p("file = 'D:\\in\\a.csv'\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は file では使わない"]);
-        assert_eq!(
-            p("file = 'D:\\in\\a.csv'\non_closed = \"prev\""),
-            ["a.toml の 4 行目: file / on_start では on_closed は \"skip\" か \"run\""]
-        );
-        assert_eq!(p("on_start = false"), ["a.toml の 3 行目: on_start は true だけ（使わないなら [[when]] ごと消す）"]);
-        assert_eq!(p("on_start = true\nsettle = \"10s\""), ["a.toml の 4 行目: settle は on_start では使わない"]);
+        assert_eq!(p("file = 'in\\*.csv'"), [placed(msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["file", "file = 'D:\\recv\\*.csv'"]), 3)]);
+        assert_eq!(p("file = 'D:\\受信\\'"), [placed(msg::line(msg::DEF_FILE_NAME_MISSING, &[]), 3)]);
+        assert_eq!(p("file = 'D:\\*\\a.csv'"), [placed(msg::line(msg::DEF_FILE_WILDCARD_DIR, &[]), 3)]);
+        assert_eq!(p("file = ''"), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["file"]), 3)]);
+        assert_eq!(p("file = 'D:\\in\\a.csv'\nsettle = 10"), [placed(msg::line(msg::DEF_STRING_BAD_E, &["settle", "\"30m\""]), 4)]);
+        assert_eq!(p("file = 'D:\\in\\a.csv'\nat = [\"02:00\"]"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["at", "file"]), 4)]);
+        assert_eq!(p("file = 'D:\\in\\a.csv'\non_closed = \"prev\""), [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["file / on_start"]), 4)]);
+        assert_eq!(p("on_start = false"), [placed(msg::line(msg::DEF_ON_START_BAD, &[]), 3)]);
+        assert_eq!(p("on_start = true\nsettle = \"10s\""), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["settle", "on_start"]), 4)]);
         let net = parse("format = 1\n[[when]]\nidle = \"10m\"\n").unwrap();
         assert_eq!(net.when[0].kind, Kind::Idle { idle: 600 });
         assert!(net.when[0].is_event());
-        assert_eq!(p("idle = \"30s\""), ["a.toml の 3 行目: idle は 1m 以上（それより短いと、手を止めるたびに流れる）"]);
-        assert_eq!(p("idle = 10"), ["a.toml の 3 行目: idle は \"30m\" のように文字列で書く（単位なしの数は秒か分か分からない）"]);
-        assert_eq!(p("idle = \"10m\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は idle では使わない"]);
-        assert_eq!(p("idle = \"10m\"\non_closed = \"next\""), ["a.toml の 4 行目: idle では on_closed は \"skip\" か \"run\""]);
+        assert_eq!(p("idle = \"30s\""), [placed(msg::line(msg::DEF_IDLE_SHORT, &[]), 3)]);
+        assert_eq!(p("idle = 10"), [placed(msg::line(msg::DEF_STRING_BAD_E, &["idle", "\"30m\""]), 3)]);
+        assert_eq!(p("idle = \"10m\"\nat = [\"02:00\"]"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["at", "idle"]), 4)]);
+        assert_eq!(p("idle = \"10m\"\non_closed = \"next\""), [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["idle"]), 4)]);
         for (text, session) in
             [("sign_in", Session::SignIn), ("sign_out", Session::SignOut), ("lock", Session::Lock), ("unlock", Session::Unlock)]
         {
@@ -4259,25 +4466,25 @@ after = [{ job = \"way\", code = \"else\" }]
         assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock, user: Some("PC\\taro".to_owned()) });
         let net = parse("format = 1\n[[when]]\nsession = \"sign_in\"\nuser = \"taro\"\n").unwrap();
         assert_eq!(net.when[0].kind, Kind::Session { session: Session::SignIn, user: Some("taro".to_owned()) });
-        let wrong = ["a.toml の 4 行目: user は 'PC\\taro'・'CORP\\taro'・\"taro\" のように書く（@ や空白は書かない）"];
+        let wrong = [placed(msg::line(msg::DEF_SESSION_USER_BAD, &[]), 4)];
         assert_eq!(p("session = \"lock\"\nuser = \"taro@corp.example\""), wrong);
         assert_eq!(p("session = \"lock\"\nuser = \"\""), wrong);
         assert_eq!(p("session = \"lock\"\nuser = 'PC\\'"), wrong);
-        assert_eq!(p("session = \"lock\"\nuser = 1"), ["a.toml の 4 行目: user は文字列で書く"]);
-        assert_eq!(p("idle = \"10m\"\nuser = \"taro\""), ["a.toml の 4 行目: user は idle では使わない"]);
-        assert_eq!(p("session = \"logon\""), ["a.toml の 3 行目: session は \"sign_in\"・\"sign_out\"・\"lock\"・\"unlock\" のどれか"]);
-        assert_eq!(p("session = \"lock\"\nidle = \"10m\""), ["a.toml の 3 行目: session は idle では使わない"]);
-        assert_eq!(p("session = \"lock\"\nat = [\"02:00\"]"), ["a.toml の 4 行目: at は session では使わない"]);
-        assert_eq!(p("session = \"unlock\"\non_closed = \"prev\""), ["a.toml の 4 行目: session では on_closed は \"skip\" か \"run\""]);
+        assert_eq!(p("session = \"lock\"\nuser = 1"), [placed(msg::line(msg::DEF_STRING_BAD, &["user"]), 4)]);
+        assert_eq!(p("idle = \"10m\"\nuser = \"taro\""), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["user", "idle"]), 4)]);
         assert_eq!(
-            p("settle = \"10s\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
+            p("session = \"logon\""),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["session", "\"sign_in\", \"sign_out\", \"lock\", \"unlock\""]), 3)]
         );
+        assert_eq!(p("session = \"lock\"\nidle = \"10m\""), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["session", "idle"]), 3)]);
+        assert_eq!(p("session = \"lock\"\nat = [\"02:00\"]"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["at", "session"]), 4)]);
+        assert_eq!(p("session = \"unlock\"\non_closed = \"prev\""), [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["session"]), 4)]);
+        assert_eq!(p("settle = \"10s\""), [placed(msg::line(msg::DEF_WHEN_KIND_MISSING, &[]), 2)]);
         for f in ["file = 'D:\\in\\a.csv'", "settle = \"10s\"", "on_start = true"] {
             let name = f.split(' ').next().unwrap();
             assert_eq!(
                 p(&format!("every = \"day\"\nat = [\"02:00\"]\n{f}")),
-                [format!("a.toml の 5 行目: {name} は day では使わない")],
+                [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &[name, "day"]), 5)],
                 "{f}"
             );
         }
@@ -4299,26 +4506,29 @@ after = [{ job = \"way\", code = \"else\" }]
             Kind::EventLog { eventlog: "Application".to_owned(), ids: Vec::new(), source: Some("MyApp".to_owned()) }
         );
         assert!(net.when.iter().all(When::is_event));
-        assert_eq!(p("log = 'D:\\app\\app.log'"), ["a.toml の 2 行目: contains が要る（例: contains = \"ERROR\"）"]);
-        assert_eq!(p("log = 'D:\\app\\app.log'\ncontains = \"\""), ["a.toml の 4 行目: contains が空"]);
-        assert_eq!(p("log = 'app.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は絶対パスで書く（例: log = 'D:\\app\\app.log'）"]);
-        assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), ["a.toml の 3 行目: log は 1 つのファイルのパス（* / ? は使えない）"]);
+        assert_eq!(p("log = 'D:\\app\\app.log'"), [placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["contains", "contains = \"ERROR\""]), 2)]);
+        assert_eq!(p("log = 'D:\\app\\app.log'\ncontains = \"\""), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["contains"]), 4)]);
         assert_eq!(
-            p("contains = \"E\""),
-            ["a.toml の 2 行目: [[when]] には once か every か dates か file か log か eventlog か mail か on_start か after_jobnet か idle か session が要る"]
+            p("log = 'app.log'\ncontains = \"E\""),
+            [placed(msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["log", "log = 'D:\\app\\app.log'"]), 3)]
         );
-        assert_eq!(p("eventlog = \"System\""), ["a.toml の 2 行目: eventlog には ids か source が要る（例: ids = [4625]）"]);
+        assert_eq!(p("log = 'D:\\app\\*.log'\ncontains = \"E\""), [placed(msg::line(msg::DEF_LOG_PATH_BAD, &[]), 3)]);
+        assert_eq!(p("contains = \"E\""), [placed(msg::line(msg::DEF_WHEN_KIND_MISSING, &[]), 2)]);
         assert_eq!(
-            p("eventlog = \"System\"\nids = [70000]"),
-            ["a.toml の 4 行目: ids はイベント ID（0〜65535）の配列で書く（例: ids = [4625]）"]
+            p("eventlog = \"System\""),
+            [placed(msg::line(msg::DEF_EITHER_REQUIRED, &["eventlog", "ids", "source", "ids = [4625]"]), 2)]
         );
-        assert_eq!(p("eventlog = \"\"\nids = [1]"), ["a.toml の 3 行目: eventlog が空（例: eventlog = \"Application\"）"]);
-        assert_eq!(p("eventlog = \"System\"\nsource = \" \""), ["a.toml の 4 行目: source が空"]);
-        assert_eq!(p("eventlog = \"System\"\nids = [1]\ncontains = \"E\""), ["a.toml の 5 行目: contains は eventlog では使わない"]);
-        assert_eq!(p("log = 'D:\\a.log'\ncontains = \"E\"\nids = [1]"), ["a.toml の 5 行目: ids は log では使わない"]);
+        assert_eq!(p("eventlog = \"System\"\nids = [70000]"), [placed(msg::line(msg::DEF_IDS_BAD, &[]), 4)]);
+        assert_eq!(p("eventlog = \"\"\nids = [1]"), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["eventlog"]), 3)]);
+        assert_eq!(p("eventlog = \"System\"\nsource = \" \""), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["source"]), 4)]);
+        assert_eq!(
+            p("eventlog = \"System\"\nids = [1]\ncontains = \"E\""),
+            [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["contains", "eventlog"]), 5)]
+        );
+        assert_eq!(p("log = 'D:\\a.log'\ncontains = \"E\"\nids = [1]"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["ids", "log"]), 5)]);
         assert_eq!(
             p("log = 'D:\\a.log'\ncontains = \"E\"\non_closed = \"next\""),
-            ["a.toml の 5 行目: log / eventlog では on_closed は \"skip\" か \"run\""]
+            [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["log / eventlog"]), 5)]
         );
     }
 
@@ -4343,35 +4553,41 @@ after = [{ job = \"way\", code = \"else\" }]
         let m = "mail = \"imaps://a@b\"\n";
         assert_eq!(
             p(&format!("{m}password = \"secret:m\"")),
-            ["a.toml の 2 行目: mail には sender か subject が要る（例: subject = \"請求書\"）"]
+            [placed(msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]), 2)]
         );
         assert_eq!(
             p(&format!("{m}sender = \"x\"")),
-            ["a.toml の 2 行目: mail には password = \"secret:<名前>\" が要る（koyomi secret set <名前> で OS の資格情報に置く）"]
+            [placed(msg::line(msg::DEF_WHEN_KEY_MISSING, &["password", "password = \"secret:mailpass\""]), 2)]
         );
         assert_eq!(
             p(&format!("{m}password = \"hunter2\"\nsender = \"x\"")),
-            ["a.toml の 4 行目: password は \"secret:<名前>\" で書く（パスワードはファイルに書かず、koyomi secret set <名前> で OS の資格情報に置く）"]
+            [placed(msg::line(msg::DEF_PASSWORD_NOT_SECRET, &["password"]), 4)]
         );
-        assert_eq!(p(&format!("{m}password = \"secret:\"\nsender = \"x\"")), ["a.toml の 4 行目: password: secret: の後に名前が要る"]);
-        assert_eq!(p(&format!("{m}password = \"secret:m\"\nsender = \"\"")), ["a.toml の 5 行目: sender が空"]);
+        assert_eq!(
+            p(&format!("{m}password = \"secret:\"\nsender = \"x\"")),
+            [placed(msg::line(msg::DEF_SECRET_NAME_EMPTY, &["password"]), 4)]
+        );
+        assert_eq!(p(&format!("{m}password = \"secret:m\"\nsender = \"\"")), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["sender"]), 5)]);
         let tls = p("mail = \"imap://a@b\"\npassword = \"secret:m\"\nsender = \"x\"");
         assert!(tls.len() == 1 && crate::msg::MAIL_NOT_TLS.is_in(&tls[0]) && tls[0].ends_with("（a.toml の 3 行目）"), "{tls:?}");
         assert_eq!(
             p(&format!("{m}password = \"secret:m\"\nsender = \"x\"\ncontains = \"E\"")),
-            ["a.toml の 6 行目: contains は mail では使わない"]
+            [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["contains", "mail"]), 6)]
         );
         assert_eq!(
             p(&format!("{m}password = \"secret:m\"\nsender = \"x\"\non_closed = \"prev\"")),
-            ["a.toml の 6 行目: mail では on_closed は \"skip\" か \"run\""]
+            [placed(msg::line(msg::DEF_ON_CLOSED_BAD, &["mail"]), 6)]
         );
-        assert_eq!(p("every = \"day\"\nat = [\"02:00\"]\nsubject = \"x\""), ["a.toml の 5 行目: subject は day では使わない"]);
+        assert_eq!(
+            p("every = \"day\"\nat = [\"02:00\"]\nsubject = \"x\""),
+            [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["subject", "day"]), 5)]
+        );
     }
 
     #[test]
     fn format_must_be_one() {
-        assert_eq!(problems("name = \"x\"\n"), ["a.toml の 1 行目: format = 1 が要る"]);
-        assert_eq!(problems("format = 2\n"), ["a.toml の 1 行目: この版が読める format は 1 だけ"]);
+        assert_eq!(problems("name = \"x\"\n"), [placed(msg::line(msg::DEF_FORMAT_MISSING, &["1"]), 1)]);
+        assert_eq!(problems("format = 2\n"), [placed(msg::line(msg::DEF_FORMAT_UNSUPPORTED, &["1"]), 1)]);
     }
 
     #[test]
@@ -4379,7 +4595,11 @@ after = [{ job = \"way\", code = \"else\" }]
         let text = "format = 1\n[[job]]\nid = \"a\"\n[[job]]\nid = \"a\"\nrun = []\n";
         assert_eq!(
             problems(text),
-            ["a.toml の 2 行目: run が無い", "a.toml の 5 行目: 同じ id が 2 つある: a", "a.toml の 6 行目: run が空"]
+            [
+                placed(msg::line(msg::DEF_RUN_MISSING, &[]), 2),
+                placed(msg::line(msg::DEF_ID_DUPLICATE, &["a"]), 5),
+                placed(msg::line(msg::DEF_VALUE_EMPTY, &["run"]), 6)
+            ]
         );
     }
 
@@ -4424,7 +4644,7 @@ run = [\"x\"]
 "
             ))
             .unwrap_err();
-            assert!(e[0].message.starts_with("priority は"), "{}", e[0].message);
+            assert!(msg::DEF_PRIORITY_BAD.is_in(&e[0].message), "{}", e[0].message);
         }
     }
 
@@ -4460,7 +4680,7 @@ run = [\"x\"]
 "
             ))
             .unwrap_err();
-            assert!(e[0].message.starts_with("require は"), "{}", e[0].message);
+            assert!(msg::DEF_REQUIRE_BAD.is_in(&e[0].message), "{}", e[0].message);
         }
     }
 }

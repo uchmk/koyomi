@@ -858,9 +858,12 @@ run = [\"x.exe\", \"{param:month}\"]
         assert_eq!(net.params["month"], "{month-1:%Y-%m}");
         assert_eq!(text(&net), src);
         let msg = |e: Vec<jobnet::Problem>| e.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join(" / ");
-        assert!(msg(jobnet::parse(&src.replace("{param:month}", "{param:day}")).unwrap_err()).contains("{param:day}: [params] にない"));
-        assert!(msg(jobnet::parse(&src.replace("month = ", "1m = ")).unwrap_err()).contains("params の名前に使えない"));
-        assert!(msg(jobnet::parse(&src.replace("\"{month-1:%Y-%m}\"", "3")).unwrap_err()).contains("params の値は文字列"));
+        let e = msg(jobnet::parse(&src.replace("{param:month}", "{param:day}")).unwrap_err());
+        assert!(e.contains(&crate::msg::DEF_TEMPLATE_BAD.code()) && e.contains("{param:day}"), "{e}");
+        let e = msg(jobnet::parse(&src.replace("month = ", "1m = ")).unwrap_err());
+        assert!(e.contains(&crate::msg::DEF_NAME_BAD.code()) && e.contains("1m"), "{e}");
+        let e = msg(jobnet::parse(&src.replace("\"{month-1:%Y-%m}\"", "3")).unwrap_err());
+        assert!(e.contains(&crate::msg::DEF_VALUE_STRING_BAD.code()), "{e}");
     }
 
     #[test]
@@ -933,7 +936,7 @@ run = ["x.exe"]
         net.jobs[1].part = Part::Branch;
         net.jobs[0].after = vec![Line::ok("nope")];
         let found = check(&net);
-        assert!(found.iter().any(|f| f.job.as_deref() == Some("b") && f.message.contains("孤立")), "{found:?}");
+        assert!(found.iter().any(|f| f.job.as_deref() == Some("b") && crate::msg::DEF_JOB_NO_NEXT.is_in(&f.message)), "{found:?}");
         assert!(found.iter().any(|f| f.job.as_deref() == Some("a") && f.message.contains("nope")), "{found:?}");
     }
 

@@ -261,7 +261,7 @@ run = [\"x\"]
 ",
         )
         .unwrap_err();
-        assert!(bad[0].message.starts_with("late_end: "), "{}", bad[0].message);
+        assert!(crate::msg::DEF_VALUE_UNREADABLE.is_in(&bad[0].message) && bad[0].message.contains("late_end"), "{}", bad[0].message);
         assert!(crate::jobnet::parse(
             "format = 1
 
