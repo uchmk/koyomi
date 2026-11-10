@@ -161,6 +161,15 @@ fn force_save(far: bool, answer: usize, id: &str, text: String, base_sha256: Opt
     (answer == 2 && !far).then(|| Request::Save { id: id.to_owned(), text, base_sha256, force: true })
 }
 
+/// The conflict box's body: on another PC's engine there is no overwrite button, so its text does not offer one.
+fn conflict_body_key(far: bool) -> &'static str {
+    if far {
+        "canvas.conflict_body_far"
+    } else {
+        "canvas.conflict_body"
+    }
+}
+
 /// The request that stages a net for a day, with what the window saw: the file it started from (`base`) and the
 /// staged one over it, if any. Without a `base` the net was never saved, so there is nothing to switch from.
 fn stage_request(id: &str, base: Option<String>, staged: Option<String>, text: String, from: String) -> Result<Request, String> {
@@ -1853,9 +1862,9 @@ impl Browser {
             };
             let diff = ito_diff::diff(&e.base_text, &def.text, 3);
             let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
-            let body = [t.tr("canvas.conflict_body").to_owned()];
             // Another PC's engine takes no forced save: the box only reloads or cancels.
             let far = self.link.is_far();
+            let body = [t.tr(conflict_body_key(far)).to_owned()];
             let buttons = [t.tr("canvas.reload").to_owned(), t.tr("canvas.cancel").to_owned(), t.tr("canvas.overwrite").to_owned()];
             let buttons = &buttons[..if far { 2 } else { 3 }];
             let q = ito_confirm::Question {
@@ -2148,6 +2157,11 @@ impl Browser {
                             ui.set_min_height(ui.available_height());
                             self.gantt_view(ui, t);
                         });
+                    // Above the scrolling table, so an answer (the palette's 書き出す …) stays in sight.
+                    // The open inspector says it under the picked net's buttons instead.
+                    if !(self.inspector && self.inspected().is_some()) {
+                        self.show_result(ui);
+                    }
                     // Both ways: with the inspector open the table may be wider than what is left.
                     egui::ScrollArea::both().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
                         one_size(ui.style_mut());
@@ -2179,6 +2193,10 @@ impl Browser {
                     if self.selected_def().is_some() {
                         egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| self.detail(ui, t));
                     } else {
+                        // The pane shows the answer under the picked net's buttons; otherwise it is said here.
+                        if !(self.net_pane && self.side_net().is_some()) {
+                            self.show_result(ui);
+                        }
                         self.nets_overview(ui, t);
                     }
                 });
@@ -5267,6 +5285,20 @@ mod tests {
     use koyomi_core::scan::read_def;
 
     const NET: &str = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+
+    /// On another PC's engine the conflict box has no 上書きする button, so its body must not mention overwriting.
+    #[test]
+    fn the_far_conflict_body_does_not_offer_an_overwrite() {
+        for code in ["en", "ja"] {
+            let (t, errs) = crate::i18n::table(code);
+            assert!(errs.is_empty(), "{errs:?}");
+            let far = t.tr(conflict_body_key(true));
+            assert_ne!(far, "canvas.conflict_body_far", "{code}: key missing");
+            assert!(!far.contains("上書き") && !far.to_lowercase().contains("overwrit"), "{code}: {far}");
+            // The near body still does (the button exists there).
+            assert_ne!(t.tr(conflict_body_key(false)), far);
+        }
+    }
 
     fn defs() -> Vec<Def> {
         // A folder per call: the tests run side by side, and one that reads a

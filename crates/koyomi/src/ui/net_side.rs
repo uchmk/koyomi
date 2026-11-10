@@ -13,7 +13,7 @@ const RUNS: usize = 5;
 
 impl Browser {
     /// The net the pane shows: the one open, else the overview's picked row.
-    fn side_net(&self) -> Option<Def> {
+    pub(super) fn side_net(&self) -> Option<Def> {
         let id = self.selected.clone().or_else(|| self.nets_pick.clone())?;
         self.snap.as_ref()?.defs.iter().find(|d| d.id == id).cloned()
     }

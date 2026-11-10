@@ -236,6 +236,18 @@ impl Browser {
         }
         // The month and what goes with it scroll under the pane when the window is short.
         super::page().show(ui, |ui| {
+            // The field typed in and the result lines are pinned at the foot, so a short window never hides them.
+            // Nothing to show: no panel, no room.
+            if self.cal_inline.as_ref().is_some_and(|i| i.cal() != name) {
+                self.cal_inline = None;
+            }
+            let foot = self.foot_shown(&name);
+            if foot {
+                egui::Panel::bottom("calendar_foot")
+                    .resizable(false)
+                    .frame(egui::Frame::new().inner_margin(egui::Margin { top: 6, ..Default::default() }))
+                    .show(ui, |ui| self.month_foot(ui, t, &name, &cal));
+            }
             egui::ScrollArea::vertical().id_salt("calendar_page").auto_shrink(false).show(ui, |ui| {
                 // This calendar's own cautions in a band: this is where the person looks to fix them. When
                 // the holiday table ends soon, the band carries the button that brings a new one.
@@ -410,7 +422,7 @@ impl Browser {
                         month_grid(ui, t, &name, (y, m), &days, (&starts, &stops), picked, today)
                     }
                 };
-                self.month_notes(ui, t, &name, &cal);
+                Self::month_notes(ui, t);
                 if let Some(other) = switch_to {
                     // A pick here is the same as one in the tree: there is nothing to go back to.
                     self.forget_back();
@@ -430,6 +442,10 @@ impl Browser {
                     self.follow(|b| b.open_net(&id));
                 }
             });
+            // Something to hold arose in the page above: the foot appears on the next frame.
+            if !foot && self.foot_shown(&name) {
+                ui.ctx().request_repaint();
+            }
         });
     }
 
@@ -439,8 +455,8 @@ impl Browser {
         self.cal_month = Some((d.year(), d.month()));
     }
 
-    /// Under the month: what the colours mean, the field typed in, and what was just done.
-    fn month_notes(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, name: &str, cal: &Calendar) {
+    /// Under the month: what the colours mean.
+    fn month_notes(ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         ui.add_space(8.0);
         egui::Frame::new()
@@ -468,6 +484,16 @@ impl Browser {
                     }
                 });
             });
+    }
+
+    /// Whether the page's foot has something to hold: the field typed in for this calendar, or a result line.
+    fn foot_shown(&self, name: &str) -> bool {
+        self.cal_inline.as_ref().is_some_and(|i| i.cal() == name) || self.cal_result.is_some() || self.result.is_some()
+    }
+
+    /// The foot, pinned under the month: the field typed in, and what was just done.
+    fn month_foot(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, name: &str, cal: &Calendar) {
+        let c = ito_theme::colors();
         self.inline_view(ui, t, name, cal);
         for r in [&self.cal_result, &self.result].into_iter().flatten() {
             match r {
