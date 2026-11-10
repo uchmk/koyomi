@@ -762,7 +762,7 @@ impl State {
     /// Asks the standby `[primary]` names, and tells when it took the schedules or let them go.
     fn tick_primary(&mut self) {
         if let Some((title, line)) = self.primary.tick() {
-            crate::notify::tell(&self.notify, None, "failed", title, &line);
+            crate::notify::tell(&self.notify, None, "failed", &title, &line);
             crate::say(&format!("koyomi: {line}"), false);
         }
     }

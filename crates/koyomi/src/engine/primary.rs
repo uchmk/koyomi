@@ -83,7 +83,7 @@ impl Primary {
     }
 
     /// Asks when due and takes in what came back; what to tell of when the hold changed.
-    pub fn tick(&mut self) -> Option<(&'static str, String)> {
+    pub fn tick(&mut self) -> Option<(String, String)> {
         let (Some(every), Some(remote)) = (self.cfg.as_ref().map(|c| c.every_secs()), self.remote.clone()) else {
             return None;
         };
@@ -132,13 +132,12 @@ impl Primary {
         let cfg = self.cfg.as_ref()?;
         let name = cfg.standby.trim();
         Some(match self.hold() {
-            None | Some(Hold::Running) => format!("[primary] {name} が待機している。この PC で流す"),
-            Some(Hold::Asking { missed: 0 }) => format!("[primary] {name} に聞いている。答えるまでスケジュールとイベントは待たせる"),
-            Some(Hold::Asking { missed }) => format!(
-                "[primary] {name} に聞いている（答えなかった {missed} 回、{} 回でこの PC で流す）。スケジュールとイベントは待たせる",
-                cfg.misses
-            ),
-            Some(Hold::Held) => format!("[primary] {name} が引き継いでいる。返されるまでこちらではスケジュールとイベントで流さない"),
+            None | Some(Hold::Running) => msg::note(msg::N_PRIMARY_LINE_RUNNING, &[name]),
+            Some(Hold::Asking { missed: 0 }) => msg::note(msg::N_PRIMARY_LINE_ASKING, &[name]),
+            Some(Hold::Asking { missed }) => {
+                msg::note(msg::N_PRIMARY_LINE_ASKING_MISSED, &[name, &missed.to_string(), &cfg.misses.to_string()])
+            }
+            Some(Hold::Held) => msg::note(msg::N_PRIMARY_LINE_HELD, &[name]),
         })
     }
 
@@ -156,23 +155,22 @@ impl Primary {
     /// Why a time or an event does not start here while the standby runs them.
     pub fn held(&self) -> Option<String> {
         let name = self.cfg.as_ref()?.standby.trim();
-        (self.hold() == Some(Hold::Held)).then(|| format!("待機中（{name} が引き継いでいる）"))
+        (self.hold() == Some(Hold::Held)).then(|| msg::note(msg::N_PRIMARY_HELD, &[name]))
     }
 }
 
 /// What to tell of when the hold went from `before` to `after` on `heard`.
-fn says(name: &str, before: Hold, after: Hold, heard: Heard, was_held: bool) -> Option<(&'static str, String)> {
-    let title = "koyomi: 待機の PC";
-    Some(match (before, after, heard) {
-        (Hold::Running, Hold::Held, _) => {
-            (title, format!("{name} が引き継いで流していた。こちらはスケジュールとイベントで流すのをやめ、返されるのを待つ"))
-        }
-        (_, Hold::Held, _) => (title, format!("{name} が引き継いでいる。返されるまでこちらではスケジュールとイベントで流さない")),
-        (_, Hold::Running, Heard::Idle) if was_held => (title, format!("{name} から戻った。この PC で流す")),
-        (_, Hold::Running, Heard::Nobody) => (title, format!("{name} が答えないので、この PC で流す")),
-        (_, Hold::Running, Heard::Unclear) => (title, format!("{name} に聞いても分からないので、この PC で流す")),
+fn says(name: &str, before: Hold, after: Hold, heard: Heard, was_held: bool) -> Option<(String, String)> {
+    let title = format!("koyomi: {}", msg::note(msg::N_TITLE_STANDBY_PC, &[]));
+    let line = match (before, after, heard) {
+        (Hold::Running, Hold::Held, _) => msg::note(msg::N_PRIMARY_TOOK, &[name]),
+        (_, Hold::Held, _) => msg::note(msg::N_PRIMARY_HELD_TOLD, &[name]),
+        (_, Hold::Running, Heard::Idle) if was_held => msg::note(msg::N_PRIMARY_BACK, &[name]),
+        (_, Hold::Running, Heard::Nobody) => msg::note(msg::N_PRIMARY_NOBODY, &[name]),
+        (_, Hold::Running, Heard::Unclear) => msg::note(msg::N_PRIMARY_UNCLEAR, &[name]),
         _ => return None,
-    })
+    };
+    Some((title, line))
 }
 
 /// What the standby said in `"ha"` of its `GET /health`.
@@ -278,11 +276,18 @@ mod tests {
     fn a_change_of_hold_is_told_once_it_matters() {
         let asking = Hold::Asking { missed: 0 };
         assert!(says("pc2", asking, Hold::Running, Heard::Idle, false).is_none());
-        assert!(says("pc2", asking, Hold::Held, Heard::Active, false).is_some_and(|(_, l)| l.contains("引き継いでいる")));
-        assert!(says("pc2", Hold::Running, Hold::Held, Heard::Active, false).is_some_and(|(_, l)| l.contains("やめ")));
-        assert!(says("pc2", Hold::Held, Hold::Running, Heard::Idle, true).is_some_and(|(_, l)| l.contains("戻った")));
-        assert!(says("pc2", asking, Hold::Running, Heard::Idle, true).is_some_and(|(_, l)| l.contains("戻った")));
-        assert!(says("pc2", asking, Hold::Running, Heard::Nobody, false).is_some_and(|(_, l)| l.contains("答えない")));
+        assert!(
+            says("pc2", asking, Hold::Held, Heard::Active, false).is_some_and(|(_, l)| l == msg::note(msg::N_PRIMARY_HELD_TOLD, &["pc2"]))
+        );
+        assert!(says("pc2", Hold::Running, Hold::Held, Heard::Active, false)
+            .is_some_and(|(_, l)| l == msg::note(msg::N_PRIMARY_TOOK, &["pc2"])));
+        assert!(
+            says("pc2", Hold::Held, Hold::Running, Heard::Idle, true).is_some_and(|(_, l)| l == msg::note(msg::N_PRIMARY_BACK, &["pc2"]))
+        );
+        assert!(says("pc2", asking, Hold::Running, Heard::Idle, true).is_some_and(|(_, l)| l == msg::note(msg::N_PRIMARY_BACK, &["pc2"])));
+        assert!(
+            says("pc2", asking, Hold::Running, Heard::Nobody, false).is_some_and(|(_, l)| l == msg::note(msg::N_PRIMARY_NOBODY, &["pc2"]))
+        );
         assert!(says("pc2", Hold::Held, Hold::Asking { missed: 1 }, Heard::Nobody, true).is_none());
     }
 

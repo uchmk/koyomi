@@ -111,7 +111,7 @@ impl Http {
         // ito-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
         if let Some(p) = self.server.as_ref().filter(|_| !self.tailnet_open).and_then(Server::tailnet_port) {
             self.tailnet_open = true;
-            crate::say(&format!("koyomi: HTTP: tailnet の :{p} を開いた（Tailscale の相手は token なし）"), false);
+            crate::say(&format!("koyomi: {}", msg::note(msg::N_HTTP_TAILNET_OPENED, &[&p.to_string()])), false);
         }
         if self.cfg.as_ref() != cfg {
             self.stop();
@@ -141,10 +141,9 @@ impl Http {
         }
     }
 
-    /// The note for a failed start; the reason is cut to one line (a store's message can hold newlines).
+    /// The note for a failed start, which `start` has already coded; it is cut to one line (a store's message can hold newlines).
     fn not_listening(why: &str) -> String {
-        let why = why.split_whitespace().collect::<Vec<_>>().join(" ");
-        format!("koyomi.toml: [http] で待ち受けられない（{why}）。{} 秒ごとに試す", RETRY.as_secs())
+        why.split_whitespace().collect::<Vec<_>>().join(" ")
     }
 
     /// What a person should see about `[http]`.
@@ -160,17 +159,17 @@ impl Http {
 }
 
 fn listening(cfg: Option<&config::Http>, s: &Server) -> String {
-    let port = s.port();
+    let port = s.port().to_string();
     let tailnet = match (s.tailnet_port(), cfg.and_then(|c| c.tailnet)) {
-        (Some(p), _) => format!("。tailnet の :{p} でも（Tailscale の相手は token なし）"),
-        (None, Some(p)) => format!("。tailnet の :{p} はまだ開けない"),
+        (Some(p), _) => msg::note(msg::N_HTTP_TAIL_OPEN, &[&p.to_string()]),
+        (None, Some(p)) => msg::note(msg::N_HTTP_TAIL_PENDING, &[&p.to_string()]),
         (None, None) => String::new(),
     };
     if let Some(fp) = s.fingerprint() {
-        return format!("HTTP: LAN の :{port} で TLS で待ち受けている（指紋 {}）{tailnet}", ito_http::tls::format(&fp));
+        return msg::note(msg::N_HTTP_LISTEN_LAN, &[&port, &ito_http::tls::format(&fp), &tailnet]).trim_end().to_owned();
     }
-    let v6 = if cfg.is_some_and(|c| c.ipv6) { format!("・[::1]:{port}") } else { String::new() };
-    format!("HTTP: 127.0.0.1:{port}{v6} で待ち受けている{tailnet}")
+    let n = if cfg.is_some_and(|c| c.ipv6) { msg::N_HTTP_LISTEN_LOCAL_V6 } else { msg::N_HTTP_LISTEN_LOCAL };
+    msg::note(n, &[&port, &tailnet]).trim_end().to_owned()
 }
 
 /// Why the tailnet port is not open yet (Tailscale not running, no tailnet address, the port
@@ -180,8 +179,8 @@ fn tailnet_note(cfg: Option<&config::Http>, s: &Server) -> Option<String> {
     if s.tailnet_port().is_some() {
         return None;
     }
-    let why = s.tailnet_error().map(|e| format!("（{e}）")).unwrap_or_default();
-    Some(format!("koyomi.toml: [http] の tailnet の :{port} がまだ開けない{why}。Tailscale が動けば開く"))
+    let why = s.tailnet_error().map_or_else(|| msg::note(msg::N_HTTP_NO_DETAIL, &[]), |e| e.to_string());
+    Some(line(msg::HTTP_TAILNET_PENDING, &[&port.to_string(), &why]))
 }
 
 /// Where the LAN listener's certificate and key are kept: `app_dir`'s `tls`, beside the
@@ -193,13 +192,15 @@ pub fn cert_dir() -> Option<std::path::PathBuf> {
 /// `koyomi http fingerprint`: this PC's certificate's fingerprint, made if there is none yet.
 /// What another PC writes in its `[[remote]]`.
 pub fn fingerprint() -> Result<String, String> {
-    let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
-    ito_http::tls::fingerprint(&dir).map(|fp| ito_http::tls::format(&fp)).map_err(|e| format!("{}: {e}", dir.display()))
+    let dir = cert_dir().ok_or_else(|| line(msg::SETTINGS_DIR_UNKNOWN, &[]))?;
+    ito_http::tls::fingerprint(&dir)
+        .map(|fp| ito_http::tls::format(&fp))
+        .map_err(|e| line(msg::HTTP_CERT_FAILED, &[&dir.display().to_string(), &e.to_string()]))
 }
 
 /// Reads a token kept as `secret:<name>`.
 fn token(name: &str) -> Result<String, String> {
-    ito_http::token_from_secret("koyomi", name).map_err(|e| format!("token の秘密 {name}: {e}（koyomi secret set {name}）"))
+    ito_http::token_from_secret("koyomi", name).map_err(|e| line(msg::HTTP_TOKEN_SECRET_UNREADABLE, &[name, &e.to_string()]))
 }
 
 /// Who may do what at most: `default` for `[http]`'s token, then each `[[http.user]]` with the
@@ -251,14 +252,14 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
     // `Import` and `Save` over `POST /door` carry whole files; the token is checked before the body is read.
     c.max_body = MAX_BODY;
     let at = if cfg.lan {
-        let dir = cert_dir().ok_or("設定のフォルダーが分からない")?;
+        let dir = cert_dir().ok_or_else(|| line(msg::SETTINGS_DIR_UNKNOWN, &[]))?;
         c.bind = ito_http::Bind::Lan { addr: None, tls: ito_http::TlsCfg::new(dir) };
-        format!("LAN :{}", cfg.port)
+        msg::note(msg::N_HTTP_AT_LAN, &[&cfg.port.to_string()])
     } else {
-        format!("127.0.0.1:{}", cfg.port)
+        msg::note(msg::N_HTTP_AT_LOCAL, &[&cfg.port.to_string()])
     };
     let at = match cfg.tailnet {
-        Some(port) => format!("{at}・tailnet :{port}"),
+        Some(port) => msg::note(msg::N_HTTP_AT_TAILNET, &[&at, &port.to_string()]),
         None => at,
     };
     let gate = Gate { roles: roles(cfg), access: access(cfg), tokens };
@@ -267,7 +268,7 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
         let ask = |r: &Request| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) });
         gate.serve(&req, ask)
     };
-    Server::start(c, serve, log).map_err(|e| format!("{at}: {e}"))
+    Server::start(c, serve, log).map_err(|e| line(msg::HTTP_LISTEN_FAILED, &[&at, &e.to_string(), &RETRY.as_secs().to_string()]))
 }
 
 /// The largest body accepted: `POST /door` carries whole files (`Import`, `Save`, a holiday table).
@@ -366,7 +367,7 @@ fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap
         return None;
     }
     if req.method != "GET" {
-        return Some(Response::error(405, "GET で読む"));
+        return Some(not_allowed("GET"));
     }
     let who = req.who.as_deref().unwrap_or_default();
     let a = access.get(who);
@@ -454,7 +455,7 @@ fn narrow(
                 may(id)?;
                 ask(r)
             } else {
-                Err(format!("定義がない: {id}"))
+                Err(line(msg::JOBNET_MISSING, &[id]))
             }
         }
         Request::Propose { id, .. } if sees(id) => {
@@ -462,7 +463,7 @@ fn narrow(
             ask(r)
         }
         Request::Propose { id, .. } => {
-            let within = access.nets.as_ref().map(|n| n.patterns().join("・")).unwrap_or_default();
+            let within = access.nets.as_ref().map(|n| n.patterns().join(&msg::note(msg::N_HTTP_NETS_JOIN, &[]))).unwrap_or_default();
             return Err(line(msg::OUTSIDE_NETS, &[who, id, &within]));
         }
         Request::Kill { run, .. } | Request::Rerun { run, .. } | Request::Skip { run, .. } | Request::Log { run, .. } => {
@@ -471,7 +472,7 @@ fn narrow(
                     may(&net)?;
                     ask(r)
                 }
-                _ => Err(format!("実行がない: {run}")),
+                _ => Err(line(msg::RUN_NOT_FOUND, &[run])),
             }
         }
         _ if !all => return Err(line(msg::NARROWED_ALL_NETS, &[who])),
@@ -502,7 +503,7 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
         return None;
     }
     if req.method != "POST" {
-        return Some(Response::error(405, "POST で送る"));
+        return Some(not_allowed("POST"));
     }
     let who = req.who.as_deref().unwrap_or_default();
     if !bearer_of(req, &gate.tokens) {
@@ -513,11 +514,11 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
     }
     let body = match req.json::<serde_json::Value>() {
         Ok(Some(v)) => v,
-        Ok(None) => return Some(Response::error(400, "本文が要る: {\"proto\": …, \"request\": …}")),
-        Err(e) => return Some(Response::error(400, &format!("本文が JSON として読めない: {e}"))),
+        Ok(None) => return Some(Response::error(400, &line(msg::HTTP_BODY_MISSING, &[r#"{"proto": <number>, "request": <request>}"#]))),
+        Err(e) => return Some(bad_body(&e)),
     };
     let Some(sent) = body.get("proto").and_then(serde_json::Value::as_u64) else {
-        return Some(Response::error(400, "proto が要る（数）"));
+        return Some(missing("proto", r#"{"proto": 1, "request": <request>}"#));
     };
     if sent != u64::from(proto::PROTO) {
         return Some(Response::new(
@@ -530,11 +531,11 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
         ));
     }
     let Some(request) = body.get("request") else {
-        return Some(Response::error(400, "request が要る"));
+        return Some(missing("request", r#"{"proto": 1, "request": <request>}"#));
     };
     let request: Request = match serde_json::from_value(request.clone()) {
         Ok(r) => r,
-        Err(e) => return Some(Response::error(400, &format!("request が読めない: {e}"))),
+        Err(e) => return Some(Response::error(400, &line(msg::HTTP_REQUEST_UNREADABLE, &[&e.to_string()]))),
     };
     let Some(needs) = proto::door_needs(&request) else {
         return Some(Response::error(403, &line(msg::DOOR_NOT_ALLOWED, &[who])));
@@ -601,9 +602,26 @@ fn wrong_method(method: &str, path: &str) -> bool {
     !ok
 }
 
+const PATHS: &str = "POST /runs, GET /runs, GET /runs/<id>, GET /runs/<id>/log, POST /runs/<id>/stop|rerun|skip, GET /nets, GET /nets/text, POST /nets/hold|release|skip-next|propose, POST /standby/release, GET /health";
+
+/// 405: the path takes only `methods`.
+fn not_allowed(methods: &str) -> Response {
+    Response::error(405, &line(msg::HTTP_METHOD_NOT_ALLOWED, &[methods]))
+}
+
+/// 400: a key the request needs is not there, with the shape that holds it.
+fn missing(what: &str, example: &str) -> Response {
+    Response::error(400, &line(msg::HTTP_FIELD_MISSING, &[what, example]))
+}
+
+/// 400: the body does not parse as the JSON the path takes.
+fn bad_body(e: &dyn std::fmt::Display) -> Response {
+    Response::error(400, &line(msg::HTTP_BODY_NOT_JSON, &[&e.to_string()]))
+}
+
 fn log(l: &ito_http::LogLine) {
     let by = match (l.via, &l.who) {
-        (ito_http::Via::Tailscale, Some(who)) => format!("（{who}、Tailscale）"),
+        (ito_http::Via::Tailscale, Some(who)) => msg::note(msg::N_HTTP_VIA_TAILSCALE, &[who]),
         _ => String::new(),
     };
     crate::say(&format!("http: {} {} {} {}ms{by}", l.method, l.path, l.status, l.millis), false);
@@ -700,18 +718,15 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("GET", "/nets", ..) => nets(ask, |_| None),
         ("GET", _, Some(id), _) => look(id, ask),
         ("GET", _, _, Some(id)) => job_log(req, id, ask),
-        (_, "/runs", ..) => Response::error(405, "POST /runs で流す・GET /runs で読む"),
-        (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => Response::error(405, "GET で読む"),
-        (_, "/nets/hold" | "/nets/release", ..) => Response::error(405, "POST で保留にする・外す"),
-        (_, "/nets/skip-next", ..) => Response::error(405, "POST で次の回を飛ばす・取り消す"),
-        (_, "/nets/propose", ..) => Response::error(405, "POST で定義を出す"),
-        (_, "/nets/text", ..) => Response::error(405, "GET で読む"),
-        (_, "/standby/release", ..) => Response::error(405, "POST で引き取る"),
-        _ if act.is_some() => Response::error(405, "POST で止める・流し直す・飛ばす"),
-        _ => Response::error(
-            404,
-            "POST /runs・GET /runs・GET /runs/<id>・GET /runs/<id>/log・POST /runs/<id>/stop|rerun|skip・GET /nets・GET /nets/text・POST /nets/hold|release|skip-next|propose・POST /standby/release・GET /health だけ",
-        ),
+        (_, "/runs", ..) => not_allowed("GET, POST"),
+        (_, "/health" | "/nets", ..) | (_, _, Some(_), _) | (_, _, _, Some(_)) => not_allowed("GET"),
+        (_, "/nets/hold" | "/nets/release", ..) => not_allowed("POST"),
+        (_, "/nets/skip-next", ..) => not_allowed("POST"),
+        (_, "/nets/propose", ..) => not_allowed("POST"),
+        (_, "/nets/text", ..) => not_allowed("GET"),
+        (_, "/standby/release", ..) => not_allowed("POST"),
+        _ if act.is_some() => not_allowed("POST"),
+        _ => Response::error(404, &line(msg::HTTP_PATH_UNKNOWN, &[PATHS])),
     }
 }
 
@@ -809,7 +824,7 @@ fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
     let r = match (req.query("from"), req.query("to")) {
         (None, None) => Request::Runs,
         (Some(from), to) => Request::History { from: from.to_owned(), to: to.unwrap_or(from).to_owned() },
-        (None, Some(_)) => return Response::error(400, "to には from も要る"),
+        (None, Some(_)) => return Response::error(400, &line(msg::HTTP_TO_WITHOUT_FROM, &[])),
     };
     let days = matches!(r, Request::History { .. });
     match ask(&r).and_then(|t| Runs::parse(&t)) {
@@ -826,7 +841,7 @@ fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
 /// `GET /runs/<id>/log?job=<job>`: the tail of the job's log, as `koyomi log` shows it.
 fn job_log(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(job) = req.query("job").filter(|j| !j.is_empty()) else {
-        return Response::error(400, "job が要る: /runs/<id>/log?job=<ジョブ>");
+        return missing("job", "/runs/<id>/log?job=<job>");
     };
     match ask(&Request::Log { run: run.to_owned(), job: job.to_owned() }) {
         Ok(text) => Response::ok(serde_json::json!({ "run": run, "job": job, "log": text })),
@@ -846,8 +861,8 @@ fn run_json(run: &Run) -> serde_json::Value {
 fn start_run(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let s = match req.json::<Start>() {
         Ok(Some(s)) if !s.net.trim().is_empty() => s,
-        Ok(_) => return Response::error(400, "net が要る: {\"net\": \"<グループ>/<名前>\"}"),
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
+        Err(e) => return bad_body(&e),
     };
     let r = Request::Run { id: s.net.trim().to_owned(), date: s.date, from: s.from, dry: false, params: s.params };
     match ask(&r) {
@@ -868,12 +883,12 @@ fn stop_run(run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Resp
 fn rerun(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let a = match req.json::<Again>() {
         Ok(a) => a.unwrap_or_default(),
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Err(e) => return bad_body(&e),
     };
     let named = |j: Option<String>| j.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty());
     let r = match (named(a.from), named(a.next)) {
-        (Some(_), Some(_)) => return Response::error(400, "from と next はどちらか 1 つ"),
-        (_, None) if a.warn => return Response::error(400, "warn は next と書く"),
+        (Some(_), Some(_)) => return Response::error(400, &line(msg::HTTP_FROM_AND_NEXT, &[])),
+        (_, None) if a.warn => return Response::error(400, &line(msg::HTTP_WARN_NEEDS_NEXT, &[])),
         (from, None) => Request::Rerun { run: run.to_owned(), from, next: None },
         (None, next) => Request::Rerun { run: run.to_owned(), from: next, next: Some(if a.warn { State::Warn } else { State::Skipped }) },
     };
@@ -887,8 +902,8 @@ fn rerun(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<St
 fn skip(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let job = match req.json::<Pass>() {
         Ok(Some(p)) if !p.job.trim().is_empty() => p.job.trim().to_owned(),
-        Ok(_) => return Response::error(400, "job が要る: {\"job\": \"<ジョブ>\"}"),
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Ok(_) => return missing("job", r#"{"job": "<job>"}"#),
+        Err(e) => return bad_body(&e),
     };
     match ask(&Request::Skip { run: run.to_owned(), job: job.clone() }) {
         Ok(text) => Response::ok(serde_json::json!({ "run": run, "job": job, "said": text.trim() })),
@@ -901,8 +916,8 @@ fn skip(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<Str
 fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let h = match req.json::<Hold>() {
         Ok(Some(h)) if !h.net.trim().is_empty() => h,
-        Ok(_) => return Response::error(400, "net が要る: {\"net\": \"<グループ>/<名前>\"}"),
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
+        Err(e) => return bad_body(&e),
     };
     let (id, job) = (h.net.trim().to_owned(), h.job.map(|j| j.trim().to_owned()).filter(|j| !j.is_empty()));
     let r = if on { Request::Hold { id: id.clone(), job: job.clone() } } else { Request::Release { id: id.clone(), job: job.clone() } };
@@ -917,8 +932,8 @@ fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<Stri
 fn skip_next(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let s = match req.json::<SkipNext>() {
         Ok(Some(s)) if !s.net.trim().is_empty() => s,
-        Ok(_) => return Response::error(400, "net が要る: {\"net\": \"<グループ>/<名前>\"}"),
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
+        Err(e) => return bad_body(&e),
     };
     let id = s.net.trim().to_owned();
     match ask(&Request::SkipNext { id: id.clone(), cancel: s.cancel }) {
@@ -931,7 +946,7 @@ fn skip_next(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
 /// back as `base` and whether it is confirmed.
 fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(id) = req.query("net").map(str::trim).filter(|n| !n.is_empty()) else {
-        return Response::error(400, "net が要る: /nets/text?net=<グループ>/<名前>");
+        return missing("net", "/nets/text?net=<group>/<name>");
     };
     let def = match ask(&Request::Show { id: id.to_owned() }) {
         Ok(t) => toml::from_str::<koyomi_core::scan::Def>(&t).map_err(|e| e.to_string()),
@@ -953,10 +968,8 @@ fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, St
 fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let p = match req.json::<Proposal>() {
         Ok(Some(p)) if !p.net.trim().is_empty() && !p.text.trim().is_empty() => p,
-        Ok(_) => {
-            return Response::error(400, "net と text が要る: {\"net\": \"<グループ>/<名前>\", \"text\": \"…\", \"base\"?: \"<sha256>\"}")
-        }
-        Err(e) => return Response::error(400, &format!("JSON を読めない: {e}")),
+        Ok(_) => return missing("net, text", r#"{"net": "<group>/<name>", "text": "...", "base"?: "<sha256>"}"#),
+        Err(e) => return bad_body(&e),
     };
     let id = p.net.trim().to_owned();
     let base = p.base.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty());
@@ -974,7 +987,7 @@ fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Str
 /// A run of today or still going, then one of the day its id says it started.
 fn look(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(day) = started_on(id) else {
-        return Response::error(404, &format!("実行の id は YYYYMMDD-HHMMSS-NN: {id}"));
+        return Response::error(404, &line(msg::HTTP_RUN_ID_FORM, &[id]));
     };
     let find = |req: &Request| -> Result<Option<Run>, String> { Ok(Runs::parse(&ask(req)?)?.runs.into_iter().find(|r| r.id == id)) };
     let found = find(&Request::Runs).and_then(|r| match r {
@@ -983,7 +996,7 @@ fn look(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response 
     });
     match found {
         Ok(Some(run)) => Response::ok(run_json(&run)),
-        Ok(None) => Response::error(404, &format!("その実行はない: {id}")),
+        Ok(None) => Response::error(404, &line(msg::RUN_NOT_FOUND, &[id])),
         Err(e) => Response::error(500, &e),
     }
 }
@@ -1174,8 +1187,9 @@ mod tests {
         let s = Server::start(c, |_| ito_http::Response::ok(serde_json::Value::Null), |_| {}).unwrap();
         assert_eq!(s.tailnet_port(), None);
         let note = tailnet_note(Some(http), &s).unwrap();
-        assert!(note.contains(":8791 がまだ開けない（") && note.contains("tailscaled is not running"), "{note}");
-        assert!(listening(Some(http), &s).ends_with("tailnet の :8791 はまだ開けない"));
+        assert!(msg::HTTP_TAILNET_PENDING.is_in(&note), "{note}");
+        assert!(note.contains("8791") && note.contains("tailscaled is not running）"), "{note}");
+        assert!(listening(Some(http), &s).ends_with(&msg::note(msg::N_HTTP_TAIL_PENDING, &["8791"])));
         // Without `tailnet` there is nothing to say.
         assert_eq!(tailnet_note(None, &s), None);
         s.stop();
@@ -1577,9 +1591,21 @@ mod tests {
     /// the note for a failed start is one line.
     #[test]
     fn the_start_failure_note_is_one_line() {
-        let n = Http::not_listening("token の秘密 x: 見つからない\n（koyomi secret set x）\r\n");
+        let n = Http::not_listening(&line(msg::HTTP_TOKEN_SECRET_UNREADABLE, &["x", "no secret\n`x` for koyomi\r\n"]));
         assert!(!n.contains('\n') && !n.contains('\r'), "{n:?}");
-        assert!(n.contains("見つからない （koyomi secret set x）"), "{n}");
+        assert!(msg::HTTP_TOKEN_SECRET_UNREADABLE.is_in(&n), "{n}");
+        assert!(n.contains("no secret `x` for koyomi"), "{n}");
+    }
+
+    /// `koyomi status` finds the listener's line by its `HTTP: ` head, in either language.
+    #[test]
+    fn the_listening_notes_start_with_http() {
+        for lang in ["ja", "en"] {
+            for n in [msg::N_HTTP_LISTEN_LAN, msg::N_HTTP_LISTEN_LOCAL, msg::N_HTTP_LISTEN_LOCAL_V6, msg::N_HTTP_TAILNET_OPENED] {
+                let text = msg::note_in(lang, n, &["1", "2", "3"]);
+                assert!(text.starts_with("HTTP: "), "{lang}: {text}");
+            }
+        }
     }
 
     /// The listener as the engine starts it: the token first, then the handler.

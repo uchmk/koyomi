@@ -3372,6 +3372,144 @@ text = "{0} 個のジョブネットがジョブネット {1} を使用してい
 cause = "削除すると、使用しているジョブネットの参照が壊れるためです。"
 action = "使用しているジョブネットを先に修正してください。"
 
+[E2177]
+when = "[http] のトークンのシークレットを読み込めないとき"
+text = "[http] のトークンを保存したシークレット {0} を読み込めません。（{1}）"
+cause = "シークレット {0} が存在しない、空である、または資格情報ストアにアクセスできない可能性があります。"
+action = "koyomi secret set {0} でトークンを保存してください。待ち受けは、一定時間ごとに再試行されます。"
+
+[E3767]
+when = "[http] の待ち受けを開始できないとき"
+text = "{0} で待ち受けを開始できません。（{1}）"
+cause = "ポートがほかのプログラムに使用されている、またはバインドする権限がない可能性があります。LAN で待ち受ける場合は、証明書を準備できていない可能性もあります。"
+action = "koyomi.toml の [http] の port と lan の設定、およびポートを使用しているプログラムを確認してください。待ち受けは {2} 秒ごとに再試行されます。"
+
+[E3768]
+when = "koyomi http fingerprint で、この PC の証明書を読み込めない、または作成できないとき"
+text = "証明書のフォルダー {0} で、証明書を読み込めない、または作成できません。（{1}）"
+cause = "フォルダーに書き込む権限がない、または既存の証明書のファイルが壊れている可能性があります。"
+action = "フォルダーの権限と、証明書のファイルを確認してください。"
+
+[W3769]
+when = "[http] の tailnet のポートをまだ開けないとき"
+text = "tailnet のポート {0} をまだ開けません。（{1}）"
+cause = "Tailscale が起動していない、tailnet のアドレスがない、またはポートがほかのプログラムに使用されている可能性があります。"
+action = "Tailscale を起動してください。tailnet のポートは、Tailscale が利用できるようになると自動的に開きます。"
+
+[E3773]
+when = "HTTP の API に、許可されていないメソッドで要求したとき"
+text = "このパスには、{0} 以外のメソッドで要求できません。"
+cause = "指定したパスは、{0} のメソッドだけを受け付けるためです。"
+action = "要求のメソッドを {0} に変更してください。"
+
+[E3774]
+when = "HTTP の API に、存在しないパスで要求したとき"
+text = "このパスは存在しません。"
+cause = "指定したパスが、HTTP の API が提供しているパスのどれにも一致しないためです。"
+action = "{0} のいずれかのパスを指定してください。"
+
+[E3775]
+when = "HTTP の API に、JSON として読み込めない本文を送ったとき"
+text = "リクエストの本文を JSON として読み込めません。（{0}）"
+cause = "本文が JSON として正しくない、未知の項目が含まれている、または項目の型が想定と一致していない可能性があります。"
+action = "本文に、正しい JSON を指定してください。"
+
+[E3776]
+when = "POST /door に、本文を付けずに要求したとき"
+text = "リクエストに本文が指定されていません。"
+cause = "POST /door は、画面の要求を JSON の本文で受け取るためです。"
+action = "本文に、{0} の形式の JSON を指定してください。"
+
+[E3777]
+when = "HTTP の API に、必須の項目を指定せずに要求したとき"
+text = "{0} が指定されていません。"
+cause = "要求の本文またはクエリに、必須の項目が含まれていない、空である、または型が正しくない可能性があります。"
+action = "{1} のように、{0} を指定してください。"
+
+[E3778]
+when = "POST /door の request を要求として読み込めないとき"
+text = "request を、エンジンへの要求として読み込めません。（{0}）"
+cause = "request の内容が、エンジンが受け付ける要求の形式と一致していません。"
+action = "request には、エンジンが受け付ける要求の JSON を指定してください。"
+
+[E3779]
+when = "GET /runs に、from を指定せずに to を指定したとき"
+text = "to が指定されていますが、from が指定されていません。"
+cause = "to は、from とあわせて指定する項目のためです。"
+action = "from に、開始日を YYYY-MM-DD の形式で指定してください。"
+
+[E3780]
+when = "POST /runs/<id>/rerun に、from と next の両方を指定したとき"
+text = "from と next は、同時に指定できません。"
+cause = "再実行を始めるジョブの指定が、from と next で重複するためです。"
+action = "どちらか一方を指定してください。"
+
+[E3781]
+when = "POST /runs/<id>/rerun に、next を指定せずに warn を指定したとき"
+text = "warn は、next とあわせて指定する必要があります。"
+cause = "warn は、next で指定したジョブを警告として終了させる項目のためです。"
+action = "warn を指定するときは、next にジョブを指定してください。"
+
+[E3782]
+when = "HTTP の API に、実行の ID の形式ではない値を指定したとき"
+text = "{0} は、実行の ID の形式ではありません。"
+cause = "実行の ID は、開始した日付と時刻から作られる形式のためです。"
+action = "実行の ID は、YYYYMMDD-HHMMSS-NN の形式で指定してください。"
+
+[E3783]
+when = "[standby] が指定されていない PC で、実行を戻す操作を行ったとき"
+text = "koyomi.toml に [standby] が指定されていません。"
+cause = "この PC は、待機系の構成になっていません。"
+action = "待機系の PC の koyomi.toml に、[standby] を指定してください。"
+
+[E3784]
+when = "引き継いでいない待機系の PC に、実行を戻す操作を行ったとき"
+text = "{0} から引き継いでいないため、実行を戻せません。"
+cause = "この PC は待機中で、{0} の実行をまだ引き継いでいないためです。"
+action = "{0} から引き継いだあとに、再度実行してください。"
+
+[E3785]
+when = "エンジンの起動後、接続先をまだ確認していない待機系の PC に、実行を戻す操作を行ったとき"
+text = "接続先 {0} の状態をまだ確認できていないため、実行を戻せません。"
+cause = "エンジンの起動後、接続先への最初の問い合わせが完了していないためです。"
+action = "少し待ってから、再度実行してください。"
+
+[E3786]
+when = "give_back = \"manual\" の待機系が、実行を戻すよう求められたとき"
+text = "give_back = \"manual\" のため、実行を戻せません。"
+cause = "give_back が manual の場合、待機系は koyomi standby giveback が実行されるまで、実行を戻さないためです。"
+action = "待機系の PC で koyomi standby giveback を実行してください。"
+
+[E3787]
+when = "give_back = \"auto\" の待機系が、接続先の応答が続く前に、実行を戻すよう求められたとき"
+text = "接続先 {0} が連続して応答した回数は {1} 回のため、実行を戻せません。（必要な回数: {2} 回）"
+cause = "give_back が auto の場合、接続先が misses の回数だけ連続して応答するまで、実行を戻さないためです。"
+action = "接続先の応答が続くまで待ってから、再度実行してください。"
+
+[E3788]
+when = "待機系が接続先から複製した定義を、この PC に書き込めないとき"
+text = "複製した定義を、この PC に書き込めません。（{0}）"
+cause = "定義の保存が拒否されました。理由は括弧内のとおりです。"
+action = "括弧内の理由を確認してください。複製は 5 分ごとに再試行されます。"
+
+[E3789]
+when = "接続先の koyomi が古く、待機系が定義を複製できないとき"
+text = "接続先 {0} の koyomi が古いため、定義を複製できません。"
+cause = "接続先の /nets の応答に、ファイルのハッシュ（sha256）が含まれていないためです。"
+action = "接続先の koyomi を更新してください。"
+
+[E3790]
+when = "接続先で実行中の実行を読み込めないとき"
+text = "接続先 {0} で実行中の実行を読み込めません。（{1}）"
+cause = "接続先の koyomi とこの PC の koyomi のバージョンが異なり、実行の形式が一致しない可能性があります。"
+action = "接続先とこの PC の koyomi を、同じバージョンに更新してください。"
+
+[W3791]
+when = "待機系が引き継ぐとき、接続先で最後に読み込めた実行中の実行が古いとき"
+text = "接続先 {0} で最後に読み込めた実行中の実行が古すぎるため、引き継ぎに使用しません。"
+cause = "最後に読み込めてから 30 秒以上経過しており、その間に終了した実行が含まれている可能性があるためです。"
+action = "引き継いだあとの実行の状況を確認し、必要な場合は再度実行してください。"
+
 [note]
 status_head = "定義 {0} 件（確認済み {1} 件）、実行中 {2} 件。"
 status_paused = "スケジュールを停止しています（koyomi resume で再開できます）。"
@@ -3637,3 +3775,52 @@ ok_file_log = "{0} があるため正常とします（終了コード {1}）"
 host_shape_sftp = "<ホスト>[:<ポート>]、または sftp:// か ssh:// のアドレス"
 host_shape_winrm = "<ホスト>[:<ポート>]、または winrm://ユーザー@ホスト[:ポート]"
 pass_failed_coded = "{0}（{1}）"
+http_listen_lan = "HTTP: LAN のポート {0} で待ち受けています。TLS の指紋は {1} です。{2}"
+http_listen_local = "HTTP: 127.0.0.1 のポート {0} で待ち受けています。{1}"
+http_listen_local_v6 = "HTTP: 127.0.0.1 と [::1] のポート {0} で待ち受けています。{1}"
+http_tail_open = "tailnet のポート {0} でも待ち受けています。Tailscale で識別された接続には、トークンは不要です。"
+http_tail_pending = "tailnet のポート {0} は、まだ開いていません。"
+http_tailnet_opened = "HTTP: tailnet のポート {0} を開きました。Tailscale で識別された接続には、トークンは不要です。"
+http_at_local = "127.0.0.1 のポート {0}"
+http_at_lan = "LAN のポート {0}"
+http_at_tailnet = "{0}、tailnet のポート {1}"
+http_no_detail = "詳細は取得できていません"
+http_via_tailscale = "（{0}、Tailscale）"
+http_nets_join = "、"
+standby_line_watching = "待機中: 接続先 {0} を監視しています。この PC では、スケジュールとイベントによる実行を行いません。"
+standby_line_watching_missed = "待機中: 接続先 {0} を監視しています（応答なし {1} 回、{2} 回で引き継ぎます）。この PC では、スケジュールとイベントによる実行を行いません。"
+standby_line_active = "接続先 {0} から引き継いで実行しています（{1} から）。{2}"
+standby_back_next = "{0} が次に問い合わせてきたときに、実行を戻します。"
+standby_back_auto = "{0} が {1} 回続けて応答すると、実行を戻します。"
+standby_back_manual = "実行を戻すには、koyomi standby giveback を実行してください。"
+standby_took_over = "接続先 {0} が応答しなくなったため、{2} からこの PC で実行します。（{1}）{3}"
+standby_took_over_unread = "接続先 {0} が応答しなくなったため、{2} からこの PC で実行します。（{1}）{3}接続先で実行中の実行は確認できませんでした。（{4}）"
+standby_both_asks = "接続先 {0} が再び応答しています。分断されていた間は、両方の PC で実行していました。{0} は、次に問い合わせてきたときに待機します。"
+standby_both_auto = "接続先 {0} が再び応答しています。両方の PC で実行しています。{0} が {1} 回続けて応答すると、この PC は実行を停止します。"
+standby_both_manual = "接続先 {0} が再び応答しています。両方の PC で実行しています。どちらかの PC を停止するか、この PC で koyomi standby giveback を実行して実行を戻してください。"
+standby_wait_giving = "接続先 {0} が引き取りを待っています。次に問い合わせてきたときに、実行を渡します。"
+standby_wait_auto = "接続先 {0} が再び応答し、引き取りを待っています。{1} 回続けて応答すると、実行を渡します。"
+standby_wait_manual = "接続先 {0} が再び応答し、引き取りを待っています。実行を渡すには、koyomi standby giveback を実行してください。"
+standby_gave_back_auto = "接続先 {0} が {1} 回続けて応答したため、この PC での実行を終了しました。再び監視します。"
+standby_gave_back_release = "接続先 {0} が引き取りに来たため、実行を戻しました。再び監視します。"
+standby_rec_took_over = "{0} から引き継ぎました。（{1}）"
+standby_rec_gave_back_auto = "{0} に戻しました。（{1} 回続けて応答しました。give_back = \"auto\"）"
+standby_rec_decided = "戻すことを決めました。（koyomi standby giveback。{0} が次に問い合わせてきたときに渡します）"
+standby_rec_gave_back_cmd = "{0} に戻しました。（koyomi standby giveback）"
+standby_rec_gave_back_release = "{0} に戻しました。（{0} が引き取りに来ました）"
+standby_record_line = "[standby] 記録: {0}"
+standby_giveback_decided = "{0} が次に問い合わせてきたときに戻します。（すでに決定済みです）"
+standby_giveback_will = "{0} が引き取りを待っているため、次に問い合わせてきたときに戻します。"
+standby_giveback_done_nobody = "{0} に戻しました。{0} は現在応答していません。再び監視します。"
+standby_giveback_done = "{0} に戻しました。再び監視します。"
+primary_line_running = "[primary] 接続先 {0} は待機中です。この PC で実行します。"
+primary_line_asking = "[primary] 接続先 {0} に問い合わせています。応答があるまで、スケジュールとイベントによる実行を待機させます。"
+primary_line_asking_missed = "[primary] 接続先 {0} に問い合わせています（応答なし {1} 回、{2} 回でこの PC が実行します）。スケジュールとイベントによる実行を待機させます。"
+primary_line_held = "[primary] 接続先 {0} が引き継いでいます。実行が戻されるまで、この PC ではスケジュールとイベントによる実行を行いません。"
+primary_held = "待機中です（接続先 {0} が引き継いでいます）。"
+title_standby_pc = "待機系の PC"
+primary_took = "接続先 {0} が引き継いで実行していました。この PC はスケジュールとイベントによる実行を停止し、実行が戻されるまで待機します。"
+primary_back = "接続先 {0} から実行が戻りました。この PC で実行します。"
+primary_nobody = "接続先 {0} が応答しないため、この PC で実行します。"
+primary_unclear = "接続先 {0} の状態を確認できないため、この PC で実行します。"
+primary_held_told = "接続先 {0} が引き継いでいます。実行が戻されるまで、この PC ではスケジュールとイベントによる実行を行いません。"

@@ -83,6 +83,9 @@ struct Kept {
     /// A person ran `koyomi standby giveback` while the primary waited: let go when it asks.
     #[serde(default)]
     giving: bool,
+    /// When it last handed the schedules back, `YYYY-MM-DD HH:MM` (empty: not since this was kept).
+    #[serde(default)]
+    back: String,
     /// The handovers, oldest first: when, which way, and why.
     #[serde(default)]
     log: Vec<String>,
@@ -119,6 +122,8 @@ pub struct Standby {
     watch: Watch,
     writer: kept::Writer,
     since: String,
+    /// When it last handed the schedules back, `YYYY-MM-DD HH:MM`.
+    back: String,
     log: Vec<String>,
     last: Option<Instant>,
     tx: mpsc::Sender<Poll>,
@@ -167,6 +172,7 @@ impl Standby {
             watch: if prev.active { Watch::resumed(misses, false, prev.giving) } else { Watch::new(misses, false) },
             writer: kept::Writer::new(path, true),
             since: prev.since,
+            back: prev.back,
             log: prev.log,
             last: None,
             tx,
@@ -309,7 +315,8 @@ impl Standby {
     /// The copies that could not be written here, to show until a copy goes through.
     pub fn refused(&mut self, why: Vec<String>) {
         if !why.is_empty() {
-            self.copy_note = Some(format!("写した定義を置けない: {}", why.join(" / ")));
+            let why: Vec<&str> = why.iter().map(|w| msg::uncoded(w)).collect();
+            self.copy_note = Some(line(msg::COPY_NOT_WRITTEN, &[&why.join(" / ")]));
         }
     }
 
@@ -341,45 +348,46 @@ impl Standby {
             Step::TakeOver => {
                 self.since = ito_common::now::now_local().format("%Y-%m-%d %H:%M").to_string();
                 let why = self.missed_why.clone().unwrap_or_default();
-                self.record(format!("{} {name} から引き継いだ（{why}）", stamp()));
+                self.record(&msg::note(msg::N_STANDBY_REC_TOOK_OVER, &[name, msg::uncoded(&why)]));
                 // The latest good list is started from, unless it is too old to trust.
                 let stale = self.running_at.is_none_or(|t| t.elapsed() > RUNS_STALE);
                 if stale && self.running.take().is_some() && self.runs_note.is_none() {
-                    self.runs_note = Some("最後に読めた動いている回が古すぎる".to_owned());
+                    self.runs_note = Some(line(msg::RUNS_TOO_OLD, &[name]));
                 }
                 self.running_at = None;
                 let unread = self.running.is_none().then(|| self.runs_note.take()).flatten();
                 self.runs_note = None;
                 let back = if auto {
-                    format!("{name} が {misses} 回続けて答えたら戻す")
+                    msg::note(msg::N_STANDBY_BACK_AUTO, &[name, &misses.to_string()])
                 } else {
-                    "戻すのは koyomi standby giveback".to_owned()
+                    msg::note(msg::N_STANDBY_BACK_MANUAL, &[])
                 };
-                let line = format!("{name} が答えなくなった（{why}）ので、{} からこの PC で流す。{back}", self.since);
+                let why = msg::uncoded(&why);
                 // Say why the runs there are not known, instead of only that they were not read.
                 let line = match unread {
-                    Some(n) => format!("{line}（{n}）"),
-                    None => line,
+                    Some(n) => msg::note(msg::N_STANDBY_TOOK_OVER_UNREAD, &[name, why, &self.since, &back, msg::uncoded(&n)]),
+                    None => msg::note(msg::N_STANDBY_TOOK_OVER, &[name, why, &self.since, &back]),
                 };
                 Some(Told::TookOver(line, self.running.take()))
             }
             Step::BothActive => Some(Told::Both(match seen {
-                Seen::Asks => format!("{name} がまた答えている。分かれていた間は両方で流していた。向こうは次に聞いてきたら待つ"),
-                _ if auto => format!("{name} がまた答えている。両方で流している。{name} が {misses} 回続けて答えたらこちらは止める"),
-                _ => format!("{name} がまた答えている。両方で流している。どちらかを止めるか、こちらで koyomi standby giveback で戻す"),
+                Seen::Asks => msg::note(msg::N_STANDBY_BOTH_ASKS, &[name]),
+                _ if auto => msg::note(msg::N_STANDBY_BOTH_AUTO, &[name, &misses.to_string()]),
+                _ => msg::note(msg::N_STANDBY_BOTH_MANUAL, &[name]),
             })),
             Step::Waiting => Some(Told::Waiting(if self.watch.giving() {
-                format!("{name} が引き取りを待っている。次に聞いてきたら渡す")
+                msg::note(msg::N_STANDBY_WAIT_GIVING, &[name])
             } else if auto {
-                format!("{name} がまた答えて、引き取りを待っている。{misses} 回続けて答えたら渡す")
+                msg::note(msg::N_STANDBY_WAIT_AUTO, &[name, &misses.to_string()])
             } else {
-                format!("{name} がまた答えて、引き取りを待っている。渡すのは koyomi standby giveback")
+                msg::note(msg::N_STANDBY_WAIT_MANUAL, &[name])
             })),
             Step::StepDown => {
                 self.since.clear();
                 self.last = None;
-                self.record(format!("{} {name} に戻した（{misses} 回続けて答えた。give_back = \"auto\"）", stamp()));
-                Some(Told::GaveBack(format!("{name} が {misses} 回続けて答えたので、こちらで流すのをやめた。また見張る")))
+                let misses = misses.to_string();
+                self.record_back(&msg::note(msg::N_STANDBY_REC_GAVE_BACK_AUTO, &[name, &misses]));
+                Some(Told::GaveBack(msg::note(msg::N_STANDBY_GAVE_BACK_AUTO, &[name, &misses])))
             }
         }
     }
@@ -403,30 +411,30 @@ impl Standby {
     /// at the primary's next ask, so the schedules are never left to nobody; otherwise at once.
     pub fn give_back(&mut self) -> Result<String, String> {
         let Some(name) = self.cfg.as_ref().map(|c| c.watch.trim().to_owned()) else {
-            return Err("koyomi.toml に [standby] がない".to_owned());
+            return Err(line(msg::STANDBY_NOT_SET, &[]));
         };
         if !self.watch.active() {
-            return Err(format!("引き継いでいない（{name} を見張っている）"));
+            return Err(line(msg::STANDBY_NOT_ACTIVE, &[&name]));
         }
         if !self.polled {
             // After a restart: whether the primary waits for this one is not known yet.
-            return Err(format!("{name} をまだ見ていない。少しあとで"));
+            return Err(line(msg::STANDBY_NOT_POLLED, &[&name]));
         }
         if self.seen == Some(Seen::Waiting) {
             if self.watch.giving() {
-                return Ok(format!("{name} が次に聞いてきたら戻す（もう決めてある）"));
+                return Ok(msg::note(msg::N_STANDBY_GIVEBACK_DECIDED, &[&name]));
             }
             self.watch.hand_over();
-            self.record(format!("{} 戻すと決めた（koyomi standby giveback。{name} が次に聞いてきたら渡す）", stamp()));
-            return Ok(format!("{name} が引き取りを待っているので、次に聞いてきたら戻す"));
+            self.record(&msg::note(msg::N_STANDBY_REC_DECIDED, &[&name]));
+            return Ok(msg::note(msg::N_STANDBY_GIVEBACK_WILL, &[&name]));
         }
         self.watch.give_back();
         self.since.clear();
         self.last = None;
-        self.record(format!("{} {name} に戻した（koyomi standby giveback）", stamp()));
+        self.record_back(&msg::note(msg::N_STANDBY_REC_GAVE_BACK_CMD, &[&name]));
         Ok(match self.seen {
-            Some(Seen::Nobody) => format!("{name} に戻した。向こうは今答えていない。また見張る"),
-            _ => format!("{name} に戻した。また見張る"),
+            Some(Seen::Nobody) => msg::note(msg::N_STANDBY_GIVEBACK_DONE_NOBODY, &[&name]),
+            _ => msg::note(msg::N_STANDBY_GIVEBACK_DONE, &[&name]),
         })
     }
 
@@ -434,7 +442,7 @@ impl Standby {
     /// primary's `POST /standby/release`: let go when [`Watch::ready`], or say why not.
     pub fn handover(&mut self, release: bool) -> Result<serde_json::Value, String> {
         let Some((name, auto)) = self.cfg.as_ref().map(|c| (c.watch.trim().to_owned(), c.give_back == config::GiveBack::Auto)) else {
-            return Err("koyomi.toml に [standby] がない".to_owned());
+            return Err(line(msg::STANDBY_NOT_SET, &[]));
         };
         if release {
             if let Err(r) = self.watch.release() {
@@ -442,8 +450,8 @@ impl Standby {
             }
             self.since.clear();
             self.last = None;
-            self.record(format!("{} {name} に戻した（向こうが引き取りに来た）", stamp()));
-            self.told.push(Told::GaveBack(format!("{name} が引き取りに来たので戻した。また見張る")));
+            self.record_back(&msg::note(msg::N_STANDBY_REC_GAVE_BACK_RELEASE, &[&name]));
+            self.told.push(Told::GaveBack(msg::note(msg::N_STANDBY_GAVE_BACK_RELEASE, &[&name])));
         }
         let ready = self.watch.ready();
         Ok(serde_json::json!({
@@ -455,13 +463,24 @@ impl Standby {
             "giving": self.watch.giving(),
             "why": ready.err().map(|r| refusal(&name, r)),
             "since": (!self.since.is_empty()).then(|| self.since.clone()),
-            "back": last_back(&self.log),
+            "back": (!self.back.is_empty()).then(|| self.back.clone()).or_else(|| last_back(&self.log)),
         }))
     }
 
     /// Written down with the time, and kept with the state.
-    fn record(&mut self, line: String) {
-        self.log.push(line);
+    fn record(&mut self, note: &str) {
+        self.record_at(&stamp(), note);
+    }
+
+    /// A handback: also kept as its own time, which the window shows (`YYYY-MM-DD HH:MM`).
+    fn record_back(&mut self, note: &str) {
+        let at = stamp();
+        self.back = at.get(..16).unwrap_or_default().to_owned();
+        self.record_at(&at, note);
+    }
+
+    fn record_at(&mut self, at: &str, note: &str) {
+        self.log.push(format!("{at} {note}"));
         let over = self.log.len().saturating_sub(LOG);
         self.log.drain(..over);
         self.keep();
@@ -469,7 +488,13 @@ impl Standby {
 
     /// Written at once: it is rare, and a takeover must hold over a crash right after it.
     fn keep(&mut self) {
-        let k = Kept { active: self.watch.active(), since: self.since.clone(), giving: self.watch.giving(), log: self.log.clone() };
+        let k = Kept {
+            active: self.watch.active(),
+            since: self.since.clone(),
+            giving: self.watch.giving(),
+            back: self.back.clone(),
+            log: self.log.clone(),
+        };
         if let Ok(text) = toml::to_string(&k) {
             let _ = self.writer.save_now(text);
         }
@@ -480,20 +505,19 @@ impl Standby {
         let cfg = self.cfg.as_ref()?;
         let name = cfg.watch.trim();
         Some(match self.watch.state() {
-            State::Watching { missed: 0 } => format!("待機中: {name} を見張っている。こちらではスケジュールとイベントで流さない"),
-            State::Watching { missed } => format!(
-                "待機中: {name} を見張っている（答えなかった {missed} 回、{} 回で引き継ぐ）。こちらではスケジュールとイベントで流さない",
-                cfg.misses
-            ),
+            State::Watching { missed: 0 } => msg::note(msg::N_STANDBY_LINE_WATCHING, &[name]),
+            State::Watching { missed } => {
+                msg::note(msg::N_STANDBY_LINE_WATCHING_MISSED, &[name, &missed.to_string(), &cfg.misses.to_string()])
+            }
             State::Active { .. } => {
                 let back = if self.watch.giving() {
-                    format!("{name} が次に聞いてきたら戻す")
+                    msg::note(msg::N_STANDBY_BACK_NEXT, &[name])
                 } else if cfg.give_back == config::GiveBack::Auto {
-                    format!("{name} が {} 回続けて答えたら戻す", cfg.misses)
+                    msg::note(msg::N_STANDBY_BACK_AUTO, &[name, &cfg.misses.to_string()])
                 } else {
-                    "koyomi standby giveback で戻す".to_owned()
+                    msg::note(msg::N_STANDBY_BACK_MANUAL, &[])
                 };
-                format!("{name} から引き継いで流している（{} から。{back}）", self.since)
+                msg::note(msg::N_STANDBY_LINE_ACTIVE, &[name, &self.since, &back])
             }
         })
     }
@@ -502,7 +526,7 @@ impl Standby {
     /// last handovers.
     pub fn status(&self) -> Option<String> {
         let line = self.line()?;
-        let log = self.log.iter().rev().take(3).rev().map(|l| format!("[standby] 記録: {l}"));
+        let log = self.log.iter().rev().take(3).rev().map(|l| msg::note(msg::N_STANDBY_RECORD_LINE, &[l]));
         Some(std::iter::once(line).chain(self.notes()).chain(log).collect::<Vec<_>>().join("\n"))
     }
 
@@ -521,9 +545,9 @@ impl Standby {
 /// Why the standby does not let go yet.
 fn refusal(name: &str, r: Refusal) -> String {
     match r {
-        Refusal::Idle => format!("引き継いでいない（{name} を見張っている）"),
-        Refusal::Manual => "give_back = \"manual\"。こちらで koyomi standby giveback を流すまで渡さない".to_owned(),
-        Refusal::NotYet { back, misses } => format!("{name} が答えたのは続けて {back} 回。{misses} 回で渡す"),
+        Refusal::Idle => line(msg::STANDBY_NOT_ACTIVE, &[name]),
+        Refusal::Manual => line(msg::GIVEBACK_MANUAL, &[]),
+        Refusal::NotYet { back, misses } => line(msg::GIVEBACK_NOT_YET, &[name, &back.to_string(), &misses.to_string()]),
     }
 }
 
@@ -532,11 +556,11 @@ fn stamp() -> String {
 }
 
 /// When it last handed the schedules back, from the handovers written down: `YYYY-MM-DD HH:MM`.
+/// Only a log from before `back` was kept is read this way, by the words it was written in.
 fn last_back(log: &[String]) -> Option<String> {
+    // an engine from before the IDs
     log.iter().rev().find(|l| l.contains(" に戻した（")).and_then(|l| l.get(..16)).map(str::to_owned)
 }
-
-const COPY: &str = "定義を写せない";
 
 /// One copy from `r`: the confirmed definitions there whose file differs from `here`.
 fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
@@ -556,7 +580,7 @@ fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
         return Err(line(msg::UNEXPECTED_STATUS, &[&r.name, &format!("/nets {}", list.status)]));
     }
     let mut out = Vec::new();
-    for id in wanted(&list.json, here)? {
+    for id in wanted(&r.name, &list.json, here)? {
         let reply = c.get(&format!("/nets/text?net={}", crate::remote::query(&id))).map_err(reason)?;
         match reply.status {
             200 => {
@@ -575,13 +599,13 @@ fn fetch(r: &config::Remote, here: &BTreeMap<String, String>) -> Fetched {
 
 /// The ids to fetch from a `GET /nets` answer: confirmed there, and with a file hash that is
 /// not the one in `here`.
-fn wanted(list: &serde_json::Value, here: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
-    let nets = list["nets"].as_array().ok_or(format!("{COPY}: /nets の答えが読めない"))?;
+fn wanted(name: &str, list: &serde_json::Value, here: &BTreeMap<String, String>) -> Result<Vec<String>, String> {
+    let nets = list["nets"].as_array().ok_or_else(|| line(msg::REPLY_UNREADABLE, &[name, "/nets"]))?;
     let mut out = Vec::new();
     for n in nets {
         let Some(id) = n["id"].as_str() else { continue };
         let Some(sha) = n["sha256"].as_str() else {
-            return Err(format!("{COPY}: 向こうの koyomi が古い（/nets にハッシュがない）。写すには向こうを新しくする"));
+            return Err(line(msg::COPY_REMOTE_OLD, &[name]));
         };
         if n["standing"] == "confirmed" && here.get(id).map(String::as_str) != Some(sha) {
             out.push(id.to_owned());
@@ -653,16 +677,15 @@ fn seen_of(health: &serde_json::Value) -> Seen {
 /// The runs going on there (`GET /runs?running=1`), for a takeover to start from. A koyomi too
 /// old for `running` answers with all of today's: the ones over are dropped here.
 fn running_of(name: &str, c: &Client) -> Result<Vec<Run>, String> {
-    const READ: &str = "動いている回が読めない";
     // One more try: a reply that fails right after /health must not leave a takeover with no runs.
     let reply = c.get("/runs?running=1").or_else(|_| c.get("/runs?running=1")).map_err(|e| crate::remote::reason(name, &e))?;
     if reply.status != 200 {
         return Err(line(msg::UNEXPECTED_STATUS, &[name, &format!("/runs {}", reply.status)]));
     }
-    let list = reply.json["runs"].as_array().ok_or(format!("{READ}: /runs の答えが読めない"))?;
+    let list = reply.json["runs"].as_array().ok_or_else(|| line(msg::REPLY_UNREADABLE, &[name, "/runs"]))?;
     let mut out = Vec::new();
     for v in list {
-        let r: Run = serde_json::from_value(v.clone()).map_err(|e| format!("{READ}（向こうの koyomi と版が違うかもしれない）: {e}"))?;
+        let r: Run = serde_json::from_value(v.clone()).map_err(|e| line(msg::RUNS_UNREADABLE, &[name, &e.to_string()]))?;
         if !r.is_over() {
             out.push(r);
         }
@@ -738,17 +761,23 @@ mod tests {
         assert_eq!(s.notes().len(), 0);
         assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(t, None)) if t.contains("refused")));
         assert!(!s.waiting());
-        assert!(s.line().unwrap().contains("引き継いで"));
+        let l = s.line().unwrap();
+        assert!(l.contains("pc1") && l.contains(&s.since) && l.ends_with(&msg::note(msg::N_STANDBY_BACK_MANUAL, &[])), "{l}");
         assert!(matches!(s.take("pc1", answered(Seen::Running)), Some(Told::Both(_))));
         let mut again = Standby::new(&d);
         again.set(Some(&cfg(2)), &[remote()]);
         assert!(!again.waiting(), "a restart stays taken over");
-        assert!(again.give_back().unwrap_err().contains("まだ見ていない"), "not before it knows whether the primary waits");
+        assert_eq!(
+            again.give_back().unwrap_err(),
+            line(msg::STANDBY_NOT_POLLED, &["pc1"]),
+            "not before it knows whether the primary waits"
+        );
         assert!(again.take("pc1", answered(Seen::Running)).is_some());
         assert!(again.give_back().is_ok());
         assert!(again.waiting());
         assert!(again.give_back().is_err());
-        assert!(again.status().unwrap().contains("記録"), "{:?}", again.status());
+        let record = msg::note(msg::N_STANDBY_RECORD_LINE, &[again.log.last().unwrap()]);
+        assert!(again.status().unwrap().contains(&record), "{:?}", again.status());
         again.set(None, &[remote()]);
         assert!(!again.waiting() && again.line().is_none());
         let _ = std::fs::remove_dir_all(&d);
@@ -767,17 +796,19 @@ mod tests {
         assert_eq!(s.take("pc1", Poll::Missed("refused".into())).map(|t| matches!(t, Told::TookOver(_, Some(r)) if r == runs)), Some(true));
         assert!(s.give_back().is_ok());
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Ok(runs.clone())) });
-        s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err("動いている回が読めない: x".into())) });
-        assert!(s.notes()[0].contains("動いている回が読めない"));
+        let unread = |why: &str| line(msg::RUNS_UNREADABLE, &["pc1", why]);
+        s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err(unread("x"))) });
+        assert_eq!(s.notes()[0], unread("x"));
         // The failed read keeps the good list seen a moment before: it fails as the primary dies.
         assert_eq!(s.take("pc1", Poll::Missed("refused".into())).map(|t| matches!(t, Told::TookOver(_, Some(r)) if r == runs)), Some(true));
         // With no good list at all, the line says why.
         let d2 = dir("runs-none");
         let mut n = Standby::new(&d2);
         n.set(Some(&cfg(1)), &[remote()]);
-        n.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err("動いている回が読めない: x".into())) });
+        n.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Err(unread("x"))) });
         match n.take("pc1", Poll::Missed("refused".into())) {
-            Some(Told::TookOver(line, None)) => assert!(line.contains("動いている回が読めない: x"), "{line}"),
+            // The reason is kept, and its ID is not repeated inside the note.
+            Some(Told::TookOver(text, None)) => assert!(text.contains(msg::uncoded(&unread("x"))) && !msg::is_coded(&text), "{text}"),
             other => panic!("{other:?}"),
         }
         assert!(s.notes().is_empty());
@@ -794,9 +825,9 @@ mod tests {
         s.take("pc1", Poll::Answered { seen: Seen::Running, note: None, running: Some(Ok(Vec::new())) });
         let runs = vec![a_run("20261101-020000-00")];
         s.take_runs(Ok(runs.clone()));
-        s.take_runs(Err("動いている回が読めない: reset".into()));
+        s.take_runs(Err(line(msg::RUNS_UNREADABLE, &["pc1", "reset"])));
         assert!(s.take("pc1", Poll::Missed("refused".into())).is_none());
-        s.take_runs(Err("動いている回が読めない: refused".into()));
+        s.take_runs(Err(line(msg::RUNS_UNREADABLE, &["pc1", "refused"])));
         let told = s.take("pc1", Poll::Missed("refused".into()));
         assert!(matches!(&told, Some(Told::TookOver(_, Some(ref r))) if *r == runs), "{told:?}");
         // A list that ended there since is replaced by the newer one.
@@ -818,14 +849,17 @@ mod tests {
         s.set(Some(&auto(2)), &[remote()]);
         s.take("pc1", Poll::Missed("refused".into()));
         assert!(
-            matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(t, _)) if t.contains("2 回続けて答えたら戻す"))
+            matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(t, _)) if t.contains(&msg::note(msg::N_STANDBY_BACK_AUTO, &["pc1", "2"])))
         );
-        assert!(matches!(s.take("pc1", answered(Seen::Running)), Some(Told::Both(t)) if t.contains("止める")));
+        assert!(
+            matches!(s.take("pc1", answered(Seen::Running)), Some(Told::Both(t)) if t == msg::note(msg::N_STANDBY_BOTH_AUTO, &["pc1", "2"]))
+        );
         assert!(matches!(s.take("pc1", answered(Seen::Running)), Some(Told::GaveBack(_))));
         assert!(s.waiting());
         let again = Standby::new(&d);
         assert_eq!(again.log.len(), 2);
-        assert!(again.log[0].contains("引き継いだ") && again.log[1].contains("give_back = \"auto\""), "{:?}", again.log);
+        assert!(again.log[0].ends_with(&msg::note(msg::N_STANDBY_REC_TOOK_OVER, &["pc1", "refused"])), "{:?}", again.log);
+        assert!(again.log[1].ends_with(&msg::note(msg::N_STANDBY_REC_GAVE_BACK_AUTO, &["pc1", "2"])), "{:?}", again.log);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -838,17 +872,17 @@ mod tests {
         assert!(s.handover(false).is_err(), "no [standby]");
         s.set(Some(&cfg(1)), &[remote()]);
         assert_eq!(s.handover(false).unwrap()["active"], false);
-        assert!(s.handover(true).unwrap_err().contains("見張っている"));
+        assert_eq!(s.handover(true).unwrap_err(), line(msg::STANDBY_NOT_ACTIVE, &["pc1"]));
         assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(..))));
         let ha = s.handover(false).unwrap();
         assert_eq!((ha["active"].as_bool(), ha["ready"].as_bool()), (Some(true), Some(false)));
-        assert!(ha["why"].as_str().unwrap().contains("manual"));
+        assert_eq!(ha["why"].as_str(), Some(line(msg::GIVEBACK_MANUAL, &[]).as_str()));
         assert_eq!((ha["since"].as_str().map(str::len), ha["back"].as_str()), (Some(16), None), "{ha}");
         assert!(s.handover(true).is_err());
         assert!(matches!(s.take("pc1", answered(Seen::Waiting)), Some(Told::Waiting(_))));
-        assert!(s.give_back().unwrap().contains("次に聞いてきたら"));
+        assert_eq!(s.give_back().unwrap(), msg::note(msg::N_STANDBY_GIVEBACK_WILL, &["pc1"]));
         assert!(!s.waiting(), "it runs until the primary comes for them");
-        assert!(s.give_back().unwrap().contains("もう決めてある"));
+        assert_eq!(s.give_back().unwrap(), msg::note(msg::N_STANDBY_GIVEBACK_DECIDED, &["pc1"]));
         let mut again = Standby::new(&d);
         again.set(Some(&cfg(1)), &[remote()]);
         assert_eq!(again.handover(false).unwrap()["ready"], true);
@@ -858,14 +892,14 @@ mod tests {
         assert!(back["back"].as_str().is_some());
         assert!(again.waiting());
         assert!(matches!(again.told.as_slice(), [Told::GaveBack(_)]));
-        assert!(again.log.last().unwrap().contains("引き取りに来た"));
+        assert!(again.log.last().unwrap().ends_with(&msg::note(msg::N_STANDBY_REC_GAVE_BACK_RELEASE, &["pc1"])));
 
         let mut s = Standby::new(&dir("release-auto"));
         s.set(Some(&auto(2)), &[remote()]);
         s.take("pc1", Poll::Missed("refused".into()));
         s.take("pc1", Poll::Missed("refused".into()));
         s.take("pc1", answered(Seen::Waiting));
-        assert!(s.handover(true).unwrap_err().contains("続けて 1 回"));
+        assert_eq!(s.handover(true).unwrap_err(), line(msg::GIVEBACK_NOT_YET, &["pc1", "1", "2"]));
         s.take("pc1", answered(Seen::Waiting));
         assert!(s.handover(true).is_ok());
         let _ = std::fs::remove_dir_all(&d);
@@ -887,6 +921,34 @@ mod tests {
         assert_eq!(last_back(&ls).as_deref(), Some("2026-10-31 10:15"));
     }
 
+    /// the time of the last handback is kept as its own field: it does not depend on the words of
+    /// a log line, and an old log is still read by its old words.
+    #[test]
+    fn the_last_give_back_is_kept_apart_from_the_words() {
+        let d = dir("back-field");
+        let mut s = Standby::new(&d);
+        s.set(Some(&cfg(1)), &[remote()]);
+        assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(..))));
+        assert_eq!(s.handover(false).unwrap()["back"], serde_json::Value::Null);
+        assert!(s.give_back().is_ok());
+        let back = s.handover(false).unwrap()["back"].as_str().map(str::to_owned);
+        assert_eq!(back.as_deref().map(str::len), Some(16));
+        // A restart reads it back, though no log line says "handed back" in the old words.
+        let mut again = Standby::new(&d);
+        again.log.clear();
+        again.set(Some(&cfg(1)), &[remote()]);
+        assert_eq!(again.handover(false).unwrap()["back"].as_str().map(str::to_owned), back);
+        // A file kept before `back` existed has none: the old log is what tells.
+        let kept: Kept = toml::from_str("active = false\nsince = \"\"\ngiving = false\nlog = [\"x\"]\n").unwrap();
+        assert_eq!((kept.back.as_str(), kept.log.len()), ("", 1));
+        let mut old = Standby::new(&dir("back-old"));
+        old.log = vec!["2026-10-31 10:15:30 pc1 に戻した（koyomi standby giveback）".to_owned()];
+        old.set(Some(&cfg(1)), &[remote()]);
+        assert_eq!(old.handover(false).unwrap()["back"].as_str(), Some("2026-10-31 10:15"));
+        let _ = std::fs::remove_dir_all(&d);
+        let _ = std::fs::remove_dir_all(dir("back-old"));
+    }
+
     /// only the confirmed nets there whose file is not the one here are fetched; a peer
     /// without the hashes is said to be too old.
     #[test]
@@ -899,10 +961,10 @@ mod tests {
             { "id": "a/invalid", "standing": "invalid", "sha256": "5" },
         ]});
         let here = BTreeMap::from([("a/same".to_owned(), "1".to_owned()), ("a/changed".to_owned(), "old".to_owned())]);
-        assert_eq!(wanted(&list, &here).unwrap(), ["a/changed", "a/new"]);
+        assert_eq!(wanted("pc1", &list, &here).unwrap(), ["a/changed", "a/new"]);
         let old = serde_json::json!({ "nets": [{ "id": "a/x", "standing": "confirmed" }] });
-        assert!(wanted(&old, &here).unwrap_err().contains("古い"));
-        assert!(wanted(&serde_json::json!({}), &here).is_err());
+        assert_eq!(wanted("pc1", &old, &here).unwrap_err(), line(msg::COPY_REMOTE_OLD, &["pc1"]));
+        assert_eq!(wanted("pc1", &serde_json::json!({}), &here).unwrap_err(), line(msg::REPLY_UNREADABLE, &["pc1", "/nets"]));
     }
 
     /// what the copy thread brings is handed over while standing by, and dropped once it
@@ -918,17 +980,18 @@ mod tests {
         assert!(s.copied_at.is_none());
         s.set(Some(&cfg(1)), &[remote()]);
         s.copied_at = Some(Instant::now());
-        s.copy_tx.send(Err("定義を写せない: x".into())).unwrap();
+        let trouble = line(msg::COPY_REMOTE_OLD, &["pc1"]);
+        s.copy_tx.send(Err(trouble.clone())).unwrap();
         assert!(s.copies(BTreeMap::new).is_empty());
         assert_eq!(s.notes().len(), 1);
         // `koyomi standby` says the trouble under the status line.
         let status = s.status().unwrap();
-        assert!(status.starts_with("待機中") && status.ends_with("定義を写せない: x"), "{status}");
+        assert!(status.starts_with(&msg::note(msg::N_STANDBY_LINE_WATCHING, &["pc1"])) && status.ends_with(&trouble), "{status}");
         s.copy_tx.send(Ok(vec![one.clone()])).unwrap();
         assert_eq!(s.copies(BTreeMap::new), std::slice::from_ref(&one));
         assert!(s.notes().is_empty());
         s.refused(vec!["a/b: 保存できない".into()]);
-        assert!(s.notes()[0].contains("置けない"));
+        assert!(msg::COPY_NOT_WRITTEN.is_in(&s.notes()[0]) && s.notes()[0].contains("a/b: 保存できない"), "{:?}", s.notes());
         assert!(matches!(s.take("pc1", Poll::Missed("refused".into())), Some(Told::TookOver(..))));
         s.copy_tx.send(Ok(vec![one])).unwrap();
         assert!(s.copies(BTreeMap::new).is_empty());

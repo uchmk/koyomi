@@ -3372,6 +3372,144 @@ text = "The jobnet {1} is used by {0} jobnets, so it cannot be deleted."
 cause = "A delete would break the references of the jobnets that use it."
 action = "Fix the jobnets that use it first."
 
+[E2177]
+when = "The secret that holds a token of [http] cannot be read"
+text = "Cannot read the secret {0} that holds a token of [http]. ({1})"
+cause = "The secret {0} may not exist, may be empty, or the credential store may be unavailable."
+action = "Store the token with koyomi secret set {0}. The listener is tried again at intervals."
+
+[E3767]
+when = "The [http] listener cannot start"
+text = "Cannot start listening on {0}. ({1})"
+cause = "The port may be used by another program, or this program may not be allowed to bind it. For a LAN listener, the certificate may not be ready."
+action = "Check port and lan in [http] of koyomi.toml, and the program that uses the port. The listener is tried again every {2} seconds."
+
+[E3768]
+when = "koyomi http fingerprint cannot read or create this PC's certificate"
+text = "Cannot read or create the certificate in the folder {0}. ({1})"
+cause = "You may not be allowed to write to the folder, or an existing certificate file may be damaged."
+action = "Check the permissions of the folder and the certificate files."
+
+[W3769]
+when = "The tailnet port of [http] is not open yet"
+text = "The tailnet port {0} is not open yet. ({1})"
+cause = "Tailscale may not be running, there may be no tailnet address, or another program may use the port."
+action = "Start Tailscale. The tailnet port opens by itself once Tailscale is available."
+
+[E3773]
+when = "A request to the HTTP API uses a method that is not allowed"
+text = "This path cannot be requested with a method other than {0}."
+cause = "The path accepts only the method {0}."
+action = "Change the method of the request to {0}."
+
+[E3774]
+when = "A request to the HTTP API uses a path that does not exist"
+text = "This path does not exist."
+cause = "The path matches none of the paths the HTTP API offers."
+action = "Use one of these paths: {0}"
+
+[E3775]
+when = "A request to the HTTP API has a body that cannot be read as JSON"
+text = "Cannot read the body of the request as JSON. ({0})"
+cause = "The body may not be valid JSON, may contain an unknown key, or a value may have the wrong type."
+action = "Send a valid JSON body."
+
+[E3776]
+when = "A request to POST /door has no body"
+text = "The request has no body."
+cause = "POST /door takes the request of the screen as a JSON body."
+action = "Send a JSON body of the form {0}."
+
+[E3777]
+when = "A request to the HTTP API lacks a required key"
+text = "{0} is not specified."
+cause = "The body or the query of the request may lack the required key, the key may be empty, or its value may have the wrong type."
+action = "Specify {0}, for example {1}."
+
+[E3778]
+when = "The request of POST /door cannot be read as a request"
+text = "Cannot read request as a request to the engine. ({0})"
+cause = "The content of request does not match the form of a request the engine accepts."
+action = "Specify the JSON of a request the engine accepts in request."
+
+[E3779]
+when = "GET /runs has to but no from"
+text = "to is specified, but from is not."
+cause = "to is a key that goes with from."
+action = "Specify the first day in from, as YYYY-MM-DD."
+
+[E3780]
+when = "POST /runs/<id>/rerun has both from and next"
+text = "from and next cannot be specified together."
+cause = "Both of them say which job the rerun starts from."
+action = "Specify only one of them."
+
+[E3781]
+when = "POST /runs/<id>/rerun has warn but no next"
+text = "warn has to be specified together with next."
+cause = "warn makes the job named in next end as a warning."
+action = "When you specify warn, specify a job in next."
+
+[E3782]
+when = "A request to the HTTP API gives a value that is not the form of a run ID"
+text = "{0} is not the form of a run ID."
+cause = "A run ID is built from the date and time the run started."
+action = "Specify the run ID as YYYYMMDD-HHMMSS-NN."
+
+[E3783]
+when = "Handing back is requested on a PC without [standby]"
+text = "[standby] is not specified in koyomi.toml."
+cause = "This PC is not set up as a standby."
+action = "Specify [standby] in koyomi.toml of the standby PC."
+
+[E3784]
+when = "Handing back is requested on a standby that has not taken over"
+text = "The schedules cannot be handed back because they have not been taken over from {0}."
+cause = "This PC is standing by and has not taken over from {0} yet."
+action = "Run it again after this PC has taken over from {0}."
+
+[E3785]
+when = "Handing back is requested before the standby has checked its connection"
+text = "The schedules cannot be handed back because the state of {0} is not known yet."
+cause = "The first poll of the connection has not finished since the engine started."
+action = "Wait a little, then run it again."
+
+[E3786]
+when = "A standby with give_back = \"manual\" is asked to hand back"
+text = "The schedules cannot be handed back because give_back = \"manual\"."
+cause = "With give_back = \"manual\", the standby does not hand back until koyomi standby giveback is run."
+action = "Run koyomi standby giveback on the standby PC."
+
+[E3787]
+when = "A standby with give_back = \"auto\" is asked to hand back before the connection has answered enough times"
+text = "The schedules cannot be handed back because {0} has answered {1} times in a row. ({2} are needed)"
+cause = "With give_back = \"auto\", the standby does not hand back until the connection has answered misses times in a row."
+action = "Wait until the connection keeps answering, then run it again."
+
+[E3788]
+when = "The definitions a standby copied from the connection cannot be written to this PC"
+text = "Cannot write the copied definitions to this PC. ({0})"
+cause = "Saving a definition was refused. The reason is in the parentheses."
+action = "Check the reason in the parentheses. The copy is tried again every 5 minutes."
+
+[E3789]
+when = "The connection's koyomi is too old for a standby to copy definitions"
+text = "Cannot copy the definitions because the koyomi of {0} is too old."
+cause = "The answer of /nets from the connection has no hash (sha256) of the files."
+action = "Update the koyomi of the connection."
+
+[E3790]
+when = "The runs going on at the connection cannot be read"
+text = "Cannot read the runs going on at {0}. ({1})"
+cause = "The versions of koyomi on the connection and on this PC may differ, so the form of a run does not match."
+action = "Update koyomi on the connection and on this PC to the same version."
+
+[W3791]
+when = "A standby takes over, and the last runs it read from the connection are too old"
+text = "The runs last read from {0} are too old, so they are not used for the takeover."
+cause = "More than 30 seconds have passed since they were read, and some of them may have ended since."
+action = "Check the runs after the takeover, and run them again if necessary."
+
 [note]
 status_head = "{0} definitions ({1} confirmed), {2} runs going."
 status_paused = "The schedules are paused (koyomi resume resumes them)."
@@ -3637,3 +3775,52 @@ ok_file_log = "{0} is there, so it counts as ok (exit code {1})"
 host_shape_sftp = "<host>[:<port>] or an sftp:// or ssh:// address"
 host_shape_winrm = "<host>[:<port>] or winrm://user@host[:port]"
 pass_failed_coded = "{0} ({1})"
+http_listen_lan = "HTTP: Listening on the LAN port {0}. The TLS fingerprint is {1}. {2}"
+http_listen_local = "HTTP: Listening on port {0} of 127.0.0.1. {1}"
+http_listen_local_v6 = "HTTP: Listening on port {0} of 127.0.0.1 and [::1]. {1}"
+http_tail_open = "Also listening on the tailnet port {0}. A connection identified by Tailscale needs no token."
+http_tail_pending = "The tailnet port {0} is not open yet."
+http_tailnet_opened = "HTTP: The tailnet port {0} is open. A connection identified by Tailscale needs no token."
+http_at_local = "port {0} of 127.0.0.1"
+http_at_lan = "the LAN port {0}"
+http_at_tailnet = "{0} and the tailnet port {1}"
+http_no_detail = "no detail is available"
+http_via_tailscale = " ({0}, Tailscale)"
+http_nets_join = ", "
+standby_line_watching = "Standing by: watching {0}. This PC runs no schedule and no event."
+standby_line_watching_missed = "Standing by: watching {0} (no answer {1} times; takes over at {2}). This PC runs no schedule and no event."
+standby_line_active = "Running in place of {0} since {1}. {2}"
+standby_back_next = "The schedules are handed back the next time {0} asks."
+standby_back_auto = "The schedules are handed back once {0} has answered {1} times in a row."
+standby_back_manual = "To hand the schedules back, run koyomi standby giveback."
+standby_took_over = "{0} stopped answering, so this PC runs the schedules from {2}. ({1}) {3}"
+standby_took_over_unread = "{0} stopped answering, so this PC runs the schedules from {2}. ({1}) {3} The runs going on there could not be checked: {4}"
+standby_both_asks = "{0} answers again. Both PCs ran the schedules while they were apart. {0} waits the next time it asks."
+standby_both_auto = "{0} answers again. Both PCs run the schedules. This PC stops once {0} has answered {1} times in a row."
+standby_both_manual = "{0} answers again. Both PCs run the schedules. Stop one of them, or run koyomi standby giveback on this PC to hand the schedules back."
+standby_wait_giving = "{0} is waiting to take the schedules back. They are handed over the next time it asks."
+standby_wait_auto = "{0} answers again and is waiting to take the schedules back. They are handed over once it has answered {1} times in a row."
+standby_wait_manual = "{0} answers again and is waiting to take the schedules back. To hand them over, run koyomi standby giveback."
+standby_gave_back_auto = "{0} answered {1} times in a row, so this PC stopped running the schedules. It watches again."
+standby_gave_back_release = "{0} came to take the schedules back, so they were handed back. This PC watches again."
+standby_rec_took_over = "Took over from {0}. ({1})"
+standby_rec_gave_back_auto = "Handed back to {0}. (It answered {1} times in a row. give_back = \"auto\")"
+standby_rec_decided = "Decided to hand back. (koyomi standby giveback. It is handed over the next time {0} asks)"
+standby_rec_gave_back_cmd = "Handed back to {0}. (koyomi standby giveback)"
+standby_rec_gave_back_release = "Handed back to {0}. ({0} came to take the schedules back)"
+standby_record_line = "[standby] Record: {0}"
+standby_giveback_decided = "The schedules are handed back the next time {0} asks. (This is already decided)"
+standby_giveback_will = "{0} is waiting to take the schedules back, so they are handed back the next time it asks."
+standby_giveback_done_nobody = "Handed back to {0}. {0} is not answering now. This PC watches again."
+standby_giveback_done = "Handed back to {0}. This PC watches again."
+primary_line_running = "[primary] {0} is standing by. This PC runs the schedules."
+primary_line_asking = "[primary] Asking {0}. The schedules and the events wait until it answers."
+primary_line_asking_missed = "[primary] Asking {0} (no answer {1} times; this PC runs the schedules after {2}). The schedules and the events wait."
+primary_line_held = "[primary] {0} has taken over. This PC runs no schedule and no event until they are handed back."
+primary_held = "Waiting ({0} has taken over)."
+title_standby_pc = "Standby PC"
+primary_took = "{0} had taken over and was running the schedules. This PC stops running the schedules and the events, and waits until they are handed back."
+primary_back = "{0} handed the schedules back. This PC runs them."
+primary_nobody = "{0} does not answer, so this PC runs the schedules."
+primary_unclear = "The state of {0} cannot be checked, so this PC runs the schedules."
+primary_held_told = "{0} has taken over. This PC runs no schedule and no event until they are handed back."
