@@ -8,6 +8,7 @@ use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
 use ito_common::kept;
+use koyomi_core::msg;
 use serde::{Deserialize, Serialize};
 
 const FORMAT: &str = "%Y-%m-%d %H:%M:%S";
@@ -76,12 +77,11 @@ fn outage(prev: &Kept, now: NaiveDateTime) -> Option<(String, bool)> {
     if secs < if prev.clean { STOP_MIN } else { CRASH_MIN } {
         return None;
     }
-    let how = if prev.clean { "止まっていた" } else { "落ちていた" };
+    let how = msg::note(if prev.clean { msg::N_ENGINE_STOPPED } else { msg::N_ENGINE_CRASHED }, &[]);
     let span = koyomi_core::duration::text(secs as u64);
-    let line = format!(
-        "エンジンは {} から {} ({span}) {how}。この間の時刻のジョブは流れていない",
-        at.format("%-m/%-d %-H:%M"),
-        now.format("%-m/%-d %-H:%M")
+    let line = msg::line(
+        msg::ENGINE_WAS_DOWN,
+        &[&at.format("%-m/%-d %-H:%M").to_string(), &now.format("%-m/%-d %-H:%M").to_string(), &span, &how],
     );
     Some((line, !prev.clean))
 }
@@ -105,8 +105,14 @@ mod tests {
         assert_eq!(outage(&kept("2026-10-30 08:59:30", false), now), None);
         assert_eq!(outage(&kept("2026-10-30 08:55:00", true), now), None);
         let (line, crashed) = outage(&kept("2026-10-30 08:00:00", false), now).unwrap();
-        assert!(crashed && line.contains("10/30 8:00 から 10/30 9:00") && line.contains("落ちていた"), "{line}");
+        assert!(
+            crashed
+                && line.contains("10/30 8:00 から 10/30 9:00")
+                && line.contains("異常終了していました")
+                && msg::ENGINE_WAS_DOWN.is_in(&line),
+            "{line}"
+        );
         let (line, crashed) = outage(&kept("2026-10-29 18:00:00", true), now).unwrap();
-        assert!(!crashed && line.contains("止まっていた"), "{line}");
+        assert!(!crashed && line.contains("停止していました") && msg::ENGINE_WAS_DOWN.is_in(&line), "{line}");
     }
 }

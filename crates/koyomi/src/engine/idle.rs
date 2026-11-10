@@ -16,6 +16,7 @@
 use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 
+use koyomi_core::msg;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when::Kind;
 
@@ -37,9 +38,9 @@ pub fn idle_now() -> Option<Duration> {
 /// `600` as `10 分`, for the record of why a net started.
 pub fn span_text(secs: u64) -> String {
     if secs.is_multiple_of(60) {
-        format!("{} 分", secs / 60)
+        msg::note(msg::N_SPAN_MIN, &[&(secs / 60).to_string()])
     } else {
-        format!("{secs} 秒")
+        msg::note(msg::N_SPAN_SEC, &[&secs.to_string()])
     }
 }
 
@@ -118,13 +119,7 @@ impl Idle {
         }
         let mut ids: Vec<&str> = self.rules.iter().map(|r| r.def_id.as_str()).collect();
         ids.dedup();
-        ids.into_iter()
-            .map(|id| {
-                format!(
-                    "{id}: PC が空いたかが分からない（画面の無い PC・画面に誰もサインインしていないとき・Windows がこの PC の使われない時間を教えないとき）ので、idle の [[when]] では流れない"
-                )
-            })
-            .collect()
+        ids.into_iter().map(|id| msg::line(msg::IDLE_UNKNOWN, &[id])).collect()
     }
 }
 
@@ -223,10 +218,7 @@ mod tests {
         idle.set_rules(&[def("g/a", TEN, Standing::Confirmed)]);
         assert!(idle.problems().is_empty());
         assert!(idle.step(None).is_empty());
-        assert_eq!(
-            idle.problems(),
-            ["g/a: PC が空いたかが分からない（画面の無い PC・画面に誰もサインインしていないとき・Windows がこの PC の使われない時間を教えないとき）ので、idle の [[when]] では流れない"]
-        );
+        assert_eq!(idle.problems(), [msg::line(msg::IDLE_UNKNOWN, &["g/a"])]);
         assert!(idle.step(HOUR).is_empty());
         assert!(idle.problems().is_empty());
     }

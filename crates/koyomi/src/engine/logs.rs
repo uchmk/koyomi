@@ -10,6 +10,7 @@
 
 use std::time::{Duration, Instant};
 
+use koyomi_core::msg;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when::Kind;
 
@@ -97,10 +98,10 @@ impl Logs {
             .filter_map(|w| {
                 let what = match &w.kind {
                     Kind::Log { log, .. } => log.clone(),
-                    Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog}"),
+                    Kind::EventLog { eventlog, .. } => msg::note(msg::N_EVENTLOG_NAME, &[eventlog]),
                     _ => return None,
                 };
-                Some(format!("{}: {what} を読めない（{}）", w.def_id, w.problem.as_ref()?))
+                Some(msg::line(msg::LOG_WATCH_UNREADABLE, &[&w.def_id, &what, w.problem.as_ref()?]))
             })
             .collect()
     }
@@ -245,6 +246,9 @@ mod tests {
         assert!(logs.read().is_empty());
         let p = logs.problems();
         assert_eq!(p.len(), 1, "{p:?}");
-        assert!(p[0].starts_with("g/e: イベントログ koyomi-no-such-log-x を読めない（"), "{p:?}");
+        assert!(
+            msg::LOG_WATCH_UNREADABLE.is_in(&p[0]) && p[0].contains("g/e") && p[0].contains("イベントログ koyomi-no-such-log-x"),
+            "{p:?}"
+        );
     }
 }

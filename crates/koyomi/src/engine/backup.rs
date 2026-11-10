@@ -14,6 +14,7 @@ use std::sync::mpsc::{self, Receiver};
 use chrono::NaiveDate;
 use ito_common::kept;
 use koyomi_core::bundle::{export, Pick, Source};
+use koyomi_core::msg;
 use serde::{Deserialize, Serialize};
 
 /// How many day files `backups/` keeps.
@@ -98,15 +99,17 @@ impl Backup {
     pub fn line(&self) -> String {
         let k = &self.last;
         if k.at.is_empty() {
-            return "バックアップ: まだ".to_owned();
+            return msg::note(msg::N_BACKUP_NONE, &[]);
         }
         let mut s = if k.file.is_empty() {
-            format!("バックアップ: {}、定義がないので書かなかった", k.at)
+            msg::note(msg::N_BACKUP_EMPTY, &[&k.at])
         } else {
-            format!("バックアップ: {}、{} に {} 件（{} 日分を残す）", k.at, k.file, k.count, KEEP)
+            msg::note(msg::N_BACKUP_DONE, &[&k.at, &k.file, &k.count.to_string(), &KEEP.to_string()])
         };
         if !k.errors.is_empty() {
-            s.push_str(&format!("、できなかった {} 件: {}", k.errors.len(), k.errors.join(" / ")));
+            let each: Vec<&str> = k.errors.iter().map(|e| msg::uncoded(e)).collect();
+            s.push(' ');
+            s.push_str(&msg::note(msg::N_BACKUP_ERRORS, &[&k.errors.len().to_string(), &each.join(" / ")]));
         }
         s
     }
@@ -132,9 +135,9 @@ fn write(app: &Path, dir: &Path, today: NaiveDate) -> Done {
     let mut errors = Vec::new();
     let name = format!("{}.toml", today.format("%Y-%m-%d"));
     if let Err(e) = std::fs::create_dir_all(dir) {
-        errors.push(format!("{} を作れない: {e}", dir.display()));
+        errors.push(msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]));
     } else if let Err(e) = ito_common::write_atomic(&dir.join(&name), bundle.to_toml()) {
-        errors.push(e);
+        errors.push(if msg::is_coded(&e) { e } else { msg::line(msg::FILE_WRITE_FAILED, &[&dir.join(&name).display().to_string(), &e]) });
     } else {
         errors.extend(rotate(dir));
     }
@@ -148,7 +151,12 @@ fn rotate(dir: &Path) -> Vec<String> {
         rd.flatten().map(|e| e.path()).filter(|p| p.is_file() && p.file_name().and_then(|n| n.to_str()).is_some_and(is_day_file)).collect();
     days.sort();
     days.reverse();
-    days.iter().skip(KEEP).filter_map(|p| std::fs::remove_file(p).err().map(|e| format!("{} を消せない: {e}", p.display()))).collect()
+    days.iter()
+        .skip(KEEP)
+        .filter_map(|p| {
+            std::fs::remove_file(p).err().map(|e| msg::line(msg::FILE_DELETE_FAILED, &[&p.display().to_string(), &e.to_string()]))
+        })
+        .collect()
 }
 
 /// `2026-10-30.toml`.
@@ -174,9 +182,9 @@ mod tests {
         std::fs::write(state.join("backups").join("note.txt"), "x").unwrap();
         // Nothing there: no file, and the old ones stay.
         let mut b = Backup::new(&app, &state);
-        assert_eq!(b.line(), "バックアップ: まだ");
+        assert!(b.line().contains("まだ実行されていません"), "{}", b.line());
         let line = wait(&mut b);
-        assert!(line.contains("書かなかった"), "{line}");
+        assert!(line.contains("ファイルを書き込みませんでした"), "{line}");
         assert_eq!(std::fs::read_dir(state.join("backups")).unwrap().count(), 10);
         assert_eq!(b.tick(), None);
         // Something there, another day: written and the oldest rotated out.

@@ -20,6 +20,7 @@ use std::time::Instant;
 use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use ito_common::kept;
 use koyomi_core::jobnet::{Missed, Overlap};
+use koyomi_core::msg;
 use koyomi_core::quiet::{self, OnQuiet};
 use koyomi_core::run::State;
 use koyomi_core::scan::{Def, Standing};
@@ -152,23 +153,26 @@ pub fn judge_known(
         return on_time;
     }
     if passed && !(missed == Missed::Once && last) {
-        return Verdict::NotRun(State::Missed, format!("{} に PC が止まっていました", planned.format("%-H:%M")));
+        return Verdict::NotRun(State::Missed, msg::note(msg::N_MISSED_PC_STOPPED, &[&planned.format("%-H:%M").to_string()]));
     }
     if !warnings.is_empty() {
-        return Verdict::NotRun(State::Locked, format!("流さなかった: {}", warnings.join(" / ")));
+        return Verdict::NotRun(
+            State::Locked,
+            msg::note(msg::N_NOT_RUN_BECAUSE, &[&warnings.iter().map(|w| msg::uncoded(w)).collect::<Vec<_>>().join(" / ")]),
+        );
     }
     if let Some(e) = bad_config {
-        return Verdict::NotRun(State::Locked, format!("流さなかった: {e}"));
+        return Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_BECAUSE, &[msg::uncoded(e)]));
     }
     match def.standing {
-        Standing::Invalid => return Verdict::NotRun(State::Locked, "定義の誤りがあり、流さなかった".to_owned()),
-        Standing::Unconfirmed => return Verdict::NotRun(State::Locked, format!("未確認のため流さなかった（koyomi approve {}）", def.id)),
+        Standing::Invalid => return Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_INVALID, &[])),
+        Standing::Unconfirmed => return Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_UNCONFIRMED, &[&def.id])),
         Standing::Confirmed => {}
     }
     if running {
         return match overlap {
             Overlap::Queue => Verdict::Queue { late: passed },
-            Overlap::Skip => Verdict::NotRun(State::Skipped, "前の回がまだ動いていました".to_owned()),
+            Overlap::Skip => Verdict::NotRun(State::Skipped, msg::note(msg::N_NOT_RUN_PREVIOUS, &[])),
         };
     }
     Verdict::Start { late: passed }
@@ -191,7 +195,7 @@ pub fn quiet(def: &Def, planned: NaiveDateTime, now: NaiveDateTime) -> Option<Qu
     let until = quiet::until(&net.quiet, planned).filter(|u| *u > now)?;
     Some(match net.on_quiet {
         OnQuiet::Wait => Quiet::Wait(until),
-        OnQuiet::Skip => Quiet::Skip(format!("流さない時間帯（{}）", quiet::named(&net.quiet, planned).unwrap_or_default())),
+        OnQuiet::Skip => Quiet::Skip(msg::note(msg::N_QUIET_SKIP, &[&quiet::named(&net.quiet, planned).unwrap_or_default()])),
     })
 }
 
@@ -238,7 +242,7 @@ mod tests {
         assert_eq!(quiet(&wait, p, at("2026-10-30 03:00:00")), None, "over by now: it starts");
         assert_eq!(quiet(&wait, at("2026-10-30 03:00:00"), at("2026-10-30 03:00:00")), None);
         let skip = def_with(Standing::Confirmed, "quiet = [\"01:30-03:00\"]\non_quiet = \"skip\"\n");
-        assert_eq!(quiet(&skip, p, p), Some(Quiet::Skip("流さない時間帯（01:30-03:00）".into())));
+        assert_eq!(quiet(&skip, p, p), Some(Quiet::Skip(msg::note(msg::N_QUIET_SKIP, &["01:30-03:00"]))));
         assert_eq!(quiet(&def(Standing::Confirmed), p, p), None);
     }
 
@@ -262,26 +266,26 @@ mod tests {
         );
         assert_eq!(
             judge(&def(Standing::Confirmed), p, Duration::seconds(61), none, None, false, true),
-            Verdict::NotRun(State::Missed, "2:00 に PC が止まっていました".into())
+            Verdict::NotRun(State::Missed, msg::note(msg::N_MISSED_PC_STOPPED, &["2:00"]))
         );
         assert_eq!(
             judge(&def(Standing::Confirmed), p, Duration::seconds(3), none, None, true, true),
-            Verdict::NotRun(State::Skipped, "前の回がまだ動いていました".into())
+            Verdict::NotRun(State::Skipped, msg::note(msg::N_NOT_RUN_PREVIOUS, &[]))
         );
         let w = judge(&def(Standing::Confirmed), p, Duration::zero(), &["x が書ける".to_owned()], None, false, true);
-        assert_eq!(w, Verdict::NotRun(State::Locked, "流さなかった: x が書ける".into()));
+        assert_eq!(w, Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_BECAUSE, &["x が書ける"])));
         let w = judge(&def(Standing::Confirmed), p, Duration::zero(), none, Some("koyomi.toml が読めない"), false, true);
-        assert_eq!(w, Verdict::NotRun(State::Locked, "流さなかった: koyomi.toml が読めない".into()));
+        assert_eq!(w, Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_BECAUSE, &["koyomi.toml が読めない"])));
         let w = judge(&def(Standing::Unconfirmed), p, Duration::zero(), none, None, false, true);
-        assert_eq!(w, Verdict::NotRun(State::Locked, "未確認のため流さなかった（koyomi approve 経理/月次締め）".into()));
+        assert_eq!(w, Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_UNCONFIRMED, &["経理/月次締め"])));
         let w = judge(&def(Standing::Invalid), p, Duration::zero(), none, None, false, true);
-        assert_eq!(w, Verdict::NotRun(State::Locked, "定義の誤りがあり、流さなかった".into()));
+        assert_eq!(w, Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_INVALID, &[])));
         // A time the PC slept through is 時刻を過ぎた whatever else is wrong: that is what happened.
         let w = judge(&def(Standing::Unconfirmed), p, Duration::minutes(5), &["w".to_owned()], None, true, true);
         assert!(matches!(w, Verdict::NotRun(State::Missed, _)), "{w:?}");
         // But not a time the engine never knew: one added to an unconfirmed net after it passed.
         let w = judge_known(&def(Standing::Unconfirmed), p, Duration::minutes(5), none, None, false, true, false);
-        assert_eq!(w, Verdict::NotRun(State::Locked, "未確認のため流さなかった（koyomi approve 経理/月次締め）".into()));
+        assert_eq!(w, Verdict::NotRun(State::Locked, msg::note(msg::N_NOT_RUN_UNCONFIRMED, &["経理/月次締め"])));
         let w = judge_known(&def(Standing::Unconfirmed), p, Duration::minutes(5), none, None, false, true, true);
         assert!(matches!(w, Verdict::NotRun(State::Missed, _)), "{w:?}");
     }
@@ -301,7 +305,7 @@ mod tests {
         let w = judge(&once, p, Duration::minutes(5), &["w".to_owned()], None, false, true);
         assert!(matches!(w, Verdict::NotRun(State::Locked, _)), "{w:?}");
         let w = judge(&once, p, Duration::minutes(5), none, None, true, true);
-        assert_eq!(w, Verdict::NotRun(State::Skipped, "前の回がまだ動いていました".into()));
+        assert_eq!(w, Verdict::NotRun(State::Skipped, msg::note(msg::N_NOT_RUN_PREVIOUS, &[])));
         let queue = def_with(Standing::Confirmed, "overlap = \"queue\"\n");
         assert_eq!(judge(&queue, p, Duration::seconds(3), none, None, true, true), Verdict::Queue { late: false });
         assert_eq!(judge(&queue, p, Duration::seconds(3), none, None, false, true), Verdict::Start { late: false });

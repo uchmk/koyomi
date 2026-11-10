@@ -2958,7 +2958,529 @@ text = "key and password cannot be given together."
 cause = "Both key and password are given."
 action = "Give one of key and password."
 
+[E3701]
+when = "When the settings folder cannot be determined"
+text = "The settings folder cannot be determined."
+cause = "The OS did not give the user's settings folder."
+action = "Check the user profile and the environment variables, and run it again."
+
+[E3702]
+when = "When the state folder cannot be determined"
+text = "The state folder cannot be determined."
+cause = "The OS did not give the user's state folder."
+action = "Check the user profile and the environment variables, and run it again."
+
+[E3703]
+when = "When koyomi.toml cannot be read as a file"
+text = "{0} cannot be read. ({1}) No job runs until it can be read."
+cause = "The file's permissions or its use by another process may be the cause."
+action = "Check the file's permissions and whether another program is using it."
+
+[E3704]
+when = "When the record of approvals (approved.toml) cannot be read"
+text = "{0} cannot be read. ({1}) Nothing can be approved until it can be read."
+cause = "The file's permissions or its content may be the cause."
+action = "Fix the file, or move it to another place."
+
+[E3705]
+when = "When the record of holds (held.toml) cannot be read"
+text = "{0} cannot be read. ({1}) No job runs until it can be read."
+cause = "The file's permissions or its content may be the cause."
+action = "Fix the file, or move it to another place."
+
+[E3706]
+when = "When the record of staged definitions (next.toml) cannot be read"
+text = "{0} cannot be read. ({1}) No definition is switched until it can be read."
+cause = "The file's permissions or its content may be the cause."
+action = "Fix the file, or move it to another place."
+
+[W3707]
+when = "When someone other than this user can write a definition or the place it is kept"
+text = "{0} can be written by {1}."
+cause = "Whoever can change a definition can make a command run that nobody has checked."
+action = "Check the write permissions of {0}, and remove the ones that are not needed."
+
+[E3708]
+when = "When koyomi tray starts while another tray is already up"
+text = "The tray is already running. ({0})"
+cause = "Only one tray can run for a user."
+action = "Use the tray that is running."
+
+[E3709]
+when = "When koyomi tray starts where there is no task tray"
+text = "The task tray is not available here."
+cause = "There is no desktop task tray in this environment."
+action = "Run it where a task tray exists."
+
+[E3710]
+when = "When koyomi tray starts while the engine has its own tray"
+text = "Another tray cannot start because the engine has its own tray."
+cause = "The engine was started without --no-tray."
+action = "To run the tray apart, start the engine with koyomi engine --no-tray."
+
+[W3711]
+when = "When the url of [ping] in koyomi.toml is written in plain text and hide_webhooks is on"
+text = "The url of [ping] in koyomi.toml is written in plain text. The signal that tells the engine is alive is not sent."
+cause = "While hide_webhooks is on (the default), a plain-text address is not used."
+action = "Save the address in the OS credential store as secret:<name> (koyomi secret set <name>). To keep it in plain text, set hide_webhooks = false in [notify]."
+
+[E3712]
+when = "When the secret the url of [ping] points to is not in the credential store"
+text = "The secret {0} given as the url of [ping] is not in the credential store. The signal that tells the engine is alive cannot be sent."
+cause = "The secret {0} is not saved."
+action = "Save the secret with koyomi secret set {0}."
+
+[E3713]
+when = "When the secret the url of [ping] points to cannot be read from the credential store"
+text = "The secret {0} given as the url of [ping] cannot be read. The signal that tells the engine is alive cannot be sent. ({1})"
+cause = "The credential store may be out of reach, or the read may have been refused."
+action = "Check the credential store, and run it again."
+
+[W3714]
+when = "When a net has an idle [[when]] but the idle time of the PC cannot be known"
+text = "The idle [[when]] of the jobnet {0} does not run, because the idle time of the PC cannot be known."
+cause = "The PC has no screen, nobody is signed in to its screen, or Windows does not report how long this PC has been unused."
+action = "To use an idle [[when]], keep someone signed in to the PC."
+
+[E3715]
+when = "When a log a net watches cannot be read"
+text = "The jobnet {0} cannot read {1}, which it watches. ({2})"
+cause = "The place of the log, or its access permissions, may be the cause."
+action = "Check the place of the log and its access permissions."
+
+[W3716]
+when = "When the engine starts and a long time has passed since the previous engine ended"
+text = "The engine was {3} from {0} to {1} ({2}). The jobs due in this time were not run."
+cause = "No job starts while the engine is not running."
+action = "Run the jobs that were missed by hand, if they are needed."
+
+[E3717]
+when = "When a handover is asked for while a time of a confirmed net is within 30 seconds"
+text = "A handover cannot be accepted, because a time of a confirmed jobnet is near ({0})."
+cause = "This keeps a time from falling between the two PCs while the answer travels."
+action = "Wait a little, and run it again."
+
+[E3718]
+when = "When a handback is asked of a PC that is [primary]"
+text = "This PC is [primary]. A handback is done on the standby PC."
+cause = "A [primary] PC is the one that gets the schedules back."
+action = "Do it on the standby PC."
+
+[E3719]
+when = "When a standby operation is asked and koyomi.toml has neither [standby] nor [primary]"
+text = "Neither [standby] nor [primary] is given in koyomi.toml."
+cause = "This PC is not set up for a standby."
+action = "To set it up for a standby, give [standby] or [primary] in koyomi.toml."
+
+[E3720]
+when = "When an operation names a jobnet that does not exist"
+text = "The definition of the jobnet {0} does not exist."
+cause = "There is no jobnet of that name."
+action = "Check the name of the jobnet, and run it again."
+
+[E3721]
+when = "When an operation names a jobnet whose definition has errors"
+text = "The definition of the jobnet {0} cannot be read."
+cause = "The definition has errors."
+action = "Fix the errors in the definition, and run it again."
+
+[E3722]
+when = "When an operation names a job that the jobnet does not have"
+text = "The jobnet {0} has no job {1}."
+cause = "The jobnet has no job of that name."
+action = "Check the name of the job, and run it again."
+
+[E3723]
+when = "When a jobnet that is already on hold is put on hold"
+text = "The jobnet {0} is already on hold."
+cause = "The jobnet is on hold."
+action = "To take it off hold, run koyomi release {0}."
+
+[E3724]
+when = "When a job that is already on hold is put on hold"
+text = "The job {1} of the jobnet {0} is already on hold."
+cause = "The job is on hold."
+action = "To take it off hold, run koyomi release {0} {1}."
+
+[E3725]
+when = "When a jobnet that is not on hold is taken off hold"
+text = "The jobnet {0} is not on hold."
+cause = "The jobnet is not on hold."
+action = "Check which jobnets are on hold with koyomi status."
+
+[E3726]
+when = "When a job that is not on hold is taken off hold"
+text = "The job {1} of the jobnet {0} is not on hold."
+cause = "The job is not on hold."
+action = "Check which jobs are on hold with koyomi status."
+
+[E3727]
+when = "When a time is not given as YYYY-MM-DD HH:MM"
+text = "The form of the time {0} is not valid."
+cause = "The time is not given as YYYY-MM-DD HH:MM."
+action = "Give it as YYYY-MM-DD HH:MM."
+
+[E3728]
+when = "When a date is not given as YYYY-MM-DD"
+text = "The form of the date {0} is not valid."
+cause = "The date is not given as YYYY-MM-DD."
+action = "Give it as YYYY-MM-DD."
+
+[E3729]
+when = "When a business day is not given as YYYY-MM-DD"
+text = "The form of the business day {0} is not valid."
+cause = "The business day is not given as YYYY-MM-DD."
+action = "Give it as YYYY-MM-DD."
+
+[E3730]
+when = "When the move of a time that was not moved is taken back"
+text = "The time {1} of the jobnet {0} has not been moved."
+cause = "The time is not set to be moved."
+action = "Check the times that were moved, and run it again."
+
+[E3731]
+when = "When a time the jobnet does not have is given as the time to move"
+text = "The jobnet {0} has no time {1}."
+cause = "No [[when]] of the jobnet plans a run at this time."
+action = "Check the times with koyomi next {0}."
+
+[E3732]
+when = "When the time to move to is not after the time moved"
+text = "The time to move to is not after the original time."
+cause = "A move puts a time later."
+action = "Give a time after the original time."
+
+[E3733]
+when = "When the time to move to has already passed"
+text = "The time to move to has already passed."
+cause = "Nothing can run at a time that has passed."
+action = "Give a time later than now."
+
+[E3734]
+when = "When the skip of a jobnet that has none is taken back"
+text = "The jobnet {0} is not set to be skipped."
+cause = "No skip is set for the jobnet."
+action = "Check the skips that are set with koyomi status."
+
+[E3735]
+when = "When the next run of a jobnet that is not confirmed is skipped"
+text = "The jobnet {0} is not confirmed, so it does not run at its times."
+cause = "A jobnet that is not confirmed does not run when its time comes."
+action = "Confirm the jobnet, and run it again."
+
+[E3736]
+when = "When the jobnet has no time ahead"
+text = "The jobnet {0} has no time ahead."
+cause = "No time is left in the jobnet that could be skipped."
+action = "Check the times with koyomi next {0}."
+
+[E3737]
+when = "When the schedules are paused while they are already paused"
+text = "The schedules are already paused."
+cause = "The schedules are paused."
+action = "To resume them, run koyomi resume."
+
+[E3738]
+when = "When the schedules are resumed while they are not paused"
+text = "The schedules are not paused."
+cause = "The schedules are not paused."
+action = "To pause them, run koyomi pause."
+
+[E3739]
+when = "Running a jobnet, importing, restoring a version, renaming, copying, replacing or deleting is tried while the warnings at the start are not cleared"
+text = "{0} is not accepted, because the warnings at the start are not cleared. ({1})"
+cause = "None of these operations is accepted until the warnings are cleared."
+action = "Check the warnings, clear them, and try it again."
+
+[E3740]
+when = "When a jobnet whose definition has errors is run"
+text = "The jobnet cannot be run, because its definition has errors. ({0})"
+cause = "A definition with errors is not run."
+action = "Fix the errors in the definition, and run it again."
+
+[E3741]
+when = "When a jobnet that is not confirmed is run"
+text = "The jobnet {0} is not confirmed, so it cannot be run."
+cause = "A jobnet that is not confirmed does not run."
+action = "Confirm it with koyomi approve {0}, and run it again."
+
+[E3742]
+when = "When a jobnet that is on hold is run"
+text = "The jobnet {0} is on hold, so it cannot be run."
+cause = "A jobnet on hold does not run."
+action = "Take it off hold with koyomi release {0}, and run it again."
+
+[E3743]
+when = "When a jobnet is confirmed while there is a warning about its definition"
+text = "The jobnet cannot be confirmed, because a warning is not cleared. ({0})"
+cause = "A jobnet with a warning about its definition cannot be confirmed."
+action = "Check the warning, clear it, and run it again."
+
+[E3744]
+when = "When a jobnet whose definition has errors is confirmed"
+text = "The jobnet cannot be confirmed, because its definition has errors. ({0})"
+cause = "A definition with errors cannot be confirmed."
+action = "Fix the errors in the definition, and run it again."
+
+[E3745]
+when = "When the file is changed after its content was shown for confirming"
+text = "{0} was changed after its content was shown."
+cause = "The content shown differs from the file about to be confirmed."
+action = "Check the content again."
+
+[E3746]
+when = "When the staged definition of a jobnet that has none is taken back"
+text = "The jobnet {0} has no staged definition."
+cause = "No next definition is staged for the jobnet."
+action = "Check which jobnets have a staged definition."
+
+[W3747]
+when = "When the day of a staged definition came and it could not take over"
+text = "The jobnet {0} could not be switched to the definition from {1}. ({2}) It keeps running with the definition it had."
+cause = "The problem in the parentheses occurred while switching."
+action = "Clear the problem. The switch is tried again from time to time."
+
+[E3748]
+when = "When a definition is switched and the file of the current one does not exist"
+text = "The current definition of the jobnet {0} does not exist."
+cause = "The file of the definition before the switch is not there."
+action = "Create the definition of the jobnet again."
+
+[W3749]
+when = "When a net has a job run in PowerShell but this PC has no pwsh"
+text = "The jobnet {0} has a job run in PowerShell, but this PC has no pwsh."
+cause = "pwsh is not on the PATH."
+action = "Install pwsh, or change the definition to use another shell."
+
+[W3750]
+when = "When a net has a job with run_as but this PC is not Windows"
+text = "The run_as of the jobnet {0} works on Windows only. It does not run as another user."
+cause = "run_as is supported on Windows only."
+action = "Run it on a Windows PC."
+
+[W3751]
+when = "When a net has an Event Log [[when]] but this PC is not Windows"
+text = "The Event Log [[when]] of the jobnet {0} works on Windows only."
+cause = "Only Windows has an Event Log."
+action = "Run it on a Windows PC."
+
+[E3356]
+when = "When a job with kind = \"jobnet\" calls a jobnet that is not confirmed"
+text = "The child jobnet {0} is not confirmed."
+cause = "A jobnet that is not confirmed cannot be called."
+action = "Confirm the child jobnet, and run it again."
+
+[E3619]
+when = "When the file to import cannot be read"
+text = "The file to import cannot be read. ({0})"
+cause = "The content of the file is not in a form that can be imported."
+action = "Check the content of the file."
+
+[E3620]
+when = "When the file to import has nothing to bring in"
+text = "The file to import has nothing to bring in."
+cause = "The file is empty, or has nothing that can be imported."
+action = "Check the file to import."
+
+[E3621]
+when = "When a write fails halfway through an import"
+text = "The import stopped halfway. {0} items were written. ({1})"
+cause = "The problem in the parentheses occurred. The earlier content is kept under versions/."
+action = "Clear the problem, and import again."
+
+[E3622]
+when = "When everything is exported and there is nothing to export"
+text = "There is nothing to export."
+cause = "There is no jobnet, calendar, group or setting."
+action = "Create a definition, and run it again."
+
+[E3624]
+when = "When the name of a version is not like 20261030-101500"
+text = "The form of the version name {0} is not valid."
+cause = "The name of a version is made of digits and a hyphen for the date and the time."
+action = "Give it in the form of 20261030-101500."
+
+[E3625]
+when = "When the version asked for does not exist"
+text = "The version {1} of the jobnet {0} does not exist."
+cause = "No version of that name is kept."
+action = "Check the names of the versions with koyomi versions {0}."
+
+[E3756]
+when = "When a jobnet that is running is changed"
+text = "The jobnet {0} is running, so it cannot be changed."
+cause = "The name and the content of a definition cannot be changed until the runs end."
+action = "Run it again after the run has ended."
+
+[E3757]
+when = "When a jobnet used by other jobnets is renamed without --fix"
+text = "The jobnet {1} is used by {0} jobnets, so it cannot be renamed."
+cause = "A rename would break the references of the jobnets that use it."
+action = "Specify --fix to rewrite the references of the jobnets that use it at the same time."
+
+[E3758]
+when = "When a file cannot be moved"
+text = "{0} cannot be moved. ({1})"
+cause = "The destination may not be writable, or the file may be in use."
+action = "Check the place and the permissions of the file, and run it again."
+
+[E3759]
+when = "When the text to replace is empty"
+text = "The text to replace is not given."
+cause = "An empty text cannot be replaced."
+action = "Give the text to replace."
+
+[E3760]
+when = "When the text before and after are the same"
+text = "The text before and after the replace are the same."
+cause = "Replacing a text with itself changes nothing."
+action = "Give different texts."
+
+[E3761]
+when = "When a replace would leave a definition that cannot be read"
+text = "The definition of the jobnet {0} could not be read after the replace. ({1}) Nothing was written."
+cause = "The result of the replace is not valid as a definition."
+action = "Review the texts to replace."
+
+[E3762]
+when = "When a jobnet changed by a replace cannot be written"
+text = "The jobnet {0} cannot be written. ({1}) {2} The replace stopped."
+cause = "The file's permissions or its use by another process may be the cause."
+action = "Check the permissions and the use of the file, and run it again."
+
+[E3763]
+when = "When an operation that cannot be done over HTTP is asked over HTTP"
+text = "This operation cannot be done over HTTP."
+cause = "This operation can be done only from the window or the koyomi command of this PC."
+action = "Do it on this PC."
+
+[E3764]
+when = "When the engine starts while an engine is already up"
+text = "The engine is already running."
+cause = "Only one engine can run for a user."
+action = "Use the engine that is running."
+
+[E3765]
+when = "When the engine starts and the lock held while it runs cannot be taken"
+text = "The engine is already running. ({0})"
+cause = "Only one engine can run for a user."
+action = "Use the engine that is running."
+
+[E3766]
+when = "When a jobnet used by other jobnets is deleted"
+text = "The jobnet {1} is used by {0} jobnets, so it cannot be deleted."
+cause = "A delete would break the references of the jobnets that use it."
+action = "Fix the jobnets that use it first."
+
 [note]
+status_head = "{0} definitions ({1} confirmed), {2} runs going."
+status_paused = "The schedules are paused (koyomi resume resumes them)."
+status_held = "On hold: {0} (koyomi release {0} takes it off hold)."
+status_held_job = "Job on hold: {1} of {0} (koyomi release {0} {1} takes it off hold)."
+status_queued = "Waiting: {0}  the run of {1} waits for the previous run to end (waiting since {2})."
+events_not_watched = "The folders of the files being waited for cannot be watched (they are checked every 5 seconds)."
+hold_while_queued = "Put on hold while waiting (koyomi release {0})."
+pause_while_queued = "The schedules were paused while it waited (koyomi resume)."
+held_done = "Put {0} on hold (koyomi release {1} takes it off hold)."
+released = "Took {0} off hold."
+held_job_done = "Put the job {1} of {0} on hold. A run that reaches it waits (koyomi release {2} {3} takes it off hold)."
+released_job = "Took the job {1} of {0} off hold."
+unshifted = "Put the moved time back."
+shifted = "Moved the time {1} of {0} to {2} (the definition is not changed)."
+unskipped = "Took back the skips of {0}."
+skipped_next = "The time {1} of {0} is skipped (the definition is not changed; to take it back, run koyomi skip-next {0} --cancel)."
+pause_done = "Paused the schedules (koyomi resume resumes them)."
+resume_done = "Resumed the schedules."
+saved = "Saved {0}."
+proposed_unconfirmed = "Placed {0} (unconfirmed; it does not run until it is confirmed)."
+proposed_same = "Placed {0} (the same content as the confirmed definition)."
+staged = "Staged a definition of {1} to be used from {0} (until then the current definition runs)."
+unstaged = "Took back the definition of {1} staged from {0} (the current definition keeps running)."
+switched = "Switched {0} to the definition from {1}."
+switched_unconfirmed = "It was changed by hand after it was staged, so it is unconfirmed; it does not run until it is confirmed."
+switched_changed = "The current definition was changed after the staging (the changed content is kept as a version)."
+title_switched = "Switched the definition"
+title_switch_failed = "Could not switch the definition"
+cal_written = "Wrote the calendar calendars/{0}.toml."
+cal_renamed = "Renamed the calendar {0} to {1}."
+cal_deleted = "Deleted the calendar {0} (the earlier content is kept under versions/_calendars/{0})."
+holiday_imported = "Imported the holiday table (calendars/{0}, from {1} to {2})."
+restored_unconfirmed = "Put {1} back to the version {0} (unconfirmed; it runs once it is confirmed)."
+restored_same = "Put {1} back to the version {0} (the same content as the confirmed definition)."
+renamed = "Renamed {0} to {1}."
+renamed_refs = "The references were fixed too ({0})."
+renamed_refs_failed = "{0} (in jobnet {1})"
+net_approved = "Confirmed jobnet {0}."
+op_run = "Running the jobnet"
+op_import = "The import"
+op_restore = "Restoring the version"
+op_rename = "Renaming"
+op_copy = "Copying"
+op_replace = "The replace"
+op_delete = "Deleting"
+copied = "Copied {0} to {1} (unconfirmed; it runs once it is confirmed)."
+replace_none = "{0} was not found."
+replace_plan = "{1} lines of {0} jobnets are affected (with --apply they are replaced; a changed jobnet goes back to unconfirmed)."
+replaced = "Replaced {1} lines of {0} jobnets (unconfirmed; the content before is kept as versions)."
+replace_wrote_none = "No jobnet was written."
+replace_wrote = "Written jobnets: {0}."
+deleted = "Deleted {0} (the earlier content is kept as versions; koyomi versions {0} and koyomi restore bring it back)."
+diff_folded = "  … {0} lines"
+diff_more = "  … {0} more lines"
+stop_reply = "The engine is stopping."
+title_engine_crashed = "The engine ended abnormally"
+title_engine_stopped = "The engine was stopped"
+awake_busy = "A job is running"
+awake_waiting = "Waiting for the time of a jobnet"
+title_took_over = "Took over the runs from the standby"
+title_both = "Both PCs are running the schedules"
+title_waiting_takeover = "Waiting to be taken over"
+title_gave_back = "Gave the schedules back"
+skip_next_reason = "Skipped, because the next time was set to be skipped once (koyomi skip-next)."
+quiet_pending = "Skipped, because it fell in hours when nothing runs. The time {0} is waiting for the hours to end."
+take_unread = "The runs that were going on {0} could not be read."
+take_summary = "Of the {1} runs that were going on {0}, {2} are run again from where they were."
+take_left = "Runs not taken over: {0} (koyomi rerun <id> runs one again from where it was)."
+standby_copied = "[standby] Copied the definition {0} (unconfirmed; it does not run until it is confirmed on this PC)."
+wait_until_over = "Waited until {1} for {0} to end, but it did not (wait_until)."
+holiday_stale = "The holiday table is out of date (it covers up to {0})."
+standby_waiting = "Waiting as the standby (the PC being watched runs the schedules)."
+paused = "The schedules are paused (koyomi resume)."
+held_net = "On hold (koyomi release {0})."
+off_day_range = "{0} It was not run, because the day is in except or outside start / end."
+off_day_closed = "{0} It was not run, because the day is closed (on_closed = \"run\" runs it)."
+event_start = "The engine started."
+event_file = "The file {0} arrived."
+event_log = "A line was written to the log {0}."
+event_eventlog = "A record was written to the event log {0}."
+event_mail = "A mail arrived in {0}."
+event_idle = "The PC was not used for {0}."
+event_after = "{0} ended ({1})."
+event_more = "({0} more)"
+event_first = "Line: {0}{1}"
+event_still_running = "{0} It was not run, because the previous run was still running."
+after_same_day = "{0} But it has already run on the same business day ({1}) as {2}. The following jobnet was not run. Run it by hand if it is needed (koyomi run {3})."
+watch_existing = "When the watching began, {0} files were already there ({1}). Nothing was run."
+span_min = "{0} min"
+span_sec = "{0} s"
+eventlog_name = "event log {0}"
+engine_stopped = "stopped"
+engine_crashed = "ended abnormally"
+missed_pc_stopped = "The PC was stopped at {0}."
+not_run_because = "Not run: {0}"
+not_run_invalid = "Not run, because the definition has errors."
+not_run_unconfirmed = "Not run, because it is not yet confirmed (koyomi approve {0})."
+not_run_previous = "The previous run was still running."
+quiet_skip = "Skipped, because it fell in hours when nothing runs ({0})."
+backup_none = "Backup: not yet run."
+backup_empty = "Backup: ran at {0}, but there was no definition to back up, so no file was written."
+backup_done = "Backup: ran at {0} and wrote {2} items to {1} ({3} days are kept)."
+backup_errors = "{0} steps could not be done ({1})."
+retain_none = "Record cleanup: not yet run."
+retain_done = "Record cleanup: ran at {0}, kept {1} days, and deleted {2} days of logs and {3} days of history."
+retain_archived = "{0} days were moved to archive/."
+retain_pruned = "{0} old zip files were deleted."
+retain_errors = "{0} items could not be deleted ({1})."
 list_sep = ", "
 config_at_line = "line {0} of koyomi.toml"
 file_at_line = "line {1} of {0}"

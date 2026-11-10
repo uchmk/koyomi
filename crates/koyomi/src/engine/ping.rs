@@ -15,9 +15,12 @@ use std::time::{Duration, Instant};
 
 use ito_notify::webhook::{self, Level};
 use koyomi_core::config;
+use koyomi_core::msg;
 
 /// Said of a plain-text `[ping]` address while `hide_webhooks` is on.
-pub const PLAIN: &str = "koyomi.toml: [ping] の url が平文で書かれている。既定では OS の資格情報ストアに置く（`secret:<名前>`、`koyomi secret set <名前>`）。平文のままにするなら [notify] に `hide_webhooks = false` と書く。それまで合図を送らない";
+pub fn plain() -> String {
+    msg::line(msg::PING_URL_PLAIN, &[])
+}
 
 #[derive(Default)]
 pub struct Ping {
@@ -45,15 +48,8 @@ impl Ping {
                 Address::Plain(u) => u,
                 Address::Secret(name) => match ito_secret::get("koyomi", &name) {
                     Ok(Some(u)) => u,
-                    Ok(None) => {
-                        return set(
-                            &note,
-                            Some(format!("koyomi.toml: [ping] の url の秘密 {name} が資格情報ストアに無い。合図を送れていない")),
-                        )
-                    }
-                    Err(e) => {
-                        return set(&note, Some(format!("koyomi.toml: [ping] の url の秘密 {name} が読めない（{e}）。合図を送れていない")))
-                    }
+                    Ok(None) => return set(&note, Some(msg::line(msg::PING_SECRET_MISSING, &[&name]))),
+                    Err(e) => return set(&note, Some(msg::line(msg::PING_SECRET_UNREADABLE, &[&name, &e.to_string()]))),
                 },
             };
             set(&note, None);
@@ -64,9 +60,9 @@ impl Ping {
 
     /// What a person should see about `[ping]`.
     pub fn notes(&self, cfg: Option<&config::Ping>, plain_ok: bool) -> Vec<String> {
-        let plain = cfg.is_some_and(|c| address(&c.url, plain_ok).is_none());
+        let is_plain = cfg.is_some_and(|c| address(&c.url, plain_ok).is_none());
         let store = cfg.and_then(|_| self.note.lock().ok().and_then(|n| n.clone()));
-        plain.then(|| PLAIN.to_owned()).into_iter().chain(store).collect()
+        is_plain.then(plain).into_iter().chain(store).collect()
     }
 }
 
@@ -112,7 +108,7 @@ mod tests {
         assert!(matches!(address("secret:ping", false), Some(Address::Secret(n)) if n == "ping"));
         let cfg = config::Ping { url: "https://hc-ping.com/x".into(), every: "5m".into() };
         let p = Ping::default();
-        assert_eq!(p.notes(Some(&cfg), false), vec![PLAIN.to_owned()]);
+        assert_eq!(p.notes(Some(&cfg), false), vec![plain()]);
         assert!(p.notes(Some(&cfg), true).is_empty());
         assert!(p.notes(None, false).is_empty());
     }

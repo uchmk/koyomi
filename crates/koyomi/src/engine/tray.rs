@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 use chrono::NaiveDateTime;
 use ito_tray::{Event, Icon, Item, State};
+use koyomi_core::msg;
 use koyomi_core::run::{Run, State as RunState};
 
 use ito_prefs::NotifyCfg;
@@ -208,13 +209,13 @@ pub fn apart() -> i32 {
     let _single = match ito_common::single::acquire("koyomi", "tray") {
         Ok(g) => g,
         Err(held) => {
-            crate::say(&format!("koyomi: トレイはもう動いている ({held})"), true);
+            crate::say(&msg::line(msg::TRAY_ALREADY_RUNNING, &[&held.to_string()]), true);
             return 1;
         }
     };
     let t = crate::cli::table();
     let Some(mut tray) = Tray::start(&t) else {
-        crate::say("koyomi: ここではタスク トレイが使えない", true);
+        crate::say(&msg::line(msg::TRAY_UNAVAILABLE, &[]), true);
         return 1;
     };
     tray.apart = true;
@@ -234,7 +235,7 @@ pub fn apart() -> i32 {
             let view = ito_ipc::door::ask(&proto::door(), &Request::Tray { since }).ok().and_then(|text| TrayView::parse(&text).ok());
             match view {
                 Some(v) if v.own => {
-                    crate::say("koyomi: エンジンが自分のトレイを持っている（koyomi engine --no-tray のときに使う）", true);
+                    crate::say(&msg::line(msg::ENGINE_HAS_TRAY, &[]), true);
                     return 1;
                 }
                 Some(v) => {

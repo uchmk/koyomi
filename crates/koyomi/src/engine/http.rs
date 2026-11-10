@@ -962,7 +962,8 @@ fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Str
     let base = p.base.map(|b| b.trim().to_owned()).filter(|b| !b.is_empty());
     match ask(&Request::Propose { id: id.clone(), text: p.text, base_sha256: base }) {
         Ok(text) => {
-            let confirmed = text.starts_with("置いた（確認済み");
+            // The listener and the engine are one process with one language, so the reply is the note as `msg::note` builds it here.
+            let confirmed = text.trim() == msg::note(msg::N_PROPOSED_SAME, &[&id]);
             Response::ok(serde_json::json!({ "net": id, "confirmed": confirmed, "said": text.trim() }))
         }
         Err(e) if koyomi_core::msg::SAVE_CHANGED_ELSEWHERE.is_in(&e) => Response::error(409, &e),
@@ -1346,8 +1347,16 @@ mod tests {
                     Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_CHANGED_ELSEWHERE, &["g/a"]))
                 }
                 Request::Propose { text, .. } if text.contains("bad") => Err("保存できない:\nx".to_owned()),
-                Request::Propose { text, .. } if text.contains("same") => Ok("置いた（確認済みと同じ中身）: g/a\n".to_owned()),
-                Request::Propose { .. } => Ok("置いた（未確認。この PC の窓で確認するまで動かない）: g/a\n".to_owned()),
+                Request::Propose { text, .. } if text.contains("same") => Ok(format!(
+                    "{}
+",
+                    msg::note(msg::N_PROPOSED_SAME, &["g/a"])
+                )),
+                Request::Propose { .. } => Ok(format!(
+                    "{}
+",
+                    msg::note(msg::N_PROPOSED_UNCONFIRMED, &["g/a"])
+                )),
                 _ => Err("定義がない".to_owned()),
             }
         };

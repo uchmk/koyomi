@@ -25,6 +25,7 @@ use koyomi_core::group;
 use koyomi_core::held::Held;
 use koyomi_core::jobnet::{Jobnet, Part};
 use koyomi_core::late::{self, Delay};
+use koyomi_core::msg;
 use koyomi_core::run::{How, Run, State as RunState};
 use koyomi_core::scan::{def_of_text, link, scan_in, Def, Standing};
 use koyomi_core::standby::Resume;
@@ -78,8 +79,8 @@ pub struct Paths {
 
 impl Paths {
     pub fn find() -> Result<Paths, String> {
-        let app = ito_common::app_dir("koyomi").ok_or("設定のフォルダーが分からない")?;
-        let state = ito_common::state_dir("koyomi").ok_or("状態のフォルダーが分からない")?;
+        let app = ito_common::app_dir("koyomi").ok_or_else(|| msg::line(msg::SETTINGS_DIR_UNKNOWN, &[]))?;
+        let state = ito_common::state_dir("koyomi").ok_or_else(|| msg::line(msg::STATE_DIR_UNKNOWN, &[]))?;
         Ok(Paths {
             jobnets: app.join("jobnets"),
             calendars: app.join("calendars"),
@@ -94,23 +95,31 @@ impl Paths {
 
     /// `koyomi.toml`, or why it does not read.
     pub fn config(&self) -> Result<Config, String> {
-        Config::load(&self.config).map_err(|e| format!("{} が読めない（{e}）。直すまで流さない", shown(&self.config)))
+        Config::load(&self.config).map_err(|e| load_failed(msg::CONFIG_LOAD_FAILED, &self.config, e))
     }
 
     /// The approvals, or the line that says `approved.toml` does not read.
     pub fn store(&self) -> Result<Store, String> {
-        Store::load(&self.approved).map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで承認しない", shown(&self.approved)))
+        Store::load(&self.approved).map_err(|e| load_failed(msg::APPROVED_LOAD_FAILED, &self.approved, e))
     }
 
     /// What is on hold, or the line that says `held.toml` does not read.
     pub fn held(&self) -> Result<Held, String> {
-        Held::load(&self.held).map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで流さない", shown(&self.held)))
+        Held::load(&self.held).map_err(|e| load_failed(msg::HELD_LOAD_FAILED, &self.held, e))
     }
 
     /// The staged definitions, or the line that says `next.toml` does not read.
     pub fn staged(&self) -> Result<koyomi_core::next::Store, String> {
-        koyomi_core::next::Store::load(&self.next)
-            .map_err(|e| format!("{} が読めない（{e}）。直すか退けるまで切り替えない", shown(&self.next)))
+        koyomi_core::next::Store::load(&self.next).map_err(|e| load_failed(msg::NEXT_LOAD_FAILED, &self.next, e))
+    }
+}
+
+/// A state file that does not read: its own coded reason as it is, else `id` around the OS's words.
+fn load_failed(id: msg::Id, path: &Path, e: String) -> String {
+    if msg::is_coded(&e) {
+        e
+    } else {
+        msg::line(id, &[&shown(path), &e])
     }
 }
 
@@ -139,7 +148,7 @@ pub fn access_warnings(paths: &Paths, files: &[PathBuf]) -> Vec<String> {
     check(&paths.approved);
     check(&paths.next);
     files.iter().for_each(|f| check(f));
-    seen.into_iter().map(|(p, who)| format!("{} は {} が書き換えられる", shown(&p), who)).collect()
+    seen.into_iter().map(|(p, who)| msg::line(msg::FILE_WRITABLE_BY, &[&shown(&p), &who])).collect()
 }
 
 /// The warnings in `warnings` that bear on the net in `file`: those about the shared folders and
@@ -148,7 +157,8 @@ pub fn warnings_about(paths: &Paths, warnings: &[String], defs: &[Def], file: &s
     let at = |f: &str| shown(&f.split('/').fold(paths.jobnets.clone(), |p, c| p.join(c)));
     let own = at(file);
     let others: Vec<String> = defs.iter().filter(|d| d.file != file).map(|d| at(&d.file)).collect();
-    warnings.iter().filter(|w| w.starts_with(&own) || !others.iter().any(|o| w.starts_with(o.as_str()))).cloned().collect()
+    // A coded warning has its ID at the head, so the path is looked for anywhere in it.
+    warnings.iter().filter(|w| w.contains(&own) || !others.iter().any(|o| w.contains(o.as_str()))).cloned().collect()
 }
 
 /// Whether a `pwsh` is on `PATH` (the shell a PowerShell job runs in off Windows).
@@ -157,6 +167,25 @@ fn pwsh_on_path() -> bool {
 }
 
 /// The path without Windows' `\\?\` prefix.
+/// The warnings on one line, each without its ID: the line that holds them has the ID.
+/// `BLOCKED_BY_WARNINGS`: `op` (an `N_OP_*` note) is refused while the warnings at the start stand.
+fn blocked(op: msg::Note, warnings: &str) -> String {
+    msg::line(msg::BLOCKED_BY_WARNINGS, &[&msg::note(op, &[]), warnings])
+}
+
+fn joined_warnings(warnings: &[String]) -> String {
+    warnings.iter().map(|w| msg::uncoded(w)).collect::<Vec<_>>().join(" / ")
+}
+
+/// A bundle that does not read: a coded line stays as it is, anything else is the reason of one.
+fn import_failed(e: String) -> String {
+    if msg::is_coded(&e) {
+        e
+    } else {
+        msg::line(msg::IMPORT_FAILED, &[&e])
+    }
+}
+
 fn shown(p: &Path) -> String {
     let s = p.display().to_string();
     s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
@@ -373,9 +402,9 @@ impl State {
         s.reload();
         s.rescan();
         if let Some((line, crashed)) = s.alive.outage.take() {
-            let title = if crashed { "koyomi: エンジンが落ちていた" } else { "koyomi: エンジンが止まっていた" };
-            crate::notify::tell(&s.notify, None, "failed", title, &line);
-            crate::say(&format!("koyomi: {line}"), false);
+            let title = msg::note(if crashed { msg::N_TITLE_ENGINE_CRASHED } else { msg::N_TITLE_ENGINE_STOPPED }, &[]);
+            crate::notify::tell(&s.notify, None, "failed", &format!("koyomi: {title}"), &line);
+            crate::say(&line, false);
             s.outage = Some((line, Instant::now()));
         }
         s
@@ -591,8 +620,8 @@ impl State {
         let now = ito_common::now::now_local().naive_local();
         let waking = self.wake.as_ref().is_some_and(|w| w.set.is_ok() && w.waking(now));
         if (busy > 0 || waking) && self.awake.is_none() {
-            let why = if busy > 0 { "koyomi: ジョブを実行中" } else { "koyomi: ジョブネットの時刻を待っている" };
-            self.awake = Some(ito_power::Awake::hold(why));
+            let why = msg::note(if busy > 0 { msg::N_AWAKE_BUSY } else { msg::N_AWAKE_WAITING }, &[]);
+            self.awake = Some(ito_power::Awake::hold(&format!("koyomi: {why}")));
         } else if busy == 0 && !waking {
             self.awake = None;
         }
@@ -671,7 +700,7 @@ impl State {
                 let hit = self.held.take_skip(&def.id, *planned);
                 let _ = self.save_held();
                 if hit {
-                    self.runner.not_run(&def, *planned, RunState::Skipped, "次の 1 回だけスキップ（koyomi skip-next）");
+                    self.runner.not_run(&def, *planned, RunState::Skipped, &msg::note(msg::N_SKIP_NEXT_REASON, &[]));
                     continue;
                 }
             }
@@ -693,7 +722,7 @@ impl State {
                     // One time of a net waits; the next ones in the same hours are not piled up behind it.
                     Some(schedule::Quiet::Wait(until)) => {
                         if let Some(first) = self.quieted.iter().find(|q| q.def.id == def.id) {
-                            let why = format!("流さない時間帯。{} の回が終わりを待っている", first.planned.format("%-H:%M"));
+                            let why = msg::note(msg::N_QUIET_PENDING, &[&first.planned.format("%-H:%M").to_string()]);
                             self.runner.not_run(&def, *planned, RunState::Skipped, &why);
                         } else {
                             self.quieted.push(Quieted { def, planned: *planned, until, late });
@@ -718,13 +747,14 @@ impl State {
                 standby::Told::TookOver(line, runs) => {
                     let from = self.standby.watched().unwrap_or_default().to_owned();
                     let taken = self.take_runs(runs, &from);
-                    ("koyomi: 待機から引き継いだ", format!("{line}{taken}"))
+                    let line = if taken.is_empty() { line } else { format!("{line} {taken}") };
+                    (msg::note(msg::N_TITLE_TOOK_OVER, &[]), line)
                 }
-                standby::Told::Both(line) => ("koyomi: 両方で流している", line),
-                standby::Told::Waiting(line) => ("koyomi: 引き取りを待っている", line),
-                standby::Told::GaveBack(line) => ("koyomi: 戻した", line),
+                standby::Told::Both(line) => (msg::note(msg::N_TITLE_BOTH, &[]), line),
+                standby::Told::Waiting(line) => (msg::note(msg::N_TITLE_WAITING_TAKEOVER, &[]), line),
+                standby::Told::GaveBack(line) => (msg::note(msg::N_TITLE_GAVE_BACK, &[]), line),
             };
-            crate::notify::tell(&self.notify, None, "failed", title, &line);
+            crate::notify::tell(&self.notify, None, "failed", &format!("koyomi: {title}"), &line);
             crate::say(&format!("koyomi: {line}"), false);
         }
     }
@@ -742,7 +772,7 @@ impl State {
     /// are written down as not taken over, for a person to decide. What to add to the line.
     fn take_runs(&mut self, runs: Option<Vec<Run>>, from: &str) -> String {
         let Some(runs) = runs else {
-            return "。向こうで動いていた回は読めていなかった".to_owned();
+            return msg::note(msg::N_TAKE_UNREAD, &[from]);
         };
         if runs.is_empty() {
             return String::new();
@@ -763,14 +793,15 @@ impl State {
                         Err(e) => e,
                     },
                 },
-                (Resume::Rerun, None) => "この PC に流せる定義がない".to_owned(),
+                (Resume::Rerun, None) => msg::note(msg::N_STANDBY_NO_DEFINITION, &[]),
                 (Resume::Leave(why), _) => why,
             };
-            left.push(self.runner.left(theirs, def.as_ref(), from, &why));
+            left.push(self.runner.left(theirs, def.as_ref(), from, msg::uncoded(&why)));
         }
-        let mut out = format!("。{from} で動いていた {} 回: 続きから流す {again} 回", runs.len());
+        let mut out = msg::note(msg::N_TAKE_SUMMARY, &[from, &runs.len().to_string(), &again.to_string()]);
         if !left.is_empty() {
-            out.push_str(&format!("、引き継いでいない {}（koyomi rerun <id> で続きから流せる）", left.join("・")));
+            out.push(' ');
+            out.push_str(&msg::note(msg::N_TAKE_LEFT, &[&left.join(&msg::note(msg::N_RUN_LIST_JOIN, &[]))]));
         }
         out
     }
@@ -783,15 +814,15 @@ impl State {
         if self.standby.watched().is_some() {
             if release {
                 if let Some(near) = self.near_time() {
-                    return Err(format!("時刻が近い（{near}）。少しあとで"));
+                    return Err(msg::line(msg::HANDOVER_TOO_NEAR, &[&near]));
                 }
             }
             return self.standby.handover(release).map(|v| v.to_string());
         }
         match self.primary.json() {
-            Some(_) if release => Err("この PC は [primary]。戻すのは待機の PC".to_owned()),
+            Some(_) if release => Err(msg::line(msg::HANDOVER_NOT_STANDBY, &[])),
             Some(v) => Ok(v.to_string()),
-            None => Err("koyomi.toml に [standby] も [primary] もない".to_owned()),
+            None => Err(msg::line(msg::NO_STANDBY_OR_PRIMARY, &[])),
         }
     }
 
@@ -819,9 +850,7 @@ impl State {
             let mut next = Vec::new();
             for c in left {
                 match self.write_def(&c.id, &c.text, c.base.as_deref(), false, false) {
-                    Ok(()) => {
-                        crate::say(&format!("koyomi: [standby] 写した（未確認。この PC の窓で確認するまで動かない）: {}", c.id), false)
-                    }
+                    Ok(()) => crate::say(&format!("koyomi: {}", msg::note(msg::N_STANDBY_COPIED, &[&c.id])), false),
                     Err(e) => {
                         refused.push(format!("{}: {}", c.id, koyomi_core::msg::uncoded(&e)));
                         next.push(c);
@@ -927,11 +956,8 @@ impl State {
                     self.runner.not_run(&w.def, w.planned, RunState::Locked, &e);
                 }
             } else if w.until.is_some_and(|u| now >= u) {
-                let why = format!(
-                    "{} の終わりを {} まで待ったが、終わらなかった（wait_until）",
-                    w.for_net,
-                    w.until.map_or(String::new(), |u| u.format("%H:%M").to_string())
-                );
+                let why =
+                    msg::note(msg::N_WAIT_UNTIL_OVER, &[&w.for_net, &w.until.map_or(String::new(), |u| u.format("%H:%M").to_string())]);
                 self.runner.not_run(&w.def, w.planned, RunState::Error, &why);
             } else {
                 self.waiting.push(w);
@@ -951,19 +977,19 @@ impl State {
         }
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         if let Some(until) = cal.filter(|c| c.stale(day)).and_then(|c| c.until()) {
-            return Some((RunState::Locked, format!("祝日の表が古い（{until} まで）")));
+            return Some((RunState::Locked, msg::note(msg::N_HOLIDAY_STALE, &[&until.to_string()])));
         }
         if self.standby.waiting() {
-            return Some((RunState::Skipped, "待機中（見張っている PC が流す）".to_owned()));
+            return Some((RunState::Skipped, msg::note(msg::N_STANDBY_WAITING, &[])));
         }
         if let Some(why) = self.primary.held() {
             return Some((RunState::Skipped, why));
         }
         if self.held.paused {
-            return Some((RunState::Held, "スケジュールを止めている（koyomi resume）".to_owned()));
+            return Some((RunState::Held, msg::note(msg::N_PAUSED, &[])));
         }
         if self.held.is_held(&def.id) {
-            return Some((RunState::Held, format!("保留中（koyomi release {}）", def.id)));
+            return Some((RunState::Held, msg::note(msg::N_HELD_NET, &[&def.id])));
         }
         None
     }
@@ -973,11 +999,11 @@ impl State {
     /// `on_closed` is not `"run"`. `what` is the event, for the record.
     fn off_day(&self, def: &Def, w: &when::When, day: NaiveDate, what: &str) -> Option<String> {
         if !w.runs_on(day) {
-            return Some(format!("{what}が、except か start / end の外なので流さない"));
+            return Some(msg::note(msg::N_OFF_DAY_RANGE, &[what]));
         }
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         if cal.is_some_and(|c| !c.is_business(day)) && w.on_closed_in(cal) != OnClosed::Run {
-            return Some(format!("{what}が、休業日なので流さない（on_closed = \"run\" で流せる）"));
+            return Some(msg::note(msg::N_OFF_DAY_CLOSED, &[what]));
         }
         None
     }
@@ -998,7 +1024,7 @@ impl State {
         if self.events.take_start() {
             for def in self.defs.clone() {
                 let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| matches!(w.kind, Kind::OnStart))) else { continue };
-                if let Some(why) = self.off_day(&def, w, today, "起動した") {
+                if let Some(why) = self.off_day(&def, w, today, &msg::note(msg::N_EVENT_START, &[])) {
                     self.runner.not_run(&def, now, RunState::Skipped, &why);
                     continue;
                 }
@@ -1008,7 +1034,7 @@ impl State {
                 }
                 match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
                     schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
-                        if let Err(e) = self.runner.start_event(&def, today, How::Start, "起動したとき", None) {
+                        if let Err(e) = self.runner.start_event(&def, today, How::Start, &msg::note(msg::N_EVENT_START, &[]), None) {
                             self.runner.not_run(&def, now, RunState::Locked, &e);
                         }
                     }
@@ -1030,7 +1056,8 @@ impl State {
                 self.events.fired(&a.def_id, &a.pattern, &a.path);
                 continue;
             };
-            if let Some(why) = self.off_day(&def, w, today, &format!("{path} が来た")) {
+            let arrived = msg::note(msg::N_EVENT_FILE, &[&path]);
+            if let Some(why) = self.off_day(&def, w, today, &arrived) {
                 self.runner.not_run(&def, now, RunState::Skipped, &why);
                 self.events.fired(&a.def_id, &a.pattern, &a.path);
                 continue;
@@ -1046,7 +1073,7 @@ impl State {
             }
             match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
                 schedule::Verdict::Start { .. } | schedule::Verdict::Queue { .. } => {
-                    if let Err(e) = self.runner.start_event(&def, today, How::File, &format!("{path} が来た"), Some(path)) {
+                    if let Err(e) = self.runner.start_event(&def, today, How::File, &arrived, Some(path)) {
                         self.runner.not_run(&def, now, RunState::Locked, &e);
                     }
                 }
@@ -1062,10 +1089,10 @@ impl State {
             let Some(def) = self.defs.iter().find(|d| d.id == hit.def_id).cloned() else { continue };
             let Some(w) = def.net.as_ref().and_then(|n| n.when.iter().find(|w| w.kind == hit.kind)).cloned() else { continue };
             let what = match &hit.kind {
-                Kind::Log { log, .. } => format!("{log} に行が書かれた"),
-                Kind::EventLog { eventlog, .. } => format!("イベントログ {eventlog} に記録された"),
-                Kind::Mail { mail, .. } => format!("{mail} にメールが来た"),
-                Kind::Idle { idle: secs } => format!("PC が {} 使われなかった", idle::span_text(*secs)),
+                Kind::Log { log, .. } => msg::note(msg::N_EVENT_LOG, &[log]),
+                Kind::EventLog { eventlog, .. } => msg::note(msg::N_EVENT_EVENTLOG, &[eventlog]),
+                Kind::Mail { mail, .. } => msg::note(msg::N_EVENT_MAIL, &[mail]),
+                Kind::Idle { idle: secs } => msg::note(msg::N_EVENT_IDLE, &[&idle::span_text(*secs)]),
                 Kind::Session { session, .. } => session::what(*session, &hit.first),
                 _ => continue,
             };
@@ -1075,13 +1102,14 @@ impl State {
                 Kind::Session { .. } => How::Session,
                 _ => How::Log,
             };
-            let more = if hit.count > 1 { format!("（ほか {} 件）", hit.count - 1) } else { String::new() };
+            let more = if hit.count > 1 { msg::note(msg::N_EVENT_MORE, &[&(hit.count - 1).to_string()]) } else { String::new() };
             // The PC left alone has no line to keep; whose lock it was is said in `what`.
             let first = if matches!(hit.kind, Kind::Session { .. }) { "" } else { hit.first.as_str() };
-            let tail = if first.is_empty() { more } else { format!(": {first}{more}") };
-            let reason = format!("{what}{tail}");
+            let tail = if first.is_empty() { more } else { msg::note(msg::N_EVENT_FIRST, &[first, &more]) };
+            let with_tail = |s: &str| if tail.is_empty() { s.to_owned() } else { format!("{s} {tail}") };
+            let reason = with_tail(&what);
             if let Some(why) = self.off_day(&def, &w, today, &what) {
-                self.runner.not_run(&def, now, RunState::Skipped, &format!("{why}{tail}"));
+                self.runner.not_run(&def, now, RunState::Skipped, &with_tail(&why));
                 continue;
             }
             if let Some((state, why)) = self.stopped(&def, today, now) {
@@ -1090,7 +1118,7 @@ impl State {
             }
             // A line, a mail, the PC left alone or a lock is not kept as a file is: one that comes while the net runs is told of, not run later.
             if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
-                self.runner.not_run(&def, now, RunState::Skipped, &format!("{what}が、前の回がまだ動いているので流さない{tail}"));
+                self.runner.not_run(&def, now, RunState::Skipped, &with_tail(&msg::note(msg::N_EVENT_STILL_RUNNING, &[&what])));
                 continue;
             }
             match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
@@ -1117,7 +1145,7 @@ impl State {
         for prev in over {
             for (def, w) in followers(&self.defs, prev) {
                 let date = NaiveDate::parse_from_str(&prev.date, "%Y-%m-%d").unwrap_or(now.date());
-                let what = format!("{} が終わった（{}）", prev.jobnet, crate::show::word(&self.words, prev.state));
+                let what = msg::note(msg::N_EVENT_AFTER, &[&prev.jobnet, &crate::show::word(&self.words, prev.state)]);
                 if let Some(why) = self.off_day(&def, &w, date, &what) {
                     self.runner.not_run(&def, now, RunState::Skipped, &why);
                     continue;
@@ -1127,15 +1155,12 @@ impl State {
                     continue;
                 }
                 if let Some(done) = followed(self.runner.runs(), &def.id, &prev.date) {
-                    let why = format!(
-                        "{what}が、同じ業務日（{}）に既に流した（{}）: 後続は流していない。要るなら手で流す（koyomi run {}）",
-                        prev.date, done.id, def.id
-                    );
+                    let why = msg::note(msg::N_AFTER_SAME_DAY, &[&what, &prev.date, &done.id, &def.id]);
                     self.runner.not_run(&def, now, RunState::Skipped, &why);
                     continue;
                 }
                 if self.runner.runs().iter().any(|r| r.jobnet == def.id && !r.is_over()) {
-                    self.runner.not_run(&def, now, RunState::Skipped, &format!("{what}が、前の回がまだ動いているので流さない"));
+                    self.runner.not_run(&def, now, RunState::Skipped, &msg::note(msg::N_EVENT_STILL_RUNNING, &[&what]));
                     continue;
                 }
                 match schedule::judge(&def, now, chrono::Duration::zero(), &self.warnings, self.bad_config.as_deref(), false, true) {
@@ -1222,7 +1247,7 @@ impl State {
         let now = ito_common::now::now_local().naive_local();
         for (id, pattern, n) in self.events.set_rules(&self.defs) {
             if let Some(def) = self.defs.iter().find(|d| d.id == id).cloned() {
-                self.runner.not_run(&def, now, RunState::Skipped, &format!("見張り始めたときに既に {n} 個あった（{pattern}）: 流さない"));
+                self.runner.not_run(&def, now, RunState::Skipped, &msg::note(msg::N_WATCH_EXISTING, &[&n.to_string(), &pattern]));
             }
         }
         self.logs.set_rules(&self.defs);
@@ -1242,8 +1267,8 @@ impl State {
             .map(|d| {
                 let net = match (d.standing, &d.net) {
                     (Standing::Confirmed, Some(n)) => Ok(n.clone()),
-                    (Standing::Unconfirmed, _) => Err(format!("子ジョブネット {} が未確認", d.id)),
-                    _ => Err(format!("子ジョブネット {} に定義の誤りがある", d.id)),
+                    (Standing::Unconfirmed, _) => Err(msg::line(msg::CHILD_UNCONFIRMED, &[&d.id])),
+                    _ => Err(msg::line(msg::CHILD_INVALID, &[&d.id])),
                 };
                 (d.id.clone(), net)
             })
@@ -1265,7 +1290,7 @@ impl State {
             .chain(self.standby.notes())
             .chain(self.primary.notes())
             // Not a reason to stop: the folders are looked at every 5 s instead, and a file still starts its net.
-            .chain((!self.events.watching()).then(|| "待つファイルのフォルダーを見張れない（5 秒ごとに見る）".to_owned()))
+            .chain((!self.events.watching()).then(|| msg::note(msg::N_EVENTS_NOT_WATCHED, &[])))
             .collect();
         Snapshot {
             defs: self.defs.clone(),
@@ -1323,14 +1348,14 @@ impl State {
             if !has_pwsh {
                 let uses = net.jobs.iter().any(|j| j.shell.is_some() || matches!(&j.part, Part::Chore(c) if !c.own()));
                 if uses {
-                    out.push(format!("{}: PowerShell で動く片付けやスクリプトがあるが、この PC に pwsh がない", d.id));
+                    out.push(msg::line(msg::OS_NO_PWSH, &[&d.id]));
                 }
             }
             if net.jobs.iter().any(|j| j.run_as.is_some()) {
-                out.push(format!("{}: run_as は Windows でだけ使える（別の利用者では流せない）", d.id));
+                out.push(msg::line(msg::OS_RUN_AS, &[&d.id]));
             }
             if net.when.iter().any(|w| matches!(w.kind, Kind::EventLog { .. })) {
-                out.push(format!("{}: イベントログの [[when]] は Windows でだけ使える", d.id));
+                out.push(msg::line(msg::OS_EVENTLOG, &[&d.id]));
             }
         }
         out
@@ -1339,15 +1364,8 @@ impl State {
     fn status(&self) -> String {
         let confirmed = self.defs.iter().filter(|d| d.standing == Standing::Confirmed).count();
         let running = self.runner.runs().iter().filter(|r| !r.is_over()).count();
-        let mut out = format!(
-            "koyomi engine pid {}: 定義 {} 件（確認済み {}）、動いている実行 {}\n{}\n{}",
-            std::process::id(),
-            self.defs.len(),
-            confirmed,
-            running,
-            self.retain.line(),
-            self.backup.line()
-        );
+        let head = msg::note(msg::N_STATUS_HEAD, &[&self.defs.len().to_string(), &confirmed.to_string(), &running.to_string()]);
+        let mut out = format!("koyomi engine pid {}: {head}\n{}\n{}", std::process::id(), self.retain.line(), self.backup.line());
         if let Some(line) = self.http.line() {
             out.push_str(&format!("\n{line}"));
         }
@@ -1358,13 +1376,13 @@ impl State {
             out.push_str(&format!("\n{line}"));
         }
         if self.held.paused {
-            out.push_str("\nスケジュールを止めている（koyomi resume で戻す）");
+            out.push_str(&format!("\n{}", msg::note(msg::N_STATUS_PAUSED, &[])));
         }
         for id in &self.held.held {
-            out.push_str(&format!("\n保留中: {id}（koyomi release {id} で戻す）"));
+            out.push_str(&format!("\n{}", msg::note(msg::N_STATUS_HELD, &[id])));
         }
         for h in &self.held.jobs {
-            out.push_str(&format!("\n保留中: {} の {}（koyomi release {} {} で戻す）", h.net, h.job, h.net, h.job));
+            out.push_str(&format!("\n{}", msg::note(msg::N_STATUS_HELD_JOB, &[&h.net, &h.job])));
         }
         let p = self.power();
         if let (Some(at), Some(id)) = (&p.wake_at, &p.wake_for) {
@@ -1383,10 +1401,11 @@ impl State {
         }
         for q in self.runner.queued() {
             out.push_str(&format!(
-                "\n待ち: {}  {} の回は前の回が終わってから流す（{} から待っている）",
-                q.def.label(),
-                q.planned.format("%-H:%M"),
-                q.since.format("%-H:%M")
+                "\n{}",
+                msg::note(
+                    msg::N_STATUS_QUEUED,
+                    &[q.def.label(), &q.planned.format("%-H:%M").to_string(), &q.since.format("%-H:%M").to_string()]
+                )
             ));
         }
         out
@@ -1428,7 +1447,7 @@ impl State {
     ) -> Result<String, String> {
         let def = self.startable(id)?.clone();
         let date = match date {
-            Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| format!("業務日は YYYY-MM-DD: {d}"))?,
+            Some(d) => NaiveDate::parse_from_str(d, "%Y-%m-%d").map_err(|_| msg::line(msg::BUSINESS_DAY_FORM_BAD, &[d]))?,
             None => ito_common::now::now_local().date_naive(),
         };
         if dry {
@@ -1448,16 +1467,16 @@ impl State {
     /// The definition `id` as it may be started: nothing warned, koyomi.toml reads, and it is confirmed.
     fn startable(&self, id: &str) -> Result<&Def, String> {
         if !self.warnings.is_empty() {
-            return Err(format!("流せない: {}", self.warnings.join(" / ")));
+            return Err(blocked(msg::N_OP_RUN, &joined_warnings(&self.warnings)));
         }
         if let Some(e) = &self.bad_config {
-            return Err(format!("流せない: {e}"));
+            return Err(blocked(msg::N_OP_RUN, msg::uncoded(e)));
         }
-        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
         match def.standing {
-            Standing::Invalid => Err(format!("定義の誤りがあり、流せない: {}", def.file)),
-            Standing::Unconfirmed => Err(format!("未確認のため流さない: {}（koyomi approve {id}）", def.file)),
-            Standing::Confirmed if self.held.is_held(id) => Err(format!("保留中のため流さない: {id}（koyomi release {id}）")),
+            Standing::Invalid => Err(msg::line(msg::RUN_INVALID, &[&def.file])),
+            Standing::Unconfirmed => Err(msg::line(msg::RUN_UNCONFIRMED, &[id])),
+            Standing::Confirmed if self.held.is_held(id) => Err(msg::line(msg::RUN_HELD, &[id])),
             Standing::Confirmed => Ok(def),
         }
     }
@@ -1477,79 +1496,79 @@ impl State {
     }
     fn hold(&mut self, id: &str) -> Result<String, String> {
         self.held_writable()?;
-        let label = self.defs.iter().find(|d| d.id == id).map(Def::label).ok_or_else(|| format!("定義がない: {id}"))?.to_owned();
+        let label = self.defs.iter().find(|d| d.id == id).map(Def::label).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?.to_owned();
         if !self.held.hold(id) {
-            return Err(format!("もう保留している: {id}"));
+            return Err(msg::line(msg::HOLD_ALREADY, &[id]));
         }
         self.save_held()?;
         for q in self.runner.unqueue(Some(id)) {
-            self.runner.not_run(&q.def, q.planned, RunState::Held, &format!("待っている間に保留した（koyomi release {id}）"));
+            self.runner.not_run(&q.def, q.planned, RunState::Held, &msg::note(msg::N_HOLD_WHILE_QUEUED, &[id]));
         }
-        Ok(format!("保留した: {label}（koyomi release {id} で戻す）"))
+        Ok(msg::note(msg::N_HELD_DONE, &[&label, id]))
     }
     fn release(&mut self, id: &str) -> Result<String, String> {
         self.held_writable()?;
         if !self.held.release(id) {
-            return Err(format!("保留していない: {id}"));
+            return Err(msg::line(msg::HOLD_NOT, &[id]));
         }
         self.save_held()?;
-        Ok(format!("保留を解いた: {id}"))
+        Ok(msg::note(msg::N_RELEASED, &[id]))
     }
     /// `koyomi hold <net> <job>`: a run of `id` that comes to `job` waits there as ⏸ 保留.
     fn hold_job(&mut self, id: &str, job: &str) -> Result<String, String> {
         self.held_writable()?;
-        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
-        let net = def.net.as_ref().ok_or_else(|| format!("{id} が読めない"))?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
+        let net = def.net.as_ref().ok_or_else(|| msg::line(msg::JOBNET_UNREADABLE, &[id]))?;
         let label = net
             .jobs
             .iter()
             .find(|j| j.id == job)
             .map(|j| j.name.clone().unwrap_or_else(|| j.id.clone()))
-            .ok_or_else(|| format!("{id} にジョブがない: {job}"))?;
+            .ok_or_else(|| msg::line(msg::NET_JOB_MISSING, &[id, job]))?;
         if !self.held.hold_job(id, job) {
-            return Err(format!("もう保留している: {id} の {job}"));
+            return Err(msg::line(msg::HOLD_JOB_ALREADY, &[id, job]));
         }
         self.save_held()?;
         self.runner.set_held(&self.held);
-        Ok(format!("保留した: {} の {label}（そこに着いた回は待つ。koyomi release {id} {job} で戻す）", def.label()))
+        Ok(msg::note(msg::N_HELD_JOB_DONE, &[def.label(), &label, id, job]))
     }
     fn release_job(&mut self, id: &str, job: &str) -> Result<String, String> {
         self.held_writable()?;
         if !self.held.release_job(id, job) {
-            return Err(format!("保留していない: {id} の {job}"));
+            return Err(msg::line(msg::HOLD_JOB_NOT, &[id, job]));
         }
         self.save_held()?;
         self.runner.set_held(&self.held);
-        Ok(format!("保留を解いた: {id} の {job}"))
+        Ok(msg::note(msg::N_RELEASED_JOB, &[id, job]))
     }
     /// `koyomi shift`: the time `from` of `id` starts at `to` once (`None`: the move is taken back).
     fn shift(&mut self, id: &str, from: &str, to: Option<&str>) -> Result<String, String> {
         self.held_writable()?;
-        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").map_err(|_| format!("時刻は YYYY-MM-DD HH:MM で書く: {s}"));
+        let at = |s: &str| NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M").map_err(|_| msg::line(msg::TIME_FORM_BAD, &[s]));
         let from = at(from)?;
         let Some(to) = to else {
             if !self.held.unshift(id, from) {
-                return Err(format!("{} の {} はずらしていない", id, from.format("%Y-%m-%d %H:%M")));
+                return Err(msg::line(msg::SHIFT_NOT_SHIFTED, &[id, &from.format("%Y-%m-%d %H:%M").to_string()]));
             }
             self.save_held()?;
-            return Ok("ずらしを戻した".to_owned());
+            return Ok(msg::note(msg::N_UNSHIFTED, &[]));
         };
         let to = at(to)?;
-        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
-        let net = def.net.as_ref().ok_or_else(|| format!("定義が読めない: {id}"))?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
+        let net = def.net.as_ref().ok_or_else(|| msg::line(msg::JOBNET_UNREADABLE, &[id]))?;
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         if !net.when.iter().any(|w| !w.is_event() && w.times_on_in(from.date(), cal).contains(&from.time())) {
-            return Err(format!("{id} にその時刻はない: {}（koyomi next {id} で見る）", from.format("%Y-%m-%d %H:%M")));
+            return Err(msg::line(msg::SHIFT_NO_SUCH_TIME, &[id, &from.format("%Y-%m-%d %H:%M").to_string()]));
         }
         if to <= from {
-            return Err("ずらす先は、元の時刻より後にする".to_owned());
+            return Err(msg::line(msg::SHIFT_BEFORE, &[]));
         }
         if to <= ito_common::now::now_local().naive_local() {
-            return Err("ずらす先が過ぎている".to_owned());
+            return Err(msg::line(msg::SHIFT_PAST, &[]));
         }
         self.held.shift(id, from, to);
         self.save_held()?;
-        Ok(format!("{} の {} を {} にずらした（定義は変えない）", id, from.format("%Y-%m-%d %H:%M"), to.format("%Y-%m-%d %H:%M")))
+        Ok(msg::note(msg::N_SHIFTED, &[id, &from.format("%Y-%m-%d %H:%M").to_string(), &to.format("%Y-%m-%d %H:%M").to_string()]))
     }
     /// `koyomi skip-next`: the next time of `id` that is not yet skipped or moved does not start
     /// (`cancel`: every skip of `id` is taken back).
@@ -1557,25 +1576,25 @@ impl State {
         self.held_writable()?;
         if cancel {
             if !self.held.unskip(id) {
-                return Err(format!("{id} は飛ばしていない"));
+                return Err(msg::line(msg::SKIP_NOT, &[id]));
             }
             self.save_held()?;
-            return Ok(format!("{id} を飛ばすのをやめた"));
+            return Ok(msg::note(msg::N_UNSKIPPED, &[id]));
         }
-        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
-        let net = def.net.as_ref().ok_or_else(|| format!("定義が読めない: {id}"))?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
+        let net = def.net.as_ref().ok_or_else(|| msg::line(msg::JOBNET_UNREADABLE, &[id]))?;
         if def.standing != Standing::Confirmed {
-            return Err(format!("{id} は承認されていないので、時刻では流れない"));
+            return Err(msg::line(msg::SKIP_UNCONFIRMED, &[id]));
         }
         let cal = def.calendar.as_deref().and_then(|c| self.calendars.get(c));
         let held = &self.held;
         let at = koyomi_core::held::next_open(&net.when, cal, ito_common::now::now_local().naive_local(), |t| {
             held.is_skipped(id, t) || held.is_shifted(id, t)
         })
-        .ok_or_else(|| format!("{id} にこの先の時刻がない（koyomi next {id} で見る）"))?;
+        .ok_or_else(|| msg::line(msg::SKIP_NO_NEXT, &[id]))?;
         self.held.skip(id, at);
         self.save_held()?;
-        Ok(format!("{} の {} を飛ばす（定義は変えない。戻すのは koyomi skip-next {} --cancel）", id, at.format("%Y-%m-%d %H:%M"), id))
+        Ok(msg::note(msg::N_SKIPPED_NEXT, &[id, &at.format("%Y-%m-%d %H:%M").to_string()]))
     }
     /// Starts the times that were moved once their new time comes.
     fn tick_shift(&mut self) {
@@ -1603,16 +1622,16 @@ impl State {
     fn pause(&mut self, on: bool) -> Result<String, String> {
         self.held_writable()?;
         if self.held.paused == on {
-            return Err(if on { "もう止めている（koyomi resume で戻す）" } else { "止めていない" }.to_owned());
+            return Err(msg::line(if on { msg::PAUSE_ALREADY } else { msg::PAUSE_NOT }, &[]));
         }
         self.held.paused = on;
         self.save_held()?;
         if on {
             for q in self.runner.unqueue(None) {
-                self.runner.not_run(&q.def, q.planned, RunState::Held, "待っている間にスケジュールを止めた（koyomi resume）");
+                self.runner.not_run(&q.def, q.planned, RunState::Held, &msg::note(msg::N_PAUSE_WHILE_QUEUED, &[]));
             }
         }
-        Ok(if on { "スケジュールを止めた（koyomi resume で戻す）" } else { "スケジュールを戻した" }.to_owned())
+        Ok(msg::note(if on { msg::N_PAUSE_DONE } else { msg::N_RESUME_DONE }, &[]))
     }
 
     /// Whether the engine could have known the time `planned` of `def`: its file was not written
@@ -1642,16 +1661,16 @@ impl State {
 
     /// [`Self::approve`] over the state of the scan just made.
     fn approve_scanned(&mut self, id: &str, sha256: &str) -> Result<String, String> {
-        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+        let def = self.defs.iter().find(|d| d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
         let own = self.warnings_for(&def.file);
         if !own.is_empty() {
-            return Err(format!("承認できない: {}", own.join(" / ")));
+            return Err(msg::line(msg::APPROVE_BLOCKED, &[&joined_warnings(&own)]));
         }
         if def.standing == Standing::Invalid {
-            return Err(format!("定義の誤りがあり、承認できない: {}", def.file));
+            return Err(msg::line(msg::APPROVE_INVALID, &[&def.file]));
         }
         if def.sha256 != sha256 {
-            return Err(format!("{} が確かめたあとに変わった。もう一度確かめてください", def.file));
+            return Err(msg::line(msg::APPROVE_CHANGED, &[&def.file]));
         }
         let mut next = self.store.clone();
         next.approve(id, &def.sha256, &def.text);
@@ -1662,14 +1681,14 @@ impl State {
         ito_common::write_atomic(&self.paths.approved, next.to_toml()).map_err(|e| write_failed(&self.paths.approved, &e))?;
         self.store = next;
         self.rescan();
-        Ok(format!("確認した: {id}"))
+        Ok(msg::note(msg::N_NET_APPROVED, &[id]))
     }
 
     /// The editor's save (see [`Request::Save`]): checked as a file would be, the old
     /// file kept under `versions/`, written whole, and approved at once.
     fn save(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool) -> Result<String, String> {
         self.write_def(id, text, base_sha256, force, true)?;
-        Ok(format!("保存した: {id}"))
+        Ok(msg::note(msg::N_SAVED, &[id]))
     }
 
     /// A definition sent over HTTP (see [`Request::Propose`]): written as a save is, but left
@@ -1677,18 +1696,14 @@ impl State {
     fn propose(&mut self, id: &str, text: &str, base_sha256: Option<&str>) -> Result<String, String> {
         self.write_def(id, text, base_sha256, false, false)?;
         let left = self.defs.iter().find(|d| d.id == id).is_some_and(|d| d.standing != Standing::Confirmed);
-        Ok(if left {
-            format!("置いた（未確認。確認するまで動かない）: {id}")
-        } else {
-            format!("置いた（確認済みと同じ中身）: {id}")
-        })
+        Ok(msg::note(if left { msg::N_PROPOSED_UNCONFIRMED } else { msg::N_PROPOSED_SAME }, &[id]))
     }
 
     /// Checks `text` as a file would be, keeps the old file under `versions/` and writes it
     /// whole; with `approve`, confirms it too.
     fn write_def(&mut self, id: &str, text: &str, base_sha256: Option<&str>, force: bool, approve: bool) -> Result<(), String> {
         if !self.warnings.is_empty() {
-            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&self.warnings.join(" / ")]));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&joined_warnings(&self.warnings)]));
         }
         let (group, name) = split_id(id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
@@ -1760,7 +1775,7 @@ impl State {
         expect: Option<&proto::StageExpect>,
     ) -> Result<String, String> {
         if !self.warnings.is_empty() {
-            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&self.warnings.join(" / ")]));
+            return Err(koyomi_core::msg::line(koyomi_core::msg::SAVE_BLOCKED, &[&joined_warnings(&self.warnings)]));
         }
         // `next.toml` as it is now, not as the last scan saw it: a hand edit a moment ago counts. When it no
         // longer reads, `staged` is empty and `warnings` is stale, so the write is refused here.
@@ -1794,7 +1809,7 @@ impl State {
         self.staged = staged;
         self.staged_failed.remove(id);
         self.staged_look = None;
-        Ok(format!("{from} から使う定義を置いた: {id}（それまでは今の定義で流す）"))
+        Ok(msg::note(msg::N_STAGED, &[&from.to_string(), id]))
     }
 
     /// See [`Request::Unstage`].
@@ -1802,13 +1817,13 @@ impl State {
         if let Some(e) = &self.staged_bad {
             return Err(e.clone());
         }
-        let from = self.staged.get(id).map(|e| e.from).ok_or_else(|| format!("{id} に次の定義は置いていない"))?;
+        let from = self.staged.get(id).map(|e| e.from).ok_or_else(|| msg::line(msg::UNSTAGE_NONE, &[id]))?;
         let mut staged = self.staged.clone();
         staged.forget(id);
         self.save_staged(&staged)?;
         self.staged = staged;
         self.staged_failed.remove(id);
-        Ok(format!("{from} から使う定義をやめた: {id}（今の定義のまま流す）"))
+        Ok(msg::note(msg::N_UNSTAGED, &[&from.to_string(), id]))
     }
 
     /// `next.toml` can be written: it read.
@@ -1852,14 +1867,14 @@ impl State {
                     self.staged_failed.remove(&e.id);
                     crate::say(&format!("koyomi: {line}"), false);
                     self.runner.record_op("switch", &e.id, &line, "");
-                    notify::tell(&to, None, "done", "koyomi: 定義を切り替えた", &line);
+                    notify::tell(&to, None, "done", &format!("koyomi: {}", msg::note(msg::N_TITLE_SWITCHED, &[])), &line);
                 }
                 Err(why) => {
-                    let why = why.lines().collect::<Vec<_>>().join(" ");
-                    let line = format!("{} を {} からの定義に切り替えられなかった（今までの定義のまま）: {why}", e.id, e.from);
+                    let why = msg::uncoded(&why).lines().collect::<Vec<_>>().join(" ");
+                    let line = msg::line(msg::SWITCH_FAILED, &[&e.id, &e.from.to_string(), &why]);
                     if self.staged_failed.get(&e.id) != Some(&line) {
-                        crate::say(&format!("koyomi: {line}"), true);
-                        notify::tell(&to, None, "failed", "koyomi: 定義を切り替えられなかった", &line);
+                        crate::say(&line, true);
+                        notify::tell(&to, None, "failed", &format!("koyomi: {}", msg::note(msg::N_TITLE_SWITCH_FAILED, &[])), &line);
                         self.staged_failed.insert(e.id.clone(), line);
                     }
                 }
@@ -1872,11 +1887,11 @@ impl State {
     /// What to tell.
     fn switch(&mut self, e: &koyomi_core::next::Entry) -> Result<String, String> {
         if !self.warnings.is_empty() {
-            return Err(self.warnings.join(" / "));
+            return Err(joined_warnings(&self.warnings));
         }
         let (group, name) = split_id(&e.id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
-        let live = std::fs::read(&path).map_err(|_| "今の定義のファイルがない".to_owned())?;
+        let live = std::fs::read(&path).map_err(|_| msg::line(msg::SWITCH_NO_LIVE, &[&e.id]))?;
         self.checked_def(&e.id, &e.text, koyomi_core::msg::DEF_INVALID_SWITCH)?;
         let changed = e.base.as_deref().is_some_and(|b| b != approved::hash(&live));
         let approved = e.approved();
@@ -1894,12 +1909,14 @@ impl State {
         self.save_staged(&staged)?;
         self.staged = staged;
         self.rescan();
-        let mut line = format!("{} を {} からの定義にした", e.id, e.from);
+        let mut line = msg::note(msg::N_SWITCHED, &[&e.id, &e.from.to_string()]);
         if !approved {
-            line.push_str("（置いたあとに手で直されていたので未確認。確かめるまで流さない）");
+            line.push(' ');
+            line.push_str(&msg::note(msg::N_SWITCHED_UNCONFIRMED, &[]));
         }
         if changed {
-            line.push_str("。置いたあとに今の定義が直されていた（直したものは版に残した）");
+            line.push(' ');
+            line.push_str(&msg::note(msg::N_SWITCHED_CHANGED, &[]));
         }
         Ok(line)
     }
@@ -1936,24 +1953,24 @@ impl State {
     /// unconfirmed, like a file written by hand.
     fn import(&mut self, text: &str, dry_run: bool, on_conflict: Option<&str>) -> Result<String, String> {
         if !self.warnings.is_empty() {
-            return Err(format!("取り込めない: {}", self.warnings.join(" / ")));
+            return Err(blocked(msg::N_OP_IMPORT, &joined_warnings(&self.warnings)));
         }
         let on_conflict = on_conflict.map(bundle::Conflict::parse).transpose()?;
         // A Task Scheduler task comes as its XML: one net, and notes on what did not come over.
         let (b, notes) = if koyomi_core::task::is_xml(text) {
-            koyomi_core::task::bundle(text).map_err(|e| format!("取り込めない: {e}"))?
+            koyomi_core::task::bundle(text).map_err(import_failed)?
         } else {
-            (bundle::parse(text).map_err(|e| format!("取り込めない: {e}"))?, Vec::new())
+            (bundle::parse(text).map_err(import_failed)?, Vec::new())
         };
         if b.is_empty() {
-            return Err("取り込めない: ファイルに何も入っていない".to_owned());
+            return Err(msg::line(msg::IMPORT_EMPTY, &[]));
         }
         let current = bundle::Source::read(&self.paths.app);
         let mut p = bundle::plan(&b, &current, on_conflict);
         // The settings must pass what `koyomi check` passes, or nothing is written.
         for item in p.items.iter_mut().filter(|i| i.kind == bundle::Kind::Settings && i.problems.is_empty()) {
             if let Some(e) = crate::notify::settings_problem(&item.new) {
-                item.problems.push(format!("koyomi.toml が正しくない: {e}"));
+                item.problems.push(msg::line(msg::BUNDLE_SETTINGS_BAD, &[&e]));
             }
         }
         let mut lines = Vec::new();
@@ -1964,7 +1981,7 @@ impl State {
                     lines.extend(diff_lines(old, &item.new));
                 }
             }
-            lines.extend(item.problems.iter().map(|p| format!("  問題: {p}")));
+            lines.extend(item.problems.iter().map(|p| msg::note(msg::N_BUNDLE_PROBLEM, &[p])));
         }
         lines.extend(notes);
         lines.extend(p.notes.iter().cloned());
@@ -1999,13 +2016,13 @@ impl State {
             let done = (|| {
                 self.keep_version_in(&path, &dir)?;
                 if let Some(parent) = path.parent() {
-                    std::fs::create_dir_all(parent).map_err(|e| format!("{} を作れない: {e}", shown(parent)))?;
+                    std::fs::create_dir_all(parent).map_err(|e| dir_failed(parent, &e))?;
                 }
                 ito_common::write_atomic(&path, item.new.clone())
             })();
             if let Err(e) = done {
                 self.rescan();
-                return Err(format!("取り込みの途中で止まった（{written} 件は書いた。前の中身は versions/ にある）: {e}"));
+                return Err(msg::line(msg::IMPORT_STOPPED, &[&written.to_string(), msg::uncoded(&e)]));
             }
             written += 1;
         }
@@ -2059,7 +2076,7 @@ impl State {
         std::fs::create_dir_all(&self.paths.calendars).map_err(|e| dir_failed(&self.paths.calendars, &e))?;
         ito_common::write_atomic(&path, text).map_err(|e| write_failed(&path, &e))?;
         self.rescan();
-        Ok(format!("暦を書いた: calendars/{n}.toml"))
+        Ok(msg::note(msg::N_CAL_WRITTEN, &[&n]))
     }
 
     /// See [`Request::CalendarRename`]: nothing is taken over. A name that differs only in case is allowed
@@ -2083,7 +2100,7 @@ impl State {
         }
         std::fs::rename(&from_path, &to_path).map_err(|e| write_failed(&to_path, &e))?;
         self.rescan();
-        Ok(format!("暦の名前を変えた: {f} → {t}"))
+        Ok(msg::note(msg::N_CAL_RENAMED, &[&f, &t]))
     }
 
     /// See [`Request::CalendarDelete`]: the file kept under `versions/_calendars/` first.
@@ -2097,7 +2114,7 @@ impl State {
         std::fs::remove_file(&path)
             .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_DELETE_FAILED, &[&shown(&path), &e.to_string()]))?;
         self.rescan();
-        Ok(format!("暦を消した: {n}（前の中身は versions/_calendars/{n} に残した）"))
+        Ok(msg::note(msg::N_CAL_DELETED, &[&n]))
     }
 
     /// See [`Request::HolidayTable`]: the bytes written as they are when they read, over the table there
@@ -2109,12 +2126,7 @@ impl State {
         std::fs::create_dir_all(&self.paths.calendars).map_err(|e| dir_failed(&self.paths.calendars, &e))?;
         ito_common::write_atomic(&dest, bytes).map_err(|e| write_failed(&dest, &e))?;
         self.rescan();
-        Ok(format!(
-            "祝日の表を取り込んだ: calendars/{}（{} 年から {} 年）",
-            koyomi_core::calendar::TABLE_FILE,
-            table.years.0,
-            table.years.1
-        ))
+        Ok(msg::note(msg::N_HOLIDAY_IMPORTED, &[koyomi_core::calendar::TABLE_FILE, &table.years.0.to_string(), &table.years.1.to_string()]))
     }
 
     /// See [`Request::ExportAll`]: every net, calendar, group and the settings as one bundle, as the
@@ -2123,7 +2135,7 @@ impl State {
         let src = bundle::Source::read(&self.paths.app);
         let b = notify::export(&src, &bundle::Pick { all: true, ..Default::default() })?;
         if b.is_empty() {
-            return Err("書き出すものがない".to_owned());
+            return Err(msg::line(msg::EXPORT_NOTHING, &[]));
         }
         Ok(b.to_toml())
     }
@@ -2151,11 +2163,11 @@ impl State {
             self.paths.jobnets.join(group).join(format!("{name}.toml"))
         } else {
             if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-') {
-                return Err(format!("版の名前は 20261030-101500 のような形: {version}"));
+                return Err(msg::line(msg::VERSION_FORM_BAD, &[version]));
             }
             self.versions_dir(group, name).join(format!("{version}.toml"))
         };
-        let bytes = std::fs::read(&path).map_err(|_| format!("版がない: {id} の {version}"))?;
+        let bytes = std::fs::read(&path).map_err(|_| msg::line(msg::VERSION_MISSING, &[id, version]))?;
         Ok(String::from_utf8_lossy(&bytes).into_owned())
     }
 
@@ -2163,38 +2175,34 @@ impl State {
     /// what comes back is looked at like a file written by hand.
     fn restore(&mut self, id: &str, version: &str) -> Result<String, String> {
         if !self.warnings.is_empty() {
-            return Err(format!("戻せない: {}", self.warnings.join(" / ")));
+            return Err(blocked(msg::N_OP_RESTORE, &joined_warnings(&self.warnings)));
         }
         let (group, name) = split_id(id)?;
         if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit() || c == '-') {
-            return Err(format!("版の名前は 20261030-101500 のような形: {version}"));
+            return Err(msg::line(msg::VERSION_FORM_BAD, &[version]));
         }
         let from = self.versions_dir(group, name).join(format!("{version}.toml"));
-        let text = std::fs::read(&from).map_err(|_| format!("版がない: {id} の {version}"))?;
+        let text = std::fs::read(&from).map_err(|_| msg::line(msg::VERSION_MISSING, &[id, version]))?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
         self.keep_version(&path, group, name)?;
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+            std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         }
         ito_common::write_atomic(&path, text)?;
         self.rescan();
         let left = self.defs.iter().find(|d| d.id == id).is_some_and(|d| d.standing != Standing::Confirmed);
-        Ok(if left {
-            format!("{version} に戻した: {id}（未確認。確かめてから流す）")
-        } else {
-            format!("{version} に戻した: {id}（確認済みと同じ中身）")
-        })
+        Ok(msg::note(if left { msg::N_RESTORED_UNCONFIRMED } else { msg::N_RESTORED_SAME }, &[version, id]))
     }
 
     /// The net `id` as a file there is, its path, and that it does not run now: what a rename,
     /// a copy and a delete start from.
-    fn net_file(&self, id: &str, doing: &str) -> Result<(PathBuf, String), String> {
+    fn net_file(&self, id: &str, doing: msg::Note) -> Result<(PathBuf, String), String> {
         if !self.warnings.is_empty() {
-            return Err(format!("{doing}: {}", self.warnings.join(" / ")));
+            return Err(blocked(doing, &joined_warnings(&self.warnings)));
         }
         let (group, name) = split_id(id)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
-        let bytes = std::fs::read(&path).map_err(|_| format!("定義がない: {id}"))?;
+        let bytes = std::fs::read(&path).map_err(|_| msg::line(msg::JOBNET_MISSING, &[id]))?;
         Ok((path, String::from_utf8_lossy(&bytes).into_owned()))
     }
 
@@ -2203,7 +2211,7 @@ impl State {
         let (group, name) = split_id(to)?;
         let path = self.paths.jobnets.join(group).join(format!("{name}.toml"));
         if path.exists() || self.defs.iter().any(|d| d.id == to) {
-            return Err(format!("もうある: {to}"));
+            return Err(msg::line(msg::JOBNET_EXISTS, &[to]));
         }
         Ok(path)
     }
@@ -2211,14 +2219,14 @@ impl State {
     /// Refused while a run of `id` is not over.
     fn not_running(&self, id: &str) -> Result<(), String> {
         if self.runner.runs().iter().any(|r| r.jobnet == id && !r.is_over()) {
-            return Err(format!("実行中のため変えられない: {id}"));
+            return Err(msg::line(msg::JOBNET_RUNNING, &[id]));
         }
         Ok(())
     }
 
     /// The lines of `koyomi uses` for the nets that name `id`, and how to go on.
-    fn named_by(&self, id: &str, by: &[String], how: &str) -> String {
-        let mut lines = vec![format!("{} 個のジョブネットが {id} を使っている（{how}）:", by.len())];
+    fn named_by(&self, id: &str, by: &[String], head: msg::Id) -> String {
+        let mut lines = vec![msg::line(head, &[&by.len().to_string(), id])];
         lines.extend(
             koyomi_core::uses::find(&self.defs, id)
                 .into_iter()
@@ -2230,14 +2238,14 @@ impl State {
 
     /// See [`Request::Rename`].
     fn rename(&mut self, id: &str, to: &str, fix: bool) -> Result<String, String> {
-        let (from_path, text) = self.net_file(id, "名前を変えられない")?;
+        let (from_path, text) = self.net_file(id, msg::N_OP_RENAME)?;
         let to_path = self.free_id(to)?;
         self.not_running(id)?;
         self.held_writable()?;
         self.staged_writable()?;
         let by = koyomi_core::rename::referrers(&self.defs, id);
         if !by.is_empty() && !fix {
-            return Err(self.named_by(id, &by, "--fix でいっしょに直す"));
+            return Err(self.named_by(id, &by, msg::RENAME_USED));
         }
         // Every file is worked out before one is written.
         let confirmed = |def_id: &str| self.defs.iter().any(|d| d.id == def_id && d.standing == Standing::Confirmed);
@@ -2249,8 +2257,15 @@ impl State {
         // The files rewritten, by net: (before, after), for what was staged on them.
         let mut rewritten = BTreeMap::from([(id.to_owned(), (approved::hash(text.as_bytes()), approved::hash(own.as_bytes())))]);
         for r in &by {
-            let (path, old) = self.net_file(r, "名前を変えられない")?;
-            let new = koyomi_core::rename::retarget(&old, id, to).map_err(|e| format!("{r} の参照を直せない（{e}）。手で直してから"))?;
+            let (path, old) = self.net_file(r, msg::N_OP_RENAME)?;
+            let new = koyomi_core::rename::retarget(&old, id, to).map_err(|e| {
+                // A coded line keeps its ID at the head and gets the referrer after it.
+                if msg::is_coded(&e) {
+                    msg::note(msg::N_RENAMED_REFS_FAILED, &[&e, r])
+                } else {
+                    e
+                }
+            })?;
             rewritten.insert(r.clone(), (approved::hash(old.as_bytes()), approved::hash(new.as_bytes())));
             others.push((r.clone(), path, new, confirmed(r)));
         }
@@ -2258,7 +2273,7 @@ impl State {
         let mut next = self.store.clone();
         let was_confirmed = confirmed(id);
         if let Some(dir) = to_path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+            std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         }
         ito_common::write_atomic(&to_path, &own)?;
         next.forget(id);
@@ -2281,7 +2296,7 @@ impl State {
         // The file as it was goes with its versions, under the new name.
         self.keep_version(&from_path, from_group, from_name)?;
         self.move_versions(&self.versions_dir(from_group, from_name), &self.versions_dir(to_group, to_name))?;
-        std::fs::remove_file(&from_path).map_err(|e| format!("{} を消せない: {e}", shown(&from_path)))?;
+        std::fs::remove_file(&from_path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&from_path), &e.to_string()]))?;
         if self.held.carry(id, Some(to)) {
             self.save_held()?;
         }
@@ -2291,9 +2306,10 @@ impl State {
             self.staged_failed.remove(id);
         }
         self.rescan();
-        let mut said = format!("名前を変えた: {id} → {to}");
+        let mut said = msg::note(msg::N_RENAMED, &[id, to]);
         if !others.is_empty() {
-            said.push_str(&format!("（参照も直した: {}）", by.join(", ")));
+            said.push(' ');
+            said.push_str(&msg::note(msg::N_RENAMED_REFS, &[&by.join(&msg::note(msg::N_RUN_LIST_JOIN, &[]))]));
         }
         Ok(said)
     }
@@ -2331,7 +2347,7 @@ impl State {
     /// Moves every kept version in `from` to `to` (one kept there already stays: same names get `-2`).
     fn move_versions(&self, from: &Path, to: &Path) -> Result<(), String> {
         let Ok(entries) = std::fs::read_dir(from) else { return Ok(()) };
-        std::fs::create_dir_all(to).map_err(|e| format!("{} を作れない: {e}", shown(to)))?;
+        std::fs::create_dir_all(to).map_err(|e| dir_failed(to, &e))?;
         for e in entries.flatten() {
             let name = e.file_name().to_string_lossy().into_owned();
             let stem = name.strip_suffix(".toml").unwrap_or(&name).to_owned();
@@ -2341,7 +2357,7 @@ impl State {
                 n += 1;
                 target = to.join(format!("{stem}-{n}.toml"));
             }
-            std::fs::rename(e.path(), &target).map_err(|err| format!("{} を移せない: {err}", shown(&e.path())))?;
+            std::fs::rename(e.path(), &target).map_err(|err| msg::line(msg::FILE_MOVE_FAILED, &[&shown(&e.path()), &err.to_string()]))?;
         }
         let _ = std::fs::remove_dir(from);
         Ok(())
@@ -2349,41 +2365,41 @@ impl State {
 
     /// See [`Request::Copy`].
     fn copy(&mut self, id: &str, to: &str, title: Option<&str>) -> Result<String, String> {
-        let (_, text) = self.net_file(id, "複製できない")?;
+        let (_, text) = self.net_file(id, msg::N_OP_COPY)?;
         let to_path = self.free_id(to)?;
         let text = match title {
             Some(title) => koyomi_core::rename::set_title(&text, title),
             None => koyomi_core::rename::retitle(&text, split_id(id)?.1, split_id(to)?.1),
         };
         if let Some(dir) = to_path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
+            std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         }
         ito_common::write_atomic(&to_path, text)?;
         self.rescan();
-        Ok(format!("複製した: {id} → {to}（未確認。確かめてから流す）"))
+        Ok(msg::note(msg::N_COPIED, &[id, to]))
     }
 
     /// See [`Request::Replace`].
     fn replace(&mut self, from: &str, to: &str, apply: bool) -> Result<String, String> {
         if from.is_empty() {
-            return Err("探す文字が空".to_owned());
+            return Err(msg::line(msg::REPLACE_FROM_EMPTY, &[]));
         }
         if from == to {
-            return Err("探す文字と直す文字が同じ".to_owned());
+            return Err(msg::line(msg::REPLACE_SAME, &[]));
         }
         let mut ids: Vec<String> = self.defs.iter().map(|d| d.id.clone()).collect();
         ids.sort();
         // Every file is worked out before one is written.
         let mut found = Vec::new();
         for id in ids {
-            let (path, text) = self.net_file(&id, "置き換えられない")?;
+            let (path, text) = self.net_file(&id, msg::N_OP_REPLACE)?;
             let hits = koyomi_core::replace::hits(&text, from, to);
             if !hits.is_empty() {
                 found.push((id, path, text, hits));
             }
         }
         if found.is_empty() {
-            return Ok(format!("見つからない: {from}"));
+            return Ok(msg::note(msg::N_REPLACE_NONE, &[from]));
         }
         let lines = found.iter().map(|f| f.3.len()).sum::<usize>();
         if !apply {
@@ -2395,7 +2411,7 @@ impl State {
                     out.push(format!("  {}: + {}", h.line, h.after.trim()));
                 }
             }
-            out.push(format!("{} 個のジョブネットの {lines} 行（--apply で置き換える。直したジョブネットは未確認に戻る）", found.len()));
+            out.push(msg::note(msg::N_REPLACE_PLAN, &[&found.len().to_string(), &lines.to_string()]));
             return Ok(out.join(
                 "
 ",
@@ -2405,7 +2421,8 @@ impl State {
         let mut next = Vec::new();
         for (id, path, text, _) in &found {
             self.not_running(id)?;
-            let new = koyomi_core::replace::apply(text, from, to).map_err(|e| format!("{id} が読めなくなる（{e}）。何も書かなかった"))?;
+            let new =
+                koyomi_core::replace::apply(text, from, to).map_err(|e| msg::line(msg::REPLACE_UNREADABLE, &[id, msg::uncoded(&e)]))?;
             next.push((id.clone(), path.clone(), new));
         }
         let mut written: Vec<&str> = Vec::new();
@@ -2415,31 +2432,31 @@ impl State {
             if let Err(e) = put {
                 self.rescan();
                 let done = if written.is_empty() {
-                    "どれも書いていない".to_owned()
+                    msg::note(msg::N_REPLACE_WROTE_NONE, &[])
                 } else {
-                    format!("書いたのは {}", written.join(", "))
+                    msg::note(msg::N_REPLACE_WROTE, &[&written.join(&msg::note(msg::N_RUN_LIST_JOIN, &[]))])
                 };
-                return Err(format!("{id} を書けない: {e}（{done}）"));
+                return Err(msg::line(msg::REPLACE_WRITE_FAILED, &[id, msg::uncoded(&e), &done]));
             }
             written.push(id);
         }
         self.rescan();
-        Ok(format!("{} 個のジョブネットの {lines} 行を置き換えた（未確認。直す前の形は版に残した）", next.len()))
+        Ok(msg::note(msg::N_REPLACED, &[&next.len().to_string(), &lines.to_string()]))
     }
 
     /// See [`Request::Delete`].
     fn delete(&mut self, id: &str) -> Result<String, String> {
-        let (path, _) = self.net_file(id, "消せない")?;
+        let (path, _) = self.net_file(id, msg::N_OP_DELETE)?;
         self.not_running(id)?;
         self.held_writable()?;
         self.staged_writable()?;
         let by = koyomi_core::rename::referrers(&self.defs, id);
         if !by.is_empty() {
-            return Err(self.named_by(id, &by, "先にそちらを直す"));
+            return Err(self.named_by(id, &by, msg::DELETE_USED));
         }
         let (group, name) = split_id(id)?;
         self.keep_version(&path, group, name)?;
-        std::fs::remove_file(&path).map_err(|e| format!("{} を消せない: {e}", shown(&path)))?;
+        std::fs::remove_file(&path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&path), &e.to_string()]))?;
         let mut next = self.store.clone();
         if next.forget(id) {
             ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
@@ -2455,13 +2472,13 @@ impl State {
         }
         self.staged_failed.remove(id);
         self.rescan();
-        Ok(format!("消した: {id}（前の形は版に残した。koyomi versions {id} と koyomi restore で戻せる）"))
+        Ok(msg::note(msg::N_DELETED, &[id]))
     }
 
     fn answer(&mut self, request: &Request) -> Result<String, String> {
         let (request, by) = match request {
             Request::Over { by, request } if over_http(request) => (&**request, by.as_str()),
-            Request::Over { .. } => return Err("HTTP からはできない".to_owned()),
+            Request::Over { .. } => return Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
             r => (r, ""),
         };
         let out = self.dispatch(request);
@@ -2477,10 +2494,10 @@ impl State {
     fn dispatch(&mut self, request: &Request) -> Result<String, String> {
         match request {
             Request::Status => Ok(self.status()),
-            Request::Stop => Ok("止める".to_owned()),
+            Request::Stop => Ok(msg::note(msg::N_STOP_REPLY, &[])),
             Request::List => Ok(self.snapshot().to_toml()),
             Request::Show { id } => {
-                let def = self.defs.iter().find(|d| &d.id == id).ok_or_else(|| format!("定義がない: {id}"))?;
+                let def = self.defs.iter().find(|d| &d.id == id).ok_or_else(|| msg::line(msg::JOBNET_MISSING, &[id]))?;
                 toml::to_string(def).map_err(|e| e.to_string())
             }
             Request::Approve { id, sha256 } => self.approve(id, sha256),
@@ -2489,7 +2506,7 @@ impl State {
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::History { from, to } => {
-                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {s}"));
+                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| msg::line(msg::DATE_FORM_BAD, &[s]));
                 Ok(Runs { runs: self.runner.history(day(from)?, day(to)?)? }.to_toml())
             }
             Request::Log { run, job } => self.runner.log_tail(run, job),
@@ -2504,11 +2521,9 @@ impl State {
             Request::Pause => self.pause(true),
             Request::Resume => self.pause(false),
             Request::Standby { give_back: true } => self.standby.give_back(),
-            Request::Standby { give_back: false } => self
-                .standby
-                .status()
-                .or_else(|| self.primary.line())
-                .ok_or_else(|| "koyomi.toml に [standby] も [primary] もない".to_owned()),
+            Request::Standby { give_back: false } => {
+                self.standby.status().or_else(|| self.primary.line()).ok_or_else(|| msg::line(msg::NO_STANDBY_OR_PRIMARY, &[]))
+            }
             Request::Handover { release } => self.handover(*release),
             Request::Save { id, text, base_sha256, force } => self.save(id, text, base_sha256.as_deref(), *force),
             Request::Versions { id } => self.versions(id),
@@ -2524,7 +2539,7 @@ impl State {
 ",
             )),
             Request::Ops { from, to } => {
-                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("日付は YYYY-MM-DD で書く: {s}"));
+                let day = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| msg::line(msg::DATE_FORM_BAD, &[s]));
                 Ok(self.runner.ops(day(from)?, day(to)?)?.join(
                     "
 ",
@@ -2540,7 +2555,7 @@ impl State {
             Request::CalendarDelete { name, base_sha256 } => self.calendar_delete(name, base_sha256),
             Request::HolidayTable { bytes } => self.holiday_table(bytes),
             Request::ExportAll => self.export_all(),
-            Request::Over { .. } => Err("HTTP からはできない".to_owned()),
+            Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
     }
 }
@@ -2601,13 +2616,13 @@ fn diff_lines(old: &str, new: &str) -> Vec<String> {
                 ito_diff::Kind::Removed => format!("  - {}", l.text),
                 ito_diff::Kind::Same => format!("    {}", l.text),
             },
-            ito_diff::Item::Folded(n) => format!("  … {n} 行"),
+            ito_diff::Item::Folded(n) => msg::note(msg::N_DIFF_FOLDED, &[&n.to_string()]),
         })
         .collect();
     if out.len() > MOST {
         let rest = out.len() - MOST;
         out.truncate(MOST);
-        out.push(format!("  … あと {rest} 行"));
+        out.push(msg::note(msg::N_DIFF_MORE, &[&rest.to_string()]));
     }
     out
 }
@@ -2718,20 +2733,20 @@ pub fn run(own_tray: bool) -> i32 {
     let paths = match Paths::find() {
         Ok(p) => p,
         Err(e) => {
-            crate::say(&format!("koyomi: {e}"), true);
+            crate::say(&e, true);
             return 1;
         }
     };
     let door = proto::door();
     if ask(&door, &Request::Status).is_ok() {
-        crate::say("koyomi: もう動いている", true);
+        crate::say(&msg::line(msg::ENGINE_ALREADY_RUNNING, &[]), true);
         return 1;
     }
     // The lock the OS drops with the process, so two engines started together cannot both pass.
     let _single = match ito_common::single::acquire("koyomi", "engine") {
         Ok(g) => g,
         Err(held) => {
-            crate::say(&format!("koyomi: もう動いている ({held})"), true);
+            crate::say(&msg::line(msg::ENGINE_LOCK_HELD, &[&held.to_string()]), true);
             return 1;
         }
     };
@@ -2841,7 +2856,7 @@ pub fn run(own_tray: bool) -> i32 {
             }
         }
         if let Ok(false) = mine_rx.try_recv() {
-            crate::say("koyomi: もう動いている", true);
+            crate::say(&msg::line(msg::ENGINE_ALREADY_RUNNING, &[]), true);
             return 1;
         }
         if dirty.swap(false, Ordering::Relaxed) {
@@ -2888,6 +2903,24 @@ fn followed<'a>(runs: &'a [Run], id: &str, date: &str) -> Option<&'a Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn warnings_are_joined_without_their_ids() {
+        let a = msg::line(msg::OS_NO_PWSH, &["経理/a"]);
+        let b = msg::line(msg::OS_RUN_AS, &["経理/a"]);
+        let joined = joined_warnings(&[a.clone(), b.clone()]);
+        assert!(!msg::is_coded(&joined) && !joined.contains("KOYOMI-"), "{joined}");
+        assert!(joined.contains(msg::uncoded(&a)) && joined.contains(msg::uncoded(&b)), "{joined}");
+        assert_eq!(joined_warnings(&[]), "");
+    }
+
+    #[test]
+    fn a_failed_import_keeps_a_coded_reason_and_wraps_a_plain_one() {
+        let coded = msg::line(msg::IMPORT_EMPTY, &[]);
+        assert_eq!(import_failed(coded.clone()), coded);
+        let wrapped = import_failed("bad toml".to_owned());
+        assert!(msg::IMPORT_FAILED.is_in(&wrapped) && wrapped.contains("bad toml"), "{wrapped}");
+    }
 
     /// over HTTP only what its paths ask for goes through; never an approval or a save.
     #[test]
@@ -3063,15 +3096,16 @@ name = \"取込\"
 run = [\"x.exe\"]
 ";
         assert!(s.save("経理/集計", net, None, false).is_ok());
-        assert!(s.hold_job("経理/集計", "nope").unwrap_err().contains("ジョブがない"));
+        let e = s.hold_job("経理/集計", "nope").unwrap_err();
+        assert!(msg::NET_JOB_MISSING.is_in(&e) && e.contains("nope"), "{e}");
         assert!(s.hold_job("経理/無い", "a").is_err());
         assert!(s.hold_job("経理/集計", "a").unwrap().contains("取込"));
-        assert!(s.hold_job("経理/集計", "a").unwrap_err().contains("もう保留している"));
+        assert!(msg::HOLD_JOB_ALREADY.is_in(&s.hold_job("経理/集計", "a").unwrap_err()));
         let back = Held::parse(&std::fs::read_to_string(&paths.held).unwrap()).unwrap();
         assert!(back.is_job_held("経理/集計", "a"));
         assert!(!back.is_held("経理/集計"), "holding a job does not hold the net");
         assert!(s.release_job("経理/集計", "a").is_ok());
-        assert!(s.release_job("経理/集計", "a").unwrap_err().contains("保留していない"));
+        assert!(msg::HOLD_JOB_NOT.is_in(&s.release_job("経理/集計", "a").unwrap_err()));
         let back = Held::parse(&std::fs::read_to_string(&paths.held).unwrap()).unwrap();
         assert!(back.jobs.is_empty());
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
@@ -3104,8 +3138,17 @@ run = [\"x.exe\"]
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), one);
         assert!(!paths.jobnets.join("経理/新規.toml").exists());
         // Something wrong in the file: refused whatever the choice.
-        assert!(s.import("format = 1\n", false, Some("overwrite")).unwrap_err().contains("何も入っていない"));
-        assert!(s.import("nope", false, None).unwrap_err().starts_with("取り込めない"));
+        assert!(msg::IMPORT_EMPTY.is_in(
+            &s.import(
+                "format = 1
+",
+                false,
+                Some("overwrite")
+            )
+            .unwrap_err()
+        ));
+        let bad = s.import("nope", false, None).unwrap_err();
+        assert!(msg::is_coded(&bad), "{bad}");
         let mut broken = bundle::Bundle::new();
         broken.jobnets.push(bundle::Net {
             id: "経理/親".to_owned(),
@@ -3163,7 +3206,8 @@ run = [\"x.exe\"]
 ";
         assert!(s.save("経理/夜", net, None, false).is_ok());
         assert!(s.skip_next("経理/無い", false).is_err());
-        assert_eq!(s.skip_next("経理/夜", true), Err("経理/夜 は飛ばしていない".to_owned()));
+        let not = s.skip_next("経理/夜", true).unwrap_err();
+        assert!(msg::SKIP_NOT.is_in(&not) && not.contains("経理/夜"), "{not}");
         let first = s.skip_next("経理/夜", false).unwrap();
         let second = s.skip_next("経理/夜", false).unwrap();
         assert!(first.contains("02:00") && second.contains("02:00") && first != second, "{first} / {second}");
@@ -3188,7 +3232,12 @@ run = [\"x.exe\"]
             let r = s.import(bad, dry, over).unwrap();
             let plan = proto::Plan::parse(&r).unwrap();
             assert!(plan.problems > 0 && !plan.applied, "{r}");
-            assert!(plan.lines.iter().any(|l| l.contains("問題: koyomi.toml が正しくない")), "{r}");
+            assert!(
+                plan.lines
+                    .iter()
+                    .any(|l| l.trim_start().strip_prefix("問題:").is_some_and(|r| msg::BUNDLE_SETTINGS_BAD.is_in(r.trim_start()))),
+                "{r}"
+            );
         }
         assert_eq!(std::fs::read_to_string(&paths.config).ok(), before, "nothing written");
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
@@ -3214,11 +3263,11 @@ run = [\"x.exe\"]
         let (a, b) = (sha(&s, "経理/甲"), sha(&s, "経理/乙"));
         // (`approve` scans first, which would recompute the injected warning away.)
         let e = s.approve_scanned("経理/甲", &a).unwrap_err();
-        assert!(e.starts_with("承認できない: ") && e.contains("Everyone"), "{e}");
+        assert!(msg::APPROVE_BLOCKED.is_in(&e) && e.contains("Everyone"), "{e}");
         // The CLI/window pre-check asks the same question and gives the same answer.
         assert!(!warnings_about(&paths, &s.warnings, &s.defs, "経理/甲.toml").is_empty());
         assert!(warnings_about(&paths, &s.warnings, &s.defs, "経理/乙.toml").is_empty());
-        assert_eq!(s.approve("経理/乙", &b), Ok("確認した: 経理/乙".to_owned()));
+        assert_eq!(s.approve("経理/乙", &b), Ok(msg::note(msg::N_NET_APPROVED, &["経理/乙"])));
         assert_eq!(standing_of(&s, "経理/乙"), Some(Standing::Confirmed));
         assert_ne!(standing_of(&s, "経理/甲"), Some(Standing::Confirmed));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
@@ -3241,7 +3290,7 @@ id = "a"
 run = ["x.exe"]
 "#;
         let plain = "format = 1\nname = \"n\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
-        assert_eq!(s.save("保守/他人", other, None, false), Ok("保存した: 保守/他人".to_owned()));
+        assert_eq!(s.save("保守/他人", other, None, false), Ok(msg::note(msg::N_SAVED, &["保守/他人"])));
         s.propose("保守/乙", plain, None).unwrap();
         let snap = s.snapshot();
         assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
@@ -3253,7 +3302,7 @@ run = ["x.exe"]
         // The window and the CLI ask the snapshot's warnings before they approve: nothing stands in the way.
         assert!(warnings_about(&paths, &snap.warnings, &snap.defs, "保守/乙.toml").is_empty());
         let sha = s.defs.iter().find(|d| d.id == "保守/乙").unwrap().sha256.clone();
-        assert_eq!(s.approve("保守/乙", &sha), Ok("確認した: 保守/乙".to_owned()));
+        assert_eq!(s.approve("保守/乙", &sha), Ok(msg::note(msg::N_NET_APPROVED, &["保守/乙"])));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
@@ -3265,7 +3314,7 @@ run = ["x.exe"]
         let one = "format = 1\nname = \"一\"\n\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
         let two = "format = 1\nname = \"二\"\n\n[[job]]\nid = \"a\"\nrun = [\"y.exe\"]\n";
         // A new net: nothing to be based on.
-        assert_eq!(s.save("経理/集計", one, None, false), Ok("保存した: 経理/集計".to_owned()));
+        assert_eq!(s.save("経理/集計", one, None, false), Ok(msg::note(msg::N_SAVED, &["経理/集計"])));
         let file = paths.jobnets.join("経理").join("集計.toml");
         assert_eq!(std::fs::read_to_string(&file).unwrap(), one);
         assert_eq!(standing_of(&s, "経理/集計"), Some(Standing::Confirmed));
@@ -3304,7 +3353,7 @@ run = ["x.exe"]
         assert!(s.save("集計", two, None, true).is_err());
         assert!(s.save("../x/y", two, None, true).is_err());
         // A restore puts the version back, keeps today's, and leaves the net unconfirmed.
-        assert_eq!(s.restore("経理/集計", "20000101-000000"), Err("版がない: 経理/集計 の 20000101-000000".to_owned()));
+        assert_eq!(s.restore("経理/集計", "20000101-000000"), Err(msg::line(msg::VERSION_MISSING, &["経理/集計", "20000101-000000"])));
         assert!(s.restore("経理/集計", "../../approved").is_err());
         assert!(s.restore("経理/集計", "nope").is_err());
         let said = s.restore("経理/集計", &versions[0]).unwrap();
@@ -3358,6 +3407,28 @@ run = ["x.exe"]
     }
 
     #[test]
+    fn a_reference_that_cannot_be_followed_keeps_its_id_and_names_the_referrer() {
+        let paths = temp_paths("rename-unfollowed");
+        let mut s = State::new(paths.clone());
+        let parent = "format = 1
+name = \"親\"
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+";
+        // The child names the parent in a string with escapes, which the rewrite does not follow.
+        let child = "format = 1\nname = \"子\"\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"\\u7d4c\\u7406/\\u89aa\"\n";
+        assert!(s.save("経理/親", parent, None, false).is_ok());
+        assert!(s.save("経理/子", child, None, false).is_ok());
+        let err = s.rename("経理/親", "総務/親", true).unwrap_err();
+        assert!(msg::RETARGET_UNFOLLOWED.is_in(&err), "{err}");
+        let head = msg::line(msg::RETARGET_UNFOLLOWED, &["経理/親"]);
+        assert_eq!(err, msg::note(msg::N_RENAMED_REFS_FAILED, &[&head, "経理/子"]));
+        assert!(paths.jobnets.join("経理/親.toml").exists() && !paths.jobnets.join("総務/親.toml").exists());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
     fn a_rename_carries_the_net_and_fixes_its_users_a_copy_is_unconfirmed_and_a_delete_is_kept() {
         let paths = temp_paths("rename");
         let mut s = State::new(paths.clone());
@@ -3368,14 +3439,14 @@ run = ["x.exe"]
         assert!(s.hold("経理/親").is_ok());
         // Named by another net: refused, and nothing moved.
         let err = s.rename("経理/親", "総務/親", false).unwrap_err();
-        assert!(err.contains("child net  経理/子") && err.contains("--fix"), "{err}");
+        assert!(msg::RENAME_USED.is_in(&err) && err.contains("child net  経理/子"), "{err}");
         assert!(paths.jobnets.join("経理/親.toml").exists());
-        assert_eq!(s.rename("経理/親", "経理/子", true), Err("もうある: 経理/子".to_owned()));
-        assert_eq!(s.rename("経理/無い", "経理/新", true), Err("定義がない: 経理/無い".to_owned()));
+        assert_eq!(s.rename("経理/親", "経理/子", true), Err(msg::line(msg::JOBNET_EXISTS, &["経理/子"])));
+        assert_eq!(s.rename("経理/無い", "経理/新", true), Err(msg::line(msg::JOBNET_MISSING, &["経理/無い"])));
         assert!(s.rename("経理/親", "総務", true).is_err());
         // With fix: moved, the user pointed at it, both still confirmed, the hold carried.
         let said = s.rename("経理/親", "総務/親", true).unwrap();
-        assert!(said.contains("参照も直した: 経理/子"), "{said}");
+        assert!(said.contains(&msg::note(msg::N_RENAMED_REFS, &["経理/子"])), "{said}");
         assert!(!paths.jobnets.join("経理/親.toml").exists());
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("総務/親.toml")).unwrap(), parent);
         assert_eq!(
@@ -3393,10 +3464,10 @@ run = ["x.exe"]
         // A copy is unconfirmed; the original is not touched.
         assert!(s.copy("総務/親", "総務/親2", None).unwrap().contains("未確認"));
         assert_eq!(standing_of(&s, "総務/親2"), Some(Standing::Unconfirmed));
-        assert_eq!(s.copy("総務/親", "経理/子", None), Err("もうある: 経理/子".to_owned()));
+        assert_eq!(s.copy("総務/親", "経理/子", None), Err(msg::line(msg::JOBNET_EXISTS, &["経理/子"])));
         // A delete is refused while another net names it, and kept as a version when not.
-        assert!(s.delete("総務/親").unwrap_err().contains("先にそちらを直す"));
-        assert!(s.delete("経理/子").unwrap().contains("消した"));
+        assert!(msg::DELETE_USED.is_in(&s.delete("総務/親").unwrap_err()));
+        assert!(s.delete("経理/子").unwrap().contains("削除しました"));
         assert!(!paths.jobnets.join("経理/子.toml").exists());
         assert_eq!(standing_of(&s, "経理/子"), None);
         assert!(s.store.get("経理/子").is_none());
@@ -3448,7 +3519,7 @@ run = [\"x.exe\"]
         assert!(s.stage("経理/締め", next, "12/1", None).unwrap_err().contains("KOYOMI-E3109"));
         assert!(!paths.next.exists());
         // Staged: kept in next.toml and shown; the net runs as it is.
-        assert!(s.stage_on("経理/締め", next, day("2026-12-01"), today).unwrap().contains("2026-12-01 から使う"));
+        assert!(s.stage_on("経理/締め", next, day("2026-12-01"), today).unwrap() == msg::note(msg::N_STAGED, &["2026-12-01", "経理/締め"]));
         assert_eq!(koyomi_core::next::Store::load(&paths.next).unwrap().get("経理/締め").unwrap().text, next);
         assert_eq!(s.snapshot().staged.len(), 1);
         s.switch_staged(day("2026-11-30"));
@@ -3485,7 +3556,10 @@ run = [\"x.exe\"]
         assert_eq!(s.staged.get("経理/a").unwrap().text, net("a3.exe"));
         let a = s.staged.get("経理/a").unwrap().clone();
         let line = s.switch(&a).unwrap();
-        assert!(line.contains("未確認") && line.contains("直されていた"), "{line}");
+        assert!(
+            line.contains(&msg::note(msg::N_SWITCHED_UNCONFIRMED, &[])) && line.contains(&msg::note(msg::N_SWITCHED_CHANGED, &[])),
+            "{line}"
+        );
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/a.toml")).unwrap(), net("a3.exe"));
         assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Unconfirmed));
         s.switch_staged(day("2026-12-01"));
@@ -3493,9 +3567,9 @@ run = [\"x.exe\"]
         assert_eq!(standing_of(&s, "経理/b"), Some(Standing::Confirmed));
         assert!(s.staged.get("経理/b").is_some());
         let cautions = s.snapshot().cautions;
-        assert!(cautions.iter().any(|c| c.contains("経理/b") && c.contains("切り替えられなかった")), "{cautions:?}");
+        assert!(cautions.iter().any(|c| msg::SWITCH_FAILED.is_in(c) && c.contains("経理/b")), "{cautions:?}");
         // Dropped: the net runs as it is, and the caution goes.
-        assert!(s.unstage("経理/b").unwrap().contains("やめた"));
+        assert!(s.unstage("経理/b").unwrap().contains("取り消しました"));
         assert!(s.staged_failed.is_empty() && s.staged.next.is_empty());
         assert!(s.unstage("経理/b").is_err());
         // A next.toml that does not read stops every change, and nothing is written over it.
@@ -3529,7 +3603,10 @@ run = [\"x.exe\"]
         assert_eq!(koyomi_core::next::Store::load(&paths.next).unwrap(), s.staged);
         // The rename's own change to the child's file is not told as a change by hand.
         let line = s.switch(&c).unwrap();
-        assert!(!line.contains("直されていた") && !line.contains("未確認"), "{line}");
+        assert!(
+            !line.contains(&msg::note(msg::N_SWITCHED_CHANGED, &[])) && !line.contains(&msg::note(msg::N_SWITCHED_UNCONFIRMED, &[])),
+            "{line}"
+        );
         assert_eq!(standing_of(&s, "経理/子"), Some(Standing::Confirmed));
         s.switch_staged(day("2026-12-01"));
         assert_eq!(standing_of(&s, "総務/親"), Some(Standing::Confirmed));
@@ -3597,9 +3674,9 @@ run = [\"x.exe\"]
 ";
         assert!(s.save("経理/一", one, None, false).is_ok());
         assert!(s.save("経理/二", two, None, false).is_ok());
-        assert_eq!(s.replace("", "x", false), Err("探す文字が空".to_owned()));
-        assert_eq!(s.replace("x", "x", true), Err("探す文字と直す文字が同じ".to_owned()));
-        assert_eq!(s.replace("//nowhere", "x", true), Ok("見つからない: //nowhere".to_owned()));
+        assert_eq!(s.replace("", "x", false), Err(msg::line(msg::REPLACE_FROM_EMPTY, &[])));
+        assert_eq!(s.replace("x", "x", true), Err(msg::line(msg::REPLACE_SAME, &[])));
+        assert_eq!(s.replace("//nowhere", "x", true), Ok(msg::note(msg::N_REPLACE_NONE, &["//nowhere"])));
         // Shown, not written.
         let shown = s.replace("//old", "//new", false).unwrap();
         assert!(
@@ -3609,11 +3686,11 @@ run = [\"x.exe\"]
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/一.toml")).unwrap(), one);
         // A result that does not read is refused, and nothing is written.
         let err = s.replace("\"a\"", "a", true).unwrap_err();
-        assert!(err.contains("何も書かなかった"), "{err}");
+        assert!(msg::REPLACE_UNREADABLE.is_in(&err) && err.contains("経理/一"), "{err}");
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/二.toml")).unwrap(), two);
         // Applied: written, the old form kept, unconfirmed again; the other net stays confirmed.
         let said = s.replace("//old", "//new", true).unwrap();
-        assert!(said.contains("1 個のジョブネットの 1 行"), "{said}");
+        assert!(said.contains(&msg::note(msg::N_REPLACED, &["1", "1"])), "{said}");
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/一.toml")).unwrap(), one.replace("//old", "//new"));
         assert_eq!(standing_of(&s, "経理/一"), Some(Standing::Unconfirmed));
         assert_eq!(standing_of(&s, "経理/二"), Some(Standing::Confirmed));
@@ -3940,7 +4017,7 @@ run = [\"x.exe\"]
         // Changed by hand; no `rescan()`.
         std::fs::write(paths.jobnets.join("経理").join("a.toml"), net("b.exe")).unwrap();
         let err = s.approve("経理/a", &sha).unwrap_err();
-        assert!(err.contains("変わった"), "{err}");
+        assert!(msg::APPROVE_CHANGED.is_in(&err), "{err}");
         assert_eq!(s.store.to_toml(), before);
         assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Unconfirmed));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
@@ -4017,7 +4094,7 @@ run = [\"x.exe\"]
         assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Unconfirmed));
         let version = Versions::parse(&s.versions("経理/a").unwrap()).unwrap().versions[0].clone();
         let reply = s.restore("経理/a", &version).unwrap();
-        assert!(reply.contains("確認済みと同じ中身"), "{reply}");
+        assert_eq!(reply, msg::note(msg::N_RESTORED_SAME, &[&version, "経理/a"]));
         assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Confirmed));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }

@@ -9,6 +9,7 @@ use std::sync::mpsc::{self, Receiver};
 
 use chrono::NaiveDate;
 use ito_common::kept;
+use koyomi_core::msg;
 use koyomi_core::retain::{cutoff, sweep, Archive, Swept};
 use serde::{Deserialize, Serialize};
 
@@ -109,17 +110,21 @@ impl Retain {
     pub fn line(&self) -> String {
         let k = &self.last;
         if k.at.is_empty() {
-            return "記録の整理: まだ".to_owned();
+            return msg::note(msg::N_RETAIN_NONE, &[]);
         }
-        let mut s = format!("記録の整理: {}、{} 日分を残す、ログ {} 日・履歴 {} 日を消した", k.at, k.keep_days, k.logs, k.history);
+        let mut s = msg::note(msg::N_RETAIN_DONE, &[&k.at, &k.keep_days.to_string(), &k.logs.to_string(), &k.history.to_string()]);
         if k.archive {
-            s.push_str(&format!("、{} 日分を archive/ に入れた", k.archived));
+            s.push(' ');
+            s.push_str(&msg::note(msg::N_RETAIN_ARCHIVED, &[&k.archived.to_string()]));
         }
         if k.pruned > 0 {
-            s.push_str(&format!("、古い zip {} 個を消した", k.pruned));
+            s.push(' ');
+            s.push_str(&msg::note(msg::N_RETAIN_PRUNED, &[&k.pruned.to_string()]));
         }
         if !k.errors.is_empty() {
-            s.push_str(&format!("、消せなかった {} 件: {}", k.errors.len(), k.errors.join(" / ")));
+            let each: Vec<&str> = k.errors.iter().map(|e| msg::uncoded(e)).collect();
+            s.push(' ');
+            s.push_str(&msg::note(msg::N_RETAIN_ERRORS, &[&k.errors.len().to_string(), &each.join(" / ")]));
         }
         s
     }
@@ -145,7 +150,7 @@ mod tests {
         let old = dir.join("logs").join("2020-01-01");
         std::fs::create_dir_all(&old).unwrap();
         let mut r = Retain::new(&dir);
-        assert_eq!(r.line(), "記録の整理: まだ");
+        assert_eq!(r.line(), msg::note(msg::N_RETAIN_NONE, &[]));
         let mut line = None;
         for _ in 0..200 {
             line = r.tick(KEEP_90);
@@ -155,7 +160,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let line = line.expect("the sweep answers");
-        assert!(line.contains("ログ 1 日・履歴 0 日"), "{line}");
+        assert!(line.contains("ログ 1 日分と履歴 0 日分"), "{line}");
         assert!(!line.contains("archive/"), "{line}");
         assert!(!old.exists());
         // The same day and days: nothing more.
@@ -189,7 +194,7 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         let line = line.expect("the sweep answers");
-        assert!(line.contains("ログ 1 日・履歴 0 日を消した、1 日分を archive/ に入れた"), "{line}");
+        assert!(line.contains("ログ 1 日分と履歴 0 日分を削除しました。 1 日分を archive/ に移動しました"), "{line}");
         assert!(!old.exists());
         assert!(dir.join("archive").join("2020-01.zip").exists());
         // Turning it off is another sweep.
