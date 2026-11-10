@@ -91,10 +91,33 @@ fn connect(r: &Remote) -> Result<Conn, String> {
 
 /// The one place a client for another PC is made.
 fn build(r: &Remote) -> Result<Client, String> {
-    let mut client = remote::client(r)?;
+    Ok(limited(remote::client(r)?))
+}
+
+/// `client` with the deadline and the reply limit every call to another PC has.
+fn limited(mut client: Client) -> Client {
     client.deadline = Some(CALL_DEADLINE);
     client.max_reply = MAX_REPLY;
-    Ok(client)
+    client
+}
+
+/// The check the add-a-connection box makes before it writes anything: the PC at `url` (its certificate pinned
+/// to `fingerprint`) answers `GET /health`, and `token` is one a window may be driven with (`GET /me`). The
+/// client is built from what was typed: no secret is read, and nothing is written. The token is never put in a
+/// message.
+pub fn probe(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<Role, String> {
+    let r =
+        Remote { name: name.to_owned(), url: url.to_owned(), fingerprint: fingerprint.to_owned(), token: format!("secret:{name}-token") };
+    let client = limited(Client::new(url.trim(), fingerprint.trim(), token).map_err(|e| remote::why(&r, &e))?);
+    let health = client.get("/health").map_err(|e| remote::why(&r, &e))?;
+    if !(200..=299).contains(&health.status) {
+        return Err(read_status(&r, health.status, &health.json));
+    }
+    let me = client.get("/me").map_err(|e| remote::why(&r, &e))?;
+    match me.status {
+        200..=299 => admit(&me.json),
+        s => Err(read_status(&r, s, &me.json)),
+    }
 }
 
 impl Conn {
@@ -225,6 +248,12 @@ mod tests {
     fn an_unknown_name_is_an_error_not_this_pc() {
         let e = Link::Far("no-such-pc-for-this-test".into()).start().err().expect("an error");
         assert!(e.contains("no-such-pc-for-this-test"), "{e}");
+    }
+
+    #[test]
+    fn a_probe_with_an_address_that_does_not_read_fails_without_the_network() {
+        let e = probe("kei", "http://not-https", &"ab".repeat(32), "tok").unwrap_err();
+        assert!(e.starts_with("kei:") && !e.contains("tok"), "{e}");
     }
 
     #[test]

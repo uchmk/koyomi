@@ -162,6 +162,17 @@ fn shown(p: &Path) -> String {
     s.strip_prefix(r"\\?\").map(str::to_owned).unwrap_or(s)
 }
 
+/// The first name `dir/<name>.<ext>` is not taken under: `stamp`, else `stamp-2`, `stamp-3` ...
+fn free_version(dir: &Path, stamp: &str, ext: &str) -> String {
+    let mut version = stamp.to_owned();
+    let mut n = 1;
+    while dir.join(format!("{version}.{ext}")).exists() {
+        n += 1;
+        version = format!("{stamp}-{n}");
+    }
+    version
+}
+
 /// A time of a net that is due but waits for the end of another net's run on
 /// the same business day (`wait_for`), until `until` (`wait_until`).
 struct Waiting {
@@ -1901,17 +1912,17 @@ impl State {
         self.keep_copy(path, dir, "toml")
     }
 
-    /// Copies the file at `path`, when there is one, to `dir/<YYYYMMDD-HHMMSS>.<ext>`.
+    /// Copies the file at `path`, when there is one, to `dir/<YYYYMMDD-HHMMSS>.<ext>`. Only a file that is not
+    /// there means there is nothing to keep; one that cannot be read is an error, and the caller writes nothing.
     fn keep_copy(&self, path: &Path, dir: &Path, ext: &str) -> Result<(), String> {
-        let Ok(old) = std::fs::read(path) else { return Ok(()) };
+        let old = match std::fs::read(path) {
+            Ok(old) => old,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(e) => return Err(format!("{} を読めない: {e}", shown(path))),
+        };
         std::fs::create_dir_all(dir).map_err(|e| format!("{} を作れない: {e}", shown(dir)))?;
         let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
-        let mut version = stamp.clone();
-        let mut n = 1;
-        while dir.join(format!("{version}.{ext}")).exists() {
-            n += 1;
-            version = format!("{stamp}-{n}");
-        }
+        let version = free_version(dir, &stamp, ext);
         ito_common::write_atomic(&dir.join(format!("{version}.{ext}")), old)
     }
 
@@ -3685,6 +3696,8 @@ run = [\"x.exe\"]
         assert_eq!(versions("会社"), 0);
         assert!(s.calendar_put("会社", two, Some(&body.sha256)).is_ok());
         assert_eq!(versions("会社"), 1);
+        let only = std::fs::read_dir(paths.state.join("versions/_calendars/会社")).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(&only).unwrap(), one.as_bytes(), "the kept copy is the old file's bytes");
         assert!(s.calendar_put("会社", "format = [\n", Some(&approved::hash(two.as_bytes()))).is_err());
         // A rename does not take over a calendar there.
         assert!(s.calendar_put("工場", one, None).is_ok());
@@ -3727,6 +3740,45 @@ run = [\"x.exe\"]
         assert!(s.holiday_table(more.as_bytes()).is_ok());
         assert_eq!(std::fs::read(&file).unwrap(), more.as_bytes());
         assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 1);
+        let only = std::fs::read_dir(&kept).unwrap().next().unwrap().unwrap().path();
+        assert_eq!(std::fs::read(&only).unwrap(), csv.as_bytes(), "the kept copy is the old table's bytes");
+        // A Shift_JIS table (as the Cabinet Office writes it) is accepted and written as it came.
+        let sjis = b"2028/1/1,\x8c\xb3\x93\xfa\r\n";
+        assert!(s.holiday_table(sjis).is_ok());
+        assert_eq!(std::fs::read(&file).unwrap(), sjis);
+        assert_eq!(std::fs::read_dir(&kept).unwrap().count(), 2, "the table it replaced was kept too");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// The next free name of a version is `stamp`, then `stamp-2`, `stamp-3`.
+    #[test]
+    fn free_version_skips_the_names_that_are_taken() {
+        let paths = temp_paths("free-version");
+        let dir = paths.app.join("v");
+        std::fs::create_dir_all(&dir).unwrap();
+        assert_eq!(free_version(&dir, "20260101-000000", "toml"), "20260101-000000");
+        std::fs::write(dir.join("20260101-000000.toml"), "").unwrap();
+        assert_eq!(free_version(&dir, "20260101-000000", "toml"), "20260101-000000-2");
+        std::fs::write(dir.join("20260101-000000-2.toml"), "").unwrap();
+        assert_eq!(free_version(&dir, "20260101-000000", "toml"), "20260101-000000-3");
+        assert_eq!(free_version(&dir, "20260101-000000", "csv"), "20260101-000000", "another extension is another name");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// A file that cannot be read is not "no file": the copy is not skipped, and nothing is created.
+    #[test]
+    fn a_file_that_cannot_be_read_stops_the_keeping_and_creates_nothing() {
+        let paths = temp_paths("keep-unreadable");
+        let s = State::new(paths.clone());
+        let dir = paths.state.join("versions/x");
+        let not_a_file = paths.app.join("is-a-folder.toml");
+        std::fs::create_dir_all(&not_a_file).unwrap();
+        let e = s.keep_copy(&not_a_file, &dir, "toml").unwrap_err();
+        assert!(e.contains("を読めない") && e.contains("is-a-folder.toml"), "{e}");
+        assert!(!dir.exists(), "nothing is created in the versions folder");
+        // No file at all is nothing to keep.
+        assert!(s.keep_copy(&paths.app.join("none.toml"), &dir, "toml").is_ok());
+        assert!(!dir.exists());
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

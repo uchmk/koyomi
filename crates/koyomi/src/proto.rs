@@ -297,7 +297,6 @@ impl CalendarBody {
     }
 
     /// Read by a window of another PC, which is wired apart from the engine.
-    #[allow(dead_code)]
     pub fn parse(text: &str) -> Result<CalendarBody, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }

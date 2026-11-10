@@ -11,6 +11,7 @@
 //!   (`POST /nets/propose`, where it lands unconfirmed): the window's 別の PC に送る and
 //!   `koyomi remote send <name> <net>`.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ito_http::client::{self, Client, Reply};
@@ -75,6 +76,67 @@ pub fn query(s: &str) -> String {
 
 fn remotes() -> Result<Vec<Remote>, String> {
     Ok(Paths::find()?.config()?.remote)
+}
+
+/// Why a name cannot be a new `[[remote]]`'s.
+#[derive(Debug, PartialEq, Eq)]
+pub enum NameWhy {
+    Empty,
+    /// A `[[remote]]` has it already.
+    Taken,
+    /// Not usable as part of the secret's name `<name>-token`, or as a `[[remote]]` name.
+    Bad,
+}
+
+/// Whether `name` may be a new `[[remote]]`'s: not empty, not one of `have`, and made of what a secret's name
+/// and a `[[remote]]` name may hold (no space, no path separator, no control character).
+pub fn check_name(name: &str, have: &[String]) -> Result<(), NameWhy> {
+    let name = name.trim();
+    if name.is_empty() {
+        Err(NameWhy::Empty)
+    } else if name.chars().any(|c| c.is_whitespace() || c.is_control() || matches!(c, '/' | '\\' | '"' | '\'' | ':')) {
+        Err(NameWhy::Bad)
+    } else if have.iter().any(|h| h.trim().eq_ignore_ascii_case(name)) {
+        Err(NameWhy::Taken)
+    } else {
+        Ok(())
+    }
+}
+
+/// `text` (koyomi.toml) with `new` added to its `[[remote]]` after every one of `remotes` (those already read
+/// from it, so none is lost). Comments and the other tables stay. The result must read as a koyomi.toml.
+/// It refuses a name the file has already (the box's own list may be old) and a secret another `[[remote]]` uses
+/// (writing the token there would overwrite theirs).
+pub fn with_remote(text: &str, remotes: &[Remote], new: &Remote) -> Result<String, String> {
+    let have: Vec<String> = remotes.iter().map(|r| r.name.clone()).collect();
+    match check_name(&new.name, &have) {
+        Ok(()) => {}
+        Err(NameWhy::Taken) => return Err(format!("{} はもう koyomi.toml にある", new.name.trim())),
+        Err(_) => return Err(format!("{:?} はつなぎ先の名前に使えない", new.name.trim())),
+    }
+    let secret = new.secret();
+    if !secret.is_empty() && remotes.iter().any(|r| r.secret().eq_ignore_ascii_case(secret)) {
+        return Err(format!("{secret} はほかのつなぎ先が使っている"));
+    }
+    let quote = |s: &str| toml::Value::String(s.to_owned()).to_string();
+    let block = |r: &Remote| -> Vec<(&'static str, String)> {
+        vec![("name", quote(&r.name)), ("url", quote(&r.url)), ("fingerprint", quote(&r.fingerprint)), ("token", quote(&r.token))]
+    };
+    let blocks: Vec<Vec<(&str, String)>> = remotes.iter().chain(std::iter::once(new)).map(block).collect();
+    let out = ito_common::set_tables(text, "remote", &blocks)?;
+    koyomi_core::config::Config::parse(&out)?;
+    Ok(out)
+}
+
+/// Where this PC's koyomi.toml is and what it would hold with `new` added. It writes nothing, and it blocks:
+/// not on the UI thread.
+pub fn prepare_add(new: &Remote) -> Result<(PathBuf, String), String> {
+    let paths = Paths::find()?;
+    let path = paths.config.clone();
+    let text = ito_common::read_or_empty(&path)?;
+    let remotes = koyomi_core::config::Config::parse(&text)?.remote;
+    let out = with_remote(&text, &remotes, new)?;
+    Ok((path, out))
 }
 
 /// The `[[remote]]` names, for the window's PC list. It reads koyomi.toml: not on the UI thread.
@@ -150,13 +212,18 @@ fn list() -> Result<String, String> {
     Ok(lines.join("\n"))
 }
 
+/// The fingerprint the PC at `url` shows, or why not in the person's words. It blocks: not on the UI thread.
+pub(crate) fn peek_fingerprint(url: &str) -> Result<String, String> {
+    client::peek_fingerprint(url.trim(), PEEK_WAIT).map_err(|e| format!("{url}: {}", peek_why(&e)))
+}
+
 fn peek(url: &str) -> Result<String, String> {
-    let fp = client::peek_fingerprint(url, PEEK_WAIT).map_err(|e| format!("{url}: {}", peek_why(&e)))?;
+    let fp = peek_fingerprint(url)?;
     Ok(format!("fingerprint = \"{fp}\"\n向こうの PC で koyomi http fingerprint が同じものを出すのを確かめてから、[[remote]] に書く"))
 }
 
 /// What `peek` could not do, in Japanese (ito-http's own texts are English).
-fn peek_why(e: &client::Error) -> String {
+pub(crate) fn peek_why(e: &client::Error) -> String {
     match e {
         client::Error::Url(s) => format!("アドレスが読めない: {s}（https://ホスト[:ポート] で書く）"),
         client::Error::Connect(s) => {
@@ -360,5 +427,79 @@ mod tests {
         assert_eq!(There::from_json(&serde_json::json!({ "text": "x", "sha256": "s" })).standing, None);
         assert_eq!(sent_line("本番", "g/a", false), "本番 に送った: g/a（向こうでは未確認。本番 の窓で確認するまで流れない）");
         assert_eq!(sent_line("本番", "g/a", true), "本番 に送った: g/a（向こうの確認済みと同じ中身。そのまま流れる）");
+    }
+
+    fn remote_of(name: &str) -> Remote {
+        Remote {
+            name: name.into(),
+            url: format!("https://{name}:8443"),
+            fingerprint: "ab".repeat(32),
+            token: format!("secret:{name}-token"),
+        }
+    }
+
+    #[test]
+    fn with_remote_adds_one_and_keeps_comments_other_tables_and_every_existing_remote() {
+        let text = "# my settings\nkeep_days = 30 # keep\n\n[vars]\nplace = \"x\"\n\n# the factory\n[[remote]]\nname = \"fact\"\nurl = \"https://fact:8443\"\nfingerprint = \"".to_owned()
+            + &"cd".repeat(32)
+            + "\"\ntoken = \"secret:fact-token\"\n\n[[remote]]\nname = \"office\"\nurl = \"https://office:8443\"\nfingerprint = \""
+            + &"ef".repeat(32)
+            + "\"\ntoken = \"secret:office-token\"\n";
+        let have = koyomi_core::config::Config::parse(&text).unwrap().remote;
+        assert_eq!(have.len(), 2);
+        let out = with_remote(&text, &have, &remote_of("new")).unwrap();
+        for kept in ["# my settings", "keep_days = 30 # keep", "[vars]", "place = \"x\"", "# the factory"] {
+            assert!(out.contains(kept), "{kept} lost:\n{out}");
+        }
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        let names: Vec<&str> = now.iter().map(|r| r.name.as_str()).collect();
+        assert_eq!(names, ["fact", "office", "new"]);
+        assert_eq!(now[0].fingerprint, "cd".repeat(32));
+        assert_eq!(now[2].token, "secret:new-token");
+        assert_eq!(now[2].url, "https://new:8443");
+    }
+
+    #[test]
+    fn with_remote_works_on_an_empty_text() {
+        let out = with_remote("", &[], &remote_of("new")).unwrap();
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        assert_eq!(now.len(), 1);
+        assert_eq!(now[0].name, "new");
+    }
+
+    #[test]
+    fn with_remote_refuses_a_name_the_file_has_in_any_case_and_a_secret_another_remote_uses() {
+        let have = vec![remote_of("Fact")];
+        let text = with_remote("", &[], &have[0]).unwrap();
+        let e = with_remote(&text, &have, &remote_of("fact")).unwrap_err();
+        assert!(e.contains("fact"), "{e}");
+        assert!(with_remote(&text, &have, &remote_of("FACT")).is_err());
+        let mut other = remote_of("new");
+        other.token = "secret:FACT-token".into();
+        let e = with_remote(&text, &have, &other).unwrap_err();
+        assert_eq!(e, "FACT-token はほかのつなぎ先が使っている");
+        // Nothing of either was written, and a fresh name and secret still go in.
+        assert!(with_remote(&text, &have, &remote_of("new")).is_ok());
+    }
+
+    #[test]
+    fn a_remote_that_does_not_read_back_is_not_written() {
+        let mut bad = remote_of("new");
+        bad.fingerprint = "short".into();
+        assert!(with_remote("", &[], &bad).is_err());
+    }
+
+    #[test]
+    fn a_remote_name_is_checked_for_empty_taken_and_secret_name_characters() {
+        let have = vec!["Fact".to_owned()];
+        assert_eq!(check_name("", &have), Err(NameWhy::Empty));
+        assert_eq!(check_name("  ", &have), Err(NameWhy::Empty));
+        assert_eq!(check_name("fact", &have), Err(NameWhy::Taken));
+        assert_eq!(check_name(" Fact ", &have), Err(NameWhy::Taken));
+        for bad in ["a b", "a/b", "a\\b", "a\"b", "a'b", "a:b", "a\tb", "a\nb"] {
+            assert_eq!(check_name(bad, &have), Err(NameWhy::Bad), "{bad:?}");
+        }
+        assert_eq!(check_name("office-2", &have), Ok(()));
+        assert_eq!(check_name("工場", &have), Ok(()));
     }
 }

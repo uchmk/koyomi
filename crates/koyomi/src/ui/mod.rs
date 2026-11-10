@@ -39,9 +39,45 @@ const FAR_RETRY: Duration = Duration::from_secs(10);
 /// How often it is asked which PC runs the schedules (`[standby]` or `[primary]`).
 const HA_POLL: Duration = Duration::from_secs(30);
 
-/// What the thread is asked to do. Only a request for now.
+/// What the thread is asked to do.
 enum Job {
     Ask(Request),
+    /// A change to one calendar: the text is fetched first, the change is made on what was fetched, and the
+    /// write carries the hash of what was fetched. It is the same path for this PC and another.
+    Calendar {
+        name: String,
+        change: CalendarChange,
+    },
+}
+
+/// What a calendar edit does to the text the engine has: the new text, or why it cannot.
+pub(super) type EditFn = Box<dyn FnOnce(&str) -> Result<String, String> + Send>;
+
+/// What a calendar job does to the fetched text.
+pub(super) enum CalendarChange {
+    /// Makes the new text from the fetched one; a failure writes nothing.
+    Edit(EditFn),
+    Delete,
+}
+
+/// The words every failure before the write ends with: nothing was changed.
+fn unchanged(why: &str) -> String {
+    format!("{why}。変えていない")
+}
+
+/// One calendar change: ask for the calendar's text, change it, and write it back with the hash it was read
+/// at. Any failure before the write says nothing was changed. The write's own answer comes back as it is: an
+/// engine refusal verbatim, a broken connection with its 「届いたか分からない」. Never retried on its own.
+fn calendar_job(name: &str, change: CalendarChange, call: &dyn Fn(&Request) -> Result<String, String>) -> Result<String, String> {
+    let body =
+        call(&Request::CalendarText { name: name.to_owned() }).and_then(|t| proto::CalendarBody::parse(&t)).map_err(|e| unchanged(&e))?;
+    match change {
+        CalendarChange::Edit(f) => {
+            let text = f(&body.text).map_err(|e| unchanged(&e))?;
+            call(&Request::CalendarPut { name: name.to_owned(), text, base_sha256: Some(body.sha256) })
+        }
+        CalendarChange::Delete => call(&Request::CalendarDelete { name: name.to_owned(), base_sha256: body.sha256 }),
+    }
 }
 
 /// One request that is in the worker's hands and is not a read: it counts while it is alive, and it is
@@ -81,14 +117,25 @@ struct Outbox {
 }
 
 impl Outbox {
-    fn send(&self, request: Request) {
+    /// Whether the request was sent (`false`: refused while a switch of the link waits).
+    fn send(&self, request: Request) -> bool {
         if self.switching.get() && !request.is_read() {
             self.refused.set(true);
-            return;
+            return false;
         }
         let pending = (!request.is_read()).then(|| Pending::new(&self.pending));
         // A failed send gives the envelope back inside the error, and its drop takes the count off again.
-        let _ = self.tx.send(Work { job: Job::Ask(request), pending });
+        self.tx.send(Work { job: Job::Ask(request), pending }).is_ok()
+    }
+
+    /// A calendar job is never a read: it always counts, and it is refused while a switch waits.
+    fn send_calendar(&self, name: String, change: CalendarChange) -> bool {
+        if self.switching.get() {
+            self.refused.set(true);
+            return false;
+        }
+        let pending = Some(Pending::new(&self.pending));
+        self.tx.send(Work { job: Job::Calendar { name, change }, pending }).is_ok()
     }
 }
 
@@ -133,20 +180,27 @@ fn after_list_failure(link: &Link) -> Option<Duration> {
     link.is_far().then_some(FAR_RETRY)
 }
 
+/// One job is answered, and only then is its envelope dropped (the window counts on that order). Whether the
+/// window is still there to hear it comes back.
+fn answer(work: Work, reply: &dyn Fn(&Request) -> Result<String, String>, send: &dyn Fn(Msg) -> bool) -> bool {
+    let Work { job, pending } = work;
+    let alive = match job {
+        Job::Ask(request) => {
+            let r = reply(&request);
+            send(Msg::Answer(request, r))
+        }
+        Job::Calendar { name, change } => send(Msg::CalendarDone(calendar_job(&name, change, reply))),
+    };
+    drop(pending);
+    alive
+}
+
 /// The thread: keeps the link up, answers the window's requests and asks for the list, the runs, the log being
 /// watched and the handover. It ends when the window drops its side of a channel.
 fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui::Context, seen: &Watch) {
     let send = |m: Msg| {
         let alive = tx_msg.send(m).is_ok();
         ctx.request_repaint();
-        alive
-    };
-    // A request is answered, and only then is its envelope dropped (the window counts on that order).
-    let answer = |work: Work, reply: &dyn Fn(&Request) -> Result<String, String>| -> bool {
-        let Work { job: Job::Ask(request), pending } = work;
-        let r = reply(&request);
-        let alive = send(Msg::Answer(request, r));
-        drop(pending);
         alive
     };
     let poll = link.poll();
@@ -168,7 +222,7 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
                 }
                 Err(e) => {
                     for work in rx_req.try_iter() {
-                        if !answer(work, &|_| Err(e.clone())) {
+                        if !answer(work, &|_| Err(e.clone()), &send) {
                             return;
                         }
                     }
@@ -177,7 +231,7 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
                     }
                     match rx_req.recv_timeout(after_list_failure(link).unwrap_or(poll * 3)) {
                         Ok(work) => {
-                            if !answer(work, &|_| Err(e.clone())) {
+                            if !answer(work, &|_| Err(e.clone()), &send) {
                                 return;
                             }
                         }
@@ -191,7 +245,7 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
         let Some(c) = conn.as_ref() else { continue };
         match rx_req.recv_timeout(wait) {
             Ok(work) => {
-                if !answer(work, &|r| c.call(r)) {
+                if !answer(work, &|r| c.call(r), &send) {
                     return;
                 }
             }
@@ -250,6 +304,8 @@ enum Msg {
     Down(String),
     /// The engine's answer to a request the window sent.
     Answer(Request, Result<String, String>),
+    /// The engine's answer to a calendar job: its own text, or why nothing was changed.
+    CalendarDone(Result<String, String>),
     /// File work done off the UI thread: a line for under the detail, or why not.
     Done(Result<Said, Said>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
@@ -838,7 +894,7 @@ impl Browser {
 
     /// The picker of the link: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
     pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
-        if !self.link.is_far() && self.far.names().is_empty() {
+        if !self.link.is_far() && self.far.names().is_empty() && self.down.is_none() {
             return;
         }
         let this_pc = t.tr("link.this_pc").to_owned();
@@ -853,6 +909,13 @@ impl Browser {
                     pick = Some(Link::Far(name.clone()));
                 }
             }
+            ui.separator();
+            let add = t.tr("link.add");
+            let r = ui.selectable_label(false, add);
+            ito_a11y::say(&r, Role::Button, add);
+            if r.clicked() {
+                self.far.open_add();
+            }
         });
         ito_a11y::say(&combo.response, Role::Button, &format!("{} {current}", t.tr("link.pick")));
         if let Some(l) = pick.filter(|l| *l != self.link) {
@@ -863,8 +926,8 @@ impl Browser {
     /// Hands a request to the thread. A request that is not a read is counted until the thread has finished
     /// it. While a switch of the link waits, a write is refused (and said so); a read still goes, and its answer
     /// goes to this browser, which goes away with the switch.
-    fn send(&self, request: Request) {
-        self.out.send(request);
+    fn send(&self, request: Request) -> bool {
+        self.out.send(request)
     }
 
     /// Whether the engine has answered once.
@@ -893,8 +956,17 @@ impl Browser {
         }
     }
 
+    /// Opens the box that adds a `[[remote]]` (the command palette uses it).
+    pub fn add_remote_box(&mut self) {
+        self.far.open_add();
+    }
+
     pub fn drain(&mut self) {
         self.far.drain();
+        if let Some(name) = self.far.take_joined() {
+            // The one way the window changes its link: the pick is taken by the app.
+            self.want_link = Some(Link::Far(name));
+        }
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,
@@ -1029,6 +1101,15 @@ impl Browser {
                     Some(e) if e.id == id => e.result = Some(r),
                     _ => self.result = Some(r),
                 },
+                Msg::CalendarDone(r) => self.cal_result = Some(r),
+                Msg::Answer(Request::CalendarPut { name, .. } | Request::CalendarRename { to: name, .. }, r) => {
+                    if self.new_cal.as_ref().is_some_and(|m| m.waiting) {
+                        self.new_cal_answer(name, r);
+                    } else {
+                        self.cal_result = Some(r);
+                    }
+                }
+                Msg::Answer(Request::HolidayTable { .. }, r) => self.cal_result = Some(r),
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -1838,7 +1919,9 @@ impl Browser {
                     let staged =
                         self.snap.as_ref().and_then(|s| s.staged.iter().find(|n| n.id == e.id)).map(koyomi_core::next::Entry::seal);
                     match stage_request(&e.id, e.base.clone(), staged, text, from) {
-                        Ok(r) => self.out.send(r),
+                        Ok(r) => {
+                            self.out.send(r);
+                        }
                         Err(m) => e.result = Some(Err(m)),
                     }
                 }
@@ -1884,6 +1967,7 @@ impl Browser {
             self.result = Some(Err(t.tr("link.switching_refused").to_owned()));
         }
         let ctx = ui.ctx().clone();
+        self.far.add_box(&ctx, t);
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;
@@ -4567,9 +4651,14 @@ pub(crate) fn box_foot<R>(ui: &mut egui::Ui, buttons: impl FnOnce(&mut egui::Ui)
 /// A box's two buttons at its foot: what it is for (filled, with `mark`), then one that closes it doing nothing,
 /// rightmost. `Some(0)` or `Some(1)` for the one clicked, as Enter and Esc give.
 pub(crate) fn box_answer(ui: &mut egui::Ui, mark: ito_prefs::Mark, go: &str, cancel: &str) -> Option<usize> {
+    box_answer_on(ui, true, mark, go, cancel)
+}
+
+/// [`box_answer`] with the go button off while `enabled` is false (a request is with the engine).
+pub(crate) fn box_answer_on(ui: &mut egui::Ui, enabled: bool, mark: ito_prefs::Mark, go: &str, cancel: &str) -> Option<usize> {
     box_foot(ui, |ui| {
         let cancel = ito_prefs::IconButton::new(ito_prefs::Mark::Close, cancel).show(ui).clicked();
-        let go = primary(ui, true, mark, go).clicked();
+        let go = primary(ui, enabled, mark, go).clicked();
         if go {
             Some(0)
         } else {
@@ -5270,9 +5359,14 @@ mod tests {
     impl Asked {
         fn try_recv(&self) -> Result<Request, mpsc::TryRecvError> {
             self.0.try_recv().map(|w| {
-                let Job::Ask(r) = w.job;
+                let Job::Ask(r) = w.job else { panic!("a calendar job where a request was expected") };
                 r
             })
+        }
+
+        /// The next envelope as it is, for a test that looks at a calendar job.
+        fn try_work(&self) -> Result<Work, mpsc::TryRecvError> {
+            self.0.try_recv()
         }
     }
 
@@ -6572,7 +6666,7 @@ run = [\"x.exe\"]
         drop(rx);
         assert_eq!(b.pending(), 0);
         // Sending into a closed queue takes the count off again.
-        b.send(save_of("g/c"));
+        assert!(!b.send(save_of("g/c")), "a closed queue says it did not send");
         assert_eq!(b.pending(), 0);
     }
 
@@ -6615,6 +6709,278 @@ run = [\"x.exe\"]
         assert!(answered, "the save got an Err");
         assert!(b.down.is_some());
         assert_eq!(b.pending(), 0);
+    }
+
+    fn body(text: &str, sha: &str) -> Result<String, String> {
+        Ok(proto::CalendarBody { text: text.into(), sha256: sha.into() }.to_toml())
+    }
+
+    /// Runs `calendar_job` against a scripted engine: `text` answers `CalendarText`, `write` answers anything
+    /// else. Gives back every request sent and the job's answer.
+    fn run_calendar(
+        text: Result<String, String>,
+        change: CalendarChange,
+        write: Result<String, String>,
+    ) -> (Vec<Request>, Result<String, String>) {
+        let sent = std::cell::RefCell::new(Vec::new());
+        let r = calendar_job("会社", change, &|req: &Request| {
+            sent.borrow_mut().push(req.clone());
+            match req {
+                Request::CalendarText { .. } => text.clone(),
+                _ => write.clone(),
+            }
+        });
+        (sent.into_inner(), r)
+    }
+
+    #[test]
+    fn a_calendar_job_that_cannot_read_the_calendar_writes_nothing_and_says_so() {
+        let edit = || CalendarChange::Edit(Box::new(|t| Ok(format!("{t}x"))));
+        for text in [Err("会社: つながらない".to_owned()), Ok("not = [toml".to_owned())] {
+            let (sent, r) = run_calendar(text, edit(), Ok("書いた".into()));
+            assert!(r.as_ref().unwrap_err().ends_with("。変えていない"), "{r:?}");
+            assert_eq!(sent.len(), 1, "only the read: {sent:?}");
+        }
+        let (sent, r) = run_calendar(Err("暦がない: 会社".into()), CalendarChange::Delete, Ok("消した".into()));
+        assert_eq!(r, Err("暦がない: 会社。変えていない".to_owned()));
+        assert_eq!(sent.len(), 1);
+        // A change that fails is nothing written either.
+        let (sent, r) = run_calendar(body("a", "h1"), CalendarChange::Edit(Box::new(|_| Err("直せない".into()))), Ok("書いた".into()));
+        assert_eq!(r, Err("直せない。変えていない".to_owned()));
+        assert_eq!(sent.len(), 1);
+    }
+
+    #[test]
+    fn a_calendar_put_carries_the_hash_of_what_was_fetched_and_the_change_sees_only_that_text() {
+        let seen = Arc::new(Mutex::new(String::new()));
+        let seen_in = seen.clone();
+        let change = CalendarChange::Edit(Box::new(move |t| {
+            *seen_in.lock().unwrap() = t.to_owned();
+            Ok(format!("{t}+"))
+        }));
+        let (sent, r) = run_calendar(body("fetched", "h-now"), change, Ok("暦を書いた: calendars/会社.toml".into()));
+        assert_eq!(r, Ok("暦を書いた: calendars/会社.toml".to_owned()), "the engine's text as it is");
+        assert_eq!(*seen.lock().unwrap(), "fetched");
+        assert_eq!(sent.len(), 2);
+        assert!(matches!(&sent[0], Request::CalendarText { name } if name == "会社"));
+        assert!(matches!(
+            &sent[1],
+            Request::CalendarPut { name, text, base_sha256: Some(h) } if name == "会社" && text == "fetched+" && h == "h-now"
+        ));
+    }
+
+    #[test]
+    fn a_refusal_comes_back_verbatim_and_is_not_retried() {
+        let no = "ほかで変わっています: 会社";
+        let (sent, r) = run_calendar(body("a", "h1"), CalendarChange::Edit(Box::new(|t| Ok(t.to_owned()))), Err(no.into()));
+        assert_eq!(r, Err(no.to_owned()));
+        assert_eq!(sent.len(), 2, "one read and one write: {sent:?}");
+        let (sent, r) = run_calendar(body("a", "h2"), CalendarChange::Delete, Err(no.into()));
+        assert_eq!(r, Err(no.to_owned()));
+        assert_eq!(sent.len(), 2);
+    }
+
+    #[test]
+    fn a_calendar_delete_carries_the_fetched_hash() {
+        let (sent, r) = run_calendar(body("a", "h9"), CalendarChange::Delete, Ok("暦を消した: 会社".into()));
+        assert_eq!(r, Ok("暦を消した: 会社".to_owned()));
+        assert!(matches!(&sent[1], Request::CalendarDelete { name, base_sha256 } if name == "会社" && base_sha256 == "h9"));
+    }
+
+    #[test]
+    fn a_calendar_job_counts_until_dropped_is_refused_while_switching_and_gives_the_count_back() {
+        let (tx, rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        assert!(b.out.send_calendar("会社".into(), CalendarChange::Delete));
+        assert_eq!(b.pending(), 1);
+        let w = rx.try_work().unwrap();
+        assert!(matches!(&w.job, Job::Calendar { name, .. } if name == "会社"));
+        assert!(w.pending.is_some());
+        drop(w);
+        assert_eq!(b.pending(), 0, "back to 0 once the envelope is dropped");
+        // Switching: refused, nothing sent, nothing counted.
+        assert!(b.out.send_calendar("会社".into(), CalendarChange::Delete));
+        assert_eq!(b.switch_step(), 1);
+        assert!(!b.out.send_calendar("会社".into(), CalendarChange::Delete));
+        assert!(b.out.refused.get());
+        assert_eq!(b.pending(), 1, "the refused job is not counted");
+        assert!(rx.try_work().is_ok(), "the first one is there");
+        assert!(rx.try_work().is_err(), "the refused one never left");
+        // A send into a closed queue takes the count off again.
+        b.cancel_switch();
+        let before = b.pending();
+        let (tx, rx) = asks();
+        b.out.tx = tx;
+        drop(rx);
+        assert!(!b.out.send_calendar("会社".into(), CalendarChange::Delete));
+        assert_eq!(b.pending(), before);
+    }
+
+    /// Runs `answer` on a calendar delete with a real count; returns what was sent, the count afterwards and the return value.
+    fn answered(reply: &dyn Fn(&Request) -> Result<String, String>, listening: bool) -> (Vec<Msg>, usize, bool) {
+        let (tx, rx) = asks();
+        let out = Outbox { tx, pending: Arc::new(AtomicUsize::new(0)), switching: Cell::new(false), refused: Cell::new(false) };
+        assert!(out.send_calendar("会社".into(), CalendarChange::Delete));
+        assert_eq!(out.pending.load(Ordering::SeqCst), 1);
+        let work = rx.try_work().unwrap();
+        let sent = std::cell::RefCell::new(Vec::new());
+        let seen_count = std::cell::Cell::new(usize::MAX);
+        let send = |m: Msg| {
+            // The envelope is still alive while the message is sent.
+            seen_count.set(out.pending.load(Ordering::SeqCst));
+            sent.borrow_mut().push(m);
+            listening
+        };
+        let alive = answer(work, reply, &send);
+        assert_eq!(seen_count.get(), 1, "the count goes after the message");
+        (sent.into_inner(), out.pending.load(Ordering::SeqCst), alive)
+    }
+
+    #[test]
+    fn a_calendar_job_pressed_while_the_engine_cannot_start_comes_back_unchanged_and_counts_zero() {
+        let (sent, count, alive) = answered(&|_| Err("起動できない".into()), true);
+        assert!(alive);
+        assert_eq!(count, 0);
+        let [Msg::CalendarDone(Err(e))] = &sent[..] else { panic!("one failed answer expected") };
+        assert!(e.ends_with("。変えていない"), "{e}");
+    }
+
+    #[test]
+    fn a_calendar_job_that_goes_through_answers_with_the_engines_words_and_counts_zero() {
+        let (sent, count, alive) = answered(
+            &|r| match r {
+                Request::CalendarText { .. } => body("a", "h1"),
+                _ => Ok("暦を消した: 会社".into()),
+            },
+            true,
+        );
+        assert!(alive);
+        assert_eq!(count, 0);
+        assert!(matches!(&sent[..], [Msg::CalendarDone(Ok(s))] if s == "暦を消した: 会社"), "{} messages", sent.len());
+    }
+
+    #[test]
+    fn answer_says_false_and_still_counts_zero_when_the_window_is_gone() {
+        let (sent, count, alive) = answered(&|_| Err("起動できない".into()), false);
+        assert!(!alive);
+        assert_eq!(count, 0);
+        assert_eq!(sent.len(), 1);
+    }
+
+    fn put_of(name: &str) -> Request {
+        Request::CalendarPut { name: name.into(), text: String::new(), base_sha256: None }
+    }
+
+    #[test]
+    fn the_new_calendar_box_waits_for_the_answer_shows_an_error_and_a_yes_closes_it() {
+        let (tx, rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.new_cal_box();
+        b.new_cal.as_mut().unwrap().name = "工場".into();
+        let t = crate::i18n::table("ja").0;
+        b.new_cal_go(&t);
+        assert!(b.new_cal.as_ref().unwrap().waiting, "waits for the answer");
+        assert!(matches!(rx.try_recv(), Ok(Request::CalendarPut { name, base_sha256: None, .. }) if name == "工場"));
+        // A second press while waiting sends nothing.
+        b.new_cal_go(&t);
+        assert!(rx.try_recv().is_err());
+        // The engine says no: the box stays open with the words, ready for another go.
+        b.io.0.send(Msg::Answer(put_of("工場"), Err("もうある".into()))).unwrap();
+        b.drain();
+        let m = b.new_cal.as_ref().expect("still open");
+        assert!(!m.waiting);
+        assert_eq!(m.error.as_deref(), Some("もうある"));
+        // A yes closes it and shows the calendar with the engine's own words.
+        b.new_cal_go(&t);
+        assert!(b.new_cal.as_ref().unwrap().waiting);
+        b.io.0.send(Msg::Answer(put_of("工場"), Ok("暦を書いた: calendars/工場.toml".into()))).unwrap();
+        b.drain();
+        assert!(b.new_cal.is_none());
+        assert_eq!(b.cal_sel.as_deref(), Some("工場"));
+        assert_eq!(b.cal_result, Some(Ok("暦を書いた: calendars/工場.toml".to_owned())));
+    }
+
+    #[test]
+    fn a_yes_for_a_box_opened_from_the_editor_sets_the_editors_calendar() {
+        let (tx, _rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        let net = koyomi_core::jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n").unwrap();
+        b.editor = Some(canvas::Editor::new_net("試験/a", net));
+        b.new_cal_box_for_net();
+        b.new_cal.as_mut().unwrap().name = "工場".into();
+        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.io.0.send(Msg::Answer(put_of("工場"), Ok("暦を書いた: calendars/工場.toml".into()))).unwrap();
+        b.drain();
+        assert!(b.new_cal.is_none());
+        let e = b.editor.as_ref().unwrap();
+        assert_eq!(e.result, Some(Ok("暦を書いた: calendars/工場.toml".to_owned())));
+        assert!(b.cal_sel.is_none(), "the editor stays, the calendar page is not opened");
+    }
+
+    #[test]
+    fn a_refused_send_leaves_the_new_calendar_box_not_waiting() {
+        let (tx, _rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.new_cal_box();
+        b.new_cal.as_mut().unwrap().name = "工場".into();
+        b.out.switching.set(true);
+        b.new_cal_go(&crate::i18n::table("ja").0);
+        let m = b.new_cal.as_ref().expect("stays open");
+        assert!(!m.waiting);
+        assert_eq!(m.error.as_deref(), Some("送っていない。もう一度押す"));
+    }
+
+    #[test]
+    fn a_waiting_new_calendar_box_ignores_cancel_and_esc() {
+        let (tx, _rx) = asks();
+        let mut b = quiet(Vec::new());
+        b.out.tx = tx;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("＋ 新しいカレンダー", &mut b);
+        b.new_cal.as_mut().unwrap().name = "工場".into();
+        b.new_cal_go(&crate::i18n::table("ja").0);
+        assert!(b.new_cal.as_ref().unwrap().waiting);
+        s.settle(&mut b);
+        s.click("やめる", &mut b);
+        assert!(b.new_cal.as_ref().is_some_and(|m| m.waiting), "cancel does nothing while waiting");
+        s.show(key(egui::Key::Escape), &mut b);
+        s.show(key(egui::Key::Enter), &mut b);
+        assert!(b.new_cal.as_ref().is_some_and(|m| m.waiting), "Esc and Enter do nothing while waiting");
+    }
+
+    #[test]
+    fn the_calendar_selected_is_the_one_sent_not_the_name_typed_after() {
+        let (tx, _rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.new_cal_box();
+        b.new_cal.as_mut().unwrap().name = "工場".into();
+        b.new_cal_go(&crate::i18n::table("ja").0);
+        b.new_cal.as_mut().unwrap().name = "別".into();
+        b.io.0.send(Msg::Answer(put_of("工場"), Ok("ok".into()))).unwrap();
+        b.drain();
+        assert!(b.new_cal.is_none());
+        assert_eq!(b.cal_sel.as_deref(), Some("工場"));
+    }
+
+    #[test]
+    fn a_calendar_answer_with_no_waiting_box_goes_to_the_calendar_result() {
+        let mut b = quiet(defs());
+        b.io.0.send(Msg::Answer(put_of("工場"), Ok("ok".into()))).unwrap();
+        b.drain();
+        assert_eq!(b.cal_result, Some(Ok("ok".to_owned())));
+        assert!(b.cal_sel.is_none());
+        // A box that is open but not waiting is not closed by an older answer.
+        b.new_cal_box();
+        b.io.0.send(Msg::Answer(Request::CalendarRename { from: "a".into(), to: "b".into() }, Err("no".into()))).unwrap();
+        b.drain();
+        assert!(b.new_cal.as_ref().is_some_and(|m| m.error.is_none()));
+        assert_eq!(b.cal_result, Some(Err("no".to_owned())));
     }
 
     #[test]

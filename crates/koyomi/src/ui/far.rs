@@ -9,6 +9,7 @@
 //! What the other PC lets this one do is its `[[user]]` role's: a refusal shows as its words.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::{Duration, Instant};
 
@@ -47,6 +48,90 @@ enum Got {
     Log(String, String, String, Result<serde_json::Value, String>),
     /// PC, the line to show under the heading.
     Did(String, Result<String, String>),
+    /// The add box: its ticket, and the fingerprint that PC shows (or why not).
+    Peeked(u64, Result<String, String>),
+    /// The add box: its ticket, the name, and whether the check passed and the connection was written.
+    Joined(u64, String, Result<(), String>),
+}
+
+/// Where the add-a-connection box is. Nothing is written before the last step has passed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AddStep {
+    /// The name and the URL are typed.
+    Form,
+    /// The fingerprint is being fetched.
+    Peeking,
+    /// The fingerprint is shown, to be compared with what the other PC says. There is no way on without the
+    /// person saying it is the same.
+    Compare,
+    /// The token is typed.
+    Token,
+    /// The check runs and, once it passed, the connection is written.
+    Joining,
+}
+
+/// The add-a-connection box.
+pub(super) struct Add {
+    /// Which box this is: a result from a thread of an earlier box with the same name does not belong to this one.
+    ticket: u64,
+    pub(super) step: AddStep,
+    pub(super) name: String,
+    pub(super) url: String,
+    /// The typed token: handed to the thread and emptied as soon as it has it.
+    pub(super) token: String,
+    /// The fingerprint the other PC showed.
+    pub(super) fp: Option<String>,
+    pub(super) error: Option<String>,
+}
+
+impl Add {
+    fn new() -> Add {
+        static TICKETS: AtomicU64 = AtomicU64::new(1);
+        Add {
+            ticket: TICKETS.fetch_add(1, Ordering::Relaxed),
+            step: AddStep::Form,
+            name: String::new(),
+            url: String::new(),
+            token: String::new(),
+            fp: None,
+            error: None,
+        }
+    }
+}
+
+/// The check, then the writing: the PC answers, the token drives a window, and only then the token goes to the
+/// credential store and the `[[remote]]` to koyomi.toml. Nothing is written when the check fails, and the token is
+/// not stored until koyomi.toml is known to take the connection; a koyomi.toml that cannot be written gives it back.
+fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), String> {
+    crate::link::probe(name, url, fingerprint, token)?;
+    let secret = format!("{name}-token");
+    let new = koyomi_core::config::Remote {
+        name: name.to_owned(),
+        url: url.to_owned(),
+        fingerprint: fingerprint.to_owned(),
+        token: format!("secret:{secret}"),
+    };
+    let (path, text) = crate::remote::prepare_add(&new).map_err(|e| format!("{name}: {e}"))?;
+    ito_secret::set("koyomi", &secret, token).map_err(|e| format!("{name}: {e}"))?;
+    ito_common::write_atomic(&path, text).map_err(|e| {
+        let undone = ito_secret::delete("koyomi", &secret).map_err(|d| d.to_string());
+        write_failed(name, &e, undone)
+    })
+}
+
+/// What the box says when koyomi.toml could not be written: the write's reason, and, if the token that was
+/// stored for it could not be taken out again, that it is still in the credential store. Never the token.
+fn write_failed(name: &str, write: &str, undone: Result<(), String>) -> String {
+    match undone {
+        Ok(()) => format!("{name}: {write}"),
+        Err(d) => format!("{name}: {write}（資格情報ストアに入れたトークンも消せず、残っている: {d}）"),
+    }
+}
+
+/// Whether Enter presses the button that goes on at this step. Not at the fingerprint: 同じだった is the person
+/// saying they compared it, and the Enter that sent the form, pressed again or held, must not say that for them.
+fn enter_goes_on(step: AddStep) -> bool {
+    step != AddStep::Compare
 }
 
 /// A press waiting for its yes.
@@ -98,6 +183,10 @@ pub struct Far {
     tx: Sender<Got>,
     rx: Receiver<Got>,
     ctx: egui::Context,
+    /// The add-a-connection box, while it is open.
+    pub(super) add: Option<Add>,
+    /// The connection just added: the window goes to it (taken by [`Far::take_joined`]).
+    joined: Option<String>,
 }
 
 impl Far {
@@ -120,6 +209,8 @@ impl Far {
             tx,
             rx,
             ctx: ctx.clone(),
+            add: None,
+            joined: None,
         }
     }
 
@@ -202,6 +293,42 @@ impl Far {
             {
                 self.log = Some(j.map(|j| j["log"].as_str().unwrap_or_default().to_owned()));
             }
+            Got::Peeked(ticket, r) => {
+                if let Some(a) = self.add.as_mut().filter(|a| a.ticket == ticket && a.step == AddStep::Peeking) {
+                    match r {
+                        Ok(fp) => {
+                            a.fp = Some(fp);
+                            a.step = AddStep::Compare;
+                        }
+                        Err(e) => {
+                            a.step = AddStep::Form;
+                            a.error = Some(e);
+                        }
+                    }
+                }
+            }
+            Got::Joined(ticket, name, r) => {
+                let waiting = self.add.as_ref().is_some_and(|a| a.ticket == ticket && a.step == AddStep::Joining);
+                match r {
+                    Ok(()) => {
+                        // It is written, so it is a name now, even if the box was given up meanwhile.
+                        if !self.names.contains(&name) {
+                            self.names.push(name.clone());
+                        }
+                        if waiting {
+                            self.add = None;
+                            self.joined = Some(name);
+                        }
+                    }
+                    Err(e) if waiting => {
+                        if let Some(a) = &mut self.add {
+                            a.step = AddStep::Token;
+                            a.error = Some(e);
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
             Got::Did(pc, said) if here(&pc) => {
                 self.said = Some(said);
                 // What was done shows at once, not at the next round.
@@ -218,7 +345,177 @@ impl Far {
         }
         let names = std::mem::take(&mut self.names);
         let (tx, rx, ctx) = (self.tx.clone(), std::mem::replace(&mut self.rx, mpsc::channel().1), self.ctx.clone());
-        *self = Far { names, on: pc, tx, rx, ..Far::idle(&ctx) };
+        let (add, joined) = (self.add.take(), self.joined.take());
+        *self = Far { names, on: pc, tx, rx, add, joined, ..Far::idle(&ctx) };
+    }
+
+    /// Opens the add-a-connection box.
+    pub fn open_add(&mut self) {
+        if self.add.is_none() {
+            self.add = Some(Add::new());
+        }
+    }
+
+    /// Whether the add box is open.
+    #[cfg(test)]
+    pub fn adding(&self) -> bool {
+        self.add.is_some()
+    }
+
+    /// Closes the add box. A check that is still running ends on its own; what it brings back is dropped.
+    pub fn add_cancel(&mut self) {
+        self.add = None;
+    }
+
+    /// The name and the URL are checked: what cannot be used is said in the box, else the fingerprint is fetched.
+    pub(super) fn add_name_go(&mut self, t: &ito_i18n::Table) {
+        use crate::remote::NameWhy;
+        let Some(a) = self.add.as_mut().filter(|a| a.step == AddStep::Form) else { return };
+        let (name, url) = (a.name.trim().to_owned(), a.url.trim().to_owned());
+        let bad = match crate::remote::check_name(&name, &self.names) {
+            Err(NameWhy::Empty) => Some(t.tr("far.add_name_empty").to_owned()),
+            Err(NameWhy::Taken) => Some(t.trf("far.add_name_taken", &[&name])),
+            Err(NameWhy::Bad) => Some(t.tr("far.add_name_bad").to_owned()),
+            Ok(()) if url.len() <= "https://".len() || !url.starts_with("https://") || url.contains(char::is_whitespace) => {
+                Some(t.tr("far.add_url_bad").to_owned())
+            }
+            Ok(()) => None,
+        };
+        if bad.is_some() {
+            a.error = bad;
+            return;
+        }
+        a.error = None;
+        a.step = AddStep::Peeking;
+        let ticket = a.ticket;
+        self.spawn(move || Got::Peeked(ticket, crate::remote::peek_fingerprint(&url)));
+    }
+
+    /// 同じだった: the fingerprint is what the other PC says. Only from the step that shows it.
+    pub(super) fn add_same(&mut self) {
+        if let Some(a) = self.add.as_mut().filter(|a| a.step == AddStep::Compare) {
+            a.step = AddStep::Token;
+            a.error = None;
+        }
+    }
+
+    /// つなぐ: the typed token leaves the box here (the box is left holding none) with what the check needs, and
+    /// the box goes to its waiting step. `None`: the token is empty, or this is not the step for it.
+    pub(super) fn add_hand_off(&mut self, t: &ito_i18n::Table) -> Option<(String, String, String, String)> {
+        let a = self.add.as_mut().filter(|a| a.step == AddStep::Token)?;
+        if a.token.trim().is_empty() {
+            a.error = Some(t.tr("far.add_token_empty").to_owned());
+            return None;
+        }
+        let fingerprint = a.fp.clone()?;
+        let token = std::mem::take(&mut a.token).trim().to_owned();
+        a.error = None;
+        a.step = AddStep::Joining;
+        Some((a.name.trim().to_owned(), a.url.trim().to_owned(), fingerprint, token))
+    }
+
+    /// つなぐ: the check and then the writing, on a thread.
+    pub(super) fn add_join(&mut self, t: &ito_i18n::Table) {
+        let ticket = self.add.as_ref().map_or(0, |a| a.ticket);
+        let Some((name, url, fingerprint, token)) = self.add_hand_off(t) else { return };
+        self.spawn(move || {
+            let r = join(&name, &url, &fingerprint, &token);
+            Got::Joined(ticket, name, r)
+        });
+    }
+
+    /// The name of the connection just added, once: the window goes to it.
+    pub fn take_joined(&mut self) -> Option<String> {
+        self.joined.take()
+    }
+
+    /// The add-a-connection box. Esc closes it; Enter presses the button that goes on, except at the fingerprint.
+    pub fn add_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table) {
+        let Some(step) = self.add.as_ref().map(|a| a.step) else { return };
+        let (esc, enter) = ctx.input_mut(|i| {
+            (i.consume_key(egui::Modifiers::NONE, egui::Key::Escape), i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+        });
+        if esc {
+            self.add_cancel();
+            return;
+        }
+        let c = ito_theme::colors();
+        let mut pressed = (enter && enter_goes_on(step)).then_some(0);
+        if let Some(a) = &mut self.add {
+            let (lead, go) = match step {
+                AddStep::Form | AddStep::Peeking => (t.tr("far.add_lead"), t.tr("far.add_next")),
+                AddStep::Compare => (t.tr("far.add_compare"), t.tr("far.add_same")),
+                AddStep::Token | AddStep::Joining => (t.tr("far.add_token_lead"), t.tr("far.add_join")),
+            };
+            egui::Window::new(t.tr("far.add_title"))
+                .id(egui::Id::new("far-add"))
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
+                .show(ctx, |ui| {
+                    ui.set_width(480.0);
+                    ui.add(egui::Label::new(lead).wrap());
+                    let busy = matches!(step, AddStep::Peeking | AddStep::Joining);
+                    match step {
+                        AddStep::Form | AddStep::Peeking => {
+                            ui.add_enabled_ui(!busy, |ui| {
+                                egui::Grid::new("far-add-fields").num_columns(2).show(ui, |ui| {
+                                    ui.label(t.tr("far.add_name"));
+                                    let r = ui.add(
+                                        egui::TextEdit::singleline(&mut a.name).hint_text(t.tr("far.add_name_hint")).desired_width(300.0),
+                                    );
+                                    ito_a11y::say(&r, Role::Label, t.tr("far.add_name"));
+                                    if a.name.is_empty() && a.url.is_empty() {
+                                        r.request_focus();
+                                    }
+                                    ui.end_row();
+                                    ui.label(t.tr("far.add_url"));
+                                    let r =
+                                        ui.add(egui::TextEdit::singleline(&mut a.url).hint_text("https://pc:8443").desired_width(300.0));
+                                    ito_a11y::say(&r, Role::Label, t.tr("far.add_url"));
+                                    ui.end_row();
+                                });
+                            });
+                        }
+                        AddStep::Compare => {
+                            let fp = a.fp.clone().unwrap_or_default();
+                            let r = ui.add(egui::Label::new(egui::RichText::new(&fp).monospace().strong()).wrap().selectable(true));
+                            ito_a11y::say(&r, Role::Label, &fp);
+                        }
+                        AddStep::Token | AddStep::Joining => {
+                            ui.add_enabled_ui(!busy, |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.label(t.tr("far.add_token"));
+                                    let r = ui.add(egui::TextEdit::singleline(&mut a.token).password(true).desired_width(300.0));
+                                    ito_a11y::say(&r, Role::Label, t.tr("far.add_token"));
+                                    if step == AddStep::Token && a.token.is_empty() {
+                                        r.request_focus();
+                                    }
+                                });
+                            });
+                        }
+                    }
+                    if busy {
+                        ui.horizontal(|ui| {
+                            ui.spinner();
+                            ui.label(t.tr(if step == AddStep::Peeking { "far.add_peeking" } else { "far.add_joining" }));
+                        });
+                    }
+                    if let Some(e) = &a.error {
+                        ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
+                    }
+                    if let Some(n) = super::box_answer_on(ui, !busy, ito_prefs::Mark::Plus, go, t.tr("far.add_cancel")) {
+                        pressed = Some(n);
+                    }
+                });
+        }
+        match (pressed, step) {
+            (Some(1), _) => self.add_cancel(),
+            (Some(_), AddStep::Form) => self.add_name_go(t),
+            (Some(_), AddStep::Compare) => self.add_same(),
+            (Some(_), AddStep::Token) => self.add_join(t),
+            _ => {}
+        }
     }
 
     /// Asks the shown PC for its nets and runs (and the log looked at) when a round is due.
@@ -637,5 +934,211 @@ mod tests {
             frame(&mut f);
         }
         assert_eq!(f.on.as_deref(), Some("b"));
+    }
+
+    fn adding() -> Far {
+        let mut f = Far::idle(&egui::Context::default());
+        f.names = vec!["old".to_owned()];
+        f.open_add();
+        f
+    }
+
+    fn ticket(f: &Far) -> u64 {
+        f.add.as_ref().unwrap().ticket
+    }
+
+    fn ja() -> ito_i18n::Table {
+        crate::i18n::table("ja").0
+    }
+
+    /// Puts the box at a step as if the earlier ones had passed (no thread, no network).
+    fn at(f: &mut Far, step: AddStep) {
+        let a = f.add.as_mut().unwrap();
+        a.name = "new".into();
+        a.url = "https://pc:8443".into();
+        a.step = step;
+    }
+
+    #[test]
+    fn the_add_box_refuses_a_bad_name_or_address_in_the_box_and_starts_nothing() {
+        let t = ja();
+        for (name, url) in [
+            ("", "https://pc"),
+            ("old", "https://pc"),
+            ("a b", "https://pc"),
+            ("a:b", "https://pc"),
+            ("ok", "http://pc"),
+            ("ok", "https://"),
+            ("ok", "https://a b"),
+        ] {
+            let mut f = adding();
+            let a = f.add.as_mut().unwrap();
+            (a.name, a.url) = (name.into(), url.into());
+            f.add_name_go(&t);
+            let a = f.add.as_ref().unwrap();
+            assert_eq!(a.step, AddStep::Form, "{name:?} {url:?}");
+            assert!(a.error.is_some(), "{name:?} {url:?}");
+            assert_eq!(f.pending, 0, "no thread for {name:?} {url:?}");
+        }
+    }
+
+    #[test]
+    fn there_is_no_token_step_without_the_same_press() {
+        let t = ja();
+        let mut f = adding();
+        at(&mut f, AddStep::Peeking);
+        f.take(Got::Peeked(ticket(&f), Ok("ab".repeat(32))));
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Compare);
+        // Nothing but the press gets past it.
+        assert!(f.add_hand_off(&t).is_none());
+        f.add.as_mut().unwrap().token = "t".into();
+        assert!(f.add_hand_off(&t).is_none());
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Compare);
+        f.add_same();
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Token);
+        // The press does nothing from any other step.
+        let mut g = adding();
+        at(&mut g, AddStep::Form);
+        g.add_same();
+        assert_eq!(g.add.as_ref().unwrap().step, AddStep::Form);
+    }
+
+    #[test]
+    fn enter_does_not_say_the_fingerprint_is_the_same() {
+        assert!(!enter_goes_on(AddStep::Compare));
+        assert!(enter_goes_on(AddStep::Form));
+        assert!(enter_goes_on(AddStep::Token));
+    }
+
+    #[test]
+    fn a_failed_peek_goes_back_to_the_form_with_the_words() {
+        let mut f = adding();
+        at(&mut f, AddStep::Peeking);
+        f.take(Got::Peeked(ticket(&f), Err("つながらない".into())));
+        let a = f.add.as_ref().unwrap();
+        assert_eq!((a.step, a.error.as_deref(), a.fp.is_none()), (AddStep::Form, Some("つながらない"), true));
+        // An answer after the box moved on changes nothing.
+        let mut f = adding();
+        at(&mut f, AddStep::Compare);
+        f.take(Got::Peeked(ticket(&f), Ok("x".into())));
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Compare);
+        assert!(f.add.as_ref().unwrap().fp.is_none());
+    }
+
+    #[test]
+    fn a_late_peek_of_an_earlier_box_with_the_same_name_changes_nothing() {
+        let mut f = adding();
+        at(&mut f, AddStep::Peeking);
+        let old = ticket(&f);
+        f.add_cancel();
+        f.open_add();
+        at(&mut f, AddStep::Peeking);
+        assert_ne!(ticket(&f), old);
+        f.take(Got::Peeked(old, Ok("aa".repeat(32))));
+        let a = f.add.as_ref().unwrap();
+        assert_eq!((a.step, a.fp.is_none(), a.error.is_none()), (AddStep::Peeking, true, true));
+        f.take(Got::Peeked(old, Err("late".into())));
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Peeking);
+        assert!(f.add.as_ref().unwrap().error.is_none());
+    }
+
+    #[test]
+    fn a_late_join_of_an_earlier_box_adds_the_name_but_leaves_a_new_box_alone() {
+        let mut f = adding();
+        at(&mut f, AddStep::Joining);
+        let old = ticket(&f);
+        f.add_cancel();
+        f.open_add();
+        at(&mut f, AddStep::Joining);
+        f.take(Got::Joined(old, "new".into(), Ok(())));
+        assert_eq!(f.names, ["old", "new"], "it was written, so it is a name");
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Joining, "the new box is as it was");
+        assert!(f.take_joined().is_none());
+        let mut f = adding();
+        at(&mut f, AddStep::Joining);
+        let old = ticket(&f);
+        f.add_cancel();
+        f.open_add();
+        at(&mut f, AddStep::Joining);
+        f.take(Got::Joined(old, "new".into(), Err("late".into())));
+        assert_eq!(f.names, ["old"]);
+        let a = f.add.as_ref().unwrap();
+        assert_eq!((a.step, a.error.is_none()), (AddStep::Joining, true));
+    }
+
+    #[test]
+    fn a_failed_write_says_why_and_whether_the_token_is_left_and_never_the_token() {
+        assert_eq!(write_failed("pc", "読み取り専用", Ok(())), "pc: 読み取り専用");
+        let w = write_failed("pc", "読み取り専用", Err("アクセス拒否".into()));
+        assert!(w.starts_with("pc: 読み取り専用") && w.contains("資格情報ストア") && w.contains("アクセス拒否"), "{w}");
+    }
+
+    #[test]
+    fn the_token_is_gone_from_the_box_once_handed_off_and_an_empty_one_goes_nowhere() {
+        let t = ja();
+        let mut f = adding();
+        at(&mut f, AddStep::Token);
+        f.add.as_mut().unwrap().fp = Some("ab".repeat(32));
+        assert!(f.add_hand_off(&t).is_none(), "empty token");
+        assert!(f.add.as_ref().unwrap().error.is_some());
+        assert_eq!(f.add.as_ref().unwrap().step, AddStep::Token);
+        f.add.as_mut().unwrap().token = "  secret  ".into();
+        let (name, url, fp, token) = f.add_hand_off(&t).unwrap();
+        assert_eq!((name.as_str(), url.as_str(), token.as_str()), ("new", "https://pc:8443", "secret"));
+        assert_eq!(fp, "ab".repeat(32));
+        let a = f.add.as_ref().unwrap();
+        assert!(a.token.is_empty(), "the box holds no token");
+        assert_eq!(a.step, AddStep::Joining);
+        // A second press cannot hand off again.
+        assert!(f.add_hand_off(&t).is_none());
+    }
+
+    #[test]
+    fn a_failed_check_stays_in_the_box_and_gives_no_connection_to_go_to() {
+        let t = ja();
+        let mut f = adding();
+        at(&mut f, AddStep::Token);
+        f.add.as_mut().unwrap().fp = Some("ab".repeat(32));
+        f.add.as_mut().unwrap().token = "bad".into();
+        f.add_hand_off(&t).unwrap();
+        f.take(Got::Joined(ticket(&f), "new".into(), Err("new: 401".into())));
+        let a = f.add.as_ref().expect("still open");
+        assert_eq!((a.step, a.error.as_deref()), (AddStep::Token, Some("new: 401")));
+        assert!(a.token.is_empty());
+        assert!(f.take_joined().is_none());
+        assert_eq!(f.names, ["old"], "the name is not added");
+    }
+
+    #[test]
+    fn a_passed_check_closes_the_box_adds_the_name_and_names_the_link_once() {
+        let t = ja();
+        let mut f = adding();
+        at(&mut f, AddStep::Token);
+        f.add.as_mut().unwrap().fp = Some("ab".repeat(32));
+        f.add.as_mut().unwrap().token = "ok".into();
+        f.add_hand_off(&t).unwrap();
+        f.take(Got::Joined(ticket(&f), "new".into(), Ok(())));
+        assert!(f.add.is_none());
+        assert_eq!(f.names, ["old", "new"]);
+        assert_eq!(f.take_joined().as_deref(), Some("new"));
+        assert!(f.take_joined().is_none());
+    }
+
+    #[test]
+    fn a_check_that_passes_after_the_box_was_given_up_adds_the_name_but_does_not_switch() {
+        let mut f = adding();
+        at(&mut f, AddStep::Joining);
+        f.add_cancel();
+        assert!(!f.adding());
+        f.take(Got::Joined(0, "new".into(), Ok(())));
+        assert_eq!(f.names, ["old", "new"]);
+        assert!(f.take_joined().is_none());
+    }
+
+    #[test]
+    fn the_add_box_survives_a_switch_of_the_page() {
+        let mut f = adding();
+        f.switch(Some("old".into()));
+        assert!(f.adding());
     }
 }

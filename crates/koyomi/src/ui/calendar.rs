@@ -1,23 +1,27 @@
 //! The calendars in the window: a list under 今日 on the left, and the month
-//! table in the detail when one is picked. A click on a day writes
+//! table in the detail when one is picked. A click on a day changes
 //! `calendars/<name>.toml` (a weekend or holiday becomes `open`, a weekday
 //! `closed`, and a second click takes it back); the engine's watcher reads the
 //! file again and the table follows what the engine counts by. The boxes above
-//! the month set `holidays` and `weekly_off`. 新しいカレンダー writes a new
+//! the month set `holidays` and `weekly_off`. 新しいカレンダー makes a new
 //! `calendars/<name>.toml` from a box; the same box renames one, and 消す keeps
 //! the file under `versions/_calendars/` before it goes. Neither touches the
 //! files that name the calendar: the box lists them. A day's menu names it
-//! (創立記念日), and 祝日の表を取り込む copies a `syukujitsu.csv` into
-//! `calendars/` once it reads; both are typed under the month.
+//! (創立記念日), and 祝日の表を取り込む sends a `syukujitsu.csv` once it reads;
+//! both are typed under the month.
+//!
+//! Every change goes through the engine (this PC's or another's alike), as a calendar job of the worker:
+//! the window never reads or writes a calendar file itself.
 
 use chrono::{Datelike, NaiveDate, Weekday};
 use ito_a11y::Role;
 use koyomi_core::blackout::{self, Blackout};
-use koyomi_core::calendar::{Calendar, Day, Table, TABLE_FILE};
+use koyomi_core::calendar::{Calendar, Day, Table};
 use koyomi_core::run::State;
 use koyomi_core::scan::{Def, Standing};
 
-use super::{bad_file_name, Browser, Why};
+use super::{bad_file_name, Browser, CalendarChange, EditFn, Why};
+use crate::proto::Request;
 use crate::show;
 
 const WEEK: [Weekday; 7] = [Weekday::Mon, Weekday::Tue, Weekday::Wed, Weekday::Thu, Weekday::Fri, Weekday::Sat, Weekday::Sun];
@@ -66,6 +70,8 @@ pub(super) struct NewCal {
     pub(super) error: Option<String>,
     /// The name field takes the keyboard on the first frame.
     fresh: bool,
+    /// The request is with the engine: the go button is off until the answer comes.
+    pub(super) waiting: bool,
 }
 
 /// What is typed under the month of `cal`: a day's name, or the path of a holiday table.
@@ -171,11 +177,7 @@ impl Browser {
             match &self.cal_result {
                 // Just made, renamed or deleted: what was done; a file there is one the engine has
                 // not read yet.
-                Some(Ok(done)) => {
-                    let there = ito_common::app_dir("koyomi").is_some_and(|d| d.join(format!("calendars/{name}.toml")).exists());
-                    let line = if there { format!("{done} {}", t.tr("calendar.reading")) } else { done.clone() };
-                    ui.label(egui::RichText::new(line).color(c.dim))
-                }
+                Some(Ok(done)) => ui.label(egui::RichText::new(done).color(c.dim)),
                 _ => ui.label(egui::RichText::new(t.trf("calendar.missing", &[&name])).color(c.err)),
             };
             return;
@@ -372,7 +374,7 @@ impl Browser {
                 ui.add(egui::Label::new(egui::RichText::new(t.tr("calendar.hint")).small().color(c.dim)).wrap());
                 if let Some((holidays, off)) = rules {
                     let off = days_off(off);
-                    self.cal_result = Some(edit_file(t, &name, |text| set_rules(text, holidays, &off)));
+                    self.send_calendar(&name, CalendarChange::Edit(Box::new(move |text| set_rules(text, holidays, &off))));
                 }
                 if bring {
                     act = Some(2);
@@ -410,7 +412,7 @@ impl Browser {
                     self.cal_go(d);
                 }
                 if let Some((d, day)) = out.toggle.or(side.toggle.take()) {
-                    self.cal_result = Some(toggle_day(t, &name, &cal, d, &day));
+                    self.send_calendar(&name, CalendarChange::Edit(toggle_edit(name.clone(), d, day)));
                 }
                 if out.naming.is_some() {
                     self.cal_inline = out.naming;
@@ -1092,13 +1094,19 @@ impl Browser {
         match pressed {
             Some(0) => {
                 let Some(inline) = self.cal_inline.take() else { return };
-                self.cal_result = Some(match inline {
+                match inline {
                     Inline::Name { day, text, .. } => {
-                        let named = named(cal, day, &cal.day(day), text.trim());
-                        edit_file(t, name, |text| rewrite(text, &named))
+                        // `shown` is the day as the person saw it; the rest comes from the fetched text.
+                        let change = CalendarChange::Edit(name_edit(name.to_owned(), day, cal.day(day), text.trim().to_owned()));
+                        self.send_calendar(name, change);
                     }
-                    Inline::Table { path, .. } => import_table(t, &path),
-                });
+                    Inline::Table { path, .. } => match import_table(t, &path) {
+                        Ok(request) => {
+                            self.send(request);
+                        }
+                        Err(e) => self.cal_result = Some(Err(e)),
+                    },
+                }
             }
             Some(_) => self.cal_inline = None,
             None => {}
@@ -1125,6 +1133,7 @@ impl Browser {
                 off: [false, false, false, false, false, true, true],
                 error: None,
                 fresh: true,
+                waiting: false,
             });
             self.focus = 0;
         }
@@ -1141,6 +1150,7 @@ impl Browser {
                 off: [false; 7],
                 error: None,
                 fresh: true,
+                waiting: false,
             });
             self.focus = 0;
         }
@@ -1180,7 +1190,7 @@ impl Browser {
             Some(0) => {
                 self.cal_deleting = None;
                 self.cal_sel = Some(name.clone());
-                self.cal_result = Some(delete_file(t, &name));
+                self.send_calendar(&name, CalendarChange::Delete);
             }
             Some(_) => self.cal_deleting = None,
             None => {}
@@ -1211,29 +1221,32 @@ impl Browser {
                     Some(from) => t.trf("newcal.rename_lead", &[from]),
                 };
                 ui.add(egui::Label::new(lead).wrap());
-                egui::Grid::new("new-cal-fields").num_columns(2).show(ui, |ui| {
-                    ui.label(t.tr("newcal.name"));
-                    let r = ui.add(egui::TextEdit::singleline(&mut m.name).hint_text(t.tr("newcal.name_hint")).desired_width(240.0));
-                    ito_a11y::say(&r, Role::Label, t.tr("newcal.name"));
-                    if m.fresh {
-                        r.request_focus();
-                        m.fresh = false;
-                    }
-                    ui.end_row();
-                    if m.from.is_some() {
-                        return;
-                    }
-                    ui.label("");
-                    // egui names a checkbox for the screen reader itself.
-                    ui.checkbox(&mut m.holidays, t.tr("newcal.holidays"));
-                    ui.end_row();
-                    ui.label(t.tr("newcal.off"));
-                    ui.horizontal(|ui| {
-                        for w in GRID {
-                            ui.checkbox(&mut m.off[w.num_days_from_monday() as usize], weekday(t, w));
+                let waiting = m.waiting;
+                ui.add_enabled_ui(!waiting, |ui| {
+                    egui::Grid::new("new-cal-fields").num_columns(2).show(ui, |ui| {
+                        ui.label(t.tr("newcal.name"));
+                        let r = ui.add(egui::TextEdit::singleline(&mut m.name).hint_text(t.tr("newcal.name_hint")).desired_width(240.0));
+                        ito_a11y::say(&r, Role::Label, t.tr("newcal.name"));
+                        if m.fresh {
+                            r.request_focus();
+                            m.fresh = false;
                         }
+                        ui.end_row();
+                        if m.from.is_some() {
+                            return;
+                        }
+                        ui.label("");
+                        // egui names a checkbox for the screen reader itself.
+                        ui.checkbox(&mut m.holidays, t.tr("newcal.holidays"));
+                        ui.end_row();
+                        ui.label(t.tr("newcal.off"));
+                        ui.horizontal(|ui| {
+                            for w in GRID {
+                                ui.checkbox(&mut m.off[w.num_days_from_monday() as usize], weekday(t, w));
+                            }
+                        });
+                        ui.end_row();
                     });
-                    ui.end_row();
                 });
                 if let (Some(from), false) = (&m.from, users.is_empty()) {
                     let line = t.trf("calendar.users_left", &[from, &users.join(", ")]);
@@ -1242,8 +1255,12 @@ impl Browser {
                 if let Some(e) = &m.error {
                     ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                 }
-                pressed = super::box_answer(ui, mark, go, t.tr("make.cancel"));
+                // The request cannot be called back: while it is on its way the box only waits.
+                pressed = ui.add_enabled_ui(!waiting, |ui| super::box_answer_on(ui, true, mark, go, t.tr("make.cancel"))).inner;
             });
+        if self.new_cal.as_ref().is_some_and(|m| m.waiting) {
+            return;
+        }
         match pressed.or(key) {
             Some(0) => self.new_cal_go(t),
             Some(_) => self.new_cal = None,
@@ -1251,56 +1268,78 @@ impl Browser {
         }
     }
 
-    /// The box's 作る: writes the file (or renames it) and shows its month. Nothing is overwritten.
-    fn new_cal_go(&mut self, t: &ito_i18n::Table) {
+    /// The box's 作る: asks the engine to write the file (or rename it). Nothing is overwritten: the engine
+    /// refuses a name that is there. The box stays open, with its button off, until the answer comes.
+    pub(super) fn new_cal_go(&mut self, t: &ito_i18n::Table) {
         let Some(m) = &mut self.new_cal else { return };
+        if m.waiting {
+            return;
+        }
         let have = self.snap.iter().flat_map(|s| s.calendars.keys().map(String::as_str));
         // A rename to the name it has, or only another case of it, is not taken.
         let from = m.from.clone();
         let have = have.filter(|h| from.as_deref().is_none_or(|f| !f.eq_ignore_ascii_case(h)));
-        let dir = ito_common::app_dir("koyomi").map(|d| d.join("calendars"));
-        let made = match new_name(&m.name, have) {
+        let request = match new_name(&m.name, have) {
             Err(Why::Empty) => Err(t.tr("newcal.empty").to_owned()),
             Err(Why::Bad) => Err(t.tr("make.bad").to_owned()),
             Err(Why::Exists(n)) => Err(t.trf("make.exists", &[n.as_str()])),
-            Ok(name) => {
-                let file = format!("calendars/{name}.toml");
-                let same = |d: &std::path::Path| from.as_deref().is_some_and(|f| f.eq_ignore_ascii_case(&name)) && d.exists();
-                match (&dir, &from) {
-                    (None, _) => Err(t.trf("calendar.write_failed", &[&file, "app_dir"])),
-                    (Some(_), Some(f)) if *f == name => Err(t.trf("make.exists", &[&name])),
-                    // Not read by the engine yet, but there: made by hand a moment ago.
-                    (Some(d), _) if d.join(format!("{name}.toml")).exists() && !same(d) => Err(t.trf("make.exists", &[&name])),
-                    (Some(d), None) => ito_common::write_atomic(&d.join(format!("{name}.toml")), new_text(m.holidays, &days_off(m.off)))
-                        .map(|()| (name, t.trf("calendar.written", &[&file])))
-                        .map_err(|e| t.trf("calendar.write_failed", &[&file, &e])),
-                    (Some(d), Some(f)) => std::fs::rename(d.join(format!("{f}.toml")), d.join(format!("{name}.toml")))
-                        .map(|()| (name.clone(), t.trf("calendar.renamed", &[f, &name])))
-                        .map_err(|e| t.trf("calendar.rename_failed", &[&format!("calendars/{f}.toml"), &e.to_string()])),
-                }
-            }
+            Ok(name) => match &from {
+                Some(f) if *f == name => Err(t.trf("make.exists", &[&name])),
+                Some(f) => Ok(Request::CalendarRename { from: f.clone(), to: name }),
+                None => Ok(Request::CalendarPut { name, text: new_text(m.holidays, &days_off(m.off)), base_sha256: None }),
+            },
         };
-        match made {
+        match request {
             Err(e) => m.error = Some(e),
-            Ok((name, said)) if m.for_net && self.editor.is_some() => {
-                self.new_cal = None;
-                if let Some(e) = &mut self.editor {
-                    e.set_calendar(&name);
-                    e.result = Some(Ok(said));
+            Ok(request) => {
+                m.error = None;
+                let sent = self.send(request);
+                if let Some(m) = &mut self.new_cal {
+                    m.waiting = sent;
+                    if !sent {
+                        m.error = Some(t.tr("newcal.not_sent").to_owned());
+                    }
                 }
-            }
-            Ok((name, said)) => {
-                self.new_cal = None;
-                self.cal_sel = Some(name);
-                self.cal_month = None;
-                self.cal_result = Some(Ok(said));
-                self.run_sel = None;
-                self.job_sel = None;
-                self.result = None;
-                self.hist = None;
-                self.gantt = false;
             }
         }
+    }
+
+    /// The engine's answer to the box's request: a no stays in the box; a yes closes it and shows the calendar.
+    /// `name` is the one in the answered request, never what the box shows now.
+    pub(super) fn new_cal_answer(&mut self, name: String, r: Result<String, String>) {
+        let Some(m) = &mut self.new_cal else { return };
+        m.waiting = false;
+        match r {
+            Err(e) => m.error = Some(e),
+            Ok(said) => self.new_cal_made(name, said),
+        }
+    }
+
+    /// What follows a calendar made or renamed: the editor's net takes it, or the month shows it.
+    fn new_cal_made(&mut self, name: String, said: String) {
+        if self.new_cal.as_ref().is_some_and(|m| m.for_net) && self.editor.is_some() {
+            self.new_cal = None;
+            if let Some(e) = &mut self.editor {
+                e.set_calendar(&name);
+                e.result = Some(Ok(said));
+            }
+        } else {
+            self.new_cal = None;
+            self.cal_sel = Some(name);
+            self.cal_month = None;
+            self.cal_result = Some(Ok(said));
+            self.run_sel = None;
+            self.job_sel = None;
+            self.result = None;
+            self.hist = None;
+            self.gantt = false;
+        }
+    }
+
+    /// Hands one calendar change to the worker. A refused send (a switch of the link waits) says so.
+    fn send_calendar(&self, name: &str, change: CalendarChange) {
+        // A refusal is said on the result line by the outbox's `refused` flag.
+        self.out.send_calendar(name.to_owned(), change);
     }
 }
 
@@ -1449,85 +1488,34 @@ pub fn named(cal: &Calendar, d: NaiveDate, day: &Day, name: &str) -> Calendar {
     out
 }
 
-fn toggle_day(t: &ito_i18n::Table, name: &str, cal: &Calendar, d: NaiveDate, day: &Day) -> Result<String, String> {
-    edit_file(t, name, |text| rewrite(text, &toggled(cal, d, day)))
+/// The change a click on a day makes, on the text fetched when it is sent: `day` is the day as the person
+/// saw it, and nothing else of the screen's calendar is used.
+fn toggle_edit(name: String, d: NaiveDate, day: Day) -> EditFn {
+    Box::new(move |text| {
+        let fetched = Calendar::parse(&name, text)?;
+        rewrite(text, &toggled(&fetched, d, &day))
+    })
 }
 
-/// `calendars/<name>.toml` read, changed by `change`, and written back; what to say under the month.
-fn edit_file(t: &ito_i18n::Table, name: &str, change: impl FnOnce(&str) -> Result<String, String>) -> Result<String, String> {
-    let file = format!("calendars/{name}.toml");
-    let path = ito_common::app_dir("koyomi").ok_or_else(|| t.trf("calendar.write_failed", &[&file, "app_dir"]))?.join(&file);
-    let write = || -> Result<(), String> {
-        let text = ito_common::read_or_empty(&path)?;
-        ito_common::write_atomic(&path, change(&text)?)
-    };
-    match write() {
-        Ok(()) => Ok(t.trf("calendar.written", &[&file])),
-        Err(e) => Err(t.trf("calendar.write_failed", &[&file, &e])),
-    }
+/// The change a day's name makes, on the text fetched when it is sent; `shown` is the day as the person saw it.
+fn name_edit(name: String, d: NaiveDate, shown: Day, label: String) -> EditFn {
+    Box::new(move |text| {
+        let fetched = Calendar::parse(&name, text)?;
+        rewrite(text, &named(&fetched, d, &shown, &label))
+    })
 }
 
-/// `calendars/<name>.toml` copied to `versions/_calendars/<name>/<YYYYMMDD-HHMMSS>.toml` in the
-/// state folder (as an import keeps one it writes over), then deleted.
-fn delete_file(t: &ito_i18n::Table, name: &str) -> Result<String, String> {
-    let file = format!("calendars/{name}.toml");
-    let failed = |e: &str| t.trf("calendar.delete_failed", &[&file, e]);
-    let path = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join(&file);
-    let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join(name);
-    let kept = keep_and_delete(&path, &dir, &ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string()).map_err(|e| failed(&e))?;
-    Ok(t.trf("calendar.deleted", &[&file, &kept.display().to_string()]))
-}
-
-/// `path` copied into `dir` as `<stamp>.toml` (or `<stamp>-2.toml` … when taken), then deleted;
-/// where the copy went. Nothing is deleted when the copy fails.
-fn keep_and_delete(path: &std::path::Path, dir: &std::path::Path, stamp: &str) -> Result<std::path::PathBuf, String> {
-    let kept = keep(path, dir, stamp, "toml")?;
-    std::fs::remove_file(path).map_err(|e| e.to_string())?;
-    Ok(kept)
-}
-
-/// `path` copied into `dir` as `<stamp>.<ext>` (or `<stamp>-2.<ext>` … when taken); where it went.
-fn keep(path: &std::path::Path, dir: &std::path::Path, stamp: &str, ext: &str) -> Result<std::path::PathBuf, String> {
-    let text = std::fs::read(path).map_err(|e| e.to_string())?;
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let mut kept = dir.join(format!("{stamp}.{ext}"));
-    let mut n = 1;
-    while kept.exists() {
-        n += 1;
-        kept = dir.join(format!("{stamp}-{n}.{ext}"));
-    }
-    ito_common::write_atomic(&kept, text)?;
-    Ok(kept)
-}
-
-/// 祝日の表を取り込む: the file at `path` (quotes from コピー as path are taken off) becomes
-/// `calendars/syukujitsu.csv` when it reads; the one there is kept under `versions/_calendars/`.
-fn import_table(t: &ito_i18n::Table, path: &str) -> Result<String, String> {
+/// 祝日の表を取り込む: the file at `path` (quotes from コピー as path are taken off) is read here and must
+/// read as a table; the request that makes the engine write it.
+fn import_table(t: &ito_i18n::Table, path: &str) -> Result<Request, String> {
     let path = path.trim().trim_matches('"');
     let failed = |e: &str| t.trf("calendar.table_failed", &[path, e]);
     if path.is_empty() {
         return Err(t.tr("calendar.table_empty").to_owned());
     }
-    let dest = ito_common::app_dir("koyomi").ok_or_else(|| failed("app_dir"))?.join("calendars").join(TABLE_FILE);
-    let dir = ito_common::state_dir("koyomi").ok_or_else(|| failed("state_dir"))?.join("versions").join("_calendars").join("syukujitsu");
-    let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
-    let (from, to) = bring_table(std::path::Path::new(path), &dest, &dir, &stamp).map_err(|e| failed(&e))?;
-    Ok(t.trf("calendar.table_done", &[&format!("calendars/{TABLE_FILE}"), &from.to_string(), &to.to_string()]))
-}
-
-/// The holiday table at `src` read, and its bytes written to `dest` as they are (the file there
-/// kept in `dir` first); the years it covers. Nothing is written when it does not read.
-fn bring_table(src: &std::path::Path, dest: &std::path::Path, dir: &std::path::Path, stamp: &str) -> Result<(i32, i32), String> {
-    let bytes = std::fs::read(src).map_err(|e| e.to_string())?;
-    let table = Table::parse(&Table::decode(&bytes))?;
-    if dest.exists() {
-        keep(dest, dir, stamp, "csv")?;
-    }
-    if let Some(parent) = dest.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-    }
-    ito_common::write_atomic(dest, bytes)?;
-    Ok(table.years)
+    let bytes = std::fs::read(path).map_err(|e| failed(&e.to_string()))?;
+    Table::parse(&Table::decode(&bytes)).map_err(|e| failed(&e))?;
+    Ok(Request::HolidayTable { bytes })
 }
 
 #[cfg(test)]
@@ -1574,24 +1562,6 @@ closed = [{ date = 2026-11-20, name = \"創立記念日\" }]
         assert_eq!(back, CAL);
         assert_eq!(set_rules(&text, true, &[]).unwrap().lines().nth(2), Some("weekly_off = []"));
         assert_eq!(days_off([true, false, false, false, false, false, true]), vec![Weekday::Mon, Weekday::Sun]);
-    }
-
-    #[test]
-    fn a_deleted_calendar_is_kept_first_under_a_stamp_that_is_free() {
-        let dir = std::env::temp_dir().join(format!("koyomi-caldel-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        let keep = dir.join("versions/_calendars/会社");
-        std::fs::create_dir_all(&keep).unwrap();
-        std::fs::write(keep.join("20261031-120000.toml"), "old").unwrap();
-        let path = dir.join("会社.toml");
-        std::fs::write(&path, CAL).unwrap();
-        let kept = keep_and_delete(&path, &keep, "20261031-120000").unwrap();
-        assert_eq!(kept, keep.join("20261031-120000-2.toml"));
-        assert_eq!(std::fs::read_to_string(&kept).unwrap(), CAL);
-        assert!(!path.exists());
-        assert!(keep_and_delete(&path, &keep, "20261031-120001").is_err(), "nothing there: nothing kept");
-        assert!(!keep.join("20261031-120001.toml").exists());
-        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1648,25 +1618,29 @@ closed = [{ date = 2026-11-20, name = \"創立記念日\" }]
     }
 
     #[test]
-    fn a_holiday_table_is_written_only_when_it_reads_and_the_old_one_is_kept() {
-        let dir = std::env::temp_dir().join(format!("koyomi-caltable-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let (dest, keep) = (dir.join("calendars").join(TABLE_FILE), dir.join("versions/_calendars/syukujitsu"));
-        let bad = dir.join("bad.csv");
-        std::fs::write(&bad, "国民の祝日・休日月日,国民の祝日・休日名称\n2027/1/1,元日\nあした,何か\n").unwrap();
-        let e = bring_table(&bad, &dest, &keep, "20261031-120000").unwrap_err();
-        assert!(e.contains("3 行目"), "{e}");
-        assert!(!dest.exists(), "nothing written when it does not read");
-        let sjis = dir.join("syukujitsu.csv");
-        std::fs::write(&sjis, b"2027/1/1,\x8c\xb3\x93\xfa\r\n2028/1/1,\x8c\xb3\x93\xfa\r\n").unwrap();
-        assert_eq!(bring_table(&sjis, &dest, &keep, "20261031-120000"), Ok((2027, 2028)));
-        assert_eq!(std::fs::read(&dest).unwrap(), std::fs::read(&sjis).unwrap(), "the bytes as they are");
-        assert!(!keep.exists(), "nothing there before: nothing kept");
-        std::fs::write(&sjis, "2029/1/1,元日\n").unwrap();
-        assert_eq!(bring_table(&sjis, &dest, &keep, "20261031-120000"), Ok((2029, 2029)));
-        assert_eq!(std::fs::read(keep.join("20261031-120000.csv")).unwrap()[..8], b"2027/1/1"[..]);
-        assert_eq!(std::fs::read_to_string(&dest).unwrap(), "2029/1/1,元日\n");
-        let _ = std::fs::remove_dir_all(&dir);
+    fn a_toggle_and_a_name_are_made_on_the_fetched_text_and_keep_its_other_days() {
+        // The screen showed CAL; the engine's file has since gained a closed day and an open day.
+        let fetched = "format = 1
+holidays = \"japan\"
+weekly_off = [\"sat\", \"sun\"]
+closed = [{ date = 2026-11-20, name = \"創立記念日\" }, 2026-11-25]
+open = [2026-11-28]
+";
+        let d = |s: &str| NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
+        let screen = Calendar::parse("会社", CAL).unwrap();
+        let thu = d("2026-11-19");
+        let text = toggle_edit("会社".into(), thu, screen.day(thu))(fetched).unwrap();
+        let back = Calendar::parse("会社", &text).unwrap();
+        assert!(!back.is_business(thu), "the clicked day moved");
+        assert!(!back.is_business(d("2026-11-25")), "a closed day only the fetched text had stays");
+        assert!(back.is_business(d("2026-11-28")), "an open day only the fetched text had stays");
+        assert_eq!(back.day(d("2026-11-20")), Day::Closed("創立記念日".to_owned()));
+        // A name is put on the fetched text the same way, on the side the person saw the day.
+        let text = name_edit("会社".into(), thu, screen.day(thu), "棚卸し".into())(fetched).unwrap();
+        let back = Calendar::parse("会社", &text).unwrap();
+        assert_eq!(back.day(thu), Day::Closed("棚卸し".to_owned()));
+        assert!(!back.is_business(d("2026-11-25")) && back.is_business(d("2026-11-28")));
+        // Text that does not read is a failure, not a write.
+        assert!(toggle_edit("会社".into(), thu, Day::Business)("not = [toml").is_err());
     }
 }

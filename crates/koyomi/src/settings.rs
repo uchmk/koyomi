@@ -29,8 +29,34 @@ const LAYERS: [(&str, &str); 1] = [("app", "keys.main")];
 /// themes of its own, and no older setting to carry over.
 pub const THEMES: Option<(&str, &str, &str)> = None;
 
-/// The rows on each page, for the search.
-fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::Table) -> Vec<(usize, String)> {
+/// Whether a row of the page is the engine's (its files, on its PC) and not this window's. On another PC's
+/// engine these are not shown, so the search must not find them either.
+fn engine_row(page: usize, text: &str, t: &ito_i18n::Table, more: &MoreWords) -> bool {
+    let records = [
+        t.tr("settings.records"),
+        t.tr("settings.keep_days"),
+        t.tr("settings.archive"),
+        t.tr("settings.concurrency"),
+        t.tr("settings.log_max"),
+        "keep_days",
+        "archive",
+        "concurrency",
+        "log_max_mb",
+    ];
+    match page {
+        // The Records section, and the button for koyomi.toml.
+        GENERAL => text == CONFIG_FILE || records.contains(&text),
+        // The whole page is `[notify]` of koyomi.toml.
+        NOTIFY => true,
+        // The state folder's row is this PC's engine's: ito's own card leaves it out on another PC's engine.
+        ADVANCED => text == more.state_dir || text == more.state_dir_note,
+        _ => false,
+    }
+}
+
+/// The rows on each page, for the search. `far`: the window shows another PC's engine, so the engine's rows
+/// (see [`engine_row`]) are left out.
+fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::Table, far: bool) -> Vec<(usize, String)> {
     let keys = ito_prefs::keys_index(ito_prefs::KeyWords::of(lang)).into_iter().map(|t| (KEYS, t));
     let layers = LAYERS.iter().map(|(_, k)| (KEYS, t.tr(k)));
     vec![
@@ -75,8 +101,14 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
     .chain(ito_prefs::advanced_index(more).into_iter().map(|t| (ADVANCED, t)))
     .chain(ito_prefs::mono_font_index(more).into_iter().map(|t| (THEME, t)))
     .chain(ito_prefs::about_index(more, w).into_iter().map(|t| (ABOUT, t)))
+    .filter(|(p, text)| !(far && engine_row(*p, text, t, more)))
     .map(|(p, t)| (p, t.to_owned()))
     .collect()
+}
+
+/// The one line shown where the engine's settings would be, on another PC's engine.
+fn far_line(ui: &mut Ui, text: &str) {
+    ui.add(egui::Label::new(egui::RichText::new(text).color(ito_theme::colors().dim)).wrap());
 }
 
 pub fn show(ui: &mut Ui, app: &mut App) {
@@ -84,6 +116,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let more = MoreWords::of(&app.lang);
     poll_startup(ui, app);
     let no_folder = app.table.tr("settings.no_folder").to_owned();
+    // A box raised on this PC does not survive a switch to another PC's engine.
+    if app.browser.link().is_far() {
+        app.keep_ask = None;
+    }
     keep_ask(ui, app, &no_folder);
     // While a key is being set, or the box asks, the page takes every key, Esc included.
     let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() {
@@ -103,7 +139,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         (about.0.to_owned(), about.1.to_owned()),
     ];
     let pages: Vec<(&str, &str)> = page_words.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
-    let index = index(w, more, &app.lang, table);
+    let far = app.browser.link().is_far();
+    let far_text = tr("settings.far_line");
+    let index = index(w, more, &app.lang, table, far);
     let index: Vec<(usize, &str)> = index.iter().map(|(p, t)| (*p, t.as_str())).collect();
     let nav = ito_prefs::Nav { pages: &pages, index: &index, words: w, file: "common.toml" };
     let mut asked: Vec<CommonChange> = Vec::new();
@@ -143,7 +181,8 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let state_dir = ito_common::state_dir("koyomi");
     let (common, themes, base) = (&prefs.common, &prefs.themes, prefs.base.as_deref());
     // koyomi.toml's button above common.toml's: the engine's settings are a file of their own.
-    let extras = ito_prefs::Extras { files: &[CONFIG_FILE], ..Default::default() };
+    // On another PC's engine there is no koyomi.toml of that engine to open from here.
+    let extras = ito_prefs::Extras { files: if far { &[] } else { &[CONFIG_FILE] }, ..Default::default() };
     let out = ito_prefs::show_with(ui, ito_theme::colors(), &mut prefs.state, &nav, keys, extras, |ui, page, l| match page {
         GENERAL => {
             section(ui, l, &tr("settings.display"), |ui| {
@@ -157,6 +196,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             asked.extend(out.changes);
             forget |= out.forget;
             startup_toggled = ito_prefs::startup_card_with(ui, l, more, startup_now, startup_problem.as_deref());
+            if far {
+                far_line(ui, &far_text);
+                return;
+            }
             section(ui, l, &tr("settings.records"), |ui| {
                 if let Some(w) = config_warn {
                     ito_prefs::status(ui, w, l.c.err);
@@ -199,6 +242,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             // Read at the next start: the fonts are loaded once, in the background.
             asked.extend(ito_prefs::mono_font_card(ui, l, more, common.mono_font_or_default()));
         }
+        NOTIFY if far => far_line(ui, &far_text),
         NOTIFY => {
             for n in notify_warn {
                 ito_prefs::status(ui, n, l.c.err);
@@ -249,6 +293,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 sup: false,
             };
             key_edits.extend(ito_prefs::keys_page(ui, l, kw, &table, keys_edit).unwrap_or_default());
+        }
+        ADVANCED if far => {
+            far_line(ui, &far_text);
+            advanced.extend(ito_prefs::advanced_card(ui, l, more, false));
         }
         ADVANCED => advanced.extend(ito_prefs::advanced_card(ui, l, more, state_dir.is_some())),
         ABOUT => {
@@ -475,9 +523,44 @@ mod tests {
     fn the_search_finds_the_keys_page() {
         let (t, errors) = crate::i18n::table("en");
         assert!(errors.is_empty(), "{errors:?}");
-        let idx = index(Words::of("en"), MoreWords::of("en"), "en", &t);
+        let idx = index(Words::of("en"), MoreWords::of("en"), "en", &t, false);
         assert!(idx.iter().any(|(p, t)| *p == KEYS && t == "keymap.toml"));
         assert!(idx.iter().any(|(p, t)| *p == KEYS && t == "Everywhere"));
         assert!(idx.iter().any(|(p, t)| *p == GENERAL && t == "[window]"));
+    }
+
+    /// Home keeps every row; another PC's engine loses the engine's (Records, koyomi.toml, the whole
+    /// Notifications page) and keeps this window's own.
+    #[test]
+    fn the_search_on_another_pcs_engine_drops_the_engines_rows_only() {
+        let (t, _) = crate::i18n::table("en");
+        let (w, more) = (Words::of("en"), MoreWords::of("en"));
+        let home = index(w, more, "en", &t, false);
+        let far = index(w, more, "en", &t, true);
+        let has = |idx: &[(usize, String)], p: usize, s: &str| idx.iter().any(|(q, x)| *q == p && x == s);
+        for (p, s) in
+            [(GENERAL, "keep_days"), (GENERAL, "log_max_mb"), (GENERAL, "koyomi.toml"), (NOTIFY, "[notify]"), (NOTIFY, "koyomi.toml")]
+        {
+            assert!(has(&home, p, s) && !has(&far, p, s), "{p} {s}");
+        }
+        for k in ["settings.records", "settings.keep_days", "settings.archive", "settings.concurrency", "settings.log_max"] {
+            assert!(has(&home, GENERAL, t.tr(k)) && !has(&far, GENERAL, t.tr(k)), "{k}");
+        }
+        assert!(far.iter().all(|(p, _)| *p != NOTIFY), "nothing of the Notifications page");
+        assert!(home.iter().any(|(p, _)| *p == NOTIFY));
+        // The window's own rows stay.
+        for (p, s) in [(GENERAL, "language"), (GENERAL, "[window]"), (THEME, "theme"), (KEYS, "keymap.toml")] {
+            assert!(has(&far, p, s), "{p} {s}");
+        }
+        // Advanced: on another PC's engine exactly the state folder's two rows are fewer.
+        let adv = |idx: &[(usize, String)]| idx.iter().filter(|(p, _)| *p == ADVANCED).count();
+        assert_eq!(adv(&far) + 2, adv(&home));
+        for s in [more.state_dir, more.state_dir_note] {
+            assert!(has(&home, ADVANCED, s) && !has(&far, ADVANCED, s), "{s}");
+        }
+        assert!(has(&far, ADVANCED, more.config_dir) && has(&far, ADVANCED, more.reset_label));
+        // Only the engine's rows are gone.
+        let gone = home.len() - far.len();
+        assert_eq!(gone, home.iter().filter(|(p, x)| engine_row(*p, x, &t, more)).count());
     }
 }
