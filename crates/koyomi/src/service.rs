@@ -27,7 +27,16 @@ pub static RUNNING: AtomicBool = AtomicBool::new(false);
 
 /// The service's name: one per person on the PC, like the engine's door.
 pub fn name() -> String {
-    service_name(&std::env::var("USERNAME").unwrap_or_default())
+    name_on(cfg!(windows), &std::env::var("USERNAME").unwrap_or_default())
+}
+
+/// Windows has one service per person; a Linux machine has the one unit.
+fn name_on(windows: bool, user: &str) -> String {
+    if windows {
+        service_name(user)
+    } else {
+        "koyomi".to_owned()
+    }
 }
 
 fn service_name(user: &str) -> String {
@@ -46,6 +55,11 @@ fn account() -> String {
 /// Whether the service is installed, and where it is.
 pub fn state() -> Option<State> {
     ito_service::state(&name()).ok().flatten().map(|s| s.state)
+}
+
+/// Like [`state`], but a failed query is an error (its text) and not "no service".
+pub fn query() -> Result<Option<State>, String> {
+    ito_service::state(&name()).map(|o| o.map(|s| s.state)).map_err(|e| e.to_string())
 }
 
 /// `koyomi service [install|uninstall|start|stop|status|run]`.
@@ -269,6 +283,13 @@ mod tests {
     fn the_name_follows_the_person() {
         assert_eq!(service_name("yuu"), "koyomi-yuu");
         assert!(ito_service::valid_name(&service_name("yuu")));
+    }
+
+    #[test]
+    fn linux_has_the_one_unit_and_windows_one_per_person() {
+        assert_eq!(name_on(true, "yuu"), "koyomi-yuu");
+        assert_eq!(name_on(false, "yuu"), "koyomi");
+        assert_eq!(name_on(false, ""), "koyomi");
     }
 
     /// status says not installed, running with the pid, and how to start a stopped one.

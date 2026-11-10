@@ -130,6 +130,7 @@ pub(crate) fn why(r: &Remote, e: &client::Error) -> String {
             r.name
         ),
         client::Error::Connect(s) => format!("{}: つながらない（{s}）。向こうのエンジンと [http] の lan = true、ファイアウォールを見る", r.name),
+        client::Error::Deadline => format!("{}: 時間内に終わらなかった（通信が遅いか、向こうが混んでいる）", r.name),
         e => format!("{}: {e}", r.name),
     }
 }
@@ -164,6 +165,7 @@ fn peek_why(e: &client::Error) -> String {
         client::Error::Tls(s) => format!("TLS が通らない: {s}"),
         client::Error::Fingerprint(got) => format!("証明書が信頼したものと違う（{got}）"),
         client::Error::Bad(s) => format!("答えが読めない: {s}"),
+        client::Error::Deadline => "時間内に終わらなかった".to_owned(),
     }
 }
 

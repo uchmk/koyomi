@@ -17,6 +17,11 @@ use crate::{client as local, remote};
 const POLL_LOCAL: Duration = Duration::from_secs(1);
 /// How often another PC is asked: a request costs a TLS handshake there.
 const POLL_FAR: Duration = Duration::from_secs(3);
+/// The longest one call to another PC may take, from name lookup to the last byte of the answer. When it
+/// fires, the far side may still have acted on the request.
+const CALL_DEADLINE: Duration = Duration::from_secs(30);
+/// The largest answer taken from another PC: a year of `History` is more than the 4 MiB default.
+const MAX_REPLY: usize = 64 * 1024 * 1024;
 
 /// The words for a token the window cannot be driven with.
 const NOT_ADMITTED: &str = "この token では窓をつなげない（edit 以上で、絞り込みのない利用者が要る）";
@@ -38,7 +43,7 @@ pub struct Conn {
 
 enum Kind {
     Local,
-    Far { remote: Remote, client: Client },
+    Far { remote: Remote, client: Box<Client> },
 }
 
 impl Link {
@@ -81,12 +86,15 @@ fn connect(r: &Remote) -> Result<Conn, String> {
         200..=299 => admit(&reply.json)?,
         s => return Err(read_status(r, s, &reply.json)),
     };
-    Ok(Conn { kind: Kind::Far { remote: r.clone(), client }, role: Some(role) })
+    Ok(Conn { kind: Kind::Far { remote: r.clone(), client: Box::new(client) }, role: Some(role) })
 }
 
 /// The one place a client for another PC is made.
 fn build(r: &Remote) -> Result<Client, String> {
-    remote::client(r)
+    let mut client = remote::client(r)?;
+    client.deadline = Some(CALL_DEADLINE);
+    client.max_reply = MAX_REPLY;
+    Ok(client)
 }
 
 impl Conn {
@@ -165,7 +173,7 @@ fn read_status(r: &Remote, status: u16, json: &serde_json::Value) -> String {
 /// `text` with the warning that a request which is not a read may have arrived (a connection that broke or
 /// timed out, or an answer that did not read). It is never sent again on its own.
 fn unsure(request: &Request, e: &client::Error, text: String) -> String {
-    if matches!(e, client::Error::Connect(_) | client::Error::Bad(_)) {
+    if matches!(e, client::Error::Connect(_) | client::Error::Bad(_) | client::Error::Deadline) {
         may_have_arrived(request, text)
     } else {
         text
@@ -272,8 +280,19 @@ mod tests {
         let save = Request::Save { id: "g/a".into(), text: "x".into(), base_sha256: None, force: false };
         assert!(unsure(&save, &e, "kei: x".into()).contains("届いたか分からない"));
         assert_eq!(unsure(&Request::List, &e, "kei: x".into()), "kei: x");
+        let late = client::Error::Deadline;
+        assert!(unsure(&save, &late, "kei: x".into()).contains("届いたか分からない"));
+        assert_eq!(unsure(&Request::List, &late, "kei: x".into()), "kei: x");
         for e in [client::Error::Fingerprint("f".into()), client::Error::Url("u".into()), client::Error::Tls("t".into())] {
             assert_eq!(unsure(&save, &e, "kei: x".into()), "kei: x");
         }
+    }
+
+    #[test]
+    fn a_deadline_is_told_in_japanese_without_the_unsure_tail() {
+        let r = remote();
+        let t = remote::why(&r, &client::Error::Deadline);
+        assert!(t.starts_with("kei: 時間内"), "{t}");
+        assert!(!t.contains("届いたか"), "{t}");
     }
 }
