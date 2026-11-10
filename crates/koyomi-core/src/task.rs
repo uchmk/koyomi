@@ -10,6 +10,7 @@ use roxmltree::{Document, Node};
 
 use crate::bundle::{Bundle, Net};
 use crate::jobnet::{Job, Jobnet, Line, Missed};
+use crate::msg;
 use crate::when::{Kind, MonthRule, Session, When};
 use crate::write;
 
@@ -46,13 +47,13 @@ pub fn bundle(text: &str) -> Result<(Bundle, Vec<String>), String> {
 /// The task in `text`: its id (`グループ/名前`), the net and the notes.
 pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
     let text = text.trim_start_matches('\u{feff}');
-    let doc = Document::parse(text).map_err(|e| format!("タスクの XML が読めない: {e}"))?;
+    let doc = Document::parse(text).map_err(|e| msg::line(msg::TASK_XML_UNREADABLE, &[&e.to_string()]))?;
     let task = doc.root_element();
     if task.tag_name().name() != "Task" {
-        return Err(format!("タスク スケジューラの XML ではない（一番外が <{}>）", task.tag_name().name()));
+        return Err(msg::line(msg::TASK_NOT_SCHEDULER_XML, &[task.tag_name().name()]));
     }
     let mut notes = Vec::new();
-    let note = |notes: &mut Vec<String>, s: String| notes.push(format!("  注意: {s}"));
+    let note = |notes: &mut Vec<String>, s: String| notes.push(s);
 
     let uri = path_text(task, &["RegistrationInfo", "URI"]).unwrap_or_default();
     let (group, name) = id_of(&uri);
@@ -61,13 +62,13 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
     let mut net = Jobnet { name: Some(name.clone()), ..Default::default() };
     let settings = child(task, "Settings");
     if settings.and_then(|s| text_of(s, "Enabled")).is_some_and(|e| e == "false") {
-        note(&mut notes, "タスクは無効になっていた（取り込んだネットは確かめるまで流れない）".to_owned());
+        note(&mut notes, msg::line(msg::TASK_WAS_DISABLED, &[]));
     }
     if settings.and_then(|s| text_of(s, "StartWhenAvailable")).is_some_and(|e| e == "true") {
         net.missed = Missed::Once;
     }
     if child(task, "Principals").is_some_and(|p| p.descendants().any(|n| n.has_tag_name_local("UserId"))) {
-        note(&mut notes, "実行するユーザーは取り込まない（koyomi のエンジンを動かすユーザーで流れる）".to_owned());
+        note(&mut notes, msg::line(msg::TASK_USER_DROPPED, &[]));
     }
 
     // An idle trigger starts once the PC has been left alone as long as the task's idle setting says.
@@ -87,7 +88,7 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
         }
     }
     if net.when.is_empty() {
-        note(&mut notes, "時刻を 1 つも取り込めなかった（手で流すだけのネットになる）".to_owned());
+        note(&mut notes, msg::line(msg::TASK_NO_TIMES, &[]));
     }
 
     let timeout = settings.and_then(|s| text_of(s, "ExecutionTimeLimit")).and_then(|d| duration(&d)).filter(|&s| s > 0 && s != 72 * 3600);
@@ -95,7 +96,7 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
     if let Some(actions) = child(task, "Actions") {
         for a in actions.children().filter(Node::is_element) {
             if a.tag_name().name() != "Exec" {
-                note(&mut notes, format!("<{}> の動作は取り込めない（プログラムを動かす <Exec> だけ）", a.tag_name().name()));
+                note(&mut notes, msg::line(msg::TASK_ACTION_DROPPED, &[a.tag_name().name()]));
                 continue;
             }
             let Some(command) = text_of(a, "Command").filter(|c| !c.trim().is_empty()) else { continue };
@@ -105,7 +106,7 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
                 run.extend(split_args(&args));
             }
             if run.iter().any(|r| r.contains('%')) {
-                note(&mut notes, format!("job{n} の %…% は koyomi では広げない（必要なら cmd.exe /c で包む）"));
+                note(&mut notes, msg::line(msg::TASK_PERCENT, &[&n.to_string()]));
             }
             let after = net.jobs.last().map(|j: &Job| vec![Line::ok(&j.id)]).unwrap_or_default();
             net.jobs.push(Job {
@@ -120,7 +121,7 @@ pub fn convert(text: &str) -> Result<(String, Jobnet, Vec<String>), String> {
         }
     }
     if net.jobs.is_empty() {
-        return Err("取り込めるプログラム（<Exec> の <Command>）が無い".to_owned());
+        return Err(msg::line(msg::TASK_NO_EXEC, &[]));
     }
     Ok((id, net, notes))
 }
@@ -140,7 +141,7 @@ fn id_of(uri: &str) -> (String, String) {
     };
     let parts: Vec<&str> = uri.split('\\').filter(|p| !p.trim().is_empty()).collect();
     match parts.as_slice() {
-        [] => (GROUP.to_owned(), "タスク".to_owned()),
+        [] => (GROUP.to_owned(), GROUP.to_owned()),
         [name] => (GROUP.to_owned(), clean(name)),
         [.., folder, name] => (clean(folder), clean(name)),
     }
@@ -151,7 +152,7 @@ fn id_of(uri: &str) -> (String, String) {
 fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
     let kind = t.tag_name().name();
     if text_of(t, "Enabled").is_some_and(|e| e == "false") {
-        return Err(format!("無効のトリガー（<{kind}>）は取り込まない"));
+        return Err(msg::line(msg::TASK_TRIGGER_OFF, &[kind]));
     }
     let start = text_of(t, "StartBoundary").map(|s| boundary(&s)).transpose()?;
     let end = text_of(t, "EndBoundary").map(|s| boundary(&s)).transpose()?;
@@ -159,17 +160,17 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
     let at = start.map(|s| s.time().with_nanosecond(0).unwrap_or(s.time())).unwrap_or(NaiveTime::MIN);
     let kinds: Vec<Kind> = match kind {
         "TimeTrigger" => {
-            let Some(s) = start else { return Err("<TimeTrigger> に開始の時刻が無い".to_owned()) };
+            let Some(s) = start else { return Err(msg::line(msg::TASK_ONCE_NO_START, &[])) };
             vec![Kind::Once { at: s.with_nanosecond(0).unwrap_or(s) }]
         }
         "BootTrigger" | "LogonTrigger" => {
             if kind == "LogonTrigger" {
-                notes.push("ログオン時のトリガーは、エンジンが始まるとき（on_start）にした".to_owned());
+                notes.push(msg::line(msg::TASK_LOGON_AS_START, &[]));
             }
             vec![Kind::OnStart]
         }
         "IdleTrigger" => {
-            notes.push(format!("アイドル時のトリガーは idle = \"{}\"（PC がその間使われなかったとき）にした", crate::duration::text(idle)));
+            notes.push(msg::line(msg::TASK_IDLE, &[&crate::duration::text(idle)]));
             vec![Kind::Idle { idle }]
         }
         "CalendarTrigger" => calendar(t, at, &mut notes)?,
@@ -179,7 +180,7 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
                 Some("SessionUnlock") => Session::Unlock,
                 other => {
                     let what = other.unwrap_or_default();
-                    return Err(format!("<SessionStateChangeTrigger> の「{what}」は取り込めない（ロックとロックの解除だけ）"));
+                    return Err(msg::line(msg::TASK_SESSION_STATE, &[what]));
                 }
             };
             // The person the trigger is for, as `user`; a SID or `user@domain` is
@@ -187,10 +188,7 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
             let user = match text_of(t, "UserId").map(|u| u.trim().to_owned()).filter(|u| !u.is_empty()) {
                 Some(u) if crate::when::valid_session_user(&u) && !u.to_ascii_uppercase().starts_with("S-1-") => Some(u),
                 Some(u) => {
-                    notes.push(format!(
-                        "{u} に限ったトリガーだが、この書き方は読めないので、session = \"{}\" はどのユーザーのでも流れる（user = 'PC\\名前' を書き足す）",
-                        session.name()
-                    ));
+                    notes.push(msg::line(msg::TASK_SESSION_USER, &[&u, session.name()]));
                     None
                 }
                 None => None,
@@ -198,9 +196,7 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
             vec![Kind::Session { session, user }]
         }
         other => {
-            return Err(format!(
-                "<{other}> のトリガーは取り込めない（時刻・日・週・月・起動時・ログオン時・アイドル時・ロック時・ロック解除時だけ）"
-            ));
+            return Err(msg::line(msg::TASK_TRIGGER_KIND, &[other]));
         }
     };
     // A repetition turns each day's time into a run of times within the day.
@@ -217,7 +213,7 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
                     Some(days) if minutes => Kind::Minutes { n, from, to, days },
                     Some(days) => Kind::Hours { n, from, to, days },
                     None => {
-                        notes.push("繰り返しは日・週のトリガーのときだけ取り込む".to_owned());
+                        notes.push(msg::line(msg::TASK_REPEAT_KIND, &[]));
                         k
                     }
                 }
@@ -250,17 +246,17 @@ fn trigger(t: Node, idle: u64) -> Result<(Vec<When>, Vec<String>), String> {
 fn calendar(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Result<Vec<Kind>, String> {
     if let Some(s) = child(t, "ScheduleByDay") {
         if text_of(s, "DaysInterval").is_some_and(|n| n.trim() != "1") {
-            return Err("何日かおきのトリガーは取り込めない（毎日だけ）".to_owned());
+            return Err(msg::line(msg::TASK_INTERVAL, &["DaysInterval"]));
         }
         return Ok(vec![Kind::Day { at: vec![at] }]);
     }
     if let Some(s) = child(t, "ScheduleByWeek") {
         if text_of(s, "WeeksInterval").is_some_and(|n| n.trim() != "1") {
-            return Err("何週かおきのトリガーは取り込めない（毎週だけ）".to_owned());
+            return Err(msg::line(msg::TASK_INTERVAL, &["WeeksInterval"]));
         }
         let days = weekdays(s);
         if days.is_empty() {
-            return Err("週のトリガーに曜日が無い".to_owned());
+            return Err(msg::line(msg::TASK_WEEK_NO_DAY, &[]));
         }
         return Ok(vec![Kind::Week { days, at: vec![at] }]);
     }
@@ -270,7 +266,7 @@ fn calendar(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Result<Vec<Kind>
             .map(|d| d.children().filter(|n| n.has_tag_name_local("Day")).filter_map(|n| n.text()).map(|t| t.trim().to_owned()).collect())
             .unwrap_or_default();
         if days.is_empty() {
-            return Err("月のトリガーに日が無い".to_owned());
+            return Err(msg::line(msg::TASK_MONTH_NO_DAY, &[]));
         }
         let mut out = Vec::new();
         for d in &days {
@@ -280,15 +276,15 @@ fn calendar(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Result<Vec<Kind>
                 (true, true, _) => out.push(Kind::Month { rule: MonthRule::Last, at: vec![at] }),
                 (true, false, Some(day)) => out.push(Kind::Month { rule: MonthRule::Day { day, shift: 0 }, at: vec![at] }),
                 (false, false, Some(day)) => out.extend(months.iter().map(|&month| Kind::Year { month, day, at: vec![at] })),
-                (false, true, _) => notes.push("一部の月の末日は取り込めない（毎月の末日だけ）".to_owned()),
-                _ => notes.push(format!("月のトリガーの日 {d} は読めない")),
+                (false, true, _) => notes.push(msg::line(msg::TASK_LAST_PARTIAL, &[])),
+                _ => notes.push(msg::line(msg::TASK_MONTH_DAY_BAD, &[d])),
             }
         }
         return Ok(out);
     }
     if let Some(s) = child(t, "ScheduleByMonthDayOfWeek") {
         if months(s).len() != 12 {
-            notes.push("曜日で決める月のトリガーは、毎月として取り込んだ（一部の月だけにはしていない）".to_owned());
+            notes.push(msg::line(msg::TASK_NTH_PARTIAL, &[]));
         }
         let weeks: Vec<String> = child(s, "Weeks")
             .map(|w| w.children().filter(|n| n.has_tag_name_local("Week")).filter_map(|n| n.text()).map(|t| t.trim().to_owned()).collect())
@@ -296,17 +292,17 @@ fn calendar(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Result<Vec<Kind>
         let mut out = Vec::new();
         for w in &weeks {
             let Some(nth) = w.parse::<u32>().ok().filter(|n| (1..=4).contains(n)) else {
-                notes.push(format!("月の第 {w} 週は取り込めない（第 1〜4 週だけ）"));
+                notes.push(msg::line(msg::TASK_NTH_WEEK, &[w]));
                 continue;
             };
             out.extend(weekdays(s).into_iter().map(|weekday| Kind::Month { rule: MonthRule::Nth { nth, weekday }, at: vec![at] }));
         }
         if out.is_empty() {
-            return Err("曜日で決める月のトリガーから時刻を作れなかった".to_owned());
+            return Err(msg::line(msg::TASK_NTH_NONE, &[]));
         }
         return Ok(out);
     }
-    Err("<CalendarTrigger> の決め方が読めない".to_owned())
+    Err(msg::line(msg::TASK_CALENDAR_BAD, &[]))
 }
 
 /// `<Repetition>` as (every n, in minutes?, from, to) within the day, when there is one.
@@ -318,7 +314,7 @@ fn repetition(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Option<(u32, b
         Some(d) if d > 0 => {
             let end = at.num_seconds_from_midnight() as u64 + d;
             if end >= 24 * 3600 {
-                notes.push("日をまたぐ繰り返しは、その日の 23:59 までにした".to_owned());
+                notes.push(msg::line(msg::TASK_REPEAT_OVERNIGHT, &[]));
                 last
             } else {
                 // The last repeat starts before the end, not at it.
@@ -326,14 +322,14 @@ fn repetition(t: Node, at: NaiveTime, notes: &mut Vec<String>) -> Option<(u32, b
             }
         }
         _ => {
-            notes.push("期限の無い繰り返しは、その日の 23:59 までにした".to_owned());
+            notes.push(msg::line(msg::TASK_REPEAT_ENDLESS, &[]));
             last
         }
     };
     let minutes = every % 3600 != 0;
     let n = if minutes { every / 60 } else { every / 3600 };
     if minutes && every % 60 != 0 {
-        notes.push("繰り返しの秒は切り捨てた".to_owned());
+        notes.push(msg::line(msg::TASK_REPEAT_SECONDS, &[]));
     }
     Some((n as u32, minutes, at, to))
 }
@@ -369,7 +365,7 @@ fn boundary(s: &str) -> Result<NaiveDateTime, String> {
     let wall = s.get(..19).unwrap_or(s);
     NaiveDateTime::parse_from_str(wall, "%Y-%m-%dT%H:%M:%S")
         .or_else(|_| NaiveDate::parse_from_str(s.get(..10).unwrap_or(s), "%Y-%m-%d").map(|d| d.and_time(NaiveTime::MIN)))
-        .map_err(|_| format!("時刻 {s} が読めない"))
+        .map_err(|_| msg::line(msg::TASK_TIME_UNREADABLE, &[s]))
 }
 
 /// An ISO 8601 duration (`PT15M`, `P1D`, `P3DT2H`) in seconds.
@@ -546,8 +542,8 @@ mod tests {
         assert_eq!(net.jobs[0].timeout, Some(7200));
         assert_eq!(net.jobs[0].note.as_deref(), Some("夜のバックアップ"));
         assert_eq!(net.jobs[1].after, vec![Line::ok("job1")]);
-        assert!(notes.iter().any(|n| n.contains("EventTrigger")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("ユーザー")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_TRIGGER_KIND.is_in(n) && n.contains("EventTrigger")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_USER_DROPPED.is_in(n) && n.contains("ユーザー")), "{notes:?}");
         // What the import writes reads back as the same net.
         let (b, _) = bundle(DAILY).unwrap();
         let back = jobnet::parse(&b.jobnets[0].text).unwrap();
@@ -584,9 +580,9 @@ mod tests {
                 &Kind::OnStart,
             ]
         );
-        assert!(notes.iter().any(|n| n.contains("第 Last 週")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("何日かおき")), "{notes:?}");
-        assert!(notes.iter().any(|n| n.contains("ShowMessage")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_NTH_WEEK.is_in(n) && n.contains("第 Last 週")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_INTERVAL.is_in(n) && n.contains("DaysInterval")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_ACTION_DROPPED.is_in(n) && n.contains("ShowMessage")), "{notes:?}");
     }
 
     #[test]
@@ -602,7 +598,7 @@ mod tests {
         let (_, net, notes) = convert(&xml).unwrap();
         assert_eq!(net.when.iter().map(|w| &w.kind).collect::<Vec<_>>(), [&Kind::Idle { idle: 900 }]);
         assert!(net.when[0].start.is_none());
-        assert!(notes.iter().any(|n| n.contains("idle = \"15m\"")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_IDLE.is_in(n) && n.contains("idle = \"15m\"")), "{notes:?}");
         // With no idle setting, it waits 10 minutes.
         let (_, net, _) = convert(&xml.replace(settings, "")).unwrap();
         assert_eq!(net.when[0].kind, Kind::Idle { idle: 600 });
@@ -632,20 +628,27 @@ mod tests {
         for id in ["S-1-5-21-1004336348-1177238915-682003330-1001", "taro@corp.example"] {
             let (_, net, notes) = convert(&xml("SessionLock", &format!("<UserId>{id}</UserId>"))).unwrap();
             assert_eq!(net.when[0].kind, Kind::Session { session: Session::Lock, user: None });
-            assert!(notes.iter().any(|n| n.contains(id) && n.contains("session = \"lock\"")), "{notes:?}");
+            assert!(
+                notes.iter().any(|n| msg::TASK_SESSION_USER.is_in(n) && n.contains(id) && n.contains("session = \"lock\"")),
+                "{notes:?}"
+            );
         }
         // A remote connection has no kind here: the trigger is left out with a note, the rest comes over.
         let (_, net, notes) = convert(&xml("RemoteConnect", "")).unwrap();
         assert_eq!(net.when.len(), 1);
         assert!(matches!(net.when[0].kind, Kind::Once { .. }));
-        assert!(notes.iter().any(|n| n.contains("「RemoteConnect」は取り込めない")), "{notes:?}");
+        assert!(notes.iter().any(|n| msg::TASK_SESSION_STATE.is_in(n) && n.contains("「RemoteConnect」は取り込めません")), "{notes:?}");
     }
 
     #[test]
     fn a_task_with_nothing_to_run_is_refused() {
         let xml = r#"<Task><Actions><ComHandler><ClassId>x</ClassId></ComHandler></Actions></Task>"#;
-        assert!(convert(xml).unwrap_err().contains("<Exec>"));
-        assert!(convert("<Other/>").unwrap_err().contains("<Other>"));
+        let e = convert(xml).unwrap_err();
+        assert!(msg::TASK_NO_EXEC.is_in(&e) && e.contains("<Exec>"), "{e}");
+        let e = convert("<Other/>").unwrap_err();
+        assert!(msg::TASK_NOT_SCHEDULER_XML.is_in(&e) && e.contains("<Other>"), "{e}");
+        let e = convert("<Task>").unwrap_err();
+        assert!(msg::TASK_XML_UNREADABLE.is_in(&e), "{e}");
     }
 
     #[test]

@@ -701,7 +701,7 @@ impl Runner {
     /// would start them.
     pub fn drop_queue(&mut self) {
         for q in self.unqueue(None) {
-            self.not_run(&q.def, q.planned, State::Skipped, koyomi_core::run::ENGINE_STOPPED);
+            self.not_run(&q.def, q.planned, State::Skipped, &koyomi_core::run::engine_stopped_word());
         }
     }
     /// Takes the times waiting for the net `net` (every net when `None`) out of the queue:
@@ -1985,18 +1985,18 @@ mod tests {
         let mut r = Runner::new(&dir.join("b"), Config::default());
         let again = r.resume(&d, &theirs, "pc-a").unwrap();
         let run = wait_over(&mut r, &again);
-        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::CARRIED));
+        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::carried_word().as_str()));
         assert!(!r.log_path(&again, "a").exists(), "a ended ok there and must not run again");
         assert!(r.log_path(&again, "b").exists());
-        assert!(run.reason.contains("pc-a で動いていた"), "{}", run.reason);
+        assert!(run.reason.contains("pc-a で実行していた"), "{}", run.reason);
         // Not taken over: written down, over at once, and a rerun goes on from where it was.
         let left = r.left(&theirs, Some(&d), "pc-a", "takeover = \"rerun\" ではない");
         let run = r.run(&left).unwrap().clone();
         assert_eq!((run.state, run.job("b").unwrap().state), (State::Missed, State::NotRun));
-        assert!(run.reason.contains("引き継いでいない"), "{}", run.reason);
+        assert!(run.reason.contains("引き継いでいません"), "{}", run.reason);
         let rerun = r.rerun(&left, None, None).unwrap();
         let run = wait_over(&mut r, &rerun);
-        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::CARRIED));
+        assert_eq!((run.state, run.job("a").unwrap().reason.as_str()), (State::Ok, koyomi_core::run::carried_word().as_str()));
         assert!(!r.log_path(&rerun, "a").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2015,7 +2015,7 @@ mod tests {
         let run = wait_over(&mut r, &second);
         assert_eq!((run.how, run.state), (How::Rerun, State::Error));
         let a = run.job("a").unwrap();
-        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), koyomi_core::run::CARRIED));
+        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), koyomi_core::run::carried_word().as_str()));
         assert!(!r.log_path(&second, "a").exists(), "a must not run again");
         assert!(r.log_path(&second, "b").exists());
         assert!(r.run_dir(&second).join("definition.toml").exists());
@@ -2025,7 +2025,7 @@ mod tests {
         let back = r2.run(&second).unwrap();
         assert_eq!(back.state, State::Error);
         assert_eq!(back.job("a").unwrap().state, State::Ok);
-        assert_eq!(back.job("a").unwrap().reason, koyomi_core::run::CARRIED);
+        assert_eq!(back.job("a").unwrap().reason, koyomi_core::run::carried_word());
         // From a job: that one runs again too.
         let third = r.rerun(&first, Some("a"), None).unwrap();
         let run = wait_over(&mut r, &third);
@@ -2037,9 +2037,12 @@ mod tests {
         assert_eq!(run.job("a").unwrap().state, State::Skipped);
         assert!(!r.log_path(&fourth, "a").exists(), "a must not run");
         assert!(r.log_path(&fourth, "b").exists());
-        assert!(r.rerun(&first, Some("b"), Some(State::Warn)).unwrap_err().contains("後ろに流すジョブがない"));
+        assert_eq!(
+            r.rerun(&first, Some("b"), Some(State::Warn)).unwrap_err(),
+            koyomi_core::msg::line(koyomi_core::msg::RUN_NOTHING_AFTER, &[&first, "b"])
+        );
         assert!(r.rerun(&first, None, Some(State::Skipped)).unwrap_err().contains("ジョブが要る"));
-        assert!(r.rerun(&first, Some("x"), None).unwrap_err().contains("ジョブがない: x"));
+        assert_eq!(r.rerun(&first, Some("x"), None).unwrap_err(), koyomi_core::msg::line(koyomi_core::msg::RUN_JOB_NONE, &["x"]));
         assert!(r.rerun("20200101-000000-00", None, None).unwrap_err().contains("実行がない"));
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2109,12 +2112,12 @@ id = \"side\"
         let d = def("net", &text);
         let mut r = Runner::new(&dir, Config::default());
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        assert!(r.skip(&id, "a").unwrap_err().contains("もう動いている"));
-        assert!(r.skip(&id, "x").unwrap_err().contains("ジョブがない: x"));
+        assert!(koyomi_core::msg::RUN_SKIP_RUNNING.is_in(&r.skip(&id, "a").unwrap_err()));
+        assert_eq!(r.skip(&id, "x").unwrap_err(), koyomi_core::msg::line(koyomi_core::msg::RUN_JOB_NONE, &["x"]));
         assert!(r.skip("20200101-000000-00", "a").unwrap_err().contains("実行がない"));
         assert_eq!(r.skip(&id, "b").unwrap(), format!("{id} の b を飛ばした"));
         let b = r.run(&id).unwrap().job("b").unwrap().clone();
-        assert_eq!((b.state, b.reason.as_str()), (State::Skipped, koyomi_core::run::SKIPPED));
+        assert_eq!((b.state, b.reason.as_str()), (State::Skipped, koyomi_core::run::skipped_word().as_str()));
         // A time that waits for this net is taken out of the queue when asked.
         let planned = ito_common::now::now_local().naive_local();
         r.queue(&d, planned, false);
@@ -2131,7 +2134,7 @@ id = \"side\"
         // The history has b's skip: a new runner reads the run as it was.
         r.flush();
         let back = Runner::new(&dir, Config::default());
-        assert_eq!(back.run(&id).unwrap().job("b").unwrap().reason, koyomi_core::run::SKIPPED);
+        assert_eq!(back.run(&id).unwrap().job("b").unwrap().reason, koyomi_core::run::skipped_word());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2150,10 +2153,10 @@ id = \"side\"
         r.flush();
         let back = Runner::new(&dir, Config::default());
         assert_eq!(back.run(&id).unwrap().job("a").unwrap().state, State::Skipped);
-        assert!(r
-            .start_manual(&d, ito_common::now::now_local().date_naive(), Some("x"), &BTreeMap::new())
-            .unwrap_err()
-            .contains("ジョブがない: x"));
+        assert_eq!(
+            r.start_manual(&d, ito_common::now::now_local().date_naive(), Some("x"), &BTreeMap::new()).unwrap_err(),
+            koyomi_core::msg::line(koyomi_core::msg::RUN_JOB_NONE, &["x"])
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -2197,7 +2200,7 @@ id = \"side\"
         assert_eq!(run.running(), 2);
         assert_eq!(r.busy(), 2);
         assert_eq!(run.job("c").unwrap().state, State::Waiting);
-        assert_eq!(run.job("c").unwrap().reason, "同時に動かす数（2）の空きを待っています");
+        assert_eq!(run.job("c").unwrap().reason, "同時に実行する数（2）の空きを待っています");
         let run = wait_over(&mut r, &id);
         assert_eq!(run.state, State::Ok);
         assert_eq!(r.busy(), 0);
@@ -2373,7 +2376,7 @@ id = \"a\"
         assert_eq!(run.state, State::Error);
         let a = run.job("a").unwrap();
         assert_eq!(a.state, State::Timeout);
-        assert_eq!(a.reason, "打ち切り（1s を超えた）");
+        assert_eq!(a.reason, "打ち切り（1s を超えました）");
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
         assert!(r.log_tail(&id, "a").unwrap().ends_with("! 打ち切り（1s を超えた）\n"));
         // A job that ends in time is not touched by its timer.
@@ -2787,7 +2790,7 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let mut r = Runner::new(&dir, Config::default());
         let back = r.run("20260101-000000-00").unwrap();
         assert_eq!(back.state, State::Error);
-        assert_eq!(back.job("a").unwrap().reason, "エンジンが止まった");
+        assert_eq!(back.job("a").unwrap().reason, "エンジンが停止しました");
         assert_eq!(r.take_over().len(), 1, "the closed run is told of too");
         r.flush();
         let day = Day::load(&history::path(&hist, today)).unwrap();
@@ -2818,7 +2821,7 @@ id = \"a\"
         let run = r.run(&first).unwrap();
         assert!(run.is_late());
         assert!(run.reason.starts_with("遅れて実行（2:00 の予定を "), "{}", run.reason);
-        assert!(run.reason.ends_with(" に流しました）"), "{}", run.reason);
+        assert!(run.reason.ends_with(" に実行しました）"), "{}", run.reason);
         // The next time waits; a third is skipped, not piled up.
         r.queue(&d, p2, false);
         assert_eq!(r.queued().len(), 1);
@@ -2853,7 +2856,7 @@ id = \"a\"
         r2.drop_queue();
         assert!(r2.queued().is_empty());
         let dropped = r2.runs().iter().find(|x| x.planned == Some(p2)).unwrap();
-        assert_eq!((dropped.state, dropped.reason.as_str()), (State::Skipped, koyomi_core::run::ENGINE_STOPPED));
+        assert_eq!((dropped.state, dropped.reason.as_str()), (State::Skipped, koyomi_core::run::engine_stopped_word().as_str()));
         let _ = r2.kill(&r2.runs()[0].id.clone(), None);
     }
 
@@ -3599,7 +3602,7 @@ id = \"b\"
         let run = r.runs().iter().find(|x| x.id == id).unwrap().clone();
         assert!(run.is_over());
         let a = run.job("a").unwrap();
-        assert_eq!((a.state, a.reason.as_str()), (State::Error, "エンジンが止まった"));
+        assert_eq!((a.state, a.reason.as_str()), (State::Error, "エンジンが停止しました"));
         assert_eq!(run.job("b").unwrap().state, State::NotRun);
         // Not told as ended: the engine is stopping.
         assert!(r.take_over().is_empty());

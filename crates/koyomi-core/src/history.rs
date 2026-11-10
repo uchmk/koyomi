@@ -353,7 +353,7 @@ mod tests {
         assert_eq!(runs[0].job("a").unwrap().moved, moved);
         assert!(runs[0].job("b").unwrap().moved.is_empty());
         assert_eq!(runs[0].job("c").unwrap().state, State::NotRun);
-        assert_eq!(runs[0].job("c").unwrap().reason, "先行の bの名 が異常終了");
+        assert_eq!(runs[0].job("c").unwrap().reason, "先行の bの名 が異常終了しました");
     }
 
     #[test]

@@ -37,6 +37,7 @@ use crate::calendar::{self, Calendar, Calendars};
 use crate::config::Config;
 use crate::group::{self, Group};
 use crate::jobnet::{self, Part};
+use crate::msg;
 use crate::scan::{self, Def, Standing};
 
 /// The `format` this version writes and reads.
@@ -102,26 +103,26 @@ pub fn parse(text: &str) -> Result<Bundle, String> {
     struct Head {
         format: Option<u32>,
     }
-    let head: Head = toml::from_str(text).map_err(|e| format!("TOML の書き方が違う: {}", first_line(e.message())))?;
+    let head: Head = toml::from_str(text).map_err(|e| msg::line(msg::BUNDLE_TOML_BAD, &[first_line(e.message())]))?;
     match head.format {
-        None => return Err(format!("format = {FORMAT} が要る（koyomi export が書いたファイルを渡す）")),
-        Some(f) if f > FORMAT => return Err(format!("この版の koyomi では読めない形（format = {f}。読めるのは {FORMAT} まで）")),
+        None => return Err(msg::line(msg::BUNDLE_FORMAT_MISSING, &[&FORMAT.to_string()])),
+        Some(f) if f > FORMAT => return Err(msg::line(msg::BUNDLE_FORMAT_NEWER, &[&f.to_string(), &FORMAT.to_string()])),
         Some(_) => {}
     }
-    let b: Bundle = toml::from_str(text).map_err(|e| format!("TOML の書き方が違う: {}", first_line(e.message())))?;
+    let b: Bundle = toml::from_str(text).map_err(|e| msg::line(msg::BUNDLE_TOML_BAD, &[first_line(e.message())]))?;
     for n in &b.jobnets {
         if !jobnet::is_id(&n.id) {
-            return Err(format!("jobnet の id は グループ/名前 の形: {}", n.id));
+            return Err(msg::line(msg::BUNDLE_JOBNET_ID, &[&n.id]));
         }
     }
     for c in &b.calendars {
         if !calendar::valid_name(&c.name) {
-            return Err(format!("calendar の name が使えない: {}", c.name));
+            return Err(msg::line(msg::BUNDLE_NAME_BAD, &["calendar", &c.name]));
         }
     }
     for g in &b.groups {
         if !jobnet::is_id(&format!("{}/x", g.name)) {
-            return Err(format!("group の name が使えない: {}", g.name));
+            return Err(msg::line(msg::BUNDLE_NAME_BAD, &["group", &g.name]));
         }
     }
     Ok(b)
@@ -212,7 +213,7 @@ impl Pick {
 /// carried (the import says so when it is missing there too).
 pub fn export(src: &Source, pick: &Pick) -> Result<Bundle, String> {
     if pick.is_empty() {
-        return Err("何を書き出すか: -n <グループ/名前>、--group <グループ>、--calendars、--settings か --all".to_owned());
+        return Err(msg::line(msg::BUNDLE_PICK_EMPTY, &[]));
     }
     let mut ids: BTreeSet<String> = BTreeSet::new();
     let mut groups: BTreeSet<String> = BTreeSet::new();
@@ -220,14 +221,14 @@ pub fn export(src: &Source, pick: &Pick) -> Result<Bundle, String> {
     for g in &pick.groups {
         let nets: Vec<&String> = src.jobnets.keys().filter(|id| id.strip_prefix(g.as_str()).is_some_and(|r| r.starts_with('/'))).collect();
         if nets.is_empty() && !src.groups.contains_key(g) {
-            return Err(format!("グループがない: {g}"));
+            return Err(msg::line(msg::BUNDLE_GROUP_NONE, &[g]));
         }
         ids.extend(nets.into_iter().cloned());
         groups.insert(g.clone());
     }
     for id in &pick.ids {
         if !src.jobnets.contains_key(id) {
-            return Err(format!("定義がない: {id}"));
+            return Err(msg::line(msg::BUNDLE_DEF_NONE, &[id]));
         }
         ids.insert(id.clone());
     }
@@ -268,7 +269,8 @@ pub fn export(src: &Source, pick: &Pick) -> Result<Bundle, String> {
     b.jobnets = ids.into_iter().filter_map(|id| src.jobnets.get(&id).map(|t| Net { id, text: t.clone() })).collect();
     if pick.settings || pick.all {
         if let Some(t) = &src.settings {
-            let table: toml::Table = toml::from_str(t).map_err(|e| format!("koyomi.toml が読めない: {}", first_line(e.message())))?;
+            let table: toml::Table =
+                toml::from_str(t).map_err(|e| msg::line(msg::BUNDLE_SETTINGS_UNREADABLE, &[first_line(e.message())]))?;
             b.settings = Some(mask(&table));
         }
     }
@@ -309,7 +311,7 @@ pub fn unmask(settings: &mut toml::Table, current: Option<&toml::Table>) -> Vec<
             }
             None => {
                 notify.remove("webhook");
-                notes.push("設定の webhook の宛先は持ち出されていないので外した（設定の画面で入れ直す）".to_owned());
+                notes.push(msg::line(msg::BUNDLE_WEBHOOK_DROPPED, &[]));
             }
         }
     }
@@ -329,7 +331,7 @@ pub fn unmask(settings: &mut toml::Table, current: Option<&toml::Table>) -> Vec<
                     true
                 }
                 None => {
-                    notes.push(format!("設定の webhooks の {} 番目の宛先は持ち出されていないので外した（設定の画面で入れ直す）", at + 1));
+                    notes.push(msg::line(msg::BUNDLE_WEBHOOKS_DROPPED, &[&(at + 1).to_string()]));
                     false
                 }
             }
@@ -355,7 +357,7 @@ impl Conflict {
             "overwrite" => Ok(Conflict::Overwrite),
             "rename" => Ok(Conflict::Rename),
             "skip" => Ok(Conflict::Skip),
-            _ => Err(format!("--on-conflict は overwrite、rename か skip: {s}")),
+            _ => Err(msg::line(msg::BUNDLE_ON_CONFLICT, &[s])),
         }
     }
 }
@@ -369,13 +371,14 @@ pub enum Kind {
 }
 
 impl Kind {
-    pub fn word(self) -> &'static str {
-        match self {
-            Kind::Settings => "設定",
-            Kind::Calendar => "カレンダー",
-            Kind::Group => "グループ",
-            Kind::Jobnet => "ジョブネット",
-        }
+    pub fn word(self) -> String {
+        let note = match self {
+            Kind::Settings => msg::N_BUNDLE_KIND_SETTINGS,
+            Kind::Calendar => msg::N_BUNDLE_KIND_CALENDAR,
+            Kind::Group => msg::N_BUNDLE_KIND_GROUP,
+            Kind::Jobnet => msg::N_BUNDLE_KIND_JOBNET,
+        };
+        msg::note(note, &[])
     }
 }
 
@@ -413,11 +416,11 @@ impl Item {
     pub fn line(&self) -> String {
         let what = format!("{} {}", self.kind.word(), self.name);
         match &self.change {
-            Change::Add => format!("追加: {what}"),
-            Change::Same => format!("同じ: {what}"),
-            Change::Replace => format!("上書き: {what}"),
-            Change::Rename(to) => format!("名前を変えて追加: {what} → {to}"),
-            Change::Skip => format!("飛ばす: {what}（今のまま）"),
+            Change::Add => msg::note(msg::N_BUNDLE_ADD, &[&what]),
+            Change::Same => msg::note(msg::N_BUNDLE_SAME, &[&what]),
+            Change::Replace => msg::note(msg::N_BUNDLE_REPLACE, &[&what]),
+            Change::Rename(to) => msg::note(msg::N_BUNDLE_RENAME, &[&what, to]),
+            Change::Skip => msg::note(msg::N_BUNDLE_SKIP, &[&what]),
         }
     }
 
@@ -455,7 +458,7 @@ impl Plan {
         let mut out = Vec::new();
         for i in &self.items {
             out.push(i.line());
-            out.extend(i.problems.iter().map(|p| format!("  問題: {p}")));
+            out.extend(i.problems.iter().map(|p| msg::note(msg::N_BUNDLE_PROBLEM, &[p])));
         }
         out.extend(self.notes.iter().cloned());
         out
@@ -477,7 +480,7 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
         let new = toml::to_string(&table).unwrap_or_default();
         let mut problems = Vec::new();
         if let Err(e) = toml::Value::Table(table.clone()).try_into::<Config>() {
-            problems.push(format!("koyomi.toml として読めない: {}", first_line(&e.to_string())));
+            problems.push(msg::line(msg::BUNDLE_SETTINGS_BAD, &[first_line(&e.to_string())]));
         }
         let change = match (&now, &current.settings) {
             (Some(n), _) if *n == table => Change::Same,
@@ -486,8 +489,7 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
         };
         if change != Change::Same && change != Change::Skip {
             out.notes.extend(notes);
-            out.notes
-                .push("設定は表として書き直すので、koyomi.toml のコメントは消える（前の中身は versions/_settings/ に残る）".to_owned());
+            out.notes.push(msg::line(msg::BUNDLE_SETTINGS_COMMENTS, &[]));
         }
         out.items.push(Item { kind: Kind::Settings, name: "koyomi.toml".to_owned(), change, old: current.settings.clone(), new, problems });
     }
@@ -507,8 +509,8 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
                 cals.map.insert(c.name.clone(), parsed);
             }
             // A coded line stays first (as `Problem::in_file` does), the place goes last.
-            Err(e) if crate::msg::is_coded(&e) => problems.push(format!("{e}（calendars/{}.toml）", c.name)),
-            Err(e) => problems.push(format!("calendars/{}.toml: {e}", c.name)),
+            Err(e) if msg::is_coded(&e) => problems.push(msg::note(msg::N_PROBLEM_CODED_AT, &[&e, &format!("calendars/{}.toml", c.name)])),
+            Err(e) => problems.push(msg::note(msg::N_PROBLEM_AT, &[&format!("calendars/{}.toml", c.name), &e])),
         }
         let old = current.calendars.get(&c.name).cloned();
         let change = match &old {
@@ -588,7 +590,7 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
         }
     }
     if out.items.iter().any(|i| matches!(i.change, Change::Rename(_))) {
-        out.notes.push("名前を変えたものを指す use や after_jobnet は書き換えていない（元の名前のままを指す）".to_owned());
+        out.notes.push(msg::line(msg::BUNDLE_RENAME_REFS, &[]));
     }
     out
 }
@@ -613,7 +615,7 @@ fn choose(
         Conflict::Overwrite => Change::Replace,
         Conflict::Skip => Change::Skip,
         Conflict::Rename if matches!(kind, Kind::Settings | Kind::Group) => {
-            out.notes.push(format!("{} は名前を変えられないので飛ばす: {name}", kind.word()));
+            out.notes.push(msg::line(msg::BUNDLE_CANNOT_RENAME, &[&kind.word(), name]));
             Change::Skip
         }
         Conflict::Rename => Change::Rename(free_name(name, taken)),
@@ -675,11 +677,16 @@ mod tests {
 
     #[test]
     fn parse_refuses_what_it_cannot_use() {
-        assert!(parse("x = 1\n").unwrap_err().contains("format = 1"));
-        assert!(parse("format = 9\n").unwrap_err().contains("format = 9"));
-        assert!(parse("format = 1\n[[jobnet]]\nid = \"x\"\ntext = \"\"\n").unwrap_err().contains("グループ/名前"));
-        assert!(parse("format = 1\n[[calendar]]\nname = \"_x\"\ntext = \"\"\n").unwrap_err().contains("name"));
-        assert!(parse("format = 1\nnope = 1\n").unwrap_err().contains("TOML"));
+        let e = parse("x = 1\n").unwrap_err();
+        assert!(msg::BUNDLE_FORMAT_MISSING.is_in(&e) && e.contains("format = 1"), "{e}");
+        let e = parse("format = 9\n").unwrap_err();
+        assert!(msg::BUNDLE_FORMAT_NEWER.is_in(&e) && e.contains("format = 9"), "{e}");
+        let e = parse("format = 1\n[[jobnet]]\nid = \"x\"\ntext = \"\"\n").unwrap_err();
+        assert!(msg::BUNDLE_JOBNET_ID.is_in(&e) && e.contains("グループ/名前"), "{e}");
+        let e = parse("format = 1\n[[calendar]]\nname = \"_x\"\ntext = \"\"\n").unwrap_err();
+        assert!(msg::BUNDLE_NAME_BAD.is_in(&e) && e.contains("name"), "{e}");
+        let e = parse("format = 1\nnope = 1\n").unwrap_err();
+        assert!(msg::BUNDLE_TOML_BAD.is_in(&e) && e.contains("TOML"), "{e}");
         assert_eq!(parse("format = 1\n").unwrap(), Bundle::new());
     }
 
@@ -724,8 +731,12 @@ mod tests {
         assert!(b.settings.is_some());
 
         assert!(export(&s, &Pick::default()).is_err());
-        assert!(export(&s, &Pick { ids: vec!["x/y".to_owned()], ..Default::default() }).unwrap_err().contains("定義がない"));
-        assert!(export(&s, &Pick { groups: vec!["x".to_owned()], ..Default::default() }).unwrap_err().contains("グループがない"));
+        let e = export(&s, &Pick { ids: vec!["x/y".to_owned()], ..Default::default() }).unwrap_err();
+        assert!(msg::BUNDLE_DEF_NONE.is_in(&e) && e.contains("x/y"), "{e}");
+        let e = export(&s, &Pick { groups: vec!["x".to_owned()], ..Default::default() }).unwrap_err();
+        assert!(msg::BUNDLE_GROUP_NONE.is_in(&e) && e.contains('x'), "{e}");
+        assert!(msg::BUNDLE_PICK_EMPTY.is_in(&export(&s, &Pick::default()).unwrap_err()));
+        assert!(msg::BUNDLE_ON_CONFLICT.is_in(&Conflict::parse("merge").unwrap_err()));
     }
 
     #[test]
@@ -749,7 +760,7 @@ mod tests {
         let p = plan(&b, &s, Some(Conflict::Rename));
         let r = p.items.iter().find(|i| matches!(i.change, Change::Rename(_))).unwrap();
         assert_eq!(r.change, Change::Rename("経理/子-2".to_owned()));
-        assert!(p.notes.iter().any(|n| n.contains("書き換えていない")));
+        assert!(p.notes.iter().any(|n| msg::BUNDLE_RENAME_REFS.is_in(n)), "{:?}", p.notes);
 
         // A net that does not read, and one whose child is not there.
         b.jobnets.push(Net { id: "総務/壊れ".to_owned(), text: "format = 1\nrnu = 1\n".to_owned() });
@@ -791,7 +802,7 @@ rnu = 1
         let settings = p.items.iter().find(|i| i.kind == Kind::Settings).unwrap();
         assert_eq!(settings.change, Change::Replace);
         assert!(settings.new.contains("https://a.example/x") && settings.new.contains("concurrency = 3"), "{}", settings.new);
-        assert!(p.notes.iter().any(|n| n.contains("コメントは消える")));
+        assert!(p.notes.iter().any(|n| msg::BUNDLE_SETTINGS_COMMENTS.is_in(n) && n.contains("コメントは消えます")), "{:?}", p.notes);
 
         // Settings that are not koyomi.toml.
         b.settings.as_mut().unwrap().insert("nope".to_owned(), toml::Value::Integer(1));

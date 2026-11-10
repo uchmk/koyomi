@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, RunAs, Wait};
 use crate::late::Delay;
+use crate::msg;
 
 /// A job's or a run's state, as the screen's table has them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -428,19 +429,40 @@ fn default_priority() -> u8 {
     crate::jobnet::DEFAULT_PRIORITY
 }
 
+// A reason is stored in the run (history events, the run file), so one saved by another language, or by
+// an engine from before the IDs, can be in any of these forms; the checks below read all of them.
+const LEGACY_LATE: &str = "遅れて実行";
+const LEGACY_CARRIED: &str = "前の回の結果";
+const LEGACY_SKIPPED: &str = "人がスキップした";
+const LEGACY_ENGINE_STOPPED: &str = "待っている間にエンジンが止まった";
+
+/// `n` in each language, then `legacy` (the words an engine from before the IDs wrote).
+fn forms(n: msg::Note, legacy: &str) -> [String; 3] {
+    [msg::note_in("ja", n, &[]), msg::note_in("en", n, &[]), legacy.to_owned()]
+}
+
 /// How a run that started after its time (`missed = "once"`) begins its reason.
-pub const LATE: &str = "遅れて実行";
+pub fn late_word() -> String {
+    msg::note(msg::N_RUN_LATE, &[])
+}
 
 /// How a job carried over from the previous run begins its reason (a rerun).
-pub const CARRIED: &str = "前の回の結果";
-/// `reason` with a stacked [`CARRIED`] prefix (runs saved before reruns stopped stacking it) shown once.
+pub fn carried_word() -> String {
+    msg::note(msg::N_RUN_CARRIED, &[])
+}
+
+/// `reason` with a stacked [`carried_word`] prefix (runs saved before reruns stopped stacking it) shown once.
 pub fn tidy_reason(reason: &str) -> String {
-    let stacked = format!("{CARRIED}: {CARRIED}");
     let mut r = reason.to_owned();
-    while r.starts_with(&stacked) {
-        r = r[CARRIED.len() + ": ".len()..].to_owned();
+    loop {
+        let head = forms(msg::N_RUN_CARRIED, LEGACY_CARRIED)
+            .into_iter()
+            .find(|h| r.strip_prefix(h.as_str()).and_then(|x| x.strip_prefix(": ")).is_some_and(|x| x.starts_with(h.as_str())));
+        match head {
+            Some(h) => r = r[h.len() + ": ".len()..].to_owned(),
+            None => return r,
+        }
     }
-    r
 }
 
 /// `reason` on one line, for a row of a list: a reason can hold the text that caused it (an
@@ -450,16 +472,25 @@ pub fn one_line(reason: &str) -> String {
 }
 
 /// The reason of a job a person skipped (`koyomi skip`): the ones after it go on as if it passed.
-pub const SKIPPED: &str = "人がスキップした";
+pub fn skipped_word() -> String {
+    msg::note(msg::N_RUN_SKIPPED_BY_PERSON, &[])
+}
 
 /// The reason of a time still waiting (for the run before it) when the engine stopped: it is
 /// recorded スキップ, but nobody let it go, so `--only` runs its day (`backfill`).
-pub const ENGINE_STOPPED: &str = "待っている間にエンジンが止まった";
+pub fn engine_stopped_word() -> String {
+    msg::note(msg::N_RUN_ENGINE_STOPPED_WAITING, &[])
+}
+
+/// Whether `reason` is the one [`engine_stopped_word`] gives, in either language or as an older engine wrote it.
+pub fn is_engine_stopped(reason: &str) -> bool {
+    forms(msg::N_RUN_ENGINE_STOPPED_WAITING, LEGACY_ENGINE_STOPPED).iter().any(|f| f == reason)
+}
 
 /// `from` and every job after it (by `after`, and on). `from` must be a job of `jobs`.
 fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
     if !jobs.iter().any(|j| j.id == from) {
-        return Err(format!("ジョブがない: {from}"));
+        return Err(msg::line(msg::RUN_JOB_NONE, &[from]));
     }
     let mut out: BTreeSet<String> = BTreeSet::from([from.to_owned()]);
     loop {
@@ -563,13 +594,13 @@ impl Run {
                 if !redo.contains(&jr.id) {
                     jr.state = State::Skipped;
                     jr.ended = Some(now);
-                    jr.reason = format!("{from} から流したので飛ばした");
+                    jr.reason = msg::note(msg::N_RUN_FROM_SKIPPED, &[from]);
                 }
                 jr
             })
             .collect();
         let mut run = Run::with_jobs(id, jobnet, title, date, how, jobs, now);
-        run.reason = format!("{from} から");
+        run.reason = msg::note(msg::N_RUN_FROM, &[from]);
         Ok(run)
     }
 
@@ -581,7 +612,7 @@ impl Run {
     /// unless `from` names a job.
     pub fn rerun(id: &str, previous: &Run, net: &Jobnet, from: Option<&str>, now: NaiveDateTime) -> Result<Run, String> {
         if !previous.is_over() {
-            return Err(format!("{}: まだ終わっていない", previous.id));
+            return Err(msg::line(msg::RUN_NOT_OVER, &[&previous.id]));
         }
         // In a run that ended well, a job that did not run (a handler, the branch not taken) was never work to do.
         let well = matches!(previous.state, State::Ok | State::Warn);
@@ -606,33 +637,33 @@ impl Run {
             }
         }
         if redo.is_empty() {
-            return Err(format!("{}: 全部済んでいる（流し直すなら --from <ジョブ>）", previous.id));
+            return Err(msg::line(msg::RUN_NOTHING_TO_REDO, &[&previous.id]));
         }
         let mut jobs = Vec::with_capacity(net.jobs.len());
         for j in &net.jobs {
             let mut jr = JobRun::from_job(j);
             if !redo.contains(&jr.id) {
-                let p = previous.job(&jr.id).ok_or_else(|| format!("{}: 前の回にジョブ {} はない", previous.id, jr.id))?;
+                let p = previous.job(&jr.id).ok_or_else(|| msg::line(msg::RUN_PREVIOUS_JOB_NONE, &[&previous.id, &jr.id]))?;
                 jr.state = p.state;
                 jr.started = p.started;
                 jr.ended = Some(p.ended.unwrap_or(now));
                 jr.exit = p.exit;
                 jr.retried = p.retried;
                 jr.reason = if p.reason.is_empty() {
-                    CARRIED.to_owned()
-                } else if p.reason.starts_with(CARRIED) {
+                    carried_word()
+                } else if forms(msg::N_RUN_CARRIED, LEGACY_CARRIED).iter().any(|f| p.reason.starts_with(f.as_str())) {
                     // Carried over again: keep the one mark instead of stacking it.
                     p.reason.clone()
                 } else {
-                    format!("{CARRIED}: {}", p.reason)
+                    msg::note(msg::N_RUN_CARRIED_WITH, &[&carried_word(), &p.reason])
                 };
             }
             jobs.push(jr);
         }
         let mut run = Run::with_jobs(id, &previous.jobnet, &previous.title, &previous.date, How::Rerun, jobs, now);
         run.reason = match from {
-            Some(f) => format!("再実行（{} を {f} から）", previous.id),
-            None => format!("再実行（{}）", previous.id),
+            Some(f) => msg::note(msg::N_RUN_RERUN_FROM, &[&previous.id, f]),
+            None => msg::note(msg::N_RUN_RERUN, &[&previous.id]),
         };
         Ok(run)
     }
@@ -641,21 +672,21 @@ impl Run {
     /// (⊘ スキップ or 警告), so the ones after it go on (JP1's 「次のジョブから再実行」).
     pub fn rerun_after(id: &str, previous: &Run, net: &Jobnet, job: &str, mark: State, now: NaiveDateTime) -> Result<Run, String> {
         let word = match mark {
-            State::Skipped => "スキップ",
-            State::Warn => "警告終了",
-            _ => return Err(format!("次から流すときの {job} はスキップか警告終了: {}", mark.key())),
+            State::Skipped => msg::N_RUN_AFTER_SKIPPED,
+            State::Warn => msg::N_RUN_AFTER_WARNED,
+            _ => return Err(msg::line(msg::RUN_MARK_BAD, &[job, mark.key()])),
         };
         let mut run = Run::rerun(id, previous, net, Some(job), now)?;
         if let Some(j) = run.jobs.iter_mut().find(|j| j.id == job) {
             j.state = mark;
             j.started = None;
             j.ended = Some(now);
-            j.reason = format!("次から再実行したので{word}にした");
+            j.reason = msg::note(word, &[]);
         }
         if run.jobs.iter().all(|j| j.ended.is_some()) {
-            return Err(format!("{}: {job} の後ろに流すジョブがない", previous.id));
+            return Err(msg::line(msg::RUN_NOTHING_AFTER, &[&previous.id, job]));
         }
-        run.reason = format!("再実行（{} を {job} の次から）", previous.id);
+        run.reason = msg::note(msg::N_RUN_RERUN_AFTER, &[&previous.id, job]);
         Ok(run)
     }
 
@@ -668,7 +699,7 @@ impl Run {
         over.ended.get_or_insert(now);
         let mut run = Run::rerun(id, &over, net, None, now)?;
         run.file = theirs.file.clone();
-        run.reason = format!("{from} で動いていた {} の続き", theirs.id);
+        run.reason = msg::note(msg::N_RUN_TAKEN_OVER, &[from, &theirs.id]);
         Ok(run)
     }
 
@@ -680,7 +711,7 @@ impl Run {
         run.id = id.to_owned();
         for j in run.jobs.iter_mut().filter(|j| j.ended.is_none()) {
             j.reason = match j.state {
-                State::Running | State::RunningError => format!("{from} で動いていた（終わったかは分からない）"),
+                State::Running | State::RunningError => msg::note(msg::N_RUN_LEFT_RUNNING, &[from]),
                 _ => String::new(),
             };
             j.state = State::NotRun;
@@ -688,7 +719,7 @@ impl Run {
         }
         run.state = State::Missed;
         run.ended = Some(now);
-        run.reason = format!("{from} で動いていた・引き継いでいない（{} / {why}）", theirs.id);
+        run.reason = msg::note(msg::N_RUN_LEFT_OVER, &[from, &theirs.id, why]);
         run.lock = None;
         run.delays.clear();
         run
@@ -698,13 +729,14 @@ impl Run {
     /// "once"`): the reason reads 遅れて実行（2:00 の予定を 8:12 に流しました）.
     pub fn mark_late(&mut self) {
         if let Some(p) = self.planned {
-            self.reason = format!("{LATE}（{} の予定を {} に流しました）", p.format("%-H:%M"), self.started.format("%-H:%M"));
+            self.reason =
+                msg::note(msg::N_RUN_LATE_AT, &[&late_word(), &p.format("%-H:%M").to_string(), &self.started.format("%-H:%M").to_string()]);
         }
     }
 
     /// Started after its time (`missed = "once"`).
     pub fn is_late(&self) -> bool {
-        self.reason.starts_with(LATE)
+        forms(msg::N_RUN_LATE, LEGACY_LATE).iter().any(|f| self.reason.starts_with(f.as_str()))
     }
 
     pub fn job(&self, id: &str) -> Option<&JobRun> {
@@ -728,20 +760,20 @@ impl Run {
     /// jobs after it wait for what it waited for and then go on as if it passed
     /// (a failure before it still reaches them). A job that runs or has ended is refused.
     pub fn skip(&mut self, id: &str, now: NaiveDateTime) -> Result<(), String> {
-        let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| format!("ジョブがない: {id}"))?;
+        let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| msg::line(msg::RUN_JOB_NONE, &[id]))?;
         if j.state == State::Running {
-            return Err(format!("{}: もう動いている", j.label()));
+            return Err(msg::line(msg::RUN_SKIP_RUNNING, &[j.label()]));
         }
         // A skipped branch has no exit code to choose a way by, and a skipped station would leave its children running.
         if matches!(j.part, Part::Branch | Part::Jobnet { .. }) {
-            return Err(format!("{}: 分岐とジョブネットは飛ばせない（中のジョブを飛ばす）", j.label()));
+            return Err(msg::line(msg::RUN_SKIP_STRUCTURE, &[j.label()]));
         }
         if !j.pending() && !(j.state == State::Held && j.ended.is_none()) {
-            return Err(format!("{}: もう終わっている", j.label()));
+            return Err(msg::line(msg::RUN_SKIP_ENDED, &[j.label()]));
         }
         j.state = State::Skipped;
         j.ended = Some(now);
-        j.reason = SKIPPED.to_owned();
+        j.reason = skipped_word();
         self.settle(now);
         Ok(())
     }
@@ -844,7 +876,7 @@ impl Run {
         if let Some(i) = self.index(id) {
             let j = &mut self.jobs[i];
             j.state = State::Waiting;
-            j.reason = format!("同時に動かす数（{limit}）の空きを待っています");
+            j.reason = msg::note(msg::N_RUN_WAIT_SLOT, &[&limit.to_string()]);
         }
     }
 
@@ -919,36 +951,36 @@ impl Run {
                             State::Ok
                         }
                         State::Warn => {
-                            j.reason = format!("終了コード {code}（警告）");
+                            j.reason = msg::note(msg::N_RUN_EXIT_WARN, &[&code.to_string()]);
                             State::Warn
                         }
                         _ => {
-                            j.reason = format!("終了コード {code}");
+                            j.reason = msg::note(msg::N_RUN_EXIT, &[&code.to_string()]);
                             State::Error
                         }
                     }
                 }
                 Outcome::Killed => {
-                    j.reason = "強制終了".to_owned();
+                    j.reason = msg::note(msg::N_RUN_KILLED, &[]);
                     State::Killed
                 }
                 Outcome::Timeout => {
                     j.reason = match j.timeout {
-                        Some(secs) => format!("打ち切り（{} を超えた）", crate::duration::text(secs)),
-                        None => "打ち切り".to_owned(),
+                        Some(secs) => msg::note(msg::N_RUN_TIMEOUT_OVER, &[&crate::duration::text(secs)]),
+                        None => msg::note(msg::N_RUN_TIMEOUT, &[]),
                     };
                     State::Timeout
                 }
                 Outcome::Failed => {
                     if j.reason.is_empty() {
-                        j.reason = "起動できなかった".to_owned();
+                        j.reason = msg::note(msg::N_RUN_START_FAILED, &[]);
                     }
                     State::Error
                 }
                 Outcome::NoExit => {
                     j.exit = Some(crate::chore::NO_EXIT);
                     if j.reason.is_empty() {
-                        j.reason = "終了コードを受け取れなかった".to_owned();
+                        j.reason = msg::note(msg::N_RUN_NO_EXIT, &[]);
                     }
                     State::Error
                 }
@@ -957,7 +989,7 @@ impl Run {
                 j.reason = format!("{}、{note}", j.reason);
             }
             if j.retried > 0 {
-                let note = format!("やり直し {} 回", j.retried);
+                let note = msg::note(msg::N_RUN_RETRIED, &[&j.retried.to_string()]);
                 j.reason = if j.reason.is_empty() { note } else { format!("{}、{note}", j.reason) };
             }
         }
@@ -993,12 +1025,12 @@ impl Run {
         for j in &mut self.jobs {
             if j.pending() || (j.state == State::Held && j.ended.is_none()) {
                 j.state = State::NotRun;
-                j.reason = "強制終了".to_owned();
+                j.reason = msg::note(msg::N_RUN_KILLED, &[]);
                 j.ended = Some(now);
             } else if j.state == State::Running && j.part.waits() {
                 // A wait is no process: it ends here, as 強制終了.
                 j.state = State::Killed;
-                j.reason = "強制終了".to_owned();
+                j.reason = msg::note(msg::N_RUN_KILLED, &[]);
                 j.ended = Some(now);
             }
         }
@@ -1011,11 +1043,11 @@ impl Run {
             if j.state == State::Running {
                 j.state = State::Error;
                 j.ended = Some(now);
-                j.reason = "エンジンが止まった".to_owned();
+                j.reason = msg::note(msg::N_RUN_ENGINE_STOPPED, &[]);
             } else if j.pending() || j.state == State::Held {
                 j.state = State::NotRun;
                 j.ended = Some(now);
-                j.reason = "エンジンが止まった".to_owned();
+                j.reason = msg::note(msg::N_RUN_ENGINE_STOPPED, &[]);
             }
         }
         self.settle(now);
@@ -1048,16 +1080,16 @@ impl Run {
                             let j = &mut self.jobs[i];
                             if j.state != State::Waiting {
                                 j.state = State::Waiting;
-                                j.reason = "子ジョブネットの終わりを待っています".to_owned();
+                                j.reason = msg::note(msg::N_RUN_CHILD_WAITING, &[]);
                             }
                             continue;
                         }
                         let (state, reason) = if let Some(e) = children.iter().find(|c| c.state.is_error()) {
-                            (State::Error, format!("子ジョブネットの {} が異常終了", e.label()))
+                            (State::Error, msg::note(msg::N_RUN_CHILD_FAILED, &[e.label()]))
                         } else if children.iter().all(|c| c.state == State::NotRun) {
                             (State::NotRun, children[0].reason.clone())
                         } else if children.iter().any(|c| c.state == State::Warn) {
-                            (State::Warn, "子ジョブネットに警告".to_owned())
+                            (State::Warn, msg::note(msg::N_RUN_CHILD_WARNED, &[]))
                         } else {
                             (State::Ok, String::new())
                         };
@@ -1088,8 +1120,8 @@ impl Run {
                         // A part with no process and no clock ends here and now.
                         let (state, exit, reason) = match &j.part {
                             Part::Branch => match j.after.first().and_then(|l| self.job(&l.job)).and_then(|p| p.exit) {
-                                Some(code) => (State::Ok, Some(code), format!("終了コード {code}")),
-                                None => (State::Error, None, "終了コードが無い".to_owned()),
+                                Some(code) => (State::Ok, Some(code), msg::note(msg::N_RUN_EXIT, &[&code.to_string()])),
+                                None => (State::Error, None, msg::note(msg::N_RUN_NO_EXIT_CODE, &[])),
                             },
                             Part::Join { .. } | Part::Jobnet { .. } => (State::Ok, None, String::new()),
                             _ => continue,
@@ -1163,7 +1195,11 @@ fn line_fate(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>) ->
 /// [`line_fate`], following at most `depth` skipped jobs back (a cycle that cannot be placed ends there).
 /// Whether a reason says a person skipped the job, also after a rerun carried it.
 fn skipped_by_person(reason: &str) -> bool {
-    reason == SKIPPED || reason.strip_prefix(CARRIED).and_then(|r| r.strip_prefix(": ")) == Some(SKIPPED)
+    let is = |r: &str| forms(msg::N_RUN_SKIPPED_BY_PERSON, LEGACY_SKIPPED).iter().any(|f| f == r);
+    is(reason)
+        || forms(msg::N_RUN_CARRIED, LEGACY_CARRIED)
+            .iter()
+            .any(|c| reason.strip_prefix(c.as_str()).and_then(|r| r.strip_prefix(": ")).is_some_and(is))
 }
 
 fn line_fate_in(l: &Line, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, depth: usize) -> Fate {
@@ -1205,8 +1241,8 @@ fn fate_in(j: &JobRun, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, de
     let fates: Vec<(&Line, Fate)> = j.after.iter().map(|l| (l, line_fate_in(l, jobs, codes, depth))).collect();
     let any = matches!(j.part, Part::Join { wait: Wait::Any });
     let dead = |l: &Line| match l.on {
-        On::Ok => format!("先行の {} が異常終了", label(&l.job)),
-        _ => format!("{} の線の条件に合わなかった", label(&l.job)),
+        On::Ok => msg::note(msg::N_RUN_PRED_FAILED, &[&label(&l.job)]),
+        _ => msg::note(msg::N_RUN_LINE_UNMET, &[&label(&l.job)]),
     };
     if any {
         if fates.iter().any(|(_, f)| *f == Fate::Met) {
@@ -1222,7 +1258,7 @@ fn fate_in(j: &JobRun, jobs: &[JobRun], codes: &BTreeMap<String, Vec<Range>>, de
     if open.is_empty() {
         (Fate::Met, String::new())
     } else {
-        (Fate::Open, format!("{} の終わりを待っています", open.join("・")))
+        (Fate::Open, msg::note(msg::N_RUN_WAITING_FOR, &[&open.join(&msg::note(msg::N_RUN_LIST_JOIN, &[]))]))
     }
 }
 
@@ -1363,10 +1399,10 @@ mod tests {
         let mut r = net_of(jobs());
         ended(&mut r, "a", 1, "2026-10-30 09:01:00");
         assert_eq!(r.job("b").unwrap().state, State::NotRun);
-        assert_eq!(r.job("b").unwrap().reason, "先行の a が異常終了");
+        assert_eq!(r.job("b").unwrap().reason, "先行の a が異常終了しました");
         assert_eq!(r.ready(), vec!["oops"], "the notify part may go, on a's error line");
         assert_eq!(r.job("oops2").unwrap().state, State::NotRun, "b never ran: its error line is dead");
-        assert_eq!(r.job("oops2").unwrap().reason, "b の線の条件に合わなかった");
+        assert_eq!(r.job("oops2").unwrap().reason, "b の線の条件に一致しませんでした");
         assert_eq!(r.job("end").unwrap().state, State::NotRun, "b never ran: its any line is dead");
         assert_eq!(r.state, State::RunningError);
         r.end_part("oops", State::Ok, "通知した", None, at("2026-10-30 09:01:01"));
@@ -1376,7 +1412,7 @@ mod tests {
         ended(&mut r, "a", 0, "2026-10-30 09:01:00");
         assert_eq!(r.ready(), vec!["b"]);
         assert_eq!(r.job("oops").unwrap().state, State::NotRun);
-        assert_eq!(r.job("oops").unwrap().reason, "a の線の条件に合わなかった");
+        assert_eq!(r.job("oops").unwrap().reason, "a の線の条件に一致しませんでした");
         assert_eq!(r.job("oops2").unwrap().state, State::Waiting, "b may still fail");
         ended(&mut r, "b", 0, "2026-10-30 09:02:00");
         assert_eq!(r.job("oops2").unwrap().state, State::NotRun);
@@ -1404,7 +1440,7 @@ mod tests {
         assert_eq!(way.started, Some(at("2026-10-30 09:01:00")));
         assert_eq!(r.ready(), vec!["one"]);
         assert_eq!(r.job("rest").unwrap().state, State::NotRun);
-        assert_eq!(r.job("rest").unwrap().reason, "way の線の条件に合わなかった");
+        assert_eq!(r.job("rest").unwrap().reason, "way の線の条件に一致しませんでした");
         assert_eq!(r.state, State::RunningError, "chk's code 2 is still an error of the run");
         let mut r = net_of(jobs());
         ended(&mut r, "chk", 0, "2026-10-30 09:01:00");
@@ -1426,7 +1462,7 @@ mod tests {
         let mut r = net_of(jobs(Wait::Any));
         ended(&mut r, "a", 1, "2026-10-30 09:01:00");
         assert_eq!(r.job("j").unwrap().state, State::Waiting, "b may still pass");
-        assert_eq!(r.job("j").unwrap().reason, "a・b の終わりを待っています");
+        assert_eq!(r.job("j").unwrap().reason, "a・b の終了を待っています");
         ended(&mut r, "b", 1, "2026-10-30 09:02:00");
         assert_eq!(r.job("j").unwrap().state, State::NotRun);
         assert_eq!(r.job("z").unwrap().state, State::NotRun);
@@ -1434,14 +1470,14 @@ mod tests {
         let mut r = net_of(jobs(Wait::All));
         ended(&mut r, "a", 0, "2026-10-30 09:01:00");
         assert_eq!(r.job("j").unwrap().state, State::Waiting);
-        assert_eq!(r.job("j").unwrap().reason, "b の終わりを待っています");
+        assert_eq!(r.job("j").unwrap().reason, "b の終了を待っています");
         ended(&mut r, "b", 0, "2026-10-30 09:02:00");
         assert_eq!(r.job("j").unwrap().state, State::Ok);
         assert_eq!(r.ready(), vec!["z"]);
         let mut r = net_of(jobs(Wait::All));
         ended(&mut r, "a", 1, "2026-10-30 09:01:00");
         assert_eq!(r.job("j").unwrap().state, State::NotRun);
-        assert_eq!(r.job("j").unwrap().reason, "先行の a が異常終了");
+        assert_eq!(r.job("j").unwrap().reason, "先行の a が異常終了しました");
     }
 
     /// a wait (time, file) reads as 実行中 with its reason, ends by the engine, and is killed with the run.
@@ -1491,7 +1527,7 @@ mod tests {
         r.retried("b", 1);
         r.finish_noted("b", Outcome::Timeout, asked, at("2026-10-30 09:30:02"));
         assert_eq!(r.job("b").unwrap().state, State::Timeout);
-        assert_eq!(r.job("b").unwrap().reason, format!("打ち切り（30m を超えた）、{asked}、やり直し 1 回"));
+        assert_eq!(r.job("b").unwrap().reason, format!("打ち切り（30m を超えました）、{asked}、やり直し 1 回"));
         r.finish_noted("c", Outcome::Exited(0), asked, at("2026-10-30 09:30:03"));
         assert_eq!(r.job("c").unwrap().reason, "");
     }
@@ -1509,7 +1545,7 @@ mod tests {
             ]
         };
         let mut r = net_of(jobs());
-        assert_eq!(r.job("bk").unwrap().reason, "子ジョブネットの終わりを待っています");
+        assert_eq!(r.job("bk").unwrap().reason, "子ジョブネットの終了を待っています");
         ended(&mut r, "a", 0, "2026-10-30 09:01:00");
         ended(&mut r, "bk/c1", 0, "2026-10-30 09:02:00");
         assert_eq!(r.job("bk").unwrap().state, State::Waiting);
@@ -1520,13 +1556,13 @@ mod tests {
         ended(&mut r, "a", 0, "2026-10-30 09:01:00");
         ended(&mut r, "bk/c1", 1, "2026-10-30 09:02:00");
         let bk = r.job("bk").unwrap();
-        assert_eq!((bk.state, bk.reason.as_str()), (State::Error, "子ジョブネットの bk/c1 が異常終了"));
+        assert_eq!((bk.state, bk.reason.as_str()), (State::Error, "子ジョブネットの bk/c1 が異常終了しました"));
         assert_eq!(r.job("z").unwrap().state, State::NotRun);
         assert_eq!(r.state, State::Error);
         let mut r = net_of(jobs());
         ended(&mut r, "a", 1, "2026-10-30 09:01:00");
         let bk = r.job("bk").unwrap();
-        assert_eq!((bk.state, bk.reason.as_str()), (State::NotRun, "先行の a が異常終了"));
+        assert_eq!((bk.state, bk.reason.as_str()), (State::NotRun, "先行の a が異常終了しました"));
         assert!(r.is_over());
     }
 
@@ -1595,7 +1631,7 @@ mod tests {
         prev.skip("c", t).unwrap();
         prev.finish("a", Outcome::Exited(3), at("2026-10-30 09:00:02"));
         let r = Run::rerun("r2", &prev, &net, None, now).unwrap();
-        assert_eq!(r.job("b").unwrap().reason, format!("{CARRIED}: {SKIPPED}"));
+        assert_eq!(r.job("b").unwrap().reason, format!("{}: {}", carried_word(), skipped_word()));
         assert_eq!(r.ready(), vec!["a"]);
         assert_eq!(r.job("d").unwrap().state, State::Waiting);
     }
@@ -1604,7 +1640,7 @@ mod tests {
     fn a_branch_or_a_station_is_not_skipped() {
         let mut r =
             net_of(vec![job("chk", &[]), part("way", Part::Branch, &[line("chk", On::Any)]), job("x", &[]).after(line("way", On::Else))]);
-        assert!(r.skip("way", at("2026-10-30 09:00:01")).unwrap_err().contains("飛ばせない"));
+        assert!(msg::RUN_SKIP_STRUCTURE.is_in(&r.skip("way", at("2026-10-30 09:00:01")).unwrap_err()));
         assert_eq!(r.job("way").unwrap().state, State::Waiting);
     }
 
@@ -1619,7 +1655,10 @@ mod tests {
         let mut prev = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
         ended(&mut prev, "a", 0, "2026-10-30 09:00:01");
         assert_eq!((prev.state, prev.job("h").unwrap().state), (State::Ok, State::NotRun));
-        assert!(Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap_err().contains("全部済んでいる"));
+        assert_eq!(
+            Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap_err(),
+            msg::line(msg::RUN_NOTHING_TO_REDO, &[&prev.id])
+        );
     }
 
     #[test]
@@ -1652,29 +1691,29 @@ mod tests {
         assert_eq!((r.how, r.state, r.reason.as_str()), (How::Rerun, State::Running, "再実行（r1）"));
         assert_eq!((r.jobnet.as_str(), r.title.as_str(), r.date.as_str()), ("g/n", "n", "2026-10-30"));
         let a = r.job("a").unwrap();
-        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), CARRIED));
+        assert_eq!((a.state, a.exit, a.reason.as_str()), (State::Ok, Some(0), carried_word().as_str()));
         assert_eq!((a.started, a.ended), (Some(at("2026-10-30 09:00:01")), Some(at("2026-10-30 09:00:01"))));
         assert_eq!(r.job("b").unwrap().state, State::Ok);
         assert_eq!(r.ready(), vec!["c"]);
-        assert_eq!(r.job("d").unwrap().reason, "c の終わりを待っています");
+        assert_eq!(r.job("d").unwrap().reason, "c の終了を待っています");
         // From a chosen job: it and what follows run again, with whatever did not pass.
         let r = Run::rerun("r3", &prev, &net, Some("b"), now).unwrap();
         assert_eq!(r.reason, "再実行（r1 を b から）");
-        assert_eq!(r.job("a").unwrap().reason, CARRIED);
+        assert_eq!(r.job("a").unwrap().reason, carried_word());
         let mut ready = r.ready();
         ready.sort();
         assert_eq!(ready, vec!["b", "c"]);
-        assert!(Run::rerun("r4", &prev, &net, Some("x"), now).unwrap_err().contains("ジョブがない: x"));
+        assert!(Run::rerun("r4", &prev, &net, Some("x"), now).unwrap_err().contains(&msg::line(msg::RUN_JOB_NONE, &["x"])));
         // Not over yet: nothing to rerun. Everything passed: only from a job.
-        assert!(Run::rerun("r5", &diamond(), &net, None, now).unwrap_err().contains("まだ終わっていない"));
+        assert_eq!(Run::rerun("r5", &diamond(), &net, None, now).unwrap_err(), msg::line(msg::RUN_NOT_OVER, &["r1"]));
         let mut done = diamond();
         for id in ["a", "b", "c", "d"] {
             ended(&mut done, id, 0, "2026-10-30 09:00:05");
         }
-        assert!(Run::rerun("r6", &done, &net, None, now).unwrap_err().contains("全部済んでいる"));
+        assert_eq!(Run::rerun("r6", &done, &net, None, now).unwrap_err(), msg::line(msg::RUN_NOTHING_TO_REDO, &["r1"]));
         let r = Run::rerun("r7", &done, &net, Some("d"), now).unwrap();
         assert_eq!(r.ready(), vec!["d"]);
-        assert_eq!(r.job("b").unwrap().reason, CARRIED);
+        assert_eq!(r.job("b").unwrap().reason, carried_word());
     }
 
     /// A run the primary was running when the standby took over: started again from what had
@@ -1689,17 +1728,20 @@ mod tests {
         ended(&mut theirs, "c", 0, "2026-10-30 09:00:03");
         assert!(!theirs.is_over());
         let r = Run::taken_over("r2", &theirs, &net, "pc-a", now).unwrap();
-        assert_eq!((r.how, r.state, r.reason.as_str()), (How::Rerun, State::Running, "pc-a で動いていた r1 の続き"));
-        assert_eq!(r.job("a").unwrap().reason, CARRIED);
+        assert_eq!((r.how, r.state, r.reason.as_str()), (How::Rerun, State::Running, "pc-a で実行していた r1 の続き"));
+        assert_eq!(r.job("a").unwrap().reason, carried_word());
         assert_eq!(r.job("c").unwrap().state, State::Ok);
         assert_eq!(r.ready(), vec!["b"]);
         assert!(!theirs.is_over(), "theirs is left as it was");
 
         let l = Run::left_over("r3", &theirs, "pc-a", "takeover = \"rerun\" ではない", now);
         assert_eq!((l.id.as_str(), l.state, l.ended), ("r3", State::Missed, Some(now)));
-        assert_eq!(l.reason, "pc-a で動いていた・引き継いでいない（r1 / takeover = \"rerun\" ではない）");
+        assert_eq!(l.reason, "pc-a で実行していましたが、引き継いでいません（r1 / takeover = \"rerun\" ではない）");
         let b = l.job("b").unwrap();
-        assert_eq!((b.state, b.ended, b.reason.as_str()), (State::NotRun, Some(now), "pc-a で動いていた（終わったかは分からない）"));
+        assert_eq!(
+            (b.state, b.ended, b.reason.as_str()),
+            (State::NotRun, Some(now), "pc-a で実行していました（終了したかどうかは不明です）")
+        );
         let d = l.job("d").unwrap();
         assert_eq!((d.state, d.reason.as_str()), (State::NotRun, ""));
         assert_eq!(l.job("a").unwrap().state, State::Ok);
@@ -1719,17 +1761,23 @@ mod tests {
             let r = Run::rerun_after("r2", &prev, &net, "c", mark, now).unwrap();
             assert_eq!(r.reason, "再実行（r1 を c の次から）");
             let c = r.job("c").unwrap();
-            assert_eq!((c.state, c.ended, c.reason.clone()), (mark, Some(now), format!("次から再実行したので{word}にした")));
+            assert_eq!((c.state, c.ended, c.reason.clone()), (mark, Some(now), format!("次のジョブから再実行したため、{word}にしました")));
             assert_eq!(r.ready(), vec!["d"]);
         }
-        assert!(Run::rerun_after("r3", &prev, &net, "c", State::Ok, now).unwrap_err().contains("スキップか警告終了"));
-        assert!(Run::rerun_after("r4", &prev, &net, "x", State::Skipped, now).unwrap_err().contains("ジョブがない: x"));
+        assert_eq!(
+            Run::rerun_after("r3", &prev, &net, "c", State::Ok, now).unwrap_err(),
+            msg::line(msg::RUN_MARK_BAD, &["c", State::Ok.key()])
+        );
+        assert!(Run::rerun_after("r4", &prev, &net, "x", State::Skipped, now).unwrap_err().contains(&msg::line(msg::RUN_JOB_NONE, &["x"])));
         // After the last job, with nothing else to run again: nothing would run.
         let mut done = diamond();
         for id in ["a", "b", "c", "d"] {
             ended(&mut done, id, 0, "2026-10-30 09:00:05");
         }
-        assert!(Run::rerun_after("r5", &done, &net, "d", State::Skipped, now).unwrap_err().contains("後ろに流すジョブがない"));
+        assert_eq!(
+            Run::rerun_after("r5", &done, &net, "d", State::Skipped, now).unwrap_err(),
+            msg::line(msg::RUN_NOTHING_AFTER, &["r1", "d"])
+        );
     }
 
     #[test]
@@ -1744,12 +1792,15 @@ mod tests {
         let mut r2 = r2;
         ended(&mut r2, "d", 0, "2026-10-30 10:00:05");
         let r3 = Run::rerun("r3", &r2, &net, Some("d"), now).unwrap();
-        assert_eq!(r3.job("a").unwrap().reason, CARRIED);
+        assert_eq!(r3.job("a").unwrap().reason, carried_word());
     }
 
     #[test]
     fn stacked_marks_from_old_runs_show_once() {
-        assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 前の回の結果"), CARRIED);
+        assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 前の回の結果"), "前の回の結果");
+        let c = carried_word();
+        assert_eq!(tidy_reason(&format!("{c}: {c}: {c}")), c);
+        assert_eq!(tidy_reason(&format!("{c}: {c}: 終了コード 1")), format!("{c}: 終了コード 1"));
         assert_eq!(tidy_reason("前の回の結果: 前の回の結果: 終了コード 1"), "前の回の結果: 終了コード 1");
         assert_eq!(tidy_reason("遅れて実行"), "遅れて実行");
     }
@@ -1774,7 +1825,7 @@ mod tests {
         ended(&mut prev, "c", 0, "2026-10-30 09:00:03");
         assert!(prev.is_over());
         let r = Run::rerun("r2", &prev, &net, None, at("2026-10-30 10:00:00")).unwrap();
-        assert_eq!(r.job("a").unwrap().reason, "前の回の結果: 終了コード 1（警告）");
+        assert_eq!(r.job("a").unwrap().reason, format!("{}: 終了コード 1（警告）", carried_word()));
         assert_eq!(r.job("a").unwrap().state, State::Warn);
     }
 
@@ -1782,14 +1833,14 @@ mod tests {
     fn a_skipped_job_passes_and_a_running_or_ended_one_is_not_skipped() {
         let mut r = diamond();
         r.start("a", at("2026-10-30 09:00:00"));
-        assert_eq!(r.skip("a", at("2026-10-30 09:00:01")).unwrap_err(), "a: もう動いている");
-        assert_eq!(r.skip("x", at("2026-10-30 09:00:01")).unwrap_err(), "ジョブがない: x");
+        assert_eq!(r.skip("a", at("2026-10-30 09:00:01")).unwrap_err(), msg::line(msg::RUN_SKIP_RUNNING, &["a"]));
+        assert_eq!(r.skip("x", at("2026-10-30 09:00:01")).unwrap_err(), msg::line(msg::RUN_JOB_NONE, &["x"]));
         // Waiting on a: skipped now, and d still waits for c.
         r.skip("b", at("2026-10-30 09:00:01")).unwrap();
         let b = r.job("b").unwrap();
-        assert_eq!((b.state, b.ended, b.reason.as_str()), (State::Skipped, Some(at("2026-10-30 09:00:01")), SKIPPED));
+        assert_eq!((b.state, b.ended, b.reason.as_str()), (State::Skipped, Some(at("2026-10-30 09:00:01")), skipped_word().as_str()));
         assert_eq!(r.job("d").unwrap().state, State::Waiting);
-        assert_eq!(r.skip("b", at("2026-10-30 09:00:02")).unwrap_err(), "b: もう終わっている");
+        assert_eq!(r.skip("b", at("2026-10-30 09:00:02")).unwrap_err(), msg::line(msg::RUN_SKIP_ENDED, &["b"]));
         r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
         assert_eq!(r.ready(), vec!["c"]);
         r.skip("c", at("2026-10-30 09:00:03")).unwrap();
@@ -1840,11 +1891,11 @@ mod tests {
         let now = at("2026-10-30 09:00:00");
         let r = Run::starting_at("r1", "g/n", "n", "2026-10-30", How::Manual, &net, "b", now).unwrap();
         let a = r.job("a").unwrap();
-        assert_eq!((a.state, a.ended, a.reason.as_str()), (State::Skipped, Some(now), "b から流したので飛ばした"));
+        assert_eq!((a.state, a.ended, a.reason.as_str()), (State::Skipped, Some(now), "b から実行したため、スキップしました"));
         assert_eq!(r.job("c").unwrap().state, State::Skipped);
         assert_eq!(r.ready(), vec!["b"]);
-        assert_eq!(r.job("d").unwrap().reason, "b の終わりを待っています");
-        assert_eq!((r.state, r.reason.as_str()), (State::Running, "b から"));
+        assert_eq!(r.job("d").unwrap().reason, "b の終了を待っています");
+        assert_eq!((r.state, r.reason.as_str()), (State::Running, "b から実行"));
         assert!(Run::starting_at("r1", "g/n", "n", "2026-10-30", How::Manual, &net, "x", now).is_err());
     }
 
@@ -1853,7 +1904,7 @@ mod tests {
         let mut r = diamond();
         assert_eq!(r.ready(), vec!["a"]);
         assert_eq!(r.job("d").unwrap().state, State::Waiting);
-        assert_eq!(r.job("d").unwrap().reason, "b・c の終わりを待っています");
+        assert_eq!(r.job("d").unwrap().reason, "b・c の終了を待っています");
         r.start("a", at("2026-10-30 09:00:01"));
         assert_eq!(r.state, State::Running);
         r.finish("a", Outcome::Exited(0), at("2026-10-30 09:00:02"));
@@ -1863,7 +1914,7 @@ mod tests {
         r.start("b", at("2026-10-30 09:00:03"));
         r.finish("b", Outcome::Exited(0), at("2026-10-30 09:00:04"));
         assert_eq!(r.ready(), vec!["c"]);
-        assert_eq!(r.job("d").unwrap().reason, "c の終わりを待っています");
+        assert_eq!(r.job("d").unwrap().reason, "c の終了を待っています");
         r.start("c", at("2026-10-30 09:00:05"));
         r.finish("c", Outcome::Exited(0), at("2026-10-30 09:00:06"));
         assert_eq!(r.ready(), vec!["d"]);
@@ -1886,7 +1937,7 @@ mod tests {
         assert_eq!(r.state, State::RunningError);
         assert_eq!(r.job("b").unwrap().exit, Some(3));
         assert_eq!(r.job("d").unwrap().state, State::NotRun);
-        assert_eq!(r.job("d").unwrap().reason, "先行の b が異常終了");
+        assert_eq!(r.job("d").unwrap().reason, "先行の b が異常終了しました");
         assert!(r.ready().is_empty());
         r.finish("c", Outcome::Exited(0), at("2026-10-30 09:00:05"));
         assert_eq!(r.state, State::Error);
@@ -1903,7 +1954,7 @@ mod tests {
         assert_eq!(run.reason, "", "no planned time: nothing to be late for");
         run.planned = Some(at("2026-10-30 02:00:00"));
         run.mark_late();
-        assert_eq!(run.reason, "遅れて実行（2:00 の予定を 8:12 に流しました）");
+        assert_eq!(run.reason, "遅れて実行（2:00 の予定を 8:12 に実行しました）");
         assert!(run.is_late());
     }
 
@@ -1938,7 +1989,7 @@ mod tests {
         t.jobs[0].timeout = Some(1800);
         t.start("a", at("2026-10-30 09:00:01"));
         t.finish("a", Outcome::Timeout, at("2026-10-30 09:30:02"));
-        assert_eq!(t.job("a").unwrap().reason, "打ち切り（30m を超えた）");
+        assert_eq!(t.job("a").unwrap().reason, "打ち切り（30m を超えました）");
         assert!(State::Timeout.is_error() && State::Killed.is_error());
         assert_eq!(State::Timeout.tone(), State::Error.tone());
         assert_eq!(r.state, State::Error);
@@ -1969,7 +2020,7 @@ mod tests {
         r.start("a", at("2026-10-30 09:00:01"));
         r.abandon(at("2026-10-30 09:30:00"));
         assert_eq!(r.job("a").unwrap().state, State::Error);
-        assert_eq!(r.job("a").unwrap().reason, "エンジンが止まった");
+        assert_eq!(r.job("a").unwrap().reason, "エンジンが停止しました");
         assert_eq!(r.job("d").unwrap().state, State::NotRun);
         assert_eq!(r.state, State::Error);
         assert_eq!(r.ended, Some(at("2026-10-30 09:30:00")));
@@ -1980,7 +2031,7 @@ mod tests {
         let mut r = diamond();
         r.wait_for_slot("a", 1);
         assert_eq!(r.job("a").unwrap().state, State::Waiting);
-        assert_eq!(r.job("a").unwrap().reason, "同時に動かす数（1）の空きを待っています");
+        assert_eq!(r.job("a").unwrap().reason, "同時に実行する数（1）の空きを待っています");
         assert_eq!(r.ready(), vec!["a"]);
     }
 

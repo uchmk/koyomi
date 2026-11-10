@@ -399,7 +399,7 @@ mod tests {
             *region = Some("Tokyo".into());
             *endpoint = None;
         }
-        assert!(run(&job, false).unwrap_err().contains("region は ap-northeast-1 のように"));
+        assert!(koyomi_core::msg::CHORE_S3_REGION_BAD.is_in(&run(&job, false).unwrap_err()));
         let none = go(&send(&s3, &dir.0, "s3://bucket/x/"), None, None, &AtomicBool::new(false));
         assert_eq!(none, Err("key_id がない".into()));
         let copy = Chore::Copy { from: "a".into(), into: "b".into(), pattern: None };

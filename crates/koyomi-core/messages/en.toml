@@ -6,6 +6,8 @@ a31 = "Saving and checking jobnets"
 a32 = "Running jobs"
 a33 = "Jobnet definitions"
 a34 = "Job definitions"
+a35 = "Job targets and file paths"
+a36 = "Import and export"
 a37 = "Running the engine"
 a41 = "Calendars"
 
@@ -1762,6 +1764,738 @@ text = "Cannot read {0} as a run ID."
 cause = "The run ID is not in the expected form."
 action = "Check the run ID."
 
+[E3501]
+when = "A task's XML cannot be read"
+text = "Cannot read the task's XML. ({0})"
+cause = "The content of the given file is not valid XML."
+action = "Give an XML file exported from Task Scheduler."
+
+[E3502]
+when = "An XML file is not a Task Scheduler task"
+text = "This is not Task Scheduler XML. The outermost element is <{0}>."
+cause = "The outermost element of the XML is not <Task>."
+action = "Give an XML file exported from Task Scheduler."
+
+[E3503]
+when = "A task has no program to import"
+text = "There is no program to import (a <Command> in an <Exec>)."
+cause = "The task has no <Exec> action with a <Command>."
+action = "Give a task that has a program in the <Command> of an <Exec>."
+
+[W3504]
+when = "The task to import was disabled"
+text = "The task was disabled."
+cause = "<Enabled> in <Settings> of the XML is false."
+action = "The imported jobnet does not run until you confirm it. Check its content."
+
+[W3505]
+when = "The task to import names a user to run as"
+text = "The user the task runs as is not imported."
+cause = "<Principals> of the XML has a <UserId>. koyomi does not import the user to run as."
+action = "The jobs run as the user that runs the koyomi engine."
+
+[W3506]
+when = "The imported task has no time to run"
+text = "No time could be imported."
+cause = "The task has no trigger, or none of its triggers could be imported."
+action = "The imported jobnet is run by hand only."
+
+[W3507]
+when = "The task has an action that cannot be imported"
+text = "The <{0}> action cannot be imported."
+cause = "<Actions> of the XML has an action other than <Exec>."
+action = "Only <Exec>, which runs a program, can be imported."
+
+[W3508]
+when = "A program path or argument to import holds %"
+text = "%...% in job{0} is not expanded by koyomi."
+cause = "The command or an argument holds %. koyomi does not expand environment variables."
+action = "If it must be expanded, wrap the command in cmd.exe /c."
+
+[W3509]
+when = "The task to import has a disabled trigger"
+text = "The disabled trigger (<{0}>) is not imported."
+cause = "<Enabled> of the trigger is false."
+action = "To import it, enable the trigger in Task Scheduler."
+
+[W3510]
+when = "The start or end time of a trigger cannot be read"
+text = "The time {0} cannot be read, so this trigger is not imported."
+cause = "<StartBoundary> or <EndBoundary> is not in a date-time form."
+action = "Give the time as 2026-01-01T02:00:00."
+
+[W3511]
+when = "A time trigger has no start time"
+text = "<TimeTrigger> has no start time. This trigger is not imported."
+cause = "<TimeTrigger> has no <StartBoundary>."
+action = "Give the start time in <StartBoundary>."
+
+[W3512]
+when = "A logon trigger was imported"
+text = "The logon trigger was imported as the engine start (on_start)."
+cause = "koyomi has no trigger for a logon."
+action = "The jobnet runs when the engine starts, not at a logon."
+
+[W3513]
+when = "An idle trigger was imported"
+text = "The idle trigger was imported as idle = \"{0}\"."
+cause = "The idle time of the task is imported as idle. Without that setting, or under 1 minute, it is 10 minutes."
+action = "The jobnet runs when the PC has not been used for {0}."
+
+[W3514]
+when = "A session trigger is not a lock or an unlock"
+text = "The \"{0}\" of <SessionStateChangeTrigger> cannot be imported."
+cause = "Only a trigger whose <StateChange> is SessionLock or SessionUnlock can be imported."
+action = "Only a lock and an unlock can be imported."
+
+[W3515]
+when = "The user of a lock or unlock trigger is in a form that cannot be imported"
+text = "The trigger is limited to {0}, but this form cannot be read, so session = \"{1}\" runs for any user."
+cause = "A SID or a user@domain is not a name that can be passed to the engine."
+action = "Add user = 'PC\\name'."
+
+[W3516]
+when = "A trigger is of a kind that cannot be imported"
+text = "The <{0}> trigger cannot be imported."
+cause = "It is a kind of trigger that cannot be imported."
+action = "Only triggers for a time, a day, a week, a month, a start, a logon, idle, a lock and an unlock can be imported."
+
+[W3517]
+when = "A trigger other than a day or a week has a repetition"
+text = "A repetition is imported only for a day or a week trigger."
+cause = "<Repetition> of any other trigger cannot be imported."
+action = "Any other trigger is imported without the repetition."
+
+[W3518]
+when = "The interval of a day or week trigger is not 1"
+text = "A trigger whose {0} is not 1 cannot be imported."
+cause = "It is a trigger for every few days or every few weeks."
+action = "Only daily and weekly triggers can be imported."
+
+[W3519]
+when = "A week trigger has no weekday"
+text = "The week trigger has no weekday."
+cause = "<DaysOfWeek> of <ScheduleByWeek> names no weekday."
+action = "Give weekdays in <DaysOfWeek>."
+
+[W3520]
+when = "A month trigger has no day"
+text = "The month trigger has no day."
+cause = "<DaysOfMonth> of <ScheduleByMonth> names no day."
+action = "Give days in <DaysOfMonth>."
+
+[W3521]
+when = "A last-day trigger is for only some months"
+text = "The last day of only some months cannot be imported."
+cause = "The last-day trigger is set for fewer than all 12 months."
+action = "Only the last day of every month can be imported."
+
+[W3522]
+when = "A day of a month trigger cannot be read"
+text = "Cannot read the day {0} of the month trigger."
+cause = "The day is neither 1 to 31 nor Last."
+action = "Give a day from 1 to 31, or Last."
+
+[W3523]
+when = "A weekday-of-month trigger is for only some months"
+text = "The weekday-of-month trigger was imported as every month."
+cause = "A limit to some months cannot be imported."
+action = "It is not set for only some months. Check the imported definition and fix it if needed."
+
+[W3524]
+when = "The week of a weekday-of-month trigger cannot be imported"
+text = "Week {0} of the month cannot be imported."
+cause = "The week is not 1 to 4."
+action = "Only weeks 1 to 4 can be imported."
+
+[W3525]
+when = "No time can be made from a weekday-of-month trigger"
+text = "No time could be made from the weekday-of-month trigger."
+cause = "It names no week that can be imported, or no weekday."
+action = "Give weeks 1 to 4 in <Weeks> and weekdays in <DaysOfWeek>."
+
+[W3526]
+when = "The schedule form of a calendar trigger cannot be read"
+text = "Cannot read how <CalendarTrigger> is scheduled."
+cause = "It has none of ScheduleByDay, ScheduleByWeek, ScheduleByMonth and ScheduleByMonthDayOfWeek."
+action = "Give one of them."
+
+[W3527]
+when = "A repetition goes past midnight"
+text = "The repetition that goes past midnight was imported as ending at 23:59 of the day."
+cause = "<Duration> of the repetition goes past the end of the day."
+action = "It does not repeat on the next day. Check the imported definition and fix it if needed."
+
+[W3528]
+when = "A repetition has no end"
+text = "The repetition with no end was imported as ending at 23:59 of the day."
+cause = "<Duration> of the repetition is missing or 0."
+action = "It does not repeat on the next day."
+
+[W3529]
+when = "A repetition interval has seconds"
+text = "The seconds of the repetition interval were dropped."
+cause = "A repetition in koyomi is in minutes or hours."
+action = "The interval is imported in minutes. Check the imported definition and fix it if needed."
+
+[E3601]
+when = "The file to import cannot be read as TOML"
+text = "Cannot read the file to import as TOML. ({0})"
+cause = "The content is not valid TOML, or it holds an item that a file written by export does not have."
+action = "Give a file written by koyomi export."
+
+[E3602]
+when = "The file to import has no format"
+text = "format = {0} is not given."
+cause = "The file has no format item."
+action = "Give a file written by koyomi export."
+
+[E3603]
+when = "The format of the file to import is newer than this version reads"
+text = "This version of koyomi cannot read this format. (format = {0}; it reads up to {1})"
+cause = "The file was written by a newer version of koyomi."
+action = "Import it with the version that wrote it, or a newer one."
+
+[E3604]
+when = "The id of a jobnet in the file to import is not valid"
+text = "The jobnet id {0} is not in the form group/name."
+cause = "The id is not two names separated by one /, or it holds a character that cannot be used."
+action = "Give the id as group/name, with no \\ : * ? \" < > | in either name and no name ending in . or a space."
+
+[E3605]
+when = "The name of a calendar or a group in the file to import cannot be used"
+text = "The name {1} of the {0} cannot be used."
+cause = "The name is empty, holds a character a file name cannot have, ends in . or a space, or is a reserved name. The name of a calendar cannot start with _ either."
+action = "Give a name with no / \\ : * ? \" < > |, and not ending in . or a space."
+
+[E3606]
+when = "Nothing to export is given"
+text = "Nothing to export is given."
+cause = "None of -n, --group, --calendars, --settings and --all is given."
+action = "Give one of -n <group/name>, --group <group>, --calendars, --settings and --all."
+
+[E3607]
+when = "The group to export does not exist"
+text = "The group {0} does not exist."
+cause = "The given group has no jobnet and no group file."
+action = "Check the name of the group."
+
+[E3608]
+when = "The definition of the jobnet to export does not exist"
+text = "The definition of jobnet {0} does not exist."
+cause = "There is no definition file for the given jobnet ID."
+action = "Check the jobnet ID (group/name)."
+
+[E3609]
+when = "The koyomi.toml to export cannot be read"
+text = "Cannot read koyomi.toml. ({0})"
+cause = "The content of koyomi.toml is not valid TOML."
+action = "Correct koyomi.toml."
+
+[E3610]
+when = "An unusable value is given to --on-conflict"
+text = "The value {0} of --on-conflict cannot be used."
+cause = "The value is none of overwrite, rename and skip."
+action = "Give overwrite, rename or skip to --on-conflict."
+
+[E3611]
+when = "The settings to import are not valid as koyomi.toml"
+text = "Cannot read the settings to import as koyomi.toml. ({0})"
+cause = "The content of [settings] in the file to import is not valid as koyomi.toml."
+action = "Check the content of [settings]."
+
+[W3612]
+when = "The webhook address in the settings to import was dropped"
+text = "The webhook address in the settings was not exported, so it was removed."
+cause = "The webhook address is not in the export, and the settings here do not have it either."
+action = "Enter the address again in the settings screen."
+
+[W3613]
+when = "An address in webhooks in the settings to import was dropped"
+text = "Address number {0} in webhooks in the settings was not exported, so it was removed."
+cause = "The address is not in the export, and the settings here do not have it at the same position either."
+action = "Enter the address again in the settings screen."
+
+[W3614]
+when = "Settings are imported"
+text = "The settings are rewritten as a table, so the comments in koyomi.toml are lost."
+cause = "The settings are written as a TOML table, and the comments of the original file are not kept."
+action = "The previous content is kept in versions/_settings/."
+
+[W3615]
+when = "A jobnet is imported under another name"
+text = "use and after_jobnet that point to a jobnet imported under another name are not rewritten."
+cause = "The import does not rewrite the values of use and after_jobnet."
+action = "They still point to the original name, so correct them if needed."
+
+[W3616]
+when = "Settings or a group file is to be imported under another name"
+text = "{0} {1} cannot be renamed, so it was left as it is."
+cause = "Settings and group files cannot be imported under another name."
+action = "To write over it, give --on-conflict overwrite."
+
+[E3201]
+when = "The job given to rerun from or to skip is not found"
+text = "The job {0} does not exist."
+cause = "The given ID is not a job of the jobnet or of the run."
+action = "Check the ID of the job."
+
+[E3202]
+when = "A run that has not ended is to be rerun"
+text = "The run {0} has not ended yet."
+cause = "Only a run that has ended can be rerun."
+action = "Rerun it after the run has ended."
+
+[E3203]
+when = "A run whose jobs have all finished is to be rerun"
+text = "All the jobs of the run {0} have finished."
+cause = "There is no job to rerun. Finished work (an import, a send) is never done twice."
+action = "Give a job with --from <job> to rerun from that job."
+
+[E3204]
+when = "The run to rerun has no record of a job in the definition"
+text = "The run {0} has no record of the job {1}."
+cause = "The jobnet definition used for the rerun has a job that the original run does not have."
+action = "Run the jobnet from the start."
+
+[E3205]
+when = "An unusable end state is given to the job a rerun starts after"
+text = "{1} cannot be the end state of the job {0} when rerunning from the next job."
+cause = "Only skipped and ended with a warning can be given."
+action = "Give skipped or ended with a warning."
+
+[E3206]
+when = "No job follows the job a rerun starts after"
+text = "The run {0} has no job to run after the job {1}."
+cause = "No job to run follows the job the rerun starts after."
+action = "Give a job that has jobs after it."
+
+[E3207]
+when = "A job that is running is to be skipped"
+text = "The job {0} is already running, so it cannot be skipped."
+cause = "Only a job that has not started can be skipped."
+action = "Give a job that has not started."
+
+[E3208]
+when = "A branch or a jobnet is to be skipped"
+text = "The job {0} is a branch or a jobnet, so it cannot be skipped."
+cause = "A branch has no exit code to choose its way by, and skipping a jobnet would leave the jobs inside it running."
+action = "Skip the jobs inside it."
+
+[E3209]
+when = "A job that has ended is to be skipped"
+text = "The job {0} has already ended, so it cannot be skipped."
+cause = "Only a job that has not started can be skipped."
+action = "Give a job that has not started."
+
+[E3530]
+when = "An item such as path, from, into, url, sql, file or out is empty"
+text = "{0} is not given."
+cause = "{0} is not given, or holds only spaces."
+action = "Give a value for {0}."
+
+[E3531]
+when = "The on of an ssh or a winrm is empty"
+text = "on is not given."
+cause = "on is not given, or holds only spaces."
+action = "Give the PC to run on in the form {0} or group:group-name."
+
+[E3532]
+when = "The on of an ssh or a winrm is not in a form that can be used"
+text = "The value {1} of on cannot be used."
+cause = "on is neither in the form {0} nor in the form group:group-name."
+action = "Give on in the form {0} or group:group-name."
+
+[E3533]
+when = "There is no group name after group: in on"
+text = "No group name is given after group: in on."
+cause = "on is only group:, with no group name after it."
+action = "As in on = \"group:web\", give the name of a group in [groups] of koyomi.toml after group:."
+
+[E3534]
+when = "The group name in on has a character that cannot be used"
+text = "The group name {0} cannot be used."
+cause = "The group name has a character other than letters, digits and _."
+action = "Use only letters, digits and _ in the group name."
+
+[E3535]
+when = "max is out of its range"
+text = "The value of max is out of range."
+cause = "max is not from 1 to {0}. max is how many PCs of the group run at once."
+action = "Give max a number from 1 to {0}."
+
+[E3536]
+when = "max or pass is given while on is not a group (group:group-name)"
+text = "{0} can be given only when on is a group."
+cause = "on is not in the form group:group-name."
+action = "Remove {0}, or give on as group:group-name."
+
+[E3537]
+when = "keep_days of a delete is 0"
+text = "keep_days cannot be 0."
+cause = "keep_days is a number of days, 1 or more."
+action = "Give keep_days 1 or more. To delete everything, give kind = \"empty\"."
+
+[E3538]
+when = "The into of a zip is not a .zip file"
+text = "The into {0} is not a .zip file."
+cause = "into does not end in .zip."
+action = "Give into the path of a file that ends in .zip."
+
+[E3539]
+when = "The from of a send or the into of a fetch is an sftp:// or s3:// peer"
+text = "The {1} of {0} cannot be an sftp:// or s3:// peer."
+cause = "The {1} of {0} is a file or a folder on this machine."
+action = "Give {1} a path on this machine, and give an sftp:// or s3:// peer in {2}."
+
+[E3540]
+when = "The into of a send is s3:// and its key has * or ?"
+text = "* and ? cannot be given in the into {0} of a send."
+cause = "into is the destination folder (s3://bucket/folder/)."
+action = "Give into as s3://bucket/folder/, with no * or ? in it."
+
+[E3541]
+when = "The from of a fetch does not name the file to fetch"
+text = "The from {0} of a fetch does not name the file to fetch."
+cause = "from points to a folder (ending in /) or to the top of a bucket."
+action = "Give from down to a file name (a key name for s3://) or a form such as *.csv."
+
+[E3542]
+when = "The from of a fetch has * or ? before its last /"
+text = "* and ? cannot be given before the last / of the from {0}."
+cause = "* and ? can be used only in the name part."
+action = "Give * and ? only in the name after the last /."
+
+[E3543]
+when = "The url of an http, or the endpoint of s3://, does not start with http:// or https://"
+text = "The {0} {1} cannot be used."
+cause = "{0} starts with neither http:// nor https://."
+action = "Give a {0} that starts with http:// or https://."
+
+[E3544]
+when = "An unusable value is given to the method of an http"
+text = "The value {1} of method cannot be used."
+cause = "method is none of {0}."
+action = "Give one of {0} to method."
+
+[E3545]
+when = "body is given with the method GET or HEAD"
+text = "body cannot be given with method = \"{0}\"."
+cause = "A body cannot be sent with GET or HEAD."
+action = "To send a body, give method = \"POST\" or the like."
+
+[E3546]
+when = "body or command is too long"
+text = "{0} is over {1} characters."
+cause = "The number of characters of {0} is over the limit of {1}."
+action = "Give {0} in {1} characters or fewer."
+
+[E3547]
+when = "content_type is given without a body"
+text = "content_type can be given only with a body."
+cause = "body is not given."
+action = "Remove content_type, or give a body."
+
+[E3548]
+when = "expect of an http has a value that is not a status code"
+text = "The value {0} of expect cannot be used."
+cause = "{0} is not from 100 to 599."
+action = "Give expect status codes from 100 to 599."
+
+[E3549]
+when = "cert is not given for a single PC of a winrm"
+text = "cert is not given for winrm://."
+cause = "A winrm:// connection needs the fingerprint of the peer's certificate."
+action = "Give the fingerprint of the peer's certificate (AB:CD:…) in cert. koyomi winrm cert <host> shows it."
+
+[E3550]
+when = "password is not given for winrm or for a SQL login with a user"
+text = "password is not given for {0}."
+cause = "A connection with {0} needs a password."
+action = "Give password as secret:<name>. Save the value in the OS credential store with koyomi secret set <name>."
+
+[E3551]
+when = "password is not in the form secret:<name>"
+text = "password is not given as secret:<name>."
+cause = "password holds a value that does not start with secret:, or has no name after secret:."
+action = "Give password as secret:<name>. Save the value in the OS credential store with koyomi secret set <name>."
+
+[E3552]
+when = "to of a mail is empty"
+text = "to is not given."
+cause = "to has no address to send to."
+action = "As in to = [\"ops@example.com\"], give the addresses to send to."
+
+[E3553]
+when = "An address in to or cc of a mail cannot be read"
+text = "{0} cannot be read as a mail address."
+cause = "The address is not in the form local@domain, or it holds several addresses or a character that cannot be used."
+action = "Give ops@example.com or Name <ops@example.com>, one person to an item."
+
+[E3554]
+when = "subject of a mail is empty"
+text = "subject is not given."
+cause = "subject is not given, or holds only spaces."
+action = "Give the subject line of the mail in subject."
+
+[E3555]
+when = "subject of a mail has a line break"
+text = "subject cannot have a line break."
+cause = "subject holds a line break."
+action = "Give subject on one line."
+
+[E3556]
+when = "files of a mail has too many items"
+text = "files has more than {0} items."
+cause = "The number of items in files is over the limit of {0}."
+action = "Give {0} items or fewer in files."
+
+[E3557]
+when = "files of a mail has an empty item"
+text = "files has an empty item."
+cause = "files holds an item that is empty or only spaces."
+action = "Remove the empty item from files, or give a file path."
+
+[E3558]
+when = "db of a sql is empty"
+text = "db is not given."
+cause = "db is not given, or holds only spaces."
+action = "Give the database in db as sqlserver://host/database, postgres://user@host/database or sqlite://C:\\data\\app.db."
+
+[E3559]
+when = "password is given to a sqlserver:// without a user"
+text = "password cannot be given to a sqlserver:// without a user."
+cause = "A sqlserver:// without a user logs in as the Windows account that runs the job."
+action = "Remove password. To use a SQL Server login, give sqlserver://user@host/database."
+
+[E3560]
+when = "tls = \"off\" is given for SQL Server"
+text = "tls = \"off\" cannot be used for a SQL Server connection."
+cause = "A SQL Server connection is always encrypted."
+action = "Remove tls = \"off\". To skip checking the certificate, give tls = \"trust\"."
+
+[E3561]
+when = "password or tls is given to sqlite://"
+text = "{0} cannot be given to sqlite://."
+cause = "sqlite:// does not use {0}."
+action = "Remove {0}."
+
+[E3562]
+when = "Not exactly one of sql and file is given"
+text = "Exactly one of sql and file must be given."
+cause = "Both of sql and file are given, or neither is."
+action = "Give the SQL to run in sql, or give the path of a file that holds the SQL in file."
+
+[E3563]
+when = "sql is too long"
+text = "sql is over {0} characters."
+cause = "The number of characters of sql is over the limit of {0}."
+action = "Give sql in {0} characters or fewer. Put a long SQL in file."
+
+[E3564]
+when = "A name in headers of an http has a character that cannot be used"
+text = "The name {0} in headers cannot be used."
+cause = "The name is empty, or holds a character an HTTP header name cannot have."
+action = "Use letters, digits, - and the like in the names in headers."
+
+[E3565]
+when = "Content-Type is given in headers of an http"
+text = "Content-Type cannot be given in headers."
+cause = "Content-Type is given in content_type."
+action = "Remove Content-Type from headers and give it in content_type."
+
+[E3566]
+when = "The path of a delete or an empty is the top of a drive or a share"
+text = "The path {0} is the top of a drive or a share, so it cannot be used."
+cause = "delete and empty do not work on the top folder of a drive or a share."
+action = "Give a folder below the drive or the share in path."
+
+[E3567]
+when = "An ssh:// or winrm:// address has a path"
+text = "An address of {0} cannot have a path. ({2})"
+cause = "An address of {0} points to a PC and has no path."
+action = "Give it in the form {1}."
+
+[E3568]
+when = "A winrm:// address has no user"
+text = "The winrm:// address has no user. ({0})"
+cause = "A winrm:// connection is authenticated with the password of a user, so it needs the user."
+action = "Give it in the form winrm://user@host[:port]."
+
+[E3569]
+when = "The bucket name of an s3:// address is empty or cannot be used"
+text = "The bucket name of the s3:// address is not valid. ({0})"
+cause = "The bucket name is empty, or is not 3 to 63 letters, digits, . - and _."
+action = "Give s3://bucket/folder/ with a bucket name of 3 to 63 letters, digits, . - and _."
+
+[E3570]
+when = "The key of an s3:// address has a control character"
+text = "The key of the s3:// address cannot have a control character such as a line break. ({0})"
+cause = "The key holds a control character."
+action = "Remove the control characters from the key."
+
+[E3571]
+when = "key or host_key is given for an s3:// peer"
+text = "{0} cannot be given for an s3:// peer."
+cause = "key and host_key are items of an sftp:// peer."
+action = "For s3://, give key_id and password."
+
+[E3572]
+when = "An item for one kind of peer is given for another kind"
+text = "{0} can be given only for a {1} peer."
+cause = "{0} is an item of a {1} peer."
+action = "Remove {0}, or give a {1} peer."
+
+[E3573]
+when = "key_id is not given for s3://"
+text = "key_id is not given for s3://."
+cause = "An s3:// connection needs an access key ID."
+action = "Give the access key ID in key_id. It can be given as secret:<name> too."
+
+[E3574]
+when = "There is no name after secret: in key_id"
+text = "No name is given after secret: in key_id."
+cause = "key_id is only secret:."
+action = "Give the name as secret:<name>."
+
+[E3575]
+when = "key_id has a space"
+text = "key_id cannot have a space. ({0})"
+cause = "key_id holds a space or a control character."
+action = "Remove the spaces and control characters from key_id."
+
+[E3576]
+when = "password is not given for s3://"
+text = "password is not given for s3://."
+cause = "An s3:// connection needs the secret access key."
+action = "Give password = \"secret:<name>\". Save the value in the OS credential store with koyomi secret set <name>."
+
+[E3577]
+when = "Neither region nor endpoint is given for s3://"
+text = "region is not given for s3://."
+cause = "Neither region nor endpoint is given."
+action = "Give region = \"ap-northeast-1\" or the like. For MinIO and the like, give endpoint."
+
+[E3578]
+when = "region of s3:// has a character that cannot be used"
+text = "The region {0} cannot be used."
+cause = "region holds a character other than lower-case letters, digits and -."
+action = "Give a region such as ap-northeast-1."
+
+[E3580]
+when = "The host of endpoint of s3:// is empty or has a character that cannot be used"
+text = "The endpoint {0} cannot be used."
+cause = "The host[:port] part of endpoint is empty, or holds a character that cannot be used."
+action = "As in http://nas:9000, give endpoint down to host[:port]."
+
+[E3581]
+when = "The file path after sqlite:// is not valid"
+text = "The database file after sqlite:// is not given correctly. ({0})"
+cause = "The file path is not an absolute path with a drive, or it holds a line break."
+action = "Give the whole path of the file, as in sqlite://C:\\data\\app.db."
+
+[E3582]
+when = "The db of a sql does not start with a form that is supported"
+text = "The db address {0} cannot be used."
+cause = "db starts with none of sqlserver://, postgres:// and sqlite://."
+action = "Give a db address that starts with sqlserver://, postgres:// or sqlite://."
+
+[E3583]
+when = "The db of a sql has no database name"
+text = "The {0} address has no database name. ({2})"
+cause = "There is no database name after the last / of the address."
+action = "Give it in the form {1}."
+
+[E3584]
+when = "The database name in the db of a sql has a character that cannot be used"
+text = "The database name has a character that cannot be used. ({0})"
+cause = "The database name holds /, ? or a control character."
+action = "Remove the characters that cannot be used from the database name."
+
+[E3585]
+when = "The host of sqlserver:// has a named instance"
+text = "A named instance (host\\name) cannot be used. ({0})"
+cause = "SQL Server is connected to by its port, so the host cannot hold an instance name."
+action = "Give the port, as in sqlserver://host:port/database."
+
+[E3586]
+when = "The host or the user of postgres:// has a \\"
+text = "The {0} of the address cannot have a \\. ({1})"
+cause = "The {0} of the address holds a \\."
+action = "Remove the \\ from the {0}."
+
+[E3587]
+when = "The user of sqlserver:// has a \\"
+text = "A user cannot be given to log in with a Windows account. ({0})"
+cause = "The user holds a \\, so it is taken as a Windows account."
+action = "Do not give a user. It logs in as the account that runs the job. To log in as another account, give run_as."
+
+[E3588]
+when = "A postgres:// address has no user"
+text = "The {0} address has no user. ({2})"
+cause = "A postgres:// address needs a user."
+action = "Give it in the form {1}."
+
+[E3589]
+when = "rows of a sql cannot be read as counts of rows"
+text = "The value {0} of rows cannot be used."
+cause = "rows cannot be read as the counts of rows that are normal."
+action = "Give the counts of rows that are normal, as in 0, 1.. or 1..100. Several can be separated by commas."
+
+[E3590]
+when = "command of an ssh or a winrm is empty"
+text = "command is not given."
+cause = "command is not given, or holds only spaces."
+action = "Give the command to run on the peer PC in command."
+
+[E3591]
+when = "cert of a winrm is not in the form of a fingerprint"
+text = "The cert {0} cannot be used."
+cause = "cert is not in the form AB:CD:… (32 bytes of SHA-256 in hex)."
+action = "Give the AB:CD:… value that koyomi winrm cert <host> prints in cert."
+
+[E3592]
+when = "The port in an address cannot be used"
+text = "The port {0} of the address {1} cannot be used."
+cause = "The port is not a number from 1 to 65535."
+action = "Give a number from 1 to 65535 as the port."
+
+[E3593]
+when = "An address has no host"
+text = "The {0} address {1} has no host."
+cause = "The host is empty, or the user before @ is empty."
+action = "Give it in the form [user@]host[:port]."
+
+[E3594]
+when = "The user or the host in an address has a character that cannot be used"
+text = "The user or the host of the address {0} has a character that cannot be used."
+cause = "The user or the host holds a space, a quote, ; & | < > or the like, or the host starts with -."
+action = "Remove the characters that cannot be used from the user and the host."
+
+[E3595]
+when = "The path in an address has a line break"
+text = "The path of the address {0} cannot have a line break."
+cause = "The path holds a line break."
+action = "Remove the line break from the path."
+
+[E3596]
+when = "host_key is not given for an sftp:// or ssh:// peer"
+text = "host_key is not given for {0}."
+cause = "A {0} connection needs the fingerprint of the peer's host key."
+action = "Give the fingerprint of the peer's host key (SHA256:…) in host_key. koyomi sftp hostkey <host> shows it."
+
+[E3597]
+when = "host_key is not in the form of a fingerprint"
+text = "The host_key {0} cannot be used."
+cause = "host_key is not SHA256: followed by a base64 digest."
+action = "Give the SHA256:… value that koyomi sftp hostkey <host> prints in host_key."
+
+[E3598]
+when = "Both key and password are given"
+text = "key and password cannot be given together."
+cause = "Both key and password are given."
+action = "Give one of key and password."
+
 [note]
 list_sep = ", "
 config_at_line = "line {0} of koyomi.toml"
@@ -1804,3 +2538,48 @@ holiday_autumn_equinox = "Autumnal Equinox Day"
 holiday_sports = "Sports Day"
 holiday_culture = "Culture Day"
 holiday_labor_thanks = "Labor Thanksgiving Day"
+bundle_kind_settings = "Settings"
+bundle_kind_calendar = "Calendar"
+bundle_kind_group = "Group"
+bundle_kind_jobnet = "Jobnet"
+bundle_add = "Add: {0}"
+bundle_same = "Same: {0}"
+bundle_replace = "Overwrite: {0}"
+bundle_rename = "Add under another name: {0} → {1}"
+bundle_skip = "Skip: {0} (as it is)"
+bundle_problem = "  Problem: {0}"
+run_late = "Started late"
+run_late_at = "{0} (the {1} time was run at {2})"
+run_carried = "Result of the previous run"
+run_carried_with = "{0}: {1}"
+run_skipped_by_person = "Skipped by a person"
+run_engine_stopped_waiting = "The engine stopped while waiting"
+run_engine_stopped = "The engine stopped"
+run_from_skipped = "Skipped because the run started from {0}"
+run_from = "Started from {0}"
+run_rerun_from = "Rerun ({0} from {1})"
+run_rerun = "Rerun ({0})"
+run_rerun_after = "Rerun ({0} from after {1})"
+run_after_skipped = "Marked skipped because the rerun started from the next job"
+run_after_warned = "Marked ended with a warning because the rerun started from the next job"
+run_taken_over = "Continues {1}, which {0} was running"
+run_left_running = "Was running on {0} (it is not known whether it ended)"
+run_left_over = "Was running on {0} and was not taken over ({1} / {2})"
+run_wait_slot = "Waiting for a free place among the {0} jobs allowed to run at once"
+run_exit_warn = "Exit code {0} (warning)"
+run_exit = "Exit code {0}"
+run_killed = "Killed"
+run_timeout_over = "Cut off (over {0})"
+run_timeout = "Cut off"
+run_start_failed = "Could not start"
+run_no_exit = "No exit code was received"
+run_retried = "Retried {0} times"
+run_child_waiting = "Waiting for the child jobnet to end"
+run_child_failed = "{0} in the child jobnet ended with an error"
+run_child_warned = "The child jobnet has a warning"
+run_no_exit_code = "There is no exit code"
+run_pred_failed = "The job before it, {0}, ended with an error"
+run_line_unmet = "The condition of the line from {0} was not met"
+run_waiting_for = "Waiting for {0} to end"
+run_list_join = ", "
+chore_shared_differs = "The copied content does not match: {0} (source {1}, destination {2})"

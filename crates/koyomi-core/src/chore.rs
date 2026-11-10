@@ -15,6 +15,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Jobnet, Judge, Part, Range};
+use crate::msg;
 
 /// One chore and what it works on. Paths may have `{date}`, `{param:…}` and `{var:…}`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -341,20 +342,20 @@ pub fn group(on: &str) -> Option<&str> {
 /// one. An `on` that starts with `{…}` is told once it is filled in.
 fn fan(on: &str, max: Option<u32>, pass: Pass) -> Result<bool, String> {
     let group = match group(on) {
-        Some("") => return Err("on の group: のあとに組の名前を書く（koyomi.toml の [groups] の名前。例: on = \"group:web\"）".into()),
+        Some("") => return Err(msg::line(msg::CHORE_GROUP_NAME_EMPTY, &[])),
         Some(name) if crate::jobnet::plain_name(name) => true,
-        Some(name) => return Err(format!("組の名前は英数字と _ だけ: {name}")),
+        Some(name) => return Err(msg::line(msg::CHORE_GROUP_NAME_BAD, &[name])),
         None => false,
     };
     if max.is_some_and(|m| !(1..=GROUP_MAX as u32).contains(&m)) {
-        return Err(format!("max は 1 から {GROUP_MAX} までの数で書く（組の PC をいくつ同時に動かすか）"));
+        return Err(msg::line(msg::CHORE_MAX_RANGE, &[&GROUP_MAX.to_string()]));
     }
     if !group && !on.trim().starts_with('{') {
         if max.is_some() {
-            return Err("max は on が PC の組（group:名前）のときだけ書く".into());
+            return Err(msg::line(msg::CHORE_GROUP_ONLY, &["max"]));
         }
         if pass != Pass::All {
-            return Err("pass は on が PC の組（group:名前）のときだけ書く".into());
+            return Err(msg::line(msg::CHORE_GROUP_ONLY, &["pass"]));
         }
     }
     Ok(group)
@@ -603,13 +604,13 @@ impl Chore {
     /// or password, a `mail` without a good address or a subject, a `sql` without
     /// a database it can read, a login that fits it, or its SQL.
     pub fn check(&self) -> Result<(), String> {
-        let need = |name: &str, p: &str| if p.trim().is_empty() { Err(format!("{name} が空")) } else { Ok(()) };
+        let need = |name: &str, p: &str| if p.trim().is_empty() { Err(msg::line(msg::CHORE_KEY_EMPTY, &[name])) } else { Ok(()) };
         match self {
             Chore::Delete { path, keep_days, .. } => {
                 need("path", path)?;
                 not_root(path)?;
                 if *keep_days == 0 {
-                    return Err("keep_days は 1 以上（全部を消すなら kind = \"empty\"）".into());
+                    return Err(msg::line(msg::CHORE_KEEP_DAYS, &[]));
                 }
             }
             Chore::Empty { path } => {
@@ -620,7 +621,7 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
                 if !into.trim().to_ascii_lowercase().ends_with(".zip") {
-                    return Err(format!("into は .zip のファイル: {into}"));
+                    return Err(msg::line(msg::CHORE_ZIP_INTO, &[into]));
                 }
             }
             Chore::Copy { from, into, .. } => {
@@ -631,12 +632,12 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(from).is_some() || s3(from).is_some() {
-                    return Err("send の from はこのマシンのファイル（sftp://・s3:// は into に書く）".into());
+                    return Err(msg::line(msg::CHORE_LOCAL_ONLY, &["send", "from", "into"]));
                 }
                 if let Some(at) = s3(into).transpose()? {
                     s3_login(key, host_key, password, key_id, region, endpoint)?;
                     if at.key.contains(['*', '?']) {
-                        return Err(format!("send の into は送り先のフォルダー（s3://バケット/フォルダー/）。* や ? は書かない: {into}"));
+                        return Err(msg::line(msg::CHORE_S3_KEY_WILDCARD, &[into]));
                     }
                 } else {
                     not_s3(key_id, region, endpoint)?;
@@ -648,22 +649,22 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(into).is_some() || s3(into).is_some() {
-                    return Err("fetch の into はこのマシンのフォルダー（sftp://・s3:// は from に書く）".into());
+                    return Err(msg::line(msg::CHORE_LOCAL_ONLY, &["fetch", "into", "from"]));
                 }
                 if let Some(at) = s3(from).transpose()? {
                     s3_login(key, host_key, password, key_id, region, endpoint)?;
                     if at.key.is_empty() || at.key.ends_with('/') {
-                        return Err(format!("fetch の from はキーの名前か *.csv のような形まで書く: {from}"));
+                        return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[from]));
                     }
                     if at.key[..at.key.rfind('/').map_or(0, |i| i + 1)].contains(['*', '?']) {
-                        return Err(format!("* や ? は最後の / のあと（名前）にだけ書ける: {from}"));
+                        return Err(msg::line(msg::CHORE_S3_WILDCARD_FOLDER, &[from]));
                     }
                 } else {
                     not_s3(key_id, region, endpoint)?;
                     let far = sftp(from).transpose()?;
                     if let Some(at) = &far {
                         if at.path == "." || at.path.ends_with('/') {
-                            return Err(format!("fetch の from はファイルの名前か *.csv のような形まで書く: {from}"));
+                            return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[from]));
                         }
                     }
                     login("sftp://", far.is_some(), true, key, host_key, password)?;
@@ -674,35 +675,35 @@ impl Chore {
                 // A url that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 let u = url.trim().to_ascii_lowercase();
                 if !u.starts_with('{') && !u.starts_with("http://") && !u.starts_with("https://") {
-                    return Err(format!("url は http:// か https:// で始める: {url}"));
+                    return Err(msg::line(msg::CHORE_HTTP_URL, &["url", url]));
                 }
                 if !METHODS.contains(&method.as_str()) {
-                    return Err(format!("method は {} のどれか: {method}", METHODS.join("・")));
+                    return Err(msg::line(msg::CHORE_HTTP_METHOD, &[&METHODS.join(", "), method]));
                 }
                 if body.is_some() && (method == "GET" || method == "HEAD") {
-                    return Err(format!("method = \"{method}\" には body を書けない（送るなら method = \"POST\" など）"));
+                    return Err(msg::line(msg::CHORE_HTTP_BODY_METHOD, &[method]));
                 }
                 if body.as_ref().is_some_and(|b| b.chars().count() > BODY_MAX) {
-                    return Err(format!("body は {BODY_MAX} 文字まで"));
+                    return Err(msg::line(msg::CHORE_TEXT_TOO_LONG, &["body", &BODY_MAX.to_string()]));
                 }
                 if content_type.is_some() && body.is_none() {
-                    return Err("content_type は body を書いたときだけ".into());
+                    return Err(msg::line(msg::CHORE_CONTENT_TYPE_NO_BODY, &[]));
                 }
                 for k in headers.keys() {
                     header_name(k)?;
                 }
                 if let Some(c) = expect.iter().find(|c| !(100..=599).contains(*c)) {
-                    return Err(format!("expect は 100〜599 の状態コード: {c}"));
+                    return Err(msg::line(msg::CHORE_HTTP_EXPECT, &[&c.to_string()]));
                 }
             }
             Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                 if on.trim().is_empty() {
-                    return Err("on が空（動かす PC を ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く）".into());
+                    return Err(msg::line(msg::CHORE_ON_EMPTY, &["ssh://[user@]host[:port]"]));
                 }
                 let group = fan(on, *max, *pass)?;
                 // An `on` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 if !group && ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(format!("on は ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く: {on}"));
+                    return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", on]));
                 }
                 far_command(command)?;
                 // A group's PCs may each have their own host key in `[groups]`.
@@ -710,103 +711,95 @@ impl Chore {
             }
             Chore::Winrm { on, command, cert, password, max, pass, .. } => {
                 if on.trim().is_empty() {
-                    return Err("on が空（動かす PC を winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く）".into());
+                    return Err(msg::line(msg::CHORE_ON_EMPTY, &["winrm://user@host[:port]"]));
                 }
                 let group = fan(on, *max, *pass)?;
                 if !group && winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(format!("on は winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く: {on}"));
+                    return Err(msg::line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", on]));
                 }
                 far_command(command)?;
                 match cert.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
                     // Each PC of a group may have its own in `[groups]`.
                     None if group => {}
                     None => {
-                        return Err("winrm:// には cert が要る（相手の証明書の指紋 AB:CD:…。koyomi winrm cert <ホスト> で調べる）".into());
+                        return Err(msg::line(msg::CHORE_WINRM_CERT_MISSING, &[]));
                     }
                     Some(c) if c.starts_with('{') => {}
                     Some(c) => cert_ok(c)?,
                 }
                 match password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
                     None => {
-                        return Err(
-                            "winrm:// には password が要る（secret:<名前> で書き、値は koyomi secret set <名前> で OS の資格情報に置く）"
-                                .into(),
-                        );
+                        return Err(msg::line(msg::CHORE_PASSWORD_MISSING, &["winrm://"]));
                     }
                     Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => {
-                        return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                        return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
                     }
                     Some(_) => {}
                 }
             }
             Chore::Mail { to, cc, subject, body, files, .. } => {
                 if to.is_empty() {
-                    return Err("to が空（送り先のアドレスを書く。例: to = [\"ops@example.com\"]）".into());
+                    return Err(msg::line(msg::CHORE_MAIL_TO_EMPTY, &[]));
                 }
                 for a in to.iter().chain(cc) {
                     mail_address(a)?;
                 }
                 if subject.trim().is_empty() {
-                    return Err("subject が空（メールの件名を書く）".into());
+                    return Err(msg::line(msg::CHORE_MAIL_SUBJECT_EMPTY, &[]));
                 }
                 if subject.contains(['\r', '\n']) {
-                    return Err("subject に改行は書けない".into());
+                    return Err(msg::line(msg::CHORE_MAIL_SUBJECT_NEWLINE, &[]));
                 }
                 if body.as_ref().is_some_and(|b| b.chars().count() > BODY_MAX) {
-                    return Err(format!("body は {BODY_MAX} 文字まで"));
+                    return Err(msg::line(msg::CHORE_TEXT_TOO_LONG, &["body", &BODY_MAX.to_string()]));
                 }
                 if files.len() > FILES_MAX {
-                    return Err(format!("files は {FILES_MAX} 個まで"));
+                    return Err(msg::line(msg::CHORE_FILES_MAX, &[&FILES_MAX.to_string()]));
                 }
                 if files.iter().any(|f| f.trim().is_empty()) {
-                    return Err("files に空のものがある".into());
+                    return Err(msg::line(msg::CHORE_FILES_EMPTY, &[]));
                 }
             }
             Chore::Sql { db, password, sql, file, out, rows, tls } => {
                 if db.trim().is_empty() {
-                    return Err(
-                        "db が空（流す先を sqlserver://ホスト/データベース・postgres://ユーザー@ホスト/データベース・sqlite://C:\\data\\app.db で書く）"
-                            .into(),
-                    );
+                    return Err(msg::line(msg::CHORE_SQL_DB_EMPTY, &[]));
                 }
                 let password = password.as_deref().map(str::trim).filter(|p| !p.is_empty());
                 if let Some(p) = password {
                     if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
-                        return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                        return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
                     }
                 }
                 // A `db` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 if !db.trim().starts_with('{') {
-                    match sql_db(db)? {
+                    let parsed = sql_db(db)?;
+                    match &parsed {
                         SqlDb::SqlServer { user: None, .. } if password.is_some() => {
-                            return Err("ユーザーを書かない sqlserver:// はジョブを動かす Windows のアカウントでログインする: password は書かない（SQL Server のログインなら sqlserver://ユーザー@ホスト/データベース）".into());
+                            return Err(msg::line(msg::CHORE_SQL_WINDOWS_PASSWORD, &[]));
                         }
                         SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. } if password.is_none() => {
-                            return Err("このログインには password が要る（secret:<名前> で書き、値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+                            let scheme = if matches!(parsed, SqlDb::Postgres { .. }) { "postgres://" } else { "sqlserver://" };
+                            return Err(msg::line(msg::CHORE_PASSWORD_MISSING, &[scheme]));
                         }
                         SqlDb::SqlServer { .. } if *tls == SqlTls::Off => {
-                            return Err(
-                                "SQL Server へはいつも暗号化してつなぐ: tls = \"off\" は使えない（証明書を確かめないなら tls = \"trust\"）"
-                                    .into(),
-                            );
+                            return Err(msg::line(msg::CHORE_SQL_TLS_OFF, &[]));
                         }
-                        SqlDb::Sqlite { .. } if password.is_some() => return Err("sqlite:// には password を書かない".into()),
-                        SqlDb::Sqlite { .. } if *tls != SqlTls::Verify => return Err("sqlite:// には tls を書かない".into()),
+                        SqlDb::Sqlite { .. } if password.is_some() => return Err(msg::line(msg::CHORE_SQLITE_NO, &["password"])),
+                        SqlDb::Sqlite { .. } if *tls != SqlTls::Verify => return Err(msg::line(msg::CHORE_SQLITE_NO, &["tls"])),
                         _ => {}
                     }
                 }
                 match (sql, file) {
-                    (None, None) => return Err("sql か file のどちらかを書く（流す SQL か、それを書いたファイル）".into()),
-                    (Some(_), Some(_)) => return Err("sql と file はどちらか一方".into()),
-                    (Some(s), None) if s.trim().is_empty() => return Err("sql が空".into()),
+                    (None, None) | (Some(_), Some(_)) => return Err(msg::line(msg::CHORE_SQL_ONE_OF, &[])),
+                    (Some(s), None) if s.trim().is_empty() => return Err(msg::line(msg::CHORE_KEY_EMPTY, &["sql"])),
                     (Some(s), None) if s.chars().count() > COMMAND_MAX => {
-                        return Err(format!("sql は {COMMAND_MAX} 文字まで（長いものは file に書く）"));
+                        return Err(msg::line(msg::CHORE_SQL_TOO_LONG, &[&COMMAND_MAX.to_string()]));
                     }
-                    (None, Some(f)) if f.trim().is_empty() => return Err("file が空".into()),
+                    (None, Some(f)) if f.trim().is_empty() => return Err(msg::line(msg::CHORE_KEY_EMPTY, &["file"])),
                     _ => {}
                 }
                 if out.as_ref().is_some_and(|o| o.trim().is_empty()) {
-                    return Err("out が空".into());
+                    return Err(msg::line(msg::CHORE_KEY_EMPTY, &["out"]));
                 }
                 if let Some(r) = rows {
                     sql_rows(r)?;
@@ -1030,17 +1023,17 @@ pub fn mail_address(a: &str) -> Result<(), String> {
     if !t.contains(['\r', '\n', ',', ';']) && bare.is_some_and(good) {
         Ok(())
     } else {
-        Err(format!("メールのアドレスとして読めない: {a}（例: ops@example.com か 名前 <ops@example.com>。1 つに 1 人）"))
+        Err(msg::line(msg::CHORE_MAIL_ADDRESS, &[a]))
     }
 }
 
 /// A header name as HTTP takes it; `Content-Type` is `content_type`.
 pub fn header_name(k: &str) -> Result<(), String> {
     if k.is_empty() || !k.chars().all(|c| c.is_ascii_alphanumeric() || "!#$%&'*+-.^_`|~".contains(c)) {
-        return Err(format!("headers の名前に使えない: {k}（英数字と - など）"));
+        return Err(msg::line(msg::CHORE_HEADER_NAME, &[k]));
     }
     if k.eq_ignore_ascii_case("content-type") {
-        return Err("Content-Type は headers でなく content_type に書く".into());
+        return Err(msg::line(msg::CHORE_HEADER_CONTENT_TYPE, &[]));
     }
     Ok(())
 }
@@ -1170,7 +1163,7 @@ fn not_root(path: &str) -> Result<(), String> {
     let t = path.trim().trim_end_matches(['\\', '/']);
     let share_root = t.strip_prefix("\\\\").is_some_and(|rest| rest.split(['\\', '/']).filter(|s| !s.is_empty()).count() <= 2);
     if t.is_empty() || (t.len() == 2 && t.ends_with(':')) || share_root {
-        return Err(format!("ドライブや共有の一番上は扱わない: {path}"));
+        return Err(msg::line(msg::CHORE_NOT_ROOT, &[path]));
     }
     Ok(())
 }
@@ -1196,7 +1189,7 @@ pub struct Sftp {
 pub fn sftp(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..7).filter(|p| p.eq_ignore_ascii_case("sftp://")).map(|_| &t[7..])?;
-    Some(read_sftp(rest, "sftp://").map_err(|e| format!("{e}: {t}")))
+    Some(read_sftp(rest, "sftp://", t))
 }
 
 /// `s` read as an `ssh://[user@]host[:port]` address (no path: `path` is `.`); `None`
@@ -1204,11 +1197,11 @@ pub fn sftp(s: &str) -> Option<Result<Sftp, String>> {
 pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..6).filter(|p| p.eq_ignore_ascii_case("ssh://")).map(|_| &t[6..])?;
-    let read = read_sftp(rest, "ssh://").and_then(|far| match rest.split_once('/') {
-        Some((_, p)) if !p.is_empty() => Err("ssh:// にパスは書かない（ssh://[ユーザー@]ホスト[:ポート]）".into()),
+    let read = read_sftp(rest, "ssh://", t).and_then(|far| match rest.split_once('/') {
+        Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["ssh://", "ssh://[user@]host[:port]", t])),
         _ => Ok(far),
     });
-    Some(read.map_err(|e| format!("{e}: {t}")))
+    Some(read)
 }
 
 /// `s` read as a `winrm://user@host[:port]` address (no path: `path` is `.`, no
@@ -1217,12 +1210,12 @@ pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
 pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..8).filter(|p| p.eq_ignore_ascii_case("winrm://")).map(|_| &t[8..])?;
-    let read = read_sftp(rest, "winrm://").and_then(|far| match rest.split_once('/') {
-        Some((_, p)) if !p.is_empty() => Err("winrm:// にパスは書かない（winrm://ユーザー@ホスト[:ポート]）".into()),
-        _ if far.user.is_none() => Err("winrm:// にはユーザーが要る（winrm://ユーザー@ホスト[:ポート]）".into()),
+    let read = read_sftp(rest, "winrm://", t).and_then(|far| match rest.split_once('/') {
+        Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["winrm://", "winrm://user@host[:port]", t])),
+        _ if far.user.is_none() => Err(msg::line(msg::CHORE_WINRM_USER, &[t])),
         _ => Ok(far),
     });
-    Some(read.map_err(|e| format!("{e}: {t}")))
+    Some(read)
 }
 
 /// Where a `sql`'s `db` points.
@@ -1259,16 +1252,14 @@ pub fn s3(s: &str) -> Option<Result<S3, String>> {
     let rest = after_scheme(t, "s3://")?;
     let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
     let good = |b: &str| (3..=63).contains(&b.len()) && b.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
-    let read = if bucket.is_empty() {
-        Err("s3:// にはバケットが要る（s3://バケット/フォルダー/）".to_owned())
-    } else if !bucket.contains('{') && !good(bucket) {
-        Err("バケットの名前は 3〜63 文字の英数字と . - _".to_owned())
+    let read = if bucket.is_empty() || (!bucket.contains('{') && !good(bucket)) {
+        Err(msg::line(msg::CHORE_S3_BUCKET, &[t]))
     } else if key.chars().any(char::is_control) {
-        Err("キーに改行などは使えない".to_owned())
+        Err(msg::line(msg::CHORE_S3_KEY_CONTROL, &[t]))
     } else {
         Ok(S3 { bucket: bucket.to_owned(), key: key.trim_start_matches('/').to_owned() })
     };
-    Some(read.map_err(|e| format!("{e}: {t}")))
+    Some(read)
 }
 
 /// How a `send` or `fetch` with S3 logs in: `key_id`, and `password` (the secret
@@ -1284,48 +1275,45 @@ fn s3_login(
 ) -> Result<(), String> {
     let val = |v: &Option<String>| v.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(str::to_owned);
     if let Some((name, _)) = [("key", key), ("host_key", host_key)].into_iter().find(|(_, v)| val(v).is_some()) {
-        return Err(format!("{name} は sftp:// の相手にだけ書く（s3:// は key_id と password）"));
+        return Err(msg::line(msg::CHORE_S3_NOT_SFTP_KEY, &[name]));
     }
     match val(key_id) {
-        None => return Err("s3:// には key_id が要る（アクセス キー ID。secret:<名前> でもよい）".into()),
+        None => return Err(msg::line(msg::CHORE_S3_KEY_ID_MISSING, &[])),
         Some(k) if k.strip_prefix("secret:").is_some_and(|n| n.trim().is_empty()) => {
-            return Err("key_id の secret: のあとに名前を書く".into());
+            return Err(msg::line(msg::CHORE_S3_KEY_ID_SECRET_NAME, &[]));
         }
         Some(k) if !k.starts_with("secret:") && k.chars().any(|c| c.is_whitespace() || c.is_control()) => {
-            return Err(format!("key_id に空白は使えない: {k}"));
+            return Err(msg::line(msg::CHORE_S3_KEY_ID_SPACE, &[&k]));
         }
         Some(_) => {}
     }
     match val(password) {
         None => {
-            return Err(
-                "s3:// には password = \"secret:<名前>\" が要る（シークレット アクセス キー。値は koyomi secret set <名前> で OS の資格情報に置く）"
-                    .into(),
-            );
+            return Err(msg::line(msg::CHORE_S3_SECRET_KEY_MISSING, &[]));
         }
         Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => {
-            return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+            return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
         }
         Some(_) => {}
     }
     let (region, endpoint) = (val(region), val(endpoint));
     match &region {
         None if endpoint.is_none() => {
-            return Err("s3:// には region が要る（例: region = \"ap-northeast-1\"。MinIO などは endpoint を書く）".into());
+            return Err(msg::line(msg::CHORE_S3_REGION_MISSING, &[]));
         }
         // `{param:…}` or `{var:…}` is told once it is filled in.
         Some(r) if !r.starts_with('{') && !r.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-') => {
-            return Err(format!("region は ap-northeast-1 のように書く: {r}"));
+            return Err(msg::line(msg::CHORE_S3_REGION_BAD, &[r]));
         }
         _ => {}
     }
     if let Some(e) = endpoint.filter(|e| !e.starts_with('{')) {
         let Some(rest) = after_scheme(&e, "https://").or_else(|| after_scheme(&e, "http://")) else {
-            return Err(format!("endpoint は http:// か https:// で始める: {e}"));
+            return Err(msg::line(msg::CHORE_HTTP_URL, &["endpoint", &e]));
         };
         let host = rest.strip_suffix('/').unwrap_or(rest);
         if host.is_empty() || host.contains(['/', '?', '#', '@']) || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return Err(format!("endpoint はホスト[:ポート]までを書く（例: http://nas:9000）: {e}"));
+            return Err(msg::line(msg::CHORE_S3_ENDPOINT_HOST, &[&e]));
         }
     }
     Ok(())
@@ -1335,7 +1323,7 @@ fn s3_login(
 fn not_s3(key_id: &Option<String>, region: &Option<String>, endpoint: &Option<String>) -> Result<(), String> {
     let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
     match [("key_id", key_id), ("region", region), ("endpoint", endpoint)].into_iter().find(|(_, v)| set(v)) {
-        Some((name, _)) => Err(format!("{name} は s3:// の相手にだけ書く")),
+        Some((name, _)) => Err(msg::line(msg::CHORE_ONLY_FOR, &[name, "s3://"])),
         None => Ok(()),
     }
 }
@@ -1348,7 +1336,7 @@ pub fn sql_db(s: &str) -> Result<SqlDb, String> {
         let b = path.as_bytes();
         let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
         if path.contains(['\r', '\n']) || !(drive || path.starts_with(['\\', '/', '{'])) {
-            return Err(format!("sqlite:// のあとはデータベースのファイルを C:\\data\\app.db のように全部書く: {t}"));
+            return Err(msg::line(msg::CHORE_SQLITE_PATH, &[t]));
         }
         return Ok(SqlDb::Sqlite { path: path.to_owned() });
     }
@@ -1359,42 +1347,28 @@ pub fn sql_db(s: &str) -> Result<SqlDb, String> {
     } else if let Some(r) = after_scheme(t, "postgresql://") {
         (r, "postgresql://", false)
     } else {
-        return Err(format!("db は sqlserver://・postgres://・sqlite:// のどれかで書く: {t}"));
+        return Err(msg::line(msg::CHORE_DB_SCHEME, &[t]));
     };
-    let form = if server {
-        "sqlserver://[ユーザー@]ホスト[:ポート]/データベース"
-    } else {
-        "postgres://ユーザー@ホスト[:ポート]/データベース"
-    };
+    let form = if server { "sqlserver://[user@]host[:port]/database" } else { "postgres://user@host[:port]/database" };
     let Some((auth, database)) = rest.split_once('/').filter(|(_, d)| !d.trim().is_empty()) else {
-        return Err(format!("{scheme} にはデータベースの名前が要る（{form}）: {t}"));
+        return Err(msg::line(msg::CHORE_DB_NAME_MISSING, &[scheme, form, t]));
     };
     if database.contains(['/', '?']) || database.chars().any(char::is_control) {
-        return Err(format!("データベースの名前に使えない文字がある: {t}"));
+        return Err(msg::line(msg::CHORE_DB_NAME_BAD, &[t]));
     }
-    let far = read_sftp(auth, scheme).map_err(|e| format!("{e}: {t}"))?;
+    let far = read_sftp(auth, scheme, t)?;
     if far.host.contains('\\') {
-        let why = if server {
-            "名前付きインスタンス（ホスト\\名前）は使えない: そのポートを書く（sqlserver://ホスト:ポート/データベース）"
-        } else {
-            "ホストに \\ は使えない"
-        };
-        return Err(format!("{why}: {t}"));
+        return Err(if server { msg::line(msg::CHORE_SQL_INSTANCE, &[t]) } else { msg::line(msg::CHORE_DB_BACKSLASH, &["host", t]) });
     }
     if far.user.as_deref().is_some_and(|u| u.contains('\\')) {
-        let why = if server {
-            "Windows のアカウントでログインするならユーザーを書かない（ジョブを動かすアカウントでログインする。ほかのアカウントは run_as）"
-        } else {
-            "ユーザーに \\ は使えない"
-        };
-        return Err(format!("{why}: {t}"));
+        return Err(if server { msg::line(msg::CHORE_SQL_USER_WINDOWS, &[t]) } else { msg::line(msg::CHORE_DB_BACKSLASH, &["user", t]) });
     }
     let database = database.to_owned();
     if server {
         return Ok(SqlDb::SqlServer { user: far.user, host: far.host, port: far.port.unwrap_or(SQL_SERVER_PORT), database });
     }
     let Some(user) = far.user else {
-        return Err(format!("{scheme} にはユーザーが要る（{form}）: {t}"));
+        return Err(msg::line(msg::CHORE_DB_USER_MISSING, &[scheme, form, t]));
     };
     Ok(SqlDb::Postgres { user, host: far.host, port: far.port.unwrap_or(POSTGRES_PORT), database })
 }
@@ -1402,7 +1376,7 @@ pub fn sql_db(s: &str) -> Result<SqlDb, String> {
 /// A `sql`'s `rows` read as the counts that are 正常, each `(least, most)`:
 /// `0`, `1..` (one or more), `1..100`, `..5`, several with `,`.
 pub fn sql_rows(s: &str) -> Result<Vec<(u64, u64)>, String> {
-    let bad = || format!("rows は 0・1..・1..100 のように書く（正常とする行の数。, で並べられる）: {s}");
+    let bad = || msg::line(msg::CHORE_ROWS, &[s]);
     let num = |x: &str, none: u64| match x.trim() {
         "" => Some(none),
         n => n.parse::<u64>().ok(),
@@ -1436,10 +1410,10 @@ fn fan_env(prefix: &str, max: Option<u32>, pass: Pass) -> Vec<(String, String)> 
 /// The command of an `ssh` or `winrm`: something, and not past [`COMMAND_MAX`].
 fn far_command(command: &str) -> Result<(), String> {
     if command.trim().is_empty() {
-        return Err("command が空（相手の PC で動かすコマンドを書く）".into());
+        return Err(msg::line(msg::CHORE_COMMAND_EMPTY, &[]));
     }
     if command.chars().count() > COMMAND_MAX {
-        return Err(format!("command は {COMMAND_MAX} 文字まで"));
+        return Err(msg::line(msg::CHORE_TEXT_TOO_LONG, &["command", &COMMAND_MAX.to_string()]));
     }
     Ok(())
 }
@@ -1451,17 +1425,17 @@ pub fn cert_ok(c: &str) -> Result<(), String> {
     if hex.len() == 64 && hex.chars().all(|x| x.is_ascii_hexdigit()) {
         Ok(())
     } else {
-        Err(format!("cert は AB:CD:… の形（SHA-256 の 32 バイトを 16 進で）で書く（koyomi winrm cert <ホスト> が出すもの）: {c}"))
+        Err(msg::line(msg::CHORE_CERT_BAD, &[c]))
     }
 }
 
-fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
+fn read_sftp(rest: &str, scheme: &str, addr: &str) -> Result<Sftp, String> {
     let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
     // A `:` inside `{param:…}` or `{var:…}` is not a port.
     let (dest, port) = match auth.rsplit_once(':') {
         Some((d, p)) if !p.contains('}') => match p.parse::<u16>() {
             Ok(n) if n > 0 => (d, Some(n)),
-            _ => return Err(format!("ポートは 1〜65535 の数で書く（{p}）")),
+            _ => return Err(msg::line(msg::CHORE_PORT_BAD, &[p, addr])),
         },
         _ => (auth, None),
     };
@@ -1470,13 +1444,13 @@ fn read_sftp(rest: &str, scheme: &str) -> Result<Sftp, String> {
         None => (None, dest),
     };
     if host.is_empty() || user == Some("") {
-        return Err(format!("{scheme} には [ユーザー@]ホスト が要る"));
+        return Err(msg::line(msg::CHORE_ADDR_HOST_MISSING, &[scheme, addr]));
     }
     if host.starts_with('-') || dest.chars().any(|c| c.is_whitespace() || "\"'`;&|<>".contains(c)) {
-        return Err("ユーザーとホストに使えない文字がある".into());
+        return Err(msg::line(msg::CHORE_ADDR_CHARS, &[addr]));
     }
     if path.contains(['\n', '\r']) {
-        return Err("パスに改行は使えない".into());
+        return Err(msg::line(msg::CHORE_ADDR_PATH_NEWLINE, &[addr]));
     }
     let path = match path.strip_prefix('~') {
         _ if path.is_empty() || path == "~" => ".".to_owned(),
@@ -1500,14 +1474,14 @@ fn login(
     let set = |v: &Option<String>| v.as_deref().is_some_and(|x| !x.trim().is_empty());
     if !far {
         if let Some((name, _)) = [("key", key), ("host_key", host_key), ("password", password)].into_iter().find(|(_, v)| set(v)) {
-            return Err(format!("{name} は {scheme} の相手にだけ書く"));
+            return Err(msg::line(msg::CHORE_ONLY_FOR, &[name, scheme]));
         }
         return Ok(());
     }
     match host_key.as_deref().map(str::trim).filter(|h| !h.is_empty()) {
         None if !need_host_key => {}
         None => {
-            return Err(format!("{scheme} には host_key が要る（相手のホスト鍵の指紋 SHA256:…。koyomi sftp hostkey <ホスト> で調べる）"));
+            return Err(msg::line(msg::CHORE_HOST_KEY_MISSING, &[scheme]));
         }
         // `{param:…}` or `{var:…}` is told once it is filled in.
         Some(h) if h.starts_with('{') => {}
@@ -1515,10 +1489,10 @@ fn login(
     }
     if let Some(p) = password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
         if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
-            return Err("password は secret:<名前> で書く（値は koyomi secret set <名前> で OS の資格情報に置く）".into());
+            return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
         }
         if set(key) {
-            return Err("key と password はどちらか一方".into());
+            return Err(msg::line(msg::CHORE_KEY_AND_PASSWORD, &[]));
         }
     }
     Ok(())
@@ -1529,7 +1503,7 @@ pub fn host_key_ok(h: &str) -> Result<(), String> {
     let digest = h.get(..7).filter(|p| p.eq_ignore_ascii_case("sha256:")).map(|_| h[7..].trim_end_matches('='));
     match digest {
         Some(d) if d.len() == 43 && d.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/') => Ok(()),
-        _ => Err(format!("host_key は SHA256:… の形で書く（koyomi sftp hostkey <ホスト> が出すもの）: {h}")),
+        _ => Err(msg::line(msg::CHORE_HOST_KEY_BAD, &[h])),
     }
 }
 
@@ -1548,9 +1522,11 @@ fn shared(from: &str, into: &str, verb: &str, done: &str, verify: bool) -> Strin
          $done = '{done}'\n\
          $verify = ${verify}\n\
          $nothing = {NOTHING}\n\
+         $differs = {d}\n\
          {SHARED_SCRIPT}",
         f = quote(from),
         i = quote(into),
+        d = quote(&msg::note(msg::N_CHORE_SHARED_DIFFERS, &["{0}", "{1}", "{2}"])),
     )
 }
 
@@ -1590,7 +1566,7 @@ foreach ($x in $files) {
     if ($ours -ne $theirs) {
         Remove-Item -LiteralPath $part -Force
         Kept $x.Name $x.Length $ours $false
-        $why = "届いた中身が違います: $($x.Name)（こちら $ours、相手 $theirs）"
+        $why = $differs -f $x.Name, $ours, $theirs
         if ($env:KOYOMI_REASON) { [System.IO.File]::WriteAllText($env:KOYOMI_REASON, $why, $utf8) }
         Write-Output "! $why"
         exit 2
@@ -1710,16 +1686,16 @@ mod tests {
             .check()
         };
         let far = "sftp://u@h/in";
-        assert!(send(None, None, None, far).unwrap_err().contains("koyomi sftp hostkey"));
-        assert!(send(None, Some("47DEQpj8"), None, far).unwrap_err().contains("SHA256:"));
+        assert!(msg::CHORE_HOST_KEY_MISSING.is_in(&send(None, None, None, far).unwrap_err()));
+        assert!(msg::CHORE_HOST_KEY_BAD.is_in(&send(None, Some("47DEQpj8"), None, far).unwrap_err()));
         assert_eq!(send(None, Some(&HK.to_lowercase().replacen("sha256", "SHA256", 1)), None, far), Ok(()));
         assert_eq!(send(None, Some(&format!("{HK}=")), None, far), Ok(()));
         assert_eq!(send(None, Some("{param:hk}"), None, far), Ok(()));
         assert_eq!(send(None, Some(HK), Some("secret:partner"), far), Ok(()));
-        assert!(send(None, Some(HK), Some("hunter2"), far).unwrap_err().contains("secret:<名前>"));
-        assert!(send(Some("C:\\keys\\id"), Some(HK), Some("secret:partner"), far).unwrap_err().contains("どちらか一方"));
-        assert!(send(None, Some(HK), None, "\\\\nas\\share\\in").unwrap_err().contains("host_key は sftp://"));
-        assert!(send(None, None, Some("secret:p"), "D:\\in").unwrap_err().contains("password は sftp://"));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&send(None, Some(HK), Some("hunter2"), far).unwrap_err()));
+        assert!(msg::CHORE_KEY_AND_PASSWORD.is_in(&send(Some("C:\\keys\\id"), Some(HK), Some("secret:partner"), far).unwrap_err()));
+        assert!(msg::CHORE_ONLY_FOR.is_in(&send(None, Some(HK), None, "\\\\nas\\share\\in").unwrap_err()));
+        assert!(msg::CHORE_ONLY_FOR.is_in(&send(None, None, Some("secret:p"), "D:\\in").unwrap_err()));
     }
 
     #[test]
@@ -1789,6 +1765,8 @@ mod tests {
         assert!(script.contains("$verify = $true"), "{script}");
         assert!(script.contains("$part = $to + '.part'") && script.contains("SHA256]::Create()"), "{script}");
         assert!(script.contains("exit 2") && script.contains("KOYOMI_REASON"), "{script}");
+        assert!(script.contains("$differs = '") && script.contains("$why = $differs -f $x.Name, $ours, $theirs"), "{script}");
+        assert!(script.contains(&msg::note(msg::N_CHORE_SHARED_DIFFERS, &["{0}", "{1}", "{2}"])), "{script}");
         assert!(sure.env().is_empty(), "the shared folder needs no variable");
     }
 
@@ -1822,12 +1800,12 @@ mod tests {
         assert_eq!(s3("s3://{param:b}/x").unwrap().unwrap().bucket, "{param:b}");
         assert!(s3("sftp://h/in").is_none());
         assert!(s3("D:\\in").is_none());
-        assert!(s3("s3://").unwrap().unwrap_err().contains("バケットが要る"));
-        assert!(s3("s3:///in").unwrap().unwrap_err().contains("バケットが要る"));
+        assert!(msg::CHORE_S3_BUCKET.is_in(&s3("s3://").unwrap().unwrap_err()));
+        assert!(msg::CHORE_S3_BUCKET.is_in(&s3("s3:///in").unwrap().unwrap_err()));
         for bad in ["s3://ab/x", "s3://a b/x", "s3://a:b/x", "s3://user@bucket/x"] {
-            assert!(s3(bad).unwrap().unwrap_err().contains("バケットの名前"), "{bad}");
+            assert!(msg::CHORE_S3_BUCKET.is_in(&s3(bad).unwrap().unwrap_err()), "{bad}");
         }
-        assert!(s3("s3://logs/a\nb").unwrap().unwrap_err().contains("改行"));
+        assert!(msg::CHORE_S3_KEY_CONTROL.is_in(&s3("s3://logs/a\nb").unwrap().unwrap_err()));
     }
 
     #[test]
@@ -1839,31 +1817,33 @@ mod tests {
         assert_eq!(ok(cloud_send(to, Some("secret:s3-id"), pw, None, Some("http://nas:9000"))), Ok(()));
         assert_eq!(ok(cloud_send(to, Some("minio"), pw, Some("{param:r}"), Some("https://s3.example.com/"))), Ok(()));
         assert_eq!(ok(cloud_send("s3://logs", Some("k"), pw, Some("us-east-1"), None)), Ok(()));
-        assert!(ok(cloud_send(to, None, pw, Some("us-east-1"), None)).unwrap_err().contains("key_id が要る"));
-        assert!(ok(cloud_send(to, Some("secret:"), pw, Some("us-east-1"), None)).unwrap_err().contains("名前を書く"));
-        assert!(ok(cloud_send(to, Some("AK IA"), pw, Some("us-east-1"), None)).unwrap_err().contains("空白"));
-        assert!(ok(cloud_send(to, Some("k"), None, Some("us-east-1"), None)).unwrap_err().contains("password = \"secret:<名前>\""));
-        assert!(ok(cloud_send(to, Some("k"), Some("hunter2"), Some("us-east-1"), None)).unwrap_err().contains("secret:<名前>"));
-        assert!(ok(cloud_send(to, Some("k"), pw, None, None)).unwrap_err().contains("region が要る"));
-        assert!(ok(cloud_send(to, Some("k"), pw, Some("Tokyo"), None)).unwrap_err().contains("ap-northeast-1 のように"));
-        assert!(ok(cloud_send(to, Some("k"), pw, None, Some("nas:9000"))).unwrap_err().contains("http://"));
+        assert!(msg::CHORE_S3_KEY_ID_MISSING.is_in(&ok(cloud_send(to, None, pw, Some("us-east-1"), None)).unwrap_err()));
+        assert!(msg::CHORE_S3_KEY_ID_SECRET_NAME.is_in(&ok(cloud_send(to, Some("secret:"), pw, Some("us-east-1"), None)).unwrap_err()));
+        assert!(msg::CHORE_S3_KEY_ID_SPACE.is_in(&ok(cloud_send(to, Some("AK IA"), pw, Some("us-east-1"), None)).unwrap_err()));
+        assert!(msg::CHORE_S3_SECRET_KEY_MISSING.is_in(&ok(cloud_send(to, Some("k"), None, Some("us-east-1"), None)).unwrap_err()));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&ok(cloud_send(to, Some("k"), Some("hunter2"), Some("us-east-1"), None)).unwrap_err()));
+        assert!(msg::CHORE_S3_REGION_MISSING.is_in(&ok(cloud_send(to, Some("k"), pw, None, None)).unwrap_err()));
+        assert!(msg::CHORE_S3_REGION_BAD.is_in(&ok(cloud_send(to, Some("k"), pw, Some("Tokyo"), None)).unwrap_err()));
+        assert!(ok(cloud_send(to, Some("k"), pw, None, Some("nas:9000")))
+            .unwrap_err()
+            .contains(&msg::line(msg::CHORE_HTTP_URL, &["endpoint", "nas:9000"])));
         for bad in ["http://", "http://nas:9000/minio", "http://u@nas", "https://nas?x=1"] {
-            assert!(ok(cloud_send(to, Some("k"), pw, None, Some(bad))).unwrap_err().contains("ホスト[:ポート]"), "{bad}");
+            assert!(msg::CHORE_S3_ENDPOINT_HOST.is_in(&ok(cloud_send(to, Some("k"), pw, None, Some(bad))).unwrap_err()), "{bad}");
         }
-        assert!(ok(cloud_send("s3://logs/*.csv", Some("k"), pw, Some("us-east-1"), None)).unwrap_err().contains("* や ?"));
+        assert!(msg::CHORE_S3_KEY_WILDCARD.is_in(&ok(cloud_send("s3://logs/*.csv", Some("k"), pw, Some("us-east-1"), None)).unwrap_err()));
         let mut with_key = cloud_send(to, Some("k"), pw, Some("us-east-1"), None);
         if let Chore::Send { host_key, .. } = &mut with_key {
             *host_key = Some(HK.into());
         }
-        assert!(ok(with_key).unwrap_err().contains("host_key は sftp://"));
+        assert!(msg::CHORE_S3_NOT_SFTP_KEY.is_in(&ok(with_key).unwrap_err()));
         // `key_id`, `region` and `endpoint` go only with `s3://`.
-        assert!(ok(cloud_send("\\\\nas\\in", Some("k"), None, None, None)).unwrap_err().contains("key_id は s3://"));
-        assert!(ok(cloud_send("D:\\in", None, None, Some("us-east-1"), None)).unwrap_err().contains("region は s3://"));
+        assert!(msg::CHORE_ONLY_FOR.is_in(&ok(cloud_send("\\\\nas\\in", Some("k"), None, None, None)).unwrap_err()));
+        assert!(msg::CHORE_ONLY_FOR.is_in(&ok(cloud_send("D:\\in", None, None, Some("us-east-1"), None)).unwrap_err()));
         let mut sftp_with_endpoint = cloud_send("sftp://u@h/in", None, None, None, Some("http://nas:9000"));
         if let Chore::Send { host_key, .. } = &mut sftp_with_endpoint {
             *host_key = Some(HK.into());
         }
-        assert!(ok(sftp_with_endpoint).unwrap_err().contains("endpoint は s3://"));
+        assert!(msg::CHORE_ONLY_FOR.is_in(&ok(sftp_with_endpoint).unwrap_err()));
         // Not from S3 into here with a `send`, nor into S3 with a `fetch`.
         let back = Chore::Send {
             from: "s3://logs/a.csv".into(),
@@ -1876,7 +1856,7 @@ mod tests {
             endpoint: None,
             verify: None,
         };
-        assert!(back.check().unwrap_err().contains("s3:// は into"));
+        assert!(msg::CHORE_LOCAL_ONLY.is_in(&back.check().unwrap_err()));
     }
 
     #[test]
@@ -1894,10 +1874,10 @@ mod tests {
         };
         assert_eq!(fetch("s3://logs/daily/*.csv", "D:\\in").check(), Ok(()));
         assert_eq!(fetch("s3://logs/a.csv", "D:\\in").check(), Ok(()));
-        assert!(fetch("s3://logs/daily/", "D:\\in").check().unwrap_err().contains("*.csv のような形"));
-        assert!(fetch("s3://logs", "D:\\in").check().unwrap_err().contains("*.csv のような形"));
-        assert!(fetch("s3://logs/*/a.csv", "D:\\in").check().unwrap_err().contains("最後の / のあと"));
-        assert!(fetch("s3://logs/a.csv", "s3://logs/b/").check().unwrap_err().contains("s3:// は from"));
+        assert!(msg::CHORE_FETCH_FROM_NAME.is_in(&fetch("s3://logs/daily/", "D:\\in").check().unwrap_err()));
+        assert!(msg::CHORE_FETCH_FROM_NAME.is_in(&fetch("s3://logs", "D:\\in").check().unwrap_err()));
+        assert!(msg::CHORE_S3_WILDCARD_FOLDER.is_in(&fetch("s3://logs/*/a.csv", "D:\\in").check().unwrap_err()));
+        assert!(msg::CHORE_LOCAL_ONLY.is_in(&fetch("s3://logs/a.csv", "s3://logs/b/").check().unwrap_err()));
         let f = fetch("s3://logs/daily/*.csv", "D:\\in");
         assert!(f.cloud() && f.own() && !f.far());
         assert_eq!(f.op(), "cloud");
@@ -1943,7 +1923,7 @@ mod tests {
         assert_eq!(ssh("ssh://{param:who}@h").unwrap().unwrap().user.as_deref(), Some("{param:who}"));
         assert!(ssh("sftp://h").is_none());
         assert!(ssh("h").is_none());
-        assert!(ssh("ssh://h/tmp").unwrap().unwrap_err().contains("パスは書かない"));
+        assert!(msg::CHORE_ADDR_PATH.is_in(&ssh("ssh://h/tmp").unwrap().unwrap_err()));
         for bad in ["ssh://", "ssh://@h", "ssh://h:0", "ssh://h:x", "ssh://-oProxyCommand=x", "ssh://a b", "ssh://h;calc"] {
             assert!(ssh(bad).unwrap().is_err(), "{bad}");
         }
@@ -1967,20 +1947,20 @@ mod tests {
         assert_eq!(ok("ssh://u@h", "df -h"), Ok(()));
         assert_eq!(ok("{param:pc}", "df -h"), Ok(()));
         assert_eq!(ok("{var:pc}", "df -h"), Ok(()));
-        assert!(ok("", "df -h").unwrap_err().contains("on が空"));
-        assert!(ok("u@h", "df -h").unwrap_err().contains("ssh://[ユーザー@]ホスト[:ポート] か group:組の名前 で書く"));
-        assert!(ok("sftp://u@h/in", "df -h").unwrap_err().contains("ssh://"));
-        assert!(ok("ssh://h/x", "df -h").unwrap_err().contains("パスは書かない"));
-        assert!(ok("ssh://u@h", " \n").unwrap_err().contains("command が空"));
+        assert!(msg::CHORE_ON_EMPTY.is_in(&ok("", "df -h").unwrap_err()));
+        assert!(msg::CHORE_ON_BAD.is_in(&ok("u@h", "df -h").unwrap_err()));
+        assert!(msg::CHORE_ON_BAD.is_in(&ok("sftp://u@h/in", "df -h").unwrap_err()));
+        assert!(msg::CHORE_ADDR_PATH.is_in(&ok("ssh://h/x", "df -h").unwrap_err()));
+        assert!(msg::CHORE_COMMAND_EMPTY.is_in(&ok("ssh://u@h", " \n").unwrap_err()));
         assert_eq!(ok("ssh://u@h", &"x".repeat(COMMAND_MAX)), Ok(()));
-        assert!(ok("ssh://u@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err().contains("8000 文字まで"));
+        assert!(msg::CHORE_TEXT_TOO_LONG.is_in(&ok("ssh://u@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err()));
         let login =
             |key: Option<&str>, host_key: Option<&str>, password: Option<&str>| remote("ssh://u@h", "x", key, host_key, password).check();
-        assert!(login(None, None, None).unwrap_err().contains("ssh:// には host_key が要る"));
-        assert!(login(None, Some("47DEQpj8"), None).unwrap_err().contains("SHA256:"));
+        assert!(msg::CHORE_HOST_KEY_MISSING.is_in(&login(None, None, None).unwrap_err()));
+        assert!(msg::CHORE_HOST_KEY_BAD.is_in(&login(None, Some("47DEQpj8"), None).unwrap_err()));
         assert_eq!(login(None, Some(HK), Some("secret:ops")), Ok(()));
-        assert!(login(None, Some(HK), Some("hunter2")).unwrap_err().contains("secret:<名前>"));
-        assert!(login(Some("C:\\keys\\id"), Some(HK), Some("secret:ops")).unwrap_err().contains("どちらか一方"));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&login(None, Some(HK), Some("hunter2")).unwrap_err()));
+        assert!(msg::CHORE_KEY_AND_PASSWORD.is_in(&login(Some("C:\\keys\\id"), Some(HK), Some("secret:ops")).unwrap_err()));
     }
 
     #[test]
@@ -2013,14 +1993,14 @@ mod tests {
         // Each PC's host key may be in [groups], so the job need not have one.
         assert_eq!(fanned("group:web", None, None, Pass::All).check(), Ok(()));
         assert_eq!(fanned("group:web", Some(HK), Some(4), Pass::Any).check(), Ok(()));
-        assert!(fanned("group:web", Some("47DEQ"), None, Pass::All).check().unwrap_err().contains("SHA256:"));
-        assert!(fanned("group:", None, None, Pass::All).check().unwrap_err().contains("組の名前を書く"));
-        assert!(fanned("group:web-1", None, None, Pass::All).check().unwrap_err().contains("英数字と _ だけ"));
-        assert!(fanned("group:web", None, Some(0), Pass::All).check().unwrap_err().contains("1 から 64 まで"));
-        assert!(fanned("group:web", None, Some(65), Pass::All).check().unwrap_err().contains("1 から 64 まで"));
+        assert!(msg::CHORE_HOST_KEY_BAD.is_in(&fanned("group:web", Some("47DEQ"), None, Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_GROUP_NAME_EMPTY.is_in(&fanned("group:", None, None, Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_GROUP_NAME_BAD.is_in(&fanned("group:web-1", None, None, Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_MAX_RANGE.is_in(&fanned("group:web", None, Some(0), Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_MAX_RANGE.is_in(&fanned("group:web", None, Some(65), Pass::All).check().unwrap_err()));
         // max and pass go with a group only; a param is told once it is filled in.
-        assert!(fanned("ssh://h", Some(HK), Some(2), Pass::All).check().unwrap_err().contains("max は on が PC の組"));
-        assert!(fanned("ssh://h", Some(HK), None, Pass::Any).check().unwrap_err().contains("pass は on が PC の組"));
+        assert!(msg::CHORE_GROUP_ONLY.is_in(&fanned("ssh://h", Some(HK), Some(2), Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_GROUP_ONLY.is_in(&fanned("ssh://h", Some(HK), None, Pass::Any).check().unwrap_err()));
         assert_eq!(fanned("{var:pcs}", Some(HK), Some(2), Pass::Any).check(), Ok(()));
         let env = fanned("group:web", None, Some(3), Pass::Any).env();
         assert!(env.contains(&("KOYOMI_SSH_ON".to_owned(), "group:web".to_owned())));
@@ -2042,8 +2022,8 @@ mod tests {
             }
         };
         assert_eq!(w(None, Some("secret:ops"), Some(8), Pass::Any).check(), Ok(()));
-        assert!(w(None, None, None, Pass::All).check().unwrap_err().contains("password が要る"));
-        assert!(w(Some("3F:2A"), Some("secret:ops"), None, Pass::All).check().unwrap_err().contains("AB:CD:…"));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&w(None, None, None, Pass::All).check().unwrap_err()));
+        assert!(msg::CHORE_CERT_BAD.is_in(&w(Some("3F:2A"), Some("secret:ops"), None, Pass::All).check().unwrap_err()));
         let env = w(None, Some("secret:ops"), Some(8), Pass::Any).env();
         assert!(env.contains(&("KOYOMI_WINRM_MAX".to_owned(), "8".to_owned())));
         assert!(env.contains(&("KOYOMI_WINRM_PASS".to_owned(), "any".to_owned())));
@@ -2085,8 +2065,8 @@ mod tests {
         assert_eq!(winrm("winrm://{param:who}@h").unwrap().unwrap().user.as_deref(), Some("{param:who}"));
         assert!(winrm("ssh://u@h").is_none());
         assert!(winrm("h").is_none());
-        assert!(winrm("winrm://h").unwrap().unwrap_err().contains("ユーザーが要る"));
-        assert!(winrm("winrm://u@h/wsman").unwrap().unwrap_err().contains("パスは書かない"));
+        assert!(msg::CHORE_WINRM_USER.is_in(&winrm("winrm://h").unwrap().unwrap_err()));
+        assert!(msg::CHORE_ADDR_PATH.is_in(&winrm("winrm://u@h/wsman").unwrap().unwrap_err()));
         for bad in ["winrm://", "winrm://@h", "winrm://u@h:0", "winrm://u@h:x", "winrm://u@-h", "winrm://u@a b", "winrm://u@h&calc"] {
             assert!(winrm(bad).unwrap().is_err(), "{bad}");
         }
@@ -2109,24 +2089,24 @@ mod tests {
         let ok = |on: &str, command: &str| windows(on, command, Some(CERT), Some("secret:ops")).check();
         assert_eq!(ok("winrm://ops@h", "ipconfig /all"), Ok(()));
         assert_eq!(ok("{param:pc}", "ipconfig"), Ok(()));
-        assert!(ok("", "ipconfig").unwrap_err().contains("on が空"));
-        assert!(ok("ops@h", "ipconfig").unwrap_err().contains("winrm://ユーザー@ホスト[:ポート] か group:組の名前 で書く"));
-        assert!(ok("ssh://ops@h", "ipconfig").unwrap_err().contains("winrm://"));
-        assert!(ok("winrm://h", "ipconfig").unwrap_err().contains("ユーザーが要る"));
-        assert!(ok("winrm://ops@h", " \r\n").unwrap_err().contains("command が空"));
-        assert!(ok("winrm://ops@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err().contains("8000 文字まで"));
+        assert!(msg::CHORE_ON_EMPTY.is_in(&ok("", "ipconfig").unwrap_err()));
+        assert!(msg::CHORE_ON_BAD.is_in(&ok("ops@h", "ipconfig").unwrap_err()));
+        assert!(msg::CHORE_ON_BAD.is_in(&ok("ssh://ops@h", "ipconfig").unwrap_err()));
+        assert!(msg::CHORE_WINRM_USER.is_in(&ok("winrm://h", "ipconfig").unwrap_err()));
+        assert!(msg::CHORE_COMMAND_EMPTY.is_in(&ok("winrm://ops@h", " \r\n").unwrap_err()));
+        assert!(msg::CHORE_TEXT_TOO_LONG.is_in(&ok("winrm://ops@h", &"x".repeat(COMMAND_MAX + 1)).unwrap_err()));
         let login = |cert: Option<&str>, password: Option<&str>| windows("winrm://ops@h", "x", cert, password).check();
-        assert!(login(None, Some("secret:ops")).unwrap_err().contains("koyomi winrm cert"));
-        assert!(login(Some("3F:2A"), Some("secret:ops")).unwrap_err().contains("AB:CD:…"));
-        assert!(login(Some(&"zz".repeat(32)), Some("secret:ops")).unwrap_err().contains("AB:CD:…"));
+        assert!(msg::CHORE_WINRM_CERT_MISSING.is_in(&login(None, Some("secret:ops")).unwrap_err()));
+        assert!(msg::CHORE_CERT_BAD.is_in(&login(Some("3F:2A"), Some("secret:ops")).unwrap_err()));
+        assert!(msg::CHORE_CERT_BAD.is_in(&login(Some(&"zz".repeat(32)), Some("secret:ops")).unwrap_err()));
         // Colons, spaces and case as one likes, or a param.
         assert_eq!(login(Some(&CERT.replace(':', "").to_lowercase()), Some("secret:ops")), Ok(()));
         assert_eq!(login(Some(&CERT.replace(':', " ")), Some("secret:ops")), Ok(()));
         assert_eq!(login(Some("{param:cert}"), Some("secret:ops")), Ok(()));
-        assert!(login(Some(CERT), None).unwrap_err().contains("password が要る"));
-        assert!(login(Some(CERT), Some(" ")).unwrap_err().contains("password が要る"));
-        assert!(login(Some(CERT), Some("hunter2")).unwrap_err().contains("secret:<名前>"));
-        assert!(login(Some(CERT), Some("secret: ")).unwrap_err().contains("secret:<名前>"));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&login(Some(CERT), None).unwrap_err()));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&login(Some(CERT), Some(" ")).unwrap_err()));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&login(Some(CERT), Some("hunter2")).unwrap_err()));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&login(Some(CERT), Some("secret: ")).unwrap_err()));
     }
 
     #[test]
@@ -2204,22 +2184,22 @@ mod tests {
             h.check()
         };
         assert!(url("").is_err());
-        assert!(url("ftp://x").unwrap_err().contains("http:// か https://"));
+        assert!(url("ftp://x").unwrap_err().contains(&msg::line(msg::CHORE_HTTP_URL, &["url", "ftp://x"])));
         assert_eq!(url("HTTP://x"), Ok(()));
         assert_eq!(url("{param:api}/jobs"), Ok(()));
         assert_eq!(url("{var:api}/jobs"), Ok(()));
-        assert!(http("get", None, &[], &[]).check().unwrap_err().contains("method は"));
-        assert!(http("HEAD", Some("a"), &[], &[]).check().unwrap_err().contains("body を書けない"));
-        assert!(http("POST", Some(&"a".repeat(BODY_MAX + 1)), &[], &[]).check().unwrap_err().contains("文字まで"));
+        assert!(msg::CHORE_HTTP_METHOD.is_in(&http("get", None, &[], &[]).check().unwrap_err()));
+        assert!(msg::CHORE_HTTP_BODY_METHOD.is_in(&http("HEAD", Some("a"), &[], &[]).check().unwrap_err()));
+        assert!(msg::CHORE_TEXT_TOO_LONG.is_in(&http("POST", Some(&"a".repeat(BODY_MAX + 1)), &[], &[]).check().unwrap_err()));
         assert_eq!(http("POST", Some(&"あ".repeat(BODY_MAX)), &[], &[]).check(), Ok(()));
-        assert!(http("GET", None, &[("content-type", "a")], &[]).check().unwrap_err().contains("content_type に書く"));
-        assert!(http("GET", None, &[("X Day", "a")], &[]).check().unwrap_err().contains("名前に使えない"));
-        assert!(http("GET", None, &[], &[600]).check().unwrap_err().contains("100〜599"));
+        assert!(msg::CHORE_HEADER_CONTENT_TYPE.is_in(&http("GET", None, &[("content-type", "a")], &[]).check().unwrap_err()));
+        assert!(msg::CHORE_HEADER_NAME.is_in(&http("GET", None, &[("X Day", "a")], &[]).check().unwrap_err()));
+        assert!(msg::CHORE_HTTP_EXPECT.is_in(&http("GET", None, &[], &[600]).check().unwrap_err()));
         let mut typed = http("GET", None, &[], &[]);
         if let Chore::Http { content_type, .. } = &mut typed {
             *content_type = Some("text/plain".into());
         }
-        assert!(typed.check().unwrap_err().contains("body を書いたときだけ"));
+        assert!(msg::CHORE_CONTENT_TYPE_NO_BODY.is_in(&typed.check().unwrap_err()));
     }
 
     fn mail(to: &[&str], subject: &str, body: Option<&str>, files: &[&str]) -> Chore {
@@ -2239,20 +2219,20 @@ mod tests {
             assert_eq!(mail_address(good), Ok(()), "{good}");
         }
         for bad in ["", "ops", "@x", "a@", "a@b@c", "a b@x", "a@x, b@x", "a@x;b@x", "名前 <a@x", "a@x>", "a@x\nBcc: c@x", "<a b@x>"] {
-            assert!(mail_address(bad).unwrap_err().contains("アドレスとして読めない"), "{bad}");
+            assert!(msg::CHORE_MAIL_ADDRESS.is_in(&mail_address(bad).unwrap_err()), "{bad}");
         }
     }
 
     #[test]
     fn a_mail_that_cannot_be_sent_as_written_is_refused() {
         assert_eq!(mail(&["ops@x"], "報告 {date}", Some("本文"), &["D:\\out\\*.csv"]).check(), Ok(()));
-        assert!(mail(&[], "s", None, &[]).check().unwrap_err().contains("to が空"));
-        assert!(mail(&["ops"], "s", None, &[]).check().unwrap_err().contains("アドレス"));
-        assert!(mail(&["ops@x"], " ", None, &[]).check().unwrap_err().contains("subject が空"));
-        assert!(mail(&["ops@x"], "a\r\nBcc: c@x", None, &[]).check().unwrap_err().contains("改行"));
-        assert!(mail(&["ops@x"], "s", Some(&"a".repeat(BODY_MAX + 1)), &[]).check().unwrap_err().contains("文字まで"));
-        assert!(mail(&["ops@x"], "s", None, &["a"; FILES_MAX + 1]).check().unwrap_err().contains("個まで"));
-        assert!(mail(&["ops@x"], "s", None, &["a", " "]).check().unwrap_err().contains("空のもの"));
+        assert!(msg::CHORE_MAIL_TO_EMPTY.is_in(&mail(&[], "s", None, &[]).check().unwrap_err()));
+        assert!(msg::CHORE_MAIL_ADDRESS.is_in(&mail(&["ops"], "s", None, &[]).check().unwrap_err()));
+        assert!(msg::CHORE_MAIL_SUBJECT_EMPTY.is_in(&mail(&["ops@x"], " ", None, &[]).check().unwrap_err()));
+        assert!(msg::CHORE_MAIL_SUBJECT_NEWLINE.is_in(&mail(&["ops@x"], "a\r\nBcc: c@x", None, &[]).check().unwrap_err()));
+        assert!(msg::CHORE_TEXT_TOO_LONG.is_in(&mail(&["ops@x"], "s", Some(&"a".repeat(BODY_MAX + 1)), &[]).check().unwrap_err()));
+        assert!(msg::CHORE_FILES_MAX.is_in(&mail(&["ops@x"], "s", None, &["a"; FILES_MAX + 1]).check().unwrap_err()));
+        assert!(msg::CHORE_FILES_EMPTY.is_in(&mail(&["ops@x"], "s", None, &["a", " "]).check().unwrap_err()));
         let mut cc = mail(&["ops@x"], "s", None, &[]);
         if let Chore::Mail { cc, .. } = &mut cc {
             cc.push("bad".into());
@@ -2331,16 +2311,16 @@ mod tests {
         assert_eq!(sql_db("sqlite://C:\\data\\app.db"), Ok(SqlDb::Sqlite { path: "C:\\data\\app.db".into() }));
         assert_eq!(sql_db("sqlite:///var/lib/app.db"), Ok(SqlDb::Sqlite { path: "/var/lib/app.db".into() }));
         let err = |s: &str| sql_db(s).unwrap_err();
-        assert!(err("mysql://db01/x").contains("どれか"));
-        assert!(err("sqlserver://db01").contains("データベースの名前が要る"));
-        assert!(err("sqlserver://db01/ ").contains("データベースの名前が要る"));
-        assert!(err("sqlserver://db01/a/b").contains("使えない文字"));
-        assert!(err("postgres://app@pg/app?sslmode=require").contains("使えない文字"));
-        assert!(err("sqlserver://db01\\SQLEXPRESS/x").contains("名前付きインスタンス"));
-        assert!(err("sqlserver://CORP\\ops@db01/x").contains("ユーザーを書かない"));
-        assert!(err("sqlserver://db01:0/x").contains("ポート"));
-        assert!(err("postgres://pg/app").contains("ユーザーが要る"));
-        assert!(err("sqlite://app.db").contains("全部書く"));
+        assert!(msg::CHORE_DB_SCHEME.is_in(&err("mysql://db01/x")));
+        assert!(msg::CHORE_DB_NAME_MISSING.is_in(&err("sqlserver://db01")));
+        assert!(msg::CHORE_DB_NAME_MISSING.is_in(&err("sqlserver://db01/ ")));
+        assert!(msg::CHORE_DB_NAME_BAD.is_in(&err("sqlserver://db01/a/b")));
+        assert!(msg::CHORE_DB_NAME_BAD.is_in(&err("postgres://app@pg/app?sslmode=require")));
+        assert!(msg::CHORE_SQL_INSTANCE.is_in(&err("sqlserver://db01\\SQLEXPRESS/x")));
+        assert!(msg::CHORE_SQL_USER_WINDOWS.is_in(&err("sqlserver://CORP\\ops@db01/x")));
+        assert!(msg::CHORE_PORT_BAD.is_in(&err("sqlserver://db01:0/x")));
+        assert!(msg::CHORE_DB_USER_MISSING.is_in(&err("postgres://pg/app")));
+        assert!(msg::CHORE_SQLITE_PATH.is_in(&err("sqlite://app.db")));
     }
 
     #[test]
@@ -2349,7 +2329,7 @@ mod tests {
         assert_eq!(sql_rows(" 1.. "), Ok(vec![(1, u64::MAX)]));
         assert_eq!(sql_rows("1..100, ..0"), Ok(vec![(1, 100), (0, 0)]));
         for bad in ["", "x", "-1", "5..1", "1..=5", "1,,2"] {
-            assert!(sql_rows(bad).unwrap_err().contains("rows は"), "{bad}");
+            assert!(msg::CHORE_ROWS.is_in(&sql_rows(bad).unwrap_err()), "{bad}");
         }
     }
 
@@ -2362,19 +2342,19 @@ mod tests {
         ok(query("postgres://app@pg/app", Some("secret:pg"), Some("select 1"), None));
         ok(query("sqlite://C:\\data\\app.db", None, Some("select 1"), None));
         ok(query("{param:db}", Some("secret:db"), Some("select 1"), None));
-        assert!(err(query(" ", None, Some("select 1"), None)).contains("db が空"));
-        assert!(err(query("mysql://db01/x", None, Some("select 1"), None)).contains("どれか"));
-        assert!(err(query("sqlserver://db01/x", Some("secret:db"), Some("select 1"), None)).contains("password は書かない"));
-        assert!(err(query("sqlserver://ops@db01/x", None, Some("select 1"), None)).contains("password が要る"));
-        assert!(err(query("postgres://app@pg/app", None, Some("select 1"), None)).contains("password が要る"));
-        assert!(err(query("postgres://app@pg/app", Some("hunter2"), Some("select 1"), None)).contains("secret:<名前>"));
-        assert!(err(query("postgres://app@pg/app", Some("secret: "), Some("select 1"), None)).contains("secret:<名前>"));
-        assert!(err(query("sqlite://C:\\a.db", Some("secret:x"), Some("select 1"), None)).contains("password を書かない"));
-        assert!(err(query("sqlite://C:\\a.db", None, None, None)).contains("sql か file"));
-        assert!(err(query("sqlite://C:\\a.db", None, Some("select 1"), Some("D:\\a.sql"))).contains("どちらか一方"));
-        assert!(err(query("sqlite://C:\\a.db", None, Some(" \n"), None)).contains("sql が空"));
-        assert!(err(query("sqlite://C:\\a.db", None, None, Some(" "))).contains("file が空"));
-        assert!(err(query("sqlite://C:\\a.db", None, Some(&"x".repeat(COMMAND_MAX + 1)), None)).contains("文字まで"));
+        assert!(msg::CHORE_SQL_DB_EMPTY.is_in(&err(query(" ", None, Some("select 1"), None))));
+        assert!(msg::CHORE_DB_SCHEME.is_in(&err(query("mysql://db01/x", None, Some("select 1"), None))));
+        assert!(msg::CHORE_SQL_WINDOWS_PASSWORD.is_in(&err(query("sqlserver://db01/x", Some("secret:db"), Some("select 1"), None))));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&err(query("sqlserver://ops@db01/x", None, Some("select 1"), None))));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&err(query("postgres://app@pg/app", None, Some("select 1"), None))));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&err(query("postgres://app@pg/app", Some("hunter2"), Some("select 1"), None))));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&err(query("postgres://app@pg/app", Some("secret: "), Some("select 1"), None))));
+        assert!(msg::CHORE_SQLITE_NO.is_in(&err(query("sqlite://C:\\a.db", Some("secret:x"), Some("select 1"), None))));
+        assert!(msg::CHORE_SQL_ONE_OF.is_in(&err(query("sqlite://C:\\a.db", None, None, None))));
+        assert!(msg::CHORE_SQL_ONE_OF.is_in(&err(query("sqlite://C:\\a.db", None, Some("select 1"), Some("D:\\a.sql")))));
+        assert!(err(query("sqlite://C:\\a.db", None, Some(" \n"), None)).contains(&msg::line(msg::CHORE_KEY_EMPTY, &["sql"])));
+        assert!(err(query("sqlite://C:\\a.db", None, None, Some(" "))).contains(&msg::line(msg::CHORE_KEY_EMPTY, &["file"])));
+        assert!(msg::CHORE_SQL_TOO_LONG.is_in(&err(query("sqlite://C:\\a.db", None, Some(&"x".repeat(COMMAND_MAX + 1)), None))));
         let with = |db: &str, password: Option<&str>, tls: SqlTls, out: Option<&str>, rows: Option<&str>| {
             let mut c = query(db, password, Some("select 1"), None);
             if let Chore::Sql { tls: t, out: o, rows: r, .. } = &mut c {
@@ -2382,12 +2362,12 @@ mod tests {
             }
             c
         };
-        assert!(err(with("sqlserver://db01/x", None, SqlTls::Off, None, None)).contains("tls = \"off\" は使えない"));
+        assert!(msg::CHORE_SQL_TLS_OFF.is_in(&err(with("sqlserver://db01/x", None, SqlTls::Off, None, None))));
         ok(with("sqlserver://db01/x", None, SqlTls::Trust, None, None));
-        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Trust, None, None)).contains("tls を書かない"));
+        assert!(msg::CHORE_SQLITE_NO.is_in(&err(with("sqlite://C:\\a.db", None, SqlTls::Trust, None, None))));
         ok(with("postgres://app@pg/app", Some("secret:pg"), SqlTls::Off, Some("D:\\out\\a.csv"), Some("1..")));
-        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Verify, None, Some("x"))).contains("rows は"));
-        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Verify, Some(" "), None)).contains("out が空"));
+        assert!(msg::CHORE_ROWS.is_in(&err(with("sqlite://C:\\a.db", None, SqlTls::Verify, None, Some("x")))));
+        assert!(err(with("sqlite://C:\\a.db", None, SqlTls::Verify, Some(" "), None)).contains(&msg::line(msg::CHORE_KEY_EMPTY, &["out"])));
     }
 
     #[test]

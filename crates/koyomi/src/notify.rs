@@ -123,7 +123,7 @@ pub fn test(p: &ito_prefs::Notify, what: ito_prefs::Test, title: &str, body: &st
 /// (or the run's line when none did), the id and the business day.
 pub fn words(t: &Table, r: &Run) -> (&'static str, String, String) {
     let event = if r.state.is_error() { "failed" } else { "done" };
-    let late = if r.is_late() { format!("（{}）", koyomi_core::run::LATE) } else { String::new() };
+    let late = if r.is_late() { format!("（{}）", koyomi_core::run::late_word()) } else { String::new() };
     let title = format!("{}{late}  {}", show::tag(t, r.state), r.title);
     let mut lines: Vec<String> = r.jobs.iter().filter(|j| j.state.is_error()).map(|j| show::job_line(t, j)).collect();
     if lines.is_empty() {

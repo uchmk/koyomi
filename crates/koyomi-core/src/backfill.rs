@@ -5,7 +5,7 @@
 //! time that never started (時刻を過ぎた, 保留, 未確認で止めた) does not count as a run; a run
 //! still going or waiting does. A day whose latest record is スキップ was let go on purpose and is
 //! left alone, except a time dropped from the queue because the engine stopped
-//! ([`ENGINE_STOPPED`]): nobody let that go, so it counts as never started, like 未確認で止めた.
+//! ([`crate::run::engine_stopped_word`]): nobody let that go, so it counts as never started, like 未確認で止めた.
 //! A day older than `keep_days` with no record left (neither in history nor in
 //! `archive/`) cannot tell whether it ran, so it is left alone too: without `--only` every day runs.
 
@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use chrono::NaiveDate;
 
 use crate::msg;
-use crate::run::{Run, State, ENGINE_STOPPED};
+use crate::run::{is_engine_stopped, Run, State};
 
 /// Which days `--only` keeps.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,7 +46,7 @@ pub enum Day<'a> {
     /// Only records of times that never started: the latest of them.
     NotStarted(&'a Run),
     /// Only records of times that never started, the latest of them スキップ: let go on purpose
-    /// (not [`ENGINE_STOPPED`], which is [`Day::NotStarted`]).
+    /// (not [`crate::run::engine_stopped_word`], which is [`Day::NotStarted`]).
     Skipped(&'a Run),
     /// No run and no record, but older than what history keeps (`keep_days`): it may have run.
     Gone,
@@ -87,7 +87,7 @@ pub fn look<'a>(
             let day = match of_day().filter(|r| !never(r)).max_by(latest) {
                 Some(r) => Day::Ran(r),
                 None => match of_day().max_by(latest) {
-                    Some(r) if r.state == State::Skipped && r.reason != ENGINE_STOPPED => Day::Skipped(r),
+                    Some(r) if r.state == State::Skipped && !is_engine_stopped(&r.reason) => Day::Skipped(r),
                     Some(r) => Day::NotStarted(r),
                     None if kept_from.is_some_and(|k| d < k) => Day::Gone,
                     None => Day::Nothing,
@@ -110,6 +110,7 @@ pub fn refused_on_standby(watch: Option<&str>, taken_over: bool) -> Option<Strin
 mod tests {
     use super::*;
     use crate::jobnet::Jobnet;
+    use crate::run::engine_stopped_word;
     use chrono::NaiveDateTime;
 
     fn day(d: u32) -> NaiveDate {
@@ -225,7 +226,7 @@ mod tests {
     fn a_time_dropped_because_the_engine_stopped_is_picked() {
         // Day 1: waiting in the queue when the engine stopped (スキップ, but nobody let it go);
         // day 2: the same, then a person skipped a later time of it (let go on purpose).
-        let dropped = |d, h| Run { reason: ENGINE_STOPPED.to_owned(), ..run("g/a", d, d, h, State::Skipped, true) };
+        let dropped = |d, h| Run { reason: engine_stopped_word(), ..run("g/a", d, d, h, State::Skipped, true) };
         let runs = [
             dropped(1, 2),
             dropped(2, 2),

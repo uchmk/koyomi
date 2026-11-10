@@ -290,7 +290,9 @@ mod tests {
         let stop = AtomicBool::new(true);
         assert!(go(&lite(&db, Some("select 1"), None, None, None), None, &stop).unwrap_err().contains("止めた"));
         // Checked again as filled in.
-        assert!(go(&lite(&db, Some(" "), None, None, None), None, &no).unwrap_err().contains("sql が空"));
+        assert!(go(&lite(&db, Some(" "), None, None, None), None, &no)
+            .unwrap_err()
+            .contains(&koyomi_core::msg::line(koyomi_core::msg::CHORE_KEY_EMPTY, &["sql"])));
     }
 
     #[test]

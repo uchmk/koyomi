@@ -3562,7 +3562,7 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("empty", "")));
             assert!(msg::DEF_JOB_KEY_REQUIRED_PLAIN.is_in(&s) && s.contains("empty"), "{s}");
         }
-        assert!(bad("empty", "path = 'C:\\'\n").contains("ドライブや共有の一番上は扱わない"));
+        assert!(msg::CHORE_NOT_ROOT.is_in(&bad("empty", "path = 'C:\\'\n")));
         assert!(bad("empty", "path = ''\n").contains("path"), "{}", bad("empty", "path = ''\n"));
         {
             let s = ToString::to_string(&(bad("delete", "path = 'D:\\logs'\n")));
@@ -3618,12 +3618,12 @@ after = [{ job = \"way\", code = \"else\" }]
                 verify: None,
             }))
         );
-        assert!(bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n").contains("send の from はこのマシンのファイル"));
-        assert!(bad("fetch", "from = 'sftp://h/out/*.csv'\ninto = 'sftp://h/in'\n").contains("fetch の into はこのマシンのフォルダー"));
-        assert!(bad("send", "from = 'a'\ninto = 'sftp://-oProxyCommand=calc/in'\n").contains("使えない文字"));
+        assert!(msg::CHORE_LOCAL_ONLY.is_in(&bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n")));
+        assert!(msg::CHORE_LOCAL_ONLY.is_in(&bad("fetch", "from = 'sftp://h/out/*.csv'\ninto = 'sftp://h/in'\n")));
+        assert!(msg::CHORE_ADDR_CHARS.is_in(&bad("send", "from = 'a'\ninto = 'sftp://-oProxyCommand=calc/in'\n")));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\nkey = 'c'\n").contains("key"));
         assert!(bad("copy", "from = 'a'\ninto = 'b'\npassword = 'secret:c'\n").contains("password"));
-        assert!(bad("send", "from = 'a'\ninto = 'sftp://h/in'\n").contains("host_key が要る"));
+        assert!(msg::CHORE_HOST_KEY_MISSING.is_in(&bad("send", "from = 'a'\ninto = 'sftp://h/in'\n")));
         {
             let s = ToString::to_string(&(bad("send", "from = 'a'\n")));
             assert!(msg::DEF_JOB_KEY_REQUIRED_PLAIN.is_in(&s) && s.contains("send"), "{s}");
@@ -3646,7 +3646,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 verify: None,
             }))
         );
-        assert!(bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n").contains("key_id が要る"));
+        assert!(msg::CHORE_S3_KEY_ID_MISSING
+            .is_in(&bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n")));
         {
             let s = ToString::to_string(
                 &(bad("send", "from = 'a'\ninto = 's3://logs/in/'\nkey_id = 'k'\npassword = 'secret:s3'\nregion = '{param:r}'\n")),
@@ -3680,12 +3681,12 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("http", "")));
             assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("http"), "{s}");
         }
-        assert!(bad("http", "url = 'ftp://x'\n").contains("http:// か https://"));
+        assert!(msg::CHORE_HTTP_URL.is_in(&bad("http", "url = 'ftp://x'\n")));
         {
             let s = ToString::to_string(&(bad("http", "url = 'https://x'\nmethod = \"get\"\n")));
             assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("method"), "{s}");
         }
-        assert!(bad("http", "url = 'https://x'\nbody = 'a'\n").contains("body を書けない"));
+        assert!(msg::CHORE_HTTP_BODY_METHOD.is_in(&bad("http", "url = 'https://x'\nbody = 'a'\n")));
         {
             let s = ToString::to_string(&(bad("http", "url = 'https://x'\nexpect = [200, 99]\n")));
             assert!(msg::DEF_EXPECT_BAD.is_in(&s) && s.contains("expect"), "{s}");
@@ -3694,12 +3695,12 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("http", "url = 'https://x'\nexpect = []\n")));
             assert!(msg::DEF_EXPECT_BAD.is_in(&s) && s.contains("expect"), "{s}");
         }
-        assert!(bad("http", "url = 'https://x'\nheaders = { Content-Type = \"a\" }\n").contains("content_type に書く"));
+        assert!(msg::CHORE_HEADER_CONTENT_TYPE.is_in(&bad("http", "url = 'https://x'\nheaders = { Content-Type = \"a\" }\n")));
         {
             let s = ToString::to_string(&(bad("http", "url = 'https://x'\nheaders = { A = \"secret:\" }\n")));
             assert!(msg::DEF_SECRET_NAME_EMPTY.is_in(&s) && s.contains("secret"), "{s}");
         }
-        assert!(bad("http", "url = 'https://x'\ncontent_type = 'text/plain'\n").contains("body を書いたときだけ"));
+        assert!(msg::CHORE_CONTENT_TYPE_NO_BODY.is_in(&bad("http", "url = 'https://x'\ncontent_type = 'text/plain'\n")));
         assert!(bad("http", "url = 'https://x'\nenv = { A = \"b\" }\n").contains("env"));
         {
             let s = ToString::to_string(&(bad("copy", "from = 'a'\ninto = 'b'\nurl = 'https://x'\n")));
@@ -3748,11 +3749,11 @@ after = [{ job = \"way\", code = \"else\" }]
         }
         assert!(bad(&format!("on = ''\ncommand = 'x'\n{hk}")).contains("on が空"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = ' '\n{hk}")).contains("command が空"));
-        assert!(bad("on = 'ssh://h'\ncommand = 'x'\n").contains("ssh:// には host_key が要る"));
+        assert!(msg::CHORE_HOST_KEY_MISSING.is_in(&bad("on = 'ssh://h'\ncommand = 'x'\n")));
         assert!(bad("on = 'ssh://h'\ncommand = 'x'\nhost_key = 'abc'\n").contains("SHA256:"));
-        assert!(bad(&format!("on = 'h'\ncommand = 'x'\n{hk}")).contains("ssh://[ユーザー@]ホスト[:ポート]"));
-        assert!(bad(&format!("on = 'ssh://h/tmp'\ncommand = 'x'\n{hk}")).contains("パスは書かない"));
-        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}password = 'hunter2'\n")).contains("secret:<名前>"));
+        assert!(msg::CHORE_ON_BAD.is_in(&bad(&format!("on = 'h'\ncommand = 'x'\n{hk}"))));
+        assert!(msg::CHORE_ADDR_PATH.is_in(&bad(&format!("on = 'ssh://h/tmp'\ncommand = 'x'\n{hk}"))));
+        assert!(msg::CHORE_PASSWORD_SECRET.is_in(&bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}password = 'hunter2'\n"))));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}run = ['y']\n")).contains("run"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}encoding = 'utf8'\n")).contains("encoding"));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x {{date+1q}}'\n{hk}")).contains("{date+1q} の単位 q を読み込めません"));
@@ -3771,7 +3772,7 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("on = 'group:web'\ncommand = 'x'\npass = 'some'\n")));
             assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("pass"), "{s}");
         }
-        assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}max = 2\n")).contains("max は on が PC の組（group:名前）のときだけ書く"));
+        assert!(msg::CHORE_GROUP_ONLY.is_in(&bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}max = 2\n"))));
         let other = parse(
             "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\non = 'ssh://h'\ncommand = 'y'\n[[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'a'\ninto = 'b'\njudge = { warn = \"1\" }\nafter = [\"a\"]\n",
         )
@@ -3844,9 +3845,9 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad(&format!("on = ''\ncommand = 'x'\n{login}"))));
             assert!(msg::DEF_ON_EMPTY.is_in(&s) && s.contains("winrm"), "{s}");
         }
-        assert!(bad(&format!("on = 'winrm://h'\ncommand = 'x'\n{login}")).contains("ユーザーが要る"));
-        assert!(bad("on = 'winrm://u@h'\ncommand = 'x'\npassword = 'secret:ops'\n").contains("winrm:// には cert が要る"));
-        assert!(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\ncert = \"{cert}\"\n")).contains("winrm:// には password が要る"));
+        assert!(msg::CHORE_WINRM_USER.is_in(&bad(&format!("on = 'winrm://h'\ncommand = 'x'\n{login}"))));
+        assert!(msg::CHORE_WINRM_CERT_MISSING.is_in(&bad("on = 'winrm://u@h'\ncommand = 'x'\npassword = 'secret:ops'\n")));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\ncert = \"{cert}\"\n"))));
         {
             let s = ToString::to_string(&(bad(&format!("on = 'winrm://u@h'\ncommand = 'x'\n{login}host_key = 'SHA256:x'\n"))));
             assert!(msg::DEF_ONLY_FOR_KINDS.is_in(&s) && s.contains("host_key"), "{s}");
@@ -3925,9 +3926,9 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("to = ['a@x', '']\nsubject = 's'\n")));
             assert!(msg::DEF_ARRAY_BAD.is_in(&s) && s.contains("to"), "{s}");
         }
-        assert!(bad("to = []\nsubject = 's'\n").contains("to が空"));
-        assert!(bad("to = ['a@x, b@x']\nsubject = 's'\n").contains("アドレスとして読めない: a@x, b@x"));
-        assert!(bad("to = ['a@x']\ncc = ['nobody']\nsubject = 's'\n").contains("アドレスとして読めない: nobody"));
+        assert!(msg::CHORE_MAIL_TO_EMPTY.is_in(&bad("to = []\nsubject = 's'\n")));
+        assert!(bad("to = ['a@x, b@x']\nsubject = 's'\n").contains("a@x, b@x はメールのアドレスとして"));
+        assert!(bad("to = ['a@x']\ncc = ['nobody']\nsubject = 's'\n").contains("nobody はメールのアドレスとして"));
         assert!(bad("to = ['a@x']\nsubject = ' '\n").contains("subject が空"));
         assert!(bad("to = ['a@x']\nsubject = '{date+1q}'\n").contains("{date+1q} の単位 q を読み込めません"));
         {
@@ -3999,8 +4000,8 @@ after = [{ job = \"way\", code = \"else\" }]
             let s = ToString::to_string(&(bad("sql = 'select 1'\n")));
             assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("sql"), "{s}");
         }
-        assert!(bad("db = 'mysql://x/y'\nsql = 'select 1'\n").contains("sqlserver://・postgres://・sqlite:// のどれか"));
-        assert!(bad("db = 'sqlite://C:\\a.db'\n").contains("sql か file のどちらか"));
+        assert!(msg::CHORE_DB_SCHEME.is_in(&bad("db = 'mysql://x/y'\nsql = 'select 1'\n")));
+        assert!(msg::CHORE_SQL_ONE_OF.is_in(&bad("db = 'sqlite://C:\\a.db'\n")));
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = ' '\n").contains("sql が空"));
         {
             let s = ToString::to_string(&(bad("db = 'sqlite://C:\\a.db'\nsql = 1\n")));
@@ -4008,12 +4009,12 @@ after = [{ job = \"way\", code = \"else\" }]
         }
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select {param:nobody}'\n").contains("nobody"));
         assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = -1\n").contains("0 以上の整数"));
-        assert!(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = '5..1'\n").contains("rows は 0・1..・1..100"));
+        assert!(msg::CHORE_ROWS.is_in(&bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\nrows = '5..1'\n")));
         {
             let s = ToString::to_string(&(bad("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\ntls = 'none'\n")));
             assert!(msg::DEF_CHOICE_BAD.is_in(&s) && s.contains("tls"), "{s}");
         }
-        assert!(bad("db = 'postgres://app@pg/app'\nsql = 'select 1'\n").contains("password が要る"));
+        assert!(msg::CHORE_PASSWORD_MISSING.is_in(&bad("db = 'postgres://app@pg/app'\nsql = 'select 1'\n")));
         for (extra, name) in [("env = { A = 'b' }\n", "env"), ("judge = { warn = '1' }\n", "judge")] {
             assert!(bad(&format!("db = 'sqlite://C:\\a.db'\nsql = 'select 1'\n{extra}")).contains(name), "{extra}");
         }
