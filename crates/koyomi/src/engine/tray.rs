@@ -393,7 +393,7 @@ mod tests {
         let l = look(&t, &going, &BTreeSet::new(), false, 1, Some(at(9, 0)));
         assert_eq!((l.state, l.tip.as_str()), (State::Running, "koyomi: 実行中 1・次 09:00"));
         let l = look(&t, &going, &BTreeSet::new(), true, 1, Some(at(9, 0)));
-        assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: 実行中 1・スケジュールを止めている"));
+        assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: 実行中 1・スケジュールを停止しています"));
         let mut both = going.clone();
         both.push(run("a/y", at(7, 0), RunState::Timeout));
         assert_eq!(look(&t, &both, &BTreeSet::new(), true, 1, None).state, State::Error);
@@ -453,7 +453,7 @@ mod tests {
         let t = ja();
         let items = menu(&t, &look(&t, &[], &BTreeSet::new(), false, 3, None), true);
         let Some(Item::Entry { id, label, enabled, .. }) = items.last() else { panic!("no last entry") };
-        assert_eq!((id.as_str(), label.as_str(), *enabled), ("quit", "トレイを閉じる（エンジンは動き続ける）", true));
+        assert_eq!((id.as_str(), label.as_str(), *enabled), ("quit", "トレイを閉じる（エンジンは起動したままです）", true));
     }
 
     /// the badge goes over the door by name and comes back the same; no engine shows grey.
@@ -465,7 +465,7 @@ mod tests {
         assert_eq!(from_badge("later"), None);
         let t = ja();
         let l = apart_look(&t, None);
-        assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: エンジンは動いていない"));
+        assert_eq!((l.state, l.tip.as_str()), (State::Disabled, "koyomi: エンジンは起動していません"));
         let v = TrayView { badge: "error".into(), tip: "koyomi: 異常 1".into(), busy: 1, errors: 1, ..TrayView::default() };
         let l = apart_look(&t, Some(&v));
         assert_eq!((l.state, l.tip.as_str(), l.busy, l.errors), (State::Error, "koyomi: 異常 1", 1, 1));

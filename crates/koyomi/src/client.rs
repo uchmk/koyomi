@@ -3,6 +3,7 @@
 use std::time::{Duration, Instant};
 
 use ito_ipc::door::{ask, Reply};
+use koyomi_core::msg::{self, line};
 
 use crate::proto::{self, Request};
 
@@ -41,7 +42,7 @@ pub fn start() -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(50));
     }
-    Err("エンジンが起動しなかった".to_owned())
+    Err(line(msg::ENGINE_NOT_STARTED, &[]))
 }
 
 /// What `start` does once the engine does not answer.
@@ -58,14 +59,12 @@ fn decide(windows: bool, queried: Result<Option<ito_service::State>, String>) ->
     use ito_service::State;
     match queried {
         Ok(None) => Step::Spawn,
-        Ok(Some(State::Stopped | State::Stopping)) => Step::Refuse(if windows {
-            "サービスのエンジンが止まっている。`koyomi service start` で始める".to_owned()
-        } else {
-            "サービスのエンジンが止まっている。`sudo systemctl start koyomi` で始める".to_owned()
-        }),
+        Ok(Some(State::Stopped | State::Stopping)) => {
+            Step::Refuse(line(if windows { msg::ENGINE_SERVICE_STOPPED_WINDOWS } else { msg::ENGINE_SERVICE_STOPPED_LINUX }, &[]))
+        }
         Ok(Some(_)) => Step::Wait,
         Err(_) if windows => Step::Spawn,
-        Err(e) => Step::Refuse(format!("サービスの状態が読めないので、エンジンを起こさない: {e}")),
+        Err(e) => Step::Refuse(line(msg::SERVICE_STATE_UNREADABLE, &[&e])),
     }
 }
 
@@ -79,7 +78,7 @@ fn spawn() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("engine");
-    ito_proc::spawn_detached(cmd).map_err(|e| format!("エンジンを起動できない: {e}"))
+    ito_proc::spawn_detached(cmd).map_err(|e| line(msg::ENGINE_SPAWN_FAILED, &[&e.to_string()]))
 }
 
 #[cfg(test)]
@@ -97,14 +96,8 @@ mod tests {
     #[test]
     fn a_stopped_service_is_refused_with_the_command_of_the_platform() {
         for s in [State::Stopped, State::Stopping] {
-            assert_eq!(
-                decide(true, Ok(Some(s))),
-                Step::Refuse("サービスのエンジンが止まっている。`koyomi service start` で始める".to_owned())
-            );
-            assert_eq!(
-                decide(false, Ok(Some(s))),
-                Step::Refuse("サービスのエンジンが止まっている。`sudo systemctl start koyomi` で始める".to_owned())
-            );
+            assert_eq!(decide(true, Ok(Some(s))), Step::Refuse(line(msg::ENGINE_SERVICE_STOPPED_WINDOWS, &[])));
+            assert_eq!(decide(false, Ok(Some(s))), Step::Refuse(line(msg::ENGINE_SERVICE_STOPPED_LINUX, &[])));
         }
     }
 
@@ -119,6 +112,6 @@ mod tests {
     #[test]
     fn a_failed_query_spawns_on_windows_and_refuses_on_linux() {
         assert_eq!(decide(true, Err("boom".into())), Step::Spawn);
-        assert_eq!(decide(false, Err("boom".into())), Step::Refuse("サービスの状態が読めないので、エンジンを起こさない: boom".to_owned()));
+        assert_eq!(decide(false, Err("boom".into())), Step::Refuse(line(msg::SERVICE_STATE_UNREADABLE, &["boom"])));
     }
 }

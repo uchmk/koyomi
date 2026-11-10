@@ -62,6 +62,6 @@ mod tests {
         r.average = None;
         r.worst.clear();
         assert_eq!(line(&t, &r), "g/n  12 回  成功 -  いつもは -");
-        assert_eq!(lines(&t, &[]), ["この期間に終わった実行はありません"]);
+        assert_eq!(lines(&t, &[]), ["この期間に終了した実行はありません。"]);
     }
 }

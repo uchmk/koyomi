@@ -71,17 +71,17 @@ mod tests {
     #[test]
     fn each_role_says_who_runs_the_schedules() {
         let took = json!({ "role": "standby", "watch": "main-pc", "active": true, "ready": false, "since": "2026-11-01 09:30" });
-        assert_eq!(ja(took), Some(("main-pc から引き継いで流している（2026-11-01 09:30 から）".to_owned(), Tone::Run)));
+        assert_eq!(ja(took), Some(("main-pc から引き継いで実行しています（2026-11-01 09:30 から）".to_owned(), Tone::Run)));
         let watching = json!({ "role": "standby", "watch": "main-pc", "active": false, "ready": false });
-        assert_eq!(ja(watching), Some(("待機中: main-pc を見張っている".to_owned(), Tone::Wait)));
+        assert_eq!(ja(watching), Some(("待機中: main-pc を監視しています".to_owned(), Tone::Wait)));
         let back = json!({ "role": "standby", "watch": "main-pc", "active": false, "back": "2026-10-31 18:05" });
-        assert_eq!(ja(back), Some(("待機中: main-pc を見張っている（2026-10-31 18:05 に戻した）".to_owned(), Tone::Wait)));
+        assert_eq!(ja(back), Some(("待機中: main-pc を監視しています（2026-10-31 18:05 に戻しました）".to_owned(), Tone::Wait)));
         let held = json!({ "role": "primary", "standby": "sub-pc", "hold": "held" });
-        assert_eq!(ja(held), Some(("sub-pc が引き継いでいる".to_owned(), Tone::Wait)));
+        assert_eq!(ja(held), Some(("sub-pc が引き継いでいます".to_owned(), Tone::Wait)));
         let asking = json!({ "role": "primary", "standby": "sub-pc", "hold": "asking" });
-        assert_eq!(ja(asking), Some(("sub-pc に聞いている".to_owned(), Tone::Wait)));
+        assert_eq!(ja(asking), Some(("sub-pc に確認しています".to_owned(), Tone::Wait)));
         let running = json!({ "role": "primary", "standby": "sub-pc", "hold": "running" });
-        assert_eq!(ja(running), Some(("sub-pc が待機している".to_owned(), Tone::Calm)));
+        assert_eq!(ja(running), Some(("sub-pc が待機しています".to_owned(), Tone::Calm)));
         assert_eq!(ja(json!({ "role": "other" })), None);
         assert_eq!(ja(json!({})), None);
         let (en, _) = crate::i18n::table("en");

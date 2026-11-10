@@ -37,7 +37,7 @@
   </nav>
 
   <main class="center">
-    <p id="paused" class="band" hidden>スケジュール停止中: 時刻が来ても流れません</p>
+    <p id="paused" class="band" hidden>スケジュール停止中: 時刻が来ても実行されません</p>
     <div class="tabs" role="tablist">
       <button id="tab-today" type="button" role="tab" aria-selected="true">今日</button>
       <button id="tab-history" type="button" role="tab" aria-selected="false">履歴</button>
@@ -50,7 +50,7 @@
     <div class="table-wrap">
       <table class="runs">
         <thead>
-          <tr><th>状態</th><th>ジョブネット</th><th id="col-planned">予定</th><th>開始</th><th>終了</th><th>時間</th><th id="col-next">次の回</th></tr>
+          <tr><th>状態</th><th>ジョブネット</th><th id="col-planned">予定</th><th>開始</th><th>終了</th><th>時間</th><th id="col-next">次の実行</th></tr>
         </thead>
         <tbody id="rows"></tbody>
       </table>
@@ -80,7 +80,7 @@
     <p id="ask-text"></p>
     <div id="ask-fields" class="fields"></div>
     <div class="actions end">
-      <button id="ask-no" type="submit" value="no" autofocus>やめる</button>
+      <button id="ask-no" type="submit" value="no" autofocus>キャンセル</button>
       <button id="ask-yes" type="submit" value="yes" class="primary">はい</button>
     </div>
   </form>

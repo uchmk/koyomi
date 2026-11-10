@@ -339,6 +339,7 @@ skipped = "skipped"
 missed = "time passed"
 locked = "locked"
 not_run = "not run"
+both = "{0}, {1}"
 
 [inspect]
 title = "Picked net"

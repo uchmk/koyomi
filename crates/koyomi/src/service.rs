@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use ito_ipc::door::ask;
 use ito_service::{Error, Install, Start, State};
+use koyomi_core::msg::{self, line};
 
 use crate::proto::{self, Request};
 
@@ -101,35 +102,35 @@ fn status() -> Result<String, String> {
 
 fn status_line(name: &str, s: Option<ito_service::Status>) -> String {
     match s {
-        None => "サービスは入っていない（`koyomi service install` で入れる）".to_owned(),
+        None => msg::note(msg::N_SERVICE_NONE, &[]),
         Some(s) => {
             let state = match s.state {
-                State::Running => format!("動いている（pid {}）", s.pid),
-                State::Starting => "始めているところ".to_owned(),
-                State::Stopping => "止めているところ".to_owned(),
-                State::Stopped => "止まっている（`koyomi service start` で始める）".to_owned(),
+                State::Running => msg::note(msg::N_SERVICE_RUNNING, &[&s.pid.to_string()]),
+                State::Starting => msg::note(msg::N_SERVICE_STARTING, &[]),
+                State::Stopping => msg::note(msg::N_SERVICE_STOPPING, &[]),
+                State::Stopped => msg::note(msg::N_SERVICE_STOPPED, &[]),
             };
-            format!("サービス {name}: {state}")
+            msg::note(msg::N_SERVICE_LINE, &[name, &state])
         }
     }
 }
 
 fn install() -> Result<String, String> {
     if state().is_some() {
-        return Err(format!("サービス {} はもう入っている", name()));
+        return Err(line(msg::SERVICE_INSTALLED_ALREADY, &[&name()]));
     }
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     crate::cli::refuse_temp(&exe)?;
     let account = account();
-    let password = ito_service::read_password(&format!("{account} のパスワード（Windows のサインインのもの）: ")).map_err(|e| why(&e))?;
+    let password = ito_service::read_password(&msg::note(msg::N_SERVICE_PASSWORD_ASK, &[&account])).map_err(|e| why(&e))?;
     if password.is_empty() {
-        return Err("パスワードが空。パスワードの無い（PIN だけの）アカウントでは入れられない".to_owned());
+        return Err(line(msg::SERVICE_PASSWORD_EMPTY, &[]));
     }
     let user = std::env::var("USERNAME").unwrap_or_default();
     ito_service::install(&Install {
         name: name(),
         display: format!("koyomi ({user})"),
-        description: "koyomi のエンジン。サインインしていなくてもネットを流す。".to_owned(),
+        description: msg::note(msg::N_SERVICE_DESCRIPTION, &[]),
         exe,
         args: vec!["service".to_owned(), "run".to_owned()],
         account,
@@ -137,12 +138,14 @@ fn install() -> Result<String, String> {
         start: Start::AutoDelayed,
     })
     .map_err(|e| why(&e))?;
-    let mut text = format!("サービス {} を入れた（PC が起きたら少し遅れて始まる）", name());
+    let mut text = msg::note(msg::N_SERVICE_INSTALLED, &[&name()]);
     if restart_entry() == Ok(true) {
-        text.push_str("。サインイン時にはトレイだけを起こす");
+        text.push(' ');
+        text.push_str(&msg::note(msg::N_SERVICE_INSTALLED_TRAY, &[]));
     }
     if crate::client::running() {
-        text.push_str("。今はサインインで起こしたエンジンが動いている。`koyomi engine stop` で止めてから `koyomi service start` で始める");
+        text.push(' ');
+        text.push_str(&msg::note(msg::N_SERVICE_INSTALLED_BUSY, &[]));
     } else {
         text.push('\n');
         text.push_str(&start()?);
@@ -152,52 +155,46 @@ fn install() -> Result<String, String> {
 
 fn uninstall() -> Result<String, String> {
     if state().is_none() {
-        return Err(format!("サービス {} は入っていない", name()));
+        return Err(line(msg::SERVICE_NOT_INSTALLED, &[&name()]));
     }
     ito_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
     ito_service::uninstall(&name()).map_err(|e| why(&e))?;
     let then = match restart_entry() {
-        Ok(true) => "サインイン時にはまたエンジンを起こす",
-        Ok(false) => "エンジンは窓を開けば起きる（サインイン時に起こすなら `koyomi startup on`）",
+        Ok(true) => msg::note(msg::N_SERVICE_THEN_ENGINE, &[]),
+        Ok(false) => msg::note(msg::N_SERVICE_THEN_SCREEN, &[]),
         // The entry still starts only the tray: the exe that would take its place is in Temp.
-        Err(_) => {
-            "サインイン時の起動はトレイだけを起こすまま（この exe は Temp にあるので向け直さなかった）。置いた場所の koyomi で `koyomi startup on` を回す"
-        }
+        Err(_) => msg::note(msg::N_SERVICE_THEN_TEMP, &[]),
     };
-    Ok(format!("サービス {} を外した。{then}", name()))
+    Ok(format!("{} {then}", msg::note(msg::N_SERVICE_REMOVED, &[&name()])))
 }
 
 fn start() -> Result<String, String> {
     if state().is_none() {
-        return Err(format!("サービス {} は入っていない（`koyomi service install` で入れる）", name()));
+        return Err(line(msg::SERVICE_NOT_INSTALLED, &[&name()]));
     }
     if state() != Some(State::Running) && crate::client::running() {
-        return Err("サインインで起こしたエンジンが動いている。`koyomi engine stop` で止めてから始める".to_owned());
+        return Err(line(msg::SERVICE_SIGNIN_ENGINE_RUNNING, &[]));
     }
     ito_service::start(&name()).map_err(|e| why(&e))?;
     let until = Instant::now() + START_WAIT;
     while Instant::now() < until {
         if crate::client::running() {
-            return Ok(format!("サービス {} を始めた", name()));
+            return Ok(msg::note(msg::N_SERVICE_STARTED, &[&name()]));
         }
         if state() == Some(State::Stopped) {
-            return Err(format!(
-                "サービス {} が始まってすぐ止まった。{} を見る",
-                name(),
-                log_path().map(|p| p.display().to_string()).unwrap_or_default()
-            ));
+            return Err(line(msg::SERVICE_STOPPED_AT_START, &[&name(), &log_path().map(|p| p.display().to_string()).unwrap_or_default()]));
         }
         std::thread::sleep(Duration::from_millis(200));
     }
-    Err(format!("サービス {} のエンジンが {} 秒たっても答えない", name(), START_WAIT.as_secs()))
+    Err(line(msg::SERVICE_NO_ANSWER, &[&name(), &START_WAIT.as_secs().to_string()]))
 }
 
 fn stop() -> Result<String, String> {
     if state().is_none() {
-        return Err(format!("サービス {} は入っていない", name()));
+        return Err(line(msg::SERVICE_NOT_INSTALLED, &[&name()]));
     }
     ito_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
-    Ok(format!("サービス {} を止めた（動いていたジョブのプロセスは終えた）", name()))
+    Ok(msg::note(msg::N_SERVICE_STOPPED_DONE, &[&name()]))
 }
 
 /// Points the sign-in entry, when there is one, at what it should start now: the tray beside a
@@ -235,10 +232,7 @@ fn run() -> i32 {
     match res {
         Ok(()) => 0,
         Err(Error::NotService) => {
-            crate::say(
-                "koyomi: `koyomi service run` は Windows のサービスとして起こされたときだけ動く（手で流すなら `koyomi engine`）",
-                true,
-            );
+            crate::say(&format!("koyomi: {}", line(msg::SERVICE_NOT_RUN_BY_WINDOWS, &[])), true);
             2
         }
         Err(e) => {
@@ -256,21 +250,17 @@ pub fn log_path() -> Option<PathBuf> {
 /// The person's words for why a service call failed.
 fn why(e: &Error) -> String {
     match e {
-        Error::Unsupported => "サービスは Windows でだけ動く".to_owned(),
-        Error::NotService => "Windows のサービスとして起こされていない".to_owned(),
-        Error::NeedsAdmin => "管理者の権限が要る。「管理者として実行」で開いたターミナルで回す".to_owned(),
-        Error::NotInstalled => format!("サービス {} は入っていない", name()),
-        Error::AlreadyExists => format!("サービス {} はもう入っている", name()),
-        Error::BadName => format!("サービスの名前 {} が使えない", name()),
-        Error::BadAccount => format!("アカウント {} が無いか、パスワードが無い（PIN だけのアカウントは使えない）", account()),
-        Error::LogonFailed => {
-            "サービスがサインインできなかった。パスワードが違う（変えたら `koyomi service uninstall` してから入れ直す）".to_owned()
-        }
-        Error::Timeout => "サービスが時間内に切り替わらなかった。`koyomi service status` で見る".to_owned(),
-        Error::NoConsole => {
-            "パスワードを打つ所が無い。ターミナルから `koyomi.com service install` で回すか、パスワードをパイプで渡す".to_owned()
-        }
-        Error::Failed(n) => format!("Windows が断った（エラー {n}）"),
+        Error::Unsupported => line(msg::SERVICE_UNSUPPORTED, &[]),
+        Error::NotService => line(msg::SERVICE_NOT_RUN_BY_WINDOWS, &[]),
+        Error::NeedsAdmin => line(msg::SERVICE_NEEDS_ADMIN, &[]),
+        Error::NotInstalled => line(msg::SERVICE_NOT_INSTALLED, &[&name()]),
+        Error::AlreadyExists => line(msg::SERVICE_INSTALLED_ALREADY, &[&name()]),
+        Error::BadName => line(msg::SERVICE_NAME_BAD, &[&name()]),
+        Error::BadAccount => line(msg::SERVICE_ACCOUNT_BAD, &[&account()]),
+        Error::LogonFailed => line(msg::SERVICE_LOGON_FAILED, &[]),
+        Error::Timeout => line(msg::SERVICE_TIMEOUT, &[]),
+        Error::NoConsole => line(msg::SERVICE_NO_CONSOLE, &[]),
+        Error::Failed(n) => line(msg::SERVICE_REFUSED, &[&n.to_string()]),
     }
 }
 
@@ -295,17 +285,25 @@ mod tests {
     /// status says not installed, running with the pid, and how to start a stopped one.
     #[test]
     fn the_status_line_says_where_it_is() {
-        assert!(status_line("koyomi-a", None).contains("入っていない"));
+        assert_eq!(status_line("koyomi-a", None), msg::note(msg::N_SERVICE_NONE, &[]));
+        assert!(status_line("koyomi-a", None).contains("koyomi service install"));
         let s = |state, pid| Some(ito_service::Status { state, pid });
-        assert_eq!(status_line("koyomi-a", s(State::Running, 42)), "サービス koyomi-a: 動いている（pid 42）");
+        assert_eq!(
+            status_line("koyomi-a", s(State::Running, 42)),
+            msg::note(msg::N_SERVICE_LINE, &["koyomi-a", &msg::note(msg::N_SERVICE_RUNNING, &["42"])])
+        );
+        assert!(status_line("koyomi-a", s(State::Running, 42)).contains("pid 42"));
         assert!(status_line("koyomi-a", s(State::Stopped, 0)).contains("koyomi service start"));
     }
 
     /// the reasons are the person's words, and the admin one says what to do.
     #[test]
     fn the_reasons_say_what_to_do() {
+        assert!(msg::SERVICE_NEEDS_ADMIN.is_in(&why(&Error::NeedsAdmin)));
         assert!(why(&Error::NeedsAdmin).contains("管理者として実行"));
-        assert!(why(&Error::LogonFailed).contains("パスワードが違う"));
+        assert!(msg::SERVICE_LOGON_FAILED.is_in(&why(&Error::LogonFailed)));
+        assert!(why(&Error::LogonFailed).contains("パスワードを確認"));
+        assert!(msg::SERVICE_REFUSED.is_in(&why(&Error::Failed(5))));
         assert!(why(&Error::Failed(5)).contains("5"));
     }
 }

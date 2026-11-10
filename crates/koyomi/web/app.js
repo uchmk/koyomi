@@ -17,7 +17,7 @@ const STATES = {
   held: ["⏸", "保留"],
   skipped: ["⊘", "スキップ"],
   missed: ["↷", "時刻を過ぎた"],
-  locked: ["🔒", "止めた"],
+  locked: ["🔒", "停止"],
   not_run: ["·", "未実行"],
 };
 const ERRORS = ["error", "timeout", "killed", "locked"];
@@ -74,7 +74,7 @@ async function call(method, path, body) {
   try { json = await r.json(); } catch (_) { /* not JSON */ }
   if (r.status === 401) {
     signedOut();
-    throw new Error("サインインが切れました");
+    throw new Error("サインインが切れました。");
   }
   if (!r.ok) throw new Error((json && json.error) || `${r.status}`);
   return json;
@@ -129,7 +129,7 @@ function timeCell(text) {
 }
 
 // What a dialog box asks; `fields` are [name, value] for text boxes. Resolves to the values, or null.
-function ask(text, { yes = "はい", no = "やめる", danger = false, fields = [] } = {}) {
+function ask(text, { yes = "はい", no = "キャンセル", danger = false, fields = [] } = {}) {
   const box = $("ask");
   $("ask-text").textContent = text;
   const holder = $("ask-fields");
@@ -149,7 +149,7 @@ function ask(text, { yes = "はい", no = "やめる", danger = false, fields = 
       resolve(Object.fromEntries(inputs.map(([name, input]) => [name, input.value])));
     }, { once: true });
     box.showModal();
-    // A box that stops something starts on やめる, as the window's does.
+    // A box that stops something starts on キャンセル, as the window's does.
     (inputs.length ? inputs[0][1] : $("ask-no")).focus();
   });
 }
@@ -185,7 +185,7 @@ async function signIn(ev) {
   $("token").value = "";
   const r = await fetch("/session", { method: "POST", credentials: "same-origin", headers: { Authorization: `Bearer ${token}` } });
   if (!r.ok) {
-    $("signin-message").textContent = "トークンが合いません";
+    $("signin-message").textContent = "トークンが一致しません。";
     return;
   }
   $("signin-message").textContent = "";
@@ -303,7 +303,7 @@ function drawBar() {
   const chip = $("engine");
   chip.hidden = false;
   const paused = view.nets && view.nets.paused;
-  chip.textContent = view.down ? "エンジンに繋がらない" : paused ? "スケジュール停止中" : "稼働中";
+  chip.textContent = view.down ? "エンジンに接続できません" : paused ? "スケジュール停止中" : "稼働中";
   chip.className = `chip ${view.down ? "down" : paused ? "paused" : "ok"}`;
   $("paused").hidden = !paused;
   drawHa();
@@ -313,7 +313,7 @@ function drawBar() {
   if (running) parts.push(`実行中 ${running}`);
   if (view.nets) {
     const next = view.nets.nets.filter((n) => n.next).sort((a, b) => (a.next < b.next ? -1 : 1))[0];
-    if (next) parts.push(`次の回 ${nextWords(next.next)} ${next.name}`);
+    if (next) parts.push(`次の実行 ${nextWords(next.next)} ${next.name}`);
   }
   $("foot").textContent = parts.join(" · ");
 }
@@ -330,12 +330,12 @@ function drawHa() {
   let tone;
   if (ha.role === "standby") {
     [words, tone] = ha.active
-      ? [`${ha.watch} から引き継いで流している${ha.since ? `（${ha.since} から）` : ""}`, "run"]
-      : [`待機中: ${ha.watch} を見張っている${ha.back ? `（${ha.back} に戻した）` : ""}`, "paused"];
+      ? [`${ha.watch} から引き継いで実行しています${ha.since ? `（${ha.since} から）` : ""}`, "run"]
+      : [`待機中: ${ha.watch} を監視しています${ha.back ? `（${ha.back} に戻しました）` : ""}`, "paused"];
   } else {
     [words, tone] = ha.hold === "held"
-      ? [`${ha.standby} が引き継いでいる`, "paused"]
-      : ha.hold === "asking" ? [`${ha.standby} に聞いている`, "paused"] : [`${ha.standby} が待機している`, "calm"];
+      ? [`${ha.standby} が引き継いでいます`, "paused"]
+      : ha.hold === "asking" ? [`${ha.standby} に確認しています`, "paused"] : [`${ha.standby} が待機しています`, "calm"];
   }
   chip.textContent = words;
   chip.className = `chip ${tone}`;
@@ -424,7 +424,7 @@ function drawCenter() {
   }
   const empty = $("empty");
   empty.hidden = shown.length > 0;
-  empty.textContent = all.length ? "当てはまるものはありません" : history ? "この日の実行はありません" : "今日の実行はありません";
+  empty.textContent = all.length ? "該当するものはありません。" : history ? "この日の実行はありません。" : "今日の実行はありません。";
 }
 
 function pick(what) {
@@ -484,7 +484,7 @@ function drawRun(r) {
     // Hold the job itself (every run of the net waits there), as the window's button does.
     const own = (netOf(r.jobnet)?.jobs || []).find((x) => x.id === j.id);
     if (own && canOn(r.jobnet, "run")) {
-      acts.append(button(own.held ? "保留を解く" : "保留", () => holdJob(netOf(r.jobnet), own, !own.held), "small", { data: { key: `h:${j.id}` } }));
+      acts.append(button(own.held ? "保留を解除" : "保留", () => holdJob(netOf(r.jobnet), own, !own.held), "small", { data: { key: `h:${j.id}` } }));
     }
     const on = view.log && view.log.job === j.id;
     const cls = [on ? "on" : "", j.reason ? "has-why" : ""].filter(Boolean).join(" ") || null;
@@ -497,7 +497,7 @@ function drawRun(r) {
   if (view.log && view.log.run === r.id) {
     const job = r.jobs.find((j) => j.id === view.log.job);
     body.append(el("h3", { text: `ログ: ${job ? job.name || job.id : view.log.job}` }));
-    body.append(el("pre", { class: "log", text: view.log.text || "ログはまだありません" }));
+    body.append(el("pre", { class: "log", text: view.log.text || "ログはまだありません。" }));
   }
 }
 
@@ -515,7 +515,7 @@ function rerunMenu(r) {
     view.menu = false;
     rerun(r, label, body);
   }, null, { role: "menuitem", data: { key } }));
-  item("止まったところから（済んだジョブは引き継ぐ）", {}, "m:rest");
+  item("停止したところから（完了したジョブは引き継ぐ）", {}, "m:rest");
   list.append(el("hr"));
   for (const j of r.jobs) item(`${j.name || j.id} から再実行`, { from: j.id }, `m:f:${j.id}`);
   const failed = r.jobs.filter((j) => ERRORS.includes(j.state));
@@ -534,28 +534,28 @@ function drawNet(n) {
   const standing = el("span", { class: n.standing === "confirmed" ? "dim" : n.standing === "invalid" ? "st s-error" : "st s-warn", text: STANDINGS[n.standing] || n.standing });
   $("pane-state").replaceChildren(standing);
   $("pane-sub").textContent = n.id;
-  if (n.held) note("ジョブネットを保留中です。時刻が来ても流しません。解くまで「今すぐ流す」もできません");
-  else if (n.standing !== "confirmed") note("承認するまで流れません。承認は窓でします");
+  if (n.held) note("ジョブネットを保留中です。時刻が来ても実行しません。解除するまで「今すぐ実行」もできません。");
+  else if (n.standing !== "confirmed") note("承認するまで実行されません。承認は koyomi の画面で行います。");
 
   const actions = $("pane-actions");
   if (canOn(n.id, "run")) {
     const ready = n.standing === "confirmed" && !n.held;
-    actions.append(button("今すぐ流す", () => runNow(n), "primary", { disabled: !ready, data: { key: "a:now" } }));
+    actions.append(button("今すぐ実行", () => runNow(n), "primary", { disabled: !ready, data: { key: "a:now" } }));
     actions.append(n.held
-      ? button("ジョブネットの保留を解く", () => hold(n, false), null, { data: { key: "a:hold" } })
+      ? button("ジョブネットの保留を解除する", () => hold(n, false), null, { data: { key: "a:hold" } })
       : button("ジョブネットを保留", () => hold(n, true), null, { data: { key: "a:hold" } }));
-    if (n.next) actions.append(button("次の回を飛ばす", () => skipNext(n, false), null, { data: { key: "a:skip" } }));
+    if (n.next) actions.append(button("次の実行を飛ばす", () => skipNext(n, false), null, { data: { key: "a:skip" } }));
     if ((n.skips || []).length) actions.append(button("飛ばしを戻す", () => skipNext(n, true), null, { data: { key: "a:unskip" } }));
   }
 
   const body = $("pane-body");
-  body.append(el("h3", { text: "次の回" }), el("p", { class: "mono", text: n.next ? nextWords(n.next) : "—" }));
+  body.append(el("h3", { text: "次の実行" }), el("p", { class: "mono", text: n.next ? nextWords(n.next) : "—" }));
   if ((n.today || []).length) {
     body.append(el("h3", { text: "今日の予定" }));
     body.append(el("ul", { class: "list" }, ...n.today.map((t) => el("li", {}, stateTag("waiting", el("span", { class: "mono", text: ` ${hms(t)}` }))))));
   }
   if ((n.skips || []).length) {
-    body.append(el("h3", { text: "飛ばす回" }));
+    body.append(el("h3", { text: "飛ばす実行" }));
     body.append(el("ul", { class: "list" }, ...n.skips.map((t) => el("li", {}, stateTag("skipped", el("span", { class: "mono", text: ` ${nextWords(t)}` }))))));
   }
   if ((n.jobs || []).length) {
@@ -563,13 +563,13 @@ function drawNet(n) {
     body.append(el("ul", { class: "list" }, ...n.jobs.map((j) => {
       const li = el("li", {}, el("span", { class: "name", text: j.name || j.id }));
       if (j.held) li.append(el("span", { class: "flag", title: "保留", text: " ⏸" }));
-      if (canOn(n.id, "run")) li.append(" ", button(j.held ? "保留を解く" : "保留", () => holdJob(n, j, !j.held), "small", { data: { key: `h:${j.id}` } }));
+      if (canOn(n.id, "run")) li.append(" ", button(j.held ? "保留を解除" : "保留", () => holdJob(n, j, !j.held), "small", { data: { key: `h:${j.id}` } }));
       return li;
     })));
   }
   const runs = view.runs.filter((r) => r.jobnet === n.id).sort((a, b) => (a.started < b.started ? 1 : -1));
-  body.append(el("h3", { text: view.tab === "history" ? "この日の回" : "今日の回" }));
-  if (!runs.length) body.append(el("p", { class: "dim", text: "ありません" }));
+  body.append(el("h3", { text: view.tab === "history" ? "この日の実行" : "今日の実行" }));
+  if (!runs.length) body.append(el("p", { class: "dim", text: "ありません。" }));
   for (const r of runs) {
     const line = button(null, () => pick({ run: r.id }), "net", { data: { key: `pr:${r.id}` } });
     line.append(stateTag(r.state), el("span", { class: "name mono", text: ` ${hms(r.started)}–${hms(r.ended)}` }));
@@ -581,8 +581,8 @@ function drawNet(n) {
 
 async function kill(r) {
   const name = r.title || r.jobnet;
-  if (!(await ask(`${name} を強制終了します。動いているジョブは止まり、まだのジョブは流れません`, { yes: "強制終了する", danger: true }))) return;
-  await act(`${name} を強制終了しました`, () => call("POST", `/runs/${encodeURIComponent(r.id)}/stop`));
+  if (!(await ask(`${name} を強制終了します。実行中のジョブは停止し、未実行のジョブは実行されません。`, { yes: "強制終了する", danger: true }))) return;
+  await act(`${name} を強制終了しました。`, () => call("POST", `/runs/${encodeURIComponent(r.id)}/stop`));
 }
 
 async function rerun(r, label, body) {
@@ -591,14 +591,14 @@ async function rerun(r, label, body) {
     const res = await call("POST", `/runs/${encodeURIComponent(r.id)}/rerun`, body);
     view.picked = { run: res.run };
     view.log = null;
-    return `再実行しました（${res.run}）`;
+    return `再実行しました（${res.run}）。`;
   });
 }
 
 async function skipJob(r, j) {
   const name = j.name || j.id;
-  if (!(await ask(`${name} をスキップしますか？（⊘ で終わり、後ろのジョブは進みます）`, { yes: `${name} をスキップ` }))) return;
-  await act(`${name} をスキップしました`, () => call("POST", `/runs/${encodeURIComponent(r.id)}/skip`, { job: j.id }));
+  if (!(await ask(`${name} をスキップしますか？（⊘ で終了し、後続のジョブは進みます）`, { yes: `${name} をスキップ` }))) return;
+  await act(`${name} をスキップしました。`, () => call("POST", `/runs/${encodeURIComponent(r.id)}/skip`, { job: j.id }));
 }
 
 async function showLog(run, job) {
@@ -614,38 +614,38 @@ async function showLog(run, job) {
 async function runNow(n) {
   const defaults = Object.entries(n.params || {});
   const lead = defaults.length
-    ? `${n.name} の [params] の値です。変えたものだけがこの実行に使われます（空のままにすると空の値）。`
-    : `${n.name} を今すぐ流しますか？`;
-  const given = await ask(lead, { yes: "今すぐ流す", fields: defaults });
+    ? `${n.name} の [params] の値です。変更したものだけがこの実行に使われます（空のままにすると空の値になります）。`
+    : `${n.name} を今すぐ実行しますか？`;
+  const given = await ask(lead, { yes: "今すぐ実行", fields: defaults });
   if (!given) return;
   const params = Object.fromEntries(Object.entries(given).filter(([k, v]) => v !== n.params[k]));
   await act("", async () => {
     const res = await call("POST", "/runs", Object.keys(params).length ? { net: n.id, params } : { net: n.id });
     view.picked = { run: res.run };
     view.tab = "today";
-    return `${n.name} を流しました（${res.run}）`;
+    return `${n.name} を実行しました（${res.run}）。`;
   });
 }
 
 async function hold(n, on) {
-  const text = on ? `${n.name} を保留にしますか？時刻が来ても流れません` : `${n.name} の保留を解きますか？`;
-  if (!(await ask(text, { yes: on ? "ジョブネットを保留" : "ジョブネットの保留を解く" }))) return;
-  await act(on ? `${n.name} を保留にしました` : `${n.name} の保留を解きました`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id }));
+  const text = on ? `${n.name} を保留にしますか？時刻が来ても実行されません。` : `${n.name} の保留を解除しますか？`;
+  if (!(await ask(text, { yes: on ? "ジョブネットを保留" : "ジョブネットの保留を解除する" }))) return;
+  await act(on ? `${n.name} を保留にしました。` : `${n.name} の保留を解除しました。`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id }));
 }
 
 async function holdJob(n, j, on) {
   const name = j.name || j.id;
   const text = on
-    ? `${name} を保留にしますか？${n.name} のどの回も、ここに来たら待ちます`
-    : `${name} の保留を解きますか？`;
-  if (!(await ask(text, { yes: on ? `${name} を保留` : `${name} の保留を解く` }))) return;
-  await act(on ? `${name} を保留にしました` : `${name} の保留を解きました`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id, job: j.id }));
+    ? `${name} を保留にしますか？${n.name} のどの実行も、ここに到達したら待機します。`
+    : `${name} の保留を解除しますか？`;
+  if (!(await ask(text, { yes: on ? `${name} を保留` : `${name} の保留を解除する` }))) return;
+  await act(on ? `${name} を保留にしました。` : `${name} の保留を解除しました。`, () => call("POST", on ? "/nets/hold" : "/nets/release", { net: n.id, job: j.id }));
 }
 
 async function skipNext(n, cancel) {
   const text = cancel
-    ? `${n.name} の飛ばす回を全部戻しますか？`
-    : `${n.name} の次の回（${nextWords(n.next)}）を 1 回だけ流さずに、スキップとして残します。定義は変えません`;
+    ? `${n.name} の飛ばす実行をすべて戻しますか？`
+    : `${n.name} の次の実行（${nextWords(n.next)}）を 1 回だけ実行せず、スキップとして記録します。定義は変更しません。`;
   if (!(await ask(text, { yes: cancel ? "戻す" : "飛ばす" }))) return;
   await act("", async () => (await call("POST", "/nets/skip-next", { net: n.id, cancel })).said);
 }

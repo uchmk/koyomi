@@ -4,3 +4,7 @@ crates/koyomi-core/src/run.rs 前の回の結果 the old words of a carried-over
 crates/koyomi-core/src/run.rs 人がスキップした the old words of a skipped job's reason, read back so that a saved run is still recognised
 crates/koyomi-core/src/run.rs 待っている間にエンジンが止まった the old words of a time dropped when the engine stopped, read back so that a saved run is still recognised
 crates/koyomi/src/engine/standby.rs に戻した（ the old words of a handback in standby.toml's log, read back for the time of the last handback when the file was kept by an engine from before the IDs
+crates/koyomi/src/glossary.rs ジョブの流れ ito_glossary's Term holds the word in both languages as constants
+crates/koyomi/src/glossary.rs ジョブとその実行順を、ひとつのファイルにまとめたものです。決めた時刻に自動で実行されます。 ito_glossary's Term holds the word in both languages as constants
+crates/koyomi/src/glossary.rs 確認して許可 ito_glossary's Term holds the word in both languages as constants
+crates/koyomi/src/glossary.rs 実行する内容を読んで許可することです。許可するまでは実行されません。ファイルを変更すると、再度必要です。 ito_glossary's Term holds the word in both languages as constants

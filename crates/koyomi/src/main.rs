@@ -1163,9 +1163,9 @@ fn main() -> eframe::Result {
     // The window talks to the engine at KOYOMI_ADDRESS. A script without it would reach the real engine (its jobs
     // included), so it stops before the window opens.
     if script.is_some() && std::env::var_os(proto::ENV).is_none_or(|v| v.is_empty()) {
-        let why = "KOYOMI_ADDRESS がない。--keys の窓は本物のエンジンにつながるので、回ごとに別の名前を渡してから走らせる";
+        let why = koyomi_core::msg::line(koyomi_core::msg::KEYS_ADDRESS_MISSING, &[]);
         if let Some(done) = &done {
-            let _ = std::fs::write(done, ito_keyscript::refused_report(why));
+            let _ = std::fs::write(done, ito_keyscript::refused_report(&why));
         }
         say(&format!("koyomi --keys: {why}"), true);
         std::process::exit(2);

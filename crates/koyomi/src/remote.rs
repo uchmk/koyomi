@@ -28,9 +28,9 @@ const PEEK_WAIT: Duration = Duration::from_secs(10);
 /// `koyomi http fingerprint`.
 pub fn http_cmd(args: &[String]) -> i32 {
     match args {
-        [op] if op == "fingerprint" => finish(crate::engine::http::fingerprint().map(|fp| {
-            format!("{fp}\n（ほかの PC の koyomi.toml の [[remote]] に fingerprint = \"…\" で書く。[http] に lan = true が要る）")
-        })),
+        [op] if op == "fingerprint" => {
+            finish(crate::engine::http::fingerprint().map(|fp| format!("{fp}\n{}", msg::note(msg::N_REMOTE_FP_HINT, &[]))))
+        }
         _ => usage("http takes fingerprint"),
     }
 }
@@ -188,10 +188,10 @@ fn blocks_of(remotes: &[&Remote]) -> Vec<Vec<(&'static str, String)>> {
 /// Refuses when `[standby] watch` or `[primary] standby` names `name` (compared as `Config::parse` does).
 fn not_named_by_tables(cfg: &koyomi_core::config::Config, name: &str) -> Result<(), String> {
     if cfg.standby.as_ref().is_some_and(|s| s.watch.trim() == name) {
-        return Err(line(msg::NAMED_BY_TABLE, &[name, "[standby] の watch"]));
+        return Err(line(msg::NAMED_BY_TABLE, &[name, "[standby] watch"]));
     }
     if cfg.primary.as_ref().is_some_and(|p| p.standby.trim() == name) {
-        return Err(line(msg::NAMED_BY_TABLE, &[name, "[primary] の standby"]));
+        return Err(line(msg::NAMED_BY_TABLE, &[name, "[primary] standby"]));
     }
     Ok(())
 }
@@ -331,10 +331,10 @@ fn carry_rename(
     let (old, new) = (old.trim(), new.trim());
     let out = plan_rename(text, old, new)?;
     write(path, out)?;
-    let mut line = format!("{old} の名前を {new} に変えた");
+    let mut line = msg::note(msg::N_REMOTE_RENAMED, &[old, new]);
     if let Some(dir) = state {
         if let Err(e) = crate::acked::move_file(dir, old, new) {
-            line.push_str(&format!("。確認済みの印は新しい名前に移せなかった（{e}）"));
+            line = msg::note(msg::N_REMOTE_RENAMED_ACK, &[old, new, &e.to_string()]);
         }
     }
     Ok(line)
@@ -365,15 +365,15 @@ fn carry_remove(
         other => other,
     };
     write(path, plan.text)?;
-    let mut line = format!("{name} を消した");
+    let mut line = msg::note(msg::N_REMOTE_REMOVED, &[name]);
     match fate {
         SecretFate::Delete(s) => {
             if let Err(e) = store.delete(&s) {
-                line.push_str(&format!("。秘密 {s} は消せずに残っている（{e}）"));
+                line = msg::note(msg::N_REMOTE_REMOVED_SECRET_LEFT, &[name, &s, &e.to_string()]);
             }
         }
         SecretFate::Keep(s) if !s.is_empty() => {
-            line.push_str(&format!("。秘密 {s} は残した（ほかで使っていなければ koyomi secret delete {s} で消せる）"));
+            line = msg::note(msg::N_REMOTE_REMOVED_SECRET_KEPT, &[name, &s]);
         }
         SecretFate::Keep(_) => {}
     }
@@ -444,7 +444,7 @@ pub(crate) fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) 
         if names.is_empty() {
             line(msg::NO_REMOTE, &[name])
         } else {
-            line(msg::UNKNOWN_REMOTE, &[name, &names.join("・")])
+            line(msg::UNKNOWN_REMOTE, &[name, &names.join(", ")])
         }
     })?;
     f(r)
@@ -502,12 +502,17 @@ pub(crate) fn reason(name: &str, e: &client::Error) -> String {
 fn list() -> Result<String, String> {
     let all = remotes()?;
     if all.is_empty() {
-        return Ok("[[remote]] がない（koyomi.toml に name・url・fingerprint・token を書く）".to_owned());
+        return Ok(msg::note(msg::N_REMOTE_NONE, &[]));
     }
     let lines: Vec<String> = all
         .iter()
         .map(|r| match call(r, |c| c.get("/health")) {
-            Ok(j) => format!("{}  {}  {}", r.name, r.url, j["status"].as_str().unwrap_or("答えた")),
+            Ok(j) => format!(
+                "{}  {}  {}",
+                r.name,
+                r.url,
+                j["status"].as_str().map_or_else(|| msg::note(msg::N_REMOTE_ANSWERED, &[]), str::to_owned)
+            ),
             // A coded line already names the connection and keeps its ID at the head.
             Err(e) if msg::is_coded(&e) => e,
             Err(e) => format!("{}  {}  ✕ {}", r.name, r.url, e),
@@ -523,12 +528,12 @@ pub(crate) fn peek_fingerprint(url: &str) -> Result<String, String> {
 
 fn peek(url: &str) -> Result<String, String> {
     let fp = peek_fingerprint(url)?;
-    Ok(format!("fingerprint = \"{fp}\"\n向こうの PC で koyomi http fingerprint が同じものを出すのを確かめてから、[[remote]] に書く"))
+    Ok(format!("fingerprint = \"{fp}\"\n{}", msg::note(msg::N_REMOTE_PEEK_HINT, &[])))
 }
 
 fn status(r: &Remote) -> Result<String, String> {
     let j = call(r, |c| c.get("/health"))?;
-    Ok(format!("{}: {}（koyomi {}）", r.name, j["status"].as_str().unwrap_or_default(), j["version"].as_str().unwrap_or("?")))
+    Ok(msg::note(msg::N_REMOTE_STATUS, &[&r.name, j["status"].as_str().unwrap_or_default(), j["version"].as_str().unwrap_or("?")]))
 }
 
 fn nets(r: &Remote) -> Result<String, String> {
@@ -539,10 +544,10 @@ fn nets(r: &Remote) -> Result<String, String> {
 fn nets_text(j: &serde_json::Value) -> String {
     let mut lines: Vec<String> = Vec::new();
     if j["paused"].as_bool() == Some(true) {
-        lines.push("（止めている: koyomi resume で戻す）".to_owned());
+        lines.push(msg::note(msg::N_REMOTE_PAUSED, &[]));
     }
     for n in j["nets"].as_array().into_iter().flatten() {
-        let held = if n["held"].as_bool() == Some(true) { "  保留" } else { "" };
+        let held = if n["held"].as_bool() == Some(true) { format!("  {}", msg::note(msg::N_REMOTE_HELD, &[])) } else { String::new() };
         lines.push(format!(
             "{}  {}  {}{held}",
             n["id"].as_str().unwrap_or("?"),
@@ -551,7 +556,7 @@ fn nets_text(j: &serde_json::Value) -> String {
         ));
     }
     if lines.is_empty() {
-        lines.push("ネットがない".to_owned());
+        lines.push(msg::note(msg::N_REMOTE_NO_NETS, &[]));
     }
     lines.join("\n")
 }
@@ -567,7 +572,8 @@ fn runs_text(j: &serde_json::Value) -> String {
         .into_iter()
         .flatten()
         .map(|r| {
-            let over = if r["over"].as_bool() == Some(true) { "" } else { "  動いている" };
+            let over =
+                if r["over"].as_bool() == Some(true) { String::new() } else { format!("  {}", msg::note(msg::N_REMOTE_RUNNING, &[])) };
             format!(
                 "{}  {}  {}{over}",
                 r["id"].as_str().unwrap_or("?"),
@@ -577,7 +583,7 @@ fn runs_text(j: &serde_json::Value) -> String {
         })
         .collect();
     if lines.is_empty() {
-        "今日の回はない".to_owned()
+        msg::note(msg::N_REMOTE_NO_RUNS, &[])
     } else {
         lines.join("\n")
     }
@@ -585,7 +591,7 @@ fn runs_text(j: &serde_json::Value) -> String {
 
 fn run(r: &Remote, net: &str) -> Result<String, String> {
     let j = call(r, |c| c.post_json("/runs", &serde_json::json!({ "net": net })))?;
-    Ok(format!("{}: {net} を流した（{}）", r.name, j["run"].as_str().unwrap_or("?")))
+    Ok(msg::note(msg::N_REMOTE_RUN_DONE, &[&r.name, net, j["run"].as_str().unwrap_or("?")]))
 }
 
 /// What `GET /nets/text` says of a net on another PC (TODO 111).
@@ -632,7 +638,7 @@ pub fn propose(name: &str, net: &str, text: &str, base: Option<&str>) -> Result<
         }
         let reply = client(r)?.post_json("/nets/propose", &body).map_err(|e| why(r, &e))?;
         if reply.status == 409 {
-            return Err(format!("{}: 読んだあとで向こうの {net} が変わった（読み直してから送る）", r.name));
+            return Err(line(msg::REMOTE_NET_CHANGED, &[&r.name, net]));
         }
         answer(r, reply).map(|j| j["confirmed"].as_bool() == Some(true))
     })
@@ -643,15 +649,15 @@ pub fn propose(name: &str, net: &str, text: &str, base: Option<&str>) -> Result<
 fn send(name: &str, id: &str) -> Result<String, String> {
     let def: Def = crate::client::call(&Request::Show { id: id.to_owned() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string()))?;
     if def.standing == Standing::Invalid {
-        return Err(format!("{id} に定義の誤りがある。直してから送る（koyomi show {id}）"));
+        return Err(line(msg::CMD_SEND_INVALID, &[id]));
     }
     let there = there(name, id)?;
     if there.as_ref().is_some_and(|t| t.text == def.text) {
-        return Ok(format!("{name} の {id} はこの PC と同じ中身（送らなかった）"));
+        return Ok(msg::note(msg::N_SEND_SAME, &[name, id]));
     }
     let head = match &there {
-        Some(_) => format!("{name} に {id} を送る（- 向こうの今 / + この PC）:"),
-        None => format!("{name} には {id} がない。新しく置く:"),
+        Some(_) => msg::note(msg::N_SEND_DIFF, &[name, id]),
+        None => msg::note(msg::N_SEND_NEW, &[name, id]),
     };
     crate::say(&head, false);
     let old = there.as_ref().map_or("", |t| t.text.as_str());
@@ -659,13 +665,13 @@ fn send(name: &str, id: &str) -> Result<String, String> {
         crate::say(&l, false);
     }
     if def.standing != Standing::Confirmed {
-        crate::say("（この PC でもまだ未確認の定義）", false);
+        crate::say(&msg::note(msg::N_SEND_UNCONFIRMED_HERE, &[]), false);
     }
-    crate::say("送ると向こうでは未確認で置かれ、向こうの窓で確認するまで流れない。送るなら y を入力（それ以外は送らない）:", false);
+    crate::say(&msg::note(msg::N_SEND_ASK, &[]), false);
     let mut typed = String::new();
     let _ = std::io::stdin().read_line(&mut typed);
     if !typed.trim().eq_ignore_ascii_case("y") {
-        return Err(format!("{id}: 送らなかった"));
+        return Err(line(msg::CMD_SEND_DECLINED, &[id]));
     }
     let same = propose(name, id, &def.text, there.as_ref().map(|t| t.sha256.as_str()))?;
     Ok(sent_line(name, id, same))
@@ -673,11 +679,7 @@ fn send(name: &str, id: &str) -> Result<String, String> {
 
 /// What a send says once that PC took it.
 fn sent_line(name: &str, net: &str, same: bool) -> String {
-    if same {
-        format!("{name} に送った: {net}（向こうの確認済みと同じ中身。そのまま流れる）")
-    } else {
-        format!("{name} に送った: {net}（向こうでは未確認。{name} の窓で確認するまで流れない）")
-    }
+    msg::note(if same { msg::N_SEND_DONE_SAME } else { msg::N_SEND_DONE }, &[name, net])
 }
 
 #[cfg(test)]
@@ -704,14 +706,15 @@ mod tests {
             { "id": "g/a", "name": "A", "standing": "confirmed", "held": false },
             { "id": "g/b", "name": "B", "standing": "unconfirmed", "held": true },
         ]});
-        assert_eq!(nets_text(&j), "（止めている: koyomi resume で戻す）\ng/a  A  confirmed\ng/b  B  unconfirmed  保留");
-        assert_eq!(nets_text(&serde_json::json!({ "nets": [] })), "ネットがない");
+        let (paused, held) = (msg::note(msg::N_REMOTE_PAUSED, &[]), msg::note(msg::N_REMOTE_HELD, &[]));
+        assert_eq!(nets_text(&j), format!("{paused}\ng/a  A  confirmed\ng/b  B  unconfirmed  {held}"));
+        assert_eq!(nets_text(&serde_json::json!({ "nets": [] })), msg::note(msg::N_REMOTE_NO_NETS, &[]));
         let j = serde_json::json!({ "runs": [
             { "id": "1", "jobnet": "g/a", "title": "A", "over": true },
             { "id": "2", "jobnet": "g/b", "title": "B", "over": false },
         ]});
-        assert_eq!(runs_text(&j), "1  g/a  A\n2  g/b  B  動いている");
-        assert_eq!(runs_text(&serde_json::json!({ "runs": [] })), "今日の回はない");
+        assert_eq!(runs_text(&j), format!("1  g/a  A\n2  g/b  B  {}", msg::note(msg::N_REMOTE_RUNNING, &[])));
+        assert_eq!(runs_text(&serde_json::json!({ "runs": [] })), msg::note(msg::N_REMOTE_NO_RUNS, &[]));
     }
 
     /// What another PC has of a net is read from `GET /nets/text`; one that does not say its
@@ -722,8 +725,11 @@ mod tests {
         let want = There { text: "format = 1\n".into(), sha256: "abc".into(), standing: Some(Standing::Unconfirmed) };
         assert_eq!(There::from_json(&j), want);
         assert_eq!(There::from_json(&serde_json::json!({ "text": "x", "sha256": "s" })).standing, None);
-        assert_eq!(sent_line("本番", "g/a", false), "本番 に送った: g/a（向こうでは未確認。本番 の窓で確認するまで流れない）");
-        assert_eq!(sent_line("本番", "g/a", true), "本番 に送った: g/a（向こうの確認済みと同じ中身。そのまま流れる）");
+        assert_eq!(sent_line("本番", "g/a", false), msg::note(msg::N_SEND_DONE, &["本番", "g/a"]));
+        assert_eq!(sent_line("本番", "g/a", true), msg::note(msg::N_SEND_DONE_SAME, &["本番", "g/a"]));
+        // Unconfirmed says whose screen confirms it; the same-content send does not wait.
+        assert!(sent_line("本番", "g/a", false).matches("本番").count() == 2);
+        assert!(sent_line("本番", "g/a", false) != sent_line("本番", "g/a", true));
     }
 
     fn remote_of(name: &str) -> Remote {
@@ -999,7 +1005,7 @@ mod tests {
             Ok(())
         })
         .unwrap();
-        assert_eq!(line, "fact の名前を works に変えた");
+        assert_eq!(line, msg::note(msg::N_REMOTE_RENAMED, &["fact", "works"]));
         let (p, t) = wrote.into_inner().expect("written");
         assert_eq!(p, path);
         assert_eq!(names_in(&t), ["works"]);
@@ -1027,7 +1033,7 @@ mod tests {
         let line = carry_remove(path, &text, "fact", |_| false, &store, write).unwrap();
         order.borrow_mut().extend(store.calls.borrow().iter().cloned());
         assert_eq!(*order.borrow(), ["write", "delete fact-token"]);
-        assert_eq!(line, "fact を消した");
+        assert_eq!(line, msg::note(msg::N_REMOTE_REMOVED, &["fact"]));
 
         // A write error leaves the secret, and makes no call.
         let store = Fake::default();
@@ -1038,13 +1044,19 @@ mod tests {
         // A delete error is a success with a note that names the secret.
         let store = Fake { delete_fails: true, ..Fake::default() };
         let line = carry_remove(path, &text, "fact", |_| false, &store, |_, _| Ok(())).unwrap();
-        assert!(line.starts_with("fact を消した") && line.contains("fact-token") && line.contains("denied"), "{line}");
+        assert!(
+            line == msg::note(msg::N_REMOTE_REMOVED_SECRET_LEFT, &["fact", "fact-token", "denied"])
+                && line.contains("fact-token")
+                && line.contains("denied"),
+            "{line}"
+        );
 
         // Used elsewhere, or not generated: Keep, no delete call, and it says how to remove it.
         let store = Fake::default();
         let line = carry_remove(path, &text, "fact", |_| true, &store, |_, _| Ok(())).unwrap();
         assert!(store.calls.borrow().is_empty());
-        assert_eq!(line, "fact を消した。秘密 fact-token は残した（ほかで使っていなければ koyomi secret delete fact-token で消せる）");
+        assert_eq!(line, msg::note(msg::N_REMOTE_REMOVED_SECRET_KEPT, &["fact", "fact-token"]));
+        assert!(line.contains("koyomi secret delete fact-token"));
         let custom = text.replace("secret:fact-token", "secret:shared");
         let line = carry_remove(path, &custom, "fact", |_| false, &store, |_, _| Ok(())).unwrap();
         assert!(store.calls.borrow().is_empty());

@@ -5667,11 +5667,11 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         b.cal_sel = Some("会社".into());
         s.settle(&mut b);
-        s.click("名前を変える…", &mut b);
+        s.click("名前の変更…", &mut b);
         assert_eq!(b.new_cal.as_ref().map(|m| m.name.as_str()), Some("会社"));
         let shown = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
         assert!(shown(&s, "jobnets/試験/bom.toml, jobnets/試験/_group.toml"));
-        assert!(shown(&s, "会社 のファイルの名前を変えます"), "a rename says the content stays");
+        assert!(shown(&s, "会社 のファイル名を変更します"), "a rename says the content stays");
         s.show(key(egui::Key::Enter), &mut b);
         assert_eq!(
             b.new_cal.as_ref().and_then(|m| m.error.as_deref()),
@@ -5680,7 +5680,7 @@ run = [\"x.exe\"]
         );
         s.show(key(egui::Key::Escape), &mut b);
         assert!(b.new_cal.is_none());
-        s.click("消す…", &mut b);
+        s.click("削除…", &mut b);
         assert_eq!(b.cal_deleting.as_deref(), Some("会社"));
         assert!(shown(&s, "versions/_calendars/会社/"));
         s.show(key(egui::Key::Enter), &mut b);
@@ -5746,7 +5746,7 @@ run = [\"x.exe\"]
         assert!(b.cal_inline.is_none() && b.cal_result.is_none(), "Esc writes nothing");
         s.click("祝日の表を取り込む…", &mut b);
         assert!(matches!(b.cal_inline, Some(calendar::Inline::Table { .. })));
-        s.click("決める", &mut b);
+        s.click("決定する", &mut b);
         assert_eq!(b.cal_result, Some(Err(koyomi_core::msg::line(koyomi_core::msg::TABLE_PATH_EMPTY, &[]))));
         assert!(b.cal_inline.is_none());
         b.cal_inline = Some(calendar::Inline::Name { cal: "工場".into(), day, text: String::new(), fresh: true });
@@ -5871,8 +5871,8 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         let has = |s: &Screen, w: &str| s.nodes.values().any(|n| n.0 == w);
-        assert!(has(&s, "選んだ回"));
-        assert!(has(&s, "表で行を選ぶと、その回のジョブ・ログ・操作がここに出ます。"));
+        assert!(has(&s, "選択した実行"));
+        assert!(has(&s, "表で行を選ぶと、その実行のジョブ・ログ・操作がここに表示されます。"));
         s.click("右の欄をたたむ", &mut b);
         assert!(!b.hist_pane);
         s.click("右の欄を開く", &mut b);
@@ -6029,10 +6029,10 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         let menu_says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
-        assert!(!menu_says(&s, "止まったところから"), "one button until opened");
-        assert!(menu_says(&s, "ジョブを選ぶとそこから再実行"), "the hint with no job picked");
+        assert!(!menu_says(&s, "停止したところから"), "one button until opened");
+        assert!(menu_says(&s, "ジョブを選ぶと、そのジョブから再実行します。"), "the hint with no job picked");
         s.click("再実行 ▾", &mut b);
-        s.click("止まったところから", &mut b);
+        s.click("停止したところから", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, next: None, .. })));
         b.job_sel = Some("a".into());
         s.settle(&mut b);
@@ -6047,7 +6047,7 @@ run = [\"x.exe\"]
         assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
         b.snap.as_mut().unwrap().held_jobs.push(koyomi_core::held::HeldJob { net: "試験/bom".into(), job: "a".into() });
         s.settle(&mut b);
-        s.click("ジョブ a の保留を解く", &mut b);
+        s.click("ジョブ a の保留を解除する", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
     }
 
@@ -6264,18 +6264,18 @@ run = [\"x.exe\"]
 
         b.deleting = Some("試験/bom".into());
         s.settle(&mut b);
-        s.click("やめる", &mut b);
+        s.click("キャンセル", &mut b);
         assert!(b.deleting.is_none() && rx_req.try_recv().is_err(), "the safe button deletes nothing");
         b.deleting = Some("試験/bom".into());
         s.settle(&mut b);
-        s.click("消す", &mut b);
+        s.click("削除する", &mut b);
         assert!(b.deleting.is_none());
         assert!(matches!(rx_req.try_recv(), Ok(Request::Delete { id }) if id == "試験/bom"));
 
         b.run_sel = Some("r1".into());
         b.killing = Some("r1".into());
         s.settle(&mut b);
-        s.click("やめる", &mut b);
+        s.click("キャンセル", &mut b);
         assert!(b.killing.is_none() && rx_req.try_recv().is_err(), "the safe button kills nothing");
         b.killing = Some("r1".into());
         s.settle(&mut b);
@@ -6287,7 +6287,7 @@ run = [\"x.exe\"]
         b.selected = Some(def.id.clone());
         b.asking = Some(Approval { id: def.id.clone(), sha256: def.sha256.clone() });
         s.settle(&mut b);
-        s.click("確かめた", &mut b);
+        s.click("確認した", &mut b);
         assert!(b.asking.is_none());
         assert!(matches!(rx_req.try_recv(), Ok(Request::Approve { id, .. }) if id == def.id));
     }
@@ -6299,7 +6299,7 @@ run = [\"x.exe\"]
         b.io.0.send(Msg::Done(Ok(("run.history_csv_done", vec!["C:/x.csv".to_owned()])))).unwrap();
         let mut s = Screen::new();
         s.settle(&mut b);
-        assert!(matches!(&b.result, Some(Ok(m)) if m == "書いた: C:/x.csv"), "{:?}", b.result);
+        assert!(matches!(&b.result, Some(Ok(m)) if m == "出力しました: C:/x.csv"), "{:?}", b.result);
         // A failure is worded the same way.
         b.io.0.send(Msg::Done(Err(no_dir(std::path::Path::new("C:/e"), std::io::Error::other("denied"))))).unwrap();
         s.settle(&mut b);
@@ -6329,10 +6329,10 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         s.right_click("⏸ 保留 bom", &mut b);
-        s.click("ジョブネットの保留を解く", &mut b);
+        s.click("ジョブネットの保留を解除する", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: None }) if id == "試験/bom"));
         s.right_click("⏸ 保留 bom", &mut b);
-        s.click("ジョブ a の保留を解く", &mut b);
+        s.click("ジョブ a の保留を解除する", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
         // Not held: the same place holds it.
         b.snap.as_mut().unwrap().held.clear();
@@ -6482,7 +6482,7 @@ run = [\"x.exe\"]
         assert!(inside, "the button is on the screen");
         s.click("対応済みにする", &mut b);
         assert_eq!(b.take_acks(), vec!["r1".to_owned()]);
-        assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにした"));
+        assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにしました。"));
         // Dealt with: the button says so and is off.
         s.settle(&mut b);
         assert!(s.nodes.values().any(|n| n.0 == "対応済み"));
@@ -6604,7 +6604,7 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
-        assert!(says(&s, "2099-12-01 から次の定義に切り替わる"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+        assert!(says(&s, "2099-12-01 から次の定義に切り替わります"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
         s.click("次の定義を見る", &mut b);
         assert_eq!(b.staged_box.as_deref(), Some(id.as_str()));
         s.show(key(egui::Key::Enter), &mut b);
@@ -6662,7 +6662,7 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         s.settle(&mut b);
         let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
-        assert!(says(&s, "今すぐ流す") && !says(&s, "別の PC に送る"), "no [[remote]], no button");
+        assert!(says(&s, "今すぐ実行") && !says(&s, "別の PC に送る"), "no [[remote]], no button");
         b.far.set_names(vec!["本番".into(), "同じ".into(), "新しい".into(), "遠い".into()]);
         b.wire = Wire { there, propose };
         s.settle(&mut b);
@@ -6670,7 +6670,7 @@ run = [\"x.exe\"]
         s.click("本番 に送る…", &mut b);
         wait(&mut s, &mut b, |b| b.sending.as_ref().is_some_and(|x| x.there.is_some()));
         assert!(says(&s, &format!("{id} を 本番 に送る")), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
-        assert!(says(&s, "向こうの今") && says(&s, "確認済み"));
+        assert!(says(&s, "接続先の現在の定義") && says(&s, "確認済み"));
         s.show(key(egui::Key::Escape), &mut b);
         assert!(b.sending.is_none() && sent().is_empty(), "Esc sends nothing");
         s.click("別の PC に送る ▾", &mut b);
@@ -6679,20 +6679,23 @@ run = [\"x.exe\"]
         s.show(key(egui::Key::Enter), &mut b);
         assert!(b.sending.is_none());
         wait(&mut s, &mut b, |b| b.result.is_some());
-        assert_eq!(b.result, Some(Ok(format!("本番 に送った: {id}（向こうでは未確認。本番 の窓で確認するまで流れない）"))));
+        assert_eq!(
+            b.result,
+            Some(Ok(format!("本番 に送信しました: {id}（接続先では未確認です。本番 の画面で確認するまで実行されません）")))
+        );
         assert_eq!(sent(), [("本番".to_owned(), id.clone(), NET.to_owned(), Some("abc".to_owned()))]);
         // A PC without the net: the box says so, and the send has no hash.
         s.click("別の PC に送る ▾", &mut b);
         s.click("新しい に送る…", &mut b);
         wait(&mut s, &mut b, |b| b.sending.as_ref().is_some_and(|x| x.there.is_some()));
-        assert!(says(&s, "なし（新しく置く）"));
+        assert!(says(&s, "なし（新規に配置する）"));
         s.show(key(egui::Key::Enter), &mut b);
         wait(&mut s, &mut b, |b| b.result.is_some());
         assert_eq!(sent().last().map(|x| (x.0.as_str(), x.3.clone())), Some(("新しい", None)));
         s.click("別の PC に送る ▾", &mut b);
         s.click("同じ に送る…", &mut b);
         wait(&mut s, &mut b, |b| b.sending.is_none() && b.result.is_some());
-        assert_eq!(b.result, Some(Ok(format!("同じ の {id} はこの PC と同じ中身です（送っていません）"))));
+        assert_eq!(b.result, Some(Ok(format!("同じ の {id} はこの PC と同じ内容です（送信していません）"))));
         s.click("別の PC に送る ▾", &mut b);
         s.click("遠い に送る…", &mut b);
         wait(&mut s, &mut b, |b| b.sending.is_none() && b.result.is_some());
@@ -7035,7 +7038,7 @@ run = [\"x.exe\"]
         b.new_cal_go();
         assert!(b.new_cal.as_ref().unwrap().waiting);
         s.settle(&mut b);
-        s.click("やめる", &mut b);
+        s.click("キャンセル", &mut b);
         assert!(b.new_cal.as_ref().is_some_and(|m| m.waiting), "cancel does nothing while waiting");
         s.show(key(egui::Key::Escape), &mut b);
         s.show(key(egui::Key::Enter), &mut b);

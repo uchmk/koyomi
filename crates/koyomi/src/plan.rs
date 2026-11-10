@@ -9,6 +9,7 @@ use std::fmt::Write as _;
 use chrono::{Datelike, NaiveDate, NaiveDateTime};
 use koyomi_core::blackout::Blackout;
 use koyomi_core::calendar::Calendar;
+use koyomi_core::msg;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when;
 
@@ -106,13 +107,17 @@ fn esc(s: &str) -> String {
 /// The month as A4 pages of SVG, the title on each.
 pub fn svg(days: &[Day], year: i32, m: u32) -> Vec<String> {
     let mut lines: Vec<(String, bool)> = Vec::new();
+    let weekdays = msg::note(msg::N_PLAN_WEEKDAYS, &[]);
+    let weekdays: Vec<&str> = weekdays.split_whitespace().collect();
     for (d, list) in days {
-        let wd = ["月", "火", "水", "木", "金", "土", "日"][d.weekday().num_days_from_monday() as usize];
+        let wd = weekdays.get(d.weekday().num_days_from_monday() as usize).copied().unwrap_or("");
         if list.is_empty() {
             lines.push((format!("{:02}({wd})   -", d.day()), false));
         }
         for (i, (at, name)) in list.iter().enumerate() {
-            let day = if i == 0 { format!("{:02}({wd})", d.day()) } else { "      ".to_owned() };
+            let label = format!("{:02}({wd})", d.day());
+            // The continuation lines indent by the label's width on the page (a Japanese letter takes two columns).
+            let day = if i == 0 { label } else { " ".repeat(label.chars().map(|c| if c.is_ascii() { 1 } else { 2 }).sum()) };
             lines.push((format!("{day}   {}   {name}", at.format("%H:%M")), true));
         }
     }
@@ -126,7 +131,8 @@ pub fn svg(days: &[Day], year: i32, m: u32) -> Vec<String> {
         );
         let _ = writeln!(
             s,
-            "<text x=\"48\" y=\"64\" font-family=\"sans-serif\" font-size=\"24\" fill=\"#000\">{year}年{m}月 実行予定表</text>"
+            "<text x=\"48\" y=\"64\" font-family=\"sans-serif\" font-size=\"24\" fill=\"#000\">{}</text>",
+            esc(&msg::note(msg::N_PLAN_TITLE, &[&year.to_string(), &m.to_string()]))
         );
         let _ = writeln!(s, "<line x1=\"48\" y1=\"80\" x2=\"{}\" y2=\"80\" stroke=\"#000\"/>", PAGE.0 - 48);
         for (i, (line, on)) in chunks.get(n).copied().unwrap_or_default().iter().enumerate() {

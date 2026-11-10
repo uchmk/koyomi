@@ -17,6 +17,7 @@ use chrono::{Datelike, NaiveDate};
 use ito_ipc::door::ask;
 use koyomi_core::backfill::Only;
 use koyomi_core::calendar::{Calendar, Calendars, Day, Table, TABLE_FILE};
+use koyomi_core::msg;
 use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
 use serde::Serialize;
@@ -65,14 +66,14 @@ usage: koyomi [--version | --help | env]
                                      two runs side by side: how long each job took, its state and exit code, and how the logs differ
        koyomi kill <run> [<job>]     stop one job, or the whole run
        koyomi hold <group/name> [<job>]
-                                     hold the net: its times are written down as 保留 and nothing runs;
-                                     with <job>, a run that comes to that job waits there as 保留 (the jobs
+                                     hold the net: its times are written down as held and nothing runs;
+                                     with <job>, a run that comes to that job waits there as held (the jobs
                                      after it wait too) and goes on as the same run once it is released
        koyomi release <group/name> [<job>]
                                      take the net (or its job) off hold
        koyomi skip <run> <job>       skip one job that has not started; the jobs after it go on
        koyomi approve-step <run> <job> [--no]
-                                     answer a 確認待ち part: let the run go on, or --no to end it 異常
+                                     answer a job that waits for approval: let the run go on, or --no to end the run abnormally
        koyomi shift <group/name> <from> <to|--cancel>
                                      start its time <from> at <to> this once (HH:MM is today, or YYYY-MM-DD HH:MM);
                                      the definition does not change; --cancel takes the move back
@@ -91,7 +92,7 @@ usage: koyomi [--version | --help | env]
                                      the month as calendars/<name>.toml counts it (this month when none)
        koyomi report [YYYY-MM] [--csv <file>]
                                      the month's report (this month when none): for each net how many runs, the share that
-                                     passed, how long the good ones took on average, and the jobs that ended 異常 most
+                                     passed, how long the good ones took on average, and the jobs that ended abnormally most
        koyomi plan [YYYY-MM] [--pdf <file>] [--print] [--csv <file>]
                                      what starts on each day of the month (this month when none), by the approved
                                      nets' times and calendars; --pdf: write it as A4 pages; --print: send that PDF to the printer;
@@ -181,10 +182,7 @@ fn temp_words(exe: &std::path::Path, in_temp: bool, allowed: bool) -> Result<(),
     if !in_temp || allowed {
         return Ok(());
     }
-    Err(format!(
-        "{} は Temp のフォルダーにあり、掃除で消える。`~\\.cargo\\bin` か Program Files に置いて、そこから回す（試すときは {ALLOW_TEMP}=1 で通る）",
-        exe.display()
-    ))
+    Err(msg::line(msg::EXE_IN_TEMP, &[&exe.display().to_string()]))
 }
 
 /// Words for the person at the console: common.toml's language.
@@ -430,7 +428,7 @@ fn check(args: &[String]) -> i32 {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
-            out(&format!("{name}: 読めない: {e}"), true);
+            out(&msg::line(msg::FILE_READ_FAILED, &[file.as_str(), &e.to_string()]), true);
             return 1;
         }
     };
@@ -445,11 +443,11 @@ fn check(args: &[String]) -> i32 {
     if name == "_group.toml" {
         return match koyomi_core::group::parse(&text) {
             Ok(_) => {
-                out(&format!("{name}: 問題なし"), false);
+                out(&msg::note(msg::N_CHECK_OK, &[&name]), false);
                 0
             }
             Err(e) => {
-                out(&format!("{name}: {e}"), true);
+                out(&named(&name, &e.to_string()), true);
                 1
             }
         };
@@ -497,7 +495,7 @@ fn check(args: &[String]) -> i32 {
         let folder = std::path::absolute(path).ok().and_then(|p| p.parent().map(std::path::Path::to_path_buf));
         let work = config.as_ref().and_then(|c| c.work_folder(folder.as_deref()));
         for f in koyomi_core::preflight::check(net, &cals, today, engine::CAUTION_DAYS, &path_var, &exts, work.as_deref()) {
-            out(&format!("{name}: {}", f.text), true);
+            out(&named(&name, &f.text), true);
             bad |= !f.warn;
         }
         // The places it names, in `koyomi.toml`: a name none has is told to no webhook and no mail.
@@ -505,33 +503,38 @@ fn check(args: &[String]) -> i32 {
             let (n, _) = crate::notify::read(&config);
             let unknown = crate::notify::unknown(&n, net);
             if !unknown.is_empty() {
-                out(&format!("{name}: 注意: koyomi.toml の [notify] にその名前の通知先がない: {}", unknown.join(", ")), true);
+                out(&named(&name, &msg::line(msg::CHECK_NOTIFY_UNKNOWN, &[&unknown.join(", ")])), true);
             }
             // A `mail` job's place to send through: one it would not find fails when it runs.
             for w in crate::mail::unknown(&n.mail_places, net) {
-                out(&format!("{name}: 注意: {w}"), true);
+                out(&named(&name, &w), true);
             }
             // A `{var:…}` that `[vars]` does not have stops the run that reads it.
             let vars = config.vars();
             for v in koyomi_core::template::vars_of(net).into_iter().filter(|v| !vars.contains_key(v)) {
-                out(&format!("{name}: 注意: {{var:{v}}} が koyomi.toml の [vars] にない（流すと止まる）"), true);
+                out(&named(&name, &msg::line(msg::CHECK_VAR_MISSING, &[&v])), true);
             }
             // An `ssh` or a `winrm` on a group: the group must be there, and each PC needs a key.
-            for w in group_warnings(&config, net) {
-                out(&format!("{name}: 注意: {w}（流すと止まる）"), true);
+            for (job, w) in group_warnings(&config, net) {
+                out(&named(&msg::note(msg::N_CHECK_PLACE_JOB, &[&name, &job]), &w), true);
             }
         }
     }
     if !bad {
-        out(&format!("{name}: 問題なし"), false);
+        out(&msg::note(msg::N_CHECK_OK, &[&name]), false);
     }
     i32::from(bad)
 }
 
+/// `text` (a coded line or not) with the place it is about, the way a jobnet's problems are told.
+fn named(place: &str, text: &str) -> String {
+    koyomi_core::jobnet::Problem { line: 0, message: text.to_owned() }.in_file(place)
+}
+
 /// What an `ssh` or a `winrm` with `on = "group:…"` would stop on, by koyomi.toml:
 /// a group it does not have, or PCs with no host key (certificate) where the job has
-/// none either.
-fn group_warnings(config: &koyomi_core::config::Config, net: &koyomi_core::jobnet::Jobnet) -> Vec<String> {
+/// none either. Each is the job's id and the line about it.
+fn group_warnings(config: &koyomi_core::config::Config, net: &koyomi_core::jobnet::Jobnet) -> Vec<(String, String)> {
     use koyomi_core::chore::{self, Chore};
     use koyomi_core::jobnet::Part;
     let mut out = Vec::new();
@@ -543,7 +546,7 @@ fn group_warnings(config: &koyomi_core::config::Config, net: &koyomi_core::jobne
         };
         let Some(name) = chore::group(on) else { continue };
         match config.members(name, kind) {
-            Err(e) => out.push(format!("{}: {e}", j.id)),
+            Err(e) => out.push((j.id.clone(), e)),
             Ok(_) if own => {}
             Ok(members) => {
                 let bare: Vec<&str> = members
@@ -552,7 +555,7 @@ fn group_warnings(config: &koyomi_core::config::Config, net: &koyomi_core::jobne
                     .map(|m| m.on.as_str())
                     .collect();
                 if !bare.is_empty() {
-                    out.push(format!("{}: 組 {name} の {} に {key} がなく、ジョブにもない", j.id, bare.join(", ")));
+                    out.push((j.id.clone(), msg::line(msg::CHECK_GROUP_KEY_MISSING, &[name, &bare.join(", "), key])));
                 }
             }
         }
@@ -591,7 +594,7 @@ fn check_calendar(name: &str, text: &str, path: &std::path::Path) -> i32 {
             return 0;
         }
     }
-    out(&format!("{name}: 問題なし"), false);
+    out(&msg::note(msg::N_CHECK_OK, &[name]), false);
     i32::from(bad)
 }
 
@@ -601,7 +604,13 @@ fn check_table(name: &str, path: &std::path::Path) -> i32 {
         Ok(Some(t)) => {
             let (a, b) = t.years;
             let until = koyomi_core::calendar::until(Some(&t));
-            out(&format!("{name}: 問題なし（{a}〜{b} 年の祝日 {} 日。祝日は {until} まで分かる）", t.days.len()), false);
+            out(
+                &msg::note(
+                    msg::N_CHECK_OK_HOLIDAYS,
+                    &[name, &a.to_string(), &b.to_string(), &t.days.len().to_string(), &until.to_string()],
+                ),
+                false,
+            );
             0
         }
         Ok(None) => {
@@ -620,7 +629,7 @@ fn check_config(name: &str, text: &str) -> i32 {
     let config = match koyomi_core::config::Config::parse(text) {
         Ok(c) => c,
         Err(e) => {
-            out(&format!("{name}: {e}"), true);
+            out(&named(name, &e), true);
             return 1;
         }
     };
@@ -629,7 +638,7 @@ fn check_config(name: &str, text: &str) -> i32 {
         out(n, true);
     }
     if notes.is_empty() {
-        out(&format!("{name}: 問題なし"), false);
+        out(&msg::note(msg::N_CHECK_OK, &[name]), false);
     }
     i32::from(!notes.is_empty())
 }
@@ -669,7 +678,7 @@ fn list(args: &[String]) -> i32 {
     };
     if let Some(g) = &group {
         if !snap.defs.iter().any(|d| &d.group == g) {
-            return fail(&format!("グループがない: {g}"));
+            return fail(&msg::line(msg::BUNDLE_GROUP_NONE, &[g]));
         }
         snap.defs.retain(|d| &d.group == g);
     }
@@ -684,16 +693,16 @@ fn list(args: &[String]) -> i32 {
         out(&format!("! {w}"), false);
     }
     for n in snap.notes.iter().chain(&snap.cautions) {
-        out(&format!("注意: {n}"), false);
+        out(n, false);
     }
     if snap.paused {
-        out(&format!("{} スケジュールを止めている（koyomi resume で戻す）", State::Held.mark()), false);
+        out(&msg::note(msg::N_LIST_PAUSED, &[State::Held.mark()]), false);
     }
     for line in review::tree(&table(), &snap.defs, &snap.held) {
         out(&line, false);
     }
     for e in snap.staged.iter().filter(|e| group.as_ref().is_none_or(|g| e.id.starts_with(&format!("{g}/")))) {
-        out(&format!("→ {} から次の定義: {}", e.from, e.id), false);
+        out(&msg::note(msg::N_LIST_STAGED, &[&e.from.to_string(), &e.id]), false);
     }
     0
 }
@@ -726,7 +735,7 @@ fn show_cmd(args: &[String]) -> i32 {
     }
     out(&head, false);
     if let Some(e) = snap.staged.iter().find(|e| e.id == def.id) {
-        out(&format!("→ {} から次の定義に切り替わる（koyomi stage {} --cancel でやめる）", e.from, def.id), false);
+        out(&msg::note(msg::N_SHOW_STAGED, &[&e.from.to_string(), &def.id]), false);
     }
     for p in &def.problems {
         out(&p.in_file(&def.file), true);
@@ -763,7 +772,8 @@ fn approve(args: &[String]) -> i32 {
             for w in &own {
                 out(&format!("! {w}"), true);
             }
-            return fail("承認できない: 上の警告を直してから（警告がある間は何も確認できない）");
+            let why: Vec<&str> = own.iter().map(|w| msg::uncoded(w)).collect();
+            return fail(&msg::line(msg::APPROVE_BLOCKED, &[&why.join(" / ")]));
         }
     }
     let def: Def = match client::call(&Request::Show { id: id.clone() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
@@ -775,10 +785,10 @@ fn approve(args: &[String]) -> i32 {
             for p in &def.problems {
                 out(&p.in_file(&def.file), true);
             }
-            return fail(&format!("{}: 定義の誤りがあり、承認できない", def.file));
+            return fail(&msg::line(msg::APPROVE_INVALID, &[&def.file]));
         }
         Standing::Confirmed => {
-            out(&format!("{}: すでに確認済み", def.file), false);
+            out(&msg::note(msg::N_APPROVE_ALREADY, &[&def.file]), false);
             return 0;
         }
         Standing::Unconfirmed => {}
@@ -797,11 +807,11 @@ fn approve(args: &[String]) -> i32 {
             say(&l, false);
         }
     }
-    say("確かめたなら y を入力（それ以外は未確認のまま）:", false);
+    say(&msg::note(msg::N_APPROVE_ASK, &[]), false);
     let mut answer = String::new();
     let _ = std::io::stdin().read_line(&mut answer);
     if !answer.trim().eq_ignore_ascii_case("y") {
-        return fail(&format!("{}: 未確認のまま", def.file));
+        return fail(&msg::line(msg::CMD_APPROVE_DECLINED, &[&def.file]));
     }
     match client::call(&Request::Approve { id, sha256: def.sha256 }) {
         Ok(text) => {
@@ -836,12 +846,12 @@ fn next(args: &[String]) -> i32 {
         Ok(s) => s,
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
-    let Some(def) = snap.defs.iter().find(|d| d.id == id) else { return fail(&format!("定義がない: {id}")) };
+    let Some(def) = snap.defs.iter().find(|d| d.id == id) else { return fail(&msg::line(msg::JOBNET_MISSING, &[&id])) };
     let Some(net) = &def.net else {
         for p in &def.problems {
             out(&p.in_file(&def.file), true);
         }
-        return fail(&format!("{}: 定義の誤り", def.file));
+        return fail(&msg::line(msg::CMD_NEXT_INVALID, &[&def.file]));
     };
     let cal = def.calendar.as_deref().and_then(|c| snap.calendars.get(c));
     let now = ito_common::now::now_local().naive_local();
@@ -1185,13 +1195,13 @@ fn pick_days(id: &str, days: &[NaiveDate], only: Only, dry: bool) -> Result<Vec<
             out(&backfill_line(&t, *date, *day, only), false);
         }
     } else if picked.is_empty() {
-        out("流す日はない", false);
+        out(&msg::note(msg::N_BACKFILL_NONE, &[]), false);
     } else {
         let list: Vec<String> = picked.iter().map(NaiveDate::to_string).collect();
-        out(&format!("{} 日のうち {} 日を流す: {}", days.len(), picked.len(), list.join(", ")), false);
+        out(&msg::note(msg::N_BACKFILL_PICKED, &[&days.len().to_string(), &picked.len().to_string(), &list.join(", ")]), false);
     }
     if seen.iter().any(|(_, d)| matches!(d, koyomi_core::backfill::Day::Gone)) {
-        out("記録が残っていない日は流さない。範囲の日を全部流すなら --only を外す", false);
+        out(&msg::note(msg::N_BACKFILL_GONE, &[]), false);
     }
     Ok(picked)
 }
@@ -1213,11 +1223,11 @@ fn standby_refusal() -> Option<String> {
 /// One day of `run --only --dry`: whether it runs, and why.
 fn backfill_line(t: &ito_i18n::Table, date: NaiveDate, day: koyomi_core::backfill::Day, only: Only) -> String {
     use koyomi_core::backfill::Day;
-    let verdict = if day.picked(only) { "流す    " } else { "流さない" };
+    let verdict = msg::note(if day.picked(only) { msg::N_BACKFILL_RUN } else { msg::N_BACKFILL_SKIP }, &[]);
     let why = match day {
-        Day::NotPlanned => "予定のない日".to_owned(),
-        Day::Nothing => "実行の記録がない".to_owned(),
-        Day::Gone => "記録が残っていない（keep_days より前）".to_owned(),
+        Day::NotPlanned => msg::note(msg::N_DAY_NOT_PLANNED, &[]),
+        Day::Nothing => msg::note(msg::N_DAY_NOTHING, &[]),
+        Day::Gone => msg::note(msg::N_DAY_GONE, &[]),
         Day::NotStarted(r) | Day::Skipped(r) | Day::Ran(r) => {
             let reason = if r.reason.is_empty() { String::new() } else { format!("  {}", koyomi_core::run::one_line(&r.reason)) };
             format!("{}  {}{reason}", show::tag(t, r.state), r.id)
@@ -1300,7 +1310,7 @@ fn started(reply: Result<String, String>, wait: bool) -> i32 {
             Ok(rs) => rs.into_iter().find(|r| r.id == run),
             Err(e) => return fail(&e),
         };
-        let Some(r) = found else { return fail(&format!("実行が見当たらない: {run}")) };
+        let Some(r) = found else { return fail(&msg::line(msg::RUN_NOT_FOUND, &[&run.to_string()])) };
         if r.is_over() {
             say_runs(&t, std::slice::from_ref(&r));
             return i32::from(!r.state.passed());
@@ -1325,7 +1335,7 @@ fn status(args: &[String]) -> i32 {
     }
     let t = table();
     if rs.is_empty() {
-        out(if today { t.tr("run.none") } else { "動いている実行はありません" }, false);
+        out(&if today { t.tr("run.none").to_owned() } else { msg::note(msg::N_RUN_NONE_RUNNING, &[]) }, false);
     }
     // The last 30 days tell how long each running net usually takes.
     let past = {
@@ -1610,7 +1620,7 @@ fn new_cmd(args: &[String]) -> i32 {
     let [id] = args else { return usage("new takes one group/name") };
     let id = id.replace('\\', "/");
     let Some((group, name)) = id.split_once('/').filter(|_| koyomi_core::jobnet::is_id(&id)) else {
-        return fail(&format!("グループ/名前 の形で書く: {id}"));
+        return fail(&msg::line(msg::JOBNET_ID_FORM, &[&id]));
     };
     let paths = match engine::Paths::find() {
         Ok(p) => p,
@@ -1618,17 +1628,17 @@ fn new_cmd(args: &[String]) -> i32 {
     };
     let path = paths.jobnets.join(group).join(format!("{name}.toml"));
     if path.exists() {
-        return fail(&format!("もうある: {}", path.display()));
+        return fail(&msg::line(msg::CMD_FILE_EXISTS, &[&path.display().to_string()]));
     }
     if let Some(dir) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            return fail(&format!("{} を作れない: {e}", dir.display()));
+            return fail(&msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]));
         }
     }
     if let Err(e) = ito_common::write_atomic(&path, koyomi_core::write::template(name)) {
         return fail(&e);
     }
-    out(&format!("書いた: {}（未確認。窓か koyomi approve で確かめてから流す）", path.display()), false);
+    out(&msg::note(msg::N_NEW_WROTE, &[&path.display().to_string()]), false);
     0
 }
 
@@ -1649,7 +1659,7 @@ fn versions(args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     if v.versions.is_empty() {
-        out(&format!("版はまだ無い: {id}"), false);
+        out(&msg::note(msg::N_VERSIONS_NONE, &[&id]), false);
     } else {
         out(&v.versions.join("\n"), false);
     }
@@ -1699,11 +1709,11 @@ fn delete(args: &[String]) -> i32 {
             out(&used, true);
         }
     }
-    say(&format!("{id} を消すなら y を入力（前の形は版に残る）:"), false);
+    say(&msg::note(msg::N_DELETE_ASK, &[&id]), false);
     let mut answer = String::new();
     let _ = std::io::stdin().read_line(&mut answer);
     if !answer.trim().eq_ignore_ascii_case("y") {
-        return fail(&format!("{id}: 消さなかった"));
+        return fail(&msg::line(msg::CMD_DELETE_DECLINED, &[&id]));
     }
     ask_and_say(&Request::Delete { id })
 }
@@ -1731,12 +1741,12 @@ fn stage(args: &[String]) -> i32 {
 
 /// The change from the net's file now to `file`, then `y` stages it for `from` (approved).
 fn stage_file(id: &str, file: &str, from: &str) -> i32 {
-    let text = match std::fs::read(file)
-        .map_err(|e| e.to_string())
-        .and_then(|b| String::from_utf8(b).map_err(|_| "UTF-8 の文字として読めない".to_owned()))
-    {
-        Ok(t) => t,
-        Err(e) => return fail(&format!("{file} が読めない: {e}")),
+    let text = match std::fs::read(file) {
+        Ok(b) => match String::from_utf8(b) {
+            Ok(t) => t,
+            Err(_) => return fail(&msg::line(msg::DEF_NOT_UTF8, &[file])),
+        },
+        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[file, &e.to_string()])),
     };
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
     let now: Def = match client::call(&Request::Show { id: id.to_owned() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
@@ -1744,17 +1754,17 @@ fn stage_file(id: &str, file: &str, from: &str) -> i32 {
         Err(e) => return fail(&format!("koyomi: {e}")),
     };
     if now.text == text {
-        return fail(&format!("今の定義と同じ中身: {id}"));
+        return fail(&msg::line(msg::CMD_STAGE_SAME, &[id]));
     }
-    say(&format!("{id} を {from} からこの形にする（- 今の定義 / + 次の定義）:"), false);
+    say(&msg::note(msg::N_STAGE_HEAD, &[id, from]), false);
     for l in review::diff_text(&ito_diff::diff(&now.text, &text, 3)) {
         say(&l, false);
     }
-    say("確かめたなら y を入力（承認して置く。それ以外は置かない）:", false);
+    say(&msg::note(msg::N_STAGE_ASK, &[]), false);
     let mut answer = String::new();
     let _ = std::io::stdin().read_line(&mut answer);
     if !answer.trim().eq_ignore_ascii_case("y") {
-        return fail(&format!("{id}: 置かなかった"));
+        return fail(&msg::line(msg::CMD_STAGE_DECLINED, &[id]));
     }
     ask_and_say(&Request::Stage { id: id.to_owned(), text, from: from.to_owned(), expect: None })
 }
@@ -1788,7 +1798,7 @@ fn export(args: &[String]) -> i32 {
     let Some(to) = to else { return usage("export takes -o <file>") };
     let path = std::path::Path::new(&to);
     if path.exists() {
-        return fail(&format!("もうある: {}", path.display()));
+        return fail(&msg::line(msg::CMD_FILE_EXISTS, &[&path.display().to_string()]));
     }
     let paths = match engine::Paths::find() {
         Ok(p) => p,
@@ -1800,19 +1810,21 @@ fn export(args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     if bundle.is_empty() {
-        return fail("書き出すものがない");
+        return fail(&msg::line(msg::EXPORT_NOTHING, &[]));
     }
     if let Err(e) = ito_common::write_atomic(path, bundle.to_toml()) {
         return fail(&e);
     }
+    let wrote = if bundle.settings.is_some() { msg::N_EXPORT_WROTE_SETTINGS } else { msg::N_EXPORT_WROTE };
     out(
-        &format!(
-            "書いた: {}（ジョブネット {}、グループ {}、カレンダー {}{}）",
-            path.display(),
-            bundle.jobnets.len(),
-            bundle.groups.len(),
-            bundle.calendars.len(),
-            if bundle.settings.is_some() { "、設定（webhook の宛先は *** にした）" } else { "" }
+        &msg::note(
+            wrote,
+            &[
+                &path.display().to_string(),
+                &bundle.jobnets.len().to_string(),
+                &bundle.groups.len().to_string(),
+                &bundle.calendars.len().to_string(),
+            ],
         ),
         false,
     );
@@ -1852,9 +1864,9 @@ fn import(args: &[String]) -> i32 {
     let text = match std::fs::read(&file) {
         Ok(b) => match port_text(&b) {
             Some(t) => t,
-            None => return fail(&format!("{file} を読めない: UTF-8 でも UTF-16 でもない")),
+            None => return fail(&msg::line(msg::FILE_ENCODING_UNKNOWN, &[&file])),
         },
-        Err(e) => return fail(&format!("{file} を読めない: {e}")),
+        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[&file, &e.to_string()])),
     };
     let answer = match client::call(&Request::Import { text, dry_run, on_conflict }) {
         Ok(t) => t,
@@ -1870,23 +1882,20 @@ fn import(args: &[String]) -> i32 {
     };
     out(&plan.lines.join("\n"), false);
     if plan.applied {
-        out("取り込んだ（ジョブネットは未確認。窓か koyomi approve で確かめてから流す）", false);
+        out(&msg::note(msg::N_IMPORT_DONE, &[]), false);
         return 0;
     }
     if plan.problems > 0 {
-        return fail(&format!("問題が {} 件あるので取り込まない", plan.problems));
+        return fail(&msg::line(msg::IMPORT_PROBLEMS, &[&plan.problems.to_string()]));
     }
     if plan.undecided {
-        return fail(&format!(
-            "今あるものと違うものが {} 件ある: --on-conflict overwrite（上書き。前の中身は versions/ に残る）、rename（名前を変えて足す）か skip（飛ばす）で決める",
-            plan.conflicts
-        ));
+        return fail(&msg::line(msg::CMD_IMPORT_CONFLICT, &[&plan.conflicts.to_string()]));
     }
     if !plan.writes {
-        out("書くものはない（全部同じか、飛ばす）", false);
+        out(&msg::note(msg::N_IMPORT_NOTHING, &[]), false);
         return 0;
     }
-    out("まだ取り込んでいない（--dry-run）", false);
+    out(&msg::note(msg::N_IMPORT_DRY, &[]), false);
     1
 }
 
@@ -2028,17 +2037,17 @@ fn engine_cmd(args: &[String]) -> i32 {
                 0
             }
             Err(_) => {
-                out("koyomi: エンジンは動いていない", true);
+                out(&format!("koyomi: {}", msg::line(msg::ENGINE_NOT_RUNNING, &[])), true);
                 1
             }
         },
         [a] if a == "stop" => match ask(&proto::door(), &Request::Stop) {
             Ok(_) => {
-                out("koyomi: エンジンを止めた", false);
+                out(&format!("koyomi: {}", msg::note(msg::N_CLI_ENGINE_STOPPED, &[])), false);
                 0
             }
             Err(_) => {
-                out("koyomi: エンジンは動いていない", true);
+                out(&format!("koyomi: {}", msg::line(msg::ENGINE_NOT_RUNNING, &[])), true);
                 1
             }
         },
@@ -2049,9 +2058,9 @@ fn engine_cmd(args: &[String]) -> i32 {
 /// Whether the engine starts at sign-in, in a line.
 fn startup_line() -> String {
     match ito_common::startup::enabled("koyomi") {
-        true if crate::service::state().is_some() => "サインイン時の起動: あり（トレイだけ。エンジンはサービス）".to_owned(),
-        true => "サインイン時の起動: あり".to_owned(),
-        false => "サインイン時の起動: なし".to_owned(),
+        true if crate::service::state().is_some() => msg::note(msg::N_STARTUP_TRAY, &[]),
+        true => msg::note(msg::N_STARTUP_ON, &[]),
+        false => msg::note(msg::N_STARTUP_OFF, &[]),
     }
 }
 
@@ -2070,12 +2079,12 @@ fn secret_cmd(args: &[String]) -> i32 {
             if value.is_empty() {
                 return usage("secret set reads the value from stdin; it was empty");
             }
-            ito_secret::set("koyomi", name, value).map(|()| format!("koyomi: 秘密 {name} を保存した"))
+            ito_secret::set("koyomi", name, value).map(|()| format!("koyomi: {}", msg::note(msg::N_SECRET_SAVED, &[name])))
         }
-        "delete" => ito_secret::delete("koyomi", name).map(|()| format!("koyomi: 秘密 {name} を消した")),
+        "delete" => ito_secret::delete("koyomi", name).map(|()| format!("koyomi: {}", msg::note(msg::N_SECRET_DELETED, &[name]))),
         "check" => ito_secret::get("koyomi", name).map(|v| match v {
-            Some(_) => format!("koyomi: 秘密 {name} はある"),
-            None => format!("koyomi: 秘密 {name} はない"),
+            Some(_) => format!("koyomi: {}", msg::note(msg::N_SECRET_EXISTS, &[name])),
+            None => format!("koyomi: {}", msg::note(msg::N_SECRET_ABSENT, &[name])),
         }),
         _ => return usage("secret takes set, delete or check, and a name"),
     };
@@ -2116,16 +2125,14 @@ fn startup_cmd(args: &[String]) -> i32 {
     }
     match ito_common::startup::set("koyomi", &exe, &startup_args(), on) {
         Ok(()) => {
-            out(
-                if on && crate::service::state().is_some() {
-                    "koyomi: サインイン時にトレイを起動する（エンジンはサービス）"
-                } else if on {
-                    "koyomi: サインイン時にエンジンを起動する"
-                } else {
-                    "koyomi: サインイン時には起動しない"
-                },
-                false,
-            );
+            let set = if on && crate::service::state().is_some() {
+                msg::N_STARTUP_SET_TRAY
+            } else if on {
+                msg::N_STARTUP_SET_ENGINE
+            } else {
+                msg::N_STARTUP_SET_OFF
+            };
+            out(&format!("koyomi: {}", msg::note(set, &[])), false);
             0
         }
         Err(e) => {
@@ -2165,6 +2172,7 @@ mod tests {
     fn an_exe_in_temp_is_refused_unless_allowed() {
         let exe = std::path::Path::new(r"C:\Users\a\AppData\Local\Temp\x\koyomi.com");
         let e = super::temp_words(exe, true, false).expect_err("Temp is refused");
+        assert!(koyomi_core::msg::EXE_IN_TEMP.is_in(&e));
         assert!(e.contains("Temp") && e.contains("Program Files") && e.contains(super::ALLOW_TEMP));
         assert_eq!(super::temp_words(exe, true, true), Ok(()));
         assert_eq!(super::temp_words(exe, false, false), Ok(()));
@@ -2189,9 +2197,17 @@ mod tests {
         .unwrap();
         let w = super::group_warnings(&config, &net);
         assert_eq!(w.len(), 3, "{w:?}");
-        assert_eq!(w[0], "a: 組 web の ssh://ops@web1 に host_key がなく、ジョブにもない");
-        assert!(w[1].starts_with("b: ") && koyomi_core::msg::CFG_GROUP_MISSING.is_in(&w[1][3..]), "{}", w[1]);
-        assert!(w[2].starts_with("e: ") && koyomi_core::msg::CFG_GROUP_WRONG_KIND.is_in(&w[2][3..]), "{}", w[2]);
+        // Each is the job it is about and the line, so the job's name is in what a person reads.
+        assert_eq!(w[0].0, "a");
+        assert_eq!(w[0].1, koyomi_core::msg::line(koyomi_core::msg::CHECK_GROUP_KEY_MISSING, &["web", "ssh://ops@web1", "host_key"]));
+        assert!(w[0].1.contains("web") && w[0].1.contains("ssh://ops@web1") && w[0].1.contains("host_key"));
+        assert_eq!(w[1].0, "b");
+        assert!(koyomi_core::msg::CFG_GROUP_MISSING.is_in(&w[1].1), "{}", w[1].1);
+        assert_eq!(w[2].0, "e");
+        assert!(koyomi_core::msg::CFG_GROUP_WRONG_KIND.is_in(&w[2].1), "{}", w[2].1);
+        // And `check` puts the job's name beside the line without moving the ID from its head.
+        let shown = super::named(&koyomi_core::msg::note(koyomi_core::msg::N_CHECK_PLACE_JOB, &["f.toml", "b"]), &w[1].1);
+        assert!(koyomi_core::msg::CFG_GROUP_MISSING.is_in(&shown) && shown.contains("f.toml"), "{shown}");
     }
 
     #[test]

@@ -466,7 +466,7 @@ error low",
         let (ja, _) = crate::i18n::table("ja");
         let (en, _) = crate::i18n::table("en");
         assert_eq!(event_row(&ja, &whens[0]).as_deref(), Some("画面をロックしたとき"));
-        assert_eq!(event_row(&ja, &whens[1]).as_deref(), Some("画面のロックを解いたとき（PC\\taro だけ）"));
+        assert_eq!(event_row(&ja, &whens[1]).as_deref(), Some("画面のロックを解除したとき（PC\\taro だけ）"));
         assert_eq!(event_row(&en, &whens[1]).as_deref(), Some("When the screen is unlocked (PC\\taro only)"));
     }
 
@@ -561,12 +561,12 @@ run = [\"x\"]
         let mut s = Sleep { after: Some(1800), wake: false, cannot: None };
         let rows = next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[]);
         assert_eq!(rows[0], "2026-10-30（金）09:10", "within 30 minutes: awake still");
-        assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30分で眠る設定。起こさなければ動かない");
+        assert_eq!(rows[1], "2026-10-30（金）10:00  この PC は 30分で眠る設定です。起こさなければ実行されません。");
         s.wake = true;
-        assert!(next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1].ends_with("PC を起こして流す"));
+        assert!(next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1].ends_with("PC を起こして実行する"));
         s.cannot = Some("battery".into());
         let row = &next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1];
-        assert!(row.contains("起こせない") && row.contains("バッテリー"), "{row}");
+        assert!(row.contains("起こせません") && row.contains("バッテリー"), "{row}");
         s.after = None;
         assert_eq!(
             next_rows(&ja, &whens, (&[], OnQuiet::Wait), None, now, 2, Some(&s), &[])[1],

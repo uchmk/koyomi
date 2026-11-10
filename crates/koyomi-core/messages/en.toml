@@ -9,6 +9,7 @@ a34 = "Job definitions"
 a35 = "Job targets and file paths"
 a36 = "Import and export"
 a37 = "Running the engine"
+a38 = "Commands"
 a41 = "Calendars"
 
 [page]
@@ -23,6 +24,162 @@ warning = "Warning"
 message = "Message"
 cause = "Cause"
 action = "Action"
+
+[E1045]
+when = "When a service is used that is not installed"
+text = "Service {0} is not installed."
+cause = "Service {0} is not installed on this PC."
+action = "To install the service, run koyomi service install."
+
+[E1046]
+when = "When the service is installed although it is already installed"
+text = "Service {0} is already installed."
+cause = "A service of the same name is installed on this PC."
+action = "To install it again, run koyomi service uninstall first, and then install it."
+
+[E1047]
+when = "When no password is entered to install the service"
+text = "No password was given."
+cause = "A service cannot be installed for an account that has no password (one that uses only a PIN)."
+action = "Run it again with an account that has a password."
+
+[E1048]
+when = "When the service is started while the engine started at sign-in is running"
+text = "The service cannot be started because the engine started at sign-in is running."
+cause = "Two engines cannot run at the same time."
+action = "Stop the engine with koyomi engine stop, and then run koyomi service start."
+
+[E1049]
+when = "When the service stops right after it is started"
+text = "Service {0} stopped right after it started."
+cause = "The service's engine may have ended with an error while starting."
+action = "Check {1}."
+
+[E1050]
+when = "When the service is started but its engine does not answer"
+text = "The engine of service {0} did not answer within {1} seconds."
+cause = "The service started, but the engine does not accept connections."
+action = "Check the state of the service with koyomi service status."
+
+[E1051]
+when = "When koyomi service run is run although it was not started as a service"
+text = "koyomi service run can only run when it is started as a Windows service."
+cause = "This command is meant to be run by the Windows service manager."
+action = "To run the engine by hand, run koyomi engine."
+
+[E1052]
+when = "When a service is used on a system other than Windows"
+text = "Services can only be used on Windows."
+cause = "koyomi service cannot be used on the OS of this PC."
+action = "Run it on a Windows PC."
+
+[E1053]
+when = "When a service is used without administrator rights"
+text = "Administrator rights are required."
+cause = "Administrator rights are required to operate a service."
+action = "Run it again in a terminal opened with \"Run as administrator\"."
+
+[E1054]
+when = "When the service name cannot be used as a service name"
+text = "The service name {0} cannot be used."
+cause = "The name made from the user name may not be usable as a service name."
+action = "Run it again as a user whose name can be used in a service name."
+
+[E1055]
+when = "When the account to run the service as cannot be used"
+text = "Account {0} does not exist, or it has no password."
+cause = "The account does not exist, or it has no password (it uses only a PIN)."
+action = "Run it again with an account that has a password."
+
+[E1056]
+when = "When the service cannot sign in"
+text = "The service could not sign in."
+cause = "The password entered when installing is not correct."
+action = "Check the password. If the password was changed, run koyomi service uninstall and install the service again."
+
+[E1057]
+when = "When the state of the service does not change in time"
+text = "The state of the service did not change in time."
+cause = "Starting or stopping the service did not finish."
+action = "Check the state of the service with koyomi service status."
+
+[E1058]
+when = "When the service is installed where a password cannot be entered"
+text = "A password cannot be entered."
+cause = "There is no console to enter the password on."
+action = "Run koyomi.com service install from a terminal, or pass the password through a pipe."
+
+[E1059]
+when = "When Windows refuses a service operation"
+text = "Windows refused the service operation. (error {0})"
+cause = "The Windows service manager returned error {0}."
+action = "Check the state and the rights of the service, using the error number."
+
+[E1060]
+when = "When an exe in a Temp folder is given to the service or the sign-in start-up"
+text = "{0} is in a Temp folder, so it cannot be used for the service or the start-up at sign-in."
+cause = "Files in a Temp folder are deleted by cleanup."
+action = "Place it in ~\\.cargo\\bin or Program Files, and run it from there. For a test, set the environment variable KOYOMI_ALLOW_TEMP=1."
+
+[E1061]
+when = "When the engine is started but does not answer"
+text = "The engine did not start."
+cause = "The engine was started, but it did not come to accept connections."
+action = "Run koyomi engine and check what it shows."
+
+[E1062]
+when = "When the service's engine is stopped (Windows)"
+text = "The service's engine is stopped."
+cause = "The service is installed and stopped. Another engine cannot be started beside it."
+action = "Run koyomi service start to start the service."
+
+[E1063]
+when = "When the service's engine is stopped (Linux)"
+text = "The service's engine is stopped."
+cause = "The service is installed and stopped. Another engine cannot be started beside it."
+action = "Run sudo systemctl start koyomi to start the service."
+
+[E1064]
+when = "When the state of the service cannot be read"
+text = "The engine is not started because the state of the service cannot be read. ({0})"
+cause = "If the service is installed, another engine started beside it would conflict with the service's engine."
+action = "Check the state of the service, and run it again."
+
+[E1065]
+when = "When the engine's process cannot be started"
+text = "The engine cannot be started. ({0})"
+cause = "The engine's process could not be created."
+action = "Run koyomi engine and see whether it starts directly."
+
+[E1066]
+when = "When --keys is used without the environment variable KOYOMI_ADDRESS"
+text = "KOYOMI_ADDRESS is not set."
+cause = "The screen of --keys connects to the real engine. Without a different name for each run, the jobs of the real engine would be run."
+action = "Set the environment variable KOYOMI_ADDRESS to a different value for each run, and run it again."
+
+[E1067]
+when = "When the engine is not running"
+text = "The engine is not running."
+cause = "Nothing answered at the engine's address on this PC."
+action = "Run koyomi engine, or open the screen to start the engine."
+
+[W1068]
+when = "When a notify place a jobnet names is not in [notify] of koyomi.toml"
+text = "The notify place {0} named by the jobnet is not in [notify] of koyomi.toml."
+cause = "Neither a webhook nor a mail is sent to a name that does not exist."
+action = "Add the place to [notify], or correct the name of the place in the jobnet."
+
+[W1069]
+when = "When a variable a jobnet uses is not in [vars] of koyomi.toml"
+text = "The value of the variable {0} is not in [vars] of koyomi.toml. A job that uses this variable ends with an error when it runs."
+cause = "The jobnet uses the variable {0}, but {0} is not given in [vars]."
+action = "Add {0} to [vars] of koyomi.toml, or correct the name of the variable in the jobnet."
+
+[W1070]
+when = "When a PC of a group has no host key or certificate and the job has none either"
+text = "The PC {1} of group {0} has no {2}, and the job has none either. This job ends with an error when it runs."
+cause = "Without a {2} on the PC of the group or on the job, the other side cannot be verified."
+action = "Give {2} to this PC in [groups] of koyomi.toml, or give {2} to the job."
 
 [E2101]
 when = "The engine at a connection cannot be reached"
@@ -336,6 +493,12 @@ text = "Jobnet {0}, mailbox {1}: cannot read the mailbox. ({2})"
 cause = "Reading the mailbox failed with an error that is not one of the above."
 action = "Check the state of the mail server and the settings of the mailbox."
 
+[E2178]
+when = "When the jobnet on a remote is changed after it was read"
+text = "The jobnet {1} on remote {0} was changed after it was read."
+cause = "The same jobnet was changed on the remote after it was read."
+action = "Read the definition on the remote again, and send it again."
+
 [E2201]
 when = "Your role does not allow an action"
 text = "User {0} has the {1} role. This action needs the {2} role."
@@ -395,6 +558,60 @@ when = "Taking over or copying definitions from a connection lacks a role"
 text = "{0} refused the request. The user of the token needs the {1} role."
 cause = "The role of the user of the token is lower than {1}, or the user is narrowed by nets."
 action = "In [http] of the connection, give a user who is not narrowed by nets the {1} role or higher."
+
+[E3801]
+when = "When the file to write already exists"
+text = "The file {0} already exists. It is not written over."
+cause = "An existing file is never written over."
+action = "Give another file name, or delete the existing file, and run it again."
+
+[E3802]
+when = "When something other than y is entered at the question about deleting a jobnet"
+text = "The jobnet {0} was not deleted."
+cause = "What was entered at the question was not y."
+action = "To delete it, run it again and enter y."
+
+[E3803]
+when = "When something other than y is entered at the question about confirming a jobnet"
+text = "The file {0} was not confirmed."
+cause = "What was entered at the question was not y. The jobnet stays unconfirmed."
+action = "To confirm it, run it again and enter y."
+
+[E3804]
+when = "When something other than y is entered at the question about staging the next definition"
+text = "The next definition of the jobnet {0} was not staged."
+cause = "What was entered at the question was not y."
+action = "To stage it, run it again and enter y."
+
+[E3805]
+when = "When something other than y is entered at the question about sending a jobnet"
+text = "The jobnet {0} was not sent."
+cause = "What was entered at the question was not y."
+action = "To send it, run it again and enter y."
+
+[E3806]
+when = "When the file given as the next definition is the same as the definition now"
+text = "The file has the same content as the definition of the jobnet {0} now, so it is not staged as the next definition."
+cause = "The content of the given file is the same as the definition now."
+action = "Give a file whose content differs from the definition now."
+
+[E3807]
+when = "When the next times of a jobnet whose definition has errors are asked for"
+text = "The next times of {0} cannot be shown because its definition has errors."
+cause = "Times cannot be worked out from a definition with errors."
+action = "Correct the errors in the definition, and run it again."
+
+[E3808]
+when = "When some of what is imported differs from what exists and no handling is given"
+text = "{0} items differ from what already exists."
+cause = "The names collide with existing ones, and --on-conflict does not say what to do."
+action = "Give --on-conflict one of overwrite (writes over; the earlier content stays in versions/), rename (adds under another name) or skip."
+
+[E3809]
+when = "When a jobnet whose definition has errors is sent to a remote"
+text = "The jobnet {0} cannot be sent because its definition has errors."
+cause = "A definition with errors cannot be sent to a remote."
+action = "Check the errors with koyomi show {0}, correct them, and run it again."
 
 [E4101]
 when = "A calendar of that name already exists"
@@ -3824,3 +4041,83 @@ primary_back = "{0} handed the schedules back. This PC runs them."
 primary_nobody = "{0} does not answer, so this PC runs the schedules."
 primary_unclear = "The state of {0} cannot be checked, so this PC runs the schedules."
 primary_held_told = "{0} has taken over. This PC runs no schedule and no event until they are handed back."
+service_none = "The service is not installed. You can install it with koyomi service install."
+service_line = "Service {0}: {1}"
+service_running = "running (pid {0})"
+service_starting = "starting"
+service_stopping = "stopping"
+service_stopped = "stopped (you can start it with koyomi service start)"
+service_password_ask = "Password of {0} (the one used to sign in to Windows): "
+service_description = "The engine that runs jobnets. It runs even when nobody is signed in."
+service_installed = "Service {0} is installed. It starts a little after the PC starts."
+service_installed_tray = "At sign-in, only the tray is started."
+service_installed_busy = "The engine started at sign-in is running now. Stop it with koyomi engine stop, and then start the service with koyomi service start."
+service_removed = "Service {0} is uninstalled."
+service_then_engine = "At sign-in, the engine is started again."
+service_then_screen = "The engine starts when the screen is opened. To start it at sign-in, run koyomi startup on."
+service_then_temp = "The start-up at sign-in still starts only the tray. This exe is in a Temp folder, so the setting was not changed. Run koyomi startup on with the koyomi in the place where you put it."
+service_started = "Service {0} is started."
+service_stopped_done = "Service {0} is stopped. The processes of the running jobs are ended."
+check_ok = "{0}: No problem."
+check_ok_holidays = "{0}: No problem. It holds {3} holidays of {1} to {2}, and holidays are known until {4}."
+check_place_job = "job {1} of {0}"
+list_paused = "{0} The schedule is stopped. You can resume it with koyomi resume."
+list_staged = "→ it switches to the next definition from {0}: {1}"
+show_staged = "→ it switches to the next definition from {0}. (To take it back, run koyomi stage {1} --cancel)"
+approve_already = "{0}: Already confirmed."
+approve_ask = "If you have checked it, enter y (anything else leaves it unconfirmed):"
+backfill_none = "There is no day to run."
+backfill_picked = "Of {0} days, {1} will run: {2}"
+backfill_gone = "Days with no record kept are not run. To run every day of the range, leave out --only."
+backfill_run = "run       "
+backfill_skip = "do not run"
+day_not_planned = "not planned"
+day_nothing = "no run recorded"
+day_gone = "no record kept (before keep_days)"
+run_none_running = "Nothing is running."
+new_wrote = "Created: {0} (unconfirmed; confirm it on the screen or with koyomi approve before it runs)"
+versions_none = "{0} has no version yet."
+delete_ask = "To delete {0}, enter y (the earlier content stays in the versions):"
+stage_head = "{0} switches to this form from {1}. (- the definition now / + the next definition)"
+stage_ask = "If you have checked it, enter y (it is approved and put in place; anything else does not put it in place):"
+export_wrote = "Wrote {0}. ({1} jobnets, {2} groups, {3} calendars)"
+export_wrote_settings = "Wrote {0}. ({1} jobnets, {2} groups, {3} calendars, the settings; the addresses of webhooks are replaced with ***)"
+import_done = "Imported. The jobnets are unconfirmed; confirm them on the screen or with koyomi approve before they run."
+import_nothing = "There is nothing to write. (Everything is the same, or skipped.)"
+import_dry = "Not imported yet. (--dry-run)"
+cli_engine_stopped = "The engine is stopped."
+startup_tray = "Start at sign-in: yes (the tray only; the service starts the engine)"
+startup_on = "Start at sign-in: yes"
+startup_off = "Start at sign-in: no"
+startup_set_tray = "The tray will start at sign-in. The service starts the engine."
+startup_set_engine = "The engine will start at sign-in."
+startup_set_off = "Nothing will start at sign-in."
+secret_saved = "Secret {0} is saved."
+secret_deleted = "Secret {0} is deleted."
+secret_exists = "Secret {0} exists."
+secret_absent = "Secret {0} does not exist."
+plan_weekdays = "Mon Tue Wed Thu Fri Sat Sun"
+plan_title = "Run plan for {0}-{1}"
+remote_fp_hint = "Give it in [[remote]] of koyomi.toml on the other PC as fingerprint = \"…\". [http] on this PC needs lan = true."
+remote_none = "No [[remote]] is given. Give name, url, fingerprint and token in koyomi.toml."
+remote_answered = "answered"
+remote_peek_hint = "Run koyomi http fingerprint on the remote PC, check that it shows the same value, and then give it in [[remote]]."
+remote_status = "{0}: {1} (koyomi {2})"
+remote_paused = "(stopped: you can resume with koyomi resume)"
+remote_held = "held"
+remote_no_nets = "There is no jobnet."
+remote_running = "running"
+remote_no_runs = "There is no run today."
+remote_run_done = "{0}: ran jobnet {1}. ({2})"
+remote_renamed = "Renamed {0} to {1}."
+remote_renamed_ack = "Renamed {0} to {1}. The mark of confirmation could not be moved to the new name. ({2})"
+remote_removed = "Removed {0}."
+remote_removed_secret_left = "Removed {0}. Secret {1} could not be deleted and is left. ({2})"
+remote_removed_secret_kept = "Removed {0}. Secret {1} is kept. If nothing else uses it, you can delete it with koyomi secret delete {1}."
+send_same = "{1} on {0} has the same content as on this PC (not sent)"
+send_diff = "Sending {1} to {0}. (- the definition there now / + the definition on this PC)"
+send_new = "{0} does not have {1}. It will be added."
+send_unconfirmed_here = "This definition is not confirmed on this PC either."
+send_ask = "Once sent, it is put in place unconfirmed on the remote and does not run until it is confirmed on the remote's screen. To send it, enter y (anything else does not send it):"
+send_done = "Sent to {0}: {1} (unconfirmed there; it does not run until confirmed on the screen of {0})"
+send_done_same = "Sent to {0}: {1} (it has the same content as the confirmed one there, so it runs as it is)"

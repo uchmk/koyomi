@@ -421,7 +421,7 @@ mod tests {
     #[test]
     fn the_manage_row_is_in_the_list_and_the_add_row_is_gone() {
         let (t, _) = crate::i18n::table("ja");
-        assert_eq!(t.tr("link.manage"), "つなぎ先を管理…");
+        assert_eq!(t.tr("link.manage"), "接続先を管理…");
         let ctx = egui::Context::default();
         let mut h = Hosts::new(&ctx);
         h.toggle();

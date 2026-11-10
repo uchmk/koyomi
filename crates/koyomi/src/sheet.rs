@@ -182,7 +182,8 @@ pub fn write(to: &str, table: &ito_table::Table) -> Result<(), String> {
     }
     let path = Path::new(to);
     let xlsx = path.extension().is_some_and(|e| e.eq_ignore_ascii_case("xlsx"));
-    if xlsx { table.xlsx(path) } else { table.csv(path) }.map_err(|e| format!("{to}: 書けない: {e}"))
+    if xlsx { table.xlsx(path) } else { table.csv(path) }
+        .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_WRITE_FAILED, &[to, &e.to_string()]))
 }
 
 #[cfg(test)]
@@ -241,8 +242,8 @@ mod tests {
         let text = csv(&s);
         let rows: Vec<&str> = text.lines().collect();
         assert_eq!(rows[0], "実行,ジョブネット,ジョブ,終了,ファイル,バイト,SHA-256,照合");
-        assert_eq!(rows[1], format!("20261030-020000-01,g/n,send,2026-10-30 02:00:09,売上 1.csv,3,{},合っていた", "ab".repeat(32)));
-        assert_eq!(rows[2], "20261030-020000-01,g/n,send,2026-10-30 02:00:09,s3://b/x.csv,0,,違っていた");
+        assert_eq!(rows[1], format!("20261030-020000-01,g/n,send,2026-10-30 02:00:09,売上 1.csv,3,{},一致", "ab".repeat(32)));
+        assert_eq!(rows[2], "20261030-020000-01,g/n,send,2026-10-30 02:00:09,s3://b/x.csv,0,,不一致");
         assert_eq!(rows[3], "20261030-020000-01,g/n,send,2026-10-30 02:00:09,plain.csv,7,,");
         assert_eq!(rows.len(), 4, "the job that moved nothing has no row");
         assert!(s.xlsx_bytes().is_ok());

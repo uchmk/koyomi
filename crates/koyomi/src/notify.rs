@@ -684,23 +684,23 @@ run = [\"x\"]
         assert_eq!(title, "⏰ 遅れ  夜間");
         assert_eq!(
             body,
-            "夜間: 22:10 になっても始まっていない
+            "夜間: 22:10 になっても開始されていません
 r  2026-10-30"
         );
         r.start("a", at("2026-10-30 22:15:00"));
         let (_, _, body) = delay_words(&t, &net, &r, Delay::Start, None, at("2026-10-30 22:15:00"));
-        assert!(body.starts_with("夜間: 22:10 を過ぎてから始まった（22:15）"), "{body}");
+        assert!(body.starts_with("夜間: 22:10 を過ぎてから開始されました（22:15）"), "{body}");
         let (_, _, body) = delay_words(&t, &net, &r, Delay::End, None, at("2026-10-31 06:00:00"));
-        assert!(body.starts_with("夜間: 6:00 を過ぎても終わっていない"), "{body}");
+        assert!(body.starts_with("夜間: 6:00 を過ぎても終了していません"), "{body}");
         let (_, _, body) = delay_words(&t, &net, &r, Delay::End, None, now);
         assert!(body.starts_with("夜間: 10/31 6:00 を過ぎても"), "another day says the day: {body}");
         let (_, _, body) = delay_words(&t, &net, &r, Delay::Slow, Some(chrono::Duration::minutes(20)), at("2026-10-30 22:55:00"));
-        assert!(body.starts_with("夜間: いつもは 20分、もう 40分 動いている"), "{body}");
+        assert!(body.starts_with("夜間: いつもは 20分ですが、すでに 40分 実行中です"), "{body}");
         let (event, title, body) = pending_words(&t, "g/n", "夜間", at("2026-10-30 22:00:00"), at("2026-10-30 22:10:00"), now);
         assert_eq!((event, title.as_str()), ("failed", "⏰ 遅れ  夜間"));
         assert_eq!(
             body,
-            "夜間: 22:10 になっても始まっていない
+            "夜間: 22:10 になっても開始されていません
 g/n  22:00"
         );
     }
@@ -784,10 +784,10 @@ run = [\"x\"]
         let (event, title, body) = missed_words(&t, &missed[0]);
         assert_eq!(event, "failed");
         assert_eq!(title, "↷ 時刻を過ぎた  月次締め");
-        assert_eq!(body, "経理/月次締め: 2:00、6:30 の回は時刻を過ぎました（PC が止まっていました）\n20261030-090000-00  2026-10-30\n20261030-090000-01  2026-10-30");
+        assert_eq!(body, "経理/月次締め: 2:00、6:30 の実行は時刻を過ぎました（PC が停止していました）\n20261030-090000-00  2026-10-30\n20261030-090000-01  2026-10-30");
         let two = vec![miss("x", "g/n", "2026-10-29 02:00:00"), miss("y", "g/n", "2026-10-30 02:00:00")];
         let (_, _, body) = missed_words(&t, &two);
-        assert!(body.starts_with("g/n: 10/29 2:00、10/30 2:00 の回は"), "{body}");
+        assert!(body.starts_with("g/n: 10/29 2:00、10/30 2:00 の実行は"), "{body}");
     }
 
     #[test]

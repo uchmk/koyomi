@@ -63,7 +63,7 @@ pub fn row_parts(t: &Table, d: &Def, held: bool) -> (String, Option<String>) {
         (true, false) => (None, None),
         (true, true) => (Some(RunState::Held.mark()), Some(t.tr("state.held").to_owned())),
         (false, false) => (Some(state(d.standing).mark()), Some(word(t, d.standing))),
-        (false, true) => (Some(state(d.standing).mark()), Some(format!("{}・{}", word(t, d.standing), t.tr("state.held")))),
+        (false, true) => (Some(state(d.standing).mark()), Some(t.trf("state.both", &[&word(t, d.standing), t.tr("state.held")]))),
     };
     let mut out = String::new();
     if let Some(m) = mark {
@@ -607,8 +607,8 @@ run_as = {{ user = \"batch\", password = \"secret:batch\" }}
         );
         let d = def(&text, &Store::default());
         let all = jobs(&table(), &d);
-        assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードは秘密 batch）"), "{all:#?}");
-        assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードは秘密 batch）"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードはシークレット batch）"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードはシークレット batch）"), "{all:#?}");
     }
 
     /// A winrm shows its PC, command, certificate, how it logs in and the secret's name.
@@ -629,7 +629,7 @@ after = [\"a\"]
         );
         let d = def(&text, &Store::default());
         let all = jobs(&table(), &d);
-        for want in ["  動かす PC: winrm://CORP\\ops@app01", "  認証: NTLM", "  パスワード: secret:app01"] {
+        for want in ["  実行する PC: winrm://CORP\\ops@app01", "  認証: NTLM", "  パスワード: secret:app01"] {
             assert!(all.iter().any(|l| l == want), "{want}\n{all:#?}");
         }
     }
@@ -665,7 +665,7 @@ after = [\"a\"]
         assert!(!body(&table(), &d).iter().any(|l| l.contains("打ち切り")));
         assert!(!body(&table(), &d).iter().any(|l| l.contains("やり直し")));
         let d = def(&format!("{NET}retry = {{ count = 2, wait = \"5m\" }}\n"), &Store::default());
-        assert!(body(&table(), &d).iter().any(|l| l.ends_with("やり直し: 2 回まで、5m おいて")), "{:?}", body(&table(), &d));
+        assert!(body(&table(), &d).iter().any(|l| l.ends_with("やり直し: 2 回まで、5m 間隔で")), "{:?}", body(&table(), &d));
     }
 
     /// a net that takes a free slot before the others, or gives way, says so; the usual 3 says nothing.
@@ -766,7 +766,7 @@ except = [\"2026-11-01\"]",
         assert!(week(&table(), &d, None, now).is_empty(), "no [[when]] and nothing before: nothing to say");
         store.approve(&d.id, &d.sha256, &d.text);
         let d = def(&NET.replace("2026-10", "2026-11"), &store);
-        assert_eq!(week(&table(), &d, None, now), vec!["7 日の予定はありません"], "a change that leaves no time says so");
+        assert_eq!(week(&table(), &d, None, now), vec!["7 日の予定はありません。"], "a change that leaves no time says so");
         // With a calendar the weekend is not counted: the week has 5 times, not 7.
         let cal = Calendar::parse("会社", "format = 1\nweekly_off = [\"sat\", \"sun\"]\n").unwrap();
         let d = def(DAILY, &Store::default());
