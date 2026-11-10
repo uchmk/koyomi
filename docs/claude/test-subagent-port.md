@@ -12,7 +12,7 @@ fude・yagura・michi に同じ方針を取ってもらうための記録。kura
 | 走らせる道具（`--keys` の実行、証拠、検査器） | ito `scripts/lanes/` | `scripts/lanes.sh sync` が `scripts/` にコピー |
 | 配線の設定 | — | `scripts/lanes.conf`（`isolate=`・`evidence=`・`todo_marks=`・`keys_env=`） |
 
-見た目の subagent `vision` は、Tier 2（AI の見た目判断）が持ち主に承認されていないので移していない。`qa-tester` は移した（`.claude/qa-role.md`・`.claude/skills/qa-audit/SKILL.md`・`.claude/agents/qa-tester.md`）。koyomi 向けに、TESTING.md の照合（job 1）と TESTING-CHECKS.md の照合（job 2）だけにした。テストを行に起こす job 3 は、koyomi に画面なしで描画を回す harness がないので、まだ使わない。push は main に直接（持ち主の許可、verify が ALL OK のとき）。
+見た目の subagent `vision` は、まだ移していない。Tier 2（AI の見た目判断）は持ち主が承認した（2026-11-10、ito の `docs/visual-test.md` 版 2）ので、`tier = 2` の check spec を書いて実際に測るときに、ito の定義の正本（`#vision-agent`）を `.claude/agents/vision.md` に写す。`qa-tester` は移した（`.claude/qa-role.md`・`.claude/skills/qa-audit/SKILL.md`・`.claude/agents/qa-tester.md`）。koyomi 向けに、TESTING.md の照合（job 1）と TESTING-CHECKS.md の照合（job 2）だけにした。テストを行に起こす job 3 は、koyomi に画面なしで描画を回す harness がないので、まだ使わない。push は main に直接（持ち主の許可、verify が ALL OK のとき）。
 
 ## 順番（この順にやると詰まりにくい）
 

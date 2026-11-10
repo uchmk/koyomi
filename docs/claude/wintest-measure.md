@@ -12,7 +12,7 @@
 
 ### 1a. 矩形と画素（Tier 1）の現状
 
-見た目の行で、期待値のすべてを機械が測った行だけが `[x]` になりうる（TODO.md の規則）。ただし測るための道具がまだ揃っていない。
+見た目の行で `[x]` になりうるのは、同じ実行で期待値のすべてを機械が測った行（Tier 1）と、`tier = 2` の行で `evidence.py verdict` が `ai-pass-candidate` を出した行（Tier 2）だけ（TODO.md の規則、ito の `docs/visual-test.md` 版 2）。ただし測るための道具がまだ揃っていない。Tier 2 に要る `.claude/agents/vision.md` と `tier = 2` の check spec は、まだ無い。
 
 - **ito には入っている**（a55c886）: state JSON（`Runner::state_json(true)`）、`<Snap:>`、部品の test id（`ito_a11y::test_id`）、`ito_keyscript::set_wgpu_backend`。
 - **koyomi に配線済み**（`crates/koyomi/src/main.rs`・`ui/mod.rs`）: `state_json(true)`、`Runner::write_state` で画面（browser / editor）とオーバーレイ（palette / settings / help）を渡す、`set_wgpu_backend`、Test ID（`main.tree`・`main.central`）。
@@ -21,7 +21,8 @@
 - **今ある**: `scripts\keys.ps1` の `<State:名前>`（文字）、`<Shot:名前>`（窓全体の PNG）、`<Snap:名前>`（前後の state と shot）、done ファイル（`KOYOMI_KEYS_DONE`）、`scripts\visual-check.py`、`scripts\evidence.py`（`-Evidence` の証拠）。
   `keys.ps1` の経由では一度 done ファイルが出なかった（直接起動では出る）。原因は未確認。
 - 閾値を書いた check spec（`tests/visual/<行>.toml`）は、実行の**前に**書く。見たあとで決めた閾値は数えない。
-- AI Vision の答え・見た印象は、測定に数えない。
+- AI Vision の答え・見た印象は、Tier 1 の測定に数えない。Tier 2 でも Vision の答えだけでは `[x]` にしない。機械の FAIL は Vision で覆さない。
+- 悪い答え（実の画像の `PASS` 以外。場所なし・観点の欠け・`unexpected` を含む。カナリアの見逃しも）を取り直しで消さない。同じ行・同じ spec・同じカナリア・同じ版の別の回に残っていれば `undecidable` になるので、古い回のフォルダーは消さない。解除は、コードか spec かカナリアの toml を変えて新しい回を作るか、持ち主が自分で `[x]` を付ける。
 
 画素の判定は Windows の実機だけ。Linux のレーンでは画素を判定しない。
 
@@ -53,5 +54,6 @@ R: にだけある証拠は証拠ではない（再起動で消える）。取�
 ## 5. 誰が何をするか
 
 - `wintest` は測って証拠を返すだけ。ビルド・コード編集・チェックを付ける・Issue・git はしない。
-- チェックを付けるかは main が決める。測れなかった行は付けない。
+- Vision の subagent も、1 枚の画像の問いに答えるだけで、印は付けない。
+- チェックを付けるかは実機のセッションの main が決める。測れなかった行と、`tier = 2` で verdict が `ai-pass-candidate` でない行は付けない。
 - ACL の検査で出た警告は、オーナーに報告するだけ（ACL は変えない）。
