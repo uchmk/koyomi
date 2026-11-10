@@ -1,6 +1,6 @@
 # Checklist
 
-1201 checks in TESTING.md, 1195 left for a person.
+1184 checks in TESTING.md, 1178 left for a person.
 
 ## 1. Start
 
@@ -1071,31 +1071,9 @@
 - [ ] **95.39** [x] Hold the net (ジョブネットを保留) and job b together; release the net only; release b → Releasing the net leaves b held (⏸ on b, a run waits there); releasing b lets runs go; each toast names what was released 〔未訳〕
 - [ ] **95.40** [x] Hold a job, then 「再実行 ▾」 a run of that net from a job before it; hold a job of a run that is already over and start a new run → The rerun waits at the held job as 23.11 does; the over run's row shows 「保留を解く」 for it and the new run waits there 〔未訳〕
 
-## 96. Another PC in the window (the PC list; TODO 80)
+## 96. Another PC in the window (removed) — 全 0 件が自動
 
-- [ ] **96.1** Open the window with no `[[remote]]` → No PC list at the top 〔未訳〕
-- [ ] **96.2** With `[[remote]]` `b`, open the window → `PC [この PC ▾]` at the top; this PC's page as before 〔未訳〕
-- [ ] **96.3** Pick `b` → `b のエンジン`; B's jobnets (承認済み・未確認・保留) and today's runs; the tree and tabs are gone 〔未訳〕
-- [ ] **96.4** Pick a run, then one of its jobs → Its jobs with marks; the end of the job's log, secrets as `***` 〔未訳〕
-- [ ] **96.5** 今すぐ流す on a net, then やめる → Nothing starts 〔未訳〕
-- [ ] **96.6** 今すぐ流す, then 今すぐ流す in the question → `g/n: <run id>`; within 5 s the run is in the list; on B, `koyomi ops` shows `（HTTP: ito）` 〔未訳〕
-- [ ] **96.7** 強制終了 on a running run, then 強制終了する → B's jobs stop; the run shows 強制終了 〔未訳〕
-- [ ] **96.8** Put `S`'s token in the secret instead and press 今すぐ流す → The refusal (403) in red; nothing starts 〔未訳〕
-- [ ] **96.9** Stop B's engine → つながらない … in red under ジョブネット; the window stays usable; start it again and 読み直す 〔未訳〕
-- [ ] **96.10** Change B's certificate fingerprint in `[[remote]]` → 証明書が koyomi.toml の fingerprint と違う …; nothing is sent 〔未訳〕
-- [ ] **96.11** With `b` shown, open 次の 1 回だけスキップ from the tray → The window comes back to この PC with the box 〔未訳〕
-- [ ] **96.12** Pick この PC → This PC's page, as it was 〔未訳〕
-- [ ] **96.13** Let a run on B fail, pick it, 再実行, then やめる → Nothing starts 〔未訳〕
-- [ ] **96.14** 再実行, then 再実行 in the question → `<run> → <new run>`; the new run starts from the failed job, the passed ones carried over; on B, `koyomi ops` shows `rerun … （HTTP: ito）` 〔未訳〕
-- [ ] **96.15** With `S`'s token, 再実行 → The refusal (403) in red; nothing starts 〔未訳〕
-- [ ] **96.16** On B, a confirmed net with `[params]` `month = "{month-1:%Y-%m}"` and `dept = "all"`; here, 今すぐ流す on it → Above the question, a field for each value with its default in it 〔未訳〕
-- [ ] **96.17** Change `dept` to `経理`, leave `month`, then 今すぐ流す in the question → A run starts on B; its job sees `dept = 経理` and last month for `month` 〔未訳〕
-- [ ] **96.18** 今すぐ流す on a net without `[params]` → Only the question, no fields 〔未訳〕
-- [ ] **96.19** On B's net row, ジョブネットを保留, then ジョブネットを保留 in the question → The line says `保留した: …`; within 5 s the row shows 保留 and the button turns to ジョブネットの保留を解く; on B, `koyomi ops` shows `hold … （HTTP: ito）` 〔未訳〕
-- [ ] **96.20** ジョブネットの保留を解く and confirm → `保留を解いた: …`; the 保留 mark goes 〔未訳〕
-- [ ] **96.21** 次の回を飛ばす on a confirmed net with a time later today, confirm → The line names the time it skips; on B, `koyomi skip-next` would list it and nothing starts at that time 〔未訳〕
-- [ ] **96.22** 飛ばしを戻す and confirm; then 飛ばしを戻す again → `… を飛ばすのをやめた`; the second shows the refusal (`… は飛ばしていない`) in red 〔未訳〕
-- [ ] **96.23** With `S`'s token, any of the four → The refusal (403) in red; nothing changes on B 〔未訳〕
+`cargo test` が全部見ているので、押すものはありません。
 
 ## 97. Rerun, skip and hold from the Web UI (TODO 81)
 
@@ -1205,7 +1183,7 @@
 - [ ] **104.1** With the window open, write `high_contrast = true` in common.toml, in the dark and then the light theme → The window turns to the stronger colours at once (as the Web UI does); removing the line goes back 〔未訳〕
 - [ ] **104.2** Narrow the tree at the left until the long name does not fit → The name ends in `…`; `未確認` and `保留` stay whole at the right; hovering the row shows the whole name 〔未訳〕
 - [ ] **104.3** Narrow the window until the net list, a run's jobs and the net page's jobs no longer fit → The word columns (name, command, folder, reason) end in `…` and the table stays inside the window; ID, kind and times stay whole; the heads end in `…` too, and hovering a cut cell or head shows all of it 〔未訳〕
-- [ ] **104.4** Narrow the window on a calendar page, in the editor with nothing to save, and on the PC list → Each row of buttons wraps to a new line instead of pushing the page off the right side 〔未訳〕
+- [ ] **104.4** Narrow the window on a calendar page, in the editor with nothing to save, and in the status-bar list → Each row of buttons wraps to a new line instead of pushing the page off the right side 〔未訳〕
 - [ ] **104.5** Look at the headings of the net list, the net page, a run's jobs and the right pane → All the same size and weight; a screen reader reads them as headings 〔未訳〕
 
 ## 105. A role per net over HTTP (`roles`; TODO 101)
@@ -1538,7 +1516,7 @@
 
 ## 124. The link list in the status bar (`ui/hosts.rs`)
 
-- [ ] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar has no link button 〔未訳〕
+- [ ] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar shows the link button `この PC ▴` (see 124.19) 〔未訳〕
 - [ ] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `つなぎ先`, the rows `この PC` and `kei`, then a line, then `つなぎ先を管理…`; the button's dot is green 〔未訳〕
 - [ ] **124.3** kei: with the list open, click outside it; open it again and press Esc → Each closes the list; the window stays on `この PC` 〔未訳〕
 - [ ] **124.4** kei: with the list open, click the button → The list closes 〔未訳〕
@@ -1556,6 +1534,7 @@
 - [ ] **124.16** kei: press `つなぎ先を管理…` → The list closes and the box `つなぎ先の管理` opens (§125) 〔未訳〕
 - [ ] **124.17** kei, the engine of `この PC` stopped (and no service starts it): the window shows `エンジンに繋がりません`; open the list from the status-bar button → The tree has no button of its own; the list is there; the button's dot is red and the `この PC` row reads `応答なし` 〔未訳〕
 - [ ] **124.18** kei: with the language set to English (Settings → General) → The heading reads `Connections`; the second lines read `Connected`, `This PC's engine`, `Remote · answering`, `Remote · no answer`, `Remote · connected`, `Remote · checking`; the buttons read `Connect` and `Disconnect` 〔未訳〕
+- [ ] **124.19** This PC, no `[[remote]]` in koyomi.toml: open the window, then press `この PC ▴` in the status bar → The status bar shows `この PC ▴`; the list has the row `この PC` and `つなぎ先を管理…`; pressing `つなぎ先を管理…` opens the box `つなぎ先の管理`, which says `つなぎ先はまだない` and offers `つなぎ先を足す…` 〔未訳〕
 
 ## 125. Renaming and deleting a connection (`ui/manage.rs`, `remote.rs`)
 
@@ -1570,8 +1549,8 @@
 - [ ] **125.9** Add `[standby]` with `watch = "works"` to koyomi.toml, then rename `works` to `factory` → The status line reads `[standby] の watch が works を指している。先に koyomi.toml で直してから`; koyomi.toml is as before; the row keeps its name. The same for delete, and for `[primary]` `standby` 〔未訳〕
 - [ ] **125.10** Press `消す` on `works` → A question `つなぎ先を消す` opens: `works を消す。この PC の koyomi.toml から [[remote]] を消す。koyomi が作った秘密 works-token は、ほかから使われていなければ消す。向こうの PC には何もしない。` with `消す` (red) and `やめる`; the focus is on `やめる` 〔未訳〕
 - [ ] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `消す`, Shift+Tab back; Esc closes the question 〔未訳〕
-- [ ] **125.12** In the question press Tab, then Enter → The status line reads `works を消した` with a note about the secret as it was handled; the row is gone from the box and the PC list; koyomi.toml has no `works` block and its other lines and comments are as before 〔未訳〕
-- [ ] **125.13** Delete the last connection → The box reads `つなぎ先はまだない`; the status-bar link button is gone once nothing is left and the window is on this PC 〔未訳〕
+- [ ] **125.12** In the question press Tab, then Enter → The status line reads `works を消した` with a note about the secret as it was handled; the row is gone from the box and the status-bar list; koyomi.toml has no `works` block and its other lines and comments are as before 〔未訳〕
+- [ ] **125.13** Delete the last connection → The box reads `つなぎ先はまだない`; the status-bar link button stays as `この PC ▴`, and its list holds `この PC` and `つなぎ先を管理…` 〔未訳〕
 - [ ] **125.14** Put a `.toml` file in the settings folder (a job net or calendar) with a string `secret:works-token` in it, then delete `works` → The status line says the secret `works-token` was kept, with `koyomi secret delete works-token` to remove it; `koyomi secret check works-token` prints `秘密 works-token はある` 〔未訳〕
 - [ ] **125.15** Rename `works` to `factory`, then delete `factory` → The secret `works-token` is not deleted with the connection: the token still reads `secret:works-token`, so the status line names it as kept (its name is not `factory-token`) 〔未訳〕
 - [ ] **125.16** Delete `works` (its `works-token` is deleted with it); in the credential manager create a secret `works-token` by hand; then add a connection named `works`, to a PC that answers and with its token (the check comes after those) → The add box stops with `秘密 works-token がもうある。koyomi secret delete works-token で消すか、別の名前にする`; nothing is written 〔未訳〕
@@ -1579,3 +1558,11 @@
 - [ ] **125.18** Rename `works` after it had acknowledged failures (`確認済み` in its window) → After the rename the acknowledgements of the new name are those of the old one 〔未訳〕
 - [ ] **125.19** Open the add box, then the manage box through the palette; then the reverse → Only one of the two is open at a time 〔未訳〕
 - [ ] **125.20** With the box open and a row's name being typed, pick another connection in the status-bar list → The box closes and the window switches; nothing is renamed 〔未訳〕
+
+## 126. Top tabs and the calendar switcher
+
+- [ ] **126.1** Open the window → The tabs at the top read `ジョブネット`, `カレンダー`, `今日`, `履歴` in that order; the window opens on `今日` 〔未訳〕
+- [ ] **126.2** Press each tab in turn → `ジョブネット` shows the net view, `カレンダー` the calendar page, `今日` the chart, `履歴` the history; the lit tab is the one pressed 〔未訳〕
+- [ ] **126.3** Two or more calendars: open the `カレンダー` tab → Beside the calendar's name there is a small down mark; pressing it lists every calendar by name, the current one lit 〔未訳〕
+- [ ] **126.4** Press another calendar's name in that list → The list closes and the page shows that calendar; the left list lights the same one. Pressing the current one changes nothing 〔未訳〕
+- [ ] **126.5** Only one calendar: open the `カレンダー` tab → No mark beside the name 〔未訳〕

@@ -417,17 +417,12 @@ pub(crate) fn finish_add(
     write(path, text).map_err(|e| write_failed(name, &e, store.delete(secret)))
 }
 
-/// The `[[remote]]` names, for the window's PC list. It reads koyomi.toml: not on the UI thread.
+/// The `[[remote]]` names, for the window's status-bar list. It reads koyomi.toml: not on the UI thread.
 pub fn names() -> Result<Vec<String>, String> {
     Ok(remotes()?.iter().map(|r| r.name.trim().to_owned()).collect())
 }
 
-/// One call to the `[[remote]]` named `name`. It blocks: not on the UI thread.
-pub fn ask(name: &str, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) -> Result<serde_json::Value, String> {
-    with(name, |r| call(r, f))
-}
-
-/// [`ask`] with the request cut off after `deadline`, counted from when it goes out. It blocks.
+/// One call to the `[[remote]]` named `name`, cut off after `deadline`, counted from when it goes out. It blocks.
 pub fn ask_within(
     name: &str,
     deadline: Duration,
@@ -690,6 +685,13 @@ mod tests {
     }
 
     use super::*;
+
+    /// A name goes into a query as it is when it can, and percent-encoded when it cannot.
+    #[test]
+    fn a_job_is_sent_as_a_query_value() {
+        assert_eq!(query("20261030-020000-01"), "20261030-020000-01");
+        assert_eq!(query("a b&c=日"), "a%20b%26c%3D%E6%97%A5");
+    }
 
     /// the lists say paused, held and running in a line each, and say when there is nothing.
     #[test]

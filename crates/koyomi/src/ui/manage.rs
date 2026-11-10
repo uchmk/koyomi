@@ -110,9 +110,9 @@ impl Manage {
     }
 }
 
-/// Whether the window is using the connection `name`: its current link, or the PC its page shows.
-pub(super) fn in_use(link: Option<&str>, on: Option<&str>, name: &str) -> bool {
-    link.is_some_and(|l| l.trim() == name.trim()) || on.is_some_and(|o| o.trim() == name.trim())
+/// Whether the window is using the connection `name`: its current link.
+pub(super) fn in_use(link: Option<&str>, name: &str) -> bool {
+    link.is_some_and(|l| l.trim() == name.trim())
 }
 
 /// Draws the box and returns what was pressed. `used` says whether a row is in use.
@@ -297,12 +297,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_row_is_in_use_when_it_is_the_link_or_the_page_shown() {
-        assert!(in_use(Some("kei"), None, "kei"));
-        assert!(in_use(None, Some("kei"), " kei "));
-        assert!(in_use(Some("a"), Some("kei"), "kei"));
-        assert!(!in_use(Some("a"), Some("b"), "kei"));
-        assert!(!in_use(None, None, "kei"));
+    fn a_row_is_in_use_when_it_is_the_link() {
+        assert!(in_use(Some("kei"), "kei"));
+        assert!(in_use(Some(" kei "), "kei"));
+        assert!(!in_use(Some("a"), "kei"));
+        assert!(!in_use(None, "kei"));
     }
 
     #[test]

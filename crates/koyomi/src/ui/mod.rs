@@ -602,6 +602,15 @@ impl Place {
 /// where the language table is.
 type Said = (&'static str, Vec<String>);
 
+/// A tab of the row over the detail.
+#[derive(Clone, Copy)]
+enum Tab {
+    Net,
+    Calendar,
+    Today,
+    History,
+}
+
 pub struct Browser {
     rx: Receiver<Msg>,
     /// Where threads started by [`Browser::background`] report, and the window to wake.
@@ -738,7 +747,7 @@ pub struct Browser {
     wire: Wire,
     /// The editors a child net was entered from, outermost first.
     editors: Vec<canvas::Editor>,
-    /// Another PC's engine, when the PC list at the top picks one (TODO 80).
+    /// The `[[remote]]` names and the add and manage boxes (the status-bar list drives the window on another PC).
     far: far::Far,
     /// The list of links in the status bar.
     hosts: hosts::Hosts,
@@ -899,9 +908,6 @@ impl Browser {
 
     /// The link button and its list: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
     pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
-        if !self.link.is_far() && self.far.names().is_empty() && self.down.is_none() {
-            return;
-        }
         let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names());
         if out.manage {
             self.far.open_manage();
@@ -2088,23 +2094,6 @@ impl Browser {
                 });
             });
         }
-        if self.far.any() && !self.link.is_far() {
-            egui::Panel::top("pc").show(ui, |ui| {
-                // A box of this PC's open: it is answered before the window moves away from it.
-                if modal || self.editor.is_some() {
-                    ui.disable();
-                }
-                self.far.picker(ui, t);
-            });
-        }
-        if modal {
-            // A box of this PC's (opened from the tray or a key) brings its page back.
-            self.far.home();
-        }
-        if self.far.shown() {
-            egui::CentralPanel::default().show(ui, |ui| self.far.show(ui, t));
-            return;
-        }
         egui::Panel::left("tree").default_size(200.0).show(ui, |ui| {
             ito_a11y::test_id(&ui.response(), "main.tree");
             if modal {
@@ -2840,8 +2829,8 @@ impl Browser {
         }
     }
 
-    /// The tabs over the detail, at the left: 今日 (the chart), ジョブネット (the net picked on the
-    /// left), カレンダー (the first one, or the one picked) and 履歴.
+    /// The tabs over the detail, at the left: ジョブネット (the net picked on the left), カレンダー (the
+    /// first one, or the one picked), 今日 (the chart) and 履歴.
     fn tabs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         if self.snap.is_none() {
             return;
@@ -2857,14 +2846,17 @@ impl Browser {
         let row = egui::vec2(ui.available_width(), ui.spacing().interact_size.y + 6.0);
         let bar = ui.allocate_ui_with_layout(row, egui::Layout::left_to_right(egui::Align::Center), |ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
-            for (i, (on, key)) in
-                [(today, "tabs.today"), (net, "tabs.net"), (calendar, "tabs.calendar"), (history, "tabs.history")].into_iter().enumerate()
-            {
+            for (tab, on, key) in [
+                (Tab::Net, net, "tabs.net"),
+                (Tab::Calendar, calendar, "tabs.calendar"),
+                (Tab::Today, today, "tabs.today"),
+                (Tab::History, history, "tabs.history"),
+            ] {
                 let label = t.tr(key);
                 let r = pill_tab(ui, &c, on, label);
                 ito_a11y::say(&r, Role::Button, label);
                 if r.clicked() {
-                    go = Some(i);
+                    go = Some(tab);
                 }
             }
             // The day the chart is about, at the right end.
@@ -2896,8 +2888,8 @@ impl Browser {
             self.forget_back();
         }
         match go {
-            Some(0) => self.open_gantt(),
-            Some(1) => {
+            Some(Tab::Today) => self.open_gantt(),
+            Some(Tab::Net) => {
                 // Pressed again on a net's page: back to every net (the tree lets go of it too).
                 if net && self.run_sel.is_none() && self.editor.is_none() && self.selected.is_some() {
                     // The net just left stays picked in the overview.
@@ -2910,7 +2902,7 @@ impl Browser {
                 self.job_sel = None;
                 self.result = None;
             }
-            Some(2) => match self.cal_sel.clone().or(first_cal) {
+            Some(Tab::Calendar) => match self.cal_sel.clone().or(first_cal) {
                 // No calendar yet: the tab is where the first one is made.
                 None => self.new_cal_box(),
                 Some(name) => {
@@ -2924,8 +2916,8 @@ impl Browser {
                     self.cal_sel = Some(name);
                 }
             },
-            Some(3) => self.open_history(),
-            _ => {}
+            Some(Tab::History) => self.open_history(),
+            None => {}
         }
     }
 

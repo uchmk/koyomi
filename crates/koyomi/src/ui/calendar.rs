@@ -276,9 +276,12 @@ impl Browser {
                     CalView::Month => ("calendar.prev", "calendar.next", None),
                 };
                 let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+                let mut switch_to = None;
                 ui.horizontal(|ui| {
                     let r = ui.label(egui::RichText::new(&name).heading().strong());
                     ito_a11y::say(&r, Role::Heading, &name);
+                    let names: Vec<&String> = self.snap.iter().flat_map(|s| s.calendars.keys()).collect();
+                    switch_to = calendar_switch(ui, t, &names, &name);
                     let (words, colour) = match view {
                         CalView::Day => {
                             let day = &one[0].1;
@@ -408,6 +411,12 @@ impl Browser {
                     }
                 };
                 self.month_notes(ui, t, &name, &cal);
+                if let Some(other) = switch_to {
+                    // A pick here is the same as one in the tree: there is nothing to go back to.
+                    self.forget_back();
+                    self.open_calendar(&other);
+                    return;
+                }
                 if let Some(d) = out.pick {
                     self.cal_go(d);
                 }
@@ -560,6 +569,26 @@ impl Browser {
         });
         open
     }
+}
+
+/// Beside the calendar's name: a mark that lists every calendar, so another can be opened from the page itself.
+/// Nothing is drawn with one calendar. The pick is the name; the current one picks nothing.
+fn calendar_switch(ui: &mut egui::Ui, t: &ito_i18n::Table, names: &[&String], current: &str) -> Option<String> {
+    if names.len() < 2 {
+        return None;
+    }
+    let r = ito_prefs::mark_button(ui, ito_prefs::Mark::ChevronDown, t.tr("calendar.switch"), 26.0);
+    let mut pick = None;
+    egui::Popup::menu(&r).show(|ui| {
+        for name in names {
+            let r = ui.selectable_label(name.as_str() == current, name.as_str());
+            ito_a11y::say(&r, Role::Button, &t.trf("calendar.switch_to", &[name.as_str()]));
+            if r.clicked() && name.as_str() != current {
+                pick = Some((*name).clone());
+            }
+        }
+    });
+    pick
 }
 
 /// A net named in the pane or the week, as a link to its page: the hand on hover, a tip with
@@ -1642,5 +1671,26 @@ open = [2026-11-28]
         assert!(!back.is_business(d("2026-11-25")) && back.is_business(d("2026-11-28")));
         // Text that does not read is a failure, not a write.
         assert!(toggle_edit("会社".into(), thu, Day::Business)("not = [toml").is_err());
+    }
+
+    /// The mark beside the name takes room only when there is another calendar to go to.
+    #[test]
+    fn the_switch_mark_is_drawn_only_with_two_calendars_or_more() {
+        let (t, _) = crate::i18n::table("ja");
+        let (a, b) = ("a".to_owned(), "b".to_owned());
+        let ctx = egui::Context::default();
+        let width = |names: &[&String]| {
+            let mut w = 0.0;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let picked = calendar_switch(ui, &t, names, "a");
+                assert!(picked.is_none(), "nothing is picked without a click");
+                w = ui.min_rect().width();
+            });
+            out.textures_delta.clear();
+            w
+        };
+        assert_eq!(width(&[&a]), 0.0, "one calendar: nothing");
+        assert_eq!(width(&[]), 0.0);
+        assert!(width(&[&a, &b]) > 0.0, "two calendars: the mark");
     }
 }
