@@ -1,6 +1,6 @@
 # Checklist
 
-1177 checks in TESTING.md, 1171 left for a person.
+1181 checks in TESTING.md, 1175 left for a person.
 
 ## 1. Start
 
@@ -561,6 +561,10 @@
 - [ ] **48.1** Spread parts wide, zoom in, pick "Edit: show everything" in the palette (or the toolbar button) → Every part is in view at once 〔未訳〕
 - [ ] **48.2** Break a part (e.g. a missing `run`), pan far away, click its row in the problem list → The part is selected, its fields open and it is brought to the middle 〔未訳〕
 - [ ] **48.3** Type a two-line sticky note in a part's fields → The note shows in a box under the part's name; saving and reopening keeps it 〔未訳〕
+- [ ] **48.4** At 100% zoom, give parts notes of 3 or 4 lines, press 整列 in the horizontal flow, then switch to the vertical flow and press 整列 again → No note box or name overlaps another part, its name or its note, in both flows; 元に戻す takes back the last 整列 〔未訳〕
+- [ ] **48.5** In a net with no notes and short names, press 整列 → The parts stand 150 apart along the flow and 52 across it, as before 〔未訳〕
+- [ ] **48.6** Open a net whose leftmost part has a long note (and a long name) → The whole note and name are inside the canvas's left edge on the first view; the `pos` values in the file are unchanged and the editor shows no unsaved change 〔未訳〕
+- [ ] **48.7** On that net, use 全体を見る → Every note is fully in view 〔未訳〕
 
 ## 49. 回復の通知
 

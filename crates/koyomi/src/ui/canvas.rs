@@ -29,6 +29,63 @@ const MARGIN: f32 = 64.0;
 const PORT: f32 = RADIUS + 7.0;
 /// How close to a line a click has to be.
 const NEAR: f32 = 6.0;
+/// The wrap width of a part's note at zoom 1.
+const NOTE_WRAP: f32 = 140.0;
+/// How far the note's box reaches past its text.
+const NOTE_PAD: f32 = 3.0;
+/// The space between the circle and its name, and between the name and its note.
+const LABEL_GAP: f32 = 4.0;
+/// The radius of the out port's dot.
+const PORT_DOT: f32 = 3.5;
+/// How far inside the canvas the first view keeps the edge of what the parts take up.
+const SEAT: f32 = 8.0;
+
+/// What a part takes up on screen at zoom 1, from its centre: the circle, the out port, the name and the note.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+struct Sides {
+    left: f32,
+    right: f32,
+    up: f32,
+    down: f32,
+}
+
+impl Sides {
+    /// The same for `layout`, along and across the flow (`flat` swaps the axes for the vertical flow).
+    fn room(self, vertical: bool) -> layout::Room {
+        let (ab, aa, cb, ca) =
+            if vertical { (self.up, self.down, self.left, self.right) } else { (self.left, self.right, self.up, self.down) };
+        layout::Room { along_before: ab.into(), along_after: aa.into(), across_before: cb.into(), across_after: ca.into() }
+    }
+
+    /// What `job` takes up, drawn with these fonts at zoom 1.
+    fn of(painter: &egui::Painter, job: &Job, name_font: &egui::FontId, small: &egui::FontId, vertical: bool) -> Sides {
+        let color = egui::Color32::PLACEHOLDER;
+        let name = job.name.clone().unwrap_or_else(|| job.id.clone());
+        let label = painter.layout_no_wrap(name, name_font.clone(), color).size();
+        let mut half = RADIUS.max(label.x / 2.0);
+        let mut down = RADIUS + LABEL_GAP + label.y;
+        if let Some(note) = job.note.as_deref().filter(|n| !n.is_empty()) {
+            let galley = painter.layout(note.to_owned(), small.clone(), color, NOTE_WRAP);
+            half = half.max(galley.size().x / 2.0 + NOTE_PAD);
+            down += LABEL_GAP + galley.size().y + NOTE_PAD;
+        }
+        let mut s = Sides { left: half, right: half, up: RADIUS, down };
+        let out = PORT + PORT_DOT + 1.0;
+        if vertical {
+            s.down = s.down.max(out);
+        } else {
+            s.right = s.right.max(out);
+        }
+        s
+    }
+}
+
+/// `pan` moved right and down, and only so far, that the edge of what the parts take up (`edge`, at zoom 1 from the
+/// first part's margin) is at least `SEAT` inside the canvas.
+fn seated(pan: Vec2, edge: Vec2) -> Vec2 {
+    let at = Vec2::splat(MARGIN) + edge + pan;
+    pan + (Vec2::splat(SEAT) - at).max(Vec2::ZERO)
+}
 
 /// The mark of a part on the shelf, on the canvas and in the legend, drawn by ito so it follows the theme.
 fn part_icon(key: &str) -> Option<ito_prefs::Mark> {
@@ -668,6 +725,10 @@ pub struct Editor {
     cursor: Option<String>,
     pan: Vec2,
     zoom: f32,
+    /// What each part takes up on screen, by id, as last drawn.
+    sides: BTreeMap<String, Sides>,
+    /// The first view was seated (see [`seated`]); it happens once.
+    seated: bool,
     /// The canvas as last drawn: its size and the flow, for `fit` and `jump`.
     view: Vec2,
     vertical: bool,
@@ -792,6 +853,8 @@ impl Editor {
             cursor: None,
             pan: Vec2::ZERO,
             zoom: 1.0,
+            sides: BTreeMap::new(),
+            seated: false,
             view: Vec2::ZERO,
             vertical: false,
             drag: Drag::None,
@@ -904,13 +967,13 @@ impl Editor {
 
     /// Where every part is: `pos`, or the place `layout` gives one without.
     pub fn positions(&self) -> Vec<(f64, f64)> {
-        let placed = layout::places(&self.net.jobs);
-        self.net
-            .jobs
-            .iter()
-            .zip(placed)
-            .map(|(j, (l, r))| j.pos.unwrap_or((l as f64 * layout::STEP_ALONG, r as f64 * layout::STEP_ACROSS)))
-            .collect()
+        let spaced = layout::spaced(&self.net.jobs, &self.rooms());
+        self.net.jobs.iter().zip(spaced).map(|(j, s)| j.pos.unwrap_or(s)).collect()
+    }
+
+    /// What each part takes up along and across the current flow (nothing, before it was measured).
+    fn rooms(&self) -> Vec<layout::Room> {
+        self.net.jobs.iter().map(|j| self.sides.get(&j.id).copied().unwrap_or_default().room(self.vertical)).collect()
     }
 
     /// Adds `part` after `after` (connected by a 正常 line) or at `at`; the new part is the cursor. With neither it starts
@@ -1106,7 +1169,8 @@ impl Editor {
 
     pub fn align(&mut self) {
         self.record(None);
-        layout::align(&mut self.net.jobs);
+        let rooms = self.rooms();
+        layout::align_in(&mut self.net.jobs, &rooms);
         self.touched();
     }
 
@@ -1284,20 +1348,56 @@ impl Editor {
         Vec2::splat(MARGIN) + Vec2::new(x as f32, y as f32)
     }
 
-    /// Zooms and pans so every part is in view (nothing to do before the first draw or with no parts).
+    /// Each part's centre at zoom 1 (without the margin) and what it takes up.
+    fn extents(&self) -> Vec<(Vec2, Sides)> {
+        let margin = Vec2::splat(MARGIN);
+        let at = self.positions();
+        self.net.jobs.iter().zip(at).map(|(j, p)| (self.flat(p) - margin, self.sides.get(&j.id).copied().unwrap_or_default())).collect()
+    }
+
+    /// The edges of what the parts take up at `zoom`: centres scale, the text around them does not.
+    fn bounds(items: &[(Vec2, Sides)], zoom: f32) -> (Vec2, Vec2) {
+        let mut lo = Vec2::splat(f32::MAX);
+        let mut hi = Vec2::splat(f32::MIN);
+        for (c, s) in items {
+            let c = *c * zoom;
+            lo = Vec2::new(lo.x.min(c.x - s.left), lo.y.min(c.y - s.up));
+            hi = Vec2::new(hi.x.max(c.x + s.right), hi.y.max(c.y + s.down));
+        }
+        (lo, hi)
+    }
+
+    /// Zooms and pans so every part, with its name and note, is in view (nothing to do before the first draw or with no parts).
     pub fn fit(&mut self) {
-        let flat: Vec<Vec2> = self.positions().into_iter().map(|p| self.flat(p)).collect();
-        if flat.is_empty() || self.view.x < 1.0 || self.view.y < 1.0 {
+        let items = self.extents();
+        if items.is_empty() || self.view.x < 1.0 || self.view.y < 1.0 {
             return;
         }
         let pad = 48.0;
-        let min = flat.iter().fold(Vec2::splat(f32::MAX), |a, p| Vec2::new(a.x.min(p.x), a.y.min(p.y)));
-        let max = flat.iter().fold(Vec2::splat(f32::MIN), |a, p| Vec2::new(a.x.max(p.x), a.y.max(p.y)));
-        let size = (max - min).max(Vec2::splat(1.0));
-        let zoom = ((self.view.x - 2.0 * pad) / size.x).min((self.view.y - 2.0 * pad) / size.y).clamp(0.3, 1.5);
+        let room = self.view - Vec2::splat(2.0 * pad);
+        let fits = |z: f32| {
+            let (lo, hi) = Self::bounds(&items, z);
+            hi.x - lo.x <= room.x && hi.y - lo.y <= room.y
+        };
+        // The largest zoom in 0.3..=1.5 that fits (the extent is convex in the zoom, so what fits is one stretch).
+        let zoom = if fits(1.5) {
+            1.5
+        } else {
+            let (mut good, mut bad) = (0.3f32, 1.5f32);
+            for _ in 0..24 {
+                let mid = (good + bad) / 2.0;
+                if fits(mid) {
+                    good = mid;
+                } else {
+                    bad = mid;
+                }
+            }
+            good
+        };
         self.zoom = zoom;
-        // `flat` has MARGIN in it already; the pan moves the middle of the parts to the middle of the canvas.
-        self.pan = (self.view - (min + max) * zoom) / 2.0 - Vec2::splat(MARGIN) * (1.0 - zoom) * 0.0;
+        // The middle of what the parts take up goes to the middle of the canvas.
+        let (lo, hi) = Self::bounds(&items, zoom);
+        self.pan = self.view / 2.0 - Vec2::splat(MARGIN) - (lo + hi) / 2.0;
     }
 
     /// 検査: what the engine's save would refuse in the text, without saving it (empty: nothing).
@@ -1685,6 +1785,19 @@ impl Editor {
         self.view = rect.size();
         self.vertical = vertical;
         painter.rect_filled(rect, 0.0, c.bg);
+        let small = egui::TextStyle::Small.resolve(ui.style());
+        let name_font = egui::TextStyle::Body.resolve(ui.style());
+        self.sides = self.net.jobs.iter().map(|j| (j.id.clone(), Sides::of(&painter, j, &name_font, &small, vertical))).collect();
+        // The first view: the edge of the first part's name or note is not cut at the canvas's left or top.
+        if !self.seated && self.view.x >= 1.0 && self.view.y >= 1.0 {
+            self.seated = true;
+            if self.pan == Vec2::ZERO && self.zoom == 1.0 {
+                let (lo, _) = Self::bounds(&self.extents(), 1.0);
+                if lo.x != f32::MAX {
+                    self.pan = seated(self.pan, lo);
+                }
+            }
+        }
         let at: Vec<Pos2> = self.positions().into_iter().map(|p| self.to_screen(origin, p, vertical)).collect();
         let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
         let (command, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
@@ -1854,7 +1967,6 @@ impl Editor {
         }
 
         // The lines.
-        let small = egui::TextStyle::Small.resolve(ui.style());
         for (i, j) in self.net.jobs.iter().enumerate() {
             for l in &j.after {
                 let Some(f) = self.index(&l.job) else { continue };
@@ -1899,7 +2011,6 @@ impl Editor {
         }
         // The parts.
         let bad: BTreeSet<&str> = self.problems.iter().filter_map(|p| p.job.as_deref()).collect();
-        let name_font = egui::TextStyle::Body.resolve(ui.style());
         for (i, j) in self.net.jobs.iter().enumerate() {
             let p = at[i];
             let r = RADIUS * self.zoom.max(0.6);
@@ -1924,22 +2035,22 @@ impl Editor {
             // The out port.
             let port = Self::port(p, vertical);
             let hot = pointer.is_some_and(|q| (port - q).length() <= 6.0);
-            painter.circle(port, 3.5, if hot { accent } else { c.border }, Stroke::new(1.0, c.fg));
+            painter.circle(port, PORT_DOT, if hot { accent } else { c.border }, Stroke::new(1.0, c.fg));
             let name = j.name.clone().unwrap_or_else(|| j.id.clone());
             let label = if selected { Mark::Selected.marked(&name) } else { name };
             let label_rect = painter.text(
-                p + Vec2::new(0.0, r + 4.0),
+                p + Vec2::new(0.0, r + LABEL_GAP),
                 egui::Align2::CENTER_TOP,
                 label,
                 name_font.clone(),
                 if selected { accent } else { c.fg },
             );
             if let Some(note) = j.note.as_deref().filter(|n| !n.is_empty()) {
-                let galley = painter.layout(note.to_owned(), small.clone(), c.wait_text(), 140.0 * self.zoom.max(0.6));
-                let top = label_rect.center_bottom() + Vec2::new(0.0, 4.0);
-                let box_rect = Rect::from_min_size(top - Vec2::new(galley.size().x / 2.0, 0.0), galley.size()).expand(3.0);
+                let galley = painter.layout(note.to_owned(), small.clone(), c.wait_text(), NOTE_WRAP * self.zoom.max(0.6));
+                let top = label_rect.center_bottom() + Vec2::new(0.0, LABEL_GAP);
+                let box_rect = Rect::from_min_size(top - Vec2::new(galley.size().x / 2.0, 0.0), galley.size()).expand(NOTE_PAD);
                 painter.rect(box_rect, 2.0, c.wait_bg(), Stroke::new(1.0, c.border), StrokeKind::Inside);
-                painter.galley(box_rect.min + Vec2::splat(3.0), galley, c.wait_text());
+                painter.galley(box_rect.min + Vec2::splat(NOTE_PAD), galley, c.wait_text());
             }
         }
         if let Drag::Range { from } = self.drag {
@@ -2828,5 +2939,77 @@ X-Day: 1"
         assert_eq!(e.edit(Cmd::Save), None);
         let broken = Def { net: None, ..def.clone() };
         assert!(Editor::open(&broken).is_err());
+    }
+
+    fn rows() -> Editor {
+        Editor::over(
+            "経理/集計",
+            net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n[[job]]\nid = \"b\"\nrun = [\"x\"]\n[[job]]\nid = \"c\"\nrun = [\"x\"]\nafter = [\"a\"]\n[[job]]\nid = \"d\"\nrun = [\"x\"]\nafter = [\"b\"]\n"),
+        )
+    }
+
+    fn tall_note() -> Sides {
+        Sides { left: 73.0, right: 73.0, up: RADIUS, down: 120.0 }
+    }
+
+    #[test]
+    fn align_leaves_room_for_a_tall_note_in_both_flows() {
+        for vertical in [false, true] {
+            let mut e = rows();
+            e.vertical = vertical;
+            let plain = Sides { left: RADIUS, right: RADIUS, up: RADIUS, down: RADIUS };
+            e.sides.insert("a".into(), tall_note());
+            e.sides.insert("b".into(), plain);
+            e.sides.insert("c".into(), plain);
+            e.align();
+            let p = e.positions();
+            let a = e.sides["a"];
+            let (sa, sb, sc) = (e.flat(p[0]), e.flat(p[1]), e.flat(p[2]));
+            // b stands beside a across the flow and c after it along the flow: both clear of a's note on the screen.
+            let (beside, after) = if vertical {
+                ((sb.x - plain.left) - (sa.x + a.right), (sc.y - plain.up) - (sa.y + a.down))
+            } else {
+                ((sb.y - plain.up) - (sa.y + a.down), (sc.x - plain.left) - (sa.x + a.right))
+            };
+            assert!(beside >= layout::GAP as f32 - 0.01, "vertical={vertical} beside={beside}");
+            assert!(after >= layout::GAP as f32 - 0.01, "vertical={vertical} after={after}");
+        }
+    }
+
+    #[test]
+    fn a_saved_place_stays_where_it_is() {
+        let mut e = rows();
+        e.sides.insert("a".into(), tall_note());
+        e.net.jobs[1].pos = Some((7.0, 9.0));
+        assert_eq!(e.positions()[1], (7.0, 9.0));
+        assert!(!e.dirty);
+    }
+
+    #[test]
+    fn fit_keeps_the_edge_of_a_wide_note_in_view() {
+        let mut e = rows();
+        e.view = Vec2::new(800.0, 600.0);
+        e.sides.insert("a".into(), Sides { left: 300.0, right: 300.0, up: RADIUS, down: 120.0 });
+        e.align();
+        e.fit();
+        let origin = Pos2::ZERO;
+        for (i, j) in e.net.jobs.iter().enumerate() {
+            let s = e.sides.get(&j.id).copied().unwrap_or_default();
+            let c = e.to_screen(origin, e.positions()[i], false);
+            assert!(c.x - s.left >= -0.01 && c.x + s.right <= 800.01, "{} {c:?}", j.id);
+            assert!(c.y - s.up >= -0.01 && c.y + s.down <= 600.01, "{} {c:?}", j.id);
+        }
+    }
+
+    #[test]
+    fn the_first_view_only_moves_right_and_down_and_only_as_far_as_needed() {
+        // The edge at -73 from the margin of 64 is at -9: 17 short of SEAT.
+        let pan = seated(Vec2::ZERO, Vec2::new(-73.0, -2.0));
+        assert_eq!(pan.x, SEAT + 9.0);
+        assert_eq!(pan.y, 0.0, "already inside");
+        // Already inside: nothing moves, never left or up.
+        assert_eq!(seated(Vec2::ZERO, Vec2::new(0.0, 0.0)), Vec2::ZERO);
+        let far = seated(Vec2::new(5.0, -5.0), Vec2::new(500.0, 500.0));
+        assert_eq!(far, Vec2::new(5.0, -5.0));
     }
 }
