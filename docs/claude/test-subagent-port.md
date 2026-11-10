@@ -18,7 +18,7 @@ fude・yagura・michi に同じ方針を取ってもらうための記録。kura
 
 1. **ito の rev をそろえる。** アプリの `Cargo.toml` の ito の依存を全部同じ rev にする。`scripts/lanes.sh sync` が `FILES` を要求するので、rev が古いと sync が止まる（koyomi では `evidence.py` がなくて止まった）。
 2. **API の移行。** ito-keyscript の `Do::Unsettled` の腕を足す。`Runner::finish` は `Runner::end(Ending::Closed)` に替える（戻り値の `Ended` を使う）。
-3. **`--keys` の隔離。** 窓が本物のエンジンに繋がらないように、`KOYOMI_ADDRESS` が空なら起動を拒否する。`lanes.conf` の `isolate=` にアプリの設定・状態の環境変数を並べる。
+3. **`--keys` の隔離。** 画面が本物のエンジンに接続しないように、`KOYOMI_ADDRESS` が空なら起動を拒否する。`lanes.conf` の `isolate=` にアプリの設定・状態の環境変数を並べる。
 4. **テストの分け方。** 実機の ACL に依存するテストは、通常の `cargo test` から外して `KOYOMI_TEST_ACL` の付いたときだけ動かす（`scripts/verify-acl.sh`）。`verify.sh` は「ALL OK（ACL は未確認）」と出す。ACL が通った、とは書かない。
 5. **不安定なテストの直し方。** 壁時計の時間を見るテストは、プロセス生成の遅れを含む。動いているものを止める前提が要るテストは、先にログの `started` などを待つ。閾値を緩めない。
 6. **subagent を置く。** `.claude/agents/wintest.md` と `docs/claude/wintest-measure.md` を移し、アプリの名前・環境変数・scratch・証拠の場所に書き換える。
