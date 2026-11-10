@@ -23,6 +23,7 @@ mod help;
 mod i18n;
 mod icon;
 mod keymap;
+mod link;
 mod mail;
 mod mcp;
 mod notify;
@@ -116,6 +117,14 @@ struct App {
     /// The command palette while it is open (Ctrl+Shift+P, or the bar's box).
     palette: Option<ito_palette::View>,
     browser: ui::Browser,
+    /// The state folder (none while a script plays) and the one writer of its `state.toml`, which every
+    /// browser of this run gets a clone of, so an old one cannot overwrite what a new one wrote.
+    state: Option<PathBuf>,
+    state_writer: Option<ito_common::kept::Writer>,
+    /// A switch of the link that has been asked for and is not done yet.
+    switching: Option<Switching>,
+    /// The title last sent to the window.
+    title_sent: String,
     /// The Japanese face, read off the UI thread; `None` once it is registered.
     font: Option<std::sync::mpsc::Receiver<Option<Vec<u8>>>>,
     /// The `--keys` script while it plays, and what its steps ask the frame to do.
@@ -129,6 +138,14 @@ struct App {
     key_notes: Vec<String>,
     /// The window's door: the engine's tray asks it to come forward (none while a script plays).
     shows: Option<std::sync::mpsc::Receiver<ito_ipc::door::Ask<proto::Show>>>,
+}
+
+/// A switch of the link on its way: first the question about unsaved edits, then the wait for what is still being
+/// sent.
+struct Switching {
+    to: link::Link,
+    /// The edits were confirmed away (or there were none): now it waits for the requests in flight.
+    waiting: bool,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -164,6 +181,9 @@ impl App {
         }
         used.ppp = cc.egui_ctx.pixels_per_point();
         ito_common::runinfo::save("koyomi", &used);
+        let state = if script.is_some() { None } else { ito_common::state_dir("koyomi") };
+        let state_writer = state.as_ref().map(|d| ito_common::kept::Writer::new(d.join("state.toml"), true));
+        let link = ui::kept_link(state.as_deref());
         let base = ito_common::base_dir();
         let mut prefs = prefs::Prefs::load(base.clone());
         let mut warnings: Vec<String> = prefs.common_warn.iter().chain(&prefs.theme_warn).cloned().collect();
@@ -203,13 +223,17 @@ impl App {
             lang,
             scale_note: None,
             notices: Vec::new(),
-            acked: acked::Acked::load(if script.is_some() { None } else { ito_common::state_dir("koyomi") }),
+            acked: acked::Acked::load_for(state.clone(), link.far()),
             next_notice: 0,
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
             // A script plays on a window that keeps no state of its own.
-            browser: ui::Browser::start(&cc.egui_ctx, if script.is_some() { None } else { ito_common::state_dir("koyomi") }),
+            browser: ui::Browser::start(&cc.egui_ctx, state.clone(), link, state_writer.clone()),
+            state,
+            state_writer,
+            switching: None,
+            title_sent: String::new(),
             font: Some(font_reader(&cc.egui_ctx)),
             script,
             todo: Vec::new(),
@@ -220,6 +244,81 @@ impl App {
         }
     }
 
+    /// A switch of the link, the only place it happens: the question about unsaved edits, the wait for what is
+    /// still being sent (no way to switch without waiting), then a new browser with its own notices and
+    /// acknowledgements, and the link written to `state.toml`.
+    fn pump_link(&mut self, ctx: &egui::Context) {
+        if self.switching.is_none() {
+            if let Some(to) = self.browser.take_link_wish() {
+                let waiting = !self.browser.has_unsaved();
+                self.switching = Some(Switching { to, waiting });
+            }
+        }
+        let Some(sw) = &self.switching else { return };
+        if !sw.waiting {
+            let t = &self.table;
+            let buttons = [t.tr("link.switch").to_owned(), t.tr("confirm.no").to_owned()];
+            let body = [t.tr("link.unsaved_body").to_owned()];
+            let q = ito_confirm::Question {
+                title: t.tr("link.unsaved_title"),
+                body: &body,
+                buttons: &buttons,
+                marks: &[Some(ito_prefs::Mark::Check), Some(ito_prefs::Mark::Close)],
+                focus: Some(1),
+                primary: Some(1),
+                danger: true,
+                ..Default::default()
+            };
+            let key = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape).then_some(1));
+            match ito_confirm::show(ctx, &q, &ui::Browser::style()).or(key) {
+                Some(0) => {
+                    if let Some(sw) = &mut self.switching {
+                        sw.waiting = true;
+                    }
+                }
+                Some(_) => self.switching = None,
+                None => {}
+            }
+            return;
+        }
+        let left = self.browser.switch_step();
+        if left > 0 {
+            let t = &self.table;
+            let buttons = [t.tr("confirm.no").to_owned()];
+            let body = [t.trf("link.wait_body", &[&left.to_string()])];
+            let q = ito_confirm::Question {
+                title: t.tr("link.wait_title"),
+                body: &body,
+                buttons: &buttons,
+                marks: &[Some(ito_prefs::Mark::Close)],
+                focus: Some(0),
+                primary: Some(0),
+                ..Default::default()
+            };
+            let key = ctx.input_mut(|i| {
+                (i.consume_key(egui::Modifiers::NONE, egui::Key::Escape) || i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
+                    .then_some(0)
+            });
+            if ito_confirm::show(ctx, &q, &ui::Browser::style()).or(key).is_some() {
+                self.browser.cancel_switch();
+                self.switching = None;
+            }
+            ctx.request_repaint_after(std::time::Duration::from_millis(100));
+            return;
+        }
+        if let Some(sw) = self.switching.take() {
+            self.switch_link(ctx, sw.to);
+        }
+    }
+
+    /// The new browser, with a clone of the one writer of `state.toml`; the bell and the acknowledgements
+    /// of the old link go.
+    fn switch_link(&mut self, ctx: &egui::Context, to: link::Link) {
+        self.browser = ui::Browser::start(ctx, self.state.clone(), to.clone(), self.state_writer.clone());
+        reset_for_link(&mut self.notices, &mut self.bell_open, &mut self.acked, self.state.clone(), &to);
+        self.browser.save_state();
+    }
+
     /// What the tray asked: come forward, on 今日 when it says so.
     fn take_shows(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.shows else { return };
@@ -227,24 +326,26 @@ impl App {
             ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
             ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
             ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+            // The tray belongs to this PC: a run, a failure or a skip it names is not on another PC's engine.
+            let far = self.browser.link().is_far();
             match &ask.request {
                 proto::Show::Today => {
                     self.settings_open = false;
                     self.browser.show_today();
                 }
-                proto::Show::Failed => {
+                proto::Show::Failed if !far => {
                     self.settings_open = false;
                     self.browser.show_failed();
                 }
-                proto::Show::SkipNext => {
+                proto::Show::SkipNext if !far => {
                     self.settings_open = false;
                     self.browser.show_skip_next();
                 }
-                proto::Show::Run(id) => {
+                proto::Show::Run(id) if !far => {
                     self.settings_open = false;
                     self.browser.show_run(id);
                 }
-                proto::Show::Front => {}
+                proto::Show::Failed | proto::Show::SkipNext | proto::Show::Run(_) | proto::Show::Front => {}
             }
             ask.answer(Ok(String::new()));
         }
@@ -528,10 +629,21 @@ impl App {
         let ok_line = engine.is_none().then(|| self.table.tr("status.engine_ok").to_owned());
         let ha = self.browser.ha_fact(&self.table);
         let line = (waiting > 0).then(|| self.table.trf("status.unacked", &[&waiting.to_string()]));
+        let link_line = self.browser.link_label();
+        let sending = self.browser.pending();
+        let sending_line = (self.browser.link().is_far() && sending > 0).then(|| self.table.trf("link.sending", &[&sending.to_string()]));
+        let (browser, table) = (&mut self.browser, &self.table);
         ito_statusbar::show(
             ui,
             &spec,
             |ui| {
+                browser.link_picker(ui, table);
+                if let Some(l) = &link_line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().strong());
+                }
+                if let Some(l) = &sending_line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().wait);
+                }
                 if let Some(l) = &engine {
                     ito_statusbar::item(ui, l, ito_theme::colors().err);
                 }
@@ -583,7 +695,14 @@ impl App {
                 close: self.table.tr("title.close"),
             },
         };
-        let name = self.table.tr("app.title").to_string();
+        let mut name = self.table.tr("app.title").to_string();
+        if let Some(l) = self.browser.link_label() {
+            name = format!("{name} - {l}");
+        }
+        if name != self.title_sent {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Title(name.clone()));
+            self.title_sent = name.clone();
+        }
         let out = ito_titlebar::show(
             ui,
             &spec,
@@ -816,6 +935,7 @@ impl eframe::App for App {
             self.browser.set_acked(ids);
         }
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
+        self.pump_link(&ctx);
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
         self.notice_list(&ctx);
@@ -1039,6 +1159,20 @@ fn main() -> eframe::Result {
     )
 }
 
+/// What a switch of the link leaves behind: the notices and the open bell of the old link go, and the
+/// acknowledgements are those of the new link's own file.
+fn reset_for_link(
+    notices: &mut Vec<ito_notices::Notice<String>>,
+    bell_open: &mut bool,
+    acked: &mut acked::Acked,
+    state: Option<PathBuf>,
+    to: &link::Link,
+) {
+    notices.clear();
+    *bell_open = false;
+    *acked = acked::Acked::load_for(state, to.far());
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1058,5 +1192,42 @@ mod tests {
         assert_eq!(a(&["C:\\fixtures", "--keys"]).unwrap_err(), "--keys needs a script");
         assert!(matches!(a(&["C:\\fixtures"]), Ok(None)));
         assert!(matches!(a(&["--version", "--keys", "j"]), Ok(None)));
+    }
+
+    #[test]
+    fn a_switch_leaves_the_new_links_own_acknowledgements_and_no_notices() {
+        let dir = std::env::temp_dir().join(format!("koyomi-reset-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(acked::file_name(None)),
+            "acked = [\"mine\"]
+",
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join(acked::file_name(Some("kei"))),
+            "acked = [\"theirs\"]
+",
+        )
+        .unwrap();
+        let mut acked = acked::Acked::load_for(Some(dir.clone()), None);
+        assert!(acked.is_acked("mine"));
+        let mut notices = vec![ito_notices::Notice {
+            id: 1,
+            at: std::time::SystemTime::now(),
+            kind: ito_notices::Kind::Warn,
+            title: "old".into(),
+            note: None,
+            go: None,
+            read: false,
+        }];
+        let mut bell = true;
+        reset_for_link(&mut notices, &mut bell, &mut acked, Some(dir.clone()), &link::Link::Far("kei".into()));
+        assert!(notices.is_empty() && !bell);
+        assert!(acked.is_acked("theirs") && !acked.is_acked("mine"));
+        reset_for_link(&mut notices, &mut bell, &mut acked, Some(dir.clone()), &link::Link::Local);
+        assert!(acked.is_acked("mine") && !acked.is_acked("theirs"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

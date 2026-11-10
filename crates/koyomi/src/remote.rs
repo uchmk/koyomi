@@ -87,7 +87,7 @@ pub fn ask(name: &str, f: impl FnOnce(&Client) -> Result<Reply, client::Error>) 
     with(name, |r| call(r, f))
 }
 
-fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) -> Result<T, String> {
+pub(crate) fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) -> Result<T, String> {
     let all = remotes()?;
     let r = all.iter().find(|r| r.name.trim() == name).ok_or_else(|| {
         let names: Vec<_> = all.iter().map(|r| r.name.trim()).collect();
@@ -100,7 +100,7 @@ fn with<T>(name: &str, f: impl FnOnce(&Remote) -> Result<T, String>) -> Result<T
     f(r)
 }
 
-fn client(r: &Remote) -> Result<Client, String> {
+pub(crate) fn client(r: &Remote) -> Result<Client, String> {
     let name = r.secret();
     let token = ito_secret::get("koyomi", name)
         .map_err(|e| format!("{}: token の秘密 {name}: {e}", r.name))?
@@ -123,7 +123,7 @@ fn answer(r: &Remote, reply: Reply) -> Result<serde_json::Value, String> {
     }
 }
 
-fn why(r: &Remote, e: &client::Error) -> String {
+pub(crate) fn why(r: &Remote, e: &client::Error) -> String {
     match e {
         client::Error::Fingerprint(got) => format!(
             "{}: 証明書が koyomi.toml の fingerprint と違う（今見えたのは {got}）。向こうで koyomi http fingerprint を見て、同じなら書き直す。違えば別の PC につながっている",

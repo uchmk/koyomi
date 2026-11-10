@@ -136,6 +136,12 @@ impl Far {
         far
     }
 
+    /// Test only: what the name thread would send.
+    #[cfg(test)]
+    pub(super) fn send_names(&self, names: Vec<String>) {
+        let _ = self.tx.send(Got::Names(names));
+    }
+
     /// Whether there is another PC to switch to.
     pub fn any(&self) -> bool {
         !self.names.is_empty()
@@ -171,7 +177,7 @@ impl Far {
     }
 
     /// Takes what the threads sent; an answer from a PC no longer shown is dropped.
-    fn drain(&mut self) {
+    pub(super) fn drain(&mut self) {
         while let Ok(got) = self.rx.try_recv() {
             self.take(got);
         }

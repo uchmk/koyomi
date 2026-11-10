@@ -1667,7 +1667,7 @@ impl State {
         self.write_def(id, text, base_sha256, false, false)?;
         let left = self.defs.iter().find(|d| d.id == id).is_some_and(|d| d.standing != Standing::Confirmed);
         Ok(if left {
-            format!("置いた（未確認。この PC の窓で確認するまで動かない）: {id}")
+            format!("置いた（未確認。確認するまで動かない）: {id}")
         } else {
             format!("置いた（確認済みと同じ中身）: {id}")
         })

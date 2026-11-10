@@ -6,8 +6,10 @@
 //! list, the runs of today and the log being watched, and the window reads what that
 //! thread sent. An approval, a start and a kill are sent the same way.
 
+use std::cell::Cell;
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -18,8 +20,9 @@ use koyomi_core::run::{Run, State};
 use koyomi_core::scan::{Def, Standing};
 use serde::{Deserialize, Serialize};
 
+use crate::link::{Conn, Link};
 use crate::proto::{self, Request, Runs, Snapshot};
-use crate::{client, engine, review, show};
+use crate::{engine, review, show};
 
 pub mod calendar;
 pub mod canvas;
@@ -31,13 +34,215 @@ pub mod whens;
 mod ha;
 mod net_side;
 
-/// How often the engine is asked for the list and the runs.
-const POLL: Duration = Duration::from_secs(1);
+/// How long a window waits to ask another PC again after its list could not be read.
+const FAR_RETRY: Duration = Duration::from_secs(10);
 /// How often it is asked which PC runs the schedules (`[standby]` or `[primary]`).
 const HA_POLL: Duration = Duration::from_secs(30);
 
+/// What the thread is asked to do. Only a request for now.
+enum Job {
+    Ask(Request),
+}
+
+/// One request that is in the worker's hands and is not a read: it counts while it is alive, and it is
+/// dropped by the worker after its answer was sent, or with the envelope when it was never taken.
+/// A switch of the link waits until none is left.
+struct Pending(Arc<AtomicUsize>);
+
+impl Pending {
+    fn new(count: &Arc<AtomicUsize>) -> Pending {
+        count.fetch_add(1, Ordering::SeqCst);
+        Pending(count.clone())
+    }
+}
+
+impl Drop for Pending {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+/// The envelope the window sends to the thread: the job and, for a request that is not a read, its count.
+struct Work {
+    job: Job,
+    pending: Option<Pending>,
+}
+
+/// The window's side of the thread's queue. It is its own field so that a request can be sent while another
+/// field of the browser is borrowed.
+struct Outbox {
+    tx: Sender<Work>,
+    /// How many requests that are not reads the thread has not finished.
+    pending: Arc<AtomicUsize>,
+    /// A switch of the link is waiting for the pending requests: no write is sent (a read still is, and is not counted).
+    switching: Cell<bool>,
+    /// A request was refused because of `switching`; the result line says so once.
+    refused: Cell<bool>,
+}
+
+impl Outbox {
+    fn send(&self, request: Request) {
+        if self.switching.get() && !request.is_read() {
+            self.refused.set(true);
+            return;
+        }
+        let pending = (!request.is_read()).then(|| Pending::new(&self.pending));
+        // A failed send gives the envelope back inside the error, and its drop takes the count off again.
+        let _ = self.tx.send(Work { job: Job::Ask(request), pending });
+    }
+}
+
+/// This PC's offset from UTC now, in minutes (what the engine's `utc_offset_min` is compared with).
+fn local_utc_offset_min() -> i32 {
+    ito_common::now::now_local().offset().local_minus_utc() / 60
+}
+
+/// The request that saves the editor's text: `edit` may only propose (it waits for a confirmation in the
+/// engine's own window), `admin` and this PC save.
+fn save_request(role: Option<koyomi_core::role::Role>, id: String, text: String, base_sha256: Option<String>, force: bool) -> Request {
+    if role == Some(koyomi_core::role::Role::Edit) {
+        Request::Propose { id, text, base_sha256 }
+    } else {
+        Request::Save { id, text, base_sha256, force }
+    }
+}
+
+/// The forced save the conflict box's third button (index 2) asks for. Another PC's engine takes none.
+fn force_save(far: bool, answer: usize, id: &str, text: String, base_sha256: Option<String>) -> Option<Request> {
+    (answer == 2 && !far).then(|| Request::Save { id: id.to_owned(), text, base_sha256, force: true })
+}
+
+/// The request that stages a net for a day, with what the window saw: the file it started from (`base`) and the
+/// staged one over it, if any. Without a `base` the net was never saved, so there is nothing to switch from.
+fn stage_request(id: &str, base: Option<String>, staged: Option<String>, text: String, from: String) -> Result<Request, String> {
+    match base {
+        Some(live) => Ok(Request::Stage { id: id.to_owned(), text, from, expect: Some(proto::StageExpect { live, staged }) }),
+        None => Err("まだ保存していないので、日付で切り替える先が決められない".to_owned()),
+    }
+}
+
+/// The link `state.toml` keeps: this PC's when it keeps none (or no file).
+pub fn kept_link(state: Option<&std::path::Path>) -> Link {
+    let kept: Kept = state.and_then(|d| kept::read(&d.join("state.toml"))).unwrap_or_default();
+    kept.link.filter(|n| !n.trim().is_empty()).map_or(Link::Local, Link::Far)
+}
+
+/// Whether the rest of a round is skipped after the list could not be read, and how long the next wait is.
+/// Another PC is left alone for a while; this PC's engine is asked for the rest as it always was.
+fn after_list_failure(link: &Link) -> Option<Duration> {
+    link.is_far().then_some(FAR_RETRY)
+}
+
+/// The thread: keeps the link up, answers the window's requests and asks for the list, the runs, the log being
+/// watched and the handover. It ends when the window drops its side of a channel.
+fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui::Context, seen: &Watch) {
+    let send = |m: Msg| {
+        let alive = tx_msg.send(m).is_ok();
+        ctx.request_repaint();
+        alive
+    };
+    // A request is answered, and only then is its envelope dropped (the window counts on that order).
+    let answer = |work: Work, reply: &dyn Fn(&Request) -> Result<String, String>| -> bool {
+        let Work { job: Job::Ask(request), pending } = work;
+        let r = reply(&request);
+        let alive = send(Msg::Answer(request, r));
+        drop(pending);
+        alive
+    };
+    let poll = link.poll();
+    let mut conn: Option<Conn> = None;
+    let mut wait = poll;
+    let mut ha_at: Option<std::time::Instant> = None;
+    loop {
+        if conn.as_ref().is_none_or(|c| !c.running()) {
+            conn = None;
+            if !link.is_far() && !send(Msg::Starting) {
+                return;
+            }
+            match link.start() {
+                Ok(c) => {
+                    if !send(Msg::Role(c.role())) {
+                        return;
+                    }
+                    conn = Some(c);
+                }
+                Err(e) => {
+                    for work in rx_req.try_iter() {
+                        if !answer(work, &|_| Err(e.clone())) {
+                            return;
+                        }
+                    }
+                    if !send(Msg::Down(e.clone())) {
+                        return;
+                    }
+                    match rx_req.recv_timeout(after_list_failure(link).unwrap_or(poll * 3)) {
+                        Ok(work) => {
+                            if !answer(work, &|_| Err(e.clone())) {
+                                return;
+                            }
+                        }
+                        Err(mpsc::RecvTimeoutError::Timeout) => {}
+                        Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                    }
+                    continue;
+                }
+            }
+        }
+        let Some(c) = conn.as_ref() else { continue };
+        match rx_req.recv_timeout(wait) {
+            Ok(work) => {
+                if !answer(work, &|r| c.call(r)) {
+                    return;
+                }
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {}
+            Err(mpsc::RecvTimeoutError::Disconnected) => return,
+        }
+        wait = poll;
+        let listed = c.call(&Request::List).and_then(|t| Snapshot::parse(&t));
+        let failed = listed.is_err();
+        let m = match listed {
+            Ok(s) => Msg::Snapshot(Box::new(s)),
+            Err(e) => Msg::Down(e),
+        };
+        if !send(m) {
+            return;
+        }
+        if failed {
+            if let Some(w) = after_list_failure(link) {
+                // The next round connects afresh, so a new token, certificate or address and the role are read again.
+                conn = None;
+                wait = w;
+                continue;
+            }
+        }
+        if let Ok(r) = c.call(&Request::Runs).and_then(|t| Runs::parse(&t)) {
+            if !send(Msg::Runs(r)) {
+                return;
+            }
+        }
+        let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some((run, job)) = target {
+            if let Ok(text) = c.call(&Request::Log { run: run.clone(), job: job.clone() }) {
+                if !send(Msg::Log(run, job, text)) {
+                    return;
+                }
+            }
+        }
+        if ha_at.is_none_or(|at| at.elapsed() >= HA_POLL) {
+            ha_at = Some(std::time::Instant::now());
+            let ha = c.call(&Request::Handover { release: false }).ok().and_then(|t| serde_json::from_str(&t).ok());
+            if !send(Msg::Ha(ha)) {
+                return;
+            }
+        }
+    }
+}
+
 enum Msg {
     Starting,
+    /// The caller's role at the other PC (`None` for this one), once the link started.
+    Role(Option<koyomi_core::role::Role>),
     Snapshot(Box<Snapshot>),
     Runs(Runs),
     /// The tail of one job's log: run, job, text.
@@ -235,6 +440,9 @@ struct Kept {
     /// `false` once the pane at the right of the net page was folded.
     #[serde(default)]
     net_pane: Option<bool>,
+    /// The `[[remote]]` name of the PC the window is connected to; none is this PC.
+    #[serde(default)]
+    link: Option<String>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -342,7 +550,13 @@ pub struct Browser {
     io: (Sender<Msg>, egui::Context),
     /// What [`Msg::Done`] brought, until [`Browser::show`] has the words for it.
     done: Option<Result<Said, Said>>,
-    tx: Sender<Request>,
+    out: Outbox,
+    /// The link the person picked, until [`Browser::take_link_wish`].
+    want_link: Option<Link>,
+    /// Which engine the window talks to.
+    link: Link,
+    /// The caller's role at the other PC; `None` for this one.
+    role: Option<koyomi_core::role::Role>,
     watch: Watch,
     snap: Option<Snapshot>,
     runs: Vec<Run>,
@@ -474,70 +688,16 @@ pub struct Browser {
 
 impl Browser {
     /// Starts the thread. `state` is the state folder for `state.toml`; `None` keeps nothing.
-    pub fn start(ctx: &egui::Context, state: Option<PathBuf>) -> Browser {
+    pub fn start(ctx: &egui::Context, state: Option<PathBuf>, link: Link, writer: Option<kept::Writer>) -> Browser {
         let (tx_msg, rx) = mpsc::channel::<Msg>();
-        let (tx, rx_req) = mpsc::channel::<Request>();
+        let (tx, rx_req) = mpsc::channel::<Work>();
+        let pending: Arc<AtomicUsize> = Arc::default();
         let watch: Watch = Arc::default();
         let seen = watch.clone();
         let io = (tx_msg.clone(), ctx.clone());
         let ctx = ctx.clone();
-        let mut ha_at: Option<std::time::Instant> = None;
-        std::thread::spawn(move || loop {
-            let send = |m: Msg| {
-                let alive = tx_msg.send(m).is_ok();
-                ctx.request_repaint();
-                alive
-            };
-            if !client::running() {
-                if !send(Msg::Starting) {
-                    return;
-                }
-                if let Err(e) = client::start() {
-                    if !send(Msg::Down(e)) {
-                        return;
-                    }
-                    std::thread::sleep(POLL * 3);
-                    continue;
-                }
-            }
-            match rx_req.recv_timeout(POLL) {
-                Ok(request) => {
-                    let answer = client::call(&request);
-                    if !send(Msg::Answer(request, answer)) {
-                        return;
-                    }
-                }
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                Err(mpsc::RecvTimeoutError::Disconnected) => return,
-            }
-            let m = match client::call(&Request::List).and_then(|t| Snapshot::parse(&t)) {
-                Ok(s) => Msg::Snapshot(Box::new(s)),
-                Err(e) => Msg::Down(e),
-            };
-            if !send(m) {
-                return;
-            }
-            if let Ok(r) = client::call(&Request::Runs).and_then(|t| Runs::parse(&t)) {
-                if !send(Msg::Runs(r)) {
-                    return;
-                }
-            }
-            let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
-            if let Some((run, job)) = target {
-                if let Ok(text) = client::call(&Request::Log { run: run.clone(), job: job.clone() }) {
-                    if !send(Msg::Log(run, job, text)) {
-                        return;
-                    }
-                }
-            }
-            if ha_at.is_none_or(|at| at.elapsed() >= HA_POLL) {
-                ha_at = Some(std::time::Instant::now());
-                let ha = client::call(&Request::Handover { release: false }).ok().and_then(|t| serde_json::from_str(&t).ok());
-                if !send(Msg::Ha(ha)) {
-                    return;
-                }
-            }
-        });
+        let thread_link = link.clone();
+        std::thread::spawn(move || worker(&thread_link, &rx_req, &tx_msg, &ctx, &seen));
         let path = state.map(|d| d.join("state.toml"));
         let kept: Kept = path.as_deref().and_then(kept::read).unwrap_or_default();
         let vertical = kept.flow.as_deref() == Some("vertical");
@@ -545,13 +705,16 @@ impl Browser {
         let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
         let cal_view = calendar::CalView::kept(kept.calendar_view.as_deref(), kept.calendar_week);
         let net_pane = kept.net_pane != Some(false);
-        let flow = path.map(|p| kept::Writer::new(p, true));
+        let flow = writer;
         let far = far::Far::start(&io.1);
         Browser {
             far,
             rx,
             io,
-            tx,
+            want_link: None,
+            out: Outbox { tx, pending, switching: Cell::new(false), refused: Cell::new(false) },
+            link,
+            role: None,
             watch,
             snap: None,
             runs: Vec::new(),
@@ -623,6 +786,87 @@ impl Browser {
         }
     }
 
+    /// Which engine the window talks to.
+    pub fn link(&self) -> &Link {
+        &self.link
+    }
+
+    /// The other PC's name and the caller's role there, for the title and the status bar; `None` on this PC.
+    pub fn link_label(&self) -> Option<String> {
+        let name = self.link.far()?;
+        Some(match self.role {
+            Some(r) => format!("{name} ({r})"),
+            None => name.to_owned(),
+        })
+    }
+
+    /// How many requests that are not reads the thread has not finished.
+    pub fn pending(&self) -> usize {
+        self.out.pending.load(Ordering::SeqCst)
+    }
+
+    /// One look at a switch of the link that is waiting: from now on no write is sent (see [`Outbox::send`]),
+    /// and how many requests are still in the thread's hands is returned (`0`: the switch may go on). The count
+    /// is read before the thread's answers are taken: an answer is sent before its request stops counting, so a
+    /// zero means every answer is in the channel, and the drain here has them.
+    pub fn switch_step(&mut self) -> usize {
+        self.out.switching.set(true);
+        let left = self.pending();
+        self.drain();
+        left
+    }
+
+    /// 「やめる」: sends again.
+    pub fn cancel_switch(&self) {
+        self.out.switching.set(false);
+    }
+
+    /// Whether an editor holds changes that are not saved.
+    pub fn has_unsaved(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty)
+    }
+
+    /// The link the person picked in a picker, once.
+    pub fn take_link_wish(&mut self) -> Option<Link> {
+        self.want_link.take()
+    }
+
+    /// Writes `state.toml` (the link included).
+    pub fn save_state(&self) {
+        self.save_kept();
+    }
+
+    /// The picker of the link: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
+    pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        if !self.link.is_far() && self.far.names().is_empty() {
+            return;
+        }
+        let this_pc = t.tr("link.this_pc").to_owned();
+        let current = self.link.far().map_or_else(|| this_pc.clone(), str::to_owned);
+        let mut pick: Option<Link> = None;
+        let combo = egui::ComboBox::from_id_salt("link_picker").selected_text(&current).show_ui(ui, |ui| {
+            if ui.selectable_label(!self.link.is_far(), &this_pc).clicked() {
+                pick = Some(Link::Local);
+            }
+            for name in self.far.names() {
+                if ui.selectable_label(self.link.far() == Some(name.as_str()), name).clicked() {
+                    pick = Some(Link::Far(name.clone()));
+                }
+            }
+        });
+        ito_a11y::say(&combo.response, Role::Button, &format!("{} {current}", t.tr("link.pick")));
+        if let Some(l) = pick.filter(|l| *l != self.link) {
+            self.want_link = Some(l);
+        }
+    }
+
+    /// Hands a request to the thread. A request that is not a read is counted until the thread has finished
+    /// it. While a switch of the link waits, a write is refused (and said so); a read still goes, and its answer
+    /// goes to this browser, which goes away with the switch.
+    fn send(&self, request: Request) {
+        self.out.send(request);
+    }
+
     /// Whether the engine has answered once.
     pub fn snapshot_known(&self) -> bool {
         self.snap.is_some()
@@ -645,14 +889,16 @@ impl Browser {
         if self.past_asked != Some(today) && self.past_failed.is_none_or(|at| at.elapsed() > Duration::from_secs(60)) {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
-            let _ = self.tx.send(Request::History { from, to });
+            self.send(Request::History { from, to });
         }
     }
 
     pub fn drain(&mut self) {
+        self.far.drain();
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,
+                Msg::Role(r) => self.role = r,
                 Msg::Snapshot(s) => {
                     self.ask_past();
                     self.starting = false;
@@ -728,7 +974,12 @@ impl Browser {
                         }
                     }
                 }
-                Msg::Answer(Request::Save { text, .. }, r) => {
+                Msg::Answer(req @ (Request::Save { .. } | Request::Propose { .. }), r) => {
+                    // A save and a proposal (a role that may not confirm) end the same way.
+                    let text = match req {
+                        Request::Save { text, .. } | Request::Propose { text, .. } => text,
+                        _ => unreachable!("matched above"),
+                    };
                     if let Some(e) = &mut self.editor {
                         match r {
                             Ok(said) => e.saved(&text, said),
@@ -809,6 +1060,9 @@ impl Browser {
     /// The status bar's engine facts: `(engine word, running count, next time)`.
     /// The word is `None` while all is well and the engine answers.
     pub fn engine_facts(&self, t: &ito_i18n::Table) -> (Option<String>, usize, Option<chrono::NaiveDateTime>) {
+        if self.down.is_some() {
+            return (Some(t.tr("status.engine_down").to_owned()), 0, None);
+        }
         let running = self.runs.iter().filter(|r| !r.is_over()).count();
         let Some(snap) = &self.snap else {
             let word = match (&self.down, self.starting) {
@@ -897,11 +1151,8 @@ impl Browser {
 
     /// Whether a warning bears on `def` itself (approving it is refused); another net's file does not count.
     fn blocked_for(&self, def: &Def) -> bool {
-        let Some(s) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) else { return false };
-        match engine::Paths::find() {
-            Ok(paths) => !engine::warnings_about(&paths, &s.warnings, &s.defs, &def.file).is_empty(),
-            Err(_) => true,
-        }
+        // The engine says which nets a warning bears on: this PC's files and another PC's are read the same way.
+        self.snap.as_ref().is_some_and(|s| s.blocked.contains(&def.id))
     }
 
     fn selected_def(&self) -> Option<&Def> {
@@ -945,6 +1196,7 @@ impl Browser {
                 calendar_view: Some(self.cal_view.word().to_owned()),
                 calendar_week: None,
                 net_pane: Some(self.net_pane),
+                link: self.link.far().map(str::to_owned),
             });
         }
     }
@@ -1016,7 +1268,8 @@ impl Browser {
     /// under the detail.
     pub fn export(&mut self, t: &ito_i18n::Table) {
         self.result = Some(Ok(t.tr("run.writing").to_owned()));
-        Self::background(&self.io, move || export_all().map(|(path, n)| ("port.exported", vec![path, n.to_string()])));
+        let link = self.link.clone();
+        Self::background(&self.io, move || export_all(&link).map(|(path, n)| ("port.exported", vec![path, n.to_string()])));
     }
 
     /// The palette's 取り込む: opens the box with the path field.
@@ -1087,7 +1340,7 @@ impl Browser {
                 };
                 self.make = None;
                 self.result = None;
-                let _ = self.tx.send(req);
+                self.send(req);
                 return;
             }
             Ok(_) if unsaved => Err(t.tr("make.unsaved").to_owned()),
@@ -1210,7 +1463,7 @@ impl Browser {
                 self.focus = 0;
             }
             None => {
-                let _ = self.tx.send(Request::Run { id, date: None, from: None, dry: false, params: BTreeMap::new() });
+                self.send(Request::Run { id, date: None, from: None, dry: false, params: BTreeMap::new() });
             }
         }
     }
@@ -1246,7 +1499,7 @@ impl Browser {
                 let params = g.set();
                 let id = g.id.clone();
                 self.give = None;
-                let _ = self.tx.send(Request::Run { id, date: None, from: None, dry: false, params });
+                self.send(Request::Run { id, date: None, from: None, dry: false, params });
             }
             Some(_) => self.give = None,
             None => {}
@@ -1316,7 +1569,7 @@ impl Browser {
                 p.text = Some(text.clone());
                 p.waiting = true;
                 self.focus = 0;
-                let _ = self.tx.send(Request::Import { text, dry_run: true, on_conflict: None });
+                self.send(Request::Import { text, dry_run: true, on_conflict: None });
             }
             Err(e) => p.error = Some(e),
         }
@@ -1329,7 +1582,7 @@ impl Browser {
         p.plan = None;
         p.waiting = true;
         self.focus = 0;
-        let _ = self.tx.send(Request::Import { text, dry_run: false, on_conflict: on_conflict.map(str::to_owned) });
+        self.send(Request::Import { text, dry_run: false, on_conflict: on_conflict.map(str::to_owned) });
     }
 
     /// The 取り込む box: the path field, then the plan with its buttons.
@@ -1455,7 +1708,7 @@ impl Browser {
             canvas::Action::Save { force } => {
                 if let Some(e) = &mut self.editor {
                     e.result = None;
-                    let _ = self.tx.send(Request::Save { id: e.id.clone(), text: e.text(), base_sha256: e.base.clone(), force });
+                    self.out.send(save_request(self.role, e.id.clone(), e.text(), e.base.clone(), force));
                 }
             }
             canvas::Action::Flow => self.set_flow(!self.vertical),
@@ -1519,14 +1772,17 @@ impl Browser {
             let diff = ito_diff::diff(&e.base_text, &def.text, 3);
             let rows = [(t.tr("review.file").to_owned(), def.file.clone())];
             let body = [t.tr("canvas.conflict_body").to_owned()];
+            // Another PC's engine takes no forced save: the box only reloads or cancels.
+            let far = self.link.is_far();
             let buttons = [t.tr("canvas.reload").to_owned(), t.tr("canvas.cancel").to_owned(), t.tr("canvas.overwrite").to_owned()];
+            let buttons = &buttons[..if far { 2 } else { 3 }];
             let q = ito_confirm::Question {
                 title: t.tr("canvas.conflict_title"),
                 rows: &rows,
                 body: &body,
                 diff: &diff,
-                buttons: &buttons,
-                marks: &[Some(ito_prefs::Mark::Refresh), Some(ito_prefs::Mark::Close), Some(ito_prefs::Mark::Save)],
+                buttons,
+                marks: &[Some(ito_prefs::Mark::Refresh), Some(ito_prefs::Mark::Close), Some(ito_prefs::Mark::Save)][..buttons.len()],
                 focus: Some(self.focus),
                 primary: Some(0),
                 danger: true,
@@ -1534,14 +1790,16 @@ impl Browser {
             };
             let answer = ito_confirm::show(ctx, &q, &Self::style()).or(key);
             let Some(e) = &mut self.editor else { return };
+            let force = answer.and_then(|a| force_save(far, a, &e.id, text.clone(), e.base.clone()));
             match answer {
                 Some(0) => e.reload(&def),
-                Some(2) => {
+                Some(_) => {
                     e.conflict = None;
-                    e.result = None;
-                    let _ = self.tx.send(Request::Save { id: e.id.clone(), text, base_sha256: e.base.clone(), force: true });
+                    if let Some(r) = force {
+                        e.result = None;
+                        self.out.send(r);
+                    }
                 }
-                Some(_) => e.conflict = None,
                 None => {}
             }
             return;
@@ -1576,7 +1834,13 @@ impl Browser {
                 Some(0) => {
                     e.stage_ask = None;
                     e.result = None;
-                    let _ = self.tx.send(Request::Stage { id: e.id.clone(), text, from, expect: None });
+                    // What this window saw: the file it started from, and the staged one over it (if any).
+                    let staged =
+                        self.snap.as_ref().and_then(|s| s.staged.iter().find(|n| n.id == e.id)).map(koyomi_core::next::Entry::seal);
+                    match stage_request(&e.id, e.base.clone(), staged, text, from) {
+                        Ok(r) => self.out.send(r),
+                        Err(m) => e.result = Some(Err(m)),
+                    }
                 }
                 Some(_) => e.stage_ask = None,
                 None => {}
@@ -1616,6 +1880,9 @@ impl Browser {
             let words = |(key, args): Said| t.trf(key, &args.iter().map(String::as_str).collect::<Vec<_>>());
             self.result = Some(done.map(words).map_err(words));
         }
+        if self.out.refused.take() {
+            self.result = Some(Err(t.tr("link.switching_refused").to_owned()));
+        }
         let ctx = ui.ctx().clone();
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
@@ -1641,7 +1908,12 @@ impl Browser {
         let buttons = if self.vers.is_some() {
             4
         } else if conflict || self.staged_box.is_some() {
-            3
+            // Another PC's save conflict only reloads or cancels.
+            if self.link.is_far() && self.staged_box.is_none() {
+                2
+            } else {
+                3
+            }
         } else if asking_stage {
             2
         } else {
@@ -1661,6 +1933,12 @@ impl Browser {
                 }
             });
         }
+        // The engine's day is not this window's day: what 今日 shows is off.
+        if self.link.is_far() && self.snap.as_ref().is_some_and(|s| s.utc_offset_min != local_utc_offset_min()) {
+            egui::Panel::top("zone").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
+                ui.label(egui::RichText::new(t.tr("band.zone")).color(c.wait_text()));
+            });
+        }
         if self.snap.as_ref().is_some_and(|s| s.paused) {
             egui::Panel::top("paused").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
                 // Centred on the row, so the words and the button's words sit on one line.
@@ -1672,7 +1950,7 @@ impl Browser {
                     let resume = ito_prefs::IconButton::new(ito_prefs::Mark::Play, t.tr("run.resume")).tone(ito_prefs::Tone::Warn);
                     let r = ui.add_enabled(!modal, |ui: &mut egui::Ui| resume.show(ui));
                     if r.clicked() {
-                        let _ = self.tx.send(Request::Resume);
+                        self.send(Request::Resume);
                     }
                 });
             });
@@ -1730,7 +2008,7 @@ impl Browser {
                 });
             });
         }
-        if self.far.any() {
+        if self.far.any() && !self.link.is_far() {
             egui::Panel::top("pc").show(ui, |ui| {
                 // A box of this PC's open: it is answered before the window moves away from it.
                 if modal || self.editor.is_some() {
@@ -1763,7 +2041,7 @@ impl Browser {
                     ui.add_space(10.0);
                     let r = ito_prefs::icon_button(ui, ito_prefs::Mark::Pause, t.tr("run.pause"), t.tr("run.pause"));
                     if r.clicked() {
-                        let _ = self.tx.send(Request::Pause);
+                        self.send(Request::Pause);
                     }
                 }
             });
@@ -1933,6 +2211,9 @@ impl Browser {
                 (None, _) => t.tr("tree.starting").to_owned(),
             };
             ui.label(text);
+            if self.down.is_some() {
+                self.link_picker(ui, t);
+            }
             return;
         };
         if snap.defs.is_empty() {
@@ -2101,7 +2382,7 @@ impl Browser {
     /// Back to `p`, its picked row scrolled into sight; a history asks the engine for its days again.
     fn put(&mut self, p: Place) {
         if let Some(h) = &p.hist {
-            let _ = self.tx.send(h.request());
+            self.send(h.request());
         }
         self.gantt = p.gantt;
         self.hist = p.hist;
@@ -2463,7 +2744,7 @@ impl Browser {
         }
         ui.spacing_mut().item_spacing.y = gap;
         if let Some(req) = ask {
-            let _ = self.tx.send(req);
+            self.send(req);
         }
         if let Some(id) = go_net {
             self.follow(|b| b.open_net(&id));
@@ -2710,7 +2991,7 @@ impl Browser {
             });
         if let Some(r) = send {
             self.result = None;
-            let _ = self.tx.send(r);
+            self.send(r);
         }
         if close {
             self.skip_pick = false;
@@ -2757,7 +3038,7 @@ impl Browser {
             Some(0) => self.take_staged(t, &entry),
             Some(2) => {
                 self.result = None;
-                let _ = self.tx.send(Request::Unstage { id });
+                self.send(Request::Unstage { id });
             }
             _ => {}
         }
@@ -3001,7 +3282,7 @@ impl Browser {
         if self.box_open() {
             return;
         }
-        let _ = self.tx.send(Request::Versions { id: id.clone() });
+        self.send(Request::Versions { id: id.clone() });
         self.focus = 1;
         self.vers = Some(Vers { id, list: Vec::new(), idx: 0, texts: BTreeMap::new(), asked: BTreeSet::new(), error: None });
     }
@@ -3015,7 +3296,7 @@ impl Browser {
         let new = old.as_ref().map(|_| newer(v));
         for w in old.iter().chain(new.iter()) {
             if v.asked.insert(w.clone()) {
-                let _ = self.tx.send(Request::VersionText { id: v.id.clone(), version: w.clone() });
+                self.out.send(Request::VersionText { id: v.id.clone(), version: w.clone() });
             }
         }
         let texts = old.as_ref().zip(new.as_ref()).and_then(|(o, n)| Some((v.texts.get(o)?, v.texts.get(n)?)));
@@ -3058,7 +3339,7 @@ impl Browser {
                 let req = Request::Restore { id: v.id.clone(), version: v.list[v.idx].clone() };
                 self.vers = None;
                 self.result = None;
-                let _ = self.tx.send(req);
+                self.send(req);
             }
             Some(2) if v.idx + 1 < v.list.len() => v.idx += 1,
             Some(3) if v.idx > 0 => v.idx -= 1,
@@ -3070,7 +3351,7 @@ impl Browser {
     /// Opens 履歴 on the last 7 days and asks the engine for them.
     pub fn open_history(&mut self) {
         let h = History::week(ito_common::now::now_local().date_naive());
-        let _ = self.tx.send(h.request());
+        self.send(h.request());
         self.hist = Some(h);
         self.gantt = false;
         self.run_sel = None;
@@ -3223,7 +3504,7 @@ impl Browser {
                         h.from = from.to_string();
                         h.to = to.to_string();
                         h.error = None;
-                        let _ = self.tx.send(h.request());
+                        self.out.send(h.request());
                     }
                     _ => h.error = Some(t.tr("run.history_bad_date").to_owned()),
                 }
@@ -3372,7 +3653,7 @@ impl Browser {
         let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, &label).show(ui));
         if r.clicked() {
             let (id, job) = (net.to_owned(), Some(job.to_owned()));
-            let _ = self.tx.send(if held { Request::Release { id, job } } else { Request::Hold { id, job } });
+            self.send(if held { Request::Release { id, job } } else { Request::Hold { id, job } });
         }
     }
 
@@ -3456,7 +3737,7 @@ impl Browser {
                     let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
                     if run.is_over() {
                         let head = format!("{} ▾", t.tr("run.rerun"));
-                        let tx = &self.tx;
+                        let rerun = std::cell::RefCell::new(None::<Request>);
                         let button = ito_prefs::IconButton::new(ito_prefs::Mark::Rerun, &head);
                         let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| button.show(ui));
                         egui::Popup::menu(&r).show(|ui| {
@@ -3464,7 +3745,7 @@ impl Browser {
                             let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
                             ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
                             if r.clicked() {
-                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: None, next: None });
+                                *rerun.borrow_mut() = Some(Request::Rerun { run: run.id.clone(), from: None, next: None });
                             }
                             let label = match &picked {
                                 Some(j) => t.trf("run.rerun_from", &[j]),
@@ -3473,7 +3754,7 @@ impl Browser {
                             let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
                             ito_a11y::say(&r, Role::Button, &label);
                             if r.clicked() {
-                                let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
+                                *rerun.borrow_mut() = Some(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: None });
                             }
                             // From the jobs after the picked one, which ends as スキップ or 警告 without running.
                             for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
@@ -3482,10 +3763,14 @@ impl Browser {
                                 let r = ui.button(&label);
                                 ito_a11y::say(&r, Role::Button, &label);
                                 if r.clicked() {
-                                    let _ = tx.send(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
+                                    *rerun.borrow_mut() =
+                                        Some(Request::Rerun { run: run.id.clone(), from: picked.clone(), next: Some(mark) });
                                 }
                             }
                         });
+                        if let Some(r) = rerun.take() {
+                            self.send(r);
+                        }
                     }
                     // A failure dealt with: it leaves the count in the status bar.
                     let done = self.acked.contains(&run.id);
@@ -3503,7 +3788,7 @@ impl Browser {
                     };
                     let skip = !run.is_over() && pending && ito_prefs::IconButton::new(ito_prefs::Mark::Skip, &label).show(ui).clicked();
                     if let Some(job) = picked.clone().filter(|_| skip) {
-                        let _ = self.tx.send(Request::Skip { run: run.id.clone(), job });
+                        self.send(Request::Skip { run: run.id.clone(), job });
                     }
                     // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
                     if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
@@ -3526,7 +3811,7 @@ impl Browser {
                         };
                         if ito_prefs::IconButton::new(mark, &label).show(ui).clicked() {
                             if let Some(job) = target {
-                                let _ = self.tx.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
+                                self.send(Request::Answer { run: run.id.clone(), job: job.to_owned(), yes });
                             }
                         }
                     }
@@ -3963,7 +4248,7 @@ impl Browser {
         let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, t.tr(key)).show(ui));
         if r.clicked() {
             let id = def.id.clone();
-            let _ = self.tx.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
+            self.send(if held { Request::Release { id, job: None } } else { Request::Hold { id, job: None } });
         }
     }
 
@@ -4188,7 +4473,7 @@ impl Browser {
         match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
             Some(0) => {
                 let (id, sha256) = (ask.id.clone(), ask.sha256.clone());
-                let _ = self.tx.send(Request::Approve { id, sha256 });
+                self.send(Request::Approve { id, sha256 });
                 self.asking = None;
             }
             Some(_) => self.asking = None,
@@ -4218,7 +4503,7 @@ impl Browser {
         };
         match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
             Some(0) => {
-                let _ = self.tx.send(Request::Kill { run: id, job: None });
+                self.send(Request::Kill { run: id, job: None });
                 self.killing = None;
             }
             Some(_) => self.killing = None,
@@ -4252,7 +4537,7 @@ impl Browser {
             Some(0) => {
                 self.deleting = None;
                 self.result = None;
-                let _ = self.tx.send(Request::Delete { id });
+                self.send(Request::Delete { id });
             }
             Some(_) => self.deleting = None,
             None => {}
@@ -4842,17 +5127,17 @@ fn caution_key(line: &str) -> String {
     }
 }
 
-fn export_all() -> Result<(String, usize), Said> {
-    let paths = engine::Paths::find().map_err(plain)?;
-    let src = koyomi_core::bundle::Source::read(&paths.app);
-    let b = crate::notify::export(&src, &koyomi_core::bundle::Pick { all: true, ..Default::default() }).map_err(plain)?;
+/// Everything the engine of `link` has, written to `exports/<YYYYMMDD-HHMMSS>.toml` in this PC's state folder.
+fn export_all(link: &Link) -> Result<(String, usize), Said> {
+    let text = link.start().and_then(|c| c.call(&Request::ExportAll)).map_err(plain)?;
+    let b = koyomi_core::bundle::parse(&text).map_err(plain)?;
     if b.is_empty() {
         return Err(("port.export_empty", Vec::new()));
     }
-    let dir = paths.state.join("exports");
+    let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{}.toml", ito_common::now::now_local().format("%Y%m%d-%H%M%S")));
-    ito_common::write_atomic(&path, b.to_toml()).map_err(plain)?;
+    ito_common::write_atomic(&path, text).map_err(plain)?;
     Ok((path.display().to_string(), b.len()))
 }
 
@@ -4979,15 +5264,35 @@ mod tests {
         assert!(ids(&h).is_empty());
     }
 
+    /// The worker's queue as the tests read it: the requests, one at a time, as the window sent them.
+    struct Asked(Receiver<Work>);
+
+    impl Asked {
+        fn try_recv(&self) -> Result<Request, mpsc::TryRecvError> {
+            self.0.try_recv().map(|w| {
+                let Job::Ask(r) = w.job;
+                r
+            })
+        }
+    }
+
+    fn asks() -> (Sender<Work>, Asked) {
+        let (tx, rx) = mpsc::channel();
+        (tx, Asked(rx))
+    }
+
     fn quiet(defs: Vec<Def>) -> Browser {
         let (tx_msg, rx) = mpsc::channel();
-        let (tx, _) = mpsc::channel();
+        let (tx, _) = mpsc::channel::<Work>();
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
             far: far::Far::idle(&egui::Context::default()),
             rx,
             io: (tx_msg, egui::Context::default()),
-            tx,
+            out: Outbox { tx, pending: Arc::default(), switching: Cell::new(false), refused: Cell::new(false) },
+            want_link: None,
+            link: Link::Local,
+            role: None,
             watch: Arc::default(),
             snap,
             runs: Vec::new(),
@@ -5533,9 +5838,9 @@ run = [\"x.exe\"]
         run.start("b", now);
         run.finish("b", Outcome::Exited(1), now);
         assert!(run.is_over());
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         b.runs = vec![run];
         b.run_sel = Some("20261030-090000-01".into());
         let mut s = Screen::new();
@@ -5568,9 +5873,9 @@ run = [\"x.exe\"]
     /// sending only the values that were changed.
     #[test]
     fn run_now_asks_for_params_and_sends_only_the_changed_ones() {
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         b.run_now("試験/bom".into(), None);
         match rx_req.try_recv() {
             Ok(Request::Run { params, .. }) => assert!(params.is_empty()),
@@ -5609,9 +5914,9 @@ run = [\"x.exe\"]
         let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         b.runs = vec![run];
         b.run_sel = Some("r1".into());
         b.killing = Some("r1".into());
@@ -5628,9 +5933,9 @@ run = [\"x.exe\"]
     /// onto a net there is does not.
     #[test]
     fn the_tree_deletes_on_ask_and_copies_and_renames_through_the_box() {
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         let ctx = egui::Context::default();
         let size = egui::vec2(1280.0, 800.0);
         b.deleting = Some("試験/bom".into());
@@ -5690,9 +5995,9 @@ run = [\"x.exe\"]
     /// A box is not opened over another: an Enter meant for the new one would press the old one.
     #[test]
     fn no_box_opens_over_another() {
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         let ctx = egui::Context::default();
         let size = egui::vec2(1280.0, 800.0);
         b.deleting = Some("試験/bom".into());
@@ -5768,9 +6073,9 @@ run = [\"x.exe\"]
         let now = ito_common::now::now_local().naive_local();
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.start("a", now);
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         b.runs = vec![run];
         let mut s = Screen::new();
 
@@ -5829,9 +6134,9 @@ run = [\"x.exe\"]
         let mut run = Run::new("r1", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
         run.state = State::Held;
         run.ended = Some(now);
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs());
-        b.tx = tx;
+        b.out.tx = tx;
         b.runs = vec![run];
         b.gantt = true;
         let snap = b.snap.as_mut().unwrap();
@@ -6059,8 +6364,8 @@ run = [\"x.exe\"]
         b.leave_editor();
         assert!(b.editor.as_ref().unwrap().closing);
         b.editor.as_mut().unwrap().closing = false;
-        let (tx, rx_req) = mpsc::channel();
-        b.tx = tx;
+        let (tx, rx_req) = asks();
+        b.out.tx = tx;
         b.edit(canvas::Cmd::Save);
         match rx_req.try_recv() {
             Ok(Request::Save { id: saved, force, .. }) => {
@@ -6078,9 +6383,9 @@ run = [\"x.exe\"]
         use canvas::Action;
         let defs = defs();
         let id = defs[0].id.clone();
-        let (tx, rx_req) = mpsc::channel();
+        let (tx, rx_req) = asks();
         let mut b = quiet(defs);
-        b.tx = tx;
+        b.out.tx = tx;
         b.open_editor(&id);
         let e = b.editor.as_mut().unwrap();
         e.add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
@@ -6230,5 +6535,234 @@ run = [\"x.exe\"]
         let mut w = vec![100.0, 200.0];
         TodayTable::squeeze(&mut w, 400.0, &[1], 72.0);
         assert_eq!(w, [100.0, 200.0]);
+    }
+
+    fn save_of(id: &str) -> Request {
+        Request::Save { id: id.into(), text: "x".into(), base_sha256: None, force: false }
+    }
+
+    #[test]
+    fn a_send_counts_until_the_work_is_dropped_and_a_read_never_counts() {
+        let (tx, rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.send(Request::List);
+        assert_eq!(b.pending(), 0, "a read is not counted");
+        b.send(save_of("g/a"));
+        assert_eq!(b.pending(), 1);
+        // The thread takes the envelope, answers, and drops it: exactly once.
+        let w = rx.0.try_recv().unwrap();
+        let w2 = rx.0.try_recv().unwrap();
+        assert!(w.pending.is_none() && w2.pending.is_some());
+        drop(w);
+        assert_eq!(b.pending(), 1);
+        drop(w2);
+        assert_eq!(b.pending(), 0);
+    }
+
+    #[test]
+    fn a_failed_send_and_a_gone_thread_give_the_count_back() {
+        let (tx, rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        // Sent, never taken, and the thread is gone: the envelopes drop with the queue.
+        b.send(save_of("g/a"));
+        b.send(save_of("g/b"));
+        assert_eq!(b.pending(), 2);
+        drop(rx);
+        assert_eq!(b.pending(), 0);
+        // Sending into a closed queue takes the count off again.
+        b.send(save_of("g/c"));
+        assert_eq!(b.pending(), 0);
+    }
+
+    #[test]
+    fn nothing_new_is_sent_while_switching_and_cancel_sends_again() {
+        let (tx, rx) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.send(save_of("g/a"));
+        assert_eq!(b.switch_step(), 1, "one is still in the thread's hands");
+        b.send(save_of("g/b"));
+        assert!(b.out.refused.get(), "a write is refused and says so");
+        assert_eq!(b.pending(), 1, "the refused write is not counted");
+        b.send(Request::List);
+        assert_eq!(b.pending(), 1, "a read is not counted");
+        assert!(matches!(rx.try_recv(), Ok(Request::Save { id, .. }) if id == "g/a"));
+        assert!(matches!(rx.try_recv(), Ok(Request::List)), "a read still reaches the thread");
+        assert!(rx.try_recv().is_err(), "the refused write never left");
+        b.cancel_switch();
+        b.send(save_of("g/c"));
+        assert!(matches!(rx.try_recv(), Ok(Request::Save { id, .. }) if id == "g/c"));
+    }
+
+    #[test]
+    fn a_start_failure_answers_what_was_sent_and_the_count_returns_to_zero() {
+        let mut b = Browser::start(&egui::Context::default(), None, Link::Far("no-such-pc-for-this-test".into()), None);
+        b.send(save_of("g/a"));
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        let mut answered = false;
+        while std::time::Instant::now() < until && !(answered && b.down.is_some() && b.pending() == 0) {
+            while let Ok(m) = b.rx.try_recv() {
+                match m {
+                    Msg::Answer(Request::Save { .. }, Err(_)) => answered = true,
+                    Msg::Down(e) => b.down = Some(e),
+                    _ => {}
+                }
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(answered, "the save got an Err");
+        assert!(b.down.is_some());
+        assert_eq!(b.pending(), 0);
+    }
+
+    #[test]
+    fn edit_proposes_and_admin_and_this_pc_save() {
+        use koyomi_core::role::Role;
+        let mk = |r| save_request(r, "g/a".into(), "x".into(), None, false);
+        assert!(matches!(mk(Some(Role::Edit)), Request::Propose { .. }));
+        assert!(matches!(mk(Some(Role::Admin)), Request::Save { force: false, .. }));
+        assert!(matches!(mk(None), Request::Save { .. }));
+    }
+
+    #[test]
+    fn a_proposal_that_was_taken_updates_the_editor_and_a_far_conflict_has_no_force() {
+        let defs = defs();
+        let id = defs[0].id.clone();
+        let (tx, rx) = asks();
+        let mut b = quiet(defs);
+        b.out.tx = tx;
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Edit);
+        b.open_editor(&id);
+        let e = b.editor.as_mut().unwrap();
+        e.add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
+        let text = e.text();
+        assert!(e.dirty);
+        let req = Request::Propose { id: id.clone(), text: text.clone(), base_sha256: None };
+        b.io.0.send(Msg::Answer(req, Ok("置いた".into()))).unwrap();
+        b.drain();
+        let e = b.editor.as_ref().unwrap();
+        assert!(!e.dirty);
+        assert_eq!(e.base, Some(koyomi_core::approved::hash(text.as_bytes())));
+        assert_eq!(e.result, Some(Ok("置いた".to_owned())), "the engine's own text, verbatim");
+        // A conflict over there: the box offers two buttons, never a forced overwrite.
+        let req = Request::Propose { id: id.clone(), text: text.clone(), base_sha256: None };
+        b.io.0.send(Msg::Answer(req, Err("ほかで変わっています: x".into()))).unwrap();
+        b.drain();
+        assert!(b.editor.as_ref().unwrap().conflict.is_some());
+        let ctx = egui::Context::default();
+        frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        assert!(rx.try_recv().is_err(), "no force save went out");
+    }
+
+    #[test]
+    fn the_third_button_forces_a_save_on_this_pc_and_sends_nothing_on_another() {
+        assert!(force_save(true, 2, "g/a", "x".into(), None).is_none());
+        assert!(matches!(force_save(false, 2, "g/a", "x".into(), Some("h".into())), Some(Request::Save { force: true, .. })));
+        for far in [true, false] {
+            assert!(force_save(far, 0, "g/a", "x".into(), None).is_none());
+            assert!(force_save(far, 1, "g/a", "x".into(), None).is_none());
+        }
+    }
+
+    #[test]
+    fn the_stage_request_expects_what_the_window_saw() {
+        let r = stage_request("g/a", Some("live".into()), Some("seal".into()), "t".into(), "2099-12-01".into()).unwrap();
+        let Request::Stage { expect: Some(x), .. } = r else { panic!("{r:?}") };
+        assert_eq!((x.live.as_str(), x.staged.as_deref()), ("live", Some("seal")));
+        let r = stage_request("g/a", Some("live".into()), None, "t".into(), "2099-12-01".into()).unwrap();
+        assert!(matches!(r, Request::Stage { expect: Some(x), .. } if x.staged.is_none()));
+        assert!(stage_request("g/a", None, None, "t".into(), "2099-12-01".into()).is_err());
+    }
+
+    #[test]
+    fn the_names_of_the_remotes_arrive_through_drain() {
+        let mut b = quiet(defs());
+        assert!(!b.far.any());
+        b.far.send_names(vec!["kei".into(), "eigyo".into()]);
+        b.drain();
+        assert_eq!(b.far.names(), ["kei", "eigyo"]);
+    }
+
+    #[test]
+    fn a_far_engine_that_went_away_is_said_even_with_a_snapshot() {
+        let t = ito_i18n::Table::default();
+        let mut b = quiet(defs());
+        b.down = Some("gone".into());
+        let (word, running, next) = b.engine_facts(&t);
+        assert_eq!((word.as_deref(), running, next), (Some(t.tr("status.engine_down")), 0, None));
+        b.io.0.send(Msg::Snapshot(Box::<Snapshot>::default())).unwrap();
+        b.drain();
+        assert!(b.down.is_none() && b.engine_facts(&t).0.is_none());
+    }
+
+    #[test]
+    fn a_far_list_failure_skips_the_rest_and_this_pc_does_not() {
+        assert_eq!(after_list_failure(&Link::Far("kei".into())), Some(Duration::from_secs(10)));
+        assert_eq!(after_list_failure(&Link::Local), None);
+    }
+
+    #[test]
+    fn the_stage_request_carries_what_it_was_made_from() {
+        let defs = defs();
+        let id = defs[0].id.clone();
+        let (tx, rx) = asks();
+        let mut b = quiet(defs);
+        b.out.tx = tx;
+        b.open_editor(&id);
+        let e = b.editor.as_mut().unwrap();
+        e.add(koyomi_core::jobnet::Part::Notify, Some("a"), None);
+        let live = e.base.clone().expect("a net that exists has a base");
+        e.stage = Some("2099-12-01".into());
+        let ctx = egui::Context::default();
+        let size = egui::vec2(1280.0, 800.0);
+        frame(&ctx, size, Vec::new(), &mut b);
+        b.act(canvas::Action::Stage("2099-12-01".into()));
+        frame(&ctx, size, Vec::new(), &mut b);
+        frame(&ctx, size, key(egui::Key::Enter), &mut b);
+        match rx.try_recv() {
+            Ok(Request::Stage { expect: Some(x), .. }) => assert_eq!((x.live, x.staged), (live, None)),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_state_without_a_link_is_this_pc_and_one_writer_keeps_the_last_link() {
+        let dir = std::env::temp_dir().join(format!("koyomi-link-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("state.toml"), "inspector = true\n").unwrap();
+        assert_eq!(kept_link(Some(&dir)), Link::Local);
+        assert_eq!(kept_link(None), Link::Local);
+        // Two browsers without a worker (nothing here may start an engine or reach a real [[remote]]).
+        let writer = kept::Writer::new(dir.join("state.toml"), true);
+        let mut old = quiet(defs());
+        old.flow = Some(writer.clone());
+        old.link = Link::Local;
+        let mut new = quiet(defs());
+        new.flow = Some(writer);
+        new.link = Link::Far("no-such-pc-for-this-test".into());
+        let far = Link::Far("no-such-pc-for-this-test".into());
+        let settle = |want: &Link| {
+            let until = std::time::Instant::now() + Duration::from_secs(5);
+            while std::time::Instant::now() < until && kept_link(Some(&dir)) != *want {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(kept_link(Some(&dir)), *want);
+        };
+        for _ in 0..20 {
+            old.save_state();
+            new.save_state();
+        }
+        settle(&far);
+        for _ in 0..20 {
+            new.save_state();
+            old.save_state();
+        }
+        settle(&Link::Local);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

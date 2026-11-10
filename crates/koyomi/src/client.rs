@@ -9,6 +9,12 @@ use crate::proto::{self, Request};
 /// How long a start is waited for before it is called failed.
 const START_WAIT: Duration = Duration::from_secs(10);
 
+#[cfg(test)]
+thread_local! {
+    /// How many times [`start`] was called on this thread, so a test can prove a path never starts the engine.
+    pub static STARTS: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
+}
+
 /// Whether an engine answers.
 pub fn running() -> bool {
     ask(&proto::door(), &Request::Status).is_ok()
@@ -17,6 +23,8 @@ pub fn running() -> bool {
 /// Starts `koyomi engine` on its own (no window, no console, not a child that dies with this
 /// process) and waits until it answers.
 pub fn start() -> Result<(), String> {
+    #[cfg(test)]
+    STARTS.with(|c| c.set(c.get() + 1));
     if running() {
         return Ok(());
     }

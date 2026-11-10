@@ -7,6 +7,18 @@ use std::path::PathBuf;
 use ito_common::kept;
 use serde::{Deserialize, Serialize};
 
+/// `acked.toml` for this PC, `acked-<first 16 hex of the name's hash>.toml` for a `[[remote]]` (a name is not
+/// always fit for a file name).
+pub fn file_name(far: Option<&str>) -> String {
+    match far {
+        None => "acked.toml".to_owned(),
+        Some(name) => {
+            let hash = koyomi_core::approved::hash(name.as_bytes());
+            format!("acked-{}.toml", &hash[..16])
+        }
+    }
+}
+
 /// Older acknowledgements are dropped past this many (the runs themselves go with keep_days).
 const KEEP: usize = 2000;
 
@@ -25,9 +37,16 @@ pub struct Acked {
 
 impl Acked {
     /// Reads `acked.toml` under `dir`; with no folder nothing is kept.
+    #[cfg(test)]
     pub fn load(dir: Option<PathBuf>) -> Acked {
+        Acked::load_for(dir, None)
+    }
+
+    /// The file of the link `far` (a `[[remote]]` name; `None`: this PC's `acked.toml`). Run ids of another
+    /// PC are its own, so each keeps a file of its own.
+    pub fn load_for(dir: Option<PathBuf>, far: Option<&str>) -> Acked {
         let Some(dir) = dir else { return Acked { ids: BTreeSet::new(), dirty: true, writer: None } };
-        let path = dir.join("acked.toml");
+        let path = dir.join(file_name(far));
         let last: Kept = kept::read(&path).unwrap_or_default();
         Acked { ids: last.acked.into_iter().collect(), dirty: true, writer: Some(kept::Writer::new(path, true)) }
     }
@@ -73,6 +92,15 @@ impl Acked {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn each_link_has_its_own_file() {
+        assert_eq!(file_name(None), "acked.toml");
+        let (a, b) = (file_name(Some("kei")), file_name(Some("eigyo")));
+        assert_ne!(a, b);
+        assert_eq!(a, file_name(Some("kei")));
+        assert!(a.starts_with("acked-") && a.ends_with(".toml") && a.len() == "acked-.toml".len() + 16, "{a}");
+    }
 
     #[test]
     fn waiting_counts_only_what_is_not_acked() {
