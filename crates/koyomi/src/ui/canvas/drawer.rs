@@ -295,7 +295,7 @@ impl Editor {
             Part::Jobnet { .. } => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
                     let bad = !f.use_.trim().is_empty() && !jobnet::is_id(f.use_.trim());
-                    let changed = form.line(ui, "review.use", Need::Required, bad, &mut f.use_, |i| i.mono().hint("経理/月次"));
+                    let changed = form.line(ui, "review.use", Need::Required, bad, &mut f.use_, |i| i.mono().hint(t.tr("review.use_hint")));
                     if IconButton::new(M::ArrowRight, t.tr("canvas.enter")).show(ui).clicked() && jobnet::is_id(f.use_.trim()) {
                         *action = Some(Action::Enter(f.use_.trim().to_owned()));
                     }
@@ -591,7 +591,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let (to_bad, cc_bad) = (bad(&f.mail_to), bad(&f.mail_cc));
             changed |= form.code(ui, "field.mail_to", req, to_bad, &mut f.mail_to, (2, ""));
             changed |= form.code(ui, "field.mail_cc", opt, cc_bad, &mut f.mail_cc, (1, ""));
-            changed |= form.line(ui, "field.subject", req, false, &mut f.subject, |i| i.hint("売上の集計 {date}"));
+            changed |= form.line(ui, "field.subject", req, false, &mut f.subject, |i| i.hint(form.t.tr("field.subject_hint")));
             changed |= form.code(ui, "field.mail_body", opt, false, &mut f.body, (4, ""));
             changed |= form.code(ui, "field.files", opt, false, &mut f.files, (2, ""));
             changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
@@ -600,7 +600,8 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             // Which server it is decides how the SQL is cut into batches and what it signs in with.
             let db = (!f.db.contains('{')).then(|| koyomi_core::chore::sql_db(f.db.trim()).ok()).flatten();
             let db_bad = !f.db.trim().is_empty() && !f.db.contains('{') && db.is_none();
-            changed |= form.line(ui, "field.sql_db", req, db_bad, &mut f.db, |i| i.mono().hint("sqlserver://db01/売上").mark(M::Server));
+            changed |=
+                form.line(ui, "field.sql_db", req, db_bad, &mut f.db, |i| i.mono().hint(form.t.tr("field.sql_db_hint")).mark(M::Server));
             let (text, file) = (!f.sql.trim().is_empty(), !f.file.trim().is_empty());
             let aside = match &db {
                 Some(SqlDb::SqlServer { .. }) => "SQL Server",

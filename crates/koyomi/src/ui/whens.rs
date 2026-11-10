@@ -5,6 +5,7 @@
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime, Weekday};
 use ito_i18n::Table;
 use koyomi_core::duration;
+use koyomi_core::msg;
 use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When};
 
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
@@ -155,7 +156,7 @@ fn times(s: &str) -> Result<Vec<NaiveTime>, String> {
     let out: Result<Vec<_>, _> = items(s).into_iter().map(when::time).collect();
     let out = out?;
     if out.is_empty() {
-        return Err("at は \"02:00\" のように時刻を 1 つ以上書く".into());
+        return Err(msg::line(msg::DEF_WHEN_KEY_MISSING, &["at", "at = [\"02:00\"]"]));
     }
     Ok(out)
 }
@@ -165,15 +166,16 @@ fn weekdays(s: &str) -> Result<Vec<Weekday>, String> {
 }
 
 fn date(s: &str) -> Result<NaiveDate, String> {
-    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").map_err(|_| format!("日付は \"2026-04-01\" のように書く: \"{}\"", s.trim()))
+    NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").map_err(|_| msg::line(msg::DATE_BAD, &[s.trim()]))
 }
 
 fn dates(s: &str) -> Result<Vec<NaiveDate>, String> {
     items(s).into_iter().map(date).collect()
 }
 
-fn number<T: std::str::FromStr>(s: &str, what: &str) -> Result<T, String> {
-    s.trim().parse().map_err(|_| format!("{what} は数で書く: \"{}\"", s.trim()))
+/// The number in `s`, when it is one.
+fn number<T: std::str::FromStr>(s: &str) -> Option<T> {
+    s.trim().parse().ok()
 }
 
 impl WhenEdit {
@@ -292,14 +294,11 @@ impl WhenEdit {
             "once" => Kind::Once {
                 at: NaiveDateTime::parse_from_str(self.once.trim(), "%Y-%m-%d %H:%M")
                     .or_else(|_| NaiveDateTime::parse_from_str(self.once.trim(), "%Y-%m-%d %H:%M:%S"))
-                    .map_err(|_| format!("once は \"2026-04-01 02:00\" のように書く: \"{}\"", self.once.trim()))?,
+                    .map_err(|_| msg::line(msg::WIN_DATETIME_BAD, &[self.once.trim()]))?,
             },
             "day" => Kind::Day { at: times(&self.at)? },
             "minutes" | "hours" => {
-                let n: u32 = number(&self.n, "n")?;
-                if n == 0 {
-                    return Err("n は 1 以上".into());
-                }
+                let n: u32 = number(&self.n).filter(|n| *n >= 1).ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["n", "1", "1440"]))?;
                 let (from, to, days) = (when::time(&self.from)?, when::time(&self.to)?, weekdays(&self.days)?);
                 if self.kind == "minutes" {
                     Kind::Minutes { n, from, to, days }
@@ -310,32 +309,32 @@ impl WhenEdit {
             "week" => {
                 let days = weekdays(&self.days)?;
                 if days.is_empty() {
-                    return Err("days は曜日を 1 つ以上書く".into());
+                    return Err(msg::line(msg::DEF_WHEN_KEY_MISSING, &["days", "days = [\"mon\", \"fri\"]"]));
                 }
                 Kind::Week { days, at: times(&self.at)? }
             }
             "month" => {
                 let rule = match self.rule.as_str() {
                     "day" => {
-                        let day: u32 = number(&self.day, "day")?;
-                        if !(1..=31).contains(&day) {
-                            return Err("day は 1〜31".into());
-                        }
-                        MonthRule::Day { day, shift: if self.shift.trim().is_empty() { 0 } else { number(&self.shift, "shift")? } }
+                        let day: u32 = number(&self.day)
+                            .filter(|d| (1..=31).contains(d))
+                            .ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["day", "1", "31"]))?;
+                        let shift = if self.shift.trim().is_empty() {
+                            0
+                        } else {
+                            number(&self.shift).ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["shift", "-31", "31"]))?
+                        };
+                        MonthRule::Day { day, shift }
                     }
                     "last" => MonthRule::Last,
                     "nth" => {
-                        let nth: u32 = number(&self.nth, "nth")?;
-                        if !(1..=5).contains(&nth) {
-                            return Err("nth は 1〜5".into());
-                        }
+                        let nth: u32 = number(&self.nth)
+                            .filter(|n| (1..=5).contains(n))
+                            .ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["nth", "1", "5"]))?;
                         MonthRule::Nth { nth, weekday: when::weekday(&self.weekday)? }
                     }
                     _ => {
-                        let n: i32 = number(&self.n, "business_day")?;
-                        if n == 0 {
-                            return Err("business_day は 0 以外（-1 は最終営業日）".into());
-                        }
+                        let n: i32 = number(&self.n).filter(|n| *n != 0).ok_or_else(|| msg::line(msg::DEF_BUSINESS_DAY_BAD, &[]))?;
                         MonthRule::BusinessDay { n }
                     }
                 };
@@ -348,37 +347,37 @@ impl WhenEdit {
             "dates" => {
                 let ds = dates(&self.dates)?;
                 if ds.is_empty() {
-                    return Err("dates は日付を 1 つ以上書く".into());
+                    return Err(msg::line(msg::DEF_VALUE_EMPTY, &["dates"]));
                 }
                 Kind::Dates { dates: ds, at: times(&self.at)? }
             }
             "file" => {
                 if self.file.trim().is_empty() {
-                    return Err("file は待つファイルのパス".into());
+                    return Err(msg::line(msg::DEF_VALUE_EMPTY, &["file"]));
                 }
                 let settle = if self.settle.trim().is_empty() { None } else { Some(duration::parse(&self.settle)?) };
                 Kind::File { file: self.file.trim().into(), settle }
             }
             "log" => {
                 if self.log.trim().is_empty() {
-                    return Err("log は見るファイルのパス".into());
+                    return Err(msg::line(msg::DEF_VALUE_EMPTY, &["log"]));
                 }
                 if self.contains.is_empty() {
-                    return Err("contains は行に含まれる文字（例: ERROR）".into());
+                    return Err(msg::line(msg::DEF_WHEN_KEY_MISSING, &["contains", "contains = \"ERROR\""]));
                 }
                 Kind::Log { log: self.log.trim().into(), contains: self.contains.clone() }
             }
             "eventlog" => {
                 if self.eventlog.trim().is_empty() {
-                    return Err("eventlog はログの名前（例: Application）".into());
+                    return Err(msg::line(msg::DEF_WHEN_KEY_MISSING, &["eventlog", "eventlog = \"Application\""]));
                 }
                 let ids = items(&self.ids)
                     .into_iter()
-                    .map(|s| s.parse::<u32>().ok().filter(|n| *n <= 65535).ok_or(format!("ids はイベント ID（0〜65535）: \"{s}\"")))
+                    .map(|s| s.parse::<u32>().ok().filter(|n| *n <= 65535).ok_or_else(|| msg::line(msg::DEF_IDS_BAD, &[])))
                     .collect::<Result<Vec<_>, _>>()?;
                 let source = Some(self.source.trim()).filter(|s| !s.is_empty()).map(str::to_owned);
                 if ids.is_empty() && source.is_none() {
-                    return Err("eventlog には ids か source が要る".into());
+                    return Err(msg::line(msg::DEF_EITHER_REQUIRED, &["eventlog", "ids", "source", "ids = [4625]"]));
                 }
                 Kind::EventLog { eventlog: self.eventlog.trim().into(), ids, source }
             }
@@ -386,37 +385,38 @@ impl WhenEdit {
                 when::mailbox(&self.mail)?;
                 let secret = match self.password.trim().strip_prefix("secret:") {
                     Some(n) if !n.trim().is_empty() => n.to_owned(),
-                    _ => return Err("password は \"secret:<名前>\" で書く（koyomi secret set <名前> で OS の資格情報に置く）".into()),
+                    Some(_) => return Err(msg::line(msg::DEF_SECRET_NAME_EMPTY, &["password"])),
+                    None => return Err(msg::line(msg::DEF_PASSWORD_NOT_SECRET, &["password"])),
                 };
                 let text = |s: &str| Some(s.to_owned()).filter(|s| !s.trim().is_empty());
                 let (sender, subject) = (text(&self.sender), text(&self.subject));
                 if sender.is_none() && subject.is_none() {
-                    return Err("mail には sender か subject が要る".into());
+                    return Err(msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
                 }
                 Kind::Mail { mail: self.mail.trim().into(), secret, sender, subject }
             }
             "on_start" => Kind::OnStart,
             "idle" => {
-                let idle = duration::parse(&self.idle).map_err(|e| format!("idle {e}"))?;
+                let idle = duration::parse(&self.idle)?;
                 if idle < 60 {
-                    return Err("idle は 1m 以上（それより短いと、手を止めるたびに流れる）".into());
+                    return Err(msg::line(msg::DEF_IDLE_SHORT, &[]));
                 }
                 Kind::Idle { idle }
             }
             "session" => {
                 let user = Some(self.user.trim().to_owned()).filter(|u| !u.is_empty());
-                if let Some(u) = user.as_deref().filter(|u| !koyomi_core::when::valid_session_user(u)) {
-                    return Err(format!("user は PC\\taro・CORP\\taro・taro のように書く（@ や空白は書かない）: \"{u}\""));
+                if user.as_deref().is_some_and(|u| !koyomi_core::when::valid_session_user(u)) {
+                    return Err(msg::line(msg::DEF_SESSION_USER_BAD, &[]));
                 }
                 Kind::Session { session: self.session, user }
             }
             "after_jobnet" => {
                 if !koyomi_core::jobnet::is_id(self.jobnet.trim()) {
-                    return Err(format!("after_jobnet は \"グループ/名前\": \"{}\"", self.jobnet.trim()));
+                    return Err(msg::line(msg::DEF_JOBNET_REF_BAD, &["after_jobnet"]));
                 }
                 Kind::AfterJobnet { jobnet: self.jobnet.trim().into(), on: self.on }
             }
-            k => return Err(format!("知らない種類: {k}")),
+            k => return Err(msg::line(msg::WIN_WHEN_KIND_UNKNOWN, &[k])),
         };
         let opt = |s: &str| -> Result<Option<NaiveDate>, String> {
             if s.trim().is_empty() {
@@ -428,11 +428,11 @@ impl WhenEdit {
         let wait_for = match self.wait_for.trim() {
             "" => None,
             u if koyomi_core::jobnet::is_id(u) => Some(u.to_owned()),
-            u => return Err(format!("wait_for は \"グループ/名前\": \"{u}\"")),
+            _ => return Err(msg::line(msg::DEF_JOBNET_REF_BAD, &["wait_for"])),
         };
         let wait_until = if self.wait_until.trim().is_empty() { None } else { Some(when::time(&self.wait_until)?) };
         if wait_until.is_some() && wait_for.is_none() {
-            return Err("wait_until は wait_for と一緒に書く".into());
+            return Err(msg::line(msg::DEF_WAIT_UNTIL_ALONE, &[]));
         }
         Ok(When {
             kind,
@@ -671,7 +671,7 @@ mod tests {
         assert_eq!(e.to_when().unwrap().kind, Kind::Session { session: Session::Lock, user: Some("PC\\taro".into()) });
         let mut e = WhenEdit::new("day");
         e.start = "2026/04/01".into();
-        assert!(e.to_when().unwrap_err().contains("2026-04-01"));
+        assert!(e.to_when().unwrap_err().contains(&koyomi_core::msg::DATE_BAD.code()));
         // The usual values of every kind read as they are.
         for k in KINDS {
             let mut e = WhenEdit::new(k);

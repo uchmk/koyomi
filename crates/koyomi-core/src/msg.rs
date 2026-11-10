@@ -385,6 +385,10 @@ ids! {
     DEF_AFTER_CYCLE = "E3428",
     DEF_POS_BAD = "E3429",
     DEF_ON_EMPTY = "E3430",
+    WIN_JOB_ID_BAD = "E3431",
+    WIN_HEADER_BAD = "E3432",
+    WIN_STATUS_CODE_BAD = "E3433",
+    WIN_JOB_GONE = "E3434",
     DURATION_ZERO = "E3470",
     DURATION_UNREADABLE = "E3471",
     TEMPLATE_NO_CALENDAR = "E3472",
@@ -437,6 +441,8 @@ ids! {
     OS_RUN_AS = "W3750",
     OS_EVENTLOG = "W3751",
     CHILD_UNCONFIRMED = "E3356",
+    WIN_WHEN_KIND_UNKNOWN = "E3357",
+    WIN_DATETIME_BAD = "E3358",
     IMPORT_FAILED = "E3619",
     IMPORT_EMPTY = "E3620",
     IMPORT_STOPPED = "E3621",
@@ -671,6 +677,7 @@ ids! {
     CHORE_HOST_KEY_MISSING = "E3596",
     CHORE_HOST_KEY_BAD = "E3597",
     CHORE_KEY_AND_PASSWORD = "E3598",
+    HOST_CHECK_STOPPED = "E3599",
     HTTP_TOKEN_SECRET_UNREADABLE = "E2177",
     REMOTE_NET_CHANGED = "E2178",
     HTTP_LISTEN_FAILED = "E3767",
@@ -1119,6 +1126,7 @@ notes! {
     N_SEND_ASK = "send_ask",
     N_SEND_DONE = "send_done",
     N_SEND_DONE_SAME = "send_done_same",
+    N_CALENDAR_UNCHANGED = "unchanged",
 }
 
 /// A message filled in for a language. Text and action stay apart until a surface joins them.

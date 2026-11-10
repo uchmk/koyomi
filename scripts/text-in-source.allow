@@ -8,3 +8,8 @@ crates/koyomi/src/glossary.rs ジョブの流れ ito_glossary's Term holds the w
 crates/koyomi/src/glossary.rs ジョブとその実行順を、ひとつのファイルにまとめたものです。決めた時刻に自動で実行されます。 ito_glossary's Term holds the word in both languages as constants
 crates/koyomi/src/glossary.rs 確認して許可 ito_glossary's Term holds the word in both languages as constants
 crates/koyomi/src/glossary.rs 実行する内容を読んで許可することです。許可するまでは実行されません。ファイルを変更すると、再度必要です。 ito_glossary's Term holds the word in both languages as constants
+crates/koyomi/src/ui/mod.rs （あと read, not said: cuts the 「（あと N 日）」 out of the Japanese line of an engine from before the IDs
+crates/koyomi/src/ui/mod.rs ） read, not said: the closing bracket of the 「（あと N 日）」 an engine from before the IDs wrote
+crates/koyomi/src/ui/mod.rs ほかで変わっています read, not said: the refusal text of an engine from before the IDs, matched to know the file changed elsewhere
+crates/koyomi/src/ui/canvas/drawer.rs （ read, not said: split_label cuts a label at its full-width parenthesis
+crates/koyomi/src/ui/canvas/drawer.rs ） read, not said: split_label cuts a label at its full-width parenthesis

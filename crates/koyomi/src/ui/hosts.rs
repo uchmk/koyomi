@@ -163,7 +163,8 @@ impl Hosts {
                 let next = queue.lock().ok().and_then(|mut q| q.pop_front());
                 let Some(name) = next else { break };
                 // Every name must answer, or the round stays in flight and the list never refreshes.
-                let result = std::panic::catch_unwind(|| check(&name)).unwrap_or_else(|_| Err(format!("{name}: 確認の途中で止まった")));
+                let result = std::panic::catch_unwind(|| check(&name))
+                    .unwrap_or_else(|_| Err(koyomi_core::msg::line(koyomi_core::msg::HOST_CHECK_STOPPED, &[&name])));
                 let _ = tx.send((name, result));
                 ctx.request_repaint();
             });

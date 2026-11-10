@@ -223,6 +223,7 @@ priority_low = "Gives way for a free slot (priority = {0})"
 quiet_wait = "Quiet hours: {0} (a time in them runs when they are over)"
 quiet_skip = "Quiet hours: {0} (a time in them is skipped)"
 notify_to = "Notices go to: {0}"
+use_hint = "finance/monthly"
 
 [part]
 job = "Job"
@@ -562,6 +563,7 @@ next_week = "Next week"
 week_none = "Nothing starts this week"
 open_net = "Open its net page"
 open_net_hint = "Double-click to open it on the net page"
+day_said = "{0} {1} ({2}){3}"
 
 [canvas]
 new = " (new, unsaved)"
@@ -741,6 +743,8 @@ no_calendar = "(none)"
 missed = "When the PC was asleep"
 overlap = "When the last run is still going"
 skip = "Skip"
+subject_hint = "Sales summary {date}"
+sql_db_hint = "sqlserver://db01/sales"
 
 [when]
 title = "When"
@@ -919,6 +923,7 @@ skip = "Skip"
 undo = "Undo"
 none = "No approved jobnet runs on a schedule"
 close = "Close"
+named = "{0} ({1})"
 
 [give]
 title = "Run with values"

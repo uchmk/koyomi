@@ -222,6 +222,7 @@ priority_low = "空きの枠を後に回す（priority = {0}）"
 quiet_wait = "実行しない時間帯: {0}（時刻が来た実行は終了後に実行する）"
 quiet_skip = "実行しない時間帯: {0}（時刻が来た実行はスキップ）"
 notify_to = "通知の宛先: {0}"
+use_hint = "経理/月次"
 
 [part]
 job = "ジョブ"
@@ -561,6 +562,7 @@ next_week = "次の週"
 week_none = "この週に始まるものはありません。"
 open_net = "ジョブネットのページを開く"
 open_net_hint = "ダブルクリックすると、ジョブネットのページを開きます。"
+day_said = "{0} {1}（{2}）{3}"
 
 [canvas]
 new = "（新規・未保存）"
@@ -740,6 +742,8 @@ no_calendar = "（なし）"
 missed = "PC がスリープしていたとき"
 overlap = "前の実行が終了していないとき"
 skip = "飛ばす"
+subject_hint = "売上の集計 {date}"
+sql_db_hint = "sqlserver://db01/売上"
 
 [when]
 title = "いつ"
@@ -918,6 +922,7 @@ skip = "飛ばす"
 undo = "戻す"
 none = "時刻で実行される承認済みのジョブネットがありません。"
 close = "閉じる"
+named = "{0}（{1}）"
 
 [give]
 title = "値を決めて実行"

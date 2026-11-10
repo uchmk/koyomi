@@ -809,7 +809,10 @@ fn month_grid(
         let hover: Vec<&str> = named.iter().chain(&stop).map(String::as_str).collect();
         let r = if hover.is_empty() { r } else { r.on_hover_text(hover.join("\n")) };
         let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-        let said = format!("{} {}（{kind}）{}", d, weekday(t, d.weekday()), stop.map(|s| format!(" {s}")).unwrap_or_default());
+        let said = t.trf(
+            "calendar.day_said",
+            &[&d.to_string(), &weekday(t, d.weekday()), &kind, &stop.map(|s| format!(" {s}")).unwrap_or_default()],
+        );
         ito_a11y::say(&r, Role::Button, &said);
         day_press(&r, t, name, d, day, &mut out);
     }
@@ -962,7 +965,7 @@ fn timetable(
         let hover: Vec<&str> = named.iter().chain(&stop).map(String::as_str).collect();
         let r = if hover.is_empty() { r } else { r.on_hover_text(hover.join("\n")) };
         let kind = named.unwrap_or_else(|| t.tr(if day.is_business() { "calendar.business" } else { "calendar.off" }).to_owned());
-        let said = format!("{} {}（{kind}）{}", d, weekday(t, w), stop.map(|s| format!(" {s}")).unwrap_or_default());
+        let said = t.trf("calendar.day_said", &[&d.to_string(), &weekday(t, w), &kind, &stop.map(|s| format!(" {s}")).unwrap_or_default()]);
         ito_a11y::say(&r, Role::Button, &said);
         day_press(&r, t, name, d, day, &mut out);
     }

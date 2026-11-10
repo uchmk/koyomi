@@ -68,7 +68,7 @@ fn unchanged(why: &str) -> String {
     if koyomi_core::msg::is_coded(why) {
         why.to_owned()
     } else {
-        format!("{why}。変えていない")
+        koyomi_core::msg::note(koyomi_core::msg::N_CALENDAR_UNCHANGED, &[why])
     }
 }
 
@@ -1621,7 +1621,7 @@ impl Browser {
     fn imported(&mut self, dry_run: bool, r: Result<String, String>) {
         let Some(p) = &mut self.port else {
             if !dry_run {
-                self.result = Some(r.map(|_| "取り込んだ（ジョブネットは未確認）".to_owned()));
+                self.result = Some(r.map(|_| koyomi_core::msg::note(koyomi_core::msg::N_IMPORT_DONE, &[])));
             }
             return;
         };
@@ -1629,7 +1629,7 @@ impl Browser {
         match r.and_then(|text| proto::Plan::parse(&text)) {
             Ok(plan) if plan.applied => {
                 self.port = None;
-                self.result = Some(Ok("取り込んだ（ジョブネットは未確認。確かめてから流す）".to_owned()));
+                self.result = Some(Ok(koyomi_core::msg::note(koyomi_core::msg::N_IMPORT_DONE, &[])));
             }
             Ok(plan) => {
                 // Not done: the plan to confirm (or, after a choice, what changed meanwhile).
@@ -1842,7 +1842,10 @@ impl Browser {
             },
             canvas::Action::Enter(id) => {
                 let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
-                let opened = def.as_ref().ok_or_else(|| format!("ジョブネットがない: {id}")).and_then(canvas::Editor::open);
+                let opened = def
+                    .as_ref()
+                    .ok_or_else(|| koyomi_core::msg::line(koyomi_core::msg::JOBNET_MISSING, &[&id]))
+                    .and_then(canvas::Editor::open);
                 match (opened, &mut self.editor) {
                     (Ok(inner), Some(outer)) => {
                         let outer = std::mem::replace(outer, inner);
@@ -3021,7 +3024,7 @@ impl Browser {
 
     /// The approved, not held nets that run on a schedule, each with its next time not yet skipped
     /// and the times it skips: the rows of the 次の 1 回だけスキップ box.
-    fn skip_rows(&self, now: chrono::NaiveDateTime) -> Vec<SkipRow> {
+    fn skip_rows(&self, t: &ito_i18n::Table, now: chrono::NaiveDateTime) -> Vec<SkipRow> {
         let Some(snap) = &self.snap else { return Vec::new() };
         snap.defs
             .iter()
@@ -3033,7 +3036,7 @@ impl Browser {
                 let next = koyomi_core::held::next_open(&net.when, cal, now, |t| skipped.contains(&t));
                 (next.is_some() || !skipped.is_empty()).then(|| SkipRow {
                     id: d.id.clone(),
-                    name: d.title.as_ref().map_or(d.id.clone(), |title| format!("{title}（{}）", d.id)),
+                    name: d.title.as_ref().map_or(d.id.clone(), |title| t.trf("skipnext.named", &[title, &d.id])),
                     next,
                     skipped,
                 })
@@ -3048,7 +3051,7 @@ impl Browser {
             return;
         }
         let c = ito_theme::colors();
-        let rows = self.skip_rows(ito_common::now::now_local().naive_local());
+        let rows = self.skip_rows(t, ito_common::now::now_local().naive_local());
         let mut send = None;
         let mut close = key.is_some();
         egui::Window::new(t.tr("skipnext.title"))
@@ -6831,15 +6834,15 @@ run = [\"x.exe\"]
         let edit = || CalendarChange::Edit(Box::new(|t| Ok(format!("{t}x"))));
         for text in [Err("会社: つながらない".to_owned()), Ok("not = [toml".to_owned())] {
             let (sent, r) = run_calendar(text, edit(), Ok("書いた".into()));
-            assert!(r.as_ref().unwrap_err().ends_with("。変えていない"), "{r:?}");
+            assert!(r.as_ref().unwrap_err().ends_with("カレンダーは変更していません。"), "{r:?}");
             assert_eq!(sent.len(), 1, "only the read: {sent:?}");
         }
         let (sent, r) = run_calendar(Err("暦がない: 会社".into()), CalendarChange::Delete, Ok("消した".into()));
-        assert_eq!(r, Err("暦がない: 会社。変えていない".to_owned()));
+        assert_eq!(r, Err("暦がない: 会社。カレンダーは変更していません。".to_owned()));
         assert_eq!(sent.len(), 1);
         // A change that fails is nothing written either.
         let (sent, r) = run_calendar(body("a", "h1"), CalendarChange::Edit(Box::new(|_| Err("直せない".into()))), Ok("書いた".into()));
-        assert_eq!(r, Err("直せない。変えていない".to_owned()));
+        assert_eq!(r, Err("直せない。カレンダーは変更していません。".to_owned()));
         assert_eq!(sent.len(), 1);
     }
 
@@ -6936,7 +6939,7 @@ run = [\"x.exe\"]
         assert!(alive);
         assert_eq!(count, 0);
         let [Msg::CalendarDone(Err(e))] = &sent[..] else { panic!("one failed answer expected") };
-        assert!(e.ends_with("。変えていない"), "{e}");
+        assert!(e.ends_with("カレンダーは変更していません。"), "{e}");
     }
 
     #[test]

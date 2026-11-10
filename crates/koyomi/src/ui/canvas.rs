@@ -16,7 +16,7 @@ use koyomi_core::calendar::Calendar;
 use koyomi_core::chore::{Chore, Pass, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, Overlap, Part, Retry, RunAs, Wait};
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
-use koyomi_core::{approved, duration, layout, when, write};
+use koyomi_core::{approved, duration, layout, msg, when, write};
 
 use super::whens::WhenEdit;
 
@@ -414,7 +414,7 @@ impl Fields {
         let mut out = job.clone();
         let id = self.id.trim();
         if id.is_empty() || id.contains(['/', '\\', '"', ' ']) {
-            return Err("id は空でなく、/ や空白を含まない".into());
+            return Err(msg::line(msg::WIN_JOB_ID_BAD, &[]));
         }
         out.id = id.into();
         out.name = opt(&self.name);
@@ -430,8 +430,7 @@ impl Fields {
             if self.retry_count.trim().is_empty() {
                 return Ok(None);
             }
-            let count: u32 =
-                self.retry_count.trim().parse().map_err(|_| format!("retry の回数は数で書く: \"{}\"", self.retry_count.trim()))?;
+            let count: u32 = self.retry_count.trim().parse().map_err(|_| msg::line(msg::DEF_INT_RANGE, &["retry.count", "1", "100"]))?;
             Ok(Some(Retry { count, wait: opt_secs(&self.retry_wait)?.unwrap_or(0) }))
         };
         match &job.part {
@@ -444,11 +443,16 @@ impl Fields {
                             n.parse::<u32>()
                                 .ok()
                                 .filter(|c| (1..=10_000).contains(c))
-                                .ok_or_else(|| format!("count は 1 から 10000 までの数で書く: \"{n}\""))?,
+                                .ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["count", "1", "10000"]))?,
                         ),
                     };
-                    if file.is_some() == count.is_some() {
-                        return Err("繰り返しには file か count のどちらか 1 つを書く".into());
+                    match (&file, &count) {
+                        (Some(_), Some(_)) => return Err(msg::line(msg::DEF_LOOP_BOTH, &[])),
+                        (None, None) => {
+                            let shape = "file = 'C:\\in\\*.csv' / count = 3";
+                            return Err(msg::line(msg::DEF_EITHER_REQUIRED, &["kind = \"loop\"", "file", "count", shape]));
+                        }
+                        _ => {}
                     }
                     let max = match self.max.trim() {
                         "" => None,
@@ -456,7 +460,7 @@ impl Fields {
                             n.parse::<u32>()
                                 .ok()
                                 .filter(|c| (1..=jobnet::LOOP_MAX).contains(c))
-                                .ok_or_else(|| format!("max は 1 から {} までの数で書く: \"{n}\"", jobnet::LOOP_MAX))?,
+                                .ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["max", "1", &jobnet::LOOP_MAX.to_string()]))?,
                         ),
                     };
                     out.part = Part::Loop { file, count, max };
@@ -476,19 +480,19 @@ impl Fields {
                 let days: u32 = if self.days.trim().is_empty() {
                     0
                 } else {
-                    self.days.trim().parse().map_err(|_| format!("days は数で書く: \"{}\"", self.days.trim()))?
+                    self.days.trim().parse().map_err(|_| msg::line(msg::DEF_INT_RANGE, &["days", "0", "366"]))?
                 };
                 out.part = Part::Time { at: when::time(&self.at)?, days };
             }
             Part::File { .. } => {
                 if self.file.trim().is_empty() {
-                    return Err("file は待つファイルのパス".into());
+                    return Err(msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]));
                 }
                 out.part = Part::File { file: self.file.trim().into(), settle: opt_secs(&self.settle)? };
             }
             Part::Jobnet { .. } => {
                 if !jobnet::is_id(self.use_.trim()) {
-                    return Err(format!("use は \"グループ/名前\": \"{}\"", self.use_.trim()));
+                    return Err(msg::line(msg::DEF_JOBNET_REF_BAD, &["use"]));
                 }
                 out.part = Part::Jobnet { use_: self.use_.trim().into() };
             }
@@ -496,7 +500,7 @@ impl Fields {
                 let chore = match c {
                     Chore::Delete { .. } => {
                         let n = self.keep_days.trim();
-                        let keep_days = n.parse::<u32>().map_err(|_| format!("keep_days は日数で書く: \"{n}\""))?;
+                        let keep_days = n.parse::<u32>().map_err(|_| msg::line(msg::DEF_KEEP_DAYS_BAD, &[]))?;
                         Chore::Delete { path: self.path.trim().into(), pattern: opt(&self.pattern), keep_days }
                     }
                     Chore::Empty { .. } => Chore::Empty { path: self.path.trim().into() },
@@ -586,15 +590,14 @@ impl Fields {
 impl Fields {
     /// The `run_as` the fields say: none when both are empty.
     fn run_as(&self) -> Result<Option<RunAs>, String> {
+        const RUN_AS_SHAPE: &str = "{ user = 'CORP\\batch', password = \"secret:batch\" }";
         let (user, secret) = (self.run_as_user.trim(), self.run_as_secret.trim());
         let secret = secret.strip_prefix("secret:").unwrap_or(secret).trim();
         match (user.is_empty(), secret.is_empty()) {
             (true, true) => Ok(None),
-            (false, true) => Err("実行のアカウントには、パスワードの秘密の名前が要る（koyomi secret set <名前> で置く）".into()),
-            (true, false) => Err("実行のアカウントが空".into()),
-            _ if !jobnet::valid_account(user) => {
-                Err(format!("実行のアカウントは CORP\\batch・batch@corp.local・batch のように書く: \"{user}\""))
-            }
+            (false, true) => Err(msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "password", RUN_AS_SHAPE])),
+            (true, false) => Err(msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "user", RUN_AS_SHAPE])),
+            _ if !jobnet::valid_account(user) => Err(msg::line(msg::DEF_RUN_AS_USER_BAD, &[])),
             _ => Ok(Some(RunAs { user: user.into(), secret: secret.into() })),
         }
     }
@@ -611,11 +614,11 @@ impl Fields {
         let (warn, error) = (ranges(&self.warn)?, ranges(&self.error)?);
         let error_output = opt(&self.error_output);
         if let Some(p) = &error_output {
-            ito_match::Matcher::new(p).map_err(|e| format!("error_output が正規表現として読めない: {e}"))?;
+            ito_match::Matcher::new(p).map_err(|e| msg::line(msg::DEF_REGEX_BAD, &["judge.error_output", &e.to_string()]))?;
         }
         let ok_file = opt(&self.ok_file);
         if let Some(Err(e)) = ok_file.as_deref().map(koyomi_core::template::check) {
-            return Err(format!("ok_file: {e}"));
+            return Err(e);
         }
         Ok(if warn.is_empty() && error.is_empty() && error_output.is_none() && ok_file.is_none() {
             None
@@ -633,7 +636,7 @@ impl Fields {
                 .ok()
                 .filter(|c| (1..=GROUP_MAX as u32).contains(c))
                 .map(Some)
-                .ok_or_else(|| format!("max は 1 から {GROUP_MAX} までの数で書く: \"{n}\"")),
+                .ok_or_else(|| msg::line(msg::DEF_INT_RANGE, &["max", "1", &GROUP_MAX.to_string()])),
         }
     }
 
@@ -641,7 +644,7 @@ impl Fields {
     fn http(&self) -> Result<Chore, String> {
         let mut headers = BTreeMap::new();
         for l in self.headers.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let (k, v) = l.split_once(':').ok_or_else(|| format!("ヘッダーは 1 行に 名前: 値 で書く: \"{l}\""))?;
+            let (k, v) = l.split_once(':').ok_or_else(|| msg::line(msg::WIN_HEADER_BAD, &[l]))?;
             headers.insert(k.trim().to_owned(), v.trim().to_owned());
         }
         let expect = self
@@ -649,7 +652,7 @@ impl Fields {
             .split(',')
             .map(str::trim)
             .filter(|c| !c.is_empty())
-            .map(|c| c.parse::<u16>().map_err(|_| format!("状態コードは 200 のような数: \"{c}\"")))
+            .map(|c| c.parse::<u16>().map_err(|_| msg::line(msg::WIN_STATUS_CODE_BAD, &[c])))
             .collect::<Result<Vec<_>, _>>()?;
         let method = self.method.trim().to_ascii_uppercase();
         Ok(Chore::Http {
@@ -1230,10 +1233,10 @@ impl Editor {
 
     /// Puts `fields` into the part `id` (renaming it when the id changed); the reason when they do not read.
     pub fn apply_fields(&mut self, id: &str, fields: &Fields) -> Result<(), String> {
-        let Some(i) = self.index(id) else { return Err("消えた".into()) };
+        let Some(i) = self.index(id) else { return Err(msg::line(msg::WIN_JOB_GONE, &[id])) };
         let job = fields.apply(&self.net.jobs[i])?;
         if job.id != id && self.has(&job.id) {
-            return Err(format!("同じ id がある: {}", job.id));
+            return Err(msg::line(msg::DEF_ID_DUPLICATE, &[&job.id]));
         }
         if job == self.net.jobs[i] {
             return Ok(());
@@ -1403,7 +1406,7 @@ impl Editor {
     /// 検査: what the engine's save would refuse in the text, without saving it (empty: nothing).
     pub fn check(&self, defs: &[Def], calendars: &BTreeMap<String, Calendar>) -> Vec<String> {
         let Some((group, name)) = self.id.split_once('/').filter(|_| jobnet::is_id(&self.id)) else {
-            return vec![format!("グループ/名前 の形で書く: {}", self.id)];
+            return vec![msg::line(msg::DEF_JOBNET_REF_BAD, &[&format!("\"{}\"", self.id)])];
         };
         // The window does not read the engine's `_group.toml` (the engine may be on another PC):
         // a net of the group that names no calendar of its own counts by the group's.
@@ -2595,7 +2598,7 @@ run = [\"x\"]
         assert_eq!(e.net.jobs[0].timeout, Some(600), "a field that does not read changes nothing");
         f.timeout = String::new();
         f.id = "b".into();
-        assert!(e.apply_fields("a", &f).unwrap_err().contains("同じ id"));
+        assert!(e.apply_fields("a", &f).unwrap_err().contains(&msg::DEF_ID_DUPLICATE.code()));
         f.id = "a/b".into();
         assert!(e.apply_fields("a", &f).is_err());
         f.id = "first".into();
@@ -2703,7 +2706,7 @@ run = [\"x\"]
         let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
         let mut fields = Fields::of(&e.net.jobs[0]);
         fields.run_as_user = "CORP\\batch".into();
-        assert!(e.apply_fields("a", &fields).unwrap_err().contains("秘密の名前"));
+        assert!(e.apply_fields("a", &fields).unwrap_err().contains("run_as に password が指定されていません"));
         fields.run_as_secret = "secret:batch".into();
         assert_eq!(e.apply_fields("a", &fields), Ok(()));
         assert_eq!(e.net.jobs[0].run_as, Some(RunAs { user: "CORP\\batch".into(), secret: "batch".into() }));
@@ -2875,7 +2878,7 @@ X-Day: 1"
         let again = Fields::of(&e.net.jobs[1]);
         assert_eq!((again.max.as_str(), again.pass), ("4", Pass::Any));
         fields.max = "65".into();
-        assert!(e.apply_fields(&h, &fields).unwrap_err().contains("max は 1 から 64 までの数で書く"));
+        assert!(e.apply_fields(&h, &fields).unwrap_err().contains("max が 1 から 64 までの整数ではありません"));
         // One PC runs alone: no max.
         fields.on = "ssh://ops@db1".into();
         fields.max = "2".into();
