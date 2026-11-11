@@ -1,0 +1,18 @@
+#!/bin/sh
+# Refuse to install over the tar.gz install: two copies of the engine and the
+# unit would fight. The data, credentials and koyomi.toml stay through
+# `install.sh --uninstall`, so nothing is lost.
+set -e
+
+case "$1" in
+    install|upgrade)
+        if [ -e /usr/local/bin/koyomi ] || { [ -f /etc/systemd/system/koyomi.service ] && [ ! -L /etc/systemd/system/koyomi.service ]; }; then
+            echo "エラー: tar.gz でインストールした koyomi が残っています。" >&2
+            echo "先に、展開したフォルダーで \`sudo ./install.sh --uninstall\` を実行してください。" >&2
+            echo "データ、設定、token は残るので、失われるものはありません。" >&2
+            exit 1
+        fi
+        ;;
+esac
+
+exit 0

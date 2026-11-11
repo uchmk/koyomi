@@ -8,13 +8,17 @@ usage() {
 使い方: sudo koyomi-user list
         sudo koyomi-user role <名前> <view|run|edit|admin> [--nets <パターン>]... [--all-nets] [--roles <パターン>=<役割>]... [--no-roles]
         sudo koyomi-user remove <名前>
+        sudo koyomi-user add <名前> --role <view|run|edit|admin> [--nets <パターン>]... [--roles <パターン>=<役割>]...
+        sudo koyomi-user add  (対話で尋ねます)
+        sudo koyomi-user reset <名前> [--yes]  (新しいトークンを作り、一度だけ表示します)
 
   koyomi.toml の [[http.user]] の一覧、役割の変更、削除を行います。
   koyomi のサービスに頼んで行うため、サービスが動いている必要があります（systemctl status koyomi）。
   変更は数秒以内にサービスへ反映されます。
-  利用者の追加は、koyomi.toml に書き、koyomi-secret でトークンを登録してください。
+  add は新しいトークンを一度だけ表示します。控えておいてください。
 
   例:  sudo koyomi-user role sato run --nets '経理/*'
+       sudo koyomi-user add taro --role run --nets '経理/*'
 USAGE
 }
 
@@ -32,4 +36,14 @@ if [ "$(id -u)" -ne 0 ]; then
   exit 1
 fi
 
-exec runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi /usr/local/bin/koyomi user "$@"
+# The tar.gz install puts the binary in /usr/local/bin, the .deb in /usr/bin.
+bin=
+for c in /usr/local/bin/koyomi /usr/bin/koyomi; do
+  if [ -x "$c" ]; then bin=$c; break; fi
+done
+if [ -z "$bin" ]; then
+  echo "koyomi の実行ファイルが見つかりません (/usr/local/bin/koyomi も /usr/bin/koyomi もありません)。" >&2
+  exit 1
+fi
+
+exec runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi "$bin" user "$@"

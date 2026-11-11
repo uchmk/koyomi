@@ -1,0 +1,11 @@
+#!/bin/sh
+# Stop the service on remove only. On upgrade the old binary keeps running
+# until the postinst restarts it; running jobs stop at that restart, as with
+# install.sh.
+set -e
+
+if [ -z "${DPKG_ROOT:-}" ] && [ "$1" = remove ] && [ -d /run/systemd/system ]; then
+    deb-systemd-invoke stop 'koyomi.service' >/dev/null || true
+fi
+
+exit 0

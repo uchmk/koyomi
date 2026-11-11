@@ -1,0 +1,13 @@
+Package: koyomi
+Version: @VERSION@
+Architecture: @ARCH@
+Maintainer: uchmk <uchmk@users.noreply.github.com>
+Section: admin
+Priority: optional
+Depends: libc6 (>= 2.31), systemd (>= 252), init-system-helpers (>= 1.54), passwd
+Installed-Size: @SIZE@
+Homepage: https://github.com/uchmk/koyomi
+Description: small job scheduler and monitor (engine)
+ koyomi runs scheduled jobs and watches them. This package installs the
+ engine as a systemd service, with an HTTPS endpoint that the koyomi
+ screen on Windows connects to.

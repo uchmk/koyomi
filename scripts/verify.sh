@@ -75,6 +75,8 @@ run scripts/lanes.sh check
 run python3 scripts/ito-first.py
 # Every sentence a person reads lives in a catalogue, not in the code (scripts/text-in-source.allow lists the words the code reads).
 run python3 scripts/text-in-source.py --check
+# The .deb writer and the packaging shell scripts (no dpkg needed).
+run python3 -I scripts/test-make-deb.py
 # The ACL tests need this machine's real permissions: they are not part of ALL OK. Run
 # scripts/verify-acl.sh and report its result separately.
 echo "ALL OK: $tests (ACL は未確認。scripts/verify-acl.sh で別に確かめる)"

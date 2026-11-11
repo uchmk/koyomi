@@ -1,0 +1,56 @@
+#!/bin/sh
+# Prepare the user, token and first koyomi.toml with install.sh --configure
+# (the one place with those steps), then start the service the way
+# dh_installsystemd does (--restart-after-upgrade).
+set -e
+
+if [ "$1" = configure ]; then
+    # --port matters only for a first koyomi.toml. A failure here fails the
+    # postinst; `dpkg --configure koyomi` runs it again (the steps are repeatable).
+    if [ -n "${KOYOMI_PORT:-}" ]; then
+        /usr/share/koyomi/install.sh --configure --port "$KOYOMI_PORT"
+    else
+        /usr/share/koyomi/install.sh --configure
+    fi
+fi
+
+if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigure ] || [ "$1" = abort-remove ]; then
+    # This will only remove masks created by d-s-h on package removal.
+    deb-systemd-helper unmask 'koyomi.service' >/dev/null || true
+
+    # was-enabled defaults to true, so new installations run enable.
+    if deb-systemd-helper --quiet was-enabled 'koyomi.service'; then
+        # Enables the unit on first installation, creates new symlinks on upgrades
+        # if the unit file has changed.
+        deb-systemd-helper enable 'koyomi.service' >/dev/null || true
+    else
+        # Update the statefile to add new symlinks (if any), which need to be
+        # cleaned up on purge. Also remove old symlinks.
+        deb-systemd-helper update-state 'koyomi.service' >/dev/null || true
+    fi
+
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+        if [ -n "$2" ]; then
+            _dh_action=restart
+        else
+            _dh_action=start
+        fi
+        deb-systemd-invoke $_dh_action 'koyomi.service' >/dev/null || true
+    fi
+fi
+
+# A message only: it does not fail the postinst.
+if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
+    if ! systemctl is-enabled --quiet koyomi; then
+        # An admin turned it off: the package leaves it off.
+        echo "koyomi のサービスは無効のため起動していません（起動するには: systemctl enable --now koyomi）。"
+    elif sleep 3 && systemctl is-active --quiet koyomi; then
+        echo "koyomi は起動しています。"
+    else
+        echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
+        echo "  journalctl -u koyomi -n 30 --no-pager" >&2
+    fi
+fi
+
+exit 0

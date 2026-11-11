@@ -1,0 +1,28 @@
+#!/bin/sh
+# Mask on remove, purge the state on purge, and tell where the data stays.
+# The data, credentials and user are never removed here.
+set -e
+
+if [ "$1" = remove ] && [ -x /usr/bin/deb-systemd-helper ]; then
+    deb-systemd-helper mask 'koyomi.service' >/dev/null || true
+fi
+
+if [ "$1" = purge ] && [ -x /usr/bin/deb-systemd-helper ]; then
+    deb-systemd-helper purge 'koyomi.service' >/dev/null || true
+    deb-systemd-helper unmask 'koyomi.service' >/dev/null || true
+fi
+
+if [ "$1" = remove ] || [ "$1" = purge ]; then
+    if [ -d /run/systemd/system ]; then
+        systemctl --system daemon-reload >/dev/null || true
+    fi
+    echo "koyomi のパッケージを削除しました。"
+    echo "次は残してあります。不要な場合は、ご自身で削除してください (ここでは実行しません)。"
+    echo "  /var/lib/koyomi  (設定と状態)"
+    echo "  /etc/koyomi  (token などのシークレット)"
+    echo "  利用者 koyomi"
+    echo "削除するとき:"
+    echo "  sudo rm -rf /var/lib/koyomi /etc/koyomi && sudo userdel koyomi"
+fi
+
+exit 0

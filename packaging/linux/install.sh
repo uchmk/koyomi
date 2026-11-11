@@ -9,15 +9,18 @@ conf_dir=$home/.config/uchmk/koyomi
 conf=$conf_dir/koyomi.toml
 cred_dir=/etc/koyomi/credentials
 unit=/etc/systemd/system/koyomi.service
+bin=/usr/local/bin/koyomi
 
 usage() {
   cat <<'USAGE'
 使い方: sudo ./install.sh [--port <n>]
         sudo ./install.sh --uninstall
+        (内部用) /usr/share/koyomi/install.sh --configure [--port <n>]
 
   (引数なし)   koyomi のエンジンをインストールします。インストール済みの場合は更新します。
   --port <n>   待ち受けるポートです (既定 8790)。最初に koyomi.toml を作成するときだけ有効です。
   --uninstall  サービスと実行ファイルを削除します。データ、設定、利用者は残します。
+  --configure  .deb パッケージの postinst 用です。利用者、token、最初の koyomi.toml を用意します。サービスの停止と起動はしません。
   -h           この説明を表示します。
 USAGE
 }
@@ -31,6 +34,7 @@ while [ "$#" -gt 0 ]; do
   case "$1" in
     -h|--help) usage; exit 0 ;;
     --uninstall) mode=uninstall; shift ;;
+    --configure) mode=configure; shift ;;
     --port)
       [ "$#" -ge 2 ] || die "--port に番号が指定されていません。番号を指定してください。"
       port=$2; port_given=1; shift 2 ;;
@@ -45,6 +49,19 @@ if [ "$port_given" -eq 1 ]; then
 fi
 
 [ "$(id -u)" -eq 0 ] || die "root で実行してください (sudo ./install.sh)。"
+
+if [ "$mode" = configure ]; then
+  # Called by the postinst of the .deb: the files are already in /usr.
+  bin=/usr/bin/koyomi
+else
+  # A package owns the files when dpkg knows koyomi: use apt or dpkg then.
+  # No dpkg-query, or an unknown package, goes on as before.
+  dpkg_status=$(dpkg-query -W -f='${Status}' koyomi 2>/dev/null || true)
+  case "${dpkg_status##* }" in
+    ''|not-installed|config-files) ;;
+    *) die "koyomi は .deb パッケージとしてインストールされています。更新や削除は apt / dpkg を使ってください (例: sudo apt remove koyomi)。" ;;
+  esac
+fi
 
 # Run a command as the koyomi user with a clean XDG environment. Everything
 # under /var/lib/koyomi is written and read through this: that tree is
@@ -80,7 +97,7 @@ if [ "$mode" = uninstall ]; then
   if [ -f "$unit" ]; then
     systemctl disable --now koyomi || die "koyomi を停止できませんでした。何も削除していません。"
   fi
-  rm -f "$unit" /usr/local/bin/koyomi /usr/local/sbin/koyomi-secret /usr/local/sbin/koyomi-user
+  rm -f "$unit" "$bin" /usr/local/sbin/koyomi-secret /usr/local/sbin/koyomi-user
   systemctl daemon-reload || true
   echo "koyomi のサービスと実行ファイルを削除しました。"
   echo "次は残してあります。不要な場合は、ご自身で削除してください (ここでは実行しません)。"
@@ -93,13 +110,18 @@ if [ "$mode" = uninstall ]; then
 fi
 
 # 1. Check the environment and the package.
-[ -d /run/systemd/system ] || die "systemd で動作していません。この手順には systemd が必要です。"
-for f in koyomi koyomi.service koyomi-secret koyomi-user; do
-  [ -f "$here/$f" ] || die "$here に $f がありません。展開したフォルダーで実行してください。"
-done
-if ! ver_out=$("$here/koyomi" --version 2>&1); then
+if [ "$mode" != configure ]; then
+  [ -d /run/systemd/system ] || die "systemd で動作していません。この手順には systemd が必要です。"
+  for f in koyomi koyomi.service koyomi-secret koyomi-user; do
+    [ -f "$here/$f" ] || die "$here に $f がありません。展開したフォルダーで実行してください。"
+  done
+  run_bin=$here/koyomi
+else
+  run_bin=$bin
+fi
+if ! ver_out=$("$run_bin" --version 2>&1); then
   echo "$ver_out" >&2
-  die "同梱の koyomi を実行できません。CPU の種類 (x86_64 / aarch64) が異なるか、OS が古すぎる可能性があります。このマシンの CPU の種類と OS の版を確認してください。"
+  die "koyomi ($run_bin) を実行できません。CPU の種類 (x86_64 / aarch64) が異なるか、OS が古すぎる可能性があります。このマシンの CPU の種類と OS の版を確認してください。"
 fi
 echo "実行ファイル: $ver_out"
 
@@ -125,29 +147,31 @@ else
   echo "admin の token は既にあります。変更しません。"
 fi
 
-# 4. Check that this systemd can read a credential folder. Done before anything
-#    running is touched, so a failure leaves a working koyomi alone.
-if ! systemd-run --wait --pipe --quiet -p LoadCredential=koyomi:"$cred_dir" \
-    /bin/sh -c 'test -r "$CREDENTIALS_DIRECTORY/koyomi_http-admin"'; then
-  die "この systemd は credential のフォルダーを読み込めません。Debian 12 以降が必要です。koyomi の起動も更新もしていません。"
-fi
+if [ "$mode" != configure ]; then
+  # 4. Check that this systemd can read a credential folder. Done before anything
+  #    running is touched, so a failure leaves a working koyomi alone.
+  if ! systemd-run --wait --pipe --quiet -p LoadCredential=koyomi:"$cred_dir" \
+      /bin/sh -c 'test -r "$CREDENTIALS_DIRECTORY/koyomi_http-admin"'; then
+    die "この systemd は credential のフォルダーを読み込めません。Debian 12 以降が必要です。koyomi の起動も更新もしていません。"
+  fi
 
-# 5. Stop the unit if it is installed (systemctl waits until it has stopped;
-#    `koyomi engine stop` does not). Not tied to is-active, so that a unit
-#    waiting in `activating (auto-restart)` is stopped too.
-if [ -f "$unit" ]; then
-  echo "koyomi を停止します。実行中のジョブは停止します。"
-  systemctl stop koyomi
-fi
-trap 'echo "途中で失敗しました。koyomi は起動していません。原因を修正してから、install.sh をもう一度実行してください。" >&2' ERR
+  # 5. Stop the unit if it is installed (systemctl waits until it has stopped;
+  #    `koyomi engine stop` does not). Not tied to is-active, so that a unit
+  #    waiting in `activating (auto-restart)` is stopped too.
+  if [ -f "$unit" ]; then
+    echo "koyomi を停止します。実行中のジョブは停止します。"
+    systemctl stop koyomi
+  fi
+  trap 'echo "途中で失敗しました。koyomi は起動していません。原因を修正してから、install.sh をもう一度実行してください。" >&2' ERR
 
-# 6. Put the files in place.
-install -m 0755 -o root -g root "$here/koyomi" /usr/local/bin/koyomi
-install -d -m 0755 /usr/local/sbin
-install -m 0755 -o root -g root "$here/koyomi-secret" /usr/local/sbin/koyomi-secret
-install -m 0755 -o root -g root "$here/koyomi-user" /usr/local/sbin/koyomi-user
-install -m 0644 -o root -g root "$here/koyomi.service" "$unit"
-systemctl daemon-reload
+  # 6. Put the files in place.
+  install -m 0755 -o root -g root "$here/koyomi" "$bin"
+  install -d -m 0755 /usr/local/sbin
+  install -m 0755 -o root -g root "$here/koyomi-secret" /usr/local/sbin/koyomi-secret
+  install -m 0755 -o root -g root "$here/koyomi-user" /usr/local/sbin/koyomi-user
+  install -m 0644 -o root -g root "$here/koyomi.service" "$unit"
+  systemctl daemon-reload
+fi
 
 # 7. First-time settings, written as koyomi (never by root inside its tree).
 if ! as_koyomi test -e "$conf"; then
@@ -183,8 +207,8 @@ else
 fi
 
 # 8. Read the fingerprint before the start (a failure here does not stop the install).
-fp_help='sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi /usr/local/bin/koyomi http fingerprint'
-if fp=$(as_koyomi /usr/local/bin/koyomi http fingerprint); then
+fp_help="sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi $bin http fingerprint"
+if fp=$(as_koyomi "$bin" http fingerprint); then
   # The command adds a note about [[remote]] below the fingerprint.
   fp=${fp%%$'\n'*}
 else
@@ -192,20 +216,31 @@ else
   fp=
 fi
 
-# 9. Start.
-systemctl enable --now koyomi || true
-sleep 3
-if ! systemctl is-active --quiet koyomi; then
-  echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
-  echo "  journalctl -u koyomi -n 30 --no-pager" >&2
-  exit 1
+# 9. Start (the package does it itself with --configure).
+if [ "$mode" != configure ]; then
+  systemctl enable --now koyomi || true
+  sleep 3
+  if ! systemctl is-active --quiet koyomi; then
+    echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
+    echo "  journalctl -u koyomi -n 30 --no-pager" >&2
+    exit 1
+  fi
+  trap - ERR
 fi
-trap - ERR
 
 # 10. Summary.
 cur_port=$(conf_port || true)
 echo
-echo "インストールが完了しました。"
+if [ "$mode" = configure ]; then
+  echo "koyomi の設定を用意しました。"
+  if [ -d /run/systemd/system ]; then
+    echo "サービスはパッケージが起動します。"
+  else
+    echo "systemd が動いていないため、サービスは次の起動から始まります。"
+  fi
+else
+  echo "インストールが完了しました。"
+fi
 echo
 if [ -n "$cur_port" ]; then
   echo "接続する URL:"
