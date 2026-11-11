@@ -2,7 +2,7 @@
 
 形式は [Keep a Changelog](https://keepachangelog.com/ja/1.1.0/)、日付は JST。
 
-## [Unreleased]
+## [0.37.0] - 2026-11-12
 
 ### 追加
 - `koyomi user`: koyomi.toml の `[[http.user]]` を、エンジンに頼んで一覧・役割の変更・削除をする。`koyomi user list` は名前・役割・見るジョブネット・ジョブネットごとの役割・トークンの状態（登録済み・未登録・読み取れない・Tailscale のみ）を出す。トークンの値は出さない。`koyomi user role <名前> <view|run|edit|admin> [--nets <パターン>]… [--roles <パターン>=<役割>]…` で役割を変え、`koyomi user remove <名前>` で消す。書き換えは、一覧を読んだときの koyomi.toml と比べ、その間に変わっていれば断る。最後の admin を外すこと、HTTPS の admin が自分を admin から外すことと自分を消すことは断る。コメントはそのまま残り、数秒以内にエンジンに反映される。窓とコマンドが使う door の要求 `Users`・`UserSet`・`UserRemove` は admin だけ。確かめるのは `users::` と `engine::` のテスト。
