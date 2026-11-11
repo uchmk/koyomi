@@ -10,15 +10,31 @@ koyomi のエンジンを Debian で systemd のサービスとして実行し�
 
 ## 入手
 
-[Releases](https://github.com/uchmk/koyomi/releases) から `koyomi-<版>-linux-x86_64.tar.gz` をダウンロードします。同じページの `koyomi-v<版>-linux-x64.tar.gz` (`v` のつくもの) は最新の Ubuntu でビルドしたもので、Debian では確かめていません。インストールの道具も入っていません。
+[Releases](https://github.com/uchmk/koyomi/releases) から、次のどちらかをダウンロードします。中身は同じです。
+
+- `koyomi_<版>_amd64.deb` (ARM の機械は `koyomi_<版>_arm64.deb`): `apt` で入れるパッケージです。更新と削除も `apt` で行います。
+- `koyomi-<版>-linux-x86_64.tar.gz`: 展開して `install.sh` で入れます。
+
+同じページの `koyomi-v<版>-linux-x64.tar.gz` (`v` のつくもの) は最新の Ubuntu でビルドしたもので、Debian では確かめていません。インストールの道具も入っていません。
 
 Windows でダウンロードした場合は、PowerShell から Debian に送れます。
 
 ```powershell
-scp .\koyomi-<版>-linux-x86_64.tar.gz <Debian の利用者>@<Debian のアドレス>:
+scp .\koyomi_<版>_amd64.deb <Debian の利用者>@<Debian のアドレス>:
 ```
 
 ## インストール
+
+### .deb で入れる
+
+```sh
+sudo apt install ./koyomi_<版>_amd64.deb                  # ポートは 8790
+sudo KOYOMI_PORT=9000 apt install ./koyomi_<版>_amd64.deb  # 初回にポートを変えるとき
+```
+
+`./` を付けて、ファイルを指定します。実行ファイルを `/usr/bin`、`koyomi-secret` と `koyomi-user` を `/usr/sbin` に置き、利用者 `koyomi`、`admin` の token、最初の `koyomi.toml` を用意して、サービスを有効にして起動します。
+
+### tar.gz で入れる
 
 ```sh
 tar xzf koyomi-<版>-linux-<arch>.tar.gz
@@ -29,12 +45,16 @@ sudo ./install.sh --port 9000   # 初回にポートを変えるとき
 
 `install.sh` は、利用者 `koyomi` を作成し、実行ファイルとサービスを配置し、`admin` の token を作成して、エンジンを起動します。何度実行しても問題ありません。
 
-最後に、接続する URL (`https://<アドレス>:<ポート>`)、証明書の指紋、token の読み込み方法が表示されます。`--port` は最初に `koyomi.toml` を作成するときだけ有効です。
+### インストールの最後に表示されるもの
+
+どちらの方法でも、最後に、接続する URL (`https://<アドレス>:<ポート>`)、証明書の指紋、token の読み込み方法が表示されます。ポートの指定 (`KOYOMI_PORT`、`--port`) は最初に `koyomi.toml` を作成するときだけ有効です。
+
+.deb と tar.gz は同じ機械に同時には入れられません。もう一方で入れた koyomi が残っていると、インストールは止まります。切り替える手順は「[.deb と tar.gz を切り替える](#deb-と-targz-を切り替える)」にあります。
 
 ## Windows の画面から接続する
 
-1. 画面の状態バーの接続先を押し、一番下の「接続先を管理…」から「接続先を追加する…」を開きます (コマンドパレットの「別の PC のエンジンに接続する」でも開けます)。名前と URL (`install.sh` が表示したもの) を入力します。
-2. 画面に表示された指紋が、`install.sh` が表示した指紋と同じか確認し、「同じでした」を押します。異なる場合は接続しないでください。
+1. 画面の状態バーの接続先を押し、一番下の「接続先を管理…」から「接続先を追加する…」を開きます (コマンドパレットの「別の PC のエンジンに接続する」でも開けます)。名前と URL (インストールの最後に表示されたもの) を入力します。
+2. 画面に表示された指紋が、インストールの最後に表示された指紋と同じか確認し、「同じでした」を押します。異なる場合は接続しないでください。
 3. `admin` の token を入力して「接続する」を押します。token は Debian で `sudo cat /etc/koyomi/credentials/http-admin` を実行すると読み込めます。
 
 ### アドレス
@@ -56,7 +76,7 @@ sudo ufw allow 8790/tcp
 Debian では次のコマンドで表示できます。
 
 ```sh
-sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi /usr/local/bin/koyomi http fingerprint
+sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi koyomi http fingerprint
 ```
 
 Windows では `koyomi remote peek https://<アドレス>:<ポート>` で、相手が見せている指紋を表示できます。
@@ -159,8 +179,10 @@ sudo koyomi-user remove taro                            # 削除する
 | 設定 (`koyomi.toml`、`jobnets/`、`calendars/`、`tls/`) | `/var/lib/koyomi/.config/uchmk/koyomi/` |
 | 状態 | `/var/lib/koyomi/.local/state/uchmk/koyomi/` |
 | シークレット (token など) | `/etc/koyomi/credentials/` (root だけが読める) |
-| 実行ファイル | `/usr/local/bin/koyomi`、`/usr/local/sbin/koyomi-secret`、`/usr/local/sbin/koyomi-user` |
-| サービス | `/etc/systemd/system/koyomi.service` |
+| 実行ファイル (.deb) | `/usr/bin/koyomi`、`/usr/sbin/koyomi-secret`、`/usr/sbin/koyomi-user` |
+| 実行ファイル (tar.gz) | `/usr/local/bin/koyomi`、`/usr/local/sbin/koyomi-secret`、`/usr/local/sbin/koyomi-user` |
+| サービス (.deb) | `/usr/lib/systemd/system/koyomi.service` |
+| サービス (tar.gz) | `/etc/systemd/system/koyomi.service` |
 
 ## 状態を確認する
 
@@ -172,7 +194,10 @@ sudo -H -u koyomi koyomi status
 
 ## 更新
 
-新しい tar.gz を展開して、もう一度 `sudo ./install.sh` を実行します。実行中のジョブは停止します。設定と token は変更されません。
+- .deb: 新しい .deb を `sudo apt install ./koyomi_<新しい版>_amd64.deb` で入れます。
+- tar.gz: 新しい tar.gz を展開して、もう一度 `sudo ./install.sh` を実行します。
+
+どちらも、サービスを再起動するので、実行中のジョブは停止します。設定と token は変更されません。`systemctl disable` で無効にしたサービスは、無効のまま起動しません。
 
 ## 停止する
 
@@ -185,10 +210,20 @@ sudo systemctl stop koyomi
 ## 削除する
 
 ```sh
-sudo ./install.sh --uninstall
+sudo apt purge koyomi          # .deb で入れたとき
+sudo ./install.sh --uninstall  # tar.gz で入れたとき (展開したフォルダーで)
 ```
 
-サービスと実行ファイルを削除します。`/var/lib/koyomi` (設定と状態)、`/etc/koyomi` (シークレット)、利用者 `koyomi` は残ります。これらを削除するコマンドは `--uninstall` の最後に表示されます (自動では実行しません)。
+サービスを止め、実行ファイルとサービスを削除します。`/var/lib/koyomi` (設定と状態)、`/etc/koyomi` (シークレット)、利用者 `koyomi` は、`apt purge` でも残ります。これらを削除するコマンドは最後に表示されます (自動では実行しません)。
+
+`sudo apt remove koyomi` でも削除できます。その場合は、サービスが止まったまま無効になります (`systemctl` では masked と表示されます)。もう一度 .deb を入れると元に戻ります。
+
+## .deb と tar.gz を切り替える
+
+設定、状態、token はそのまま引き継がれます。
+
+- tar.gz から .deb へ: 展開したフォルダーで `sudo ./install.sh --uninstall` を実行してから、`sudo apt install ./koyomi_<版>_amd64.deb` を実行します。
+- .deb から tar.gz へ: `sudo apt purge koyomi` を実行してから、`sudo ./install.sh` を実行します。`apt remove` だけで止めていると、`install.sh` は止まり、`sudo dpkg -P koyomi` を案内します (後から purge すると、`install.sh` が有効にしたサービスが無効に戻ってしまうためです)。
 
 ## 第 1 段階の制約
 

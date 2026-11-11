@@ -47,7 +47,7 @@ fn nets_word(nets: &Option<Vec<String>>) -> String {
 fn roles_word(roles: &Option<BTreeMap<String, String>>) -> String {
     match roles {
         Some(r) if !r.is_empty() => r.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join(", "),
-        _ => String::new(),
+        _ => msg::note(msg::N_CFG_NONE, &[]),
     }
 }
 
@@ -151,11 +151,7 @@ fn send_add(u: &NewUser) -> i32 {
         emit(&reply);
         return 0;
     }
-    let roles_text = match roles_word(&u.roles) {
-        w if w.is_empty() => msg::note(msg::N_CFG_NONE, &[]),
-        w => w,
-    };
-    out(&msg::note(msg::N_USER_ADD_DONE, &[&u.name, &u.role, &nets_word(&u.nets), &roles_text]), false);
+    out(&msg::note(msg::N_USER_ADD_DONE, &[&u.name, &u.role, &nets_word(&u.nets), &roles_word(&u.roles)]), false);
     match show_token(&reply, &u.name) {
         Ok(()) => 0,
         Err(e) => fail(&e),
@@ -455,11 +451,7 @@ fn role(args: &[String]) -> i32 {
     if cleared {
         out(&msg::note(msg::N_USER_ADMIN_CLEARED, &[]), false);
     }
-    let roles_text = match roles_word(&new_roles) {
-        w if w.is_empty() => msg::note(msg::N_CFG_NONE, &[]),
-        w => w,
-    };
-    out(&msg::note(msg::N_USER_ROLE_DONE, &[name, new_role, &nets_word(&new_nets), &roles_text]), false);
+    out(&msg::note(msg::N_USER_ROLE_DONE, &[name, new_role, &nets_word(&new_nets), &roles_word(&new_roles)]), false);
     0
 }
 
@@ -523,7 +515,8 @@ mod tests {
         assert_eq!(nets_word(&Some(Vec::new())), nets_word(&None));
         let r: BTreeMap<String, String> = [("a/*".to_owned(), "run".to_owned())].into();
         assert_eq!(roles_word(&Some(r)), "a/*=run");
-        assert_eq!(roles_word(&None), "");
+        assert_eq!(roles_word(&None), msg::note(msg::N_CFG_NONE, &[]));
+        assert_eq!(roles_word(&Some(BTreeMap::new())), roles_word(&None));
     }
 
     #[test]

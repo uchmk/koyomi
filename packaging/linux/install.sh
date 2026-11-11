@@ -55,10 +55,14 @@ if [ "$mode" = configure ]; then
   bin=/usr/bin/koyomi
 else
   # A package owns the files when dpkg knows koyomi: use apt or dpkg then.
-  # No dpkg-query, or an unknown package, goes on as before.
+  # No dpkg-query, or an unknown package, goes on as before. A removed but
+  # not purged package (config-files) is refused too: a later purge would
+  # remove the enable link this install makes, and the service would not
+  # start at the next boot.
   dpkg_status=$(dpkg-query -W -f='${Status}' koyomi 2>/dev/null || true)
   case "${dpkg_status##* }" in
-    ''|not-installed|config-files) ;;
+    ''|not-installed) ;;
+    config-files) die "koyomi の .deb パッケージの登録が残っています。先に sudo dpkg -P koyomi を実行してください (データ、設定、token は残ります)。" ;;
     *) die "koyomi は .deb パッケージとしてインストールされています。更新や削除は apt / dpkg を使ってください (例: sudo apt remove koyomi)。" ;;
   esac
 fi
