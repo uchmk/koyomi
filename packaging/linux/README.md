@@ -8,6 +8,16 @@ koyomi のエンジンを Debian で systemd のサービスとして実行し�
 - root の権限 (`sudo`) が必要です。
 - Windows の PC からエンジンのポートに TCP で届く必要があります。
 
+## 入手
+
+[Releases](https://github.com/uchmk/koyomi/releases) から `koyomi-<版>-linux-x86_64.tar.gz` をダウンロードします。同じページの `koyomi-v<版>-linux-x64.tar.gz` (`v` のつくもの) は最新の Ubuntu でビルドしたもので、Debian では確かめていません。インストールの道具も入っていません。
+
+Windows でダウンロードした場合は、PowerShell から Debian に送れます。
+
+```powershell
+scp .\koyomi-<版>-linux-x86_64.tar.gz <Debian の利用者>@<Debian のアドレス>:
+```
+
 ## インストール
 
 ```sh
@@ -26,6 +36,30 @@ sudo ./install.sh --port 9000   # 初回にポートを変えるとき
 1. 画面の状態バーの接続先を押し、一番下の「接続先を管理…」から「接続先を追加する…」を開きます (コマンドパレットの「別の PC のエンジンに接続する」でも開けます)。名前と URL (`install.sh` が表示したもの) を入力します。
 2. 画面に表示された指紋が、`install.sh` が表示した指紋と同じか確認し、「同じでした」を押します。異なる場合は接続しないでください。
 3. `admin` の token を入力して「接続する」を押します。token は Debian で `sudo cat /etc/koyomi/credentials/http-admin` を実行すると読み込めます。
+
+### アドレス
+
+- URL には IP アドレスもホスト名も使えます (`https://192.168.0.10:8790`)。IPv6 は `https://[fd00::10]:8790` のように角かっこで囲みます。
+- 接続は証明書の指紋だけで確かめるので、証明書の名前とアドレスが一致していなくても接続できます。
+- アドレスが変わると接続できなくなります。DHCP を使っている場合は、ルーターでアドレスを予約するか、固定のアドレスにしてください。変わった場合は、接続先を削除して追加し直すか、Windows の `koyomi.toml` の `[[remote]]` の `url` を書き換えます。
+
+### ファイアウォール
+
+Debian は標準ではポートを閉じません。`ufw` を使っている場合は、ポートを開けます。
+
+```sh
+sudo ufw allow 8790/tcp
+```
+
+### 指紋をもう一度確認する
+
+Debian では次のコマンドで表示できます。
+
+```sh
+sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi /usr/local/bin/koyomi http fingerprint
+```
+
+Windows では `koyomi remote peek https://<アドレス>:<ポート>` で、相手が見せている指紋を表示できます。
 
 ## 利用者を追加する
 

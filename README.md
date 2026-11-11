@@ -7,3 +7,13 @@ uchmk のアプリ。共通の部品は [ito](https://github.com/uchmk/ito) を�
 エラーや警告が出たときは [こんな時はどうする](docs/troubleshooting.md) を、メッセージの先頭の ID（`KOYOMI-E2101` など）で検索してください。
 
     cargo run
+
+## Debian でエンジンを動かす
+
+エンジンを Debian 12 以降で systemd のサービスとして動かし、Windows の画面から HTTPS で接続できます。
+
+1. [Releases](https://github.com/uchmk/koyomi/releases) から `koyomi-<版>-linux-x86_64.tar.gz` を Debian に置きます。
+2. 展開して `sudo ./install.sh` を実行します。最後に、接続する URL、証明書の指紋、token の読み込み方法が表示されます。
+3. Windows の画面で、状態バーの接続先 →「接続先を管理…」→「接続先を追加する…」から、URL と token を入力します。
+
+詳しい手順（利用者の追加、ファイルの場所、更新、削除、制約）は [koyomi エンジンを Debian にインストールする](packaging/linux/README.md) にあります。
