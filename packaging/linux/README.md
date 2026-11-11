@@ -61,26 +61,71 @@ sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIM
 
 Windows では `koyomi remote peek https://<アドレス>:<ポート>` で、相手が見せている指紋を表示できます。
 
-## 利用者を追加する
+## 利用者と役割
 
-`/var/lib/koyomi/.config/uchmk/koyomi/koyomi.toml` に `[[http.user]]` を追加し、token を `koyomi-secret` で登録します。
+Windows の画面から接続する人ごとに、`[[http.user]]` で名前・役割・token を決めます。役割によって、その人ができる操作が分かれます。
+
+### 利用者の名前
+
+- `name` は koyomi の中だけで使う名前です。Linux の利用者とは関係がなく、Debian に同じ名前の利用者を作る必要はありません。
+- 名前は自由に決められます。ただし、空白を含む名前と `default` は使えません。ほかの `[[http.user]]` と同じ名前も使えません。
+- 名前は、その人が行った操作と一緒に操作の記録 (`koyomi ops`) に残ります。
+- ジョブは、誰が実行しても Debian の利用者 `koyomi` の権限で動きます (Linux では `run_as` を使えません)。
+
+### 役割 (`role`)
+
+上の役割は、下の役割ができることを全部できます。
+
+- `view`: 見るだけです。状態、実行の一覧、履歴、ジョブのログ、操作の記録を見られます。定義の本文は見られません。
+- `run`: `view` に加えて、ジョブネットの実行・停止・再実行・飛ばし、保留と解除、次回だけ飛ばす、などを操作できます。
+- `edit`: `run` に加えて、定義の本文を読めます。定義を送ることもできますが、送った定義は `admin` が確定するまで動きません。
+- `admin`: `edit` に加えて、定義の確定と保存、予定の一時停止と再開、カレンダーと祝日の変更、名前の変更、削除、全体の書き出しができます。確定もできるので、token を渡す相手と token の扱いに注意してください。
+
+役割が分かれるのは、HTTPS で接続してきた人だけです。Debian の上で `koyomi` として行う操作 (`sudo -H -u koyomi koyomi …`) は、役割に関係なく全部できます。
+
+### ジョブネットごとに絞る
+
+- `nets`: 書いたジョブネットだけが見え、ほかは無いものとして扱います。
+- `roles`: ジョブネットごとに役割を変えます。書いていないジョブネットは `role` の役割になります。
+- どちらも `<グループ>/<名前>` の形で書き、`*` は任意の文字の並びです (`経理/*` は経理のすべて、`*/日次` はすべての日次)。
+- `admin` には `nets` も `roles` も付けられません。`roles` の値にも `admin` は書けません。
 
 ```toml
 [[http.user]]
 name = "taro"
-role = "run"
+role = "view"                    # 下の roles に書いていないジョブネットは見るだけ
+roles = { "経理/*" = "run" }      # 経理のジョブネットは実行もできる
 token = "secret:http-taro"
+
+[[http.user]]
+name = "hanako"
+role = "run"
+nets = ["人事/*"]                 # 人事のジョブネットだけが見える
+token = "secret:http-hanako"
 ```
 
-```sh
-sudo koyomi-secret http-taro      # 値は標準入力から読み込みます (端末では入力が画面に表示されません)
-```
+### 追加する
 
-`koyomi-secret` は値を引数で受け取りません。koyomi が起動していれば再起動します（実行中のジョブは停止します）。停止していれば次の起動から使われます。
+1. token を登録します。値は長い乱数にします。次の例は乱数を作って、そのまま登録します。
 
-## 権限
+   ```sh
+   od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | sudo koyomi-secret http-taro
+   ```
 
-`role` は `view`・`run`・`edit`・`admin` のどれかです。`admin` は確定もできるので、token を渡す相手と token の扱いに注意してください。
+   `koyomi-secret` は値を引数で受け取らず、標準入力から読み込みます (端末から入力したときは画面に表示されません)。koyomi が起動していれば再起動します (実行中のジョブは停止します)。
+
+2. `koyomi.toml` に `[[http.user]]` を追加します。`token` の `secret:` の後ろには、手順 1 で登録した名前を書きます。保存すると、エンジンが数秒のうちに読み直して使い始めます (再起動は要りません)。
+
+   ```sh
+   sudo -H -u koyomi nano /var/lib/koyomi/.config/uchmk/koyomi/koyomi.toml
+   ```
+
+   `/var/lib/koyomi` の中は利用者 `koyomi` が書き換えられる場所なので、`install.sh` と同じく root ではなく `koyomi` として書き換えます。
+3. 登録した token を `sudo cat /etc/koyomi/credentials/http-taro` で読み込み、その人に渡します。その人は Windows の画面で「接続先を追加する…」から接続します。
+
+先に `koyomi.toml` に書いて token を登録していないと、エンジンは HTTPS の受け付けを始められず、ほかの人も接続できなくなります。token を先に登録してください。
+
+役割や `nets`・`roles` だけを変えるときは、`koyomi.toml` を書き換えて保存するだけで反映されます。
 
 ## ファイルの場所
 

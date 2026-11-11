@@ -16,4 +16,6 @@ uchmk のアプリ。共通の部品は [ito](https://github.com/uchmk/ito) を�
 2. 展開して `sudo ./install.sh` を実行します。最後に、接続する URL、証明書の指紋、token の読み込み方法が表示されます。
 3. Windows の画面で、状態バーの接続先 →「接続先を管理…」→「接続先を追加する…」から、URL と token を入力します。
 
-詳しい手順（利用者の追加、ファイルの場所、更新、削除、制約）は [koyomi エンジンを Debian にインストールする](packaging/linux/README.md) にあります。
+利用者ごとに役割（`view`・`run`・`edit`・`admin`）を決めて、できる操作を分けられます。利用者の名前は koyomi の中だけの名前で、Linux の利用者とは関係ありません。
+
+詳しい手順（利用者と役割、ファイルの場所、更新、削除、制約）は [koyomi エンジンを Debian にインストールする](packaging/linux/README.md) にあります。
