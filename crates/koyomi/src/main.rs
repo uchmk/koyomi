@@ -149,6 +149,9 @@ struct Switching {
     to: link::Link,
     /// The edits were confirmed away (or there were none): now it waits for the requests in flight.
     waiting: bool,
+    /// How many times the token box had opened when the wait began: a box that opens during the wait calls the
+    /// switch off (a token shown once must not go with the old window).
+    tokens: u64,
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -259,14 +262,21 @@ impl App {
         if self.switching.is_none() {
             if let Some(to) = self.browser.take_link_wish() {
                 let waiting = !self.browser.has_unsaved();
-                self.switching = Some(Switching { to, waiting });
+                self.switching = Some(Switching { to, waiting, tokens: self.browser.tokens_opened() });
             }
         }
         let Some(sw) = &self.switching else { return };
         if !sw.waiting {
             let t = &self.table;
             let buttons = [t.tr("link.switch").to_owned(), t.tr("confirm.no").to_owned()];
-            let body = [t.tr(if self.browser.unsaved_is_config() { "link.unsaved_config_body" } else { "link.unsaved_body" }).to_owned()];
+            let body_key = if self.browser.holds_token() {
+                "link.unsaved_token_body"
+            } else if self.browser.unsaved_is_config() {
+                "link.unsaved_config_body"
+            } else {
+                "link.unsaved_body"
+            };
+            let body = [t.tr(body_key).to_owned()];
             let q = ito_confirm::Question {
                 title: t.tr("link.unsaved_title"),
                 body: &body,
@@ -280,8 +290,11 @@ impl App {
             let key = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape).then_some(1));
             match ito_confirm::show(ctx, &q, &ui::Browser::style()).or(key) {
                 Some(0) => {
+                    let tokens = self.browser.tokens_opened();
                     if let Some(sw) = &mut self.switching {
                         sw.waiting = true;
+                        // A box that was open when the person agreed does not count: only one that opens from now on.
+                        sw.tokens = tokens;
                     }
                 }
                 Some(_) => self.switching = None,
@@ -315,6 +328,12 @@ impl App {
             return;
         }
         if let Some(sw) = self.switching.take() {
+            // A token came while the writes were finishing (a user was added or a token made): the window that
+            // holds it stays, so the person can copy it.
+            if self.browser.switch_called_off(sw.tokens) {
+                self.browser.cancel_switch();
+                return;
+            }
             self.switch_link(ctx, sw.to);
         }
     }

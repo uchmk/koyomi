@@ -17,9 +17,10 @@ use crate::App;
 pub const GENERAL: usize = 0;
 pub const THEME: usize = 1;
 pub const NOTIFY: usize = 2;
-pub const KEYS: usize = 3;
-pub const ADVANCED: usize = 4;
-pub const ABOUT: usize = 5;
+pub const USERS: usize = 3;
+pub const KEYS: usize = 4;
+pub const ADVANCED: usize = 5;
+pub const ABOUT: usize = 6;
 
 /// The keymap's layers and the words that name them on the Keys page.
 const LAYERS: [(&str, &str); 1] = [("app", "keys.main")];
@@ -90,6 +91,13 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (THEME, "light_theme"),
         (NOTIFY, "[notify]"),
         (NOTIFY, "koyomi.toml"),
+        (USERS, "[[http.user]]"),
+        (USERS, "koyomi.toml"),
+        (USERS, t.tr("settings.users")),
+        (USERS, t.tr("users.add")),
+        (USERS, t.tr("users.edit")),
+        (USERS, t.tr("users.reset")),
+        (USERS, t.tr("users.remove")),
         (KEYS, "keymap.toml"),
         (KEYS, "prepend_keymap"),
     ]
@@ -122,7 +130,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     keep_ask(ui, app, &no_folder);
     // While a key is being set, or the box asks, the page takes every key, Esc included.
-    let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() || app.browser.config_open() {
+    // A token on the screen, or a question, form or editor of the users page, takes Esc before the settings do.
+    let users_keys = app.browser.holds_token() || (app.prefs.state.page == USERS && app.browser.users_wants_esc());
+    let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() || app.browser.config_open() || users_keys {
         ito_prefs::Keys::default()
     } else {
         ito_prefs::Keys::standard(ui, false)
@@ -134,6 +144,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         (tr("settings.general"), tr("settings.general_lead")),
         (tr("settings.theme"), tr("settings.theme_lead")),
         (tr("settings.notify"), tr("settings.notify_lead")),
+        (tr("settings.users"), tr("settings.users_lead")),
         (tr("settings.keys"), tr("settings.keys_lead")),
         (adv.0.to_owned(), adv.1.to_owned()),
         (about.0.to_owned(), about.1.to_owned()),
@@ -186,6 +197,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let (common, themes, base) = (&prefs.common, &prefs.themes, prefs.base.as_deref());
     // koyomi.toml's button above common.toml's: the engine's settings are a file of their own.
     // On another PC's engine there is no koyomi.toml of that engine to open from here.
+    // While a new token is on the screen, only its box answers.
+    if app.browser.holds_token() {
+        ui.disable();
+    }
     let extras = ito_prefs::Extras { files: if far { &[] } else { &[CONFIG_FILE] }, ..Default::default() };
     let out = ito_prefs::show_with(ui, ito_theme::colors(), &mut prefs.state, &nav, keys, extras, |ui, page, l| match page {
         GENERAL => {
@@ -286,6 +301,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                 mails_new = Some(mails);
             }
         }
+        USERS => app.browser.users_page(ui, table),
         KEYS => {
             let layer_name = |n: &str| LAYERS.iter().find(|(id, _)| *id == n).map_or_else(|| n.to_owned(), |(_, k)| tr(k));
             let desc = |d: &str| table.tr_desc(d).to_owned();
@@ -327,6 +343,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         app.browser.open_config_edit();
     }
     app.browser.config_box(ui.ctx(), &app.table);
+    app.browser.token_box(ui.ctx(), &app.table);
     // The numbers typed: whole, 1 or more; else told off under the section.
     let mut limit_edits: Vec<(&'static str, String)> = Vec::new();
     for (key, text) in limit_typed {
@@ -528,7 +545,7 @@ mod tests {
 
     #[test]
     fn pages_follow_ito_default_order() {
-        let ours = [GENERAL, THEME, KEYS, ADVANCED, ABOUT];
+        let ours = [GENERAL, THEME, NOTIFY, USERS, KEYS, ADVANCED, ABOUT];
         assert!(ours.windows(2).all(|w| w[0] < w[1]));
         let has = [Page::Theme, Page::Keys, Page::Advanced];
         assert_eq!(ito_prefs::default_order(&has), [Page::General, Page::Theme, Page::Keys, Page::Advanced, Page::About]);

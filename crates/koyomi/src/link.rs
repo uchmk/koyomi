@@ -37,6 +37,8 @@ pub enum Link {
 pub struct Conn {
     kind: Kind,
     role: Option<Role>,
+    /// The `[[http.user]]` name the engine knows this connection by (`/me`'s `who`); `None` for this PC.
+    who: Option<String>,
 }
 
 enum Kind {
@@ -69,7 +71,7 @@ impl Link {
     /// error and does not fall back to this PC.
     pub fn start(&self) -> Result<Conn, String> {
         match self {
-            Link::Local => local::start().map(|()| Conn { kind: Kind::Local, role: None }),
+            Link::Local => local::start().map(|()| Conn { kind: Kind::Local, role: None, who: None }),
             Link::Far(name) => remote::with(name, connect),
         }
     }
@@ -84,7 +86,8 @@ fn connect(r: &Remote) -> Result<Conn, String> {
         200..=299 => admit(&r.name, &reply.json)?,
         s => return Err(read_status(r, s, &reply.json)),
     };
-    Ok(Conn { kind: Kind::Far { remote: r.clone(), client: Box::new(client) }, role: Some(role) })
+    let who = who_of(&reply.json);
+    Ok(Conn { kind: Kind::Far { remote: r.clone(), client: Box::new(client) }, role: Some(role), who })
 }
 
 /// The one place a client for another PC is made.
@@ -124,6 +127,11 @@ impl Conn {
         self.role
     }
 
+    /// The user name this connection is, over there; `None` for this PC, or when the engine named none.
+    pub fn who(&self) -> Option<&str> {
+        self.who.as_deref()
+    }
+
     /// Whether the engine still answers. Another PC counts as up once started: a failed call says otherwise.
     pub fn running(&self) -> bool {
         match self.kind {
@@ -145,6 +153,11 @@ impl Conn {
             }
         }
     }
+}
+
+/// The `who` of a `GET /me` answer: only a non-empty string is a name.
+pub fn who_of(me: &serde_json::Value) -> Option<String> {
+    me["who"].as_str().filter(|s| !s.is_empty()).map(str::to_owned)
 }
 
 /// The role of a `GET /me` answer when a window may be driven with it: `edit` or `admin`, not narrowed.
@@ -208,6 +221,15 @@ mod tests {
 
     fn reply(status: u16, json: serde_json::Value) -> Reply {
         Reply { status, json }
+    }
+
+    #[test]
+    fn who_is_only_a_non_empty_string() {
+        assert_eq!(who_of(&json!({"who": "kei", "role": "admin"})), Some("kei".to_owned()));
+        assert_eq!(who_of(&json!({"role": "admin"})), None);
+        assert_eq!(who_of(&json!({"who": 3})), None);
+        assert_eq!(who_of(&json!({"who": ""})), None);
+        assert_eq!(who_of(&json!({"who": null})), None);
     }
 
     #[test]

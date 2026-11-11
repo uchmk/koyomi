@@ -148,6 +148,7 @@ sudo koyomi-user remove taro                            # 削除する
 - `koyomi-user` は koyomi のサービスに頼んで `koyomi.toml` を書き換えるので、サービスが動いている必要があります。ほかの行とコメントはそのまま残ります。
 - 最後の `admin` を `admin` から外すことと、削除することはできません。
 - token をなくしたときは `reset` で作り直します。その人は、表示された token を Windows で `koyomi secret set <名前>` を実行して保存し直します (`<名前>` は、Windows の `koyomi.toml` の `[[remote]]` にある `token = "secret:<名前>"` の名前です)。
+- Windows の画面を `admin` の token でこのエンジンに接続しているときは、設定 → 利用者 のページでも同じこと (一覧・追加・役割の変更・token の作り直し・削除) ができます。作った token は画面に 1 回だけ表示されます。画面が接続に使っている利用者は、このページでは変更できません。
 
 ### koyomi.toml を直接書き換える
 

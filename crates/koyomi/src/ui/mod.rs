@@ -36,6 +36,7 @@ mod ha;
 mod hosts;
 mod manage;
 mod net_side;
+mod users;
 
 /// How long a window waits to ask another PC again after its list could not be read.
 const FAR_RETRY: Duration = Duration::from_secs(10);
@@ -243,7 +244,7 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
             }
             match link.start() {
                 Ok(c) => {
-                    if !send(Msg::Role(c.role())) {
+                    if !send(Msg::Role(c.role(), c.who().map(str::to_owned))) {
                         return;
                     }
                     conn = Some(c);
@@ -323,8 +324,9 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
 
 enum Msg {
     Starting,
-    /// The caller's role at the other PC (`None` for this one), once the link started.
-    Role(Option<koyomi_core::role::Role>),
+    /// The caller's role and name at the other PC (`None` for this one), once the link started (every start, a
+    /// reconnect too).
+    Role(Option<koyomi_core::role::Role>, Option<String>),
     Snapshot(Box<Snapshot>),
     Runs(Runs),
     /// The tail of one job's log: run, job, text.
@@ -650,6 +652,10 @@ pub struct Browser {
     link: Link,
     /// The caller's role at the other PC; `None` for this one.
     role: Option<koyomi_core::role::Role>,
+    /// The caller's name at the other PC (`/me`'s `who`); `None` for this one or when it told none.
+    who: Option<String>,
+    /// The 利用者 page of the settings. Its state is here, so a switch of the link empties it.
+    users: users::Users,
     watch: Watch,
     snap: Option<Snapshot>,
     runs: Vec<Run>,
@@ -820,6 +826,8 @@ impl Browser {
             out: Outbox { tx, pending, switching: Cell::new(false), refused: Cell::new(false) },
             link,
             role: None,
+            who: None,
+            users: users::Users::default(),
             watch,
             snap: None,
             runs: Vec::new(),
@@ -928,16 +936,40 @@ impl Browser {
         self.out.switching.set(false);
     }
 
-    /// Whether an editor holds changes that are not saved.
+    /// Whether an editor holds changes that are not saved, or a new token is on the screen (it is shown once).
     pub fn has_unsaved(&self) -> bool {
         self.editor.as_ref().is_some_and(|e| e.dirty)
             || self.editors.iter().any(|e| e.dirty)
             || self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
+            || self.users.unsaved()
+    }
+
+    /// Whether a new token is on the screen: a switch of the link would lose it, and its question says so.
+    pub fn holds_token(&self) -> bool {
+        self.users.holds_token()
+    }
+
+    /// How many times the token box has opened. A switch that waits for a write notes it at its start: if it moved,
+    /// a token came during the wait and the switch is called off.
+    pub fn tokens_opened(&self) -> u64 {
+        self.users.tokens_opened()
+    }
+
+    /// Whether a token box opened since `started` (what [`Browser::tokens_opened`] said when the switch began): the
+    /// switch is then called off and the box stays.
+    pub fn switch_called_off(&self, started: u64) -> bool {
+        self.users.tokens_opened() != started
+    }
+
+    /// A question, the add form or an editor of the users page is up: its Esc is for them, not for the settings.
+    pub fn users_wants_esc(&self) -> bool {
+        self.users.wants_esc()
     }
 
     /// Whether the unsaved changes are only in the koyomi.toml box: the switch's question then names that box.
     pub fn unsaved_is_config(&self) -> bool {
         !(self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty))
+            && !self.users.forms_dirty()
             && self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
     }
 
@@ -1012,6 +1044,61 @@ impl Browser {
         self.config_edit.is_some()
     }
 
+    /// Asks the engine for the users (a read). A request the thread did not take puts the page into its error line.
+    fn users_ask(&mut self) {
+        self.users.ask();
+        if !self.out.send(Request::Users) {
+            let why = self.unsent_why();
+            self.users.unsent(true, why);
+        }
+    }
+
+    /// Asks again at once when the page is open and may ask; else the page asks when it is drawn.
+    fn users_reask(&mut self) {
+        let frame = self.io.1.cumulative_frame_nr();
+        // A `down` that is there is not a reason to wait: the reconnect that brought a new role or name is the end of it.
+        let open = users::access(self.link.is_far(), self.role, None) == users::Access::Open;
+        if self.users.need && open && self.users.is_open(frame) {
+            self.users_ask();
+        }
+    }
+
+    /// The users page of the settings.
+    pub fn users_page(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        self.users.touch(ui.ctx().cumulative_frame_nr());
+        let access = users::access(self.link.is_far(), self.role, self.down.as_deref());
+        let open = access == users::Access::Open;
+        if self.users.need && open {
+            self.users_ask();
+        }
+        let (far, who) = (self.link.far().map(str::to_owned), self.who.clone());
+        let view = users::View { far: far.as_deref(), who: who.as_deref(), open };
+        let Some(click) = users::show(&mut self.users, ui, t, &view, &access) else {
+            return;
+        };
+        match self.users.act(click, &view) {
+            users::Do::Nothing => {}
+            users::Do::Ask => self.users_ask(),
+            users::Do::Send(request) => {
+                if !self.out.send(request) {
+                    let why = self.unsent_why();
+                    self.users.unsent(false, why);
+                }
+            }
+        }
+    }
+
+    /// Draws the box that shows a new token (if there is one) over the whole window. It stays when the settings
+    /// close or another page is picked, until 閉じる or Esc.
+    pub fn token_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table) {
+        let Some(issued) = self.users.token() else {
+            return;
+        };
+        if users::token_show(issued, ctx, t) {
+            self.users.close_token();
+        }
+    }
+
     /// Opens the box that edits the other PC's koyomi.toml and asks for its text.
     pub fn open_config_edit(&mut self) {
         if self.config_edit.is_none() && self.far_admin() {
@@ -1080,7 +1167,14 @@ impl Browser {
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,
-                Msg::Role(r) => self.role = r,
+                Msg::Role(r, who) => {
+                    self.role = r;
+                    self.who.clone_from(&who);
+                    // What the users page holds was read under the earlier role and name.
+                    if self.users.role_told((r, who)) {
+                        self.users_reask();
+                    }
+                }
                 Msg::Snapshot(s) => {
                     self.ask_past();
                     self.starting = false;
@@ -1220,6 +1314,21 @@ impl Browser {
                     }
                 }
                 Msg::Answer(Request::HolidayTable { .. }, r) => self.cal_result = Some(r),
+                // The users page: its own state's, never the result line's. A new token goes to its box only.
+                Msg::Answer(Request::Users, r) => self.users.listing_answer(r),
+                Msg::Answer(
+                    req @ (Request::UserSet { .. } | Request::UserRemove { .. } | Request::UserAdd { .. } | Request::UserReset { .. }),
+                    r,
+                ) => {
+                    let done = self.users.answered(&req, r);
+                    if let Some(result) = done.result {
+                        self.result = Some(result);
+                    }
+                    if done.reload {
+                        self.users.need = true;
+                        self.users_reask();
+                    }
+                }
                 // The other PC's koyomi.toml: the box's, never the result line's (and its text goes nowhere else).
                 Msg::Answer(Request::ConfigText, r) => {
                     if let Some(c) = &mut self.config_edit {
@@ -1351,6 +1460,7 @@ impl Browser {
             || self.staged_box.is_some()
             || self.sending.is_some()
             || self.config_edit.is_some()
+            || self.users.holds_token()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
     }
 
@@ -2107,6 +2217,7 @@ impl Browser {
         self.far.add_box(&ctx, t, self.covered());
         self.far.manage_box(&ctx, t, self.link.far());
         self.config_box(&ctx, t);
+        self.token_box(&ctx, t);
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;
@@ -2117,7 +2228,7 @@ impl Browser {
             self.focus = 1;
         }
         self.close_asked = closing;
-        let modal = self.asking.is_some()
+        let keys_modal = self.asking.is_some()
             || self.killing.is_some()
             || self.deleting.is_some()
             || self.cal_deleting.is_some()
@@ -2128,6 +2239,8 @@ impl Browser {
             || asking_stage
             || self.staged_box.is_some()
             || self.sending.as_ref().is_some_and(|s| s.there.is_some());
+        // The token box reads its own keys: it blocks the page like a box, but `box_keys` leaves it alone.
+        let modal = keys_modal || self.users.holds_token();
         let buttons = if self.vers.is_some() {
             4
         } else if conflict || self.staged_box.is_some() {
@@ -2142,7 +2255,7 @@ impl Browser {
         } else {
             port.map_or(2, |(n, _)| n)
         };
-        let key = if modal { self.box_keys(&ctx, buttons, making) } else { None };
+        let key = if keys_modal { self.box_keys(&ctx, buttons, making) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
             // The writable-by warning keeps its header; the files that did not read have their own.
@@ -2371,7 +2484,7 @@ impl Browser {
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
         self.confirm_send(&ctx, t, key_for(12));
-        if modal && !making && !self.covered() && !port.is_some_and(|(_, typing)| typing) {
+        if keys_modal && !making && !self.covered() && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
             ctx.memory_mut(|m| {
@@ -5560,6 +5673,8 @@ mod tests {
             want_link: None,
             link: Link::Local,
             role: None,
+            who: None,
+            users: users::Users::default(),
             watch: Arc::default(),
             snap,
             runs: Vec::new(),
@@ -7511,5 +7626,83 @@ run = [\"x.exe\"]
         assert!(b.far.manage.is_some() && b.far.add.is_none());
         b.add_remote_box();
         assert!(b.far.add.is_some() && b.far.manage.is_none());
+    }
+
+    const FAKE_TOKEN: &str = "fake-token-0123456789";
+
+    fn add_request() -> Request {
+        Request::UserAdd { name: "bob".into(), role: "viewer".into(), nets: None, roles: None, base: "b".into() }
+    }
+
+    #[test]
+    fn a_second_role_message_replaces_the_name() {
+        let mut b = quiet(defs());
+        for who in ["alice", "carol"] {
+            b.io.0.send(Msg::Role(Some(koyomi_core::role::Role::Admin), Some(who.to_owned()))).unwrap();
+            b.drain();
+            assert_eq!(b.who.as_deref(), Some(who));
+        }
+    }
+
+    #[test]
+    fn a_new_name_drops_the_listing_and_asks_again_at_an_open_page() {
+        let mut b = quiet(defs());
+        let (tx, asked) = asks();
+        b.out.tx = tx;
+        let admin = Some(koyomi_core::role::Role::Admin);
+        b.io.0.send(Msg::Role(admin, Some("alice".into()))).unwrap();
+        b.drain();
+        b.users.touch(b.io.1.cumulative_frame_nr());
+        b.users.ask();
+        b.users.listing_answer(Ok("base = \"b\"
+"
+        .to_owned()));
+        assert!(b.users.listing.is_some());
+        b.io.0.send(Msg::Role(admin, Some("carol".into()))).unwrap();
+        b.drain();
+        assert!(b.users.listing.is_none());
+        assert!(matches!(asked.try_recv(), Ok(Request::Users)));
+    }
+
+    #[test]
+    fn a_far_role_not_yet_known_sends_nothing() {
+        let mut b = quiet(defs());
+        let (tx, asked) = asks();
+        b.out.tx = tx;
+        b.link = Link::Far("pc".into());
+        b.users.touch(b.io.1.cumulative_frame_nr());
+        b.users.need = true;
+        b.users_reask();
+        assert!(asked.try_recv().is_err());
+    }
+
+    #[test]
+    fn a_new_token_stays_off_the_result_line_and_calls_a_switch_off() {
+        let mut b = quiet(defs());
+        let started = b.tokens_opened();
+        assert!(!b.switch_called_off(started));
+        let reply = format!(
+            "name = \"bob\"
+token = \"{FAKE_TOKEN}\"
+note = \"n\"
+"
+        );
+        b.io.0.send(Msg::Answer(add_request(), Ok(reply))).unwrap();
+        b.drain();
+        assert!(b.holds_token() && b.has_unsaved());
+        assert!(b.switch_called_off(started));
+        let shown = format!("{:?}", b.result);
+        assert!(!shown.contains(FAKE_TOKEN));
+        // A box already open when the person agrees does not call the switch off.
+        assert!(!b.switch_called_off(b.tokens_opened()));
+    }
+
+    #[test]
+    fn an_unreadable_reply_holds_no_token() {
+        let mut b = quiet(defs());
+        b.io.0.send(Msg::Answer(add_request(), Ok(format!("not toml {FAKE_TOKEN} =")))).unwrap();
+        b.drain();
+        assert!(!b.holds_token());
+        assert!(!format!("{:?}", b.result).contains(FAKE_TOKEN));
     }
 }
