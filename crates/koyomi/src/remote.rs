@@ -246,6 +246,13 @@ pub struct RemovePlan {
     pub secret: SecretFate,
 }
 
+/// Whether `secret` is the one `koyomi` generates for the connection `name`: `<name>-token`, ASCII case ignored.
+/// The test `plan_remove` uses to decide whether a delete takes the secret along.
+pub fn generated_secret(name: &str, secret: &str) -> bool {
+    let secret = secret.trim();
+    !secret.is_empty() && secret.eq_ignore_ascii_case(&format!("{}-token", name.trim()))
+}
+
 /// `text` (koyomi.toml) without the `[[remote]]` called `name`. The secret is `Delete` only when it is the generated
 /// `<name>-token` and no string left in the file refers to it.
 pub fn plan_remove(text: &str, name: &str) -> Result<RemovePlan, String> {
@@ -258,7 +265,7 @@ pub fn plan_remove(text: &str, name: &str) -> Result<RemovePlan, String> {
     let secret = gone.secret().to_owned();
     let left: Vec<&Remote> = cfg.remote.iter().filter(|r| r.name.trim() != name).collect();
     let out = rewrite(text, &left)?;
-    let generated = !secret.is_empty() && secret.eq_ignore_ascii_case(&format!("{name}-token"));
+    let generated = generated_secret(name, &secret);
     let fate = if generated && !refers(&out, &secret)? { SecretFate::Delete(secret) } else { SecretFate::Keep(secret) };
     Ok(RemovePlan { text: out, secret: fate })
 }
@@ -419,9 +426,10 @@ pub(crate) fn finish_add(
     write(path, text).map_err(|e| write_failed(name, &e, store.delete(secret)))
 }
 
-/// The `[[remote]]` names, for the window's status-bar list. It reads koyomi.toml: not on the UI thread.
-pub fn names() -> Result<Vec<String>, String> {
-    Ok(remotes()?.iter().map(|r| r.name.trim().to_owned()).collect())
+/// Each `[[remote]]`'s trimmed name and its secret name (empty when the token is written as is), in the order of
+/// koyomi.toml. It reads koyomi.toml: not on the UI thread.
+pub fn listed() -> Result<Vec<(String, String)>, String> {
+    Ok(remotes()?.iter().map(|r| (r.name.trim().to_owned(), r.secret().to_owned())).collect())
 }
 
 /// One call to the `[[remote]]` named `name`, cut off after `deadline`, counted from when it goes out. It blocks.
@@ -887,6 +895,17 @@ mod tests {
         assert_eq!(names_in(&plan.text), ["a", "c"]);
         assert!(plan.text.contains("# the a") && plan.text.contains("# the c") && plan.text.contains("[vars]"));
         assert!(plan_remove(&text, "ghost").is_err());
+    }
+
+    #[test]
+    fn generated_secret_is_the_name_token_in_any_ascii_case() {
+        assert!(generated_secret("works", "works-token"));
+        assert!(generated_secret("works", "Works-Token"));
+        assert!(generated_secret(" works ", " works-token "));
+        assert!(!generated_secret("works", ""));
+        assert!(!generated_secret("works", "   "));
+        assert!(!generated_secret("factory", "works-token"));
+        assert!(!generated_secret("works", "shared"));
     }
 
     #[test]

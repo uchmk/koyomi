@@ -14,7 +14,8 @@ use super::manage::{self, Manage, Pressed};
 
 /// What a thread brought back.
 enum Got {
-    Names(Vec<String>),
+    /// Every `[[remote]]`: its name and its secret name (empty: the token is written as is).
+    Names(Vec<(String, String)>),
     /// The add box: its ticket, and the fingerprint that PC shows (or why not).
     Peeked(u64, Result<String, String>),
     /// The add box: its ticket, the name, and whether the check passed and the connection was written.
@@ -76,13 +77,18 @@ impl Add {
     }
 }
 
+/// The secret `join` stores a new connection's token under. One place, so the delete question and the write agree.
+fn generated_secret(name: &str) -> String {
+    format!("{name}-token")
+}
+
 /// The check, then the writing: the PC answers, the token drives a window, and only then the token goes to the
 /// credential store and the `[[remote]]` to koyomi.toml. Nothing is written when the check fails, and the token is
 /// not stored until koyomi.toml is known to take the connection; a koyomi.toml that cannot be written gives it back.
 /// The check stays outside the lock (a slow PC must not hold up the others); the writing is under it.
 fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), String> {
     crate::link::probe(name, url, fingerprint, token)?;
-    let secret = format!("{name}-token");
+    let secret = generated_secret(name);
     let new = koyomi_core::config::Remote {
         name: name.to_owned(),
         url: url.to_owned(),
@@ -103,6 +109,8 @@ fn enter_goes_on(step: AddStep) -> bool {
 pub struct Far {
     /// The `[[remote]]` names, once read.
     names: Vec<String>,
+    /// Each name's secret name (empty: the token is written as is), for the delete question.
+    secrets: std::collections::BTreeMap<String, String>,
     tx: Sender<Got>,
     rx: Receiver<Got>,
     ctx: egui::Context,
@@ -120,7 +128,17 @@ impl Far {
     /// Nothing read: no names.
     pub fn idle(ctx: &egui::Context) -> Far {
         let (tx, rx) = mpsc::channel();
-        Far { names: Vec::new(), tx, rx, ctx: ctx.clone(), add: None, joined: None, manage: None, state: None }
+        Far {
+            names: Vec::new(),
+            secrets: std::collections::BTreeMap::new(),
+            tx,
+            rx,
+            ctx: ctx.clone(),
+            add: None,
+            joined: None,
+            manage: None,
+            state: None,
+        }
     }
 
     /// Reads the `[[remote]]` names off the UI thread. `state` is the state folder (`None`: nothing is moved there).
@@ -129,8 +147,8 @@ impl Far {
         far.state = state;
         let (tx, ctx) = (far.tx.clone(), far.ctx.clone());
         std::thread::spawn(move || {
-            if let Ok(names) = crate::remote::names() {
-                let _ = tx.send(Got::Names(names));
+            if let Ok(listed) = crate::remote::listed() {
+                let _ = tx.send(Got::Names(listed));
                 ctx.request_repaint();
             }
         });
@@ -140,7 +158,8 @@ impl Far {
     /// Test only: what the name thread would send.
     #[cfg(test)]
     pub(super) fn send_names(&self, names: Vec<String>) {
-        let _ = self.tx.send(Got::Names(names));
+        let listed = names.into_iter().map(|n| (n.clone(), generated_secret(&n))).collect();
+        let _ = self.tx.send(Got::Names(listed));
     }
 
     /// Whether any `[[remote]]` is set.
@@ -155,6 +174,7 @@ impl Far {
 
     #[cfg(test)]
     pub(super) fn set_names(&mut self, names: Vec<String>) {
+        self.secrets = names.iter().map(|n| (n.clone(), generated_secret(n))).collect();
         self.names = names;
     }
 
@@ -175,7 +195,10 @@ impl Far {
 
     fn take(&mut self, got: Got) {
         match got {
-            Got::Names(names) => self.names = names,
+            Got::Names(listed) => {
+                self.names = listed.iter().map(|(n, _)| n.clone()).collect();
+                self.secrets = listed.into_iter().collect();
+            }
             Got::Peeked(ticket, r) => {
                 if let Some(a) = self.add.as_mut().filter(|a| a.ticket == ticket && a.step == AddStep::Peeking) {
                     match r {
@@ -198,6 +221,7 @@ impl Far {
                         if !self.names.contains(&name) {
                             self.names.push(name.clone());
                         }
+                        self.secrets.insert(name.clone(), generated_secret(&name));
                         if waiting {
                             self.add = None;
                             self.joined = Some(name);
@@ -220,8 +244,14 @@ impl Far {
                             if let Some(n) = self.names.iter_mut().find(|n| *n == old) {
                                 n.clone_from(new);
                             }
+                            if let Some(secret) = self.secrets.remove(old) {
+                                self.secrets.insert(new.clone(), secret);
+                            }
                         }
-                        Change::Delete(name) => self.names.retain(|n| n != name),
+                        Change::Delete(name) => {
+                            self.names.retain(|n| n != name);
+                            self.secrets.remove(name);
+                        }
                     }
                 }
                 if let Some(m) = self.manage.as_mut().filter(|m| m.ticket == ticket && m.busy) {
@@ -255,6 +285,17 @@ impl Far {
         self.add = None;
         if self.manage.is_none() {
             self.manage = Some(Manage::new());
+            // koyomi.toml may have been edited by hand since the start: read the names and secrets again. Not in
+            // the unit tests, which must not read the owner's koyomi.toml.
+            if !cfg!(test) {
+                let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
+                std::thread::spawn(move || {
+                    if let Ok(listed) = crate::remote::listed() {
+                        let _ = tx.send(Got::Names(listed));
+                        ctx.request_repaint();
+                    }
+                });
+            }
         }
     }
 
@@ -330,7 +371,7 @@ impl Far {
     pub fn manage_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, link: Option<&str>) {
         let Some(m) = self.manage.as_mut() else { return };
         let used = |n: &str| manage::in_use(link, n);
-        match manage::show(m, ctx, t, &self.names, &used) {
+        match manage::show(m, ctx, t, &self.names, &self.secrets, &used) {
             Pressed::Nothing => {}
             Pressed::Close => {
                 if !m.busy {
@@ -341,6 +382,11 @@ impl Far {
             Pressed::Rename(old, new) => self.manage_rename(t, link, &old, &new),
             Pressed::Delete(name) => self.manage_delete(t, link, &name),
         }
+    }
+
+    /// Whether a connection box (add or manage) is open.
+    pub fn boxed(&self) -> bool {
+        self.add.is_some() || self.manage.is_some()
     }
 
     /// Whether the add box is open.
@@ -417,8 +463,9 @@ impl Far {
     }
 
     /// The add-a-connection box. Esc closes it; Enter presses the button that goes on, except at the fingerprint.
-    /// `under_card`: the troubleshooting card is open over the page, so the box does not take the focus from its field.
-    pub fn add_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, under_card: bool) {
+    /// `covered`: the troubleshooting card or the command palette is over the page, so the box does not take the focus
+    /// from its field.
+    pub fn add_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, covered: bool) {
         let Some(step) = self.add.as_ref().map(|a| a.step) else { return };
         let (esc, enter) = ctx.input_mut(|i| {
             (i.consume_key(egui::Modifiers::NONE, egui::Key::Escape), i.consume_key(egui::Modifiers::NONE, egui::Key::Enter))
@@ -453,7 +500,7 @@ impl Far {
                                         egui::TextEdit::singleline(&mut a.name).hint_text(t.tr("far.add_name_hint")).desired_width(300.0),
                                     );
                                     ito_a11y::say(&r, Role::Label, t.tr("far.add_name"));
-                                    if a.name.is_empty() && a.url.is_empty() && !under_card {
+                                    if a.name.is_empty() && a.url.is_empty() && !covered {
                                         r.request_focus();
                                     }
                                     ui.end_row();
@@ -476,7 +523,7 @@ impl Far {
                                     ui.label(t.tr("far.add_token"));
                                     let r = ui.add(egui::TextEdit::singleline(&mut a.token).password(true).desired_width(300.0));
                                     ito_a11y::say(&r, Role::Label, t.tr("far.add_token"));
-                                    if step == AddStep::Token && a.token.is_empty() && !under_card {
+                                    if step == AddStep::Token && a.token.is_empty() && !covered {
                                         r.request_focus();
                                     }
                                 });
@@ -532,6 +579,34 @@ mod tests {
         a.name = "new".into();
         a.url = "https://pc:8443".into();
         a.step = step;
+    }
+
+    #[test]
+    fn the_secret_map_follows_renames_deletes_joins_and_re_reads() {
+        let mut f = Far::idle(&egui::Context::default());
+        f.take(Got::Names(vec![("works".into(), "works-token".into())]));
+        f.manage = Some(Manage::new());
+        let t = f.manage.as_ref().unwrap().ticket;
+        // A failed change changes nothing.
+        f.take(Got::Managed(t, Change::Rename("works".into(), "factory".into()), Err("no".into())));
+        assert_eq!(f.secrets.get("works").map(String::as_str), Some("works-token"));
+        // A rename moves the key; the secret stays.
+        f.take(Got::Managed(t, Change::Rename("works".into(), "factory".into()), Ok("ok".into())));
+        assert_eq!(f.names, ["factory"]);
+        assert_eq!(f.secrets.get("factory").map(String::as_str), Some("works-token"));
+        assert!(!f.secrets.contains_key("works"));
+        // A join adds the generated secret.
+        f.take(Got::Joined(0, "new".into(), Ok(())));
+        assert_eq!(f.secrets.get("new").map(String::as_str), Some("new-token"));
+        // A delete removes it.
+        f.take(Got::Managed(t, Change::Delete("factory".into()), Ok("ok".into())));
+        assert!(!f.secrets.contains_key("factory"));
+        // A later listing replaces the map (a token edited by hand).
+        f.take(Got::Names(vec![("new".into(), String::new()), ("b".into(), "shared".into())]));
+        assert_eq!(f.names, ["new", "b"]);
+        assert_eq!(f.secrets.get("new").map(String::as_str), Some(""));
+        assert_eq!(f.secrets.get("b").map(String::as_str), Some("shared"));
+        assert_eq!(f.secrets.len(), 2);
     }
 
     #[test]

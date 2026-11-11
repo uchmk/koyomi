@@ -6,6 +6,7 @@
 //! cut the link the window stands on. Esc closes the innermost thing: the question, else the editing, else the box.
 //! While a press is carried out the box does not close and takes no new press.
 
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ito_a11y::Role;
@@ -115,8 +116,26 @@ pub(super) fn in_use(link: Option<&str>, name: &str) -> bool {
     link.is_some_and(|l| l.trim() == name.trim())
 }
 
+/// The delete question's text, by what the delete does with the connection's own secret. `secret` is the secret the
+/// token names (`Some("")`: the token is written as is; `None`: not known).
+fn ask_body(t: &ito_i18n::Table, name: &str, secret: Option<&str>) -> String {
+    match secret {
+        None => t.trf("far.manage_ask_body_unknown", &[name]),
+        Some("") => t.trf("far.manage_ask_body_plain", &[name]),
+        Some(s) if crate::remote::generated_secret(name, s) => t.trf("far.manage_ask_body", &[name, s]),
+        Some(s) => t.trf("far.manage_ask_body_kept", &[name, s]),
+    }
+}
+
 /// Draws the box and returns what was pressed. `used` says whether a row is in use.
-pub(super) fn show(m: &mut Manage, ctx: &egui::Context, t: &ito_i18n::Table, names: &[String], used: &dyn Fn(&str) -> bool) -> Pressed {
+pub(super) fn show(
+    m: &mut Manage,
+    ctx: &egui::Context,
+    t: &ito_i18n::Table,
+    names: &[String],
+    secrets: &BTreeMap<String, String>,
+    used: &dyn Fn(&str) -> bool,
+) -> Pressed {
     let (esc, enter, tab) = ctx.input_mut(|i| {
         let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
         let enter = i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
@@ -193,7 +212,7 @@ pub(super) fn show(m: &mut Manage, ctx: &egui::Context, t: &ito_i18n::Table, nam
         m.ask(&n);
     }
     if let Some(a) = m.asking.clone() {
-        let body = [t.trf("far.manage_ask_body", &[&a.name])];
+        let body = [ask_body(t, &a.name, secrets.get(a.name.trim()).map(String::as_str))];
         let buttons = [t.tr("far.manage_delete").to_owned(), t.tr("far.manage_back").to_owned()];
         let q = ito_confirm::Question {
             title: t.tr("far.manage_ask_title"),
@@ -359,6 +378,20 @@ mod tests {
         assert_eq!(m.route(true, false, false), Pressed::Nothing, "Esc does not close the box");
     }
 
+    #[test]
+    fn the_question_names_the_secret_the_delete_will_use() {
+        let (t, _) = crate::i18n::table("ja");
+        let today = "works を削除します。この PC の koyomi.toml から [[remote]] を削除します。koyomi が作成したシークレット works-token は、ほかから使われていなければ削除します。接続先の PC には何も行いません。";
+        assert_eq!(ask_body(&t, "works", Some("works-token")), today);
+        assert!(ask_body(&t, "works", Some("Works-Token")).contains("シークレット Works-Token は、"));
+        let kept = ask_body(&t, "factory", Some("works-token"));
+        assert!(kept.contains("シークレット works-token は削除しません"), "{kept}");
+        assert!(!kept.contains("factory-token"));
+        assert!(!ask_body(&t, "works", Some("")).contains("シークレット"));
+        let unknown = ask_body(&t, "works", None);
+        assert!(!unknown.contains("-token") && unknown.contains("works を削除します"), "{unknown}");
+    }
+
     /// The box draws with names, with none, with a row being renamed, with the question, and while busy.
     #[test]
     fn the_box_draws_in_each_state() {
@@ -368,7 +401,7 @@ mod tests {
         let used = |n: &str| n == "works";
         let frame = |m: &mut Manage, names: &[String]| {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                assert_eq!(show(m, ui.ctx(), &t, names, &used), Pressed::Nothing);
+                assert_eq!(show(m, ui.ctx(), &t, names, &BTreeMap::new(), &used), Pressed::Nothing);
             });
             out.textures_delta.clear();
         };

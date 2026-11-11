@@ -752,6 +752,9 @@ pub struct Browser {
     /// The troubleshooting card is open over the page: the page takes no key, and no box takes egui's focus
     /// from the card's field. Set by the window every frame.
     pub under_card: bool,
+    /// The command palette is open over the page: no box takes egui's focus from its field. Set by the window every
+    /// frame.
+    pub under_palette: bool,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -868,6 +871,7 @@ impl Browser {
             back: Vec::new(),
             reveal: false,
             under_card: false,
+            under_palette: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -938,7 +942,7 @@ impl Browser {
     /// The link button and its list: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
     pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names());
-        if out.manage {
+        if out.manage && !self.own_box_open() {
             self.far.open_manage();
         }
         // A change to koyomi.toml is being carried out: the link stays where it is until it is done.
@@ -983,11 +987,17 @@ impl Browser {
 
     /// Opens the box that adds a `[[remote]]` (the command palette uses it).
     pub fn add_remote_box(&mut self) {
+        if self.own_box_open() {
+            return;
+        }
         self.far.open_add();
     }
 
     /// Opens the box that renames and deletes a `[[remote]]` (the command palette uses it).
     pub fn manage_remotes_box(&mut self) {
+        if self.own_box_open() {
+            return;
+        }
         self.far.open_manage();
     }
 
@@ -1238,9 +1248,14 @@ impl Browser {
         self.leave_editor();
     }
 
-    /// Whether a box is up. The keys and `self.focus` belong to one box at a time, so another is not
-    /// opened over it: an Enter meant for the new one would press a button of the old one.
+    /// Whether a box is up, the browser's own or a connection box. The keys and `self.focus` belong to one box at a
+    /// time, so another is not opened over it: an Enter meant for the new one would press a button of the old one.
     fn box_open(&self) -> bool {
+        self.own_box_open() || self.far.boxed()
+    }
+
+    /// Whether one of the browser's own boxes is up (the connection boxes are not counted).
+    fn own_box_open(&self) -> bool {
         self.asking.is_some()
             || self.killing.is_some()
             || self.deleting.is_some()
@@ -1254,6 +1269,11 @@ impl Browser {
             || self.staged_box.is_some()
             || self.sending.is_some()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
+    }
+
+    /// Whether the troubleshooting card or the command palette is over the page.
+    fn covered(&self) -> bool {
+        self.under_card || self.under_palette
     }
 
     fn blocked(&self) -> bool {
@@ -2001,7 +2021,7 @@ impl Browser {
             self.result = Some(Err(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[])));
         }
         let ctx = ui.ctx().clone();
-        self.far.add_box(&ctx, t, self.under_card);
+        self.far.add_box(&ctx, t, self.covered());
         self.far.manage_box(&ctx, t, self.link.far());
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
@@ -2260,7 +2280,7 @@ impl Browser {
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
         self.confirm_send(&ctx, t, key_for(12));
-        if modal && !making && !self.under_card && !port.is_some_and(|(_, typing)| typing) {
+        if modal && !making && !self.covered() && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
             ctx.memory_mut(|m| {
@@ -5503,6 +5523,7 @@ mod tests {
             back: Vec::new(),
             reveal: false,
             under_card: false,
+            under_palette: false,
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -7225,5 +7246,148 @@ run = [\"x.exe\"]
         }
         settle(&Link::Local);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One pass as `main.rs` runs it: the command palette first, then the browser, which is told whether the palette
+    /// is still open. Returns what the palette answered.
+    fn palette_frame(
+        ctx: &egui::Context,
+        events: Vec<egui::Event>,
+        b: &mut Browser,
+        view: &mut Option<ito_palette::View>,
+    ) -> Option<ito_palette::Answer<usize>> {
+        let t = crate::i18n::table("ja").0;
+        let size = egui::vec2(1280.0, 800.0);
+        let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default() };
+        let mut answer = None;
+        let mut out = ctx.run_ui(input, |ui| {
+            if let Some(mut v) = view.take() {
+                let c = egui::Color32::GRAY;
+                let style =
+                    ito_palette::Style { panel: c, border: c, text: c, dim: c, selected_bg: c, selected_text: c, hit: c, accent: c };
+                let words = ito_palette::Words { hint: "", none: "", header: "", footer: "" };
+                let entries = [
+                    ito_palette::Entry::new("alpha", "", 0usize),
+                    ito_palette::Entry::new("beta", "", 1usize),
+                    ito_palette::Entry::new("gamma", "", 2usize),
+                ];
+                answer = ito_palette::show(ui.ctx(), &mut v, &entries, &style, &words);
+                if answer.is_none() {
+                    *view = Some(v);
+                }
+            }
+            b.under_palette = view.is_some();
+            b.show(ui, &t);
+        });
+        out.textures_delta.clear();
+        answer
+    }
+
+    /// The palette opened over a box takes the typing: a paste and typed letters land in its field, Enter picks the
+    /// line the text matches (not the first), and Esc closes the palette only.
+    fn palette_over(b: &mut Browser, still_open: impl Fn(&Browser) -> bool) {
+        let ctx = egui::Context::default();
+        let mut view = Some(ito_palette::View::new());
+        for _ in 0..4 {
+            assert!(palette_frame(&ctx, Vec::new(), b, &mut view).is_none());
+        }
+        palette_frame(&ctx, vec![egui::Event::Paste("ga".into())], b, &mut view);
+        palette_frame(&ctx, vec![egui::Event::Text("mm".into())], b, &mut view);
+        assert_eq!(view.as_ref().map(|v| v.query.as_str()), Some("gamm"));
+        assert!(still_open(b), "typing did not close the box");
+        let answer = palette_frame(&ctx, key(egui::Key::Enter), b, &mut view);
+        assert_eq!(answer, Some(ito_palette::Answer::Pick(2)), "the line the text matches, not the first");
+        assert!(still_open(b), "the box is still open after Enter");
+        // Esc closes the palette only.
+        let mut view = Some(ito_palette::View::new());
+        for _ in 0..3 {
+            palette_frame(&ctx, Vec::new(), b, &mut view);
+        }
+        let answer = palette_frame(&ctx, key(egui::Key::Escape), b, &mut view);
+        assert_eq!(answer, Some(ito_palette::Answer::Close));
+        assert!(still_open(b), "Esc did not close the box");
+    }
+
+    #[test]
+    fn the_palette_takes_the_typing_over_the_add_box() {
+        let mut b = quiet(defs());
+        b.add_remote_box();
+        palette_over(&mut b, |b| {
+            let a = b.far.add.as_ref();
+            a.is_some_and(|a| a.name.is_empty() && a.url.is_empty())
+        });
+    }
+
+    /// The same at the token step (the field that asked for the focus there).
+    #[test]
+    fn the_palette_takes_the_typing_over_the_add_boxs_token_step() {
+        let mut b = quiet(defs());
+        b.add_remote_box();
+        let a = b.far.add.as_mut().unwrap();
+        (a.name, a.url, a.step) = ("kei".into(), "https://pc:8443".into(), far::AddStep::Token);
+        palette_over(&mut b, |b| b.far.add.as_ref().is_some_and(|a| a.token.is_empty() && a.step == far::AddStep::Token));
+    }
+
+    /// The same over one of the browser's own questions, which takes egui's focus away while it is up.
+    #[test]
+    fn the_palette_takes_the_typing_over_a_browser_question() {
+        let mut b = asking();
+        palette_over(&mut b, |b| b.asking.is_some());
+    }
+
+    #[test]
+    fn the_add_box_leaves_the_focus_to_the_palette() {
+        let ctx = egui::Context::default();
+        let mut b = quiet(defs());
+        b.add_remote_box();
+        b.under_palette = true;
+        for _ in 0..3 {
+            frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        }
+        assert!(ctx.memory(|m| m.focused()).is_none(), "the box does not ask for the focus under the palette");
+        b.under_palette = false;
+        for _ in 0..3 {
+            frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        }
+        assert!(ctx.memory(|m| m.focused()).is_some(), "the box asks for it again");
+    }
+
+    #[test]
+    fn the_connection_boxes_count_as_boxes_for_the_browsers_own() {
+        for manage in [false, true] {
+            let mut b = quiet(defs());
+            assert!(!b.box_open());
+            if manage {
+                b.manage_remotes_box();
+            } else {
+                b.add_remote_box();
+            }
+            assert!(b.box_open());
+            b.new_box(None);
+            assert!(b.make.is_none(), "no new net box over a connection box (manage: {manage})");
+            b.import_box();
+            assert!(b.port.is_none(), "no import box over a connection box (manage: {manage})");
+        }
+    }
+
+    #[test]
+    fn no_connection_box_opens_over_the_browsers_own() {
+        let mut b = quiet(defs());
+        b.new_box(None);
+        assert!(b.make.is_some());
+        b.add_remote_box();
+        assert!(!b.far.boxed());
+        b.manage_remotes_box();
+        assert!(!b.far.boxed());
+    }
+
+    #[test]
+    fn the_two_connection_boxes_still_replace_each_other() {
+        let mut b = quiet(defs());
+        b.add_remote_box();
+        b.manage_remotes_box();
+        assert!(b.far.manage.is_some() && b.far.add.is_none());
+        b.add_remote_box();
+        assert!(b.far.add.is_some() && b.far.manage.is_none());
     }
 }

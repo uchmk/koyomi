@@ -991,6 +991,7 @@ impl eframe::App for App {
                 Vec::new()
             };
             self.browser.under_card = card;
+            self.browser.under_palette = self.palette.is_some();
             self.browser.show(ui, &self.table);
             if card {
                 ctx.input_mut(|i| i.events = held);

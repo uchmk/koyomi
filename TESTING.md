@@ -1901,6 +1901,10 @@ Rows need this PC with `kei` and `works` in koyomi.toml as `[[remote]]` (a copy 
 | 125.18 | Rename `works` after it had acknowledged failures (`確認済み` in its window) | After the rename the acknowledgements of the new name are those of the old one |
 | 125.19 | Open the add box, then the manage box through the palette; then the reverse | Only one of the two is open at a time |
 | 125.20 | With the box open and a row's name being typed, pick another connection in the status-bar list | The box closes and the window switches; nothing is renamed |
+| 125.21 | Rename `works` to `factory`, then press `削除する` on `factory` | The question reads `factory を削除します。この PC の koyomi.toml から [[remote]] を削除します。シークレット works-token は削除しません。接続先の PC には何も行いません。` |
+| 125.22 | Write a connection's token as is (`token = "…"`, not `secret:`), then press `削除する` on it | The question reads `<name> を削除します。この PC の koyomi.toml から [[remote]] を削除します。接続先の PC には何も行いません。`, with no sentence about a secret |
+| 125.23 | Open the add box with its fields empty; press Ctrl+Shift+P, type `新しいジョブネット` and press Enter | The palette shows over the box with the typed text in its field; after Enter no `新しいジョブネット` box opens; the add box stays and its 名前 field has the focus again |
+| 125.24 | Open the `新しいジョブネット` box; then palette → `別の PC のエンジンに接続する`, and palette → `接続先を管理する` | Neither connection box opens; the new job net box stays |
 
 ## 126. Top tabs and the calendar switcher
 
