@@ -17,7 +17,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 46;
+pub const PROTO: u32 = 47;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -290,6 +290,21 @@ pub enum Request {
         name: String,
         base: String,
     },
+    /// Add the user `name` with a token the engine makes, if koyomi.toml still hashes to `base`. Only the
+    /// token's hash goes into koyomi.toml; the token is in the reply and nowhere else.
+    UserAdd {
+        name: String,
+        role: String,
+        nets: Option<Vec<String>>,
+        roles: Option<BTreeMap<String, String>>,
+        base: String,
+    },
+    /// Make a new token for the user `name` (the old one stops working), if koyomi.toml still hashes to
+    /// `base`. The token is in the reply and nowhere else.
+    UserReset {
+        name: String,
+        base: String,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -366,7 +381,9 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::ExportAll
         | Request::Users
         | Request::UserSet { .. }
-        | Request::UserRemove { .. } => Some(Role::Admin),
+        | Request::UserRemove { .. }
+        | Request::UserAdd { .. }
+        | Request::UserReset { .. } => Some(Role::Admin),
         Request::Stop
         | Request::Tray { .. }
         | Request::Standby { .. }
@@ -436,7 +453,9 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarDelete { .. }
         | Request::HolidayTable { .. }
         | Request::UserSet { .. }
-        | Request::UserRemove { .. } => false,
+        | Request::UserRemove { .. }
+        | Request::UserAdd { .. }
+        | Request::UserReset { .. } => false,
     }
 }
 
@@ -834,6 +853,8 @@ mod tests {
             (Request::Users, Some(Admin)),
             (Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
             (Request::UserRemove { name: "u".into(), base: "b".into() }, Some(Admin)),
+            (Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
+            (Request::UserReset { name: "u".into(), base: "b".into() }, Some(Admin)),
             (Request::Stop, None),
             (Request::Tray { since: None }, None),
             (Request::Standby { give_back: false }, None),
@@ -883,6 +904,8 @@ mod tests {
             Request::Propose { id: id(), text: "x".into(), base_sha256: None },
             Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
             Request::UserRemove { name: "u".into(), base: "b".into() },
+            Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
+            Request::UserReset { name: "u".into(), base: "b".into() },
         ];
         for r in &writes {
             assert!(!r.is_read(), "{r:?}");
@@ -909,6 +932,13 @@ mod tests {
         assert_eq!((name.as_str(), base.as_str()), ("u", "b"));
         assert_eq!(nets, Some(vec!["経理/*".to_owned()]));
         assert_eq!(roles.and_then(|r| r.get("基盤/*").cloned()).as_deref(), Some("view"));
+        let add = Request::UserAdd { name: "u".into(), role: "view".into(), nets: Some(vec!["a/*".into()]), roles: None, base: "b".into() };
+        let Request::UserAdd { name, nets, base, .. } = round(&add) else { panic!("not a user add") };
+        assert_eq!((name.as_str(), base.as_str(), nets), ("u", "b", Some(vec!["a/*".to_owned()])));
+        let Request::UserReset { name, base } = round(&Request::UserReset { name: "u".into(), base: "b".into() }) else {
+            panic!("not a user reset")
+        };
+        assert_eq!((name.as_str(), base.as_str()), ("u", "b"));
         assert!(matches!(round(&Request::Users), Request::Users));
         let json = serde_json::to_string(&Request::HolidayTable { bytes: vec![1, 2] }).unwrap();
         assert!(matches!(serde_json::from_str::<Request>(&json), Ok(Request::HolidayTable { bytes }) if bytes == [1, 2]));

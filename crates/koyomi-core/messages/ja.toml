@@ -181,6 +181,18 @@ text = "グループ {0} の PC {1} に {2} が指定されておらず、ジョ
 cause = "グループの PC に {2} がなく、ジョブにも {2} がないと、接続先を確認できません。"
 action = "koyomi.toml の [groups] でこの PC に {2} を指定するか、ジョブに {2} を指定してください。"
 
+[E1071]
+when = "[[http.user]] の token の sha256: が正しくないとき"
+text = "[[http.user]] {0} の token の sha256: が正しくありません。"
+cause = "sha256: の後ろが、小文字の 16 進数 64 文字のハッシュではないか、空のトークンのハッシュであるためです。"
+action = "koyomi user reset <名前> で新しいトークンを作るか、sha256: の後ろを、小文字の 16 進数 64 文字の SHA-256 にしてください。"
+
+[E1072]
+when = "[[http.user]] の token が secret:<名前> でも sha256:<ハッシュ> でもないとき"
+text = "{0} の token が、secret:<名前> または sha256:<ハッシュ> の形式で指定されていません。"
+cause = "token が secret:<名前> または sha256:<ハッシュ> の形式でないためです。"
+action = "token には secret:<名前> を指定し、値は koyomi secret set <名前> で OS の資格情報に保存してください。sha256:<ハッシュ> も指定できます。koyomi user add は、この形式で書きます。"
+
 [E2101]
 when = "接続先のエンジンに接続できないとき"
 text = "接続先 {0} に接続できません。（{1}）"
@@ -1212,6 +1224,42 @@ when = "変更する koyomi.toml がないとき"
 text = "koyomi.toml がないため、変更する利用者がいません。"
 cause = "設定フォルダーに koyomi.toml が作成されていないためです。"
 action = "koyomi.toml に [[http.user]] を記述してください。"
+
+[E2241]
+when = "追加する利用者の名前が koyomi.toml にすでにあるとき"
+text = "[[http.user]] {0} はすでにあります。"
+cause = "koyomi.toml に、同じ名前の [[http.user]] があるためです。"
+action = "別の名前を指定してください。トークンを作り直す場合は koyomi user reset <名前> を実行してください。"
+
+[E2242]
+when = "新しいトークンを作れなかったとき"
+text = "新しいトークンを作れませんでした。（{0}）"
+cause = "OS から乱数を受け取れなかったためです。"
+action = "しばらくしてから、もう一度実行してください。"
+
+[E2243]
+when = "HTTPS の利用者が、自分自身のトークンを作り直そうとしたとき"
+text = "HTTPS では、自分自身のトークンを作り直せません。"
+cause = "作り直すと、この接続が持っている古いトークンが使えなくなり、以降の要求がすべて拒否されるためです。"
+action = "ほかの admin に頼むか、エンジンが動いている PC で koyomi user reset を実行してください。"
+
+[E2244]
+when = "koyomi.toml に [http] がないときに利用者を追加しようとしたとき"
+text = "koyomi.toml に [http] がないため、利用者を追加できません。"
+cause = "[http] がないと HTTPS の接続を受け付けず、利用者を使えないためです。"
+action = "koyomi.toml に [http] を書いてから、もう一度実行してください。ほかの PC から接続するときは、[http] に lan = true も書いてください。"
+
+[E2245]
+when = "利用者の追加またはトークンの作り直しで、エンジンの返事を受け取れなかったとき"
+text = "利用者 {0} の変更が反映されたかどうかを確認できません。（{1}）"
+cause = "要求を送ったあと、エンジンからの返事を受け取れなかったためです。"
+action = "koyomi user list で確認してください。追加された場合や、トークンが変わった可能性がある場合は、koyomi user reset {0} で新しいトークンを作ってください。"
+
+[E2246]
+when = "新しいトークンを含む返事を解釈できなかったとき"
+text = "利用者 {0} の返事を解釈できませんでした。"
+cause = "エンジンの返事が、決まった形ではなかったためです。返事にはトークンが含まれるため、内容は表示しません。"
+action = "koyomi user list で確認し、トークンが変わった可能性がある場合は、koyomi user reset {0} で新しいトークンを作ってください。"
 
 [E3181]
 when = "ジョブの実行ファイルが見つからないとき"
@@ -4195,7 +4243,6 @@ send_done = "{0} に送信しました: {1}（接続先では未確認です。{
 send_done_same = "{0} に送信しました: {1}（接続先の確認済みと同じ内容のため、そのまま実行されます）"
 unchanged = "{0}。カレンダーは変更していません。"
 user_none = "koyomi.toml に [[http.user]] はありません。"
-user_head = "名前|役割|ジョブネット|ジョブネットごとの役割|トークン"
 user_nets_all = "すべて"
 user_token_ok = "登録済み"
 user_token_missing = "未登録: {0}"
@@ -4209,6 +4256,34 @@ user_remove_done = "{0} を削除しました。数秒以内に反映されま�
 user_remove_done_engine = "koyomi.toml から {0} を削除しました。数秒以内に反映されます。"
 user_secret_stays_win = "トークン {0} は資格情報マネージャーに残っています。削除するには koyomi secret delete {0}"
 user_secret_stays_linux = "ファイル /etc/koyomi/credentials/{0} は残っています。root が削除できます。"
+user_label_role = "役割"
+user_label_nets = "ジョブネット"
+user_label_roles = "ジョブネットごとの役割"
+user_label_token = "トークン"
+user_token_hash = "ハッシュ（koyomi.toml）"
+user_add_done = "{0} を追加しました。役割 {1}、ジョブネット {2}、ジョブネットごとの役割 {3}。"
+user_token_once = "このトークンは今回だけ表示します。控えておいてください。数秒以内に使えるようになります。新しいトークンが必要なときは koyomi user reset {0} を実行してください。"
+user_reply_note = "このトークンは今回だけ表示します。数秒以内に使えるようになります（その間に接続すると、1 回失敗することがあります。もう一度試してください）。"
+user_reset_done = "{0} の新しいトークンを作りました。古いトークンは数秒以内に使えなくなります。"
+user_reset_ask = "{0} の新しいトークンを作ります。古いトークンは数秒以内に使えなくなります。作る場合は y を入力してください（y 以外を入力すると、作りません）:"
+user_reset_need_yes = "端末から実行していないため、{0} のトークンを作り直すかどうか確認できません。作り直す場合は --yes を付けてください。"
+user_ask_name = "追加する利用者の名前:"
+user_ask_name_bad = "名前には、空白を含まない、default 以外の文字列を指定してください。"
+user_ask_name_exists = "{0} はすでにあります。別の名前を指定してください。"
+user_ask_role = "役割を番号で選んでください:"
+user_ask_role_bad = "1 から 4 の番号を入力してください。"
+user_role_view = "1 view: 状態、実行の一覧、履歴、ログ、操作の記録を見るだけです。"
+user_role_run = "2 run: view に加えて、ジョブネットの実行・停止・再実行・飛ばし、保留と解除などを操作できます。"
+user_role_edit = "3 edit: run に加えて、定義の本文を読めます。送った定義は admin が確定するまで動きません。"
+user_role_admin = "4 admin: edit に加えて、定義の確定と保存、予定の一時停止と再開、カレンダーの変更、名前の変更、削除、全体の書き出しができます。"
+user_ask_nets_yn = "見せるジョブネットを絞りますか？ (y/N):"
+user_ask_nets = "ジョブネットのパターンを、空白またはカンマで区切って入力してください（例: 経理/*, */日次）:"
+user_ask_nets_empty = "パターンを 1 つ以上入力してください。"
+user_preview_head = "次の内容を koyomi.toml に追加します:"
+user_preview_token = "<追加時に作るトークンのハッシュ>"
+user_ask_confirm = "追加しますか？ (y/N):"
+user_add_stopped = "何も変更していません。"
+user_input_ended = "入力が終わったため、何も変更していません。"
 cfg_file = "ファイル: {0}"
 cfg_no_file = "{0} がないため、既定値で動作します。"
 cfg_concurrency = "同時実行数 (concurrency): {0}"

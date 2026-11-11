@@ -106,6 +106,33 @@ token = "secret:http-hanako"
 
 ### 追加する
 
+```sh
+sudo koyomi-user add taro --role run --nets '経理/*'
+```
+
+- 新しい token を作り、1 回だけ表示します。その場で控えて、その人に渡してください。`koyomi.toml` には token の SHA-256 (`token = "sha256:…"`) だけが書かれ、token の値はどこにも残りません。
+- 引数を付けずに `sudo koyomi-user add` を実行すると、名前、役割 (番号で選びます)、見せるジョブネットを絞るかを順に尋ねます。最後に `koyomi.toml` に追加する内容を表示し、確認してから追加します。
+- 数秒以内に使えるようになります。再起動は要りません。
+- 渡された人は、Windows の画面の「接続先を追加する…」から接続します。
+- `koyomi.toml` に `[http]` がないと追加できません (`install.sh` が作る `koyomi.toml` には `[http]` があります)。
+
+### 確認・変更・削除する
+
+```sh
+sudo koyomi-user list                                   # 名前、役割、ジョブネット、token の状態 (token の値は表示しません)
+sudo koyomi-user role taro view --roles '経理/*=run'     # 役割を変える
+sudo koyomi-user reset taro                             # token を作り直す (古い token は数秒以内に使えなくなります)
+sudo koyomi-user remove taro                            # 削除する
+```
+
+- `koyomi-user` は koyomi のサービスに頼んで `koyomi.toml` を書き換えるので、サービスが動いている必要があります。ほかの行とコメントはそのまま残ります。
+- 最後の `admin` を `admin` から外すことと、削除することはできません。
+- token をなくしたときは `reset` で作り直します。その人は、表示された token を Windows で `koyomi secret set <名前>` を実行して保存し直します (`<名前>` は、Windows の `koyomi.toml` の `[[remote]]` にある `token = "secret:<名前>"` の名前です)。
+
+### koyomi.toml を直接書き換える
+
+`koyomi.toml` を直接書き換えることもできます。その場合は token を `koyomi-secret` で登録し、`token = "secret:<名前>"` と書きます。
+
 1. token を登録します。値は長い乱数にします。次の例は乱数を作って、そのまま登録します。
 
    ```sh
@@ -121,11 +148,9 @@ token = "secret:http-hanako"
    ```
 
    `/var/lib/koyomi` の中は利用者 `koyomi` が書き換えられる場所なので、`install.sh` と同じく root ではなく `koyomi` として書き換えます。
-3. 登録した token を `sudo cat /etc/koyomi/credentials/http-taro` で読み込み、その人に渡します。その人は Windows の画面で「接続先を追加する…」から接続します。
+3. 登録した token を `sudo cat /etc/koyomi/credentials/http-taro` で読み込み、その人に渡します。
 
 先に `koyomi.toml` に書いて token を登録していないと、エンジンは HTTPS の受け付けを始められず、ほかの人も接続できなくなります。token を先に登録してください。
-
-役割や `nets`・`roles` だけを変えるときは、`koyomi.toml` を書き換えて保存するだけで反映されます。
 
 ## ファイルの場所
 
@@ -134,7 +159,7 @@ token = "secret:http-hanako"
 | 設定 (`koyomi.toml`、`jobnets/`、`calendars/`、`tls/`) | `/var/lib/koyomi/.config/uchmk/koyomi/` |
 | 状態 | `/var/lib/koyomi/.local/state/uchmk/koyomi/` |
 | シークレット (token など) | `/etc/koyomi/credentials/` (root だけが読める) |
-| 実行ファイル | `/usr/local/bin/koyomi`、`/usr/local/sbin/koyomi-secret` |
+| 実行ファイル | `/usr/local/bin/koyomi`、`/usr/local/sbin/koyomi-secret`、`/usr/local/sbin/koyomi-user` |
 | サービス | `/etc/systemd/system/koyomi.service` |
 
 ## 状態を確認する

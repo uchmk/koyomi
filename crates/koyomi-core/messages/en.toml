@@ -181,6 +181,18 @@ text = "The PC {1} of group {0} has no {2}, and the job has none either. This jo
 cause = "Without a {2} on the PC of the group or on the job, the other side cannot be verified."
 action = "Give {2} to this PC in [groups] of koyomi.toml, or give {2} to the job."
 
+[E1071]
+when = "The sha256: of a [[http.user]] token is not right"
+text = "The sha256: of the token of [[http.user]] {0} is not right."
+cause = "What follows sha256: is not a hash of 64 lowercase hex characters, or it is the hash of an empty token."
+action = "Make a new token with koyomi user reset <name>, or make what follows sha256: a SHA-256 of 64 lowercase hex characters."
+
+[E1072]
+when = "The token of a [[http.user]] is neither secret:<name> nor sha256:<hash>"
+text = "The token of {0} is not given as secret:<name> or sha256:<hash>."
+cause = "token is not in the form secret:<name> or sha256:<hash>."
+action = "Give token as secret:<name> and store its value with koyomi secret set <name>. sha256:<hash> is also accepted (koyomi user add writes it)."
+
 [E2101]
 when = "The engine at a connection cannot be reached"
 text = "Cannot connect to {0}. ({1})"
@@ -1212,6 +1224,42 @@ when = "There is no koyomi.toml to change"
 text = "There is no koyomi.toml, so there is no user to change."
 cause = "koyomi.toml has not been created in the settings folder."
 action = "Write the [[http.user]] in koyomi.toml."
+
+[E2241]
+when = "The user to add is already in koyomi.toml"
+text = "[[http.user]] {0} is already there."
+cause = "koyomi.toml has a [[http.user]] with the same name."
+action = "Give another name. To make the token again, run koyomi user reset <name>."
+
+[E2242]
+when = "A new token could not be made"
+text = "A new token could not be made. ({0})"
+cause = "The OS gave no random bytes."
+action = "Try again in a while."
+
+[E2243]
+when = "A user over HTTPS tries to make their own token again"
+text = "Over HTTPS, you cannot make your own token again."
+cause = "The token this connection holds would stop working, and every later request would be refused."
+action = "Ask another admin, or run koyomi user reset on the PC where the engine runs."
+
+[E2244]
+when = "A user is added while koyomi.toml has no [http]"
+text = "A user cannot be added because koyomi.toml has no [http]."
+cause = "Without [http] the HTTPS door does not open, so a user could not be used."
+action = "Write [http] in koyomi.toml and run it again. To connect from another PC, also write lan = true in [http]."
+
+[E2245]
+when = "No reply came from the engine when a user was added or a token made again"
+text = "It is not known whether the change of user {0} was made. ({1})"
+cause = "The request was sent, but no reply came back from the engine."
+action = "Check with koyomi user list. If the user was added, or the token may have changed, make a new token with koyomi user reset {0}."
+
+[E2246]
+when = "The reply holding a new token could not be understood"
+text = "The reply for user {0} could not be understood."
+cause = "The engine's reply was not in the expected form. It holds the token, so it is not shown."
+action = "Check with koyomi user list. If the token may have changed, make a new token with koyomi user reset {0}."
 
 [E3181]
 when = "A job's executable is not found"
@@ -4195,7 +4243,6 @@ send_done = "Sent to {0}: {1} (unconfirmed there; it does not run until confirme
 send_done_same = "Sent to {0}: {1} (it has the same content as the confirmed one there, so it runs as it is)"
 unchanged = "{0}. The calendar was not changed."
 user_none = "There is no [[http.user]] in koyomi.toml."
-user_head = "Name|Role|Jobnets|Role per jobnet|Token"
 user_nets_all = "all"
 user_token_ok = "registered"
 user_token_missing = "not registered: {0}"
@@ -4209,6 +4256,34 @@ user_remove_done = "Removed {0}. It applies within a few seconds."
 user_remove_done_engine = "Removed {0} from koyomi.toml. It applies within a few seconds."
 user_secret_stays_win = "The token {0} stays in the credential store. To delete it: koyomi secret delete {0}"
 user_secret_stays_linux = "The file /etc/koyomi/credentials/{0} stays. Root can remove it."
+user_label_role = "Role"
+user_label_nets = "Jobnets"
+user_label_roles = "Role per jobnet"
+user_label_token = "Token"
+user_token_hash = "hash (in koyomi.toml)"
+user_add_done = "Added {0}: role {1}, jobnets {2}, role per jobnet {3}."
+user_token_once = "This token is shown only now. Keep a copy. It works within a few seconds. To get a new one, run koyomi user reset {0}."
+user_reply_note = "This token is shown only now. It works within a few seconds (a connection made in that moment may fail once; try again)."
+user_reset_done = "Made a new token for {0}. The old one stops working within a few seconds."
+user_reset_ask = "This makes a new token for {0}. The old one stops working within a few seconds. Enter y to go on (anything else does nothing):"
+user_reset_need_yes = "This is not a terminal, so there is no way to ask whether to make the token of {0} again. Add --yes to do it."
+user_ask_name = "Name of the user to add:"
+user_ask_name_bad = "Give a name with no spaces that is not default."
+user_ask_name_exists = "{0} is already there. Give another name."
+user_ask_role = "Choose a role by number:"
+user_ask_role_bad = "Enter a number from 1 to 4."
+user_role_view = "1 view: only looks at the status, the list of runs, the history, the logs and the record of operations."
+user_role_run = "2 run: as view, and runs, stops, reruns and skips nets, holds and releases jobs, and so on."
+user_role_edit = "3 edit: as run, and reads the text of definitions. A definition they send does not run until an admin confirms it."
+user_role_admin = "4 admin: as edit, and confirms and saves definitions, pauses and resumes the schedule, changes calendars, renames, deletes and exports everything."
+user_ask_nets_yn = "Show only some jobnets? (y/N):"
+user_ask_nets = "Enter the jobnet patterns, separated by spaces or commas (for example 経理/*, */日次):"
+user_ask_nets_empty = "Enter at least one pattern."
+user_preview_head = "This will be added to koyomi.toml:"
+user_preview_token = "<hash of the token made when it is added>"
+user_ask_confirm = "Add it? (y/N):"
+user_add_stopped = "Nothing was changed."
+user_input_ended = "The input ended, so nothing was changed."
 cfg_file = "File: {0}"
 cfg_no_file = "{0} does not exist, so the defaults apply."
 cfg_concurrency = "concurrency: {0}"

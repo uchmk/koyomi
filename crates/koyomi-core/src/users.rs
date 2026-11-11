@@ -39,6 +39,8 @@ pub enum Token {
     Unreadable,
     /// The user has no token (Tailscale only).
     None,
+    /// The token is kept only as its hash, in koyomi.toml: nothing to check in a store.
+    Hash,
 }
 
 /// A [`User`] and the state of its token, as the reply to `Users` lists it.
@@ -81,6 +83,24 @@ fn user_of(u: &HttpUser) -> User {
 
 fn users_of(text: &str) -> Result<Vec<HttpUser>, String> {
     Ok(Config::parse(text)?.http.map(|h| h.user).unwrap_or_default())
+}
+
+/// The users of `text` with the state of each token: a `sha256:` token is [`Token::Hash`], a `secret:` one
+/// is what `secret` says of its name, and one with neither is [`Token::None`].
+pub fn listed(text: &str, secret: impl Fn(&str) -> Token) -> Result<Vec<Listed>, String> {
+    Ok(users_of(text)?
+        .iter()
+        .map(|u| {
+            let token = if u.hash().is_some() {
+                Token::Hash
+            } else if u.secret().is_empty() {
+                Token::None
+            } else {
+                secret(u.secret())
+            };
+            Listed { user: user_of(u), token }
+        })
+        .collect())
 }
 
 /// The users of `text` (koyomi.toml); a file that does not read is an error, not a guess.
@@ -164,6 +184,53 @@ pub fn set(
                 u.clone()
             }
         })
+        .collect();
+    rewrite(text, &before, &after)
+}
+
+/// `text` with a new user `name` after the others, whose token is kept as `hash` (`sha256:<hash>`). Text
+/// with no `[http]` (a new, empty file too) is refused: without it the HTTPS door does not open. Refused
+/// also: a name that is there already, and whatever [`Config::parse`] says of the result (an admin with `nets`, a name
+/// that does not read, a role it does not know …).
+pub fn add(
+    text: &str,
+    name: &str,
+    role: &str,
+    nets: Option<Vec<String>>,
+    roles: Option<BTreeMap<String, String>>,
+    hash: &str,
+) -> Result<String, String> {
+    let name = name.trim();
+    let before = users_of(text)?;
+    if before.iter().any(|u| u.name.trim() == name) {
+        return Err(msg::line(msg::USER_EXISTS, &[name]));
+    }
+    let mut after = before.clone();
+    after.push(HttpUser {
+        name: name.to_owned(),
+        role: role.trim().to_owned(),
+        token: format!("sha256:{hash}"),
+        tailscale: None,
+        nets,
+        roles,
+    });
+    if Config::parse(text)?.http.is_none() {
+        return Err(msg::line(msg::USER_NO_HTTP, &[]));
+    }
+    rewrite(text, &before, &after)
+}
+
+/// `text` with the token of the user `name` made `sha256:<hash>` (a `secret:` token too, which is left
+/// where it is kept). Refused: no such user, and whatever [`Config::parse`] says of the result.
+pub fn reset(text: &str, name: &str, hash: &str) -> Result<String, String> {
+    let name = name.trim();
+    let before = users_of(text)?;
+    if !before.iter().any(|u| u.name.trim() == name) {
+        return Err(missing(name));
+    }
+    let after: Vec<HttpUser> = before
+        .iter()
+        .map(|u| if u.name.trim() == name { HttpUser { token: format!("sha256:{hash}"), ..u.clone() } } else { u.clone() })
         .collect();
     rewrite(text, &before, &after)
 }
@@ -366,5 +433,97 @@ token = \"secret:s\"
         let text = l.to_toml();
         assert!(text.contains("token = \"missing\""), "{text}");
         assert_eq!(Listing::parse(&text).unwrap(), l);
+    }
+
+    const HASH_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const HASH_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
+    #[test]
+    fn a_list_mixing_all_four_token_states() {
+        let text = format!("{FILE}\n[[http.user]]\nname = \"hashed\"\nrole = \"view\"\ntoken = \"sha256:{HASH_A}\"\n");
+        let l = listed(&text, |name| if name == "boss-token" { Token::Ok } else { Token::Missing }).unwrap();
+        let states: Vec<Token> = l.iter().map(|l| l.token).collect();
+        assert_eq!(states, [Token::Ok, Token::Missing, Token::None, Token::Hash]);
+        assert_eq!(l[3].user.secret, None);
+        let text = Listing { base: String::new(), user: l }.to_toml();
+        assert!(text.contains("token = \"hash\""), "{text}");
+        assert!(!text.contains(HASH_A), "the hash is not in the listing");
+    }
+
+    #[test]
+    fn add_to_a_file_with_http_and_no_user_makes_that_one_user() {
+        let base = "[http]\nport = 8790\ntoken = \"secret:t\"\n";
+        let out = add(base, "sato", "run", Some(vec!["経理/*".into()]), None, HASH_A).unwrap();
+        let u = list(&out).unwrap();
+        assert_eq!(u.len(), 1);
+        assert_eq!((u[0].name.as_str(), u[0].role.as_str()), ("sato", "run"));
+        assert_eq!(u[0].nets.as_deref(), Some(&["経理/*".to_owned()][..]));
+        assert!(out.contains(&format!("token = \"sha256:{HASH_A}\"")), "{out}");
+        assert_eq!(out.matches("[[http.user]]").count(), 1, "{out}");
+        assert_eq!(Config::parse(&out).unwrap().http.unwrap().user[0].hash(), Some(HASH_A));
+        assert!(out.starts_with(base), "{out}");
+    }
+
+    #[test]
+    fn add_without_http_is_refused_and_nothing_is_made() {
+        for text in ["", "# only a comment\n", "concurrency = 2\n"] {
+            let e = add(text, "sato", "run", None, None, HASH_A).unwrap_err();
+            assert!(msg::USER_NO_HTTP.is_in(&e), "{text:?}: {e}");
+        }
+    }
+
+    #[test]
+    fn add_with_empty_nets_is_refused() {
+        let e = add(FILE, "kato", "view", Some(Vec::new()), None, HASH_A).unwrap_err();
+        assert!(msg::CFG_USER_FIELD.is_in(&e) && e.contains("kato"), "{e}");
+    }
+
+    #[test]
+    fn add_after_others_leaves_their_text_byte_for_byte() {
+        let out = add(FILE, "kato", "view", None, None, HASH_B).unwrap();
+        assert!(out.starts_with(FILE.trim_end()), "{out}");
+        let u = list(&out).unwrap();
+        assert_eq!(u.iter().map(|u| u.name.as_str()).collect::<Vec<_>>(), ["boss", "sato", "ito", "kato"]);
+        assert!(out.contains(&format!("token = \"sha256:{HASH_B}\"")), "{out}");
+    }
+
+    #[test]
+    fn add_refuses_a_name_that_is_there_and_what_the_config_refuses() {
+        let e = add(FILE, "sato", "view", None, None, HASH_A).unwrap_err();
+        assert!(msg::USER_EXISTS.is_in(&e), "{e}");
+        let e = add(FILE, "kato", "admin", Some(vec!["経理/*".into()]), None, HASH_A).unwrap_err();
+        assert!(msg::CFG_USER_ADMIN_NARROWED.is_in(&e), "{e}");
+        assert!(msg::CFG_USER_NAME.is_in(&add(FILE, "a b", "view", None, None, HASH_A).unwrap_err()));
+        assert!(msg::CFG_USER_NAME.is_in(&add(FILE, "default", "view", None, None, HASH_A).unwrap_err()));
+        assert!(msg::CFG_USER_FIELD.is_in(&add(FILE, "kato", "boss", None, None, HASH_A).unwrap_err()));
+        assert!(msg::CFG_TOKEN_HASH_BAD.is_in(&add(FILE, "kato", "view", None, None, "abc").unwrap_err()));
+    }
+
+    #[test]
+    fn reset_makes_the_token_a_hash_and_keeps_the_rest() {
+        let out = reset(FILE, "sato", HASH_A).unwrap();
+        assert!(out.contains(&format!("token = \"sha256:{HASH_A}\"")), "{out}");
+        assert!(!out.contains("sato-token"), "{out}");
+        for kept in ["# the boss", "token = \"secret:boss-token\"", "tailscale = \"ito@example.com\"", "nets = [\"経理/*\"]"] {
+            assert!(out.contains(kept), "{kept}\n{out}");
+        }
+        let l = listed(&out, |_| Token::Ok).unwrap();
+        assert_eq!(l[1].token, Token::Hash);
+        assert_eq!(l[1].user.secret, None);
+        // Every other line of the file is as it was, byte for byte.
+        let mut before: Vec<&str> = FILE.lines().collect();
+        before.retain(|l| !l.contains("sato-token"));
+        let mut after: Vec<&str> = out.lines().collect();
+        after.retain(|l| !l.contains(HASH_A));
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn reset_gives_a_tailscale_only_user_a_token_and_refuses_an_unknown_name() {
+        let out = reset(FILE, "ito", HASH_B).unwrap();
+        let l = listed(&out, |_| Token::Ok).unwrap();
+        assert_eq!((l[2].token, l[2].user.tailscale.as_deref()), (Token::Hash, Some("ito@example.com")));
+        assert!(msg::USER_NOT_IN_FILE.is_in(&reset(FILE, "nobody", HASH_A).unwrap_err()));
+        assert!(msg::USER_NOT_IN_FILE.is_in(&reset("", "a", HASH_A).unwrap_err()));
     }
 }

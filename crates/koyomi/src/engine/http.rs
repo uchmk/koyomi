@@ -232,17 +232,33 @@ fn tailnet(cfg: &config::Http, port: u16) -> ito_http::Tailnet {
     })
 }
 
-fn start(cfg: &config::Http) -> Result<Server, String> {
+/// The listener's tokens from `[http]` and the `[[http.user]]`, and the gate's hash of each by name. `read`
+/// gives the value of a `secret:` name; a `sha256:` user goes in as the hash, which is all that is kept.
+fn credentials(
+    cfg: &config::Http,
+    read: impl Fn(&str) -> Result<String, String>,
+) -> Result<(ito_http::Config, BTreeMap<String, String>), String> {
+    // The gate gets only hashes. The listener's Config holds the `secret:` values, which ito-http checks.
     let mut tokens = BTreeMap::new();
-    let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { token(cfg.secret())? });
+    let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { read(cfg.secret())? });
     if !cfg.secret().is_empty() {
-        tokens.insert("default".to_owned(), c.token.clone());
+        tokens.insert("default".to_owned(), ito_http::token_hash(&c.token));
     }
-    for u in cfg.user.iter().filter(|u| !u.secret().is_empty()) {
-        let t = token(u.secret())?;
-        tokens.insert(u.name.trim().to_owned(), t.clone());
-        c = c.token_named(u.name.trim(), t);
+    for u in &cfg.user {
+        if let Some(hash) = u.hash() {
+            tokens.insert(u.name.trim().to_owned(), hash.to_owned());
+            c = c.token_hash_named(u.name.trim(), hash);
+        } else if !u.secret().is_empty() {
+            let t = read(u.secret())?;
+            tokens.insert(u.name.trim().to_owned(), ito_http::token_hash(&t));
+            c = c.token_named(u.name.trim(), t);
+        }
     }
+    Ok((c, tokens))
+}
+
+fn start(cfg: &config::Http) -> Result<Server, String> {
+    let (mut c, tokens) = credentials(cfg, token)?;
     c.tailnet = cfg.tailnet.map(|port| tailnet(cfg, port));
     for path in PAGES.iter().map(|(p, ..)| *p).chain([THEME_CSS]) {
         c = c.public_path(path);
@@ -278,8 +294,10 @@ const MAX_BODY: usize = 4 * 1024 * 1024;
 struct Gate {
     roles: BTreeMap<String, Role>,
     access: BTreeMap<String, Access>,
-    /// Each caller's token by name (`default` for `[http]`'s), to tell a bearer token from a cookie or the
-    /// tailnet: `ito_http::Request` does not say how the caller was let in.
+    /// Each caller's token hash by name (`default` for `[http]`'s), to tell a bearer token from a cookie or
+    /// the tailnet: `ito_http::Request` does not say how the caller was let in. A hash for every caller,
+    /// whether the token is kept in the credential store or only as a hash in koyomi.toml: no plain token
+    /// is held here.
     tokens: BTreeMap<String, String>,
 }
 
@@ -552,12 +570,14 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
 }
 
 /// Whether the request came in with a bearer token that is its caller's own, so not with a session cookie or
-/// on the tailnet. ito-http lets a good bearer token win over a cookie, so a header that matches the token of
-/// `who` means the token let it in (the pinned `ito_http::Request` has no `via`).
-fn bearer_of(req: &ito_http::Request, tokens: &BTreeMap<String, String>) -> bool {
-    let Some(want) = req.who.as_deref().and_then(|w| tokens.get(w)) else { return false };
+/// on the tailnet. ito-http lets a good bearer token win over a cookie, so a header whose hash matches the
+/// hash of the token of `who` means the token let it in (the pinned `ito_http::Request` has no `via`).
+fn bearer_of(req: &ito_http::Request, hashes: &BTreeMap<String, String>) -> bool {
+    let Some(want) = req.who.as_deref().and_then(|w| hashes.get(w)) else { return false };
     let sent = req.headers.iter().find(|(k, _)| k == "authorization").and_then(|(_, v)| v.split_once(' '));
-    sent.is_some_and(|(scheme, t)| scheme.eq_ignore_ascii_case("bearer") && same(t.trim().as_bytes(), want.as_bytes()))
+    sent.is_some_and(|(scheme, t)| {
+        scheme.eq_ignore_ascii_case("bearer") && same(ito_http::token_hash(t.trim()).as_bytes(), want.as_bytes())
+    })
 }
 
 /// Equal bytes, compared without stopping at the first difference.
@@ -1814,7 +1834,10 @@ high_contrast = true
         )
         .unwrap();
         let http = cfg.http.as_ref().unwrap();
-        let tokens = ["default", "root", "ed", "look", "narrow"].iter().map(|n| ((*n).to_owned(), format!("tok-{n}"))).collect();
+        let tokens = ["default", "root", "ed", "look", "narrow"]
+            .iter()
+            .map(|n| ((*n).to_owned(), ito_http::token_hash(&format!("tok-{n}"))))
+            .collect();
         Gate { roles: roles(http), access: access(http), tokens }
     }
 
@@ -1999,6 +2022,64 @@ high_contrast = true
         let old = serde_json::json!({"proto": proto::PROTO - 1, "request": "Status"}).to_string();
         assert!(post_door(port, Some("tok-root"), &old).starts_with("HTTP/1.1 409"));
         server.stop();
+    }
+
+    /// A user whose token is only a hash in koyomi.toml gets in with that token and has their role; the
+    /// gate holds hashes only, and `default` still passes `/door`.
+    #[test]
+    fn a_hashed_user_is_let_in_with_their_token_and_the_gate_holds_only_hashes() {
+        let hash = ito_http::token_hash("tok-hashed");
+        let cfg = config::Config::parse(&format!(
+            "[http]\nport = 8790\ntoken = \"secret:t\"\n\
+             [[http.user]]\nname = \"root\"\nrole = \"admin\"\ntoken = \"secret:r\"\n\
+             [[http.user]]\nname = \"hashed\"\nrole = \"edit\"\ntoken = \"sha256:{hash}\"\n"
+        ))
+        .unwrap();
+        let http = cfg.http.as_ref().unwrap();
+        let fake = |name: &str| {
+            Ok(match name {
+                "t" => "tok-default",
+                _ => "tok-root",
+            }
+            .to_owned())
+        };
+        let (mut c, tokens) = credentials(http, fake).unwrap();
+        assert_eq!(tokens.get("hashed"), Some(&hash));
+        assert!(tokens.values().all(|h| h.len() == 64 && !h.starts_with("tok-")), "{tokens:?}");
+        assert_eq!(tokens.get("default"), Some(&ito_http::token_hash("tok-default")));
+        let g = Gate { roles: roles(http), access: access(http), tokens };
+        c.max_body = MAX_BODY;
+        c.port = 0;
+        let g2 = Gate { roles: g.roles.clone(), access: g.access.clone(), tokens: g.tokens.clone() };
+        let server = Server::start(c, move |r| g2.serve(&r, |_: &Request| Ok::<_, String>("done".to_owned())), |_| {}).expect("listen");
+        let port = server.port();
+        let list = door_body(serde_json::json!("List"));
+        let pause = door_body(serde_json::json!("Pause"));
+        let status = door_body(serde_json::json!("Status"));
+        for (token, body, want) in [
+            ("tok-hashed", &list, 200),
+            ("tok-hashed", &pause, 403),
+            ("tok-default", &status, 200),
+            ("tok-root", &pause, 200),
+            ("tok-other", &status, 401),
+        ] {
+            let reply = post_door(port, Some(token), body);
+            assert!(reply.starts_with(&format!("HTTP/1.1 {want}")), "{token} {body}: {reply}");
+        }
+        assert!(post_door(port, None, &status).starts_with("HTTP/1.1 401"));
+        server.stop();
+        // bearer_of: their own token, not another's, not none.
+        let mut r = req("POST", "/door", "");
+        r.who = Some("hashed".to_owned());
+        r.headers.push(("authorization".to_owned(), "Bearer tok-hashed".to_owned()));
+        assert!(bearer_of(&r, &g.tokens));
+        r.headers = vec![("authorization".to_owned(), "Bearer tok-default".to_owned())];
+        assert!(!bearer_of(&r, &g.tokens));
+        r.headers.clear();
+        assert!(!bearer_of(&r, &g.tokens));
+        r.who = Some("default".to_owned());
+        r.headers.push(("authorization".to_owned(), "Bearer tok-default".to_owned()));
+        assert!(bearer_of(&r, &g.tokens));
     }
 
     #[test]

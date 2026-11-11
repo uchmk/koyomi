@@ -2154,20 +2154,11 @@ impl State {
     fn users(&self) -> Result<String, String> {
         use koyomi_core::users::{Listed, Listing, Token};
         let text = self.users_text()?.unwrap_or_default();
-        let user = koyomi_core::users::list(&text)?
-            .into_iter()
-            .map(|user| {
-                let token = match user.secret.as_deref() {
-                    None => Token::None,
-                    Some(name) => match ito_secret::get("koyomi", name) {
-                        Ok(Some(v)) if !v.is_empty() => Token::Ok,
-                        Ok(_) => Token::Missing,
-                        Err(_) => Token::Unreadable,
-                    },
-                };
-                Listed { user, token }
-            })
-            .collect();
+        let user: Vec<Listed> = koyomi_core::users::listed(&text, |name| match ito_secret::get("koyomi", name) {
+            Ok(Some(v)) if !v.is_empty() => Token::Ok,
+            Ok(_) => Token::Missing,
+            Err(_) => Token::Unreadable,
+        })?;
         Ok(Listing { base: koyomi_core::users::sha256(&text), user }.to_toml())
     }
 
@@ -2180,9 +2171,23 @@ impl State {
         Ok(text)
     }
 
-    /// Writes koyomi.toml. Nothing is reloaded here: the sweep reads it within a few seconds and the HTTP
-    /// listener restarts then; the reply in flight is not cut (each connection has its own thread).
+    /// Like [`Self::users_base`], but a missing koyomi.toml is the empty text (what `Users` lists it as).
+    fn users_base_or_empty(&self, base: &str) -> Result<String, String> {
+        let text = self.users_text()?.unwrap_or_default();
+        if koyomi_core::users::sha256(&text) != base {
+            return Err(koyomi_core::msg::line(koyomi_core::msg::USER_BASE_CHANGED, &[]));
+        }
+        Ok(text)
+    }
+
+    /// Writes koyomi.toml, first keeping the old text under `versions/_settings/`. Nothing is reloaded
+    /// here: the sweep reads it within a few seconds and the HTTP listener restarts then; the reply in
+    /// flight is not cut (each connection has its own thread).
     fn users_write(&self, text: &str) -> Result<(), String> {
+        self.keep_version_in(&self.paths.config, &self.paths.state.join("versions").join("_settings"))?;
+        if let Some(dir) = self.paths.config.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
+        }
         ito_common::write_atomic(&self.paths.config, text).map_err(|e| write_failed(&self.paths.config, &e))
     }
 
@@ -2209,6 +2214,49 @@ impl State {
         let out = koyomi_core::users::remove(&text, name)?;
         self.users_write(&out)?;
         Ok(msg::note(msg::N_USER_REMOVE_DONE_ENGINE, &[name.trim()]))
+    }
+
+    /// A new token and its hash. The token is for the reply and nowhere else.
+    fn new_token() -> Result<(String, String), String> {
+        let token = ito_http::new_token().map_err(|e| msg::line(msg::USER_TOKEN_FAILED, &[&e.to_string()]))?;
+        let hash = ito_http::token_hash(&token);
+        Ok((token, hash))
+    }
+
+    /// The reply of `UserAdd` and `UserReset`: the name, the token (shown only here) and a note.
+    fn token_reply(name: &str, token: &str) -> Result<String, String> {
+        let mut t = toml::Table::new();
+        t.insert("name".into(), name.into());
+        t.insert("token".into(), token.into());
+        t.insert("note".into(), msg::note(msg::N_USER_REPLY_NOTE, &[]).into());
+        toml::to_string(&t).map_err(|e| e.to_string())
+    }
+
+    /// See [`Request::UserAdd`].
+    fn user_add(
+        &self,
+        name: &str,
+        role: &str,
+        nets: Option<Vec<String>>,
+        roles: Option<BTreeMap<String, String>>,
+        base: &str,
+    ) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let text = self.users_base_or_empty(base)?;
+        let (token, hash) = Self::new_token()?;
+        let out = koyomi_core::users::add(&text, name, role, nets, roles, &hash)?;
+        self.users_write(&out)?;
+        Self::token_reply(name.trim(), &token)
+    }
+
+    /// See [`Request::UserReset`].
+    fn user_reset(&self, name: &str, base: &str) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let text = self.users_base(base)?;
+        let (token, hash) = Self::new_token()?;
+        let out = koyomi_core::users::reset(&text, name, &hash)?;
+        self.users_write(&out)?;
+        Self::token_reply(name.trim(), &token)
     }
 
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
@@ -2563,11 +2611,19 @@ impl State {
             if own {
                 return Err(msg::line(msg::USER_OWN_ADMIN, &[]));
             }
+            if matches!(request, Request::UserReset { name, .. } if name.trim() == by) {
+                return Err(msg::line(msg::USER_RESET_OWN, &[]));
+            }
         }
         let out = self.dispatch(request);
         if let Ok(text) = &out {
             if let Some((op, target)) = by_hand(request) {
-                let detail: String = text.lines().next().unwrap_or_default().chars().take(120).collect();
+                // The reply of a new token holds the token itself: it is not written down.
+                let detail: String = if matches!(request, Request::UserAdd { .. } | Request::UserReset { .. }) {
+                    String::new()
+                } else {
+                    text.lines().next().unwrap_or_default().chars().take(120).collect()
+                };
                 self.runner.record_op(op, &target, &detail, by);
             }
         }
@@ -2641,6 +2697,8 @@ impl State {
             Request::Users => self.users(),
             Request::UserSet { name, role, nets, roles, base } => self.user_set(name, role, nets.clone(), roles.clone(), base),
             Request::UserRemove { name, base } => self.user_remove(name, base),
+            Request::UserAdd { name, role, nets, roles, base } => self.user_add(name, role, nets.clone(), roles.clone(), base),
+            Request::UserReset { name, base } => self.user_reset(name, base),
             Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
     }
@@ -2687,6 +2745,8 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::HolidayTable { .. } => ("holiday-table", String::new()),
         Request::UserSet { name, .. } => ("user-set", name.clone()),
         Request::UserRemove { name, .. } => ("user-remove", name.clone()),
+        Request::UserAdd { name, .. } => ("user-add", name.trim().to_owned()),
+        Request::UserReset { name, .. } => ("user-reset", name.trim().to_owned()),
         _ => return None,
     })
 }
@@ -4109,6 +4169,69 @@ port = 8700
 ",
         );
         assert!(ops.contains("user-set") && ops.contains("user-remove"), "{ops}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// A user is added and given a new token through the door: the token is in the reply and the file
+    /// holds only its hash, and neither the ops record nor the kept old text holds the token.
+    #[test]
+    fn a_user_is_added_and_given_a_new_token_through_the_door() {
+        use koyomi_core::users::{Listing, Token};
+        let paths = temp_paths("door-users-add");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let mut s = State::new(paths.clone());
+        let over = |by: &str, request: Request| Request::Over { by: by.to_owned(), request: Box::new(request) };
+        let listing = |s: &mut State| Listing::parse(&s.answer(&Request::Users).unwrap()).unwrap();
+        // No koyomi.toml yet: an empty list.
+        let first = listing(&mut s);
+        assert!(first.user.is_empty());
+        let add = |base: &str, name: &str, role: &str| Request::UserAdd {
+            name: name.into(),
+            role: role.into(),
+            nets: None,
+            roles: None,
+            base: base.into(),
+        };
+        assert!(s.answer(&add("0000", "boss", "admin")).is_err());
+        // Without an [http] there is nothing to add to: refused, and no file is made.
+        let e = s.answer(&add(&first.base, "boss", "admin")).unwrap_err();
+        assert!(koyomi_core::msg::USER_NO_HTTP.is_in(&e), "{e}");
+        assert!(!paths.config.exists());
+        std::fs::write(&paths.config, "[http]\nport = 8700\ntoken = \"secret:t\"\n").unwrap();
+        let first = listing(&mut s);
+        let reply: toml::Table = s.answer(&add(&first.base, "boss", "admin")).unwrap().parse().unwrap();
+        let token1 = reply["token"].as_str().unwrap().to_owned();
+        assert_eq!(reply["name"].as_str(), Some("boss"));
+        assert_eq!(token1.len(), 64);
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains(&format!("sha256:{}", ito_http::token_hash(&token1))), "{text}");
+        assert!(!text.contains(&token1));
+        let now = listing(&mut s);
+        assert_eq!(now.user.len(), 1);
+        assert_eq!(now.user[0].token, Token::Hash);
+        // A name that is there is refused; a second user is added after the first.
+        assert!(s.answer(&add(&now.base, "boss", "view")).is_err());
+        let reply: toml::Table = s.answer(&add(&now.base, "ann", "view")).unwrap().parse().unwrap();
+        let token2 = reply["token"].as_str().unwrap().to_owned();
+        assert_ne!(token1, token2);
+        // Over HTTPS nobody makes their own token again; another admin can.
+        let base = listing(&mut s).base;
+        assert!(s.answer(&over("boss", Request::UserReset { name: "boss".into(), base: base.clone() })).is_err());
+        let reply: toml::Table = s.answer(&over("boss", Request::UserReset { name: "ann".into(), base })).unwrap().parse().unwrap();
+        let token3 = reply["token"].as_str().unwrap().to_owned();
+        let base = listing(&mut s).base;
+        assert!(s.answer(&Request::UserReset { name: "nobody".into(), base }).is_err());
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains(&ito_http::token_hash(&token3)) && !text.contains(&ito_http::token_hash(&token2)), "{text}");
+        // The old text was kept; the token is in no record.
+        let kept = paths.state.join("versions").join("_settings");
+        assert!(std::fs::read_dir(&kept).unwrap().count() >= 1);
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap().join("\n");
+        assert!(ops.contains("user-add") && ops.contains("user-reset"), "{ops}");
+        for t in [&token1, &token2, &token3] {
+            assert!(!ops.contains(t.as_str()));
+        }
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

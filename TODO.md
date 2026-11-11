@@ -47,7 +47,7 @@
 - 持ち主に聞くこと: 窓が 1 台の Windows から複数の Linux エンジンを選ぶか。今の作りは、状態バーで `[[remote]]` のどれか 1 つを選ぶ形（同時に複数は見ない）。
 - 利用者の管理（2026-11-12、持ち主の依頼）:
   - [x] `koyomi user list|role|remove` と `koyomi config`、Debian の `sudo koyomi-user`（door の `Users`・`UserSet`・`UserRemove` は admin だけ）。
-  - [ ] `koyomi user add`（1 行と対話式）と `koyomi user reset`。トークンはハッシュで koyomi.toml に書き、一度だけ見せる。再起動もしない。
+  - [x] `koyomi user add`（1 行と対話式）と `koyomi user reset`。トークンはハッシュで koyomi.toml に書き、一度だけ見せる。再起動もしない。koyomi.toml に `[http]` がなければ断る。
   - [ ] 窓の「利用者」のページ（admin が Debian のエンジンにつないだとき）。
 
 ## v0.1 の項目（企画で採用したもの）

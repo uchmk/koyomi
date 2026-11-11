@@ -142,6 +142,10 @@ usage: koyomi [--version | --help | env]
        koyomi user role <name> <view|run|edit|admin> [--nets <pattern>]... [--all-nets] [--roles <pattern>=<role>]... [--no-roles]
                                      change a user's role (--nets / --roles: replace the jobnets / the role per jobnet; --all-nets /
                                      --no-roles: take them out; neither: keep them; admin takes both out); applies within a few seconds
+       koyomi user add [<name> --role <view|run|edit|admin> [--nets <pattern>]... [--roles <pattern>=<role>]...]
+                                     add a user with a new token, shown once (no arguments on a terminal: asks)
+       koyomi user reset <name> [--yes]
+                                     make a new token for a user, shown once; the old one stops working
        koyomi user remove <name>     take a user out of koyomi.toml (its token stays where it is kept)
        koyomi config [<file>]        what koyomi.toml sets, in a few lines (no addresses, tokens or values; no engine needed)
        koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send, fetch or ssh job takes (host_key = SHA256:…)

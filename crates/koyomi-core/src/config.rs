@@ -308,7 +308,8 @@ pub struct HttpUser {
     pub name: String,
     /// `view`, `run`, `edit` or `admin`.
     pub role: String,
-    /// `secret:<name>`; may be left out when `tailscale` is set.
+    /// `secret:<name>` (the value is kept in the OS credential store) or `sha256:<hash>` (the token
+    /// is kept only as the lowercase hex SHA-256 of it); may be left out when `tailscale` is set.
     #[serde(default)]
     pub token: String,
     /// Their Tailscale login name (`sato@example.com`), or a tag (`tag:koyomi-ha`) for a node
@@ -346,9 +347,15 @@ impl HttpUser {
         }
     }
 
-    /// The name the token is kept under; empty when they come only over the tailnet.
+    /// The name the token is kept under; empty when they come only over the tailnet or have a
+    /// hashed token ([`HttpUser::hash`]).
     pub fn secret(&self) -> &str {
         self.token.trim().strip_prefix("secret:").map(str::trim).unwrap_or_default()
+    }
+
+    /// The hash the token is kept as (`sha256:<hash>`); [`Config::parse`] has checked it reads.
+    pub fn hash(&self) -> Option<&str> {
+        self.token.trim().strip_prefix("sha256:")
     }
 
     /// Their Tailscale login or tag; [`Config::parse`] has checked it reads.
@@ -397,6 +404,12 @@ impl Remote {
     }
 }
 
+/// Whether `h` is a token hash the listener takes: 64 lowercase hex characters, and not the hash of
+/// the empty token.
+fn is_token_hash(h: &str) -> bool {
+    h.len() == 64 && h.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) && h != crate::approved::hash(b"")
+}
+
 impl Http {
     /// The name the token is kept under; [`Config::parse`] has checked there is one.
     pub fn secret(&self) -> &str {
@@ -431,8 +444,14 @@ impl Http {
             if role == crate::role::Role::Admin && (u.nets.is_some() || u.roles.is_some()) {
                 return Err(msg::line(msg::CFG_USER_ADMIN_NARROWED, &[name]));
             }
-            if u.secret().is_empty() && (!u.token.trim().is_empty() || u.tailscale.is_none()) {
-                return Err(msg::line(msg::CFG_TOKEN_NOT_SECRET, &[&format!("[[http.user]] {name}")]));
+            if let Some(h) = u.hash() {
+                // What the listener refuses at its start (ito-http) is refused here, so a file that reads
+                // never stops it.
+                if !is_token_hash(h) {
+                    return Err(msg::line(msg::CFG_TOKEN_HASH_BAD, &[name]));
+                }
+            } else if u.secret().is_empty() && (!u.token.trim().is_empty() || u.tailscale.is_none()) {
+                return Err(msg::line(msg::CFG_USER_TOKEN_FORM, &[&format!("[[http.user]] {name}")]));
             }
             if let Some(t) = &u.tailscale {
                 let t = t.trim();
@@ -912,6 +931,38 @@ port = 70000
         }
     }
 
+    /// A `[[http.user]]` token is `secret:<name>` or `sha256:<hash>`; `[http]`'s stays `secret:` only.
+    #[test]
+    fn an_http_user_token_may_be_a_secret_or_a_sha256() {
+        let user = |token: &str| format!("[http]\nport = 8790\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntoken = \"{token}\"\n");
+        let hash = "0123456789abcdef".repeat(4);
+        let c = Config::parse(&user(&format!("sha256:{hash}"))).unwrap().http.unwrap();
+        assert_eq!((c.user[0].hash(), c.user[0].secret()), (Some(hash.as_str()), ""));
+        let c = Config::parse(&user("secret:sato")).unwrap().http.unwrap();
+        assert_eq!((c.user[0].hash(), c.user[0].secret()), (None, "sato"));
+        // Neither form: E1072, which names both.
+        for bad in ["plain", "sha256", "", "secret:"] {
+            let e = Config::parse(&user(bad)).unwrap_err();
+            assert!(msg::CFG_USER_TOKEN_FORM.is_in(&e) && e.contains("sha256:<ハッシュ>"), "{bad}: {e}");
+        }
+        // A sha256: that ito-http would refuse is refused here: wrong length, upper case, not hex, the empty token's.
+        let empty = crate::approved::hash(b"");
+        for bad in [
+            "sha256:".to_owned(),
+            format!("sha256:{}", &hash[..63]),
+            format!("sha256:{hash}0"),
+            format!("sha256:{}", hash.to_uppercase()),
+            format!("sha256:{}g", &hash[..63]),
+            format!("sha256:{empty}"),
+        ] {
+            let e = Config::parse(&user(&bad)).unwrap_err();
+            assert!(msg::CFG_TOKEN_HASH_BAD.is_in(&e), "{bad}: {e}");
+        }
+        // [http] token stays secret: only.
+        let e = Config::parse(&format!("[http]\nport = 8790\ntoken = \"sha256:{hash}\"\n")).unwrap_err();
+        assert!(msg::CFG_TOKEN_NOT_SECRET.is_in(&e), "{e}");
+    }
+
     /// `nets` narrows a person to some nets; without it they reach every net, as before.
     #[test]
     fn an_http_user_may_be_narrowed_to_some_nets() {
@@ -1039,7 +1090,7 @@ token = \"secret:boss\"
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}", user("sato", "tailscale = \"sato@example.com\"\ntoken = \"plain\"\n")),
-                (msg::CFG_TOKEN_NOT_SECRET, "token が、secret:<名前> の形式で指定されていません"),
+                (msg::CFG_USER_TOKEN_FORM, "token が、secret:<名前> または sha256:<ハッシュ> の形式で指定されていません"),
             ),
             (
                 format!(
@@ -1051,7 +1102,7 @@ token = \"secret:boss\"
             ),
             (
                 format!("[http]\nport = 8790\ntailnet = 8791\n{}{}", user("sato", "tailscale = \"sato@example.com\"\n"), user("ito", "")),
-                (msg::CFG_TOKEN_NOT_SECRET, "ito の token が"),
+                (msg::CFG_USER_TOKEN_FORM, "ito の token が"),
             ),
         ] {
             let e = Config::parse(&bad).unwrap_err();
