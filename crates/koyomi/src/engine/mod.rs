@@ -3294,11 +3294,9 @@ run = ["x.exe"]
         s.propose("保守/乙", plain, None).unwrap();
         let snap = s.snapshot();
         assert!(snap.warnings.is_empty(), "{:?}", snap.warnings);
-        assert!(
-            snap.cautions.iter().any(|c| koyomi_core::msg::SESSION_USER_HIDDEN.is_in(c) && c.contains("保守/他人")),
-            "{:?}",
-            snap.cautions
-        );
+        // Where the OS gives no sign-in and lock events (not Windows) the caution says that nothing is watched instead.
+        let caution = if cfg!(windows) { koyomi_core::msg::SESSION_USER_HIDDEN } else { koyomi_core::msg::SESSION_WATCH_FAILED };
+        assert!(snap.cautions.iter().any(|c| caution.is_in(c) && c.contains("保守/他人")), "{:?}", snap.cautions);
         // The window and the CLI ask the snapshot's warnings before they approve: nothing stands in the way.
         assert!(warnings_about(&paths, &snap.warnings, &snap.defs, "保守/乙.toml").is_empty());
         let sha = s.defs.iter().find(|d| d.id == "保守/乙").unwrap().sha256.clone();
@@ -4046,7 +4044,8 @@ run = [\"x.exe\"]
         let two = "format = 1\nholidays = \"japan\"\n";
         assert!(s.calendar_put("Office", one, None).is_ok());
         assert!(s.calendar_put("office", two, None).is_ok());
-        assert!(s.calendar_rename("Office", "office").unwrap_err().contains("もうある"));
+        let err = s.calendar_rename("Office", "office").unwrap_err();
+        assert!(koyomi_core::msg::CALENDAR_EXISTS.is_in(&err), "{err}");
         assert_eq!(std::fs::read_to_string(paths.calendars.join("Office.toml")).unwrap(), one);
         assert_eq!(std::fs::read_to_string(paths.calendars.join("office.toml")).unwrap(), two);
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
