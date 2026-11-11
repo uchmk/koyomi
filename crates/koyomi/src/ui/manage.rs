@@ -117,11 +117,10 @@ pub(super) fn in_use(link: Option<&str>, name: &str) -> bool {
 }
 
 /// The delete question's text, by what the delete does with the connection's own secret. `secret` is the secret the
-/// token names (`Some("")`: the token is written as is; `None`: not known).
+/// token names (`None`: not known).
 fn ask_body(t: &ito_i18n::Table, name: &str, secret: Option<&str>) -> String {
     match secret {
         None => t.trf("far.manage_ask_body_unknown", &[name]),
-        Some("") => t.trf("far.manage_ask_body_plain", &[name]),
         Some(s) if crate::remote::generated_secret(name, s) => t.trf("far.manage_ask_body", &[name, s]),
         Some(s) => t.trf("far.manage_ask_body_kept", &[name, s]),
     }
@@ -134,6 +133,7 @@ pub(super) fn show(
     t: &ito_i18n::Table,
     names: &[String],
     secrets: &BTreeMap<String, String>,
+    unread: Option<&str>,
     used: &dyn Fn(&str) -> bool,
 ) -> Pressed {
     let (esc, enter, tab) = ctx.input_mut(|i| {
@@ -158,14 +158,23 @@ pub(super) fn show(
         .show(ctx, |ui| {
             ui.set_width(520.0);
             ui.add_enabled_ui(!busy, |ui| {
-                if names.is_empty() {
-                    ui.label(egui::RichText::new(t.tr("far.manage_none")).color(c.dim));
-                }
-                egui::ScrollArea::vertical().id_salt("far-manage-rows").max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
-                    for name in names {
-                        row(ui, t, m, name, used(name), &mut press, &mut to_edit, &mut to_ask);
+                if let Some(e) = unread {
+                    // koyomi.toml did not read: any row would fail to rename or delete, so none is drawn.
+                    let text = t.tr("far.manage_unread");
+                    let r = ui.label(egui::RichText::new(text).color(c.dim));
+                    ito_a11y::say(&r, Role::Label, text);
+                    let r = ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
+                    ito_a11y::say(&r, Role::Label, e);
+                } else {
+                    if names.is_empty() {
+                        ui.label(egui::RichText::new(t.tr("far.manage_none")).color(c.dim));
                     }
-                });
+                    egui::ScrollArea::vertical().id_salt("far-manage-rows").max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
+                        for name in names {
+                            row(ui, t, m, name, used(name), &mut press, &mut to_edit, &mut to_ask);
+                        }
+                    });
+                }
             });
             if let Some(line) = &m.line {
                 ui.add_space(6.0);
@@ -387,7 +396,6 @@ mod tests {
         let kept = ask_body(&t, "factory", Some("works-token"));
         assert!(kept.contains("シークレット works-token は削除しません"), "{kept}");
         assert!(!kept.contains("factory-token"));
-        assert!(!ask_body(&t, "works", Some("")).contains("シークレット"));
         let unknown = ask_body(&t, "works", None);
         assert!(!unknown.contains("-token") && unknown.contains("works を削除します"), "{unknown}");
     }
@@ -401,7 +409,7 @@ mod tests {
         let used = |n: &str| n == "works";
         let frame = |m: &mut Manage, names: &[String]| {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                assert_eq!(show(m, ui.ctx(), &t, names, &BTreeMap::new(), &used), Pressed::Nothing);
+                assert_eq!(show(m, ui.ctx(), &t, names, &BTreeMap::new(), None, &used), Pressed::Nothing);
             });
             out.textures_delta.clear();
         };
@@ -420,5 +428,10 @@ mod tests {
         m.busy = false;
         m.line = Some(Ok("kei を消した".into()));
         frame(&mut m, &names);
+        m.line = None;
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            assert_eq!(show(&mut m, ui.ctx(), &t, &names, &BTreeMap::new(), Some("KOYOMI-E1023 x"), &used), Pressed::Nothing);
+        });
+        out.textures_delta.clear();
     }
 }

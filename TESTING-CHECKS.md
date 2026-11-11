@@ -1,6 +1,6 @@
 # Checklist
 
-1219 checks in TESTING.md, 1213 left for a person.
+1220 checks in TESTING.md, 1214 left for a person.
 
 ## 1. Start
 
@@ -1563,9 +1563,10 @@
 - [ ] **125.19** Open the add box, then the manage box through the palette; then the reverse → Only one of the two is open at a time 〔未訳〕
 - [x] **125.20** With the box open and a row's name being typed, pick another connection in the status-bar list → The box closes and the window switches; nothing is renamed 〔未訳〕
 - [x] **125.21** Rename `works` to `factory`, then press `削除する` on `factory` → The question reads `factory を削除します。この PC の koyomi.toml から [[remote]] を削除します。シークレット works-token は削除しません。接続先の PC には何も行いません。` 〔未訳〕
-- [x] **125.22** Write a connection's token as is (`token = "…"`, not `secret:`), then open `接続先を管理…` → The band at the top of the window shows `KOYOMI-E1023 [[remote]] <name> の token が、secret:<名前> の形式で指定されていません。…`; the box reads `接続先はまだありません。`: koyomi.toml is refused as a whole, so no connection, this one or another, can be deleted until the token is fixed 〔未訳〕
+- [x] **125.22** Write a connection's token as is (`token = "…"`, not `secret:`), then open `接続先を管理…` → The band at the top reads `koyomi が読むファイルに問題があります。修正するまで、何も確認できません。` with `KOYOMI-E1023 [[remote]] <name> の token が、secret:<名前> の形式で指定されていません。…` under it, and no `他のユーザーが書き換えられる場所があります。…`; the box has no rows: it reads `koyomi.toml を読み込めないため、接続先を表示できません。直すまで、名前の変更と削除はできません。` and the same `KOYOMI-E1023 …` line 〔未訳〕
 - [~] **125.23** Open the add box with its fields empty; press Ctrl+Shift+P, type `新しいジョブネット` and press Enter → The palette shows over the box with the typed text in its field; after Enter no `新しいジョブネット` box opens; the add box stays and its 名前 field has the focus again 〔未訳〕
 - [x] **125.24** Open the `新しいジョブネット` box; then palette → `別の PC のエンジンに接続する`, and palette → `接続先を管理する` → Neither connection box opens; the new job net box stays 〔未訳〕
+- [x] **125.25** After 125.22, close the box, write the token as `secret:<name>` again and open the box → The rows are back, each with `名前を変更する` and `削除する`; the `KOYOMI-E1023` line and `koyomi.toml を読み込めないため、…` are gone from the box 〔未訳〕
 
 ## 126. Top tabs and the calendar switcher
 

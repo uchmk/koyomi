@@ -426,8 +426,8 @@ pub(crate) fn finish_add(
     write(path, text).map_err(|e| write_failed(name, &e, store.delete(secret)))
 }
 
-/// Each `[[remote]]`'s trimmed name and its secret name (empty when the token is written as is), in the order of
-/// koyomi.toml. It reads koyomi.toml: not on the UI thread.
+/// Each `[[remote]]`'s trimmed name and its secret name, in the order of koyomi.toml. A koyomi.toml with a token
+/// written as is does not read (`KOYOMI-E1023`), so the secret is never empty. It reads koyomi.toml: not on the UI thread.
 pub fn listed() -> Result<Vec<(String, String)>, String> {
     Ok(remotes()?.iter().map(|r| (r.name.trim().to_owned(), r.secret().to_owned())).collect())
 }

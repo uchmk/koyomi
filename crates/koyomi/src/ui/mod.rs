@@ -2061,14 +2061,21 @@ impl Browser {
         let key = if modal { self.box_keys(&ctx, buttons, making) } else { None };
         let c = ito_theme::colors();
         if let Some(snap) = self.snap.as_ref().filter(|s| !s.warnings.is_empty()) {
-            let lines: Vec<String> = snap.warnings.clone();
+            // The writable-by warning keeps its header; the files that did not read have their own.
+            let (writable, problems): (Vec<String>, Vec<String>) =
+                snap.warnings.iter().cloned().partition(|l| koyomi_core::msg::FILE_WRITABLE_BY.is_in(l));
             egui::Panel::top("band").frame(egui::Frame::NONE.fill(c.wait_bg()).inner_margin(8.0)).show(ui, |ui| {
                 let mark = ito_a11y::State::Warning.mark();
-                let head = format!("{mark} {}", t.tr("band.warning"));
-                let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
-                ito_a11y::say(&r, Role::Label, &head);
-                for l in &lines {
-                    ui.label(egui::RichText::new(l).color(c.wait_text()));
+                for (key, lines) in [("band.warning", &writable), ("band.problem", &problems)] {
+                    if lines.is_empty() {
+                        continue;
+                    }
+                    let head = format!("{mark} {}", t.tr(key));
+                    let r = ui.label(egui::RichText::new(head.clone()).strong().color(c.wait_text()));
+                    ito_a11y::say(&r, Role::Label, &head);
+                    for l in lines {
+                        ui.label(egui::RichText::new(l).color(c.wait_text()));
+                    }
                 }
             });
         }
@@ -5776,6 +5783,32 @@ run = [\"x.exe\"]
         b.cal_inline = Some(calendar::Inline::Name { cal: "工場".into(), day, text: String::new(), fresh: true });
         s.settle(&mut b);
         assert!(b.cal_inline.is_none(), "another calendar's field goes");
+    }
+
+    /// The band has a header for each kind of line: the writable-by warning keeps its own, a file that did not read
+    /// has another.
+    #[test]
+    fn the_band_has_a_header_for_each_kind_of_line() {
+        use koyomi_core::msg;
+        let writable = msg::line(msg::FILE_WRITABLE_BY, &["koyomi.toml"]);
+        let unread = msg::line(msg::CFG_TOKEN_NOT_SECRET, &["x", "y"]);
+        let (warning, problem) = ("他のユーザーが書き換えられる場所があります", "koyomi が読むファイルに問題があります");
+        for (lines, want_warning, want_problem) in [
+            (vec![unread.clone()], false, true),
+            (vec![writable.clone()], true, false),
+            (vec![unread.clone(), writable.clone()], true, true),
+        ] {
+            let mut b = quiet(Vec::new());
+            b.snap.as_mut().unwrap().warnings = lines.clone();
+            let mut s = Screen::new();
+            s.settle(&mut b);
+            let shown = |w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+            assert_eq!(shown(warning), want_warning, "{lines:?}");
+            assert_eq!(shown(problem), want_problem, "{lines:?}");
+            for l in &lines {
+                assert!(shown(l), "{l}");
+            }
+        }
     }
 
     /// With no calendar the heading stays, says so, and its button opens the box; the box turns

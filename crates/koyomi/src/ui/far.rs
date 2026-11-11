@@ -14,8 +14,9 @@ use super::manage::{self, Manage, Pressed};
 
 /// What a thread brought back.
 enum Got {
-    /// Every `[[remote]]`: its name and its secret name (empty: the token is written as is).
-    Names(Vec<(String, String)>),
+    /// Every `[[remote]]`: its name and its secret name (never empty: a koyomi.toml whose token is written as is does
+    /// not read, `KOYOMI-E1023`), or why koyomi.toml did not read.
+    Names(Result<Vec<(String, String)>, String>),
     /// The add box: its ticket, and the fingerprint that PC shows (or why not).
     Peeked(u64, Result<String, String>),
     /// The add box: its ticket, the name, and whether the check passed and the connection was written.
@@ -109,8 +110,10 @@ fn enter_goes_on(step: AddStep) -> bool {
 pub struct Far {
     /// The `[[remote]]` names, once read.
     names: Vec<String>,
-    /// Each name's secret name (empty: the token is written as is), for the delete question.
+    /// Each name's secret name, for the delete question.
     secrets: std::collections::BTreeMap<String, String>,
+    /// Why koyomi.toml did not read at the last listing (`None`: it read).
+    unread: Option<String>,
     tx: Sender<Got>,
     rx: Receiver<Got>,
     ctx: egui::Context,
@@ -131,6 +134,7 @@ impl Far {
         Far {
             names: Vec::new(),
             secrets: std::collections::BTreeMap::new(),
+            unread: None,
             tx,
             rx,
             ctx: ctx.clone(),
@@ -147,10 +151,8 @@ impl Far {
         far.state = state;
         let (tx, ctx) = (far.tx.clone(), far.ctx.clone());
         std::thread::spawn(move || {
-            if let Ok(listed) = crate::remote::listed() {
-                let _ = tx.send(Got::Names(listed));
-                ctx.request_repaint();
-            }
+            let _ = tx.send(Got::Names(crate::remote::listed()));
+            ctx.request_repaint();
         });
         far
     }
@@ -159,7 +161,7 @@ impl Far {
     #[cfg(test)]
     pub(super) fn send_names(&self, names: Vec<String>) {
         let listed = names.into_iter().map(|n| (n.clone(), generated_secret(&n))).collect();
-        let _ = self.tx.send(Got::Names(listed));
+        let _ = self.tx.send(Got::Names(Ok(listed)));
     }
 
     /// Whether any `[[remote]]` is set.
@@ -195,9 +197,20 @@ impl Far {
 
     fn take(&mut self, got: Got) {
         match got {
-            Got::Names(listed) => {
+            Got::Names(Ok(listed)) => {
                 self.names = listed.iter().map(|(n, _)| n.clone()).collect();
                 self.secrets = listed.into_iter().collect();
+                self.unread = None;
+            }
+            // The status-bar list keeps what it had. The box draws no rows now, so a name being typed or a delete being
+            // asked has nothing left to act on, even while one is being sent: that one carries its own names, and if it
+            // fails, Enter must not send it again.
+            Got::Names(Err(e)) => {
+                if let Some(m) = self.manage.as_mut() {
+                    m.editing = None;
+                    m.asking = None;
+                }
+                self.unread = Some(e);
             }
             Got::Peeked(ticket, r) => {
                 if let Some(a) = self.add.as_mut().filter(|a| a.ticket == ticket && a.step == AddStep::Peeking) {
@@ -290,10 +303,8 @@ impl Far {
             if !cfg!(test) {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 std::thread::spawn(move || {
-                    if let Ok(listed) = crate::remote::listed() {
-                        let _ = tx.send(Got::Names(listed));
-                        ctx.request_repaint();
-                    }
+                    let _ = tx.send(Got::Names(crate::remote::listed()));
+                    ctx.request_repaint();
                 });
             }
         }
@@ -371,7 +382,7 @@ impl Far {
     pub fn manage_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, link: Option<&str>) {
         let Some(m) = self.manage.as_mut() else { return };
         let used = |n: &str| manage::in_use(link, n);
-        match manage::show(m, ctx, t, &self.names, &self.secrets, &used) {
+        match manage::show(m, ctx, t, &self.names, &self.secrets, self.unread.as_deref(), &used) {
             Pressed::Nothing => {}
             Pressed::Close => {
                 if !m.busy {
@@ -584,7 +595,7 @@ mod tests {
     #[test]
     fn the_secret_map_follows_renames_deletes_joins_and_re_reads() {
         let mut f = Far::idle(&egui::Context::default());
-        f.take(Got::Names(vec![("works".into(), "works-token".into())]));
+        f.take(Got::Names(Ok(vec![("works".into(), "works-token".into())])));
         f.manage = Some(Manage::new());
         let t = f.manage.as_ref().unwrap().ticket;
         // A failed change changes nothing.
@@ -602,11 +613,43 @@ mod tests {
         f.take(Got::Managed(t, Change::Delete("factory".into()), Ok("ok".into())));
         assert!(!f.secrets.contains_key("factory"));
         // A later listing replaces the map (a token edited by hand).
-        f.take(Got::Names(vec![("new".into(), String::new()), ("b".into(), "shared".into())]));
+        f.take(Got::Names(Ok(vec![("new".into(), "new-secret".into()), ("b".into(), "shared".into())])));
         assert_eq!(f.names, ["new", "b"]);
-        assert_eq!(f.secrets.get("new").map(String::as_str), Some(""));
+        assert_eq!(f.secrets.get("new").map(String::as_str), Some("new-secret"));
         assert_eq!(f.secrets.get("b").map(String::as_str), Some("shared"));
         assert_eq!(f.secrets.len(), 2);
+    }
+
+    #[test]
+    fn an_unread_koyomi_toml_is_kept_as_the_reason_and_a_later_read_clears_it() {
+        let mut f = Far::idle(&egui::Context::default());
+        f.take(Got::Names(Ok(vec![("works".into(), "works-token".into())])));
+        assert!(f.unread.is_none());
+        f.take(Got::Names(Err("KOYOMI-E1023 x".into())));
+        assert_eq!(f.unread.as_deref(), Some("KOYOMI-E1023 x"));
+        assert_eq!(f.names, ["works"], "the list keeps what it had");
+        assert_eq!(f.secrets.get("works").map(String::as_str), Some("works-token"));
+        f.take(Got::Names(Ok(vec![("works".into(), "works-token".into())])));
+        assert!(f.unread.is_none());
+        // A rename being typed and a delete being asked go with the rows.
+        let mut m = Manage::new();
+        m.edit("works");
+        m.asking = Some(manage::Asking { name: "works".into(), focus: 1 });
+        f.manage = Some(m);
+        f.take(Got::Names(Err("KOYOMI-E1023 x".into())));
+        let m = f.manage.as_ref().unwrap();
+        assert!(m.editing.is_none() && m.asking.is_none());
+        // So does a rename already sent: when it fails, Enter has no rename left to send again.
+        let mut m = Manage::new();
+        m.edit("works");
+        m.busy = true;
+        let t = m.ticket;
+        f.manage = Some(m);
+        f.take(Got::Names(Err("KOYOMI-E1023 x".into())));
+        f.take(Got::Managed(t, Change::Rename("works".into(), "factory".into()), Err("no".into())));
+        let m = f.manage.as_mut().unwrap();
+        assert!(!m.busy && m.editing.is_none());
+        assert!(matches!(m.route(false, true, false), manage::Pressed::Nothing));
     }
 
     #[test]
