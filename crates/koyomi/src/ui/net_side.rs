@@ -93,7 +93,7 @@ impl Browser {
         // Open on its page, the net's buttons and problems are in the page; in the overview they are here.
         let opened = self.selected_def().is_some_and(|d| d.id == def.id);
         let held = self.snap.as_ref().is_some_and(|s| s.held.contains(&def.id));
-        let now = ito_common::now::now_local().naive_local();
+        let now = self.engine_now();
         let mut runs: Vec<_> = self.runs.iter().filter(|r| r.jobnet == def.id).cloned().collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
         ui.horizontal_wrapped(|ui| {

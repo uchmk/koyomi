@@ -110,14 +110,27 @@ pub fn probe(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<Ro
     let r =
         Remote { name: name.to_owned(), url: url.to_owned(), fingerprint: fingerprint.to_owned(), token: format!("secret:{name}-token") };
     let client = limited(Client::new(url.trim(), fingerprint.trim(), token).map_err(|e| remote::why(&r, &e))?);
-    let health = client.get("/health").map_err(|e| remote::why(&r, &e))?;
+    check(&r, &client)
+}
+
+/// The check the manage box makes before it changes the URL of `r`: as [`probe`], with `url` and `fingerprint` in
+/// place of the stored ones and the token read from the credential store as a connection reads it. The token is
+/// never put in a message, and nothing is written.
+pub fn probe_stored(r: &Remote, url: &str, fingerprint: &str) -> Result<Role, String> {
+    let moved = Remote { url: url.to_owned(), fingerprint: fingerprint.to_owned(), ..r.clone() };
+    check(&moved, &build(&moved)?)
+}
+
+/// `GET /health`, then `GET /me`, which says whether the token may drive a window.
+fn check(r: &Remote, client: &Client) -> Result<Role, String> {
+    let health = client.get("/health").map_err(|e| remote::why(r, &e))?;
     if !(200..=299).contains(&health.status) {
-        return Err(read_status(&r, health.status, &health.json));
+        return Err(read_status(r, health.status, &health.json));
     }
-    let me = client.get("/me").map_err(|e| remote::why(&r, &e))?;
+    let me = client.get("/me").map_err(|e| remote::why(r, &e))?;
     match me.status {
-        200..=299 => admit(name, &me.json),
-        s => Err(read_status(&r, s, &me.json)),
+        200..=299 => admit(&r.name, &me.json),
+        s => Err(read_status(r, s, &me.json)),
     }
 }
 

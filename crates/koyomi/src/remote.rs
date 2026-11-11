@@ -230,6 +230,113 @@ pub fn plan_rename(text: &str, old: &str, new: &str) -> Result<String, String> {
     rewrite(text, &renamed.iter().collect::<Vec<_>>())
 }
 
+/// Whether `url` may be a `[[remote]]`'s: `https://` and something after it, no whitespace.
+pub fn url_usable(url: &str) -> bool {
+    let url = url.trim();
+    url.len() > "https://".len() && url.starts_with("https://") && !url.contains(char::is_whitespace)
+}
+
+/// `text` (koyomi.toml) with the `url` of the `[[remote]]` called `name` set to `url`, and its `fingerprint` too when
+/// one is given. Nothing else changes: the name, the token line, the credential store, every comment and every other
+/// `[[remote]]` stay as they were.
+pub fn plan_url(text: &str, name: &str, url: &str, fingerprint: Option<&str>) -> Result<String, String> {
+    let (name, url) = (name.trim(), url.trim());
+    if !url_usable(url) {
+        return Err(line(msg::URL_BAD, &[]));
+    }
+    let cfg = koyomi_core::config::Config::parse(text)?;
+    if !cfg.remote.iter().any(|r| r.name.trim() == name) {
+        return Err(line(msg::REMOTE_GONE, &[name]));
+    }
+    let moved: Vec<Remote> = cfg
+        .remote
+        .iter()
+        .map(|r| {
+            if r.name.trim() == name {
+                Remote {
+                    url: url.to_owned(),
+                    fingerprint: fingerprint.map_or_else(|| r.fingerprint.clone(), |f| f.trim().to_owned()),
+                    ..r.clone()
+                }
+            } else {
+                r.clone()
+            }
+        })
+        .collect();
+    rewrite(text, &moved.iter().collect::<Vec<_>>())
+}
+
+/// What a URL check used of the `[[remote]]`: the token line as written in koyomi.toml (`secret:<name>`, never the
+/// token itself) and the fingerprint stored then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Used {
+    pub token_line: String,
+    pub fingerprint: String,
+}
+
+/// The check of a new URL: the PC at `url` (its certificate pinned to `fingerprint`) answers, and the token stored
+/// for `name` is one a window may be driven with. The token is never shown. It blocks: not on the UI thread.
+/// Returns what the check used, for [`still_the_same`].
+pub fn check_url(name: &str, url: &str, fingerprint: &str) -> Result<Used, String> {
+    with(name.trim(), |r| {
+        let used = Used { token_line: r.token.trim().to_owned(), fingerprint: r.fingerprint.trim().to_owned() };
+        crate::link::probe_stored(r, url.trim(), fingerprint.trim()).map(|_| used)
+    })
+}
+
+/// Whether `now` (the `[[remote]]` as the file holds it under the lock; `None`: gone) still has the token line and the
+/// fingerprint `used` had. Else the answer is E2125 and nothing may be written.
+pub fn still_the_same(name: &str, used: &Used, now: Option<&Remote>) -> Result<(), String> {
+    let same = now.is_some_and(|r| r.token.trim() == used.token_line && r.fingerprint.trim().eq_ignore_ascii_case(&used.fingerprint));
+    if same {
+        Ok(())
+    } else {
+        Err(line(msg::REMOTE_CHANGED_DURING_CHECK, &[name]))
+    }
+}
+
+/// What the stored `[[remote]]` called `name` holds, and whether the PC at `url` shows the same fingerprint.
+/// Returns that fingerprint and whether it equals the stored one. It blocks: not on the UI thread.
+pub fn peek_against(name: &str, url: &str) -> Result<(String, bool), String> {
+    let stored = with(name.trim(), |r| Ok(r.fingerprint.trim().to_owned()))?;
+    let seen = peek_fingerprint(url)?;
+    let same = seen.eq_ignore_ascii_case(&stored);
+    Ok((seen, same))
+}
+
+/// Writes the new URL (and fingerprint) of `name` into `path`'s text with `write`. The caller holds [`edits`].
+fn carry_url(
+    path: &std::path::Path,
+    text: &str,
+    name: &str,
+    url: &str,
+    fingerprint: Option<&str>,
+    write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
+) -> Result<String, String> {
+    let out = plan_url(text, name, url, fingerprint)?;
+    write(path, out)?;
+    Ok(msg::note(msg::N_REMOTE_URL_CHANGED, &[name.trim(), url.trim()]))
+}
+
+/// 「URL を変える」: after the check passed, `name` has `url` (and `fingerprint`, when it changed) in this PC's
+/// koyomi.toml. The check is outside the lock; the writing is under it, on the file as it is then. It blocks: not
+/// on the UI thread. Nothing is written when the check fails, and the answer says so.
+pub fn change_url(name: &str, url: &str, fingerprint: &str) -> Result<String, String> {
+    let name = name.trim();
+    let not_changed = |why: String| line(msg::URL_NOT_CHANGED, &[name, &why]);
+    let used = check_url(name, url, fingerprint).map_err(not_changed)?;
+    let _held = edits();
+    let paths = Paths::find().map_err(not_changed)?;
+    let text = ito_common::read_or_empty(&paths.config).map_err(not_changed)?;
+    let now = koyomi_core::config::Config::parse(&text).map_err(not_changed)?.remote.into_iter().find(|r| r.name.trim() == name);
+    // The file may have changed since the check; what it vouched for must still be there.
+    still_the_same(name, &used, now.as_ref()).map_err(not_changed)?;
+    let stored = now.map(|r| r.fingerprint);
+    // The fingerprint is written only when it differs from the file's own.
+    let fp = stored.as_deref().filter(|s| !s.trim().eq_ignore_ascii_case(fingerprint.trim())).map(|_| fingerprint);
+    carry_url(&paths.config, &text, name, url, fp, ito_common::write_atomic).map_err(not_changed)
+}
+
 /// What becomes of the secret of a connection that is deleted.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SecretFate {
@@ -430,6 +537,12 @@ pub(crate) fn finish_add(
 /// written as is does not read (`KOYOMI-E1023`), so the secret is never empty. It reads koyomi.toml: not on the UI thread.
 pub fn listed() -> Result<Vec<(String, String)>, String> {
     Ok(remotes()?.iter().map(|r| (r.name.trim().to_owned(), r.secret().to_owned())).collect())
+}
+
+/// Each `[[remote]]`'s trimmed name and its trimmed URL, for the URL field of the manage box. Reads koyomi.toml: not
+/// on the UI thread.
+pub fn listed_urls() -> Result<Vec<(String, String)>, String> {
+    Ok(remotes()?.iter().map(|r| (r.name.trim().to_owned(), r.url.trim().to_owned())).collect())
 }
 
 /// One call to the `[[remote]]` named `name`, cut off after `deadline`, counted from when it goes out. It blocks.
@@ -841,6 +954,58 @@ mod tests {
         assert_eq!(now[0].token, "secret:fact-token", "the token line stays as it was");
         assert_eq!(now[0].url, "https://fact:8443");
         assert_eq!(now[1].token, "secret:office-token");
+    }
+
+    #[test]
+    fn a_url_change_changes_the_url_only_and_keeps_the_rest() {
+        let text = file_with(&["fact", "office"], "");
+        let out = plan_url(&text, "fact", " https://new:9000 ", None).unwrap();
+        for kept in ["# my settings", "keep_days = 30 # keep", "[vars]", "place = \"x\"", "# the fact", "# the office"] {
+            assert!(out.contains(kept), "{kept} lost:\n{out}");
+        }
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        assert_eq!((now[0].name.as_str(), now[0].url.as_str(), now[0].fingerprint.as_str()), ("fact", "https://new:9000", FP));
+        assert_eq!(now[0].token, "secret:fact-token");
+        // The other connection is byte for byte as it was.
+        let block = |t: &str| t[t.find("# the office").unwrap()..].to_owned();
+        assert_eq!(block(&out), block(&text));
+    }
+
+    #[test]
+    fn a_url_change_writes_the_fingerprint_when_one_is_given() {
+        let text = file_with(&["fact"], "");
+        let other = "cd".repeat(32);
+        let other = other.as_str();
+        let out = plan_url(&text, "fact", "https://new:9000", Some(other)).unwrap();
+        let now = koyomi_core::config::Config::parse(&out).unwrap().remote;
+        assert_eq!((now[0].url.as_str(), now[0].fingerprint.as_str()), ("https://new:9000", other));
+        assert_eq!(now[0].token, "secret:fact-token");
+    }
+
+    #[test]
+    fn a_url_change_is_refused_for_a_bad_url_or_a_name_not_in_the_file() {
+        let text = file_with(&["fact"], "");
+        for url in ["", "http://x", "https://", "https://a b", "ftp://x"] {
+            let e = plan_url(&text, "fact", url, None).unwrap_err();
+            assert!(msg::URL_BAD.is_in(&e), "{url:?}: {e}");
+        }
+        let e = plan_url(&text, "ghost", "https://x:1", None).unwrap_err();
+        assert!(msg::REMOTE_GONE.is_in(&e) && e.contains("ghost"), "{e}");
+    }
+
+    #[test]
+    fn a_url_change_is_written_only_if_the_token_line_and_fingerprint_are_still_the_ones_checked() {
+        let fp = "ab".repeat(32);
+        let used = Used { token_line: "secret:kei".into(), fingerprint: fp.clone() };
+        let remote =
+            |token: &str, fp: &str| Remote { name: "kei".into(), url: "https://x:1".into(), fingerprint: fp.into(), token: token.into() };
+        assert_eq!(still_the_same("kei", &used, Some(&remote("secret:kei", &fp))), Ok(()));
+        // Case of the fingerprint and spaces around the lines do not count.
+        assert_eq!(still_the_same("kei", &used, Some(&remote(" secret:kei ", &fp.to_uppercase()))), Ok(()));
+        for now in [Some(remote("secret:other", &fp)), Some(remote("secret:kei", &"cd".repeat(32))), None] {
+            let e = still_the_same("kei", &used, now.as_ref()).unwrap_err();
+            assert!(msg::REMOTE_CHANGED_DURING_CHECK.is_in(&e) && e.contains("kei"), "{e}");
+        }
     }
 
     #[test]

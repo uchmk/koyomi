@@ -153,6 +153,11 @@ fn local_utc_offset_min() -> i32 {
     ito_common::now::now_local().offset().local_minus_utc() / 60
 }
 
+/// The wall clock of a PC whose UTC offset is `offset_min`, when it is `now_utc` (UTC).
+fn now_at(now_utc: chrono::DateTime<chrono::Utc>, offset_min: i32) -> chrono::NaiveDateTime {
+    (now_utc + chrono::Duration::minutes(i64::from(offset_min))).naive_utc()
+}
+
 /// The request that saves the editor's text: `edit` may only propose (it waits for a confirmation in the
 /// engine's own window), `admin` and this PC save.
 fn save_request(role: Option<koyomi_core::role::Role>, id: String, text: String, base_sha256: Option<String>, force: bool) -> Request {
@@ -236,6 +241,10 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
     let mut conn: Option<Conn> = None;
     let mut wait = poll;
     let mut ha_at: Option<std::time::Instant> = None;
+    // What this link knows of the engine's notices; only a far link asks (this PC's own are the tray's).
+    let mut told = crate::notify::NoticesAt::default();
+    // This PC's `[notify]`, read here (not on the UI thread) and again after `REREAD`.
+    let mut here: Option<(ito_prefs::NotifyCfg, std::time::Instant)> = None;
     loop {
         if conn.as_ref().is_none_or(|c| !c.running()) {
             conn = None;
@@ -304,6 +313,21 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
                 return;
             }
         }
+        if link.is_far() && c.role().is_some_and(|r| r.allows(koyomi_core::role::Role::Edit)) {
+            let view = c.call(&told.request()).and_then(|t| proto::NoticesView::parse(&t));
+            if let Ok(view) = view {
+                let new = told.take(view);
+                if !new.is_empty() {
+                    if here.as_ref().is_none_or(|(_, at)| at.elapsed() >= crate::notify::REREAD) {
+                        here = Some((crate::notify::here_cfg(), std::time::Instant::now()));
+                    }
+                    let cfg = here.as_ref().map(|(c, _)| c.clone()).unwrap_or_default();
+                    if !send(Msg::Notices(new, Box::new(cfg))) {
+                        return;
+                    }
+                }
+            }
+        }
         let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((run, job)) = target {
             if let Ok(text) = c.call(&Request::Log { run: run.clone(), job: job.clone() }) {
@@ -329,6 +353,8 @@ enum Msg {
     Role(Option<koyomi_core::role::Role>, Option<String>),
     Snapshot(Box<Snapshot>),
     Runs(Runs),
+    /// The notices a far engine kept that are new to this window, to show as this PC's own.
+    Notices(Vec<proto::Note>, Box<ito_prefs::NotifyCfg>),
     /// The tail of one job's log: run, job, text.
     Log(String, String, String),
     Down(String),
@@ -699,6 +725,10 @@ pub struct Browser {
     /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
     seen_notes: BTreeSet<String>,
     notes: Vec<String>,
+    /// The far engine's notices not shown yet (`take_far_notes`).
+    far_notes: Vec<proto::Note>,
+    /// This PC's `[notify]` as the worker read it with the last of them.
+    far_cfg: Option<ito_prefs::NotifyCfg>,
     /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
     autostart_off: bool,
     /// The lines the cautions band held last frame (`None` until the first snapshot): it opens
@@ -735,6 +765,9 @@ pub struct Browser {
     inspector: bool,
     /// The pane at the right of 履歴 is open (not folded to its strip).
     hist_pane: bool,
+    /// 履歴 was opened on a far link before its first snapshot: the days are the engine's, so the week is built and
+    /// asked when the snapshot has come.
+    hist_waiting: bool,
     /// The pane at the right of the calendar is open (not folded to its strip).
     cal_pane: bool,
     /// The calendar shows the picked day, its week or its month.
@@ -857,6 +890,8 @@ impl Browser {
             done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
+            far_notes: Vec::new(),
+            far_cfg: None,
             autostart_off: false,
             band_seen: None,
             cal_sel: None,
@@ -872,6 +907,7 @@ impl Browser {
             today_net: None,
             inspector,
             hist_pane,
+            hist_waiting: false,
             cal_pane,
             cal_view,
             net_pane,
@@ -1019,9 +1055,45 @@ impl Browser {
         ((today - chrono::Duration::days(30)).to_string(), (today + chrono::Duration::days(1)).to_string())
     }
 
-    /// Asks the engine for the last 30 days once a day.
+    /// The engine's wall clock, for what the window means by now: on a far link with a snapshot, this PC's UTC clock
+    /// moved by the offset the last snapshot carried; otherwise this PC's own clock. It promises no more than that:
+    /// a clock that is off between the two PCs, or a change of summer time on the engine's side while no snapshot
+    /// came, is not corrected. Before the first snapshot of a far link the offset is not known and this PC's clock
+    /// is used, which is fine for what is only drawn (it is drawn again when the snapshot comes) but not for a date
+    /// that goes into a request: see [`Browser::engine_date_known`].
+    pub(crate) fn engine_now(&self) -> chrono::NaiveDateTime {
+        match self.far_offset() {
+            Some(offset) => now_at(ito_common::now::now(), offset),
+            None => ito_common::now::now_local().naive_local(),
+        }
+    }
+
+    /// The engine's date: see [`Browser::engine_now`].
+    pub(crate) fn engine_today(&self) -> chrono::NaiveDate {
+        self.engine_now().date()
+    }
+
+    /// The engine's UTC offset when the window is on another PC and a snapshot has told it.
+    fn far_offset(&self) -> Option<i32> {
+        if self.link.is_far() {
+            self.snap.as_ref().map(|s| s.utc_offset_min)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the engine's date is known: always on this PC, and on a far link once the first snapshot has come.
+    fn engine_date_known(&self) -> bool {
+        !self.link.is_far() || self.snap.is_some()
+    }
+
+    /// Asks the engine for the last 30 days once a day. On a far link nothing is asked before the first snapshot:
+    /// the date that goes into the request is the engine's.
     fn ask_past(&mut self) {
-        let today = ito_common::now::now_local().date_naive();
+        if !self.engine_date_known() {
+            return;
+        }
+        let today = self.engine_today();
         if self.past_asked != Some(today) && self.past_failed.is_none_or(|at| at.elapsed() > Duration::from_secs(60)) {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
@@ -1164,6 +1236,17 @@ impl Browser {
             // The one way the window changes its link: the pick is taken by the app.
             self.want_link = Some(Link::Far(name));
         }
+        if let Some(name) = self.far.take_moved() {
+            // The window is on the connection whose URL moved: it reconnects at the new one. The box stays, so the
+            // outcome (and the reconnecting) is still read.
+            if self.link.far().is_some_and(|l| l.trim() == name.trim()) {
+                self.want_link = Some(Link::Far(name));
+                if let Some(Ok(line)) = self.far.manage.as_mut().and_then(|m| m.line.as_mut()) {
+                    line.push(' ');
+                    line.push_str(&koyomi_core::msg::note(koyomi_core::msg::N_REMOTE_URL_RECONNECT, &[]));
+                }
+            }
+        }
         while let Ok(m) = self.rx.try_recv() {
             match m {
                 Msg::Starting => self.starting = true,
@@ -1176,7 +1259,6 @@ impl Browser {
                     }
                 }
                 Msg::Snapshot(s) => {
-                    self.ask_past();
                     self.starting = false;
                     self.down = None;
                     for n in &s.notes {
@@ -1188,6 +1270,9 @@ impl Browser {
                         s.defs.iter().any(|d| d.standing == Standing::Confirmed && d.net.as_ref().is_some_and(|n| !n.when.is_empty()));
                     self.autostart_off = timed && !ito_common::startup::enabled("koyomi");
                     self.snap = Some(*s);
+                    // After the snapshot is kept: on a far link the day asked for is the engine's.
+                    self.ask_past();
+                    self.history_when_known();
                 }
                 Msg::Runs(r) => {
                     let now: BTreeSet<String> = r.runs.iter().filter(|r| r.is_over()).map(|r| r.id.clone()).collect();
@@ -1196,6 +1281,10 @@ impl Browser {
                     }
                     self.over = Some(now);
                     self.runs = r.runs;
+                }
+                Msg::Notices(notes, cfg) => {
+                    self.far_notes.extend(notes);
+                    self.far_cfg = Some(*cfg);
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Done(r) => self.done = Some(r),
@@ -1384,7 +1473,7 @@ impl Browser {
             return (Some(word.to_owned()), running, None);
         };
         let word = snap.paused.then(|| t.tr("status.paused").to_owned());
-        let now = ito_common::now::now_local().naive_local();
+        let now = self.engine_now();
         let next = snap
             .defs
             .iter()
@@ -1422,6 +1511,15 @@ impl Browser {
     pub fn take_notes(&mut self) -> Vec<String> {
         self.drain();
         std::mem::take(&mut self.notes)
+    }
+
+    /// The far engine's notices not taken before, each once; the app shows them as this PC's notifications.
+    pub fn take_far_notes(&mut self) -> (Vec<proto::Note>, ito_prefs::NotifyCfg) {
+        self.drain();
+        let notes = std::mem::take(&mut self.far_notes);
+        // Cloned only when there is something to show: this runs every frame.
+        let cfg = if notes.is_empty() { ito_prefs::NotifyCfg::default() } else { self.far_cfg.clone().unwrap_or_default() };
+        (notes, cfg)
     }
 
     /// Shows run `id` in the detail (a click under the bell).
@@ -2079,7 +2177,8 @@ impl Browser {
         let defs = self.snap.as_ref().map(|s| s.defs.as_slice()).unwrap_or(&[]);
         let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
         let staged = self.snap.as_ref().map(|s| s.staged.as_slice()).unwrap_or(&[]);
-        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged };
+        let now = self.engine_now();
+        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -2300,7 +2399,7 @@ impl Browser {
         }
         // A planned stop going on, or one to begin within the week: its time comes and nothing starts.
         let stop_line = self.snap.as_ref().and_then(|s| {
-            let now = ito_common::now::now_local().naive_local();
+            let now = self.engine_now();
             let b = koyomi_core::blackout::near(&s.blackouts, now, 7)?;
             let why = show::stop_why(t, b);
             Some(if b.contains(now) {
@@ -2793,7 +2892,7 @@ impl Browser {
             ui.label(egui::RichText::new(t.tr("nets.empty")).color(c.dim));
             return;
         }
-        let now = ito_common::now::now_local().naive_local();
+        let now = self.engine_now();
         let when = |at: chrono::NaiveDateTime| at.format("%m-%d %H:%M").to_string();
         let twins = review::twins(&snap.defs);
         struct Row {
@@ -2901,7 +3000,7 @@ impl Browser {
     fn today_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         let Some(snap) = &self.snap else { return };
-        let now = ito_common::now::now_local().naive_local();
+        let now = self.engine_now();
         let mut coming: Vec<(chrono::NaiveDateTime, String, String, Option<String>, State)> = Vec::new();
         for (d, at) in snap.starts_today(now) {
             let wake = d.net.as_ref().is_some_and(|n| n.wake);
@@ -3127,7 +3226,7 @@ impl Browser {
             }
             // The day the chart is about, at the right end.
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                let day = ito_common::now::now_local().date_naive();
+                let day = self.engine_today();
                 let wd = ["weekday.mon", "weekday.tue", "weekday.wed", "weekday.thu", "weekday.fri", "weekday.sat", "weekday.sun"]
                     [chrono::Datelike::weekday(&day).num_days_from_monday() as usize];
                 let text = format!("{}({})", day.format("%Y-%m-%d"), t.tr(wd));
@@ -3275,7 +3374,7 @@ impl Browser {
             return;
         }
         let c = ito_theme::colors();
-        let rows = self.skip_rows(t, ito_common::now::now_local().naive_local());
+        let rows = self.skip_rows(t, self.engine_now());
         let mut send = None;
         let mut close = key.is_some();
         egui::Window::new(t.tr("skipnext.title"))
@@ -3554,7 +3653,7 @@ impl Browser {
     /// ガント: today's nets, a lane each, with the runs and the starts still planned; a click on a lane opens the run under the chart.
     fn gantt_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
-        let now = ito_common::now::now_local().naive_local();
+        let now = self.engine_now();
         let planned = self.planned_today(now);
         if self.runs.is_empty() && planned.is_empty() {
             return;
@@ -3684,15 +3783,37 @@ impl Browser {
     }
 
     /// Opens 履歴 on the last 7 days and asks the engine for them.
+    /// On a far link before the first snapshot nothing is asked yet: the days are the engine's, and the week is
+    /// built and asked when the snapshot has come.
     pub fn open_history(&mut self) {
-        let h = History::week(ito_common::now::now_local().date_naive());
-        self.send(h.request());
+        let known = self.engine_date_known();
+        let h = History::week(self.engine_today());
+        if known {
+            self.send(h.request());
+        }
+        self.hist_waiting = !known;
         self.hist = Some(h);
         self.gantt = false;
         self.run_sel = None;
         self.cal_sel = None;
         self.job_sel = None;
         self.result = None;
+    }
+
+    /// The first snapshot of a far link has come: the 履歴 opened before it gets the engine's week and asks for it.
+    fn history_when_known(&mut self) {
+        if !self.hist_waiting || !self.engine_date_known() {
+            return;
+        }
+        self.hist_waiting = false;
+        let week = History::week(self.engine_today());
+        if let Some(h) = self.hist.as_mut() {
+            h.from = week.from;
+            h.to = week.to;
+            h.error = None;
+            let req = h.request();
+            self.send(req);
+        }
     }
 
     /// 履歴: a card of what narrows the rows (the days, a preset, the net, the state, the search and
@@ -3759,72 +3880,82 @@ impl Browser {
             let nets: Vec<String> = self.snap.as_ref().map(|s| s.defs.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
             // What is left of the page up to the pane (the page still reports the width it had before it).
             let room = (edge.min(ui.max_rect().right()) - ui.cursor().left() - 12.0).max(200.0);
+            let (waiting, today) = (self.hist_waiting, self.engine_today());
             let Some(h) = self.hist.as_mut() else { return };
             let r = ui.heading(egui::RichText::new(t.tr("run.history")).strong());
             ito_a11y::say(&r, Role::Heading, t.tr("run.history"));
             ui.add_space(6.0);
+            if waiting {
+                let r = ui.label(egui::RichText::new(t.tr("run.history_waiting")).color(c.dim));
+                ito_a11y::say(&r, Role::Label, t.tr("run.history_waiting"));
+            }
             let (mut search, mut csv) = (false, false);
             let all = t.tr("run.history_all");
-            egui::Frame::new()
-                .fill(c.panel)
-                .stroke(egui::Stroke::new(1.0, c.border))
-                .corner_radius(6)
-                .inner_margin(egui::Margin::symmetric(10, 8))
-                .show(ui, |ui| {
-                    ui.set_width(room - 20.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                        let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
-                        small(ui, "run.history_from");
-                        // Typed, or picked on one month grid: the first click the start, the second the end.
-                        let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
-                        ito_prefs::RangeField::new("history", words)
-                            .names(t.tr("run.history_from"), t.tr("run.history_to"))
-                            .width(124.0)
-                            .show(ui, ito_prefs::Look { c, q: "" }, &mut h.from, &mut h.to);
-                        // The presets ask at once for the days up to today.
-                        let today = ito_common::now::now_local().date_naive();
-                        let from = |back: i64| (today - chrono::Duration::days(back)).to_string();
-                        let now = [0, 7, 30].into_iter().find(|b| h.from == from(*b) && h.to == today.to_string());
-                        let options =
-                            [(Some(0), t.tr("run.history_today")), (Some(7), t.tr("run.history_7")), (Some(30), t.tr("run.history_30"))];
-                        if let Some(Some(back)) = ito_prefs::seg(ui, ito_prefs::Look { c, q: "" }, "history-presets", now, &options) {
-                            h.from = from(back);
-                            h.to = today.to_string();
-                            search = true;
-                        }
-                    });
-                    ui.add_space(2.0);
-                    ui.horizontal_wrapped(|ui| {
-                        ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
-                        let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
-                        small(ui, "run.history_net");
-                        let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
-                        egui::ComboBox::from_id_salt("history_net").width(96.0).selected_text(net_text).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut h.net, String::new(), all);
-                            for id in &nets {
-                                ui.selectable_value(&mut h.net, id.clone(), id);
+            // Off (greyed) while the engine's date is awaited: a press would otherwise be dropped without a word.
+            ui.add_enabled_ui(!waiting, |ui| {
+                egui::Frame::new()
+                    .fill(c.panel)
+                    .stroke(egui::Stroke::new(1.0, c.border))
+                    .corner_radius(6)
+                    .inner_margin(egui::Margin::symmetric(10, 8))
+                    .show(ui, |ui| {
+                        ui.set_width(room - 20.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                            small(ui, "run.history_from");
+                            // Typed, or picked on one month grid: the first click the start, the second the end.
+                            let words = ito_prefs::DateWords::for_lang(t.tr("app.lang"));
+                            ito_prefs::RangeField::new("history", words)
+                                .names(t.tr("run.history_from"), t.tr("run.history_to"))
+                                .width(124.0)
+                                .show(ui, ito_prefs::Look { c, q: "" }, &mut h.from, &mut h.to);
+                            // The presets ask at once for the days up to today.
+                            let from = |back: i64| (today - chrono::Duration::days(back)).to_string();
+                            let now = [0, 7, 30].into_iter().find(|b| h.from == from(*b) && h.to == today.to_string());
+                            let options = [
+                                (Some(0), t.tr("run.history_today")),
+                                (Some(7), t.tr("run.history_7")),
+                                (Some(30), t.tr("run.history_30")),
+                            ];
+                            if let Some(Some(back)) = ito_prefs::seg(ui, ito_prefs::Look { c, q: "" }, "history-presets", now, &options) {
+                                h.from = from(back);
+                                h.to = today.to_string();
+                                search = true;
                             }
                         });
-                        small(ui, "run.history_state");
-                        let state_text = match h.state {
-                            Some(s) => show::tag(t, s),
-                            None => all.to_owned(),
-                        };
-                        egui::ComboBox::from_id_salt("history_state").width(86.0).selected_text(state_text).show_ui(ui, |ui| {
-                            ui.selectable_value(&mut h.state, None, all);
-                            for s in State::ALL {
-                                ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
-                            }
-                        });
-                        ui.add_space(4.0);
-                        search |=
-                            ito_prefs::icon_button(ui, ito_prefs::Mark::Search, t.tr("run.history_search"), t.tr("run.history_search"))
+                        ui.add_space(2.0);
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = egui::vec2(6.0, 6.0);
+                            let small = |ui: &mut egui::Ui, key: &str| ui.label(egui::RichText::new(t.tr(key)).small().color(c.dim));
+                            small(ui, "run.history_net");
+                            let net_text = if h.net.is_empty() { all.to_owned() } else { h.net.clone() };
+                            egui::ComboBox::from_id_salt("history_net").width(96.0).selected_text(net_text).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut h.net, String::new(), all);
+                                for id in &nets {
+                                    ui.selectable_value(&mut h.net, id.clone(), id);
+                                }
+                            });
+                            small(ui, "run.history_state");
+                            let state_text = match h.state {
+                                Some(s) => show::tag(t, s),
+                                None => all.to_owned(),
+                            };
+                            egui::ComboBox::from_id_salt("history_state").width(86.0).selected_text(state_text).show_ui(ui, |ui| {
+                                ui.selectable_value(&mut h.state, None, all);
+                                for s in State::ALL {
+                                    ui.selectable_value(&mut h.state, Some(s), show::tag(t, s));
+                                }
+                            });
+                            ui.add_space(4.0);
+                            search |=
+                                ito_prefs::icon_button(ui, ito_prefs::Mark::Search, t.tr("run.history_search"), t.tr("run.history_search"))
+                                    .clicked();
+                            csv = ito_prefs::icon_button(ui, ito_prefs::Mark::Download, t.tr("run.history_csv"), t.tr("run.history_csv"))
                                 .clicked();
-                        csv = ito_prefs::icon_button(ui, ito_prefs::Mark::Download, t.tr("run.history_csv"), t.tr("run.history_csv"))
-                            .clicked();
+                        });
                     });
-                });
+            });
             if csv {
                 let mut shown = h.filtered();
                 shown.reverse();
@@ -3832,7 +3963,8 @@ impl Browser {
                 self.result = Some(Ok(t.tr("run.writing").to_owned()));
                 Self::background(&self.io, move || export_csv("history", &table).map(|path| ("run.history_csv_done", vec![path])));
             }
-            if search {
+            // Nothing is asked before the engine's date is known: the days would be this PC's.
+            if search && !waiting {
                 let day = |s: &str| chrono::NaiveDate::parse_from_str(s.trim(), "%Y-%m-%d").ok();
                 match (day(&h.from), day(&h.to)) {
                     (Some(from), Some(to)) => {
@@ -4591,7 +4723,7 @@ impl Browser {
     fn net_graph(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, def: &Def, salt: &str) {
         let c = ito_theme::colors();
         if let Some(net) = def.net.as_ref().filter(|n| !n.jobs.is_empty()) {
-            let now = ito_common::now::now_local().naive_local();
+            let now = self.engine_now();
             let mut preview = Run::new("", &def.id, def.label(), "", koyomi_core::run::How::Manual, net, now);
             // A held job shows ⏸ on its station.
             let mut any_held = false;
@@ -4639,7 +4771,7 @@ impl Browser {
                 let cal = self.snap.as_ref().and_then(|s| def.calendar.as_deref().and_then(|c| s.calendars.get(c)));
                 let power = self.snap.as_ref().map(|s| show::Sleep::of(&s.power, net.wake));
                 let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
-                let now = ito_common::now::now_local().naive_local();
+                let now = self.engine_now();
                 let rows = show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), cal, now, 10, power.as_ref(), stops);
                 if rows.is_empty() {
                     ui.label(egui::RichText::new(t.tr("run.next_over")).color(c.dim));
@@ -4786,7 +4918,7 @@ impl Browser {
         }
         let mut body = review::body(t, &def);
         let none = std::collections::BTreeMap::new();
-        let week = review::week_in(t, &def, self.snap.as_ref().map_or(&none, |s| &s.calendars), ito_common::now::now_local().naive_local());
+        let week = review::week_in(t, &def, self.snap.as_ref().map_or(&none, |s| &s.calendars), self.engine_now());
         if !week.is_empty() {
             body.push(String::new());
             body.extend(week);
@@ -5704,6 +5836,8 @@ mod tests {
             done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
+            far_notes: Vec::new(),
+            far_cfg: None,
             autostart_off: false,
             band_seen: None,
             cal_sel: None,
@@ -5719,6 +5853,7 @@ mod tests {
             today_net: None,
             inspector: true,
             hist_pane: true,
+            hist_waiting: false,
             cal_pane: true,
             cal_view: calendar::CalView::Month,
             net_pane: true,
@@ -7704,5 +7839,89 @@ note = \"n\"
         b.drain();
         assert!(!b.holds_token());
         assert!(!format!("{:?}", b.result).contains(FAKE_TOKEN));
+    }
+
+    #[test]
+    fn now_at_moves_the_utc_clock_by_the_offset_both_ways_over_midnight() {
+        use chrono::TimeZone;
+        let utc = |d: u32, h: u32, m: u32| chrono::Utc.with_ymd_and_hms(2026, 10, d, h, m, 0).unwrap();
+        let at = |d: u32, h: u32, m: u32| chrono::NaiveDate::from_ymd_opt(2026, 10, d).unwrap().and_hms_opt(h, m, 0).unwrap();
+        // +9: 15:30 UTC is already tomorrow; -5: it is still the same day.
+        assert_eq!(now_at(utc(30, 15, 30), 540), at(31, 0, 30));
+        assert_eq!(now_at(utc(30, 15, 30), -300), at(30, 10, 30));
+        // The other way: just after midnight UTC is still yesterday at -5, and 08:59 at +9.
+        assert_eq!(now_at(utc(31, 0, 0), -300), at(30, 19, 0));
+        assert_eq!(now_at(utc(30, 23, 59), 540), at(31, 8, 59));
+        assert_eq!(now_at(utc(30, 12, 0), 0), at(30, 12, 0));
+        // A half-hour zone.
+        assert_eq!(now_at(utc(30, 18, 40), 330), at(31, 0, 10));
+    }
+
+    #[test]
+    fn the_engine_clock_is_this_pcs_unless_the_link_is_far_and_a_snapshot_came() {
+        let near = |a: chrono::NaiveDateTime, b: chrono::NaiveDateTime| (a - b).num_seconds().abs() < 30;
+        let mut b = quiet(defs());
+        // This PC: the snapshot's offset is not used.
+        b.snap = Some(Snapshot { utc_offset_min: 600, ..Snapshot::default() });
+        assert!(near(b.engine_now(), ito_common::now::now_local().naive_local()));
+        // Far, with a snapshot: this PC's UTC clock by the engine's offset.
+        b.link = Link::Far("pc".into());
+        assert!(near(b.engine_now(), now_at(ito_common::now::now(), 600)));
+        b.snap = Some(Snapshot { utc_offset_min: -300, ..Snapshot::default() });
+        assert!(near(b.engine_now(), now_at(ito_common::now::now(), -300)));
+        assert_eq!(b.engine_today(), b.engine_now().date());
+        // Far, no snapshot yet: this PC's clock, and the date is not known.
+        b.snap = None;
+        assert!(near(b.engine_now(), ito_common::now::now_local().naive_local()));
+        assert!(!b.engine_date_known());
+    }
+
+    #[test]
+    fn history_opened_on_a_far_link_before_the_snapshot_asks_the_engines_week_when_it_comes() {
+        let mut b = quiet(defs());
+        let (tx, asked) = asks();
+        b.out.tx = tx;
+        b.link = Link::Far("pc".into());
+        b.snap = None;
+        b.open_history();
+        assert!(asked.try_recv().is_err(), "nothing is sent before the engine's date is known");
+        assert!(b.hist_waiting && b.hist.is_some());
+        // An engine a whole day ahead of this PC.
+        let offset = local_utc_offset_min() + 24 * 60;
+        let engine_day = now_at(ito_common::now::now(), offset).date();
+        b.io.0.send(Msg::Snapshot(Box::new(Snapshot { utc_offset_min: offset, ..Snapshot::default() }))).unwrap();
+        b.drain();
+        assert!(!b.hist_waiting);
+        let to = engine_day.to_string();
+        let from = (engine_day - chrono::Duration::days(7)).to_string();
+        let mut got = Vec::new();
+        while let Ok(r) = asked.try_recv() {
+            got.push(r);
+        }
+        assert!(
+            got.iter().any(|r| matches!(r, Request::History { from: f, to: t } if *f == from && *t == to)),
+            "the week asked is the engine's: {got:?}"
+        );
+        let h = b.hist.as_ref().unwrap();
+        assert_eq!((h.from.as_str(), h.to.as_str()), (from.as_str(), to.as_str()));
+        // A later snapshot changes nothing already asked.
+        b.io.0.send(Msg::Snapshot(Box::new(Snapshot { utc_offset_min: offset - 24 * 60, ..Snapshot::default() }))).unwrap();
+        b.drain();
+        let h = b.hist.as_ref().unwrap();
+        assert_eq!((h.from.as_str(), h.to.as_str()), (from.as_str(), to.as_str()));
+    }
+
+    #[test]
+    fn history_on_this_pc_asks_at_once_and_ask_past_waits_for_a_far_snapshot() {
+        let mut b = quiet(defs());
+        let (tx, asked) = asks();
+        b.out.tx = tx;
+        b.open_history();
+        assert!(matches!(asked.try_recv(), Ok(Request::History { .. })) && !b.hist_waiting);
+        b.link = Link::Far("pc".into());
+        b.snap = None;
+        b.past_asked = None;
+        b.ask_past();
+        assert!(asked.try_recv().is_err(), "the 30 days are the engine's: not asked before its date is known");
     }
 }

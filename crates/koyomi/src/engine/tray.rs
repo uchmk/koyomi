@@ -19,7 +19,6 @@ use koyomi_core::run::{Run, State as RunState};
 
 use ito_prefs::NotifyCfg;
 
-use super::Paths;
 use crate::notify;
 use crate::proto::{self, Request, Show, TrayView};
 
@@ -28,7 +27,7 @@ const LOOK: Duration = Duration::from_secs(1);
 /// How long a window just started is waited for, to be told to show 今日.
 const SHOW_WAIT: Duration = Duration::from_secs(15);
 /// How often `koyomi tray` reads `[notify]` again (what it shows and sounds).
-const REREAD: Duration = Duration::from_secs(30);
+const REREAD: Duration = notify::REREAD;
 
 /// What the tray shows: the badge, the tip and whether the menu offers to pause or resume.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,8 +284,7 @@ fn apart_look(t: &ito_i18n::Table, view: Option<&TrayView>) -> Look {
 
 /// `koyomi.toml`'s `[notify]` as `koyomi tray` uses it: only what it shows and sounds.
 fn notify_cfg() -> NotifyCfg {
-    let config = Paths::find().ok().and_then(|p| p.config().ok()).unwrap_or_default();
-    notify::read(&config).0
+    notify::here_cfg()
 }
 
 /// The badge as `proto::TrayView` names it.

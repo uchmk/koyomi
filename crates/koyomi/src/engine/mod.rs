@@ -2752,6 +2752,7 @@ impl State {
                 ))
             }
             Request::Tray { since } => Ok(self.tray_view(*since).to_toml()),
+            Request::Notices { boot, since } => Ok(notify::notices_view(boot.as_deref(), *since).to_toml()),
             Request::Propose { id, text, base_sha256 } => self.propose(id, text, base_sha256.as_deref()),
             Request::Stage { id, text, from, expect } => self.stage(id, text, from, expect.as_ref()),
             Request::Unstage { id } => self.unstage(id),

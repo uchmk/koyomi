@@ -1910,6 +1910,18 @@ high_contrast = true
         assert_eq!(through(&g, &get).0, 405);
     }
 
+    /// The engine's notices (a click opens a run) go to an editor and above, and never to a caller narrowed by nets.
+    #[test]
+    fn the_door_gives_the_notices_to_an_editor_and_not_to_a_narrowed_caller() {
+        let g = gate();
+        let ask = door_body(serde_json::json!({"Notices": {"boot": null, "since": null}}));
+        for (who, want) in [("look", 403), ("default", 403), ("ed", 200), ("root", 200), ("narrow", 403)] {
+            let (code, json, seen) = through(&g, &at_door(who, true, &ask));
+            assert_eq!(code, want, "{who}: {json}");
+            assert_eq!(seen.len(), usize::from(want == 200), "{who}");
+        }
+    }
+
     #[test]
     fn the_door_answers_a_wrong_version_and_a_bad_body() {
         let g = gate();

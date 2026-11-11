@@ -437,11 +437,105 @@ pub fn tell_here(n: &NotifyCfg, note: &Note, label: &str) {
     show(&here, open.as_ref(), &note.event, &note.title, &note.body);
 }
 
+/// How often this PC's `[notify]` is read again by whoever shows another engine's notices.
+pub const REREAD: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `koyomi.toml`'s `[notify]` of THIS PC as `koyomi tray` and the window use it for the notices
+/// of an engine elsewhere: only what it shows and sounds (see [`tell_here`]).
+pub fn here_cfg() -> NotifyCfg {
+    let config = crate::engine::Paths::find().ok().and_then(|p| p.config().ok()).unwrap_or_default();
+    read(&config).0
+}
+
+/// What a window on a far link knows of the engine's notices: the `(boot, last)` its last answer
+/// named, `None` until the first one (which only learns, and shows nothing, so the notices
+/// from before the window came are not all shown at once). One per link: a new link starts over. So notices kept
+/// while the window was not on that link are not shown: a link switch, and the reconnect after a URL change, are
+/// a first ask again, which only learns the boot and the last number.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct NoticesAt {
+    at: Option<(String, u64)>,
+}
+
+impl NoticesAt {
+    /// The next `Notices` to ask.
+    pub fn request(&self) -> crate::proto::Request {
+        crate::proto::Request::Notices { boot: self.at.as_ref().map(|a| a.0.clone()), since: self.at.as_ref().map(|a| a.1) }
+    }
+
+    /// Takes the engine's answer; gives the notices to show.
+    pub fn take(&mut self, view: crate::proto::NoticesView) -> Vec<Note> {
+        let first = self.at.is_none();
+        self.at = Some((view.boot, view.last));
+        if first {
+            Vec::new()
+        } else {
+            view.notes
+        }
+    }
+}
+
+/// How many far links' numbers [`FarGens`] remembers.
+const GENS: usize = 64;
+
+/// The number of every link this window has had (one more at each start or switch), and the name
+/// of the far ones, so a click on a notice made under one link finds its PC again.
+#[derive(Debug, Default)]
+pub struct FarGens {
+    gen: u64,
+    names: VecDeque<(u64, String)>,
+}
+
+impl FarGens {
+    /// The window starts on a link, or switches to one: `far` is its name (`None`: this PC).
+    pub fn enter(&mut self, far: Option<&str>) {
+        self.gen += 1;
+        if let Some(name) = far {
+            self.names.push_back((self.gen, name.to_owned()));
+            if self.names.len() > GENS {
+                self.names.pop_front();
+            }
+        }
+    }
+
+    /// The number of the link in use.
+    pub fn current(&self) -> u64 {
+        self.gen
+    }
+
+    /// The far PC link number `gen` was (`None`: this PC, or forgotten).
+    pub fn name_of(&self, gen: u64) -> Option<&str> {
+        self.names.iter().find(|(g, _)| *g == gen).map(|(_, n)| n.as_str())
+    }
+}
+
+/// The longest tag Windows keeps.
+const TAG_MAX: usize = 64;
+
+/// The tag of a notice of another PC's engine: `f<gen>~<tag>`, so a click comes back to the
+/// window with the link it was made under. `None` when there is nothing to open or it does not fit.
+pub fn far_tag(gen: u64, tag: &str) -> Option<String> {
+    let t = format!("f{gen}~{tag}");
+    (!tag.is_empty() && t.chars().count() <= TAG_MAX).then_some(t)
+}
+
+/// The link number and the engine's tag in a tag [`far_tag`] made; `None` for any other (the
+/// local tray's notices, which the window never takes).
+pub fn far_parse(tag: &str) -> Option<(u64, &str)> {
+    let (gen, rest) = tag.strip_prefix('f')?.split_once('~')?;
+    if gen.is_empty() || !gen.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    Some((gen.parse().ok()?, rest))
+}
+
 /// How many notices are kept for a tray that does not come for them.
 const KEPT: usize = 50;
 
 #[derive(Default)]
 struct Kept {
+    /// Names this engine process: a window that asks again with another one knows the engine started anew.
+    boot: String,
     last: u64,
     notes: VecDeque<Note>,
 }
@@ -469,6 +563,15 @@ impl Kept {
         rest
     }
 
+    fn answer(&self, after: Option<(&str, u64)>) -> (String, u64, Vec<Note>) {
+        let notes = match after {
+            None => Vec::new(),
+            Some((boot, since)) if boot == self.boot => self.after(since),
+            Some(_) => self.after(0),
+        };
+        (self.boot.clone(), self.last, notes)
+    }
+
     /// The notices after `since`; a `since` past the last (the engine started
     /// again since the tray last asked) gets every one kept.
     fn after(&self, since: u64) -> Vec<Note> {
@@ -484,7 +587,48 @@ static FOR_TRAY: Mutex<Option<Kept>> = Mutex::new(None);
 /// (the engine runs where it cannot show them, or without a tray of its own).
 pub fn hand_to_tray() {
     let mut k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
-    k.get_or_insert_with(Kept::default);
+    k.get_or_insert_with(|| Kept { boot: new_boot(), ..Kept::default() });
+}
+
+/// An id for this engine process: the time it began and its process number.
+fn new_boot() -> String {
+    let ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_millis());
+    format!("{ms}-{}", std::process::id())
+}
+
+/// What a window on another PC asks for (`Request::Notices`): the engine's
+/// boot id (empty while it keeps none), the number of its last notice, and the
+/// notices to show. `after` is the `(boot, last)` the window got before: with
+/// the same boot, the notices past `last`; with another (the engine started
+/// again, whatever its numbers are now), every one kept; `None`: none, only
+/// the boot and the last number to start from. After a long gap this can bring
+/// up to [`KEPT`] (50) notices at once, the same as the tray.
+pub fn notices(after: Option<(&str, u64)>) -> (String, u64, Vec<Note>) {
+    let k = FOR_TRAY.lock().unwrap_or_else(|e| e.into_inner());
+    notices_from(k.as_ref(), after)
+}
+
+/// [`notices`] on the given store (`None`: the engine keeps none, it shows them itself).
+fn notices_from(k: Option<&Kept>, after: Option<(&str, u64)>) -> (String, u64, Vec<Note>) {
+    match k {
+        Some(k) => k.answer(after),
+        None => (String::new(), 0, Vec::new()),
+    }
+}
+
+/// What the `(boot, since)` of a `Request::Notices` asks: both or neither. One alone is no ask (the first
+/// ask), never a half-made one.
+fn asked(boot: Option<&str>, since: Option<u64>) -> Option<(&str, u64)> {
+    match (boot, since) {
+        (Some(b), Some(s)) => Some((b, s)),
+        _ => None,
+    }
+}
+
+/// The answer to a `Request::Notices`.
+pub fn notices_view(boot: Option<&str>, since: Option<u64>) -> crate::proto::NoticesView {
+    let (boot, last, notes) = notices(asked(boot, since));
+    crate::proto::NoticesView { boot, last, notes }
 }
 
 /// Whether the notices are kept for `koyomi tray`.
@@ -832,5 +976,149 @@ run = [\"x\"]
         }
         assert_eq!(k.notes.len(), KEPT);
         assert_eq!(k.after(0).first().map(|n| n.seq), Some(k.last - KEPT as u64 + 1));
+    }
+
+    /// The window of another PC: the first ask gets the boot and the last number only,
+    /// the next ones what is past its number, and another boot (a restart) every note kept.
+    #[test]
+    fn notices_answer_by_boot_and_number() {
+        let mut n = NotifyCfg::default();
+        n.system = Some(vec!["failed".into()]);
+        let mut k = Kept { boot: "b1".into(), ..Kept::default() };
+        k.keep(&n, None, "failed", "t1", "");
+        k.keep(&n, None, "failed", "t2", "");
+        let titles = |v: &[Note]| v.iter().map(|n| n.title.clone()).collect::<Vec<_>>();
+        let (boot, last, notes) = k.answer(None);
+        assert_eq!((boot.as_str(), last, notes.len()), ("b1", 2, 0));
+        assert!(k.answer(Some(("b1", 2))).2.is_empty());
+        assert_eq!(titles(&k.answer(Some(("b1", 1))).2), ["t2"]);
+        // Another boot: all, whether its old number is lower than, equal to or past ours.
+        for old in [1, 2, 9] {
+            assert_eq!(titles(&k.answer(Some(("b0", old))).2), ["t1", "t2"], "{old}");
+        }
+    }
+
+    /// An engine that keeps none (it shows them itself) answers an empty boot, 0 and nothing.
+    #[test]
+    fn an_engine_that_keeps_none_answers_nothing() {
+        let k: Option<Kept> = None;
+        let a = k.as_ref().map_or((String::new(), 0, Vec::new()), |k| k.answer(None));
+        assert_eq!(a, (String::new(), 0, Vec::new()));
+        assert!(new_boot().contains('-'));
+    }
+
+    #[test]
+    fn the_window_learns_first_and_then_shows_what_is_new() {
+        use crate::proto::{NoticesView, Request};
+        let note = |seq| Note { seq, event: "failed".into(), title: seq.to_string(), ..Note::default() };
+        let view = |boot: &str, last, notes: Vec<Note>| NoticesView { boot: boot.into(), last, notes };
+        let mut at = NoticesAt::default();
+        assert!(matches!(at.request(), Request::Notices { boot: None, since: None }));
+        // The first answer only learns, even with notes kept.
+        assert!(at.take(view("b1", 3, vec![note(3)])).is_empty());
+        assert!(matches!(at.request(), Request::Notices { boot: Some(b), since: Some(3) } if b == "b1"));
+        assert_eq!(at.take(view("b1", 5, vec![note(4), note(5)])).len(), 2);
+        assert!(at.take(view("b1", 5, vec![])).is_empty());
+        // A restart whose last is lower, equal to and past the old one: the engine sends all, the window shows all.
+        for last in [1, 5, 9] {
+            let mut at = NoticesAt::default();
+            at.take(view("b1", 5, vec![]));
+            assert_eq!(at.take(view("b2", last, vec![note(1)])).len(), 1, "{last}");
+            assert!(matches!(at.request(), Request::Notices { boot: Some(b), since: Some(l) } if b == "b2" && l == last));
+        }
+        // A link switch is a new `NoticesAt`: it learns again.
+        let mut other = NoticesAt::default();
+        assert!(other.take(view("c1", 7, vec![note(7)])).is_empty());
+    }
+
+    #[test]
+    fn a_far_tag_carries_its_link_and_only_that_comes_back() {
+        assert_eq!(far_tag(3, "20261030-090000-01.l").as_deref(), Some("f3~20261030-090000-01.l"));
+        assert_eq!(far_parse("f3~20261030-090000-01.l"), Some((3, "20261030-090000-01.l")));
+        assert_eq!(run_of(far_parse("f12~r1.l").unwrap().1), "r1");
+        // Nothing to open, and one too long to keep.
+        assert_eq!(far_tag(3, ""), None);
+        assert_eq!(far_tag(3, &"x".repeat(62)), None);
+        assert!(far_tag(3, &"x".repeat(60)).is_some());
+        // The local tray's tags are not ours.
+        for t in ["20261030-090000-01", "20261030-090000-01.l", "f~x", "fx~y", "f3", ""] {
+            assert_eq!(far_parse(t), None, "{t}");
+        }
+    }
+
+    #[test]
+    fn a_click_finds_its_pc_through_a_b_a_and_not_after_the_map_forgot_it() {
+        let mut g = FarGens::default();
+        g.enter(Some("A"));
+        let a1 = g.current();
+        g.enter(Some("B"));
+        let b = g.current();
+        g.enter(Some("A"));
+        let a2 = g.current();
+        g.enter(None);
+        assert_eq!((g.name_of(a1), g.name_of(b), g.name_of(a2)), (Some("A"), Some("B"), Some("A")));
+        assert_eq!(g.name_of(g.current()), None);
+        for i in 0..GENS + 1 {
+            g.enter(Some(&format!("P{i}")));
+        }
+        assert_eq!(g.name_of(a1), None);
+        assert_eq!(g.name_of(g.current()), Some(format!("P{GENS}").as_str()));
+        assert_eq!(g.names.len(), GENS);
+    }
+
+    #[test]
+    fn notices_from_a_store_answer_nothing_for_none_and_by_boot_and_number_for_some() {
+        let titles = |v: &[Note]| v.iter().map(|n| n.title.clone()).collect::<Vec<_>>();
+        assert_eq!(notices_from(None, None), (String::new(), 0, Vec::new()));
+        assert_eq!(notices_from(None, Some(("b", 3))), (String::new(), 0, Vec::new()));
+        let mut n = NotifyCfg::default();
+        n.system = Some(vec!["failed".into()]);
+        let mut k = Kept { boot: "b1".into(), ..Kept::default() };
+        for t in ["t1", "t2", "t3"] {
+            k.keep(&n, None, "failed", t, "");
+        }
+        let (boot, last, notes) = notices_from(Some(&k), None);
+        assert_eq!((boot.as_str(), last, notes.len()), ("b1", 3, 0));
+        assert_eq!(titles(&notices_from(Some(&k), Some(("b1", 1))).2), ["t2", "t3"]);
+        assert!(notices_from(Some(&k), Some(("b1", 3))).2.is_empty());
+        assert_eq!(titles(&notices_from(Some(&k), Some(("b0", 3))).2), ["t1", "t2", "t3"]);
+    }
+
+    /// The `Request::Notices` pair: both make an ask, one alone does not.
+    #[test]
+    fn a_half_made_ask_is_the_first_ask() {
+        assert_eq!(asked(Some("b"), Some(2)), Some(("b", 2)));
+        assert_eq!(asked(Some("b"), None), None);
+        assert_eq!(asked(None, Some(2)), None);
+        assert_eq!(asked(None, None), None);
+    }
+
+    /// The reply the engine's arm makes, with and without notes kept, through TOML and back.
+    #[test]
+    fn the_notices_reply_reads_back_with_and_without_kept_notes() {
+        use crate::proto::NoticesView;
+        let reply = |k: Option<&Kept>, boot: Option<&str>, since| {
+            let (boot, last, notes) = notices_from(k, asked(boot, since));
+            NoticesView::parse(&NoticesView { boot, last, notes }.to_toml()).unwrap()
+        };
+        assert_eq!(reply(None, Some("b"), Some(1)), NoticesView::default());
+        let mut n = NotifyCfg::default();
+        n.system = Some(vec!["failed".into()]);
+        let mut k = Kept { boot: "b1".into(), ..Kept::default() };
+        k.keep(
+            &n, None, "failed", "t1", "x
+y",
+        );
+        k.keep(&n, None, "failed", "t2", "");
+        let first = reply(Some(&k), None, None);
+        assert_eq!((first.boot.as_str(), first.last, first.notes.len()), ("b1", 2, 0));
+        let next = reply(Some(&k), Some("b1"), Some(1));
+        assert_eq!((next.last, next.notes.iter().map(|n| n.title.as_str()).collect::<Vec<_>>()), (2, vec!["t2"]));
+        assert_eq!(reply(Some(&k), Some("old"), Some(9)).notes.len(), 2);
+        assert_eq!(
+            reply(Some(&k), Some("b1"), Some(0)).notes[0].body,
+            "x
+y"
+        );
     }
 }

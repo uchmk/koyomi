@@ -120,6 +120,10 @@ struct App {
     /// The command palette while it is open (Ctrl+Shift+P, or the bar's box).
     palette: Option<ito_palette::View>,
     browser: ui::Browser,
+    /// The number of each link this window has had, for the tags of a far engine's notices.
+    far_gens: notify::FarGens,
+    /// `ito_prefs::notify_window` has been called.
+    notify_ready: bool,
     /// The state folder (none while a script plays) and the one writer of its `state.toml`, which every
     /// browser of this run gets a clone of, so an old one cannot overwrite what a new one wrote.
     state: Option<PathBuf>,
@@ -240,6 +244,12 @@ impl App {
             bell_at: egui::Rect::NOTHING,
             palette: None,
             // A script plays on a window that keeps no state of its own.
+            far_gens: {
+                let mut g = notify::FarGens::default();
+                g.enter(link.far());
+                g
+            },
+            notify_ready: false,
             browser: ui::Browser::start(&cc.egui_ctx, state.clone(), link, state_writer.clone()),
             state,
             state_writer,
@@ -342,6 +352,7 @@ impl App {
     /// of the old link go.
     fn switch_link(&mut self, ctx: &egui::Context, to: link::Link) {
         self.browser = ui::Browser::start(ctx, self.state.clone(), to.clone(), self.state_writer.clone());
+        self.far_gens.enter(to.far());
         reset_for_link(&mut self.notices, &mut self.bell_open, &mut self.acked, self.state.clone(), &to);
         self.browser.save_state();
     }
@@ -941,6 +952,33 @@ impl App {
         }
     }
 
+    /// The notices a far engine kept, shown as this PC's system notifications; a click on one opens its run
+    /// here when the link it was made under is the one in use. Only the notices of a far engine: the window
+    /// never takes the local tray's clicks (their tags are not `far_tag`s and are dropped), and a click that
+    /// is dropped still brings the window forward (the notifier does that; accepted).
+    fn far_notices(&mut self, ctx: &egui::Context) {
+        if !self.notify_ready {
+            self.notify_ready = true;
+            ito_prefs::notify_window(ctx);
+        }
+        for tag in ito_prefs::take_clicks() {
+            let Some((gen, rest)) = notify::far_parse(&tag) else { continue };
+            let here = self.browser.link().far();
+            if here.is_some() && self.far_gens.name_of(gen) == here {
+                self.settings_open = false;
+                self.browser.link_run(notify::run_of(rest));
+            }
+        }
+        // `[notify]` was read by the worker, off the UI thread; only the toast and the sound run here.
+        let (notes, cfg) = self.browser.take_far_notes();
+        let gen = self.far_gens.current();
+        for mut note in notes {
+            // Without a place to open (or too long a tag to keep) it only shows.
+            note.tag = notify::far_tag(gen, &note.tag).unwrap_or_default();
+            notify::tell_here(&cfg, &note, self.table.tr("notify.open"));
+        }
+    }
+
     /// F12: the browser opens the issue form filled with the version, the OS
     /// and what the app knows.
     fn report_bug(&self, ctx: &egui::Context) {
@@ -981,6 +1019,7 @@ impl eframe::App for App {
         self.pump_link(&ctx);
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
+        self.far_notices(&ctx);
         self.notice_list(&ctx);
         if !taking {
             self.command_palette(&ctx);

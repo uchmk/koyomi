@@ -141,6 +141,9 @@ pub struct Around<'a> {
     pub defs: &'a [Def],
     /// The definitions staged for a day: this net's shows as a button by the title.
     pub staged: &'a [koyomi_core::next::Entry],
+    /// The engine's date and time now (not this PC's, when the window is on another PC's engine): every "today" of
+    /// the editor, and where its next starts are counted from.
+    pub now: chrono::NaiveDateTime,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -1603,7 +1606,7 @@ impl Editor {
                         None
                     } else {
                         // The first of next month: where a switch most often falls.
-                        let today = ito_common::now::now_local().date_naive();
+                        let today = around.now.date();
                         let first = chrono::Datelike::with_day(&today, 1).and_then(|d| d.checked_add_months(chrono::Months::new(1)));
                         Some(first.map(ito_prefs::format_date).unwrap_or_default())
                     };
@@ -1637,7 +1640,7 @@ impl Editor {
             if let Some(mut day) = self.stage.clone() {
                 let (mut go, mut cancel) = (false, false);
                 ui.horizontal_wrapped(|ui| {
-                    let today = ito_common::now::now_local().date_naive();
+                    let today = around.now.date();
                     let label = t.tr("canvas.stage_from");
                     ui.label(label);
                     let d = ito_prefs::DateField::new(("stage", &self.id), ito_prefs::DateWords::for_lang(t.tr("app.lang")))
@@ -1765,10 +1768,10 @@ impl Editor {
                 }
             });
         });
-        self.drawer(ui, t, (calendars, around.stops), power, &mut action);
+        self.drawer(ui, t, (calendars, around.stops, around.now), power, &mut action);
         egui::Panel::bottom("editor-foot").show(ui, |ui| {
             let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
-            self.foot(ui, t, cal);
+            self.foot(ui, t, cal, around.now);
         });
         egui::CentralPanel::default().show(ui, |ui| {
             if let Some(a) = self.canvas(ui, t, vertical) {
@@ -2121,7 +2124,7 @@ impl Editor {
     }
 
     /// Under the canvas: what the lines and the marks mean, and when the net starts in the next days.
-    fn foot(&self, ui: &mut egui::Ui, t: &Table, cal: Option<&Calendar>) {
+    fn foot(&self, ui: &mut egui::Ui, t: &Table, cal: Option<&Calendar>, now: chrono::NaiveDateTime) {
         let c = ito_theme::colors();
         ui.horizontal_wrapped(|ui| {
             let head = t.tr("canvas.legend");
@@ -2174,7 +2177,6 @@ impl Editor {
                 ito_a11y::say(&r, Role::Label, text);
             }
         });
-        let now = ito_common::now::now_local().naive_local();
         let starts = self.starts(now, STRIP_DAYS, cal);
         ui.horizontal(|ui| {
             let head = t.trf("canvas.strip", &[&STRIP_DAYS.to_string()]);

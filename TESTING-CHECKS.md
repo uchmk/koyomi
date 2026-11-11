@@ -1,6 +1,6 @@
 # Checklist
 
-1264 checks in TESTING.md, 1258 left for a person.
+1277 checks in TESTING.md, 1271 left for a person.
 
 ## 1. Start
 
@@ -1549,7 +1549,7 @@
 - [x] **125.5** Rename `factory` to `Factory` (a case change) → The rename is accepted and written as typed 〔未訳〕
 - [x] **125.6** Rename to the same text (with spaces around it) → The editing closes and koyomi.toml is not written (its timestamp is unchanged) 〔未訳〕
 - [x] **125.7** Rename to an empty name; to `kei` (another connection); to `a b` → One at a time, the status line reads `KOYOMI-E2130 接続先の名前が入力されていません。…`, `KOYOMI-E2131 接続先 kei はすでに存在します。…`, `KOYOMI-E2132 接続先の名前 a b は使用できません。…`; the field stays and nothing is written 〔未訳〕
-- [~] **125.8** With the window on `kei` (press 接続 on its row in the list) open the box → The `kei` row shows the dim text `接続中のため変更できません` and both of its buttons are disabled; the other rows work. Stop kei's engine: the row stays locked while the window is still on kei 〔未訳〕
+- [ ] **125.8** With the window on `kei` (press 接続 on its row in the list) open the box → The `kei` row shows the dim text `接続中のため、名前の変更と削除はできません`; `名前を変更する` and `削除する` are disabled and `URL を変更する` works (132.6); the other rows work. Stop kei's engine: the row stays locked while the window is still on kei 〔未訳〕
 - [x] **125.9** Add `[standby]` with `watch = "works"` to koyomi.toml, then rename `works` to `factory` → The status line reads `KOYOMI-E2138 接続先 works は [standby] の watch で指定されているため、変更できません。…`; koyomi.toml is as before; the row keeps its name. The same for delete, and for `[primary]` `standby` 〔未訳〕
 - [~] **125.10** Press `削除する` on `works` → A question `接続先を削除する` opens: `works を削除します。この PC の koyomi.toml から [[remote]] を削除します。koyomi が作成したシークレット works-token は、ほかから使われていなければ削除します。接続先の PC には何も行いません。` with `削除する` (red) and `キャンセル`; the focus is on `キャンセル` 〔未訳〕
 - [x] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `削除する`, Shift+Tab back; Esc closes the question 〔未訳〕
@@ -1661,3 +1661,19 @@
 - [ ] **131.8** Make a token again for `wtest` (as in 131.5); with its box open, pick この PC in the status-bar list → The question `接続先を切り替える` says `新しいトークンが画面に出ています。表示されるのは 1 回だけで、…`; `キャンセル` keeps the box and the token; then close the box 〔未訳〕
 - [ ] **131.9** On `wtest` press `削除…`; the question; `削除する` → The question `利用者を削除` says `wtest を koyomi.toml から削除します。…`; after `削除する` the card is gone and /me with the token from 131.8 is 401 〔未訳〕
 - [ ] **131.10** After 131.2–131.9, `diff` kei's koyomi.toml with the backup, and `ls <state>/versions/_settings/` → Only the comment line from 131.6 differs; `versions/_settings/` gained a file for each change the window made 〔未訳〕
+
+## 132. A connection's URL, the engine's date, and the engine's notices on this PC (`ui/manage.rs`, `remote.rs`, `ui/mod.rs` `engine_now`, `Notices`)
+
+- [ ] **132.1** With the window on この PC, open `接続先を管理…` and press `URL を変更する` on `kei` → The row turns into `kei` and a field holding kei's URL with the focus in it, with `キャンセル` and `確認して変更する`; the other rows are unchanged. Esc leaves the field and keeps the box; Esc again closes the box 〔未訳〕
+- [ ] **132.2** Type kei's other URL (the same certificate) and press Enter → `新しい URL を確認しています…` with a spinner, and every button off; then the status line of the box reads `kei の URL を https://… に変更しました。`; koyomi.toml has the new `url` in kei's block and every other byte (fingerprint, token line, comments, other `[[remote]]`) as before; the credential store is untouched 〔未訳〕
+- [ ] **132.3** Type `http://kei:1`; then `https://` alone; then a URL where nothing answers → Each time `KOYOMI-E2124 接続先 kei の URL は変更されていません。（…）` with the reason (the URL form; the connection that failed), the field stays with the typed text, and koyomi.toml is not written (its timestamp is unchanged) 〔未訳〕
+- [ ] **132.4** Put a wrong `fingerprint` (change one hex digit) in kei's block by hand; then change kei's URL to its other URL → After the check the box shows `kei の新しい URL が示す指紋は、保存されている指紋と異なります。…`, the fingerprint in full, `同じでした` and `キャンセル`; the field is off. `キャンセル` (or Esc) writes nothing. Again, and `koyomi http fingerprint` on kei shows the same; press `同じでした`: koyomi.toml has the new `url` and kei's real `fingerprint`, every other byte as before 〔未訳〕
+- [ ] **132.5** Point kei's URL at another engine's HTTPS (a different certificate whose token for kei is not valid there), press `同じでした` on its fingerprint → `KOYOMI-E2124 …` with the reason (401 or the like); nothing is written; the field comes back with the typed text 〔未訳〕
+- [ ] **132.6** With the window on kei, open the box → kei's row reads `接続中のため、名前の変更と削除はできません`; `名前を変更する` and `削除する` are off and `URL を変更する` works. Change it to kei's other URL: after `kei の URL を … に変更しました。` the window connects to kei again with the new URL (`このウィンドウは、新しい URL で接続し直します。…`); with an unsaved change in the editor the question `接続先を切り替える` comes first, and `キャンセル` keeps the old URL in use until the window connects again 〔未訳〕
+- [ ] **132.7** Set kei's time zone 9 hours behind this PC (`sudo timedatectl set-timezone UTC`, then restart koyomi there; set it back to `Asia/Tokyo` after) and, between 00:00 and 09:00 on this PC, open the window on kei → The band says the zones differ; 今日's list, the calendar's today mark, the Gantt's now line and 過去 7 日 in 履歴 are kei's date (yesterday on this PC); the clock in the status bar and export file names keep this PC's time 〔未訳〕
+- [ ] **132.8** Pick kei in the status-bar list and open 履歴 at once (before the first snapshot) → `エンジンの日付を待っています…` shows and the range, the presets, `検索` and CSV are off until the snapshot comes; then the history of kei's week is asked once and shown. On この PC 履歴 opens as before, without the line 〔未訳〕
+- [ ] **132.9** With the window on kei as `edit`, make a job net fail on kei (`koyomi run <net>` with a job that exits 1) → Within a few seconds this PC shows a system notification of the failure (the same title and text as kei's tray would show) with `開く`; its sound and focus mode follow this PC's `[notify]`. A notice kept on kei before the window connected is not shown 〔未訳〕
+- [ ] **132.10** Press `開く` (or the notification) from 132.9 → The window comes forward and opens the run on kei. Switch to この PC and press another such notification: the window comes forward and nothing opens 〔未訳〕
+- [ ] **132.11** Restart koyomi on kei; make a job net fail again → The notification of the new failure shows once; none of the notices from before the restart shows again 〔未訳〕
+- [ ] **132.12** As 121.17 with `-d '{"proto": 49, "request": {"Notices": {"boot": null, "since": null}}}'`, with a `view` token, a token narrowed by `nets`, and an `edit` token → `view`: `403` (the request needs `edit`); narrowed: `403`; `edit`: `200`, and the text holds `boot`, `last` and no notes. (The window itself connects only as `edit` or `admin`, not narrowed, so it never asks as the other two) 〔未訳〕
+- [ ] **132.13** With `koyomi tray` running on this PC, make a job fail on this PC's engine and one on kei → Two notifications: this PC's from the tray (its click opens the run on この PC as before) and kei's from the window; neither replaces the other 〔未訳〕

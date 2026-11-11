@@ -182,7 +182,7 @@ impl Browser {
             };
             return;
         };
-        let today = ito_common::now::now_local().date_naive();
+        let today = self.engine_today();
         let (y, m) = self.cal_month.unwrap_or((today.year(), today.month()));
         let days = show::month_days(&cal, y, m);
         // The day whose starts show in the pane: the one picked, or today in this month.
@@ -588,7 +588,7 @@ impl Browser {
                 ui.add(egui::Label::new(egui::RichText::new(t.tr("run.next_unconfirmed")).color(c.wait_text())).wrap());
             }
             let power = Some(show::Sleep::of(&snap.power, net.wake));
-            let now = ito_common::now::now_local().naive_local();
+            let now = self.engine_now();
             for row in show::next_rows(t, &net.when, (&net.quiet, net.on_quiet), Some(cal), now, 10, power.as_ref(), &snap.blackouts) {
                 ui.label(egui::RichText::new(row).monospace().small());
             }

@@ -133,7 +133,7 @@ impl Editor {
         &mut self,
         ui: &mut egui::Ui,
         t: &Table,
-        (calendars, stops): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout]),
+        (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
@@ -194,7 +194,7 @@ impl Editor {
                     egui::ScrollArea::vertical().id_salt("fields_scroll").auto_shrink(false).show(ui, |ui| {
                         Frame::new().inner_margin(Margin::symmetric(14, 12)).show(ui, |ui| match &mut pane {
                             Pane::Part(id, f) => self.part_form(ui, &form, id, f, action),
-                            Pane::Net(f) => self.net_form(ui, &form, f, (calendars, stops), power, action),
+                            Pane::Net(f) => self.net_form(ui, &form, f, (calendars, stops, now), power, action),
                         });
                     });
                 });
@@ -335,7 +335,7 @@ impl Editor {
         ui: &mut egui::Ui,
         form: &Form,
         f: &mut NetFields,
-        (calendars, stops): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout]),
+        (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
@@ -404,7 +404,6 @@ impl Editor {
         fieldset(ui, look, &head, "", |ui| {
             let cal = self.net.calendar.as_ref().and_then(|n| calendars.get(n));
             let sleep = show::Sleep::of(power, self.net.wake);
-            let now = ito_common::now::now_local().naive_local();
             for row in show::next_rows(t, &self.net.when, (&self.net.quiet, self.net.on_quiet), cal, now, 10, Some(&sleep), stops) {
                 let r = ui.label(RichText::new(&row).monospace());
                 ito_a11y::say(&r, Role::Label, &row);

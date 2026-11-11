@@ -23,6 +23,11 @@ enum Got {
     Joined(u64, String, Result<(), String>),
     /// The manage box: its ticket, what was asked, and the outcome line (or why not).
     Managed(u64, Change, Result<String, String>),
+    /// Every `[[remote]]`'s name and URL, for the URL field of the manage box (an error is the names' own).
+    Urls(Vec<(String, String)>),
+    /// The manage box: its ticket, the name, the URL, and the fingerprint that URL shows with whether it is the stored
+    /// one (or why not).
+    UrlPeeked(u64, String, String, Result<(String, bool), String>),
 }
 
 /// What the manage box asked a thread to do to koyomi.toml.
@@ -31,6 +36,8 @@ pub(super) enum Change {
     /// The name it had, and the one it is to have.
     Rename(String, String),
     Delete(String),
+    /// The name and its new URL.
+    Url(String, String),
 }
 
 /// Where the add-a-connection box is. Nothing is written before the last step has passed.
@@ -101,6 +108,14 @@ fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), Str
     crate::remote::finish_add(name, &secret, token, &path, text, &crate::remote::Keyring, ito_common::write_atomic)
 }
 
+/// Sends the names with their secrets, and the URLs.
+fn send_listing(tx: &Sender<Got>) {
+    let _ = tx.send(Got::Names(crate::remote::listed()));
+    if let Ok(urls) = crate::remote::listed_urls() {
+        let _ = tx.send(Got::Urls(urls));
+    }
+}
+
 /// Whether Enter presses the button that goes on at this step. Not at the fingerprint: 同じだった is the person
 /// saying they compared it, and the Enter that sent the form, pressed again or held, must not say that for them.
 fn enter_goes_on(step: AddStep) -> bool {
@@ -123,6 +138,11 @@ pub struct Far {
     joined: Option<String>,
     /// The manage box (rename and delete), while it is open.
     pub(super) manage: Option<Manage>,
+    /// Each name's URL, for the URL field of the manage box.
+    urls: std::collections::BTreeMap<String, String>,
+    /// The connection whose URL was just changed: the window reconnects if it is on it (taken by
+    /// [`Far::take_moved`]).
+    moved: Option<String>,
     /// The state folder: a rename moves the acknowledgement file there.
     state: Option<std::path::PathBuf>,
 }
@@ -141,6 +161,8 @@ impl Far {
             add: None,
             joined: None,
             manage: None,
+            urls: std::collections::BTreeMap::new(),
+            moved: None,
             state: None,
         }
     }
@@ -151,7 +173,7 @@ impl Far {
         far.state = state;
         let (tx, ctx) = (far.tx.clone(), far.ctx.clone());
         std::thread::spawn(move || {
-            let _ = tx.send(Got::Names(crate::remote::listed()));
+            send_listing(&tx);
             ctx.request_repaint();
         });
         far
@@ -209,8 +231,37 @@ impl Far {
                 if let Some(m) = self.manage.as_mut() {
                     m.editing = None;
                     m.asking = None;
+                    // A URL change under way carries its own name and URL; one only typed has nothing left to act on.
+                    if !m.busy {
+                        m.moving = None;
+                    }
                 }
                 self.unread = Some(e);
+            }
+            Got::Urls(urls) => self.urls = urls.into_iter().collect(),
+            Got::UrlPeeked(ticket, name, url, r) => {
+                let Some(m) = self.manage.as_mut().filter(|m| m.ticket == ticket && m.busy) else { return };
+                let Some(v) = m.moving.as_mut().filter(|v| v.from == name && v.step == manage::UrlStep::Peeking) else {
+                    return;
+                };
+                match r {
+                    // The fingerprint is the stored one: nothing to compare, go on to the check.
+                    Ok((fp, true)) => {
+                        v.fp = Some(fp.clone());
+                        v.step = manage::UrlStep::Checking;
+                        self.carry_url(ticket, name, url, fp);
+                    }
+                    Ok((fp, false)) => {
+                        v.fp = Some(fp);
+                        v.step = manage::UrlStep::Compare;
+                        m.busy = false;
+                    }
+                    Err(e) => {
+                        v.step = manage::UrlStep::Form;
+                        m.busy = false;
+                        m.line = Some(Err(msg::line(msg::URL_NOT_CHANGED, &[&name, &e])));
+                    }
+                }
             }
             Got::Peeked(ticket, r) => {
                 if let Some(a) = self.add.as_mut().filter(|a| a.ticket == ticket && a.step == AddStep::Peeking) {
@@ -264,6 +315,16 @@ impl Far {
                         Change::Delete(name) => {
                             self.names.retain(|n| n != name);
                             self.secrets.remove(name);
+                            self.urls.remove(name);
+                        }
+                        Change::Url(name, url) => {
+                            self.urls.insert(name.clone(), url.clone());
+                            self.moved = Some(name.clone());
+                        }
+                    }
+                    if let Change::Rename(old, new) = &change {
+                        if let Some(u) = self.urls.remove(old) {
+                            self.urls.insert(new.clone(), u);
                         }
                     }
                 }
@@ -273,9 +334,16 @@ impl Far {
                         Ok(line) => {
                             m.editing = None;
                             m.asking = None;
+                            m.moving = None;
                             m.line = Some(Ok(line));
                         }
-                        Err(e) => m.line = Some(Err(e)),
+                        Err(e) => {
+                            // A URL that was not changed goes back to its field, to be typed again.
+                            if let Some(v) = m.moving.as_mut() {
+                                v.step = manage::UrlStep::Form;
+                            }
+                            m.line = Some(Err(e));
+                        }
                     }
                 }
             }
@@ -303,7 +371,7 @@ impl Far {
             if !cfg!(test) {
                 let (tx, ctx) = (self.tx.clone(), self.ctx.clone());
                 std::thread::spawn(move || {
-                    let _ = tx.send(Got::Names(crate::remote::listed()));
+                    send_listing(&tx);
                     ctx.request_repaint();
                 });
             }
@@ -378,11 +446,65 @@ impl Far {
         });
     }
 
+    /// 確認して変更する: a URL that cannot be used is said in the box, else the fingerprint it shows is fetched and
+    /// compared with the stored one. Allowed on the connection in use.
+    pub(super) fn manage_url_go(&mut self, name: &str, url: &str) {
+        let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
+        let Some(v) = m.moving.as_mut().filter(|v| v.from == name && v.step == manage::UrlStep::Form) else { return };
+        let (name, url) = (name.trim().to_owned(), url.trim().to_owned());
+        if !crate::remote::url_usable(&url) {
+            m.line = Some(Err(msg::line(msg::URL_NOT_CHANGED, &[&name, &msg::line(msg::URL_BAD, &[])])));
+            return;
+        }
+        v.step = manage::UrlStep::Peeking;
+        m.busy = true;
+        m.line = None;
+        let ticket = m.ticket;
+        // Not in the unit tests, which must not read the owner's koyomi.toml or reach a PC.
+        if cfg!(test) {
+            return;
+        }
+        self.spawn(move || {
+            let r = crate::remote::peek_against(&name, &url);
+            Got::UrlPeeked(ticket, name, url, r)
+        });
+    }
+
+    /// 同じでした: the fingerprint shown is what the other PC says. Only from the step that shows it.
+    pub(super) fn manage_url_same(&mut self) {
+        let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
+        let Some(v) = m.moving.as_mut().filter(|v| v.step == manage::UrlStep::Compare) else { return };
+        let Some(fp) = v.fp.clone() else { return };
+        let (name, url) = (v.from.trim().to_owned(), v.text.trim().to_owned());
+        v.step = manage::UrlStep::Checking;
+        m.busy = true;
+        m.line = None;
+        let ticket = m.ticket;
+        self.carry_url(ticket, name, url, fp);
+    }
+
+    /// The check and then the writing of a new URL, on a thread.
+    fn carry_url(&mut self, ticket: u64, name: String, url: String, fingerprint: String) {
+        // Not in the unit tests, which must not read or write the owner's koyomi.toml.
+        if cfg!(test) {
+            return;
+        }
+        self.spawn(move || {
+            let r = crate::remote::change_url(&name, &url, &fingerprint);
+            Got::Managed(ticket, Change::Url(name, url), r)
+        });
+    }
+
+    /// The name of the connection whose URL was just changed, once: the window reconnects if it is on it.
+    pub fn take_moved(&mut self) -> Option<String> {
+        self.moved.take()
+    }
+
     /// The manage box. `link` is the window's current link (`None`: this PC).
     pub fn manage_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, link: Option<&str>) {
         let Some(m) = self.manage.as_mut() else { return };
         let used = |n: &str| manage::in_use(link, n);
-        match manage::show(m, ctx, t, &self.names, &self.secrets, self.unread.as_deref(), &used) {
+        match manage::show(m, ctx, t, &self.names, &self.secrets, &self.urls, self.unread.as_deref(), &used) {
             Pressed::Nothing => {}
             Pressed::Close => {
                 if !m.busy {
@@ -392,6 +514,8 @@ impl Far {
             Pressed::Add => self.open_add(),
             Pressed::Rename(old, new) => self.manage_rename(t, link, &old, &new),
             Pressed::Delete(name) => self.manage_delete(t, link, &name),
+            Pressed::Url(name, url) => self.manage_url_go(&name, &url),
+            Pressed::UrlSame => self.manage_url_same(),
         }
     }
 
@@ -420,9 +544,7 @@ impl Far {
             Err(NameWhy::Empty) => Some(msg::line(msg::NAME_EMPTY, &[])),
             Err(NameWhy::Taken) => Some(msg::line(msg::NAME_TAKEN, &[&name])),
             Err(NameWhy::Bad) => Some(msg::line(msg::NAME_UNUSABLE, &[&name])),
-            Ok(()) if url.len() <= "https://".len() || !url.starts_with("https://") || url.contains(char::is_whitespace) => {
-                Some(msg::line(msg::URL_BAD, &[]))
-            }
+            Ok(()) if !crate::remote::url_usable(&url) => Some(msg::line(msg::URL_BAD, &[])),
             Ok(()) => None,
         };
         if bad.is_some() {
@@ -967,5 +1089,153 @@ mod tests {
         f.names.clear();
         frame(&mut f, None);
         assert!(f.managing());
+    }
+
+    fn moving(f: &mut Far, name: &str, url: &str) {
+        f.manage.as_mut().unwrap().move_url(name, url);
+    }
+
+    fn step(f: &Far) -> Option<manage::UrlStep> {
+        f.manage.as_ref().unwrap().moving.as_ref().map(|v| v.step)
+    }
+
+    #[test]
+    fn a_bad_url_is_said_and_nothing_is_fetched() {
+        for url in ["", "http://x", "https://", "https://a b"] {
+            let mut f = managing();
+            moving(&mut f, "kei", url);
+            f.manage_url_go("kei", url);
+            let m = f.manage.as_ref().unwrap();
+            assert!(!m.busy && step(&f) == Some(manage::UrlStep::Form), "{url:?}");
+            assert_eq!(m.line, Some(Err(msg::line(msg::URL_NOT_CHANGED, &["kei", &msg::line(msg::URL_BAD, &[])]))));
+        }
+    }
+
+    #[test]
+    fn a_usable_url_goes_to_peeking_and_the_box_is_busy() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage_url_go("kei", " https://new:9000 ");
+        assert!(f.manage_busy() && step(&f) == Some(manage::UrlStep::Peeking));
+        // A second press while busy does nothing.
+        f.manage_url_go("kei", "https://other:1");
+        assert_eq!(step(&f), Some(manage::UrlStep::Peeking));
+    }
+
+    #[test]
+    fn the_same_fingerprint_goes_straight_to_the_check_without_a_question() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage_url_go("kei", "https://new:9000");
+        let t = mticket(&f);
+        f.take(Got::UrlPeeked(t, "kei".into(), "https://new:9000".into(), Ok(("ab".repeat(32), true))));
+        assert!(f.manage_busy() && step(&f) == Some(manage::UrlStep::Checking));
+    }
+
+    #[test]
+    fn another_fingerprint_is_shown_and_waits_for_the_person() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage_url_go("kei", "https://new:9000");
+        let t = mticket(&f);
+        f.take(Got::UrlPeeked(t, "kei".into(), "https://new:9000".into(), Ok(("cd".repeat(32), false))));
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && step(&f) == Some(manage::UrlStep::Compare));
+        assert_eq!(m.moving.as_ref().unwrap().fp, Some("cd".repeat(32)));
+        // Enter does not say 同じでした for the person.
+        let mut m = f.manage.take().unwrap();
+        assert_eq!(m.route(false, true, false), manage::Pressed::Nothing);
+        f.manage = Some(m);
+        assert_eq!(step(&f), Some(manage::UrlStep::Compare));
+        // Only the button does.
+        f.manage_url_same();
+        assert!(f.manage_busy() && step(&f) == Some(manage::UrlStep::Checking));
+    }
+
+    #[test]
+    fn a_refused_look_goes_back_to_the_field_with_the_reason() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage_url_go("kei", "https://new:9000");
+        let t = mticket(&f);
+        f.take(Got::UrlPeeked(t, "kei".into(), "https://new:9000".into(), Err("つながらない".into())));
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && step(&f) == Some(manage::UrlStep::Form));
+        assert_eq!(m.line, Some(Err(msg::line(msg::URL_NOT_CHANGED, &["kei", "つながらない"]))));
+    }
+
+    #[test]
+    fn a_passed_check_sets_the_url_and_asks_the_window_to_reconnect() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage.as_mut().unwrap().busy = true;
+        let t = mticket(&f);
+        f.take(Got::Managed(t, Change::Url("kei".into(), "https://new:9000".into()), Ok("kei の URL を変えた".into())));
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && m.moving.is_none());
+        assert_eq!(m.line, Some(Ok("kei の URL を変えた".into())));
+        assert_eq!(f.urls.get("kei").map(String::as_str), Some("https://new:9000"));
+        assert_eq!(f.take_moved().as_deref(), Some("kei"));
+        assert!(f.take_moved().is_none(), "once");
+    }
+
+    #[test]
+    fn a_failed_check_keeps_the_field_and_changes_nothing() {
+        let mut f = managing();
+        f.urls.insert("kei".into(), "https://old:1".into());
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage.as_mut().unwrap().busy = true;
+        f.manage.as_mut().unwrap().moving.as_mut().unwrap().step = manage::UrlStep::Checking;
+        let t = mticket(&f);
+        f.take(Got::Managed(t, Change::Url("kei".into(), "https://new:9000".into()), Err("401".into())));
+        let m = f.manage.as_ref().unwrap();
+        assert!(!m.busy && step(&f) == Some(manage::UrlStep::Form));
+        assert_eq!(m.line, Some(Err("401".into())));
+        assert_eq!(f.urls.get("kei").map(String::as_str), Some("https://old:1"));
+        assert!(f.take_moved().is_none());
+    }
+
+    #[test]
+    fn an_unreadable_koyomi_toml_drops_a_typed_url_but_not_one_under_way() {
+        let mut f = managing();
+        moving(&mut f, "kei", "https://new:9000");
+        f.take(Got::Names(Err("KOYOMI-E1023 x".into())));
+        assert!(f.manage.as_ref().unwrap().moving.is_none());
+        moving(&mut f, "kei", "https://new:9000");
+        f.manage.as_mut().unwrap().busy = true;
+        f.take(Got::Names(Err("KOYOMI-E1023 x".into())));
+        assert!(f.manage.as_ref().unwrap().moving.is_some());
+    }
+
+    #[test]
+    fn the_url_row_of_the_connection_in_use_is_drawn_and_the_compare_step_too() {
+        let t = ja();
+        let ctx = egui::Context::default();
+        let mut f = managing();
+        f.urls.insert("kei".into(), "https://kei:8443".into());
+        let frame = |f: &mut Far| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| f.manage_box(ui.ctx(), &t, Some("kei")));
+            out.textures_delta.clear();
+        };
+        moving(&mut f, "kei", "https://kei:8443");
+        frame(&mut f);
+        frame(&mut f);
+        // The row of the connection in use drew its URL field: the box is open, the typed URL is the field's.
+        assert!(f.managing());
+        let v = f.manage.as_ref().unwrap().moving.as_ref().unwrap();
+        assert_eq!((v.from.as_str(), v.text.as_str(), v.step), ("kei", "https://kei:8443", manage::UrlStep::Form));
+        for (s, busy) in [(manage::UrlStep::Peeking, true), (manage::UrlStep::Compare, false), (manage::UrlStep::Checking, true)] {
+            let m = f.manage.as_mut().unwrap();
+            m.busy = busy;
+            let v = m.moving.as_mut().unwrap();
+            v.step = s;
+            v.fp = Some("cd".repeat(32));
+            frame(&mut f);
+            // Drawing a step keeps the box open and the change where it was (the compare waits for a press).
+            assert!(f.managing());
+            let m = f.manage.as_ref().unwrap();
+            assert_eq!(m.moving.as_ref().map(|v| (v.step, v.fp.as_deref())), Some((s, Some("cd".repeat(32).as_str()))));
+            assert_eq!(m.busy, busy);
+        }
     }
 }

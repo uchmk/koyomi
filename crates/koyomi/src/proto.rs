@@ -17,7 +17,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 48;
+pub const PROTO: u32 = 49;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -216,6 +216,14 @@ pub enum Request {
     Tray {
         since: Option<u64>,
     },
+    /// The notices the engine keeps for a window on another PC to show (`notify::notices`), as a
+    /// [`NoticesView`]. `boot` and `since` are what the last answer said (`None` for both: the
+    /// first ask, which only learns where the engine is). Another `boot` than the engine's
+    /// (it started again) gets every notice kept, whatever `since` is.
+    Notices {
+        boot: Option<String>,
+        since: Option<u64>,
+    },
     /// A definition sent over HTTP by someone with the `edit` role (TODO 83): checked and
     /// written as [`Request::Save`] does (`base_sha256` the same way), but not confirmed.
     /// It stays unconfirmed, and runs only after this PC's window confirms it.
@@ -388,6 +396,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::VersionText { .. }
         | Request::Uses { .. }
         | Request::CalendarText { .. }
+        | Request::Notices { .. }
         | Request::Propose { .. }
         | Request::Copy { .. }
         | Request::Restore { .. }
@@ -451,6 +460,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::ExportAll
         | Request::Users
         | Request::ConfigText
+        | Request::Notices { .. }
         | Request::Tray { .. } => true,
         Request::Stop
         | Request::Approve { .. }
@@ -743,6 +753,29 @@ pub struct TrayView {
     pub last: u64,
 }
 
+/// What `Notices` answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoticesView {
+    /// Names the engine process (empty: it keeps no notices, it shows them itself).
+    #[serde(default)]
+    pub boot: String,
+    /// The number of the last notice kept (0: none yet).
+    #[serde(default)]
+    pub last: u64,
+    #[serde(default, rename = "note")]
+    pub notes: Vec<Note>,
+}
+
+impl NoticesView {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<NoticesView, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
 impl TrayView {
     pub fn to_toml(&self) -> String {
         toml::to_string(self).unwrap_or_default()
@@ -790,6 +823,29 @@ mod tests {
             let Request::Run { id, date, from, dry, params: got } = round(&sent) else { panic!("not a run") };
             assert_eq!((id.as_str(), date, from.as_deref(), dry, got), ("g/a", None, Some("b"), true, params));
         }
+    }
+
+    #[test]
+    fn a_notices_view_reads_back() {
+        let Request::Notices { boot, since } = round(&Request::Notices { boot: Some("1-2".into()), since: Some(4) }) else {
+            panic!("not notices")
+        };
+        assert_eq!((boot.as_deref(), since), (Some("1-2"), Some(4)));
+        let view = NoticesView {
+            boot: "1-2".into(),
+            last: 9,
+            notes: vec![Note {
+                seq: 9,
+                event: "failed".into(),
+                title: "t".into(),
+                body: "b
+c"
+                .into(),
+                tag: "r1.l".into(),
+            }],
+        };
+        assert_eq!(NoticesView::parse(&view.to_toml()).unwrap(), view);
+        assert_eq!(NoticesView::parse("").unwrap(), NoticesView::default());
     }
 
     #[test]
@@ -890,6 +946,7 @@ mod tests {
             (Request::UserReset { name: "u".into(), base: "b".into() }, Some(Admin)),
             (Request::Stop, None),
             (Request::Tray { since: None }, None),
+            (Request::Notices { boot: None, since: None }, Some(Edit)),
             (Request::Standby { give_back: false }, None),
             (Request::Standby { give_back: true }, None),
             (Request::Over { by: "x".into(), request: Box::new(Request::Status) }, None),
@@ -919,6 +976,7 @@ mod tests {
             Request::Users,
             Request::ConfigText,
             Request::Tray { since: None },
+            Request::Notices { boot: Some("b".into()), since: Some(3) },
         ];
         for r in &reads {
             assert!(r.is_read() && is_read(r), "{r:?}");

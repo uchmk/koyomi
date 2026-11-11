@@ -319,6 +319,18 @@ text = "{0} is in use, so it cannot be changed."
 cause = "The screen is connected to this connection now."
 action = "Switch to another connection, then run it again."
 
+[E2124]
+when = "The URL of a connection could not be changed"
+text = "The URL of {0} was not changed. ({1})"
+cause = "The new URL failed its check, or koyomi.toml could not be rewritten."
+action = "Check the reason, then enter the URL again."
+
+[E2125]
+when = "A connection was changed in koyomi.toml while its new URL was being checked"
+text = "The connection {0} was changed in koyomi.toml while the new URL was being checked. Try again."
+cause = "The token line or the fingerprint used for the check changed before the URL was written."
+action = "Change the URL again."
+
 [E2130]
 when = "The name of a connection is empty"
 text = "The name of the connection is empty."
@@ -4249,6 +4261,8 @@ remote_no_runs = "There is no run today."
 remote_run_done = "{0}: ran jobnet {1}. ({2})"
 remote_renamed = "Renamed {0} to {1}."
 remote_renamed_ack = "Renamed {0} to {1}. The mark of confirmation could not be moved to the new name. ({2})"
+remote_url_changed = "Changed the URL of {0} to {1}."
+remote_url_reconnect = "This window connects again with the new URL. If you cancel that, it keeps the old URL until it connects again."
 remote_removed = "Removed {0}."
 remote_removed_secret_left = "Removed {0}. Secret {1} could not be deleted and is left. ({2})"
 remote_removed_secret_kept = "Removed {0}. Secret {1} is kept. If nothing else uses it, you can delete it with koyomi secret delete {1}."
