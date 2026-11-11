@@ -1,6 +1,6 @@
 # Checklist
 
-1277 checks in TESTING.md, 1271 left for a person.
+1279 checks in TESTING.md, 1273 left for a person.
 
 ## 1. Start
 
@@ -951,6 +951,7 @@
 - [ ] **88.5** `koyomi engine stop` while the tray is up → The icon turns grey with `koyomi: エンジンは起動していません`; start the engine again with `--no-tray` and it comes back without old notifications 〔未訳〕
 - [ ] **88.6** Pick トレイを閉じる → The tray exits; `koyomi engine status` still answers 〔未訳〕
 - [ ] **88.7** `koyomi engine` (with its own tray), then `koyomi tray` → `koyomi tray` says the engine has its own tray and exits 1 〔未訳〕
+- [ ] **88.8** With 88.2's tray up, suspend only the process of `koyomi tray` for about 10 s, make three nets fail meanwhile, then resume it. Suspend and resume by process id (Sysinternals `pssuspend <pid>`, `pssuspend -r <pid>`), never by name: the window, the tray and the engine are all `koyomi.exe`. The command line tells them apart: `Get-CimInstance Win32_Process -Filter "Name='koyomi.exe'"` → One notification `🔔 通知が 3 件あります` with `最後の通知: <the last one's title>` and `開く`; the failed sound once. Its `開く` brings the window forward on 今日 〔未訳〕
 
 ## 89. The engine as a Windows service (`koyomi service`, TODO 86)
 
@@ -1677,3 +1678,4 @@
 - [ ] **132.11** Restart koyomi on kei; make a job net fail again → The notification of the new failure shows once; none of the notices from before the restart shows again 〔未訳〕
 - [x] **132.12** As 121.17 with `-d '{"proto": 49, "request": {"Notices": {"boot": null, "since": null}}}'`, with a `view` token, a token narrowed by `nets`, and an `edit` token → `view`: `403` (the request needs `edit`); narrowed: `403`; `edit`: `200`, and the text holds `boot`, `last` and no notes. (The window itself connects only as `edit` or `admin`, not narrowed, so it never asks as the other two) 〔未訳〕
 - [ ] **132.13** With `koyomi tray` running on this PC, make a job fail on this PC's engine and one on kei → Two notifications: this PC's from the tray (its click opens the run on この PC as before) and kei's from the window; neither replaces the other 〔未訳〕
+- [ ] **132.14** With the window on kei as `edit`, suspend only the window's process for about 30 s (by process id, as in 88.8), make three nets fail on kei meanwhile, then resume it. Then the same with two nets → Three: one system notification `🔔 kei の通知が 3 件あります` with `最後の通知: <the title of the last failure>`, `「開く」で今日の実行を確かめてください。` and `開く`; the failed sound once. `開く` opens 今日 on kei. Two: two notifications as in 132.9 〔未訳〕

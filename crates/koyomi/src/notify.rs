@@ -9,6 +9,7 @@
 //! to until `hide_webhooks = false` says that is meant. A mail's password is
 //! only ever `secret:<name>`.
 
+use std::borrow::Cow;
 use std::collections::VecDeque;
 use std::sync::Mutex;
 
@@ -437,6 +438,78 @@ pub fn tell_here(n: &NotifyCfg, note: &Note, label: &str) {
     show(&here, open.as_ref(), &note.event, &note.title, &note.body);
 }
 
+/// From this many notices in one batch (counting only those this PC shows or sounds) they are told as one.
+pub const BURST: usize = 3;
+
+/// The tag of the one notice that tells a burst ([`tell_all_here`]); a click on it opens 今日.
+/// Run ids begin with `YYYYMMDD-HHMMSS` and [`tag`] only appends `.x`, so no run's tag begins with `~`.
+pub const TODAY_TAG: &str = "~today";
+
+/// The one notice that stands for `notes` when they are a burst, and the config to tell it with; `None`
+/// below [`BURST`]. Only the notes `n` shows or sounds count (as [`tell_here`] shows nothing for the others).
+/// `from` names the PC they come from. The cfg shows the notice if any of them would have been shown and
+/// sounds it if any would have sounded. Its event picks the sound: the failed one when a note that sounds
+/// failed, else the last that sounds, so it never plays a sound `n` leaves off (with none that sounds, the
+/// same among all counted).
+fn many(n: &NotifyCfg, notes: &[Note], t: &Table, from: Option<&str>) -> Option<(NotifyCfg, Note)> {
+    let on = |which: &Option<Vec<String>>, event: &str| which.as_ref().is_some_and(|l| l.iter().any(|e| e == event));
+    let counted: Vec<&Note> = notes.iter().filter(|x| on(&n.system, &x.event) || on(&n.sound, &x.event)).collect();
+    if counted.len() < BURST {
+        return None;
+    }
+    let last = counted[counted.len() - 1];
+    let sounding: Vec<&Note> = counted.iter().copied().filter(|x| on(&n.sound, &x.event)).collect();
+    let by = if sounding.is_empty() { &counted } else { &sounding };
+    let event = if by.iter().any(|x| x.event == "failed") { "failed".to_owned() } else { by[by.len() - 1].event.clone() };
+    let count = counted.len().to_string();
+    let title = match from {
+        None => t.trf("notify.many_title", &[&count]),
+        Some(name) => t.trf("notify.many_title_from", &[&count, name]),
+    };
+    let body = t.trf("notify.many_body", &[&last.title]);
+    let mut cfg = n.clone();
+    cfg.places.clear();
+    cfg.mail_places.clear();
+    cfg.system = Some(if counted.iter().any(|x| on(&n.system, &x.event)) { vec![event.clone()] } else { Vec::new() });
+    cfg.sound = Some(if counted.iter().any(|x| on(&n.sound, &x.event)) { vec![event.clone()] } else { Vec::new() });
+    Some((cfg, Note { seq: last.seq, event, title, body, tag: TODAY_TAG.to_owned() }))
+}
+
+/// Shows on this desktop what the engine kept (`notes`, from the PC named `from`, or this one): each as
+/// [`tell_here`] does, except that a burst, as after a gap (the PC slept, the link was cut and came back,
+/// several nets failed in the same second), is told as ONE notice that says how many there are and what the
+/// last was, and asks to check them; a click on it opens 今日. `tag_of` makes the tag a click comes back with
+/// from a notice's own (it is only called for a non-empty one).
+pub fn tell_all_here(n: &NotifyCfg, notes: &[Note], t: &Table, from: Option<&str>, tag_of: impl Fn(&str) -> String) {
+    for (cfg, note) in plan(n, notes, t, from, tag_of) {
+        tell_here(&cfg, &note, t.tr("notify.open"));
+    }
+}
+
+/// What [`tell_all_here`] tells, in order, each with the config to tell it with: the one notice of a burst,
+/// or else every note as it is, with its tag made by `tag_of`.
+fn plan<'a>(
+    n: &'a NotifyCfg,
+    notes: &[Note],
+    t: &Table,
+    from: Option<&str>,
+    tag_of: impl Fn(&str) -> String,
+) -> Vec<(Cow<'a, NotifyCfg>, Note)> {
+    if let Some((cfg, mut note)) = many(n, notes, t, from) {
+        note.tag = tag_of(TODAY_TAG);
+        return vec![(Cow::Owned(cfg), note)];
+    }
+    let mut told = Vec::with_capacity(notes.len());
+    for note in notes {
+        let mut note = note.clone();
+        if !note.tag.is_empty() {
+            note.tag = tag_of(&note.tag);
+        }
+        told.push((Cow::Borrowed(n), note));
+    }
+    told
+}
+
 /// How often this PC's `[notify]` is read again by whoever shows another engine's notices.
 pub const REREAD: std::time::Duration = std::time::Duration::from_secs(30);
 
@@ -685,6 +758,96 @@ mod tests {
 
     use super::*;
     use koyomi_core::run::{How, Outcome, State};
+
+    fn note(seq: u64, event: &str, title: &str) -> Note {
+        Note { seq, event: event.into(), title: title.into(), body: String::new(), tag: "r1".into() }
+    }
+
+    fn lists(system: &[&str], sound: &[&str]) -> NotifyCfg {
+        let v = |l: &[&str]| Some(l.iter().map(|e| e.to_string()).collect::<Vec<_>>());
+        let mut n = NotifyCfg::default();
+        n.system = v(system);
+        n.sound = v(sound);
+        n
+    }
+
+    #[test]
+    fn a_burst_of_three_is_told_as_one() {
+        let (t, _) = crate::i18n::table("en");
+        let n = lists(&["failed", "done"], &[]);
+        assert!(many(&n, &[note(1, "failed", "a"), note(2, "done", "b")], &t, None).is_none());
+        let (_, one) = many(&n, &[note(1, "failed", "a"), note(2, "done", "b"), note(3, "done", "last")], &t, None).unwrap();
+        assert!(one.title.contains('3'), "{}", one.title);
+        assert!(one.body.contains("last"), "{}", one.body);
+        assert_eq!((one.tag.as_str(), one.seq), (TODAY_TAG, 3));
+    }
+
+    #[test]
+    fn notices_this_pc_neither_shows_nor_sounds_are_not_counted() {
+        let (t, _) = crate::i18n::table("en");
+        let notes = [note(1, "failed", "a"), note(2, "failed", "b"), note(3, "done", "c"), note(4, "done", "d"), note(5, "done", "e")];
+        assert!(many(&lists(&["failed"], &[]), &notes, &t, None).is_none());
+        let mut off = NotifyCfg::default();
+        off.system = None;
+        off.sound = None;
+        assert!(many(&off, &notes, &t, None).is_none());
+    }
+
+    #[test]
+    fn the_one_notice_fails_when_one_failed_and_shows_and_sounds_by_the_rule() {
+        let (t, _) = crate::i18n::table("en");
+        let notes = [note(1, "failed", "a"), note(2, "done", "b"), note(3, "done", "c")];
+        let failed = || Some(vec!["failed".to_owned()]);
+        let (cfg, one) = many(&lists(&["done"], &["failed"]), &notes, &t, None).unwrap();
+        assert_eq!((one.event.as_str(), cfg.system, cfg.sound), ("failed", failed(), failed()));
+        let (cfg, one) = many(&lists(&["done", "failed"], &[]), &notes, &t, None).unwrap();
+        assert_eq!((one.event.as_str(), cfg.system, cfg.sound), ("failed", failed(), Some(Vec::new())));
+        let (cfg, one) = many(&lists(&[], &["failed", "done"]), &notes, &t, None).unwrap();
+        assert_eq!((one.seq, cfg.system, cfg.sound), (3, Some(Vec::new()), failed()));
+        let done = [note(1, "done", "a"), note(2, "done", "b"), note(3, "done", "c")];
+        assert_eq!(many(&lists(&["done"], &[]), &done, &t, None).unwrap().1.event, "done");
+    }
+
+    /// Shown when failed, sounded when done: one failed and two done sound once with the done sound, never
+    /// the failed one this PC leaves off; with only failed ones, it shows and stays quiet.
+    #[test]
+    fn the_one_notice_never_plays_a_sound_this_pc_leaves_off() {
+        let (t, _) = crate::i18n::table("en");
+        let n = lists(&["failed"], &["done"]);
+        let done = || Some(vec!["done".to_owned()]);
+        let (cfg, one) = many(&n, &[note(1, "failed", "a"), note(2, "done", "b"), note(3, "done", "c")], &t, None).unwrap();
+        assert_eq!((one.event.as_str(), cfg.system, cfg.sound), ("done", done(), done()));
+        let (cfg, one) = many(&n, &[note(1, "failed", "a"), note(2, "failed", "b"), note(3, "failed", "c")], &t, None).unwrap();
+        assert_eq!((one.event.as_str(), cfg.system, cfg.sound), ("failed", Some(vec!["failed".to_owned()]), Some(Vec::new())));
+    }
+
+    /// Below a burst every note is told as it is, with its own config and its tag made by `tag_of` (an empty
+    /// tag stays empty); a burst is one notice whose tag `tag_of` makes from [`TODAY_TAG`].
+    #[test]
+    fn the_plan_tells_each_note_below_a_burst_and_one_from_it() {
+        let (t, _) = crate::i18n::table("en");
+        let n = lists(&["failed", "done"], &[]);
+        let tag_of = |tag: &str| format!("7:{tag}");
+        let mut quiet = note(2, "done", "b");
+        quiet.tag.clear();
+        let told = plan(&n, &[note(1, "failed", "a"), quiet], &t, None, tag_of);
+        let tags: Vec<&str> = told.iter().map(|(_, x)| x.tag.as_str()).collect();
+        assert_eq!(tags, ["7:r1", ""]);
+        assert!(told.iter().all(|(cfg, _)| matches!(cfg, Cow::Borrowed(_))));
+        assert_eq!((told[0].1.title.as_str(), told[1].1.seq), ("a", 2));
+        let told = plan(&n, &[note(1, "failed", "a"), note(2, "done", "b"), note(3, "done", "c")], &t, None, tag_of);
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].1.tag, format!("7:{TODAY_TAG}"));
+    }
+
+    #[test]
+    fn the_one_notice_names_the_far_pc() {
+        let (t, _) = crate::i18n::table("ja");
+        let notes = [note(1, "done", "a"), note(2, "done", "b"), note(3, "done", "c")];
+        let (_, one) = many(&lists(&["done"], &[]), &notes, &t, Some("kei")).unwrap();
+        assert!(one.title.contains("kei") && one.title.contains('3'), "{}", one.title);
+        assert_eq!(far_parse(&far_tag(5, TODAY_TAG).unwrap()), Some((5, TODAY_TAG)));
+    }
 
     fn cfg(notify: &str) -> Config {
         Config::parse(&format!("[notify]\n{notify}")).unwrap()

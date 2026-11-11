@@ -243,9 +243,7 @@ pub fn apart() -> i32 {
                             cfg = Some((notify_cfg(), Instant::now()));
                         }
                         if let Some((n, _)) = &cfg {
-                            for note in &v.notes {
-                                notify::tell_here(n, note, t.tr("notify.open"));
-                            }
+                            notify::tell_all_here(n, &v.notes, &t, None, |tag| tag.to_owned());
                         }
                     }
                     since = Some(v.last);
@@ -313,7 +311,16 @@ pub fn from_badge(name: &str) -> Option<State> {
 /// The notices of runs clicked since the last call: the window comes forward on each run.
 pub fn follow_clicks() {
     for tag in ito_prefs::take_clicks() {
-        front(Show::Run(notify::run_of(&tag).to_owned()));
+        front(show_of(&tag));
+    }
+}
+
+/// What a click on a notice tagged `tag` opens: 今日 for a burst told as one, else the run.
+fn show_of(tag: &str) -> Show {
+    if tag == notify::TODAY_TAG {
+        Show::Today
+    } else {
+        Show::Run(notify::run_of(tag).to_owned())
     }
 }
 
@@ -345,6 +352,12 @@ mod tests {
     use super::*;
     use chrono::NaiveDate;
     use koyomi_core::run::How;
+
+    #[test]
+    fn a_click_on_the_burst_opens_today_and_on_a_run_the_run() {
+        assert_eq!(show_of(notify::TODAY_TAG), Show::Today);
+        assert_eq!(show_of("20261030-090000-01.l"), Show::Run("20261030-090000-01".to_owned()));
+    }
 
     fn at(h: u32, m: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 10, 30).unwrap().and_hms_opt(h, m, 0).unwrap()

@@ -281,6 +281,9 @@ caution = "Notices"
 
 [notify]
 open = "Open"
+many_title = "🔔 {0} notices"
+many_title_from = "🔔 {0} notices from {1}"
+many_body = "The last: {0}\nPress Open to check today's runs."
 missed = "{0}: the run at {1} was passed over (the PC was off)"
 recovered_title = "↺ Back to normal"
 recovered = "{0} ended ok again after the abnormal run {1}"

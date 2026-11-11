@@ -952,7 +952,8 @@ impl App {
         }
     }
 
-    /// The notices a far engine kept, shown as this PC's system notifications; a click on one opens its run
+    /// The notices a far engine kept, shown as this PC's system notifications (a burst of them, as after a
+    /// gap, as one that says how many there are and opens 今日); a click on one opens its run
     /// here when the link it was made under is the one in use. Only the notices of a far engine: the window
     /// never takes the local tray's clicks (their tags are not `far_tag`s and are dropped), and a click that
     /// is dropped still brings the window forward (the notifier does that; accepted).
@@ -966,17 +967,19 @@ impl App {
             let here = self.browser.link().far();
             if here.is_some() && self.far_gens.name_of(gen) == here {
                 self.settings_open = false;
-                self.browser.link_run(notify::run_of(rest));
+                if rest == notify::TODAY_TAG {
+                    self.browser.show_today();
+                } else {
+                    self.browser.link_run(notify::run_of(rest));
+                }
             }
         }
         // `[notify]` was read by the worker, off the UI thread; only the toast and the sound run here.
         let (notes, cfg) = self.browser.take_far_notes();
         let gen = self.far_gens.current();
-        for mut note in notes {
-            // Without a place to open (or too long a tag to keep) it only shows.
-            note.tag = notify::far_tag(gen, &note.tag).unwrap_or_default();
-            notify::tell_here(&cfg, &note, self.table.tr("notify.open"));
-        }
+        let name = self.browser.link().far().map(str::to_owned);
+        // Without a place to open (or too long a tag to keep) a notice only shows.
+        notify::tell_all_here(&cfg, &notes, &self.table, name.as_deref(), |tag| notify::far_tag(gen, tag).unwrap_or_default());
     }
 
     /// F12: the browser opens the issue form filled with the version, the OS

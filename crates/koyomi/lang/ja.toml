@@ -280,6 +280,9 @@ caution = "注意"
 
 [notify]
 open = "開く"
+many_title = "🔔 通知が {0} 件あります"
+many_title_from = "🔔 {1} の通知が {0} 件あります"
+many_body = "最後の通知: {0}\n「開く」で今日の実行を確かめてください。"
 missed = "{0}: {1} の実行は時刻を過ぎました（PC が停止していました）"
 recovered_title = "↺ 正常に戻りました"
 recovered = "{0}: 異常終了した実行 {1} のあと、正常に終了しました"
