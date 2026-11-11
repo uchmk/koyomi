@@ -1521,47 +1521,47 @@
 ## 124. The link list in the status bar (`ui/hosts.rs`)
 
 - [~] **124.1** This PC, no `[[remote]]` in koyomi.toml, engine running → The status bar shows the link button `この PC ▴` (see 124.19) 〔未訳〕
-- [ ] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `接続先`, the rows `この PC` and `kei`, then a line, then `接続先を管理…`; the button's dot is green 〔未訳〕
-- [ ] **124.3** kei: with the list open, click outside it; open it again and press Esc → Each closes the list; the window stays on `この PC` 〔未訳〕
-- [ ] **124.4** kei: with the list open, click the button → The list closes 〔未訳〕
-- [ ] **124.5** kei, the engine of kei answering: open the list → `この PC` reads `接続中` with a green dot and has no button; `kei` shows a grey dot and `リモート · 確認中`, then within a few seconds a green dot and `リモート · 応答あり`, with the button 接続 〔未訳〕
-- [ ] **124.6** kei: press 接続 on the `kei` row → The list closes; the window goes to kei (the title reads `koyomi - kei (…)`); the button reads `kei` with a green dot; opened again, `kei` reads `リモート · 接続中` with the button 切断 and `この PC` reads `この PC のエンジン` with a grey dot and the button 接続 〔未訳〕
-- [ ] **124.7** kei, on kei: press 切断 on the `kei` row → The list closes; the window is on `この PC` (the title is `koyomi`) 〔未訳〕
-- [ ] **124.8** kei, on kei: press 接続 on the `この PC` row → The window goes to `この PC`, as 124.7 〔未訳〕
-- [ ] **124.9** kei, on kei: stop the engine on the other machine and wait for the status bar to read `エンジンに接続できません`; open the list → The button's dot is red; the `kei` row reads `リモート · 応答なし` with a red dot and the button 切断; 切断 goes to `この PC` 〔未訳〕
+- [~] **124.2** kei: click the button at the left of the status bar (dot, `この PC`, ▴) → A list opens above the button: the heading `接続先`, the rows `この PC` and `kei`, then a line, then `接続先を管理…`; the button's dot is green 〔未訳〕
+- [x] **124.3** kei: with the list open, click outside it; open it again and press Esc → Each closes the list; the window stays on `この PC` 〔未訳〕
+- [x] **124.4** kei: with the list open, click the button → The list closes 〔未訳〕
+- [~] **124.5** kei, the engine of kei answering: open the list → `この PC` reads `接続中` with a green dot and has no button; `kei` shows a grey dot and `リモート · 確認中`, then within a few seconds a green dot and `リモート · 応答あり`, with the button 接続 〔未訳〕
+- [~] **124.6** kei: press 接続 on the `kei` row → The list closes; the window goes to kei (the title reads `koyomi - kei (…)`); the button reads `kei` with a green dot; opened again, `kei` reads `リモート · 接続中` with the button 切断 and `この PC` reads `この PC のエンジン` with a grey dot and the button 接続 〔未訳〕
+- [x] **124.7** kei, on kei: press 切断 on the `kei` row → The list closes; the window is on `この PC` (the title is `koyomi`) 〔未訳〕
+- [x] **124.8** kei, on kei: press 接続 on the `この PC` row → The window goes to `この PC`, as 124.7 〔未訳〕
+- [~] **124.9** kei, on kei: stop the engine on the other machine and wait for the status bar to read `エンジンに接続できません`; open the list → The button's dot is red; the `kei` row reads `リモート · 応答なし` with a red dot and the button 切断; 切断 goes to `この PC` 〔未訳〕
 - [ ] **124.10** kei, on `この PC`: stop the engine on the other machine; open the list → The `kei` row turns from `リモート · 確認中` to `リモート · 応答なし` with a red dot within about 5 seconds; the window does not freeze meanwhile (scroll the list, move the window, open and close the list); the button 接続 is still there; hovering the row shows the reason 〔未訳〕
-- [ ] **124.11** kei, on `この PC`: after 124.10 press 接続 on the `kei` row → The window goes to kei and the tree says the reason as a coded line, `KOYOMI-E2101 接続先 kei に接続できません。（…）…`; 切断 is on its row 〔未訳〕
-- [ ] **124.12** kei, on `この PC`, kei answering: open the list and leave it; stop kei's engine; wait about 40 seconds → The `kei` row changes to `リモート · 応答なし` by itself, without closing the list; start the engine and wait about 40 seconds again: it goes back to `リモート · 応答あり` 〔未訳〕
-- [ ] **124.13** kei, on `この PC`: close the list; stop kei's engine; wait 40 seconds; open the list → The row is `リモート · 応答なし` within about 5 seconds of opening (a check runs on opening) 〔未訳〕
-- [ ] **124.14** two: open the list on `この PC` → Both `kei` and `works` get their dot and second line within about 5 seconds each; one that is off does not hold up the other 〔未訳〕
-- [ ] **124.15** kei, with 10 or more `[[remote]]` blocks in koyomi.toml (copies of kei's under other names): open the list → The rows scroll inside the list (the list stops at about 420 px high); `接続先を管理…` stays in view at the bottom while the rows scroll; the window does not freeze while the dead ones are asked 〔未訳〕
-- [ ] **124.16** kei: press `接続先を管理…` → The list closes and the box `接続先の管理` opens (§125) 〔未訳〕
+- [x] **124.11** kei, on `この PC`: after 124.10 press 接続 on the `kei` row → The window goes to kei and the tree says the reason as a coded line, `KOYOMI-E2101 接続先 kei に接続できません。（…）…`; 切断 is on its row 〔未訳〕
+- [x] **124.12** kei, on `この PC`, kei answering: open the list and leave it; stop kei's engine; wait about 40 seconds → The `kei` row changes to `リモート · 応答なし` by itself, without closing the list; start the engine and wait about 40 seconds again: it goes back to `リモート · 応答あり` 〔未訳〕
+- [x] **124.13** kei, on `この PC`: close the list; stop kei's engine; wait 40 seconds; open the list → The row is `リモート · 応答なし` within about 5 seconds of opening (a check runs on opening) 〔未訳〕
+- [~] **124.14** two: open the list on `この PC` → Both `kei` and `works` get their dot and second line within about 5 seconds each; one that is off does not hold up the other 〔未訳〕
+- [~] **124.15** kei, with 10 or more `[[remote]]` blocks in koyomi.toml (copies of kei's under other names): open the list → The rows scroll inside the list (the list stops at about 420 px high); `接続先を管理…` stays in view at the bottom while the rows scroll; the window does not freeze while the dead ones are asked 〔未訳〕
+- [x] **124.16** kei: press `接続先を管理…` → The list closes and the box `接続先の管理` opens (§125) 〔未訳〕
 - [ ] **124.17** kei, the engine of `この PC` stopped (and no service starts it): the tree shows `KOYOMI-E3161 ジョブネットの一覧を取得できません。（…）…`; open the list from the status-bar button → The tree has no button of its own; the list is there; the button's dot is red and the `この PC` row reads `応答なし` 〔未訳〕
-- [ ] **124.18** kei: with the language set to English (Settings → General) → The heading reads `Connections`; the second lines read `Connected`, `This PC's engine`, `Remote · answering`, `Remote · no answer`, `Remote · connected`, `Remote · checking`; the buttons read `Connect` and `Disconnect` 〔未訳〕
+- [x] **124.18** kei: with the language set to English (Settings → General) → The heading reads `Connections`; the second lines read `Connected`, `This PC's engine`, `Remote · answering`, `Remote · no answer`, `Remote · connected`, `Remote · checking`; the buttons read `Connect` and `Disconnect` 〔未訳〕
 - [x] **124.19** This PC, no `[[remote]]` in koyomi.toml: open the window, then press `この PC ▴` in the status bar → The status bar shows `この PC ▴`; the list has the row `この PC` and `接続先を管理…`; pressing `接続先を管理…` opens the box `接続先の管理`, which says `接続先はまだありません。` and offers `接続先を追加する…` 〔未訳〕
 
 ## 125. Renaming and deleting a connection (`ui/manage.rs`, `remote.rs`)
 
-- [ ] **125.1** Open the status-bar list, press `接続先を管理…` → The list closes; the box `接続先の管理` opens in the middle with one row per `[[remote]]` in the order of koyomi.toml, each with `名前を変更する` and `削除する`, and at the bottom `接続先を追加する…` at the left and `閉じる` at the right 〔未訳〕
-- [ ] **125.2** Palette → `接続先を管理する` → The same box opens. Esc closes it 〔未訳〕
-- [ ] **125.3** In the box press `名前を変更する` on `works` → The row turns into a field holding `works` with the focus in it, and `変更する` and `キャンセル`; the other rows are unchanged. Esc leaves the editing and keeps the box; Esc again closes the box 〔未訳〕
-- [ ] **125.4** Rename `works` to `factory`: type it and press Enter → The status line reads `works の名前を factory に変更しました。`; the row now reads `factory`; koyomi.toml has `name = "factory"` in that block and every other line of the block (url, fingerprint, token) as before; the window's PC list shows `factory` 〔未訳〕
-- [ ] **125.5** Rename `factory` to `Factory` (a case change) → The rename is accepted and written as typed 〔未訳〕
-- [ ] **125.6** Rename to the same text (with spaces around it) → The editing closes and koyomi.toml is not written (its timestamp is unchanged) 〔未訳〕
-- [ ] **125.7** Rename to an empty name; to `kei` (another connection); to `a b` → One at a time, the status line reads `KOYOMI-E2130 接続先の名前が入力されていません。…`, `KOYOMI-E2131 接続先 kei はすでに存在します。…`, `KOYOMI-E2132 接続先の名前 a b は使用できません。…`; the field stays and nothing is written 〔未訳〕
-- [ ] **125.8** With the window on `kei` (press 接続 on its row in the list) open the box → The `kei` row shows the dim text `接続中のため変更できません` and both of its buttons are disabled; the other rows work. Stop kei's engine: the row stays locked while the window is still on kei 〔未訳〕
-- [ ] **125.9** Add `[standby]` with `watch = "works"` to koyomi.toml, then rename `works` to `factory` → The status line reads `KOYOMI-E2138 接続先 works は [standby] の watch で指定されているため、変更できません。…`; koyomi.toml is as before; the row keeps its name. The same for delete, and for `[primary]` `standby` 〔未訳〕
-- [ ] **125.10** Press `削除する` on `works` → A question `接続先を削除する` opens: `works を削除します。この PC の koyomi.toml から [[remote]] を削除します。koyomi が作成したシークレット works-token は、ほかから使われていなければ削除します。接続先の PC には何も行いません。` with `削除する` (red) and `キャンセル`; the focus is on `キャンセル` 〔未訳〕
-- [ ] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `削除する`, Shift+Tab back; Esc closes the question 〔未訳〕
+- [~] **125.1** Open the status-bar list, press `接続先を管理…` → The list closes; the box `接続先の管理` opens in the middle with one row per `[[remote]]` in the order of koyomi.toml, each with `名前を変更する` and `削除する`, and at the bottom `接続先を追加する…` at the left and `閉じる` at the right 〔未訳〕
+- [x] **125.2** Palette → `接続先を管理する` → The same box opens. Esc closes it 〔未訳〕
+- [x] **125.3** In the box press `名前を変更する` on `works` → The row turns into a field holding `works` with the focus in it, and `変更する` and `キャンセル`; the other rows are unchanged. Esc leaves the editing and keeps the box; Esc again closes the box 〔未訳〕
+- [x] **125.4** Rename `works` to `factory`: type it and press Enter → The status line reads `works の名前を factory に変更しました。`; the row now reads `factory`; koyomi.toml has `name = "factory"` in that block and every other line of the block (url, fingerprint, token) as before; the window's PC list shows `factory` 〔未訳〕
+- [x] **125.5** Rename `factory` to `Factory` (a case change) → The rename is accepted and written as typed 〔未訳〕
+- [x] **125.6** Rename to the same text (with spaces around it) → The editing closes and koyomi.toml is not written (its timestamp is unchanged) 〔未訳〕
+- [x] **125.7** Rename to an empty name; to `kei` (another connection); to `a b` → One at a time, the status line reads `KOYOMI-E2130 接続先の名前が入力されていません。…`, `KOYOMI-E2131 接続先 kei はすでに存在します。…`, `KOYOMI-E2132 接続先の名前 a b は使用できません。…`; the field stays and nothing is written 〔未訳〕
+- [~] **125.8** With the window on `kei` (press 接続 on its row in the list) open the box → The `kei` row shows the dim text `接続中のため変更できません` and both of its buttons are disabled; the other rows work. Stop kei's engine: the row stays locked while the window is still on kei 〔未訳〕
+- [x] **125.9** Add `[standby]` with `watch = "works"` to koyomi.toml, then rename `works` to `factory` → The status line reads `KOYOMI-E2138 接続先 works は [standby] の watch で指定されているため、変更できません。…`; koyomi.toml is as before; the row keeps its name. The same for delete, and for `[primary]` `standby` 〔未訳〕
+- [~] **125.10** Press `削除する` on `works` → A question `接続先を削除する` opens: `works を削除します。この PC の koyomi.toml から [[remote]] を削除します。koyomi が作成したシークレット works-token は、ほかから使われていなければ削除します。接続先の PC には何も行いません。` with `削除する` (red) and `キャンセル`; the focus is on `キャンセル` 〔未訳〕
+- [x] **125.11** In the question press Enter at once → Nothing is deleted: the question closes and `works` is still there. Open it again: Tab moves the focus to `削除する`, Shift+Tab back; Esc closes the question 〔未訳〕
 - [ ] **125.12** In the question press Tab, then Enter → The status line reads `works を削除しました。` with a note about the secret as it was handled; the row is gone from the box and the status-bar list; koyomi.toml has no `works` block and its other lines and comments are as before 〔未訳〕
 - [x] **125.13** Delete the last connection → The box reads `接続先はまだありません。`; the status-bar link button stays as `この PC ▴`, and its list holds `この PC` and `接続先を管理…` 〔未訳〕
-- [ ] **125.14** Put a `.toml` file in the settings folder (a job net or calendar) with a string `secret:works-token` in it, then delete `works` → The status line says the secret `works-token` was kept, with `koyomi secret delete works-token` to remove it; `koyomi secret check works-token` prints `シークレット works-token は存在します。` 〔未訳〕
-- [ ] **125.15** Rename `works` to `factory`, then delete `factory` → The secret `works-token` is not deleted with the connection: the token still reads `secret:works-token`, so the status line names it as kept (its name is not `factory-token`) 〔未訳〕
+- [x] **125.14** Put a `.toml` file in the settings folder (a job net or calendar) with a string `secret:works-token` in it, then delete `works` → The status line says the secret `works-token` was kept, with `koyomi secret delete works-token` to remove it; `koyomi secret check works-token` prints `シークレット works-token は存在します。` 〔未訳〕
+- [x] **125.15** Rename `works` to `factory`, then delete `factory` → The secret `works-token` is not deleted with the connection: the token still reads `secret:works-token`, so the status line names it as kept (its name is not `factory-token`) 〔未訳〕
 - [ ] **125.16** Delete `works` (its `works-token` is deleted with it); in the credential manager create a secret `works-token` by hand; then add a connection named `works`, to a PC that answers and with its token (the check comes after those) → The add box stops with `KOYOMI-E2136 秘密 works-token はすでに存在します。…`; nothing is written 〔未訳〕
 - [ ] **125.17** While a delete or rename is carried out (a slow disk, or press and watch), look at the box → A spinner shows, every button is disabled, Esc does nothing, and the list's other connection buttons do not switch the link until it is done 〔未訳〕
 - [ ] **125.18** Rename `works` after it had acknowledged failures (`確認済み` in its window) → After the rename the acknowledgements of the new name are those of the old one 〔未訳〕
 - [ ] **125.19** Open the add box, then the manage box through the palette; then the reverse → Only one of the two is open at a time 〔未訳〕
-- [ ] **125.20** With the box open and a row's name being typed, pick another connection in the status-bar list → The box closes and the window switches; nothing is renamed 〔未訳〕
+- [x] **125.20** With the box open and a row's name being typed, pick another connection in the status-bar list → The box closes and the window switches; nothing is renamed 〔未訳〕
 
 ## 126. Top tabs and the calendar switcher
 
