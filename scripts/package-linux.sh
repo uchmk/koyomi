@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Pack the koyomi engine for Debian: dist/koyomi-<ver>-linux-<arch>.tar.gz with
-# the binary, install.sh, koyomi-secret, the unit and the README.
+# the binary, install.sh, koyomi-secret, koyomi-user, the unit and the README.
 #
 #   scripts/package-linux.sh [x86_64|aarch64] [--binary <path>]
 #
@@ -61,13 +61,13 @@ name="koyomi-$ver-linux-$arch"
 rm -rf "dist/$name" "dist/$name.tar.gz" "dist/$name.tar"
 mkdir -p "dist/$name"
 cp "$binary" "dist/$name/koyomi"
-cp packaging/linux/install.sh packaging/linux/koyomi-secret packaging/linux/koyomi.service packaging/linux/README.md "dist/$name/"
+cp packaging/linux/install.sh packaging/linux/koyomi-secret packaging/linux/koyomi-user packaging/linux/koyomi.service packaging/linux/README.md "dist/$name/"
 
 # Relative paths from dist/, so no drive letter `:` reaches tar.
 (
   cd dist
   own=(--owner=0 --group=0 --numeric-owner)
-  tar -cf "$name.tar" "${own[@]}" --mode=0755 "$name/koyomi" "$name/install.sh" "$name/koyomi-secret"
+  tar -cf "$name.tar" "${own[@]}" --mode=0755 "$name/koyomi" "$name/install.sh" "$name/koyomi-secret" "$name/koyomi-user"
   tar -rf "$name.tar" "${own[@]}" --mode=0644 "$name/koyomi.service" "$name/README.md"
   gzip -f "$name.tar"
 )

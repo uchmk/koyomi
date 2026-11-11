@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### 追加
+- `koyomi user`: koyomi.toml の `[[http.user]]` を、エンジンに頼んで一覧・役割の変更・削除をする。`koyomi user list` は名前・役割・見るジョブネット・ジョブネットごとの役割・トークンの状態（登録済み・未登録・読み取れない・Tailscale のみ）を出す。トークンの値は出さない。`koyomi user role <名前> <view|run|edit|admin> [--nets <パターン>]… [--roles <パターン>=<役割>]…` で役割を変え、`koyomi user remove <名前>` で消す。書き換えは、一覧を読んだときの koyomi.toml と比べ、その間に変わっていれば断る。最後の admin を外すこと、HTTPS の admin が自分を admin から外すことと自分を消すことは断る。コメントはそのまま残り、数秒以内にエンジンに反映される。窓とコマンドが使う door の要求 `Users`・`UserSet`・`UserRemove` は admin だけ。確かめるのは `users::` と `engine::` のテスト。
+- `koyomi config [<ファイル>]`: koyomi.toml の要約（同時実行数、保存日数、HTTP の待ち受け、利用者の名前、`[[remote]]`、通知先の名前と数、standby など）を出す。トークン・Webhook の URL・メールのアドレスは出さない。エンジンに頼まず、ファイルを読むだけ。
+- Debian: `sudo koyomi-user list|role|remove …` で、エンジンの利用者 koyomi として `koyomi user` を実行する。`install.sh` が `/usr/local/sbin` に置く。
+
 ### 修正
 - 電源断などでエンジンが止まり、2 日以上たってから起動すると、そのとき動いていた実行が履歴に未完了のまま残っていたのを直した。起動のときに、昨日より前の日の履歴（保管の zip は除く）も見て、未完了の実行をその日の履歴の中で「異常」として閉じ、終わりを通知する。前の業務日の実行なので、後続のジョブネット（`after =`）は起動しない。読み込めない日の履歴は書き換えない。この版で初めて起動したときは、前から残っていた未完了の実行も同じように閉じて通知する。確かめるのは `runner::` のテスト。
 

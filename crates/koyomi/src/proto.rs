@@ -17,7 +17,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 45;
+pub const PROTO: u32 = 46;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -272,6 +272,24 @@ pub enum Request {
     },
     /// Everything in the settings folder as one bundle (`koyomi export --all`), as its TOML.
     ExportAll,
+    /// The `[[http.user]]` of koyomi.toml and how the engine sees each one's token, as a
+    /// [`koyomi_core::users::Listing`] (its `base` is what the two requests below are made against).
+    /// Never a token value.
+    Users,
+    /// Give the user `name` the role `role` and `nets` and `roles` (`None`: the key is taken out), if
+    /// koyomi.toml still hashes to `base`. The engine's sweep takes it up within a few seconds.
+    UserSet {
+        name: String,
+        role: String,
+        nets: Option<Vec<String>>,
+        roles: Option<BTreeMap<String, String>>,
+        base: String,
+    },
+    /// Take the user `name` out of koyomi.toml, if it still hashes to `base`.
+    UserRemove {
+        name: String,
+        base: String,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -345,7 +363,10 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::CalendarRename { .. }
         | Request::CalendarDelete { .. }
         | Request::HolidayTable { .. }
-        | Request::ExportAll => Some(Role::Admin),
+        | Request::ExportAll
+        | Request::Users
+        | Request::UserSet { .. }
+        | Request::UserRemove { .. } => Some(Role::Admin),
         Request::Stop
         | Request::Tray { .. }
         | Request::Standby { .. }
@@ -382,6 +403,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::Uses { .. }
         | Request::CalendarText { .. }
         | Request::ExportAll
+        | Request::Users
         | Request::Tray { .. } => true,
         Request::Stop
         | Request::Approve { .. }
@@ -412,7 +434,9 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarPut { .. }
         | Request::CalendarRename { .. }
         | Request::CalendarDelete { .. }
-        | Request::HolidayTable { .. } => false,
+        | Request::HolidayTable { .. }
+        | Request::UserSet { .. }
+        | Request::UserRemove { .. } => false,
     }
 }
 
@@ -807,6 +831,9 @@ mod tests {
             (Request::CalendarDelete { name: "c".into(), base_sha256: "s".into() }, Some(Admin)),
             (Request::HolidayTable { bytes: vec![1] }, Some(Admin)),
             (Request::ExportAll, Some(Admin)),
+            (Request::Users, Some(Admin)),
+            (Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
+            (Request::UserRemove { name: "u".into(), base: "b".into() }, Some(Admin)),
             (Request::Stop, None),
             (Request::Tray { since: None }, None),
             (Request::Standby { give_back: false }, None),
@@ -835,6 +862,7 @@ mod tests {
             Request::Uses { target: "t".into() },
             Request::CalendarText { name: "c".into() },
             Request::ExportAll,
+            Request::Users,
             Request::Tray { since: None },
         ];
         for r in &reads {
@@ -853,6 +881,8 @@ mod tests {
             Request::CalendarPut { name: "c".into(), text: String::new(), base_sha256: None },
             Request::HolidayTable { bytes: Vec::new() },
             Request::Propose { id: id(), text: "x".into(), base_sha256: None },
+            Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
+            Request::UserRemove { name: "u".into(), base: "b".into() },
         ];
         for r in &writes {
             assert!(!r.is_read(), "{r:?}");
@@ -868,6 +898,18 @@ mod tests {
         let put = Request::CalendarPut { name: "c".into(), text: "t".into(), base_sha256: Some("b".into()) };
         let Request::CalendarPut { name, base_sha256, .. } = round(&put) else { panic!("not a put") };
         assert_eq!((name.as_str(), base_sha256.as_deref()), ("c", Some("b")));
+        let set = Request::UserSet {
+            name: "u".into(),
+            role: "run".into(),
+            nets: Some(vec!["経理/*".into()]),
+            roles: Some(BTreeMap::from([("基盤/*".to_owned(), "view".to_owned())])),
+            base: "b".into(),
+        };
+        let Request::UserSet { name, nets, roles, base, .. } = round(&set) else { panic!("not a user set") };
+        assert_eq!((name.as_str(), base.as_str()), ("u", "b"));
+        assert_eq!(nets, Some(vec!["経理/*".to_owned()]));
+        assert_eq!(roles.and_then(|r| r.get("基盤/*").cloned()).as_deref(), Some("view"));
+        assert!(matches!(round(&Request::Users), Request::Users));
         let json = serde_json::to_string(&Request::HolidayTable { bytes: vec![1, 2] }).unwrap();
         assert!(matches!(serde_json::from_str::<Request>(&json), Ok(Request::HolidayTable { bytes }) if bytes == [1, 2]));
         // A stage written without `expect` (a client before PROTO 45) reads as one with none.

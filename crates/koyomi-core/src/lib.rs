@@ -34,6 +34,7 @@ pub mod scan;
 pub mod standby;
 pub mod task;
 pub mod template;
+pub mod users;
 pub mod uses;
 pub mod when;
 pub mod write;

@@ -80,7 +80,7 @@ if [ "$mode" = uninstall ]; then
   if [ -f "$unit" ]; then
     systemctl disable --now koyomi || die "koyomi を停止できませんでした。何も削除していません。"
   fi
-  rm -f "$unit" /usr/local/bin/koyomi /usr/local/sbin/koyomi-secret
+  rm -f "$unit" /usr/local/bin/koyomi /usr/local/sbin/koyomi-secret /usr/local/sbin/koyomi-user
   systemctl daemon-reload || true
   echo "koyomi のサービスと実行ファイルを削除しました。"
   echo "次は残してあります。不要な場合は、ご自身で削除してください (ここでは実行しません)。"
@@ -94,7 +94,7 @@ fi
 
 # 1. Check the environment and the package.
 [ -d /run/systemd/system ] || die "systemd で動作していません。この手順には systemd が必要です。"
-for f in koyomi koyomi.service koyomi-secret; do
+for f in koyomi koyomi.service koyomi-secret koyomi-user; do
   [ -f "$here/$f" ] || die "$here に $f がありません。展開したフォルダーで実行してください。"
 done
 if ! ver_out=$("$here/koyomi" --version 2>&1); then
@@ -145,6 +145,7 @@ trap 'echo "途中で失敗しました。koyomi は起動していません。�
 install -m 0755 -o root -g root "$here/koyomi" /usr/local/bin/koyomi
 install -d -m 0755 /usr/local/sbin
 install -m 0755 -o root -g root "$here/koyomi-secret" /usr/local/sbin/koyomi-secret
+install -m 0755 -o root -g root "$here/koyomi-user" /usr/local/sbin/koyomi-user
 install -m 0644 -o root -g root "$here/koyomi.service" "$unit"
 systemctl daemon-reload
 

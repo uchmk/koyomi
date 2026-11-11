@@ -2141,6 +2141,76 @@ impl State {
         Ok(b.to_toml())
     }
 
+    /// koyomi.toml's text, for the users; `None` when there is no such file.
+    fn users_text(&self) -> Result<Option<String>, String> {
+        match std::fs::read_to_string(&self.paths.config) {
+            Ok(text) => Ok(Some(text)),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(&self.paths.config), &e.to_string()])),
+        }
+    }
+
+    /// See [`Request::Users`]: only the state of each token, never its value or the store's own words.
+    fn users(&self) -> Result<String, String> {
+        use koyomi_core::users::{Listed, Listing, Token};
+        let text = self.users_text()?.unwrap_or_default();
+        let user = koyomi_core::users::list(&text)?
+            .into_iter()
+            .map(|user| {
+                let token = match user.secret.as_deref() {
+                    None => Token::None,
+                    Some(name) => match ito_secret::get("koyomi", name) {
+                        Ok(Some(v)) if !v.is_empty() => Token::Ok,
+                        Ok(_) => Token::Missing,
+                        Err(_) => Token::Unreadable,
+                    },
+                };
+                Listed { user, token }
+            })
+            .collect();
+        Ok(Listing { base: koyomi_core::users::sha256(&text), user }.to_toml())
+    }
+
+    /// koyomi.toml's text for a change of the users: it must be there, and still be what `base` says.
+    fn users_base(&self, base: &str) -> Result<String, String> {
+        let text = self.users_text()?.ok_or_else(|| koyomi_core::msg::line(koyomi_core::msg::USER_NO_FILE, &[]))?;
+        if koyomi_core::users::sha256(&text) != base {
+            return Err(koyomi_core::msg::line(koyomi_core::msg::USER_BASE_CHANGED, &[]));
+        }
+        Ok(text)
+    }
+
+    /// Writes koyomi.toml. Nothing is reloaded here: the sweep reads it within a few seconds and the HTTP
+    /// listener restarts then; the reply in flight is not cut (each connection has its own thread).
+    fn users_write(&self, text: &str) -> Result<(), String> {
+        ito_common::write_atomic(&self.paths.config, text).map_err(|e| write_failed(&self.paths.config, &e))
+    }
+
+    /// See [`Request::UserSet`].
+    fn user_set(
+        &self,
+        name: &str,
+        role: &str,
+        nets: Option<Vec<String>>,
+        roles: Option<BTreeMap<String, String>>,
+        base: &str,
+    ) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let text = self.users_base(base)?;
+        let out = koyomi_core::users::set(&text, name, role, nets, roles)?;
+        self.users_write(&out)?;
+        Ok(msg::note(msg::N_USER_SET_DONE, &[name.trim()]))
+    }
+
+    /// See [`Request::UserRemove`].
+    fn user_remove(&self, name: &str, base: &str) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let text = self.users_base(base)?;
+        let out = koyomi_core::users::remove(&text, name)?;
+        self.users_write(&out)?;
+        Ok(msg::note(msg::N_USER_REMOVE_DONE_ENGINE, &[name.trim()]))
+    }
+
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
         self.paths.state.join("versions").join(group).join(name)
     }
@@ -2482,6 +2552,18 @@ impl State {
             Request::Over { .. } => return Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
             r => (r, ""),
         };
+        // Over HTTPS an admin cannot take away their own admin: they would lock themselves out. Another
+        // admin can, and so can someone at this PC (`by` is empty there).
+        if !by.is_empty() {
+            let own = match request {
+                Request::UserSet { name, role, .. } => name.trim() == by && role.trim() != "admin",
+                Request::UserRemove { name, .. } => name.trim() == by,
+                _ => false,
+            };
+            if own {
+                return Err(msg::line(msg::USER_OWN_ADMIN, &[]));
+            }
+        }
         let out = self.dispatch(request);
         if let Ok(text) = &out {
             if let Some((op, target)) = by_hand(request) {
@@ -2556,6 +2638,9 @@ impl State {
             Request::CalendarDelete { name, base_sha256 } => self.calendar_delete(name, base_sha256),
             Request::HolidayTable { bytes } => self.holiday_table(bytes),
             Request::ExportAll => self.export_all(),
+            Request::Users => self.users(),
+            Request::UserSet { name, role, nets, roles, base } => self.user_set(name, role, nets.clone(), roles.clone(), base),
+            Request::UserRemove { name, base } => self.user_remove(name, base),
             Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
     }
@@ -2600,6 +2685,8 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::CalendarRename { from, to } => ("calendar-rename", format!("{from} {to}")),
         Request::CalendarDelete { name, .. } => ("calendar-delete", name.clone()),
         Request::HolidayTable { .. } => ("holiday-table", String::new()),
+        Request::UserSet { name, .. } => ("user-set", name.clone()),
+        Request::UserRemove { name, .. } => ("user-remove", name.clone()),
         _ => return None,
     })
 }
@@ -3947,6 +4034,81 @@ run = [\"x.exe\"]
         let put = Request::CalendarPut { name: "会社".into(), text: "format = 1\n".into(), base_sha256: None };
         assert!(s.answer(&over("root", put)).is_ok());
         assert!(s.runner.ops(today, today).unwrap().join("\n").contains("calendar-save"));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// The users are listed, changed and removed through the door; a stale base and an admin taking
+    /// away their own admin over HTTPS are refused, and each change is written down.
+    #[test]
+    fn the_users_are_changed_through_the_door() {
+        use koyomi_core::users::{Listing, Token};
+        let paths = temp_paths("door-users");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let file = "# settings
+[http]
+port = 8700
+tailnet = 8701
+
+[[http.user]]
+name = \"boss\"
+role = \"admin\"
+tailscale = \"boss@example.com\"
+
+[[http.user]]
+name = \"ann\"
+role = \"run\"
+tailscale = \"ann@example.com\"
+nets = [\"a/*\"]
+";
+        std::fs::write(&paths.config, file).unwrap();
+        let mut s = State::new(paths.clone());
+        let over = |by: &str, request: Request| Request::Over { by: by.to_owned(), request: Box::new(request) };
+        let listing = |s: &mut State| Listing::parse(&s.answer(&Request::Users).unwrap()).unwrap();
+        let first = listing(&mut s);
+        assert_eq!(first.user.len(), 2);
+        assert!(first.user.iter().all(|u| u.token == Token::None));
+        // A stale base is refused and nothing is written.
+        let set = |base: &str, name: &str, role: &str| Request::UserSet {
+            name: name.into(),
+            role: role.into(),
+            nets: None,
+            roles: None,
+            base: base.into(),
+        };
+        assert!(s.answer(&set("0000", "ann", "edit")).is_err());
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        // Someone at this PC (no `by`) changes a role; the rest of the file stays as it was.
+        assert!(s.answer(&set(&first.base, "ann", "edit")).is_ok());
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(
+            text.starts_with(
+                "# settings
+[http]
+port = 8700
+"
+            ) && text.contains("role = \"edit\""),
+            "{text}"
+        );
+        assert!(!text.contains("nets"), "{text}");
+        // Over HTTPS an admin cannot take away their own admin, nor remove themselves.
+        let base = listing(&mut s).base;
+        assert!(s.answer(&over("boss", set(&base, "boss", "run"))).is_err());
+        assert!(s.answer(&over("boss", Request::UserRemove { name: "boss".into(), base: base.clone() })).is_err());
+        assert!(s.answer(&over("boss", set(&base, "boss", "admin"))).is_ok());
+        // Another admin can; the last admin cannot go.
+        let base = listing(&mut s).base;
+        assert!(s.answer(&over("ann", set(&base, "ann", "admin"))).is_ok());
+        let base = listing(&mut s).base;
+        assert!(s.answer(&over("ann", Request::UserRemove { name: "boss".into(), base })).is_ok());
+        let base = listing(&mut s).base;
+        assert_eq!(listing(&mut s).user.len(), 1);
+        assert!(s.answer(&Request::UserRemove { name: "ann".into(), base }).is_err());
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap().join(
+            "
+",
+        );
+        assert!(ops.contains("user-set") && ops.contains("user-remove"), "{ops}");
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

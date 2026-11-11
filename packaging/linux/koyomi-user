@@ -1,0 +1,35 @@
+#!/bin/sh
+# Show and change the HTTPS users of koyomi (the [[http.user]] of koyomi.toml)
+# by asking the engine, as the user koyomi runs under.
+set -eu
+
+usage() {
+  cat <<'USAGE'
+使い方: sudo koyomi-user list
+        sudo koyomi-user role <名前> <view|run|edit|admin> [--nets <パターン>]... [--all-nets] [--roles <パターン>=<役割>]... [--no-roles]
+        sudo koyomi-user remove <名前>
+
+  koyomi.toml の [[http.user]] の一覧、役割の変更、削除を行います。
+  koyomi のサービスに頼んで行うため、サービスが動いている必要があります（systemctl status koyomi）。
+  変更は数秒以内にサービスへ反映されます。
+  利用者の追加は、koyomi.toml に書き、koyomi-secret でトークンを登録してください。
+
+  例:  sudo koyomi-user role sato run --nets '経理/*'
+USAGE
+}
+
+case "${1:-}" in
+  -h|--help) usage; exit 0 ;;
+esac
+
+if [ "$#" -lt 1 ]; then
+  usage >&2
+  exit 2
+fi
+
+if [ "$(id -u)" -ne 0 ]; then
+  echo "root で実行してください (sudo koyomi-user ...)。" >&2
+  exit 1
+fi
+
+exec runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi /usr/local/bin/koyomi user "$@"

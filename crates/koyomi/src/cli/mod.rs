@@ -26,6 +26,8 @@ use crate::proto::{self, Request, Runs, Snapshot};
 use crate::{client, engine, review, say, show};
 
 mod archive;
+mod summary;
+mod user;
 
 pub const USAGE: &str = "\
 usage: koyomi [--version | --help | env]
@@ -136,6 +138,12 @@ usage: koyomi [--version | --help | env]
        koyomi service [install|uninstall|start|stop|status]  run the engine as a Windows service under your own account, so nets run without anyone signed in (install and uninstall need an administrator; what the engine says goes to engine.log)
        koyomi startup [on|off]       start the engine at sign-in, or stop doing so (nothing: say which)
        koyomi secret set|delete|check <name>  keep a value (read from stdin) in the OS credential store for a job's env or [ping] (secret:<name>)
+       koyomi user [list]            the [[http.user]] of koyomi.toml: role, jobnets, role per jobnet and whether the token is kept (exit 1 if one is not)
+       koyomi user role <name> <view|run|edit|admin> [--nets <pattern>]... [--all-nets] [--roles <pattern>=<role>]... [--no-roles]
+                                     change a user's role (--nets / --roles: replace the jobnets / the role per jobnet; --all-nets /
+                                     --no-roles: take them out; neither: keep them; admin takes both out); applies within a few seconds
+       koyomi user remove <name>     take a user out of koyomi.toml (its token stays where it is kept)
+       koyomi config [<file>]        what koyomi.toml sets, in a few lines (no addresses, tokens or values; no engine needed)
        koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send, fetch or ssh job takes (host_key = SHA256:…)
        koyomi ssh run                what an ssh job runs (kind = ssh): its command on the PC in on = ssh://…
        koyomi winrm cert <host>[:<port>]  the certificate a Windows PC shows for WinRM over HTTPS, as the line a winrm job takes (cert = AB:CD:…)
@@ -191,7 +199,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 52] = [
+const COMMANDS: [&str; 54] = [
     "check",
     "list",
     "show",
@@ -235,6 +243,8 @@ const COMMANDS: [&str; 52] = [
     "service",
     "startup",
     "secret",
+    "user",
+    "config",
     "sftp",
     "ssh",
     "winrm",
@@ -317,6 +327,8 @@ pub fn run(args: &[String]) -> Option<i32> {
         "service" => crate::service::cmd(rest),
         "startup" => startup_cmd(rest),
         "secret" => secret_cmd(rest),
+        "user" => user::cmd(rest),
+        "config" => summary::cmd(rest),
         "sftp" => crate::sftp::cmd(rest),
         "ssh" => crate::ssh::cmd(rest),
         "winrm" => crate::winrm::cmd(rest),

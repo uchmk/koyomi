@@ -2,7 +2,7 @@
 
 `koyomi-<version>-linux-x86_64.tar.gz` (the version without a `v`) is the engine for Debian 12 or later,
 packed by `scripts/package-linux.sh` and added to the release by hand after the build. It holds the binary
-(built for glibc 2.31), `install.sh`, `koyomi-secret`, the systemd unit and a README (Japanese):
+(built for glibc 2.31), `install.sh`, `koyomi-secret`, `koyomi-user`, the systemd unit and a README (Japanese):
 
 ```sh
 tar xzf koyomi-<version>-linux-x86_64.tar.gz
