@@ -1261,6 +1261,24 @@ text = "The reply for user {0} could not be understood."
 cause = "The engine's reply was not in the expected form. It holds the token, so it is not shown."
 action = "Check with koyomi user list. If the token may have changed, make a new token with koyomi user reset {0}."
 
+[E2247]
+when = "koyomi.toml is written after it changed since it was read"
+text = "koyomi.toml changed after it was read, so nothing was written."
+cause = "koyomi.toml was rewritten between reading it and saving the change; saving would undo that change."
+action = "Read koyomi.toml again, make the change again, and save."
+
+[E2248]
+when = "koyomi.toml is written with a token that is not in the credential store, or is empty"
+text = "The token {0} is not in the credential store, or is empty, so koyomi.toml was not written."
+cause = "The HTTPS listener refuses to start with a token it cannot read, and then no user could connect."
+action = "On the PC where the engine runs, store the token with koyomi secret set {0}, or give the token as sha256:<hash>, then save again."
+
+[E2249]
+when = "koyomi.toml is written over HTTPS in a way that would cut this connection"
+text = "Over HTTPS, port, lan, ipv6 and tailnet of [http], and your own [[http.user]] {0}, cannot be changed, so nothing was written."
+cause = "The connection that sends the change would be cut, and the change could not be undone from here."
+action = "Change them on the PC where the engine runs, or ask another admin."
+
 [E3181]
 when = "A job's executable is not found"
 text = "The executable {1} of job {0} was not found."
@@ -4250,6 +4268,7 @@ user_token_unreadable = "cannot be read: {0}"
 user_token_none = "none (Tailscale only)"
 user_token_bad = "{0} user(s) have no usable token, so the HTTPS listener cannot start."
 user_set_done = "Changed {0} in koyomi.toml. It applies within a few seconds."
+config_written = "koyomi.toml was written. It takes effect within a few seconds."
 user_role_done = "{0}: role {1}, jobnets {2}, role per jobnet {3}. It applies within a few seconds."
 user_admin_cleared = "admin applies to every jobnet, so the jobnet restriction and the role per jobnet were taken out."
 user_remove_done = "Removed {0}. It applies within a few seconds."

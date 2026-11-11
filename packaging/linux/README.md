@@ -227,6 +227,6 @@ sudo ./install.sh --uninstall  # tar.gz で入れたとき (展開したフォ�
 
 ## 第 1 段階の制約
 
-- `koyomi.toml` は Debian 側で修正します。画面からは修正できません。
+- `koyomi.toml` は、Debian 側で修正するか、admin の token でつないだ画面の「設定 → 一般 → 接続先の koyomi.toml を直す…」で修正します。画面からは、`[http]` の port・lan・ipv6・tailnet と、自分自身の `[[http.user]]` は変更できません (つながらなくなるため)。これらは Debian 側で修正してください。
 - 時刻帯は変更しません。画面を開く PC と同じ時刻帯で使用してください。
 - Linux で動作しない機能があります: `pwsh` が必要な後始末、`run_as`、イベントログ。画面に注意として表示されます。

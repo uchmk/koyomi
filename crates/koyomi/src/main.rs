@@ -266,7 +266,7 @@ impl App {
         if !sw.waiting {
             let t = &self.table;
             let buttons = [t.tr("link.switch").to_owned(), t.tr("confirm.no").to_owned()];
-            let body = [t.tr("link.unsaved_body").to_owned()];
+            let body = [t.tr(if self.browser.unsaved_is_config() { "link.unsaved_config_body" } else { "link.unsaved_body" }).to_owned()];
             let q = ito_confirm::Question {
                 title: t.tr("link.unsaved_title"),
                 body: &body,

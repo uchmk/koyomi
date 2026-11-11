@@ -17,7 +17,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 47;
+pub const PROTO: u32 = 48;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -305,6 +305,15 @@ pub enum Request {
         name: String,
         base: String,
     },
+    /// The text of koyomi.toml and its SHA-256, as a [`ConfigBody`] (a missing file is an empty text).
+    ConfigText,
+    /// Write `text` as koyomi.toml; the file as it was goes under `versions/_settings/`. `base_sha256` is
+    /// what the file hashed to when it was read; when it is not that now, nothing is written. The engine
+    /// takes the new file up within a few seconds.
+    ConfigPut {
+        text: String,
+        base_sha256: String,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -331,6 +340,24 @@ impl CalendarBody {
 
     /// Read by a window of another PC, which is wired apart from the engine.
     pub fn parse(text: &str) -> Result<CalendarBody, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// What `ConfigText` answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ConfigBody {
+    pub text: String,
+    pub sha256: String,
+}
+
+impl ConfigBody {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    /// Read by a window of another PC, which is wired apart from the engine.
+    pub fn parse(text: &str) -> Result<ConfigBody, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 }
@@ -380,6 +407,8 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::HolidayTable { .. }
         | Request::ExportAll
         | Request::Users
+        | Request::ConfigText
+        | Request::ConfigPut { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -421,6 +450,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarText { .. }
         | Request::ExportAll
         | Request::Users
+        | Request::ConfigText
         | Request::Tray { .. } => true,
         Request::Stop
         | Request::Approve { .. }
@@ -452,6 +482,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarRename { .. }
         | Request::CalendarDelete { .. }
         | Request::HolidayTable { .. }
+        | Request::ConfigPut { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -851,6 +882,8 @@ mod tests {
             (Request::HolidayTable { bytes: vec![1] }, Some(Admin)),
             (Request::ExportAll, Some(Admin)),
             (Request::Users, Some(Admin)),
+            (Request::ConfigText, Some(Admin)),
+            (Request::ConfigPut { text: String::new(), base_sha256: "b".into() }, Some(Admin)),
             (Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
             (Request::UserRemove { name: "u".into(), base: "b".into() }, Some(Admin)),
             (Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
@@ -884,6 +917,7 @@ mod tests {
             Request::CalendarText { name: "c".into() },
             Request::ExportAll,
             Request::Users,
+            Request::ConfigText,
             Request::Tray { since: None },
         ];
         for r in &reads {
@@ -901,6 +935,7 @@ mod tests {
             Request::Approve { id: id(), sha256: "s".into() },
             Request::CalendarPut { name: "c".into(), text: String::new(), base_sha256: None },
             Request::HolidayTable { bytes: Vec::new() },
+            Request::ConfigPut { text: String::new(), base_sha256: "b".into() },
             Request::Propose { id: id(), text: "x".into(), base_sha256: None },
             Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
             Request::UserRemove { name: "u".into(), base: "b".into() },
@@ -947,6 +982,18 @@ mod tests {
         assert!(matches!(old, Request::Stage { expect: None, .. }));
         let body = CalendarBody { text: "a = 1\n".into(), sha256: "abc".into() };
         assert_eq!(CalendarBody::parse(&body.to_toml()).unwrap(), body);
+        let put = Request::ConfigPut { text: "t".into(), base_sha256: "b".into() };
+        let Request::ConfigPut { text, base_sha256 } = round(&put) else { panic!("not a config put") };
+        assert_eq!((text.as_str(), base_sha256.as_str()), ("t", "b"));
+        assert!(matches!(round(&Request::ConfigText), Request::ConfigText));
+        let cfg = ConfigBody {
+            text: "[http]
+port = 1
+"
+            .into(),
+            sha256: "abc".into(),
+        };
+        assert_eq!(ConfigBody::parse(&cfg.to_toml()).unwrap(), cfg);
     }
 
     /// the snapshot reads back with the engine's blocked nets and offset, and without them (an older engine).

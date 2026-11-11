@@ -1952,7 +1952,22 @@ impl State {
     /// out only when nothing is undecided or wrong and `dry_run` is off. What is
     /// written over is kept under `versions/` first; a net that comes in is
     /// unconfirmed, like a file written by hand.
-    fn import(&mut self, text: &str, dry_run: bool, on_conflict: Option<&str>) -> Result<String, String> {
+    ///
+    /// `by` is the caller signed in to the engine's HTTP door (empty: this PC). Such a caller's koyomi.toml
+    /// goes through the same guards as `ConfigPut`: its secrets must be usable and it must not cut the connection.
+    fn import(&mut self, text: &str, dry_run: bool, on_conflict: Option<&str>, by: &str) -> Result<String, String> {
+        self.import_with(text, dry_run, on_conflict, by, secret_usable)
+    }
+
+    /// [`Self::import`] with the credential store as `usable` (whether a `secret:` name holds a token).
+    fn import_with(
+        &mut self,
+        text: &str,
+        dry_run: bool,
+        on_conflict: Option<&str>,
+        by: &str,
+        usable: impl Fn(&str) -> bool,
+    ) -> Result<String, String> {
         if !self.warnings.is_empty() {
             return Err(blocked(msg::N_OP_IMPORT, &joined_warnings(&self.warnings)));
         }
@@ -1966,12 +1981,34 @@ impl State {
         if b.is_empty() {
             return Err(msg::line(msg::IMPORT_EMPTY, &[]));
         }
+        // Every engine writer of koyomi.toml is serialised, whichever way it was asked: the lock is taken before the
+        // plan reads the files and held until the import returns, so nothing lands between the plan and the writes.
+        let _edit = crate::remote::edits();
         let current = bundle::Source::read(&self.paths.app);
         let mut p = bundle::plan(&b, &current, on_conflict);
         // The settings must pass what `koyomi check` passes, or nothing is written.
         for item in p.items.iter_mut().filter(|i| i.kind == bundle::Kind::Settings && i.problems.is_empty()) {
             if let Some(e) = crate::notify::settings_problem(&item.new) {
                 item.problems.push(msg::line(msg::BUNDLE_SETTINGS_BAD, &[&e]));
+            }
+        }
+        // A caller signed in to the HTTP door: what `ConfigPut` refuses is refused here too.
+        if !by.is_empty() {
+            for item in p
+                .items
+                .iter_mut()
+                .filter(|i| i.kind == bundle::Kind::Settings && i.problems.is_empty() && matches!(i.change, Change::Add | Change::Replace))
+            {
+                // A text that does not read is already a problem above.
+                let Ok(new) = koyomi_core::config::Config::parse(&item.new) else {
+                    continue;
+                };
+                if let Some(name) = unusable_secret(&new, &usable) {
+                    item.problems.push(msg::line(msg::CONFIG_SECRET, &[name]));
+                }
+                if cuts_link(item.old.as_deref().unwrap_or_default(), &new, by) {
+                    item.problems.push(msg::line(msg::CONFIG_CUTS_LINK, &[by]));
+                }
             }
         }
         let mut lines = Vec::new();
@@ -2257,6 +2294,36 @@ impl State {
         let out = koyomi_core::users::reset(&text, name, &hash)?;
         self.users_write(&out)?;
         Self::token_reply(name.trim(), &token)
+    }
+
+    /// See [`Request::ConfigText`]: a missing koyomi.toml is the empty text. The hash is the one `Users` gives.
+    fn config_text(&self) -> Result<String, String> {
+        let text = self.users_text()?.unwrap_or_default();
+        Ok(proto::ConfigBody { sha256: koyomi_core::users::sha256(&text), text }.to_toml())
+    }
+
+    /// See [`Request::ConfigPut`]; `by` is the caller signed in to the engine's HTTP door (empty: this PC).
+    fn config_put(&self, text: &str, base: &str, by: &str) -> Result<String, String> {
+        self.config_put_with(text, base, by, secret_usable)
+    }
+
+    /// [`Self::config_put`] with the credential store as `usable` (whether a `secret:` name holds a token).
+    /// The refusals come in this order, and each one writes nothing.
+    fn config_put_with(&self, text: &str, base: &str, by: &str, usable: impl Fn(&str) -> bool) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let old = self.users_text()?.unwrap_or_default();
+        if koyomi_core::users::sha256(&old) != base {
+            return Err(msg::line(msg::CONFIG_CHANGED, &[]));
+        }
+        let new = koyomi_core::config::Config::parse(text)?;
+        if let Some(name) = unusable_secret(&new, &usable) {
+            return Err(msg::line(msg::CONFIG_SECRET, &[name]));
+        }
+        if !by.is_empty() && cuts_link(&old, &new, by) {
+            return Err(msg::line(msg::CONFIG_CUTS_LINK, &[by]));
+        }
+        self.users_write(text)?;
+        Ok(msg::note(msg::N_CONFIG_WRITTEN, &[]))
     }
 
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
@@ -2615,7 +2682,7 @@ impl State {
                 return Err(msg::line(msg::USER_RESET_OWN, &[]));
             }
         }
-        let out = self.dispatch(request);
+        let out = self.dispatch(request, by);
         if let Ok(text) = &out {
             if let Some((op, target)) = by_hand(request) {
                 // The reply of a new token holds the token itself: it is not written down.
@@ -2630,7 +2697,7 @@ impl State {
         out
     }
 
-    fn dispatch(&mut self, request: &Request) -> Result<String, String> {
+    fn dispatch(&mut self, request: &Request, by: &str) -> Result<String, String> {
         match request {
             Request::Status => Ok(self.status()),
             Request::Stop => Ok(msg::note(msg::N_STOP_REPLY, &[])),
@@ -2672,7 +2739,7 @@ impl State {
             Request::Copy { id, to, title } => self.copy(id, to, title.as_deref()),
             Request::Replace { from, to, apply } => self.replace(from, to, *apply),
             Request::Delete { id } => self.delete(id),
-            Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref()),
+            Request::Import { text, dry_run, on_conflict } => self.import(text, *dry_run, on_conflict.as_deref(), by),
             Request::Uses { target } => Ok(koyomi_core::uses::find(&self.defs, target).join(
                 "
 ",
@@ -2695,6 +2762,8 @@ impl State {
             Request::HolidayTable { bytes } => self.holiday_table(bytes),
             Request::ExportAll => self.export_all(),
             Request::Users => self.users(),
+            Request::ConfigText => self.config_text(),
+            Request::ConfigPut { text, base_sha256 } => self.config_put(text, base_sha256, by),
             Request::UserSet { name, role, nets, roles, base } => self.user_set(name, role, nets.clone(), roles.clone(), base),
             Request::UserRemove { name, base } => self.user_remove(name, base),
             Request::UserAdd { name, role, nets, roles, base } => self.user_add(name, role, nets.clone(), roles.clone(), base),
@@ -2710,6 +2779,34 @@ impl State {
 fn over_http(request: &Request) -> bool {
     proto::door_needs(request).is_some()
         || matches!(request, Request::List | Request::Show { .. } | Request::Propose { .. } | Request::Handover { .. })
+}
+
+/// Whether the credential store holds a non-empty token under `name` (ito-http refuses to start with an empty one).
+fn secret_usable(name: &str) -> bool {
+    matches!(ito_secret::get("koyomi", name), Ok(Some(v)) if !v.is_empty())
+}
+
+/// The first `secret:` name of `[http]` (its own token, then each user's) that `usable` says holds no token.
+fn unusable_secret<'a>(config: &'a koyomi_core::config::Config, usable: &dyn Fn(&str) -> bool) -> Option<&'a str> {
+    let http = config.http.as_ref()?;
+    std::iter::once(http.secret()).chain(http.user.iter().map(|u| u.secret())).filter(|n| !n.is_empty()).find(|n| !usable(n))
+}
+
+/// Whether writing `new` over `old` would cut the connection `by` is making (a caller signed in to the engine's HTTP door): `[http]` `port`, `lan`,
+/// `ipv6` or `tailnet` changed, or their own `[[http.user]]` taken away or changed in any field. An `old`
+/// that does not read, or has no `[http]`, cannot be compared and counts as cutting.
+fn cuts_link(old: &str, new: &koyomi_core::config::Config, by: &str) -> bool {
+    let Some(was) = koyomi_core::config::Config::parse(old).ok().and_then(|c| c.http) else {
+        return true;
+    };
+    let Some(now) = &new.http else {
+        return true;
+    };
+    if (was.port, was.lan, was.ipv6, was.tailnet) != (now.port, now.lan, now.ipv6, now.tailnet) {
+        return true;
+    }
+    let own = |h: &koyomi_core::config::Http| h.user.iter().find(|u| u.name.trim() == by).cloned();
+    own(&was) != own(now)
 }
 
 /// The name and target a request is written down under when it succeeds: what a person did by hand.
@@ -2743,6 +2840,7 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::CalendarRename { from, to } => ("calendar-rename", format!("{from} {to}")),
         Request::CalendarDelete { name, .. } => ("calendar-delete", name.clone()),
         Request::HolidayTable { .. } => ("holiday-table", String::new()),
+        Request::ConfigPut { .. } => ("config-put", String::new()),
         Request::UserSet { name, .. } => ("user-set", name.clone()),
         Request::UserRemove { name, .. } => ("user-remove", name.clone()),
         Request::UserAdd { name, .. } => ("user-add", name.trim().to_owned()),
@@ -3275,7 +3373,7 @@ run = [\"x.exe\"]
         b.jobnets.push(bundle::Net { id: "経理/新規".to_owned(), text: one.to_owned() });
         b.calendars.push(bundle::Named { name: "会社".to_owned(), text: "format = 1\nholidays = \"japan\"\n".to_owned() });
         let text = b.to_toml();
-        let plan = |s: &mut State, dry: bool, on: Option<&str>| proto::Plan::parse(&s.import(&text, dry, on).unwrap()).unwrap();
+        let plan = |s: &mut State, dry: bool, on: Option<&str>| proto::Plan::parse(&s.import(&text, dry, on, "").unwrap()).unwrap();
         // A dry run only says. The net that differs makes the plan undecided.
         let p = plan(&mut s, true, None);
         assert!(!p.applied && p.undecided && p.writes && p.conflicts == 1 && p.problems == 0, "{p:?}");
@@ -3291,21 +3389,22 @@ run = [\"x.exe\"]
                 "format = 1
 ",
                 false,
-                Some("overwrite")
+                Some("overwrite"),
+                ""
             )
             .unwrap_err()
         ));
-        let bad = s.import("nope", false, None).unwrap_err();
+        let bad = s.import("nope", false, None, "").unwrap_err();
         assert!(msg::is_coded(&bad), "{bad}");
         let mut broken = bundle::Bundle::new();
         broken.jobnets.push(bundle::Net {
             id: "経理/親".to_owned(),
             text: "format = 1\n[[job]]\nid = \"k\"\nkind = \"jobnet\"\nuse = \"無い/子\"\n".to_owned(),
         });
-        let p = proto::Plan::parse(&s.import(&broken.to_toml(), false, Some("overwrite")).unwrap()).unwrap();
+        let p = proto::Plan::parse(&s.import(&broken.to_toml(), false, Some("overwrite"), "").unwrap()).unwrap();
         assert!(!p.applied && p.problems == 1, "{p:?}");
         assert!(!paths.jobnets.join("経理/親.toml").exists());
-        assert!(s.import(&text, false, Some("sideways")).is_err());
+        assert!(s.import(&text, false, Some("sideways"), "").is_err());
         // Skip: the one that differs stays, the rest comes in.
         let p = plan(&mut s, false, Some("skip"));
         assert!(p.applied, "{p:?}");
@@ -3327,7 +3426,7 @@ run = [\"x.exe\"]
         assert!(!p.applied && !p.writes && p.conflicts == 0, "{p:?}");
         // Rename: a different one comes in beside what is there.
         b.jobnets[0].text = one.to_owned();
-        let p = proto::Plan::parse(&s.import(&b.to_toml(), false, Some("rename")).unwrap()).unwrap();
+        let p = proto::Plan::parse(&s.import(&b.to_toml(), false, Some("rename"), "").unwrap()).unwrap();
         assert!(p.applied, "{p:?}");
         assert_eq!(std::fs::read_to_string(paths.jobnets.join("経理/集計.toml")).unwrap(), two);
         let names: Vec<String> = std::fs::read_dir(paths.jobnets.join("経理"))
@@ -3377,7 +3476,7 @@ run = [\"x.exe\"]
         let bad = "format = 1\n\n[settings]\nkeep_days = 30\n\n[settings.notify]\nwebhooks = [\"secret:x\"]\n";
         let before = std::fs::read_to_string(&paths.config).ok();
         for (dry, over) in [(true, None), (false, Some("overwrite")), (false, None)] {
-            let r = s.import(bad, dry, over).unwrap();
+            let r = s.import(bad, dry, over, "").unwrap();
             let plan = proto::Plan::parse(&r).unwrap();
             assert!(plan.problems > 0 && !plan.applied, "{r}");
             assert!(
@@ -4169,6 +4268,170 @@ port = 8700
 ",
         );
         assert!(ops.contains("user-set") && ops.contains("user-remove"), "{ops}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// koyomi.toml of a test: two users by hash, no credential store needed.
+    fn config_file(port: u16, boss_role: &str) -> String {
+        let hash = ito_http::token_hash("one");
+        format!(
+            "[http]\nport = {port}\nlan = true\n\n[[http.user]]\nname = \"boss\"\nrole = \"{boss_role}\"\ntoken = \"sha256:{hash}\"\n\n[[http.user]]\nname = \"ann\"\nrole = \"run\"\ntoken = \"sha256:{hash}\"\n"
+        )
+    }
+
+    fn config_base(s: &mut State) -> String {
+        proto::ConfigBody::parse(&s.answer(&Request::ConfigText).unwrap()).unwrap().sha256
+    }
+
+    fn config_put_over(by: &str, text: &str, base: &str) -> Request {
+        let put = Request::ConfigPut { text: text.to_owned(), base_sha256: base.to_owned() };
+        if by.is_empty() {
+            put
+        } else {
+            Request::Over { by: by.to_owned(), request: Box::new(put) }
+        }
+    }
+
+    /// koyomi.toml is read with its hash (a missing one as the empty text), written back only against that
+    /// hash, and the old text is kept under `versions/_settings/`.
+    #[test]
+    fn koyomi_toml_is_read_and_written_through_the_door() {
+        let paths = temp_paths("door-config");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let mut s = State::new(paths.clone());
+        let body = proto::ConfigBody::parse(&s.answer(&Request::ConfigText).unwrap()).unwrap();
+        assert_eq!((body.text.as_str(), body.sha256.as_str()), ("", koyomi_core::users::sha256("").as_str()));
+        // A new file from nothing.
+        let first = config_file(8700, "admin");
+        s.answer(&config_put_over("", &first, &body.sha256)).unwrap();
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), first);
+        let body = proto::ConfigBody::parse(&s.answer(&Request::ConfigText).unwrap()).unwrap();
+        assert_eq!((body.text.as_str(), body.sha256.as_str()), (first.as_str(), koyomi_core::users::sha256(&first).as_str()));
+        // The same hash `Users` lists.
+        let listing = koyomi_core::users::Listing::parse(&s.answer(&Request::Users).unwrap()).unwrap();
+        assert_eq!(listing.base, body.sha256);
+        // A wrong hash writes nothing.
+        let second = config_file(8700, "admin") + "# edited\n";
+        let e = s.answer(&config_put_over("", &second, "0000")).unwrap_err();
+        assert!(koyomi_core::msg::CONFIG_CHANGED.is_in(&e), "{e}");
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), first);
+        // The right one writes, and keeps the old text.
+        let note = s.answer(&config_put_over("", &second, &body.sha256)).unwrap();
+        assert!(!note.is_empty());
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), second);
+        let kept: Vec<_> = std::fs::read_dir(paths.state.join("versions").join("_settings")).unwrap().flatten().collect();
+        assert_eq!(kept.len(), 1);
+        assert_eq!(std::fs::read_to_string(kept[0].path()).unwrap(), first);
+        // A text that does not read is refused, as it is, and nothing changes.
+        let base = config_base(&mut s);
+        let e = s.answer(&config_put_over("", "[http\nport =", &base)).unwrap_err();
+        assert_eq!(e, koyomi_core::config::Config::parse("[http\nport =").unwrap_err());
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), second);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// For a caller signed in to the HTTP door (`by` non-empty) what would cut the connection making the change is refused; the same change from this PC goes through.
+    #[test]
+    fn a_change_that_cuts_the_https_connection_is_refused_over_https_only() {
+        let paths = temp_paths("door-config-cut");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let file = config_file(8700, "admin");
+        std::fs::write(&paths.config, &file).unwrap();
+        let mut s = State::new(paths.clone());
+        let hash = ito_http::token_hash("one");
+        let other = ito_http::token_hash("two");
+        let boss = format!("name = \"boss\"\nrole = \"admin\"\ntoken = \"sha256:{hash}\"");
+        let cuts = [
+            file.replace("port = 8700", "port = 8701"),
+            file.replace("lan = true", "lan = false"),
+            file.replace("lan = true", "lan = true\nipv6 = true"),
+            file.replacen("role = \"admin\"", "role = \"edit\"", 1),
+            file.replace(&boss, &format!("name = \"boss\"\nrole = \"admin\"\ntoken = \"sha256:{other}\"")),
+            file.replace(&boss, &format!("name = \"chief\"\nrole = \"admin\"\ntoken = \"sha256:{hash}\"")),
+        ];
+        for text in &cuts {
+            assert_ne!(text, &file);
+            let base = config_base(&mut s);
+            let e = s.answer(&config_put_over("boss", text, &base)).unwrap_err();
+            assert!(koyomi_core::msg::CONFIG_CUTS_LINK.is_in(&e), "{e}");
+            assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        }
+        // What is not the link may change over HTTPS: another user's role.
+        let ann_to_view = file.replace("role = \"run\"", "role = \"view\"");
+        let base = config_base(&mut s);
+        s.answer(&config_put_over("boss", &ann_to_view, &base)).unwrap();
+        // What cut the link goes through from this PC.
+        let moved = ann_to_view.replace("port = 8700", "port = 8701");
+        let base = config_base(&mut s);
+        s.answer(&config_put_over("", &moved, &base)).unwrap();
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), moved);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// A bundle whose `[settings]` is `config`.
+    fn settings_bundle(config: &str) -> String {
+        let mut t = toml::Table::new();
+        t.insert("format".to_owned(), toml::Value::Integer(1));
+        t.insert("settings".to_owned(), toml::Value::Table(toml::from_str(config).unwrap()));
+        toml::to_string(&t).unwrap()
+    }
+
+    /// An import is held to what `ConfigPut` holds: for a caller signed in to the HTTP door it may not cut the
+    /// connection or name a secret that holds no token, and nothing is written; from this PC it goes through.
+    #[test]
+    fn an_import_of_koyomi_toml_is_guarded_like_a_config_put() {
+        let paths = temp_paths("import-config");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let file = config_file(8700, "admin");
+        std::fs::write(&paths.config, &file).unwrap();
+        let mut s = State::new(paths.clone());
+        let moved = settings_bundle(&file.replace("port = 8700", "port = 8701"));
+        let r = s.import_with(&moved, false, Some("overwrite"), "boss", |_| true).unwrap();
+        let plan = proto::Plan::parse(&r).unwrap();
+        assert!(plan.problems > 0 && !plan.applied, "{r}");
+        assert!(plan.lines.iter().any(|l| l.contains("E2249")), "{r}");
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        // A secret that holds no token.
+        let named = file.clone()
+            + "
+[[http.user]]
+name = \"zed\"
+role = \"run\"
+token = \"secret:zed\"
+";
+        let r = s.import_with(&settings_bundle(&named), false, Some("overwrite"), "boss", |_| false).unwrap();
+        let plan = proto::Plan::parse(&r).unwrap();
+        assert!(plan.problems > 0 && !plan.applied, "{r}");
+        assert!(plan.lines.iter().any(|l| l.contains("E2248") && l.contains("zed")), "{r}");
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        // The same import from this PC goes through.
+        let r = s.import_with(&moved, false, Some("overwrite"), "", |_| true).unwrap();
+        assert!(proto::Plan::parse(&r).unwrap().applied, "{r}");
+        assert!(std::fs::read_to_string(&paths.config).unwrap().contains("8701"));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// A `secret:` token that cannot be read, or reads empty, is refused; one that reads is let through.
+    #[test]
+    fn a_secret_token_that_does_not_read_is_refused() {
+        let paths = temp_paths("door-config-secret");
+        std::fs::create_dir_all(&paths.app).unwrap();
+        let s = State::new(paths.clone());
+        let base = koyomi_core::users::sha256("");
+        let shared = "[http]\nport = 8700\ntoken = \"secret:shared\"\n";
+        let e = s.config_put_with(shared, &base, "", |_| false).unwrap_err();
+        assert!(koyomi_core::msg::CONFIG_SECRET.is_in(&e) && e.contains("shared"), "{e}");
+        assert!(!paths.config.exists());
+        let user = "[http]\nport = 8700\n\n[[http.user]]\nname = \"ann\"\nrole = \"run\"\ntoken = \"secret:ann\"\n";
+        let e = s.config_put_with(user, &base, "", |name| name != "ann").unwrap_err();
+        assert!(koyomi_core::msg::CONFIG_SECRET.is_in(&e) && e.contains("ann"), "{e}");
+        assert!(!paths.config.exists());
+        s.config_put_with(user, &base, "", |name| name == "ann").unwrap();
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), user);
+        // A user who needs no token needs no store.
+        let tail =
+            "[http]\nport = 8700\ntailnet = 8701\n\n[[http.user]]\nname = \"ann\"\nrole = \"run\"\ntailscale = \"ann@example.com\"\n";
+        s.config_put_with(tail, &koyomi_core::users::sha256(user), "", |_| false).unwrap();
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

@@ -31,6 +31,7 @@ pub mod gantt;
 pub mod graph;
 pub mod whens;
 
+mod far_config;
 mod ha;
 mod hosts;
 mod manage;
@@ -780,6 +781,8 @@ pub struct Browser {
     editors: Vec<canvas::Editor>,
     /// The `[[remote]]` names and the add and manage boxes (the status-bar list drives the window on another PC).
     far: far::Far,
+    /// The box that edits the koyomi.toml of the PC this window shows (an `admin` on another PC's engine).
+    config_edit: Option<far_config::ConfigEdit>,
     /// The list of links in the status bar.
     hosts: hosts::Hosts,
     /// The engine's `"ha"` (the status bar's HA words).
@@ -809,6 +812,7 @@ impl Browser {
         let far = far::Far::start(&io.1, state);
         Browser {
             far,
+            config_edit: None,
             hosts: hosts::Hosts::new(&io.1),
             rx,
             io,
@@ -926,7 +930,15 @@ impl Browser {
 
     /// Whether an editor holds changes that are not saved.
     pub fn has_unsaved(&self) -> bool {
-        self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty)
+        self.editor.as_ref().is_some_and(|e| e.dirty)
+            || self.editors.iter().any(|e| e.dirty)
+            || self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
+    }
+
+    /// Whether the unsaved changes are only in the koyomi.toml box: the switch's question then names that box.
+    pub fn unsaved_is_config(&self) -> bool {
+        !(self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty))
+            && self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
     }
 
     /// The link the person picked in a picker, once.
@@ -982,6 +994,64 @@ impl Browser {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
             self.send(Request::History { from, to });
+        }
+    }
+
+    /// Whether the window shows another PC's engine as an `admin`: the one role that may edit its koyomi.toml.
+    pub fn far_admin(&self) -> bool {
+        self.link.is_far() && self.role == Some(koyomi_core::role::Role::Admin)
+    }
+
+    /// Whether the window shows another PC's engine and a role that is not `admin` has been told.
+    pub fn far_not_admin(&self) -> bool {
+        self.link.is_far() && self.role.is_some_and(|r| r != koyomi_core::role::Role::Admin)
+    }
+
+    /// Whether the box that edits the other PC's koyomi.toml is open.
+    pub fn config_open(&self) -> bool {
+        self.config_edit.is_some()
+    }
+
+    /// Opens the box that edits the other PC's koyomi.toml and asks for its text.
+    pub fn open_config_edit(&mut self) {
+        if self.config_edit.is_none() && self.far_admin() {
+            self.config_edit = Some(far_config::ConfigEdit::new());
+            self.config_read();
+        }
+    }
+
+    /// Asks for the other PC's koyomi.toml; a request the thread did not take puts the box into Failed with why.
+    fn config_read(&mut self) {
+        if !self.out.send(Request::ConfigText) {
+            let why = self.unsent_why();
+            if let Some(c) = &mut self.config_edit {
+                c.unsent(why);
+            }
+        }
+    }
+
+    /// Why a request was not taken: the connection's own failure if it has one, else the words of a refused write.
+    fn unsent_why(&self) -> String {
+        self.down.clone().unwrap_or_else(|| koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[]))
+    }
+
+    /// Draws the koyomi.toml box (if open) and carries out what it asks for.
+    pub fn config_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table) {
+        let Some(c) = &mut self.config_edit else {
+            return;
+        };
+        match far_config::show(c, ctx, t) {
+            far_config::Act::Nothing => {}
+            far_config::Act::Close => self.config_edit = None,
+            far_config::Act::Read => self.config_read(),
+            far_config::Act::Write { text, base } => {
+                if !self.out.send(Request::ConfigPut { text, base_sha256: base }) {
+                    let why = self.unsent_why();
+                    if let Some(c) = &mut self.config_edit {
+                        c.unsent(why);
+                    }
+                }
+            }
         }
     }
 
@@ -1150,6 +1220,18 @@ impl Browser {
                     }
                 }
                 Msg::Answer(Request::HolidayTable { .. }, r) => self.cal_result = Some(r),
+                // The other PC's koyomi.toml: the box's, never the result line's (and its text goes nowhere else).
+                Msg::Answer(Request::ConfigText, r) => {
+                    if let Some(c) = &mut self.config_edit {
+                        c.loaded(r);
+                    }
+                }
+                Msg::Answer(Request::ConfigPut { .. }, r) => {
+                    if let Some(note) = self.config_edit.as_mut().and_then(|c| c.saved(r)) {
+                        self.config_edit = None;
+                        self.result = Some(Ok(note));
+                    }
+                }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
                     if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
@@ -1268,6 +1350,7 @@ impl Browser {
             || self.skip_pick
             || self.staged_box.is_some()
             || self.sending.is_some()
+            || self.config_edit.is_some()
             || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
     }
 
@@ -2023,6 +2106,7 @@ impl Browser {
         let ctx = ui.ctx().clone();
         self.far.add_box(&ctx, t, self.covered());
         self.far.manage_box(&ctx, t, self.link.far());
+        self.config_box(&ctx, t);
         let conflict = self.editor.as_ref().is_some_and(|e| e.conflict.is_some()) || self.vers.is_some();
         let port = self.port.as_ref().map(|p| (p.buttons(), p.stage() == Stage::Path));
         let making = self.make.is_some() || self.new_cal.is_some() || self.give.is_some() || self.skip_pick;
@@ -5468,6 +5552,7 @@ mod tests {
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
             far: far::Far::idle(&egui::Context::default()),
+            config_edit: None,
             hosts: hosts::Hosts::new(&egui::Context::default()),
             rx,
             io: (tx_msg, egui::Context::default()),

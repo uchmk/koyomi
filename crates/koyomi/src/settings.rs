@@ -122,7 +122,7 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     keep_ask(ui, app, &no_folder);
     // While a key is being set, or the box asks, the page takes every key, Esc included.
-    let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() {
+    let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() || app.browser.config_open() {
         ito_prefs::Keys::default()
     } else {
         ito_prefs::Keys::standard(ui, false)
@@ -141,6 +141,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let pages: Vec<(&str, &str)> = page_words.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
     let far = app.browser.link().is_far();
     let far_text = tr("settings.far_line");
+    // On another PC's engine an `admin` edits its koyomi.toml in a box; the other roles are told why not.
+    let (far_admin, far_not_admin) = (app.browser.far_admin(), app.browser.far_not_admin());
+    let (far_config_words, far_only_words) = (tr("settings.far_config"), tr("settings.far_admin_only"));
+    let mut open_config = false;
     let index = index(w, more, &app.lang, table, far);
     let index: Vec<(usize, &str)> = index.iter().map(|(p, t)| (*p, t.as_str())).collect();
     let nav = ito_prefs::Nav { pages: &pages, index: &index, words: w, file: "common.toml" };
@@ -197,7 +201,15 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             forget |= out.forget;
             startup_toggled = ito_prefs::startup_card_with(ui, l, more, startup_now, startup_problem.as_deref());
             if far {
-                far_line(ui, &far_text);
+                if far_admin {
+                    let r = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, &far_config_words).show(ui);
+                    ito_a11y::test_id(&r, "far_config.open");
+                    open_config |= r.clicked();
+                } else if far_not_admin {
+                    far_line(ui, &far_only_words);
+                } else {
+                    far_line(ui, &far_text);
+                }
                 return;
             }
             section(ui, l, &tr("settings.records"), |ui| {
@@ -311,6 +323,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     if bug {
         app.report_bug(ui.ctx());
     }
+    if open_config {
+        app.browser.open_config_edit();
+    }
+    app.browser.config_box(ui.ctx(), &app.table);
     // The numbers typed: whole, 1 or more; else told off under the section.
     let mut limit_edits: Vec<(&'static str, String)> = Vec::new();
     for (key, text) in limit_typed {

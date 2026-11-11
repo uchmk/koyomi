@@ -1948,3 +1948,58 @@ Rows need this PC with `kei` and `works` in koyomi.toml as `[[remote]]` (a copy 
 | 127.25 | Open the engine's web page (`/` of its HTTP) on a run that is running; press `強制終了` | A box opens with `<name> を強制終了します。実行中のジョブは停止し、未実行のジョブは実行されません。` and two buttons, `強制終了する` (red) and `キャンセル`; the focus is on `キャンセル`, so Enter alone does not stop the run; `キャンセル` closes the box and the run goes on |
 | 127.26 | On the same web page, pick a net that is not approved (`未承認`) | The net's pane has the line `承認するまで実行されません。承認は koyomi の画面で行います。` and the state `未承認`; for an approved net the line is not there; for a held net the line is `ジョブネットを保留中です。時刻が来ても実行しません。解除するまで「今すぐ実行」もできません。` instead |
 | 127.27 | `grep -n text-in-source scripts/verify.sh`; then `python3 scripts/text-in-source.py --check` | The first prints the line `run python3 scripts/text-in-source.py --check`; the check exits 0 and prints `total 0` (no Japanese sentence in the code outside the catalogue and `scripts/text-in-source.allow`). Putting a Japanese sentence into a `.rs` file makes it exit 1 and name the file |
+
+## 128. The Debian package (`.deb`)
+
+Measured on kei (Debian 13, systemd 257) with `koyomi_<version>_amd64.deb` from `scripts/package-linux.sh --deb`. "The keep list" is `/var/lib/koyomi`, every file in `/etc/koyomi/credentials` (`sha256sum`), `koyomi.toml` (`sha256sum`), the `tls/` files, the fingerprint (`koyomi http fingerprint` as `koyomi`) and the user `koyomi`.
+
+| # | Do | Expect |
+|---|---|---|
+| 128.1 | Where the tar.gz is installed: `sudo ./install.sh --uninstall`, then `sudo apt install ./koyomi_<version>_amd64.deb` | apt prints `koyomi は起動しています。`; `systemctl cat koyomi` is `/usr/lib/systemd/system/koyomi.service` with `ExecStart=/usr/bin/koyomi engine --no-tray`; `systemctl is-enabled koyomi` is `enabled`, `is-active` is `active`; the keep list is unchanged; `curl -sk -H @<header with the admin token> https://127.0.0.1:8790/me` answers 200 with `"role":"admin"` |
+| 128.2 | `sudo apt install --reinstall ./koyomi_<version>_amd64.deb` | `systemctl show -p MainPID koyomi` changes (the service restarted); it stays `enabled` and `active` |
+| 128.3 | `sudo systemctl disable --now koyomi`, then reinstall as 128.2; then `sudo systemctl enable --now koyomi` | apt prints `koyomi のサービスは無効のため起動していません（起動するには: systemctl enable --now koyomi）。`; the service stays `disabled` and `inactive`; after the enable it is `enabled` and `active` |
+| 128.4 | Put `/usr/sbin/policy-rc.d` that exits 101; `sudo systemctl stop koyomi`; reinstall as 128.2; then remove `policy-rc.d` and `sudo systemctl start koyomi` | apt prints `/usr/sbin/policy-rc.d returned 101, not running 'restart koyomi.service'` and `koyomi が起動していません。…journalctl -u koyomi -n 30 --no-pager`; the service is `enabled` and `inactive`; it starts after `policy-rc.d` is gone |
+| 128.5 | With the .deb installed, `sudo ./install.sh` from an unpacked tar.gz | Exit 1 with `エラー: koyomi は .deb パッケージとしてインストールされています。更新や削除は apt / dpkg を使ってください (例: sudo apt remove koyomi)。`; nothing is written under `/usr/local` or `/etc/systemd/system`; the service keeps its PID |
+| 128.6 | With the .deb installed, put any file at `/usr/local/bin/koyomi` and reinstall as 128.2; remove the file | apt exits 100 after `エラー: tar.gz でインストールした koyomi が残っています。` and `先に、展開したフォルダーで \`sudo ./install.sh --uninstall\` を実行してください。`; `dpkg -s koyomi` stays `install ok installed`; the service is `enabled` and `active` |
+| 128.7 | `sudo dpkg -r koyomi` (what `apt remove` does) | Prints `koyomi のパッケージを削除しました。` and the three kept places with the `sudo rm -rf …` command, which it does not run; `dpkg-query -W -f='${Status}' koyomi` is `deinstall ok config-files`; `systemctl is-enabled koyomi` is `masked`, `is-active` `inactive`; `/usr/bin/koyomi` and `/usr/sbin/koyomi-user` are gone; the keep list is unchanged |
+| 128.8 | After 128.7, `sudo ./install.sh` from an unpacked tar.gz | Exit 1 with `エラー: koyomi の .deb パッケージの登録が残っています。先に sudo dpkg -P koyomi を実行してください (データ、設定、token は残ります)。`; `/etc/systemd/system/koyomi.service` is still the link to `/dev/null`; no `/usr/local/bin/koyomi` |
+| 128.9 | `sudo dpkg -P koyomi`, then `sudo ./install.sh` | After the purge `dpkg-query` knows no koyomi and neither `/etc/systemd/system/koyomi.service` nor `multi-user.target.wants/koyomi.service` exists; after `install.sh` (exit 0) the service is `enabled` and `active`, and `multi-user.target.wants/koyomi.service` points to `/etc/systemd/system/koyomi.service`; the keep list is unchanged |
+| 128.10 | On a fresh machine, `sudo KOYOMI_PORT=9000 apt install ./koyomi_<version>_amd64.deb` | The URLs at the end show `:9000`; `koyomi.toml` has `port = 9000` and `lan = true` |
+| 128.11 | After 128.7 (removed, not purged), `sudo apt install ./koyomi_<version>_amd64.deb` | The mask is gone: the service is `enabled` and `active`; the keep list is unchanged |
+
+## 129. HTTPS users from the command line (`koyomi user`, `koyomi-user`)
+
+On kei with the service running; `koyomi-user` runs `koyomi user` as the user `koyomi`. Root's `LANG` there is `en_US.UTF-8`, so the CLI's own lines are English; the engine's refusals are Japanese (common.toml's language, else Japanese). A token is only ever written to a file (`> out`), never to the screen of the test. "/me" is `curl -sk -H @<header file with the token> https://127.0.0.1:8790/me`, about 7 s after the change.
+
+| # | Do | Expect |
+|---|---|---|
+| 129.1 | `sudo koyomi-user list` | One block per `[[http.user]]`: the name, then `Role:`, `Jobnets:`, `Role per jobnet:` (`none` when there is none) and `Token:` (`registered` for a stored `secret:`, `hash (in koyomi.toml)` for a `sha256:`); no token value; exit 0 |
+| 129.2 | `sudo koyomi-user add ktest --role admin --nets 'test/*'` | Exit 1 with `KOYOMI-E1030 [[http.user]] ktest は role = "admin" ですが、nets と roles も指定されています。 nets と roles を削除してください。`; `koyomi.toml` is unchanged |
+| 129.3 | `sudo koyomi-user add ktest --role run --nets 'test/*' > out` | Exit 0; `out` has three lines: `Added ktest: role run, jobnets test/*, role per jobnet none.`, the token alone, and `This token is shown only now. Keep a copy. …`; `koyomi.toml` gains `name = "ktest"`, `role = "run"`, `token = "sha256:<64 hex>"`, `nets = ["test/*"]`, and does not contain the token |
+| 129.4 | /me with the token from 129.3 | 200 `{"nets":["test/*"],"role":"run","roles":null,"who":"ktest"}` |
+| 129.5 | `sudo koyomi-user role ktest view --nets 'test/*'`; then /me | Exit 0 with `ktest: role view, jobnets test/*, role per jobnet none. It applies within a few seconds.`; /me shows `"role":"view"` |
+| 129.6 | `sudo koyomi-user reset ktest < /dev/null` (no `--yes`, not a terminal) | Exit 1 with `This is not a terminal, so there is no way to ask whether to make the token of ktest again. Add --yes to do it.`; no token in the output; the token from 129.3 still works |
+| 129.7 | `sudo koyomi-user reset ktest --yes > out`; then /me with the old and with the new token | Exit 0; `out` has `Made a new token for ktest. The old one stops working within a few seconds.`, the token alone and the note; the old token gets 401 `{"error":"unauthorized"}`, the new one 200 |
+| 129.8 | `sudo koyomi-user list` | The block for `ktest` reads `Role: view`, `Jobnets: test/*`, `Token: hash (in koyomi.toml)` |
+| 129.9 | `sudo koyomi-user remove ktest`; then /me with the token from 129.7 | Exit 0 with `Removed ktest. It applies within a few seconds.`; /me is 401 |
+| 129.10 | `sudo koyomi-user add ktest2 --role view` twice; then `sudo koyomi-user remove ktest2` | The first adds (exit 0); the second exits 1 with `KOYOMI-E2241 [[http.user]] ktest2 はすでにあります。 別の名前を指定してください。…`; the remove exits 0 |
+| 129.11 | After 129.2–129.10, `sha256sum koyomi.toml` and `ls <state>/versions/_settings/` | The hash is the one before 129.2; `versions/_settings/` holds one `<date>-<time>.toml` per change (six) |
+| 129.12 | `ssh -t` to the machine; `sudo koyomi-user add` with no arguments; answer a name, a role by its number and whether to narrow the job nets; answer `y` | It asks the three questions in turn, shows the `[[http.user]]` it will add and asks before adding; after `y` it prints the token once with the note; `koyomi-user list` shows the user |
+
+## 130. Editing the other PC's koyomi.toml from the window (`ui/far_config.rs`, `ConfigText` / `ConfigPut`)
+
+Rows need the window on this PC connected to kei (`[[remote]]`) with an engine of the same version there, and a token for each role (`admin`, `edit`). Back up kei's `koyomi.toml` first and restore it after; these rows change it. "On kei" means `sudo -u koyomi` there. The file text is not written to any log.
+
+| # | Do | Expect |
+|---|---|---|
+| 130.1 | Settings → 一般, with the window on kei as `admin`; as `edit`; on この PC | As `admin`: a button `接続先の koyomi.toml を直す…` in place of the line. As `edit`: the line `接続先の koyomi.toml を修正できるのは admin だけです`, no button. On この PC: the 一般 page as before (no button, no line) |
+| 130.2 | As `admin`, press `接続先の koyomi.toml を直す…` | The box `接続先の koyomi.toml` opens in the middle with the note, `読み込み中…`, then kei's koyomi.toml in a monospaced field with the focus in it; `読み直す` at the left, `閉じる` and `保存` at the right |
+| 130.3 | Add a comment line `# from the window` and press `保存` (then again with Ctrl+S in the field) | `書き込み中…` shows briefly; the box closes and the status line reads `koyomi.toml を書き込みました。数秒以内に反映されます。`; on kei the file has the line and every other byte as before; `versions/_settings/` gained the text as it was; `koyomi ops` on kei shows `config-put` with no text |
+| 130.4 | Open the box, change a comment; on kei change the file (`sudo -u koyomi sed -i …`); press `保存` | The box stays with the typed text and `KOYOMI-E2247 koyomi.toml は読み込んだあとに変更されているため、何も書き込んでいません。…` under the field; kei's file is the one changed on kei. `読み直す` asks first (the text was changed); `破棄する` reads the file again |
+| 130.5 | In the box change `[http]` `port`; then (reloaded) change your own `[[http.user]]` `role` to `edit` | Each time `KOYOMI-E2249 HTTPS からは、[http] の port・lan・ipv6・tailnet と、自分自身の [[http.user]] <you> を変更できないため、何も書き込んでいません。` under the field; the file is unchanged; the window stays connected |
+| 130.6 | Add a `[[http.user]]` with `token = "secret:nothere"` and press `保存` | `KOYOMI-E2248 トークン nothere が資格情報ストアにないか空のため、koyomi.toml を書き込んでいません。…`; nothing written |
+| 130.7 | Break the TOML (delete a `]`) and press `保存` | The parse error (with the line) under the field; nothing written; fix it and `保存` writes |
+| 130.8 | Change the text and press Esc; Enter; Esc again and Tab, Enter | The question `変更を破棄する` with the focus on `編集を続ける`: Enter keeps the box and the text; Tab moves to `破棄する` and Enter closes the box without writing |
+| 130.9 | Change the text and pick この PC in the status-bar list | The question `接続先を切り替える` comes first and says 「接続先の koyomi.toml に、保存していない変更があります。切り替えると破棄されます。」; `キャンセル` keeps the box and the text |
+| 130.10 | Close the settings while the box is open | The box stays over the window until it is closed |
+| 130.11 | As `admin` on kei, import (取り込み) a bundle whose koyomi.toml changes `[http]` `port`; then one that names `token = "secret:nothere"` in a new `[[http.user]]` | The plan lists the koyomi.toml item with `KOYOMI-E2249 …` (then `KOYOMI-E2248 …`) and nothing is written; kei's file is unchanged and the window stays connected. The same bundle imported on kei itself (`koyomi import` as `koyomi`) goes through as before |
