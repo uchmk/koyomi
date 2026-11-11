@@ -24,7 +24,7 @@
 //! and the time starts in the `tick` that sees the run end. One time waits
 //! per net; the engine records the rest as スキップ when it stops.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
@@ -237,10 +237,14 @@ pub struct Runner {
     held: Held,
     /// `jobnets/`, the folder of each group's definitions: what `work_dir = "definition"` needs.
     jobnets: Option<PathBuf>,
+    /// The runs closed at start from a day file older than yesterday.
+    stale: BTreeSet<String>,
 }
 
 impl Runner {
     /// Reads today's and yesterday's history: a run the last engine left unfinished is closed as 異常.
+    /// A run left in an older day file is closed the same way, in that file; it is told of
+    /// (`take_over`) but not kept in memory, and [`Runner::closed_stale`] says it is one of them.
     pub fn new(state_dir: &Path, config: Config) -> Runner {
         let (tx, rx) = mpsc::channel();
         let mut r = Runner {
@@ -263,6 +267,7 @@ impl Runner {
             asks: Vec::new(),
             held: Held::default(),
             jobnets: None,
+            stale: BTreeSet::new(),
         };
         let today = ito_common::now::now_local().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -284,7 +289,43 @@ impl Runner {
             r.record(&run, history::run_end(&run));
             r.over.push(run);
         }
+        r.close_stale(today - chrono::Days::new(1), now);
         r
+    }
+
+    /// Closes the unfinished runs in the day files older than `yesterday`, each in its own file.
+    /// A file that does not read, or a day that does not write back as TOML, is left alone.
+    fn close_stale(&mut self, yesterday: NaiveDate, now: NaiveDateTime) {
+        for (_, file) in koyomi_core::retain::old_history(&self.history, yesterday) {
+            let Ok(mut loaded) = Day::load(&file) else { continue };
+            let mut closed = Vec::new();
+            for mut run in loaded.runs() {
+                if !run.is_over() {
+                    run.abandon(now);
+                    closed.push(run);
+                }
+            }
+            if closed.is_empty() {
+                continue;
+            }
+            for run in &closed {
+                loaded.events.push(history::run_end(run));
+            }
+            // Not `to_toml`: it gives "" when the day does not serialize, which would empty the file.
+            let Ok(text) = toml::to_string(&loaded) else { continue };
+            if ito_common::write_atomic(&file, text).is_err() {
+                continue;
+            }
+            for run in closed {
+                self.stale.insert(run.id.clone());
+                self.over.push(run);
+            }
+        }
+    }
+
+    /// Whether run `id` was closed at start from a day file older than yesterday: it must not start followers.
+    pub fn closed_stale(&self, id: &str) -> bool {
+        self.stale.contains(id)
     }
 
     /// The runs that ended since the last call, oldest first: each once.
@@ -2835,6 +2876,58 @@ judge = {{ ok_file = '{ok_file}.none' }}
         assert_eq!(r.take_over().len(), 1, "the closed run is told of too");
         r.flush();
         let day = Day::load(&history::path(&hist, today)).unwrap();
+        assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A history file of `days_ago` days back with one run in it: finished, or left running.
+    fn old_day(hist: &Path, days_ago: u64, id: &str, finished: bool) -> PathBuf {
+        let now = ito_common::now::now_local().naive_local();
+        let then = now - chrono::Days::new(days_ago);
+        let net = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let mut run = Run::new(id, "g/net", "net", &then.format("%Y-%m-%d").to_string(), How::Manual, &net, then);
+        let mut day = Day::default();
+        day.events.push(history::run_start(&run));
+        run.start("a", then);
+        day.events.push(history::job_start(&run, run.job("a").unwrap()));
+        if finished {
+            run.abandon(then);
+            day.events.push(history::job_end(&run, run.job("a").unwrap()));
+            day.events.push(history::run_end(&run));
+        }
+        let file = history::path(hist, then.date());
+        ito_common::write_atomic(&file, day.to_toml()).unwrap();
+        file
+    }
+
+    #[test]
+    fn a_run_left_in_an_old_day_file_is_closed_there_and_marked_stale() {
+        let dir = scratch("abandon-old");
+        let hist = dir.join("history");
+        let stale = old_day(&hist, 5, "20260101-000000-01", false);
+        let done = old_day(&hist, 6, "20260101-000000-02", true);
+        let done_before = std::fs::read(&done).unwrap();
+        let recent = old_day(&hist, 1, "20260101-000000-03", false);
+        let mut r = Runner::new(&dir, Config::default());
+        let day = Day::load(&stale).unwrap();
+        assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));
+        assert_eq!(std::fs::read(&done).unwrap(), done_before, "a finished run's file is left as it was");
+        assert!(r.runs().iter().all(|x| x.id != "20260101-000000-01"), "the old run is not kept in memory");
+        let over = r.take_over();
+        assert!(over.iter().any(|x| x.id == "20260101-000000-01"));
+        assert!(!over.iter().any(|x| x.id == "20260101-000000-02"));
+        assert!(r.closed_stale("20260101-000000-01"));
+        assert!(!r.closed_stale("20260101-000000-03"), "yesterday's run still starts followers");
+        assert!(over.iter().any(|x| x.id == "20260101-000000-03"));
+        r.flush();
+        let day = Day::load(&recent).unwrap();
         assert!(matches!(day.events.last(), Some(history::Event::RunEnd { state: State::Error, .. })));
         let _ = std::fs::remove_dir_all(&dir);
     }

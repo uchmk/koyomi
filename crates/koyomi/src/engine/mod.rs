@@ -470,7 +470,8 @@ impl State {
         for r in &over {
             self.usual.remove(&r.jobnet);
         }
-        self.tick_after(&over);
+        let fresh: Vec<Run> = over.iter().filter(|r| !self.runner.closed_stale(&r.id)).cloned().collect();
+        self.tick_after(&fresh);
         let (runs, missed) = notify::group_missed(over);
         // A time stopped by hand (⏸) is not told of: the person did it.
         for r in runs.into_iter().filter(|r| r.state != RunState::Held) {
