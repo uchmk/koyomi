@@ -9,7 +9,7 @@
 //! A token lives only in [`Issued`], in the box's state: it is not in a log, a result line, a state file, a test
 //! ID or any `{:?}` (its `Debug` prints `***`).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use koyomi_core::msg;
@@ -132,13 +132,141 @@ pub(super) struct Write {
     pub name: String,
 }
 
-/// The nets as typed: split at spaces and commas.
-fn split_nets(text: &str) -> Vec<String> {
-    text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()).map(str::to_owned).collect()
+/// A user's nets as the person picks them: every net, or the chosen patterns (`<group>/<name>`, where `*` is any
+/// run inside one part). The saved form is `None` (every net) or `Some(chosen)`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct NetPick {
+    /// Every net: the request carries `nets: None`. Then `chosen` is empty.
+    pub all: bool,
+    /// The patterns, in the order they will be saved.
+    pub chosen: Vec<String>,
 }
 
-fn some(v: Vec<String>) -> Option<Vec<String>> {
-    (!v.is_empty()).then_some(v)
+impl NetPick {
+    /// Every net.
+    fn every() -> NetPick {
+        NetPick { all: true, chosen: Vec::new() }
+    }
+
+    /// The pick a listed user has: nothing is tidied.
+    fn of(nets: Option<&[String]>) -> NetPick {
+        match nets {
+            None => NetPick::every(),
+            Some(n) => NetPick { all: false, chosen: n.to_vec() },
+        }
+    }
+
+    /// The one normal form: `None` for every net, else the list as it is.
+    fn norm(&self) -> Option<Vec<String>> {
+        if self.all {
+            None
+        } else {
+            Some(self.chosen.clone())
+        }
+    }
+
+    /// 「選んだジョブネットだけ」 with nothing ticked: it cannot be saved.
+    fn missing(&self) -> bool {
+        !self.all && self.chosen.is_empty()
+    }
+
+    fn choose_all(&mut self) {
+        self.all = true;
+        self.chosen.clear();
+    }
+
+    fn has(&self, entry: &str) -> bool {
+        self.chosen.iter().any(|c| c == entry)
+    }
+
+    /// Ticks an entry that is not ticked yet: it goes last.
+    fn tick(&mut self, entry: &str) {
+        if !self.has(entry) {
+            self.chosen.push(entry.to_owned());
+        }
+    }
+
+    /// Unticks an entry: every copy of it goes.
+    fn untick(&mut self, entry: &str) {
+        self.chosen.retain(|c| c != entry);
+    }
+
+    /// Ticks a group's `<group>/*`; the single ids of that group are covered now, so they go.
+    fn tick_group(&mut self, group: &str) {
+        let pattern = group_pattern(group);
+        let prefix = format!("{group}/");
+        self.chosen.retain(|c| *c == pattern || !c.starts_with(&prefix) || c.contains('*'));
+        self.tick(&pattern);
+    }
+}
+
+/// Whether two nets lists reach the same nets as the engine reads them: the order and repeats do not count.
+fn same_nets(a: &Option<Vec<String>>, b: &Option<Vec<String>>) -> bool {
+    fn set(v: &Option<Vec<String>>) -> Option<BTreeSet<&String>> {
+        v.as_ref().map(|v| v.iter().collect())
+    }
+    set(a) == set(b)
+}
+
+/// The pattern that covers every net of a group, now and later.
+fn group_pattern(group: &str) -> String {
+    format!("{group}/*")
+}
+
+/// The engine's net ids as the chooser shows them: each group, and its ids, sorted. An id with no group is not offered.
+fn offered(ids: &[String]) -> Vec<(String, Vec<String>)> {
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for id in ids {
+        if let Some((g, _)) = id.split_once('/') {
+            groups.entry(g.to_owned()).or_default().push(id.clone());
+        }
+    }
+    groups
+        .into_iter()
+        .map(|(g, mut v)| {
+            v.sort();
+            v.dedup();
+            (g, v)
+        })
+        .collect()
+}
+
+/// Why a chosen entry is not one of the checkboxes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Kept {
+    /// It has a `*` (written in koyomi.toml).
+    Pattern,
+    /// The engine's list has come and the net is not in it.
+    Gone,
+    /// The engine's list has not come.
+    Unchecked,
+}
+
+/// What `chosen` holds that the list does not offer, in `chosen`'s order, each text once.
+fn kept_entries(chosen: &[String], ids: &[String]) -> Vec<(String, Kept)> {
+    let groups = offered(ids);
+    let mut out: Vec<(String, Kept)> = Vec::new();
+    for c in chosen {
+        let is_group = c.strip_suffix("/*").is_some_and(|g| groups.iter().any(|(n, _)| n == g));
+        let is_id = groups.iter().any(|(_, v)| v.contains(c));
+        if is_group || is_id || out.iter().any(|(t, _)| t == c) {
+            continue;
+        }
+        let why = if c.contains('*') {
+            Kept::Pattern
+        } else if ids.is_empty() {
+            Kept::Unchecked
+        } else {
+            Kept::Gone
+        };
+        out.push((c.clone(), why));
+    }
+    out
+}
+
+/// A text as a part of a test ID: lowercase hex of its UTF-8 bytes, so two texts never share one.
+fn net_code(text: &str) -> String {
+    text.bytes().map(|b| format!("{b:02x}")).collect()
 }
 
 /// 役割を変える…: one user's editor.
@@ -146,10 +274,10 @@ fn some(v: Vec<String>) -> Option<Vec<String>> {
 pub(super) struct Edit {
     pub name: String,
     pub role: String,
-    pub nets: String,
+    pub nets: NetPick,
     pub roles: Option<BTreeMap<String, String>>,
     /// What the editor opened with.
-    orig: (String, Vec<String>, Option<BTreeMap<String, String>>),
+    orig: (String, Option<Vec<String>>, Option<BTreeMap<String, String>>),
     /// The role or the name changed under the page: 保存 waits until the person has looked at the new listing.
     pub stale: bool,
     /// The user was changed elsewhere while this was open: what is typed is merged with the new listing, and the
@@ -159,14 +287,14 @@ pub(super) struct Edit {
 
 impl Edit {
     fn of(l: &Listed) -> Edit {
-        let nets = l.user.nets.clone().unwrap_or_default();
         let roles = l.user.roles.clone().filter(|r| !r.is_empty());
+        let nets = NetPick::of(l.user.nets.as_deref());
         Edit {
             name: l.user.name.clone(),
             role: l.user.role.clone(),
-            nets: nets.join(" "),
-            roles: roles.clone(),
-            orig: (l.user.role.clone(), nets, roles),
+            orig: (l.user.role.clone(), nets.norm(), roles.clone()),
+            nets,
+            roles,
             stale: false,
             changed: false,
         }
@@ -178,7 +306,7 @@ impl Edit {
         if self.role == self.orig.0 {
             self.role = fresh.role.clone();
         }
-        if split_nets(&self.nets) == self.orig.1 {
+        if same_nets(&self.nets.norm(), &self.orig.1) {
             self.nets = fresh.nets.clone();
         }
         self.roles = fresh.roles.clone();
@@ -191,16 +319,21 @@ impl Edit {
         self.role == Role::Admin.name()
     }
 
-    /// Admin has no nets and no per-net roles.
+    /// Admin has every net and no per-net roles.
     fn normalize(&mut self) {
         if self.is_admin() {
-            self.nets.clear();
+            self.nets = NetPick::every();
             self.roles = None;
         }
     }
 
+    /// The nets are 「選んだジョブネットだけ」 with nothing ticked (an admin never is).
+    pub(super) fn nets_missing(&self) -> bool {
+        !self.is_admin() && self.nets.missing()
+    }
+
     pub(super) fn dirty(&self) -> bool {
-        (self.role.as_str(), split_nets(&self.nets), &self.roles) != (self.orig.0.as_str(), self.orig.1.clone(), &self.orig.2)
+        self.role != self.orig.0 || !same_nets(&self.nets.norm(), &self.orig.1) || self.roles != self.orig.2
     }
 
     fn request(&self, base: &str) -> Request {
@@ -208,7 +341,7 @@ impl Edit {
         Request::UserSet {
             name: self.name.clone(),
             role: self.role.clone(),
-            nets: if admin { None } else { some(split_nets(&self.nets)) },
+            nets: if admin { None } else { self.nets.norm() },
             roles: if admin { None } else { self.roles.clone() },
             base: base.to_owned(),
         }
@@ -220,7 +353,7 @@ impl Edit {
 pub(super) struct Add {
     pub name: String,
     pub role: String,
-    pub nets: String,
+    pub nets: NetPick,
     pub stale: bool,
     /// Why the name was refused, in the process language.
     pub error: Option<String>,
@@ -228,15 +361,20 @@ pub(super) struct Add {
 
 impl Add {
     fn new() -> Add {
-        Add { name: String::new(), role: Role::View.name().to_owned(), nets: String::new(), stale: false, error: None }
+        Add { name: String::new(), role: Role::View.name().to_owned(), nets: NetPick::every(), stale: false, error: None }
     }
 
     pub(super) fn dirty(&self) -> bool {
-        !self.name.trim().is_empty() || self.role != Role::View.name() || !split_nets(&self.nets).is_empty()
+        !self.name.trim().is_empty() || self.role != Role::View.name() || !self.nets.all
     }
 
     fn is_admin(&self) -> bool {
         self.role == Role::Admin.name()
+    }
+
+    /// The nets are 「選んだジョブネットだけ」 with nothing ticked (an admin never is).
+    pub(super) fn nets_missing(&self) -> bool {
+        !self.is_admin() && self.nets.missing()
     }
 
     /// The trimmed name, or why it is refused (before anything is sent).
@@ -255,7 +393,7 @@ impl Add {
         Request::UserAdd {
             name,
             role: self.role.clone(),
-            nets: if self.is_admin() { None } else { some(split_nets(&self.nets)) },
+            nets: if self.is_admin() { None } else { self.nets.norm() },
             roles: None,
             base: base.to_owned(),
         }
@@ -279,7 +417,7 @@ pub(super) struct View<'a> {
     pub who: Option<&'a str>,
     /// The access is [`Access::Open`].
     pub open: bool,
-    /// The ids of the engine's nets: what the nets field can be filled from.
+    /// The ids of the engine's nets: what the nets chooser offers.
     pub nets: &'a [String],
 }
 
@@ -489,7 +627,10 @@ impl Users {
             Click::CloseEdit => self.edit = None,
             Click::Save => {
                 let ok = self.can_write(v)
-                    && self.edit.as_ref().is_some_and(|e| !e.stale && !e.changed && e.dirty() && !Self::locked(v, &e.name));
+                    && self
+                        .edit
+                        .as_ref()
+                        .is_some_and(|e| !e.stale && !e.changed && e.dirty() && !e.nets_missing() && !Self::locked(v, &e.name));
                 if ok {
                     let req = self.edit.as_ref().map(|e| (e.name.clone(), e.request(&self.base())));
                     if let Some((name, req)) = req {
@@ -512,6 +653,7 @@ impl Users {
                     if let Some(a) = self.add.as_mut().filter(|a| !a.stale) {
                         match a.check(&names) {
                             Err(why) => a.error = Some(why),
+                            Ok(_) if a.nets_missing() => a.error = None,
                             Ok(name) => {
                                 a.error = None;
                                 let req = a.request(name.clone(), &base);
@@ -977,15 +1119,97 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
     click
 }
 
-fn nets_row(ui: &mut egui::Ui, t: &ito_i18n::Table, nets: &mut String, ids: &[String], admin: bool, id: &str) {
-    ui.horizontal(|ui| {
+/// One checkbox of the nets chooser: `ticked` is what it shows, `on` whether it can be clicked. Returns whether it
+/// was clicked.
+fn net_check(ui: &mut egui::Ui, (ticked, on): (bool, bool), words: &str, hover: &str, test_id: &str, salt: &str) -> bool {
+    let mut value = ticked;
+    let r = ui
+        .push_id(salt, |ui| ui.add_enabled(on, egui::Checkbox::new(&mut value, words)))
+        .inner
+        .on_hover_text(hover)
+        .on_disabled_hover_text(hover);
+    ito_a11y::test_id(&r, test_id);
+    r.changed()
+}
+
+fn nets_row(ui: &mut egui::Ui, t: &ito_i18n::Table, nets: &mut NetPick, ids: &[String], admin: bool, id: &str) {
+    ui.horizontal_wrapped(|ui| {
         ui.label(t.tr("users.nets_field"));
-        let r = ui.add_enabled(!admin, egui::TextEdit::singleline(nets).hint_text(t.tr("users.nets_hint")).desired_width(280.0));
-        ito_a11y::say(&r, ito_a11y::Role::Label, t.tr("users.nets_field"));
-        ito_a11y::test_id(&r, id);
-        // Beside the typed field (patterns and ids stay typeable): pick what to add. Off with the field.
-        ui.add_enabled_ui(!admin, |ui| super::pick::net_adder(ui, t, &format!("{id}.add"), nets, ids));
+        if admin {
+            // An admin has every net: both radios are off.
+            let why = t.tr("users.nets_admin");
+            let r = ui.add_enabled(false, egui::RadioButton::new(false, t.tr("users.nets_all"))).on_disabled_hover_text(why);
+            ito_a11y::test_id(&r, &format!("{id}.all"));
+            let r = ui.add_enabled(false, egui::RadioButton::new(false, t.tr("users.nets_only"))).on_disabled_hover_text(why);
+            ito_a11y::test_id(&r, &format!("{id}.only"));
+            ui.label(egui::RichText::new(nets_word(None)).color(ito_theme::colors().dim)).on_hover_text(why);
+            return;
+        }
+        let r = ui.radio(nets.all, t.tr("users.nets_all"));
+        ito_a11y::test_id(&r, &format!("{id}.all"));
+        if r.clicked() && !nets.all {
+            nets.choose_all();
+        }
+        let r = ui.radio(!nets.all, t.tr("users.nets_only"));
+        ito_a11y::test_id(&r, &format!("{id}.only"));
+        if r.clicked() && nets.all {
+            nets.all = false;
+        }
     });
+    if admin || nets.all {
+        return;
+    }
+    let dim = ito_theme::colors().dim;
+    let groups = offered(ids);
+    egui::ScrollArea::vertical().id_salt(format!("{id}.scroll")).max_height(240.0).show(ui, |ui| {
+        // What is chosen but not offered here: kept until it is unticked.
+        for (text, why) in kept_entries(&nets.chosen, ids) {
+            let note = match why {
+                Kept::Pattern => t.tr("users.nets_kept_pattern"),
+                Kept::Gone => t.tr("users.nets_kept_gone"),
+                Kept::Unchecked => t.tr("users.nets_kept_unchecked"),
+            };
+            ui.horizontal(|ui| {
+                if net_check(ui, (true, true), &text, &text, &format!("{id}.kept.{}", net_code(&text)), &format!("{id}.kept.{text}")) {
+                    nets.untick(&text);
+                }
+                ui.label(egui::RichText::new(note).color(dim));
+            });
+        }
+        for (group, members) in &groups {
+            let pattern = group_pattern(group);
+            let covered = nets.has(&pattern);
+            let words = t.trf("users.nets_group", &[group]);
+            if net_check(ui, (covered, true), &words, &pattern, &format!("{id}.group.{}", net_code(group)), &format!("{id}.group.{group}"))
+            {
+                if covered {
+                    nets.untick(&pattern);
+                } else {
+                    nets.tick_group(group);
+                }
+            }
+            ui.indent(format!("{id}.members.{group}"), |ui| {
+                for member in members {
+                    let name = member.split_once('/').map_or(member.as_str(), |(_, n)| n);
+                    let ticked = covered || nets.has(member);
+                    let test_id = format!("{id}.net.{}", net_code(member));
+                    if net_check(ui, (ticked, !covered), name, member, &test_id, &format!("{id}.net.{member}")) {
+                        if ticked {
+                            nets.untick(member);
+                        } else {
+                            nets.tick(member);
+                        }
+                    }
+                }
+            });
+        }
+        if groups.is_empty() {
+            ui.label(egui::RichText::new(t.tr("users.nets_no_list")).color(dim));
+        }
+    });
+    if nets.missing() {
+        ui.label(egui::RichText::new(t.tr("users.nets_need")).color(ito_theme::colors().err));
+    }
 }
 
 fn role_radios(ui: &mut egui::Ui, current: &mut String, id: &str) -> bool {
@@ -1028,6 +1252,7 @@ fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): 
     ui.label(format!("{}: {roles}", msg::note(msg::N_USER_LABEL_ROLES, &[])));
     ui.add(egui::Label::new(egui::RichText::new(t.tr("users.edit_roles_note")).color(ito_theme::colors().dim)).wrap());
     let (dirty, stale, changed) = (e.dirty(), e.stale, e.changed);
+    let need = e.nets_missing();
     if stale {
         stale_row(ui, t, "users.stale_note", "users.seen", can_see, click);
     }
@@ -1037,8 +1262,8 @@ fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): 
     ui.horizontal(|ui| {
         if button(
             ui,
-            can && dirty && !stale && !changed,
-            None,
+            can && dirty && !stale && !changed && !need,
+            need.then(|| t.tr("users.nets_need")),
             ito_prefs::Mark::Save,
             t.tr("users.save"),
             ito_prefs::Tone::Primary,
@@ -1066,7 +1291,7 @@ fn add_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): (
                 ito_a11y::test_id(&r, "users.add.name");
             });
             if role_radios(ui, &mut a.role, "users.add") && a.is_admin() {
-                a.nets.clear();
+                a.nets = NetPick::every();
             }
             let admin = a.is_admin();
             nets_row(ui, t, &mut a.nets, ids, admin, "users.add.nets");
@@ -1078,8 +1303,17 @@ fn add_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): (
             stale_row(ui, t, "users.stale_note", "users.seen", can, click);
         }
         let stale = a.stale;
+        let need = a.nets_missing();
         ui.horizontal(|ui| {
-            if button(ui, can && !stale, None, ito_prefs::Mark::Plus, t.tr("users.create"), ito_prefs::Tone::Primary, "users.add.create") {
+            if button(
+                ui,
+                can && !stale && !need,
+                need.then(|| t.tr("users.nets_need")),
+                ito_prefs::Mark::Plus,
+                t.tr("users.create"),
+                ito_prefs::Tone::Primary,
+                "users.add.create",
+            ) {
                 click.get_or_insert(Click::Create);
             }
             if button(ui, true, None, ito_prefs::Mark::Close, t.tr("users.cancel"), ito_prefs::Tone::Plain, "users.add.cancel") {
@@ -1221,20 +1455,165 @@ mod tests {
         assert!(u.edit.is_none() && u.write().is_none());
     }
 
+    fn pick(chosen: &[&str]) -> NetPick {
+        NetPick { all: false, chosen: chosen.iter().map(|s| (*s).to_owned()).collect() }
+    }
+
+    fn strs(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
     #[test]
-    fn nets_are_split_at_spaces_and_commas_and_admin_has_none() {
+    fn a_net_pick_comes_from_none_or_a_list_and_goes_back_to_the_same_request() {
+        assert_eq!(NetPick::of(None), NetPick::every());
+        assert_eq!(NetPick::of(None).norm(), None);
+        let listed = strs(&["b/y", "a/x", "b/y"]);
+        let p = NetPick::of(Some(&listed));
+        assert!(!p.all);
+        assert_eq!(p.norm(), Some(listed), "order and duplicates are kept");
+        let mut l = user("kei", "view");
+        l.user.nets = Some(strs(&["b/y", "a/x", "b/y"]));
+        let e = Edit::of(&l);
+        assert!(!e.dirty(), "an untouched edit is not dirty");
+        assert!(matches!(e.request("b"), Request::UserSet { nets: Some(n), .. } if n == ["b/y", "a/x", "b/y"]));
+    }
+
+    #[test]
+    fn all_sends_none_and_only_with_a_list_sends_it_in_order() {
         let mut e = Edit::of(&user("kei", "view"));
-        e.nets = "a/x, b/y  c/z".into();
+        assert!(!e.dirty());
+        e.nets = pick(&["b/y", "a/x"]);
         assert!(e.dirty());
-        assert!(matches!(e.request("b"), Request::UserSet { nets: Some(n), .. } if n == ["a/x", "b/y", "c/z"]));
-        e.nets.clear();
-        assert!(matches!(e.request("b"), Request::UserSet { nets: None, .. }), "empty means every net");
-        e.nets = "a/x".into();
+        assert!(matches!(e.request("b"), Request::UserSet { nets: Some(n), .. } if n == ["b/y", "a/x"]));
+        e.nets.choose_all();
+        assert!(e.nets.chosen.is_empty(), "すべて keeps nothing aside");
+        assert!(!e.dirty(), "going back to the original すべて is not dirty");
+        assert!(matches!(e.request("b"), Request::UserSet { nets: None, .. }));
+    }
+
+    #[test]
+    fn choosing_all_clears_the_chosen_and_a_listed_list_is_dirty_against_all() {
+        let mut l = user("kei", "view");
+        l.user.nets = Some(strs(&["a/x"]));
+        let mut e = Edit::of(&l);
+        e.nets.choose_all();
+        assert!(e.nets.chosen.is_empty() && e.dirty());
+        assert!(matches!(e.request("b"), Request::UserSet { nets: None, .. }));
+    }
+
+    #[test]
+    fn admin_forces_all_and_drops_the_nets_and_per_net_roles() {
+        let mut e = Edit::of(&user("kei", "view"));
+        e.nets = pick(&["a/x"]);
         e.roles = Some(BTreeMap::from([("a/x".into(), "run".into())]));
         e.role = "admin".into();
         e.normalize();
-        assert!(e.nets.is_empty() && e.roles.is_none());
+        assert!(e.nets == NetPick::every() && e.roles.is_none());
+        assert!(!e.nets_missing());
         assert!(matches!(e.request("b"), Request::UserSet { nets: None, roles: None, .. }));
+        let mut a = Add::new();
+        a.nets = pick(&["a/x"]);
+        a.role = "admin".into();
+        assert!(!a.nets_missing());
+        assert!(matches!(a.request("mei".into(), "b"), Request::UserAdd { nets: None, .. }));
+    }
+
+    #[test]
+    fn only_with_nothing_ticked_is_refused_by_save_and_create() {
+        let v = view(None, None);
+        let mut u = loaded("b1", &[("kei", "view")]);
+        opened(&mut u, "kei");
+        u.edit.as_mut().unwrap().nets = pick(&[]);
+        assert!(u.edit.as_ref().unwrap().dirty() && u.edit.as_ref().unwrap().nets_missing());
+        assert!(matches!(u.act(Click::Save, &v), Do::Nothing));
+        assert!(u.write().is_none(), "no write starts");
+        u.edit.as_mut().unwrap().nets = pick(&["a/x"]);
+        assert!(matches!(sent(u.act(Click::Save, &v)), Request::UserSet { nets: Some(_), .. }));
+        let mut u = loaded("b1", &[("kei", "view")]);
+        u.act(Click::OpenAdd, &v);
+        let a = u.add.as_mut().unwrap();
+        a.name = "mei".into();
+        assert!(matches!(a.request("mei".into(), "b1"), Request::UserAdd { nets: None, .. }), "all sends none");
+        a.nets = pick(&[]);
+        assert!(a.dirty());
+        assert!(matches!(u.act(Click::Create, &v), Do::Nothing));
+        assert!(u.write().is_none(), "no write starts");
+        u.add.as_mut().unwrap().nets = pick(&["a/*"]);
+        assert!(matches!(sent(u.act(Click::Create, &v)), Request::UserAdd { nets: Some(n), .. } if n == ["a/*"]));
+    }
+
+    #[test]
+    fn ticking_a_new_group_drops_its_single_ids_and_unticking_keeps_a_hand_written_one() {
+        let mut p = pick(&["経理/日次", "人事/a", "経理/日*"]);
+        p.tick_group("経理");
+        assert_eq!(p.chosen, ["人事/a", "経理/日*", "経理/*"], "the group's single ids go; patterns and other groups stay");
+        // A hand-written id next to the group stays when the group is unticked.
+        let mut p = pick(&["経理/*", "経理/日次"]);
+        p.untick("経理/*");
+        assert_eq!(p.chosen, ["経理/日次"]);
+        assert!(p.has("経理/日次"));
+        // Untouched, `["経理/*", "経理/日次"]` is not dirty.
+        let mut l = user("kei", "view");
+        l.user.nets = Some(strs(&["経理/*", "経理/日次"]));
+        assert!(!Edit::of(&l).dirty());
+    }
+
+    #[test]
+    fn ticking_a_net_appends_and_unticking_removes_every_copy() {
+        let mut p = pick(&["a/x", "b/y", "a/x"]);
+        p.tick("c/z");
+        p.tick("c/z");
+        assert_eq!(p.chosen, ["a/x", "b/y", "a/x", "c/z"]);
+        p.untick("a/x");
+        assert_eq!(p.chosen, ["b/y", "c/z"]);
+    }
+
+    #[test]
+    fn unticking_and_ticking_again_is_not_a_change() {
+        let mut l = user("kei", "view");
+        l.user.nets = Some(strs(&["a/x", "b/y"]));
+        let mut e = Edit::of(&l);
+        e.nets.untick("a/x");
+        assert!(e.dirty());
+        e.nets.tick("a/x");
+        assert_eq!(e.nets.chosen, ["b/y", "a/x"]);
+        assert!(!e.dirty(), "the same nets in another order reach the same nets");
+    }
+
+    #[test]
+    fn what_the_list_does_not_offer_is_kept_with_its_note_until_unticked() {
+        let ids = strs(&["経理/日次", "経理/月次", "人事/a"]);
+        let chosen = strs(&["*/日次", "経理/*", "経理/gone", "人事/a", "*/日次", "経理/月次"]);
+        assert_eq!(kept_entries(&chosen, &ids), [("*/日次".to_owned(), Kept::Pattern), ("経理/gone".to_owned(), Kept::Gone)]);
+        // Before the list came, a plain id is not yet checked; a pattern is still a pattern.
+        assert_eq!(
+            kept_entries(&strs(&["経理/日次", "*/日次"]), &[]),
+            [("経理/日次".to_owned(), Kept::Unchecked), ("*/日次".to_owned(), Kept::Pattern)]
+        );
+        // A group that is not in the list is a pattern with a `*`.
+        assert_eq!(kept_entries(&strs(&["gone/*"]), &ids), [("gone/*".to_owned(), Kept::Pattern)]);
+        // The list arriving changes nothing in `chosen`: the pick is not touched by the listing of nets.
+        let p = pick(&["経理/gone"]);
+        let before = p.clone();
+        let _ = (kept_entries(&p.chosen, &[]), kept_entries(&p.chosen, &ids));
+        assert_eq!(p, before);
+        let mut p = p;
+        p.untick("経理/gone");
+        assert!(kept_entries(&p.chosen, &ids).is_empty());
+    }
+
+    #[test]
+    fn the_offered_list_is_sorted_by_group_and_by_id_and_skips_ids_with_no_group() {
+        let ids = strs(&["経理/b", "人事/a", "経理/a", "plain"]);
+        assert_eq!(offered(&ids), [("人事".to_owned(), strs(&["人事/a"])), ("経理".to_owned(), strs(&["経理/a", "経理/b"]))]);
+    }
+
+    #[test]
+    fn the_test_id_code_tells_groups_apart_where_tid_does_not() {
+        assert_eq!(tid("経理"), tid("総務"));
+        assert_ne!(net_code("経理"), net_code("総務"));
+        assert_eq!(net_code("ab"), "6162");
+        assert_ne!(net_code("a/x"), net_code("a/y"));
     }
 
     #[test]
@@ -1243,7 +1622,7 @@ mod tests {
         l.user.roles = Some(BTreeMap::from([("a/x".into(), "edit".into())]));
         let mut e = Edit::of(&l);
         e.role = "view".into();
-        e.nets = "a/x".into();
+        e.nets = pick(&["a/x"]);
         assert!(matches!(e.request("b"), Request::UserSet { roles: Some(r), .. } if r.get("a/x").map(String::as_str) == Some("edit")));
     }
 
@@ -1293,7 +1672,7 @@ mod tests {
             assert!(u.write().is_none());
         }
         u.add.as_mut().unwrap().name = "  mei ".into();
-        u.add.as_mut().unwrap().nets = "a/x".into();
+        u.add.as_mut().unwrap().nets = pick(&["a/x"]);
         let req = sent(u.act(Click::Create, &v));
         assert!(matches!(&req, Request::UserAdd { name, role, nets: Some(n), roles: None, base }
             if name == "mei" && role == "view" && n == &["a/x"] && base == "b1"));
@@ -1428,9 +1807,9 @@ mod tests {
         assert!(!u.unsaved());
         u.act(Click::OpenEdit("kei".into()), &v);
         assert!(!u.unsaved(), "an editor with nothing typed asks nothing");
-        u.edit.as_mut().unwrap().nets = "a/x".into();
+        u.edit.as_mut().unwrap().nets = pick(&["a/x"]);
         assert!(u.unsaved() && u.forms_dirty());
-        u.edit.as_mut().unwrap().nets.clear();
+        u.edit.as_mut().unwrap().nets.choose_all();
         assert!(!u.unsaved());
         u.act(Click::OpenAdd, &v);
         assert!(!u.unsaved());
@@ -1568,9 +1947,9 @@ mod tests {
         assert!(u.edit.is_none());
         // Same: untouched, and not flagged.
         u.edit = Some(Edit::of(&base()));
-        u.edit.as_mut().unwrap().nets = "a b".into();
+        u.edit.as_mut().unwrap().nets = pick(&["a", "b"]);
         relist(&mut u, "b3", vec![base()]);
-        assert!(u.edit.as_ref().is_some_and(|e| !e.changed && e.nets == "a b"));
+        assert!(u.edit.as_ref().is_some_and(|e| !e.changed && e.nets == pick(&["a", "b"])));
         // Different and pristine: replaced.
         u.edit = Some(Edit::of(&base()));
         relist(&mut u, "b4", vec![rich("kei", "run", &["a"], &[])]);
@@ -1578,7 +1957,7 @@ mod tests {
         assert!(!e.changed && !e.dirty() && e.role == "run" && e.roles.is_none());
         // Different and dirty: merged, flagged, save off until seen.
         u.edit = Some(Edit::of(&base()));
-        u.edit.as_mut().unwrap().nets = "a b".into();
+        u.edit.as_mut().unwrap().nets = pick(&["a", "b"]);
         relist(&mut u, "b5", vec![rich("kei", "run", &["a"], &[("a", "edit")])]);
         let e = u.edit.as_ref().unwrap();
         assert!(e.changed && e.dirty());
@@ -1588,6 +1967,29 @@ mod tests {
         assert_eq!((role.as_str(), base.as_str()), ("run", "b5"), "the role changed elsewhere is not carried back");
         assert_eq!(nets, Some(vec!["a".to_owned(), "b".to_owned()]));
         assert_eq!(roles.and_then(|r| r.get("a").cloned()).as_deref(), Some("edit"), "the listing's per-net roles");
+    }
+
+    #[test]
+    fn merge_takes_an_unchanged_pick_keeps_a_changed_one_and_a_fresh_admin_drops_it() {
+        // Unchanged pick: the fresh listing's pick is taken.
+        let mut u = loaded("b1", &[("kei", "view")]);
+        relist(&mut u, "b1", vec![rich("kei", "view", &["a"], &[])]);
+        u.edit = Some(Edit::of(&rich("kei", "view", &["a"], &[])));
+        u.edit.as_mut().unwrap().role = "run".into();
+        relist(&mut u, "b2", vec![rich("kei", "view", &["a", "b"], &[])]);
+        let e = u.edit.as_ref().unwrap();
+        assert!(e.changed && e.nets == pick(&["a", "b"]) && e.role == "run");
+        // Changed pick: kept.
+        u.edit = Some(Edit::of(&rich("kei", "view", &["a"], &[])));
+        u.edit.as_mut().unwrap().nets = pick(&["z"]);
+        relist(&mut u, "b3", vec![rich("kei", "view", &["a", "b"], &[])]);
+        assert_eq!(u.edit.as_ref().unwrap().nets, pick(&["z"]));
+        // A fresh listing that makes the user admin drops a changed pick: the one intended loss.
+        u.edit = Some(Edit::of(&rich("kei", "view", &["a"], &[])));
+        u.edit.as_mut().unwrap().nets = pick(&["z"]);
+        relist(&mut u, "b4", vec![rich("kei", "admin", &[], &[])]);
+        let e = u.edit.as_ref().unwrap();
+        assert!(e.is_admin() && e.nets == NetPick::every());
     }
 
     #[test]

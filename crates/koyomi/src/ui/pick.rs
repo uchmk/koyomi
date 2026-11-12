@@ -138,33 +138,6 @@ pub fn weekday_index(text: &str) -> Option<usize> {
     when::weekday(text).ok().map(|d| d.num_days_from_monday() as usize)
 }
 
-/// The patterns of a user's nets field (`経理/*`, ids; space or comma separated).
-fn net_patterns(text: &str) -> Vec<&str> {
-    text.split(|c: char| c.is_whitespace() || c == ',').filter(|s| !s.is_empty()).collect()
-}
-
-/// `field` with `add` after what is there, space separated; nothing is added twice.
-pub fn net_append(field: &str, add: &str) -> String {
-    if net_patterns(field).contains(&add) {
-        return field.to_owned();
-    }
-    let kept = field.trim_end();
-    if kept.is_empty() {
-        add.to_owned()
-    } else {
-        format!("{kept} {add}")
-    }
-}
-
-/// The choices of the users page's picker after 「すべて」: each group as `<group>/*`, then each id.
-pub fn net_patterns_offered(ids: &[String]) -> Vec<String> {
-    let mut groups: Vec<String> = ids.iter().filter_map(|id| id.split_once('/')).map(|(g, _)| format!("{g}/*")).collect();
-    groups.sort();
-    groups.dedup();
-    groups.extend(ids.iter().cloned());
-    groups
-}
-
 /// What a chooser is for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Want {
@@ -505,22 +478,6 @@ pub fn day_toggles(ui: &mut egui::Ui, t: &Table, label: &str, text: &mut String,
     }
 }
 
-/// 追加 ▾ beside the users page's nets field: 「すべて」 empties it, then each group and each id is added.
-pub fn net_adder(ui: &mut egui::Ui, t: &Table, id: &str, field: &mut String, ids: &[String]) {
-    let words = t.tr("pick.add");
-    let r = egui::ComboBox::from_id_salt(id).selected_text(words).show_ui(ui, |ui| {
-        if ui.selectable_label(false, t.tr("pick.all")).clicked() {
-            field.clear();
-        }
-        for p in net_patterns_offered(ids) {
-            if ui.selectable_label(false, &p).clicked() {
-                *field = net_append(field, &p);
-            }
-        }
-    });
-    ito_a11y::say(&r.response, Role::Button, &format!("{}: {words}", t.tr("users.nets_field")));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -612,16 +569,6 @@ mod tests {
         assert_eq!(number_in("1,15", 1, 31), None);
         assert_eq!(weekday_index("wed"), Some(2));
         assert_eq!(weekday_index("x"), None);
-    }
-
-    #[test]
-    fn the_users_picker_appends_once() {
-        assert_eq!(net_append("", "経理/*"), "経理/*");
-        assert_eq!(net_append("経理/*", "人事/a"), "経理/* 人事/a");
-        assert_eq!(net_append("経理/*, 人事/a", "人事/a"), "経理/*, 人事/a");
-        assert_eq!(net_append("経理/* ", "人事/a"), "経理/* 人事/a");
-        let ids = ["経理/b".to_owned(), "人事/a".to_owned(), "経理/a".to_owned()];
-        assert_eq!(net_patterns_offered(&ids), ["人事/*", "経理/*", "経理/b", "人事/a", "経理/a"]);
     }
 
     #[test]
