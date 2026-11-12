@@ -2218,7 +2218,7 @@ impl State {
     }
 
     /// Writes koyomi.toml, first keeping the old text under `versions/_settings/`. Nothing is reloaded
-    /// here: the sweep reads it within a few seconds and the HTTP listener restarts then; the reply in
+    /// here: the sweep reads it within a few seconds and the HTTP listener swaps the users then and stays open; the reply in
     /// flight is not cut (each connection has its own thread).
     fn users_write(&self, text: &str) -> Result<(), String> {
         self.keep_version_in(&self.paths.config, &self.paths.state.join("versions").join("_settings"))?;

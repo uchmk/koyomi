@@ -27,11 +27,19 @@
 //!   cookie (a change also sends `X-Ito-Csrf: 1`). `GET /me` says who and with what role.
 //!
 //! Every request carries a bearer token kept as `secret:<name>` in the OS credential
-//! store (read once when the listener starts); ito-http turns a missing or wrong one away
+//! store (read when the listener starts, and again when only `[http]`'s `token` or the
+//! `[[http.user]]` change); ito-http turns a missing or wrong one away
 //! with 401 and never logs it. `[http]`'s own token has the `run` role; each
 //! `[[http.user]]` has its own token and role (TODO 83), and a path the role does not reach
 //! gets 403. The requests go through the engine's own door as `Request::Over`, so they are
 //! what the CLI may do and are written down as by-hand ops with who sent them.
+//!
+//! When only `[http]`'s `token` or the `[[http.user]]` change (another PC's window managing the
+//! users does that), who may come in is swapped without closing the listener: the sessions of users
+//! still there with the same token stay, and a removed user or a remade token is turned away. A change to `port`,
+//! `ipv6`, `lan` or `tailnet` still restarts the listener. A token changed only in the credential
+//! store (the same `secret:<name>`, koyomi.toml unchanged) is not noticed, as before: it takes
+//! effect at the engine's next start or the next change to `[http]`.
 //!
 //! A `[[http.user]]` with `nets = ["経理/*", …]` (TODO 94) reaches only those nets: every
 //! answer is cut to them in [`narrow`], a net or run outside answers as one that is not there,
@@ -46,7 +54,7 @@
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, RwLock};
 use std::time::{Duration, Instant};
 
 use ito_http::{Response, Server};
@@ -61,10 +69,33 @@ use crate::proto::{self, Request, Runs, Snapshot};
 /// How long after a failed start the listener is tried again.
 const RETRY: Duration = Duration::from_secs(60);
 
+/// How long a swap of who may come in may take (the credential store is read meanwhile) before the
+/// listener is restarted instead: a store that hangs must not keep a removed user in.
+const SWAP_WAIT: Duration = Duration::from_secs(10);
+
+/// The gate the running listener's handler judges by. Swapped as a whole; see [`swap`].
+type SharedGate = Arc<RwLock<Arc<Gate>>>;
+
+/// What a thread of [`Http::tick`] sends back, with the gen it was started for.
+enum Answer {
+    /// A start: the listener and its gate.
+    Started(Result<(Server, SharedGate), String>),
+    /// A swap: who may come in, as ito-http wants it, and the gate that goes with it.
+    Access(Result<(ito_http::Access, Gate), String>),
+}
+
 pub struct Http {
     /// The `[http]` the listener is (or is being) started for.
     cfg: Option<config::Http>,
     server: Option<Server>,
+    /// The gate of `server`, which [`swap`] replaces.
+    gate: Option<SharedGate>,
+    /// When the read for a swap was asked for; none while no swap is under way.
+    swapping: Option<Instant>,
+    /// Reads a token kept as `secret:<name>`; tests put a fake here.
+    read: fn(&str) -> Result<String, String>,
+    /// How long a swap may take; tests shorten it.
+    swap_wait: Duration,
     /// Why the last start failed.
     note: Option<String>,
     /// When a start was last asked for.
@@ -74,14 +105,28 @@ pub struct Http {
     tailnet_open: bool,
     /// Which `[http]` a start was for; an answer for an older one is dropped.
     gen: u64,
-    tx: mpsc::Sender<(u64, Result<Server, String>)>,
-    rx: mpsc::Receiver<(u64, Result<Server, String>)>,
+    tx: mpsc::Sender<(u64, Answer)>,
+    rx: mpsc::Receiver<(u64, Answer)>,
 }
 
 impl Default for Http {
     fn default() -> Http {
         let (tx, rx) = mpsc::channel();
-        Http { cfg: None, server: None, note: None, tried: None, starting: false, tailnet_open: false, gen: 0, tx, rx }
+        Http {
+            cfg: None,
+            server: None,
+            gate: None,
+            swapping: None,
+            read: token,
+            swap_wait: SWAP_WAIT,
+            note: None,
+            tried: None,
+            starting: false,
+            tailnet_open: false,
+            gen: 0,
+            tx,
+            rx,
+        }
     }
 }
 
@@ -89,24 +134,56 @@ impl Http {
     /// Starts, restarts or stops the listener to match `cfg`. The token is read and the
     /// port taken on a thread (the store can be slow); a failed start is tried again after
     /// [`RETRY`].
+    ///
+    /// When only `[http]`'s `token` or `user` change under a running listener ([`same_listener`]),
+    /// the listener is not stopped: the tokens are read again on a thread, and then [`swap`] puts
+    /// who may come in into the running server and its gate, so no connection is cut and a browser
+    /// of a user still there with the same token stays signed in. A swap that fails or takes over `swap_wait` falls back
+    /// to a restart, so a removed user never stays in.
     pub fn tick(&mut self, cfg: Option<&config::Http>) {
-        while let Ok((gen, r)) = self.rx.try_recv() {
+        while let Ok((gen, answer)) = self.rx.try_recv() {
             if gen != self.gen {
                 continue;
             }
-            self.starting = false;
-            match r {
-                Ok(s) => {
-                    crate::say(&format!("koyomi: {}", listening(self.cfg.as_ref(), &s)), false);
-                    if let Some(why) = tailnet_note(self.cfg.as_ref(), &s) {
-                        crate::say(&why, false);
+            match answer {
+                Answer::Started(r) => {
+                    self.starting = false;
+                    match r {
+                        Ok((s, gate)) => {
+                            crate::say(&format!("koyomi: {}", listening(self.cfg.as_ref(), &s)), false);
+                            if let Some(why) = tailnet_note(self.cfg.as_ref(), &s) {
+                                crate::say(&why, false);
+                            }
+                            self.tailnet_open = s.tailnet_port().is_some();
+                            self.server = Some(s);
+                            self.gate = Some(gate);
+                            self.note = None;
+                        }
+                        Err(e) => self.note = Some(Self::not_listening(&e)),
                     }
-                    self.tailnet_open = s.tailnet_port().is_some();
-                    self.server = Some(s);
-                    self.note = None;
                 }
-                Err(e) => self.note = Some(Self::not_listening(&e)),
+                Answer::Access(r) => {
+                    let swapped = match (r, self.server.as_ref(), self.gate.as_ref()) {
+                        (Ok((access, new)), Some(server), Some(gate)) => swap(server, gate, access, new).is_ok(),
+                        _ => false,
+                    };
+                    if swapped {
+                        self.swapping = None;
+                        let port = self.server.as_ref().map_or(0, Server::port);
+                        crate::say(&format!("koyomi: {}", msg::note(msg::N_HTTP_ACCESS_SWAPPED, &[&port.to_string()])), false);
+                    } else {
+                        // The restart below reports what is wrong, and a removed user does not stay in.
+                        self.stop();
+                    }
+                }
             }
+        }
+        if self.swapping.is_some_and(|t| t.elapsed() > self.swap_wait) {
+            self.stop();
+            // The restart reads the same store and may hang too: say why nothing listens until it answers.
+            let why = msg::note(msg::N_HTTP_SWAP_SLOW, &[&self.swap_wait.as_secs().max(1).to_string()]);
+            crate::say(&format!("koyomi: {why}"), false);
+            self.note = Some(why);
         }
         // ito-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
         if let Some(p) = self.server.as_ref().filter(|_| !self.tailnet_open).and_then(Server::tailnet_port) {
@@ -114,8 +191,26 @@ impl Http {
             crate::say(&format!("koyomi: {}", msg::note(msg::N_HTTP_TAILNET_OPENED, &[&p.to_string()])), false);
         }
         if self.cfg.as_ref() != cfg {
-            self.stop();
-            self.cfg = cfg.cloned();
+            match (self.server.is_some() && !self.starting, self.cfg.as_ref(), cfg) {
+                (true, Some(old), Some(new)) if same_listener(old, new) => {
+                    self.gen += 1;
+                    self.cfg = Some(new.clone());
+                    // A change while a swap is still reading keeps the first one's clock: changes that keep coming
+                    // must not keep a removed user in past `swap_wait` while the store hangs.
+                    self.swapping = Some(self.swapping.unwrap_or_else(Instant::now));
+                    let (gen, tx, new, read) = (self.gen, self.tx.clone(), new.clone(), self.read);
+                    // The store can be slow: it is read here, never on the engine loop. This thread only reads
+                    // and sends; `tick` alone touches the server and the gate.
+                    let _ = std::thread::Builder::new().name("http".into()).spawn(move || {
+                        let r = admission(&new, read).map(|(c, gate)| (ito_http::Access::of(&c), gate));
+                        let _ = tx.send((gen, Answer::Access(r)));
+                    });
+                }
+                _ => {
+                    self.stop();
+                    self.cfg = cfg.cloned();
+                }
+            }
         }
         let Some(cfg) = &self.cfg else { return };
         if self.server.is_some() || self.starting || self.tried.is_some_and(|t| t.elapsed() < RETRY) {
@@ -123,9 +218,9 @@ impl Http {
         }
         self.tried = Some(Instant::now());
         self.starting = true;
-        let (gen, tx, cfg) = (self.gen, self.tx.clone(), cfg.clone());
+        let (gen, tx, cfg, read) = (self.gen, self.tx.clone(), cfg.clone(), self.read);
         let _ = std::thread::Builder::new().name("http".into()).spawn(move || {
-            let _ = tx.send((gen, start(&cfg)));
+            let _ = tx.send((gen, Answer::Started(start(&cfg, read))));
         });
     }
 
@@ -136,6 +231,8 @@ impl Http {
         self.tailnet_open = false;
         self.tried = None;
         self.note = None;
+        self.swapping = None;
+        self.gate = None;
         if let Some(s) = self.server.take() {
             s.stop();
         }
@@ -257,9 +354,25 @@ fn credentials(
     Ok((c, tokens))
 }
 
-fn start(cfg: &config::Http) -> Result<Server, String> {
-    let (mut c, tokens) = credentials(cfg, token)?;
+/// Whether `a` and `b` need the same listener: only `token` and `user`, which decide who may come in,
+/// may differ. Every field is named, so a field added to `config::Http` fails to compile here until it is
+/// put on one side.
+fn same_listener(a: &config::Http, b: &config::Http) -> bool {
+    let config::Http { port, token: _, ipv6, lan, user: _, tailnet } = a;
+    let config::Http { port: port_b, token: _, ipv6: ipv6_b, lan: lan_b, user: _, tailnet: tailnet_b } = b;
+    port == port_b && ipv6 == ipv6_b && lan == lan_b && tailnet == tailnet_b
+}
+
+/// What decides who may come in: the listener's tokens and tailnet logins (read with `read`) and the gate
+/// that judges each request by name. `start` and the swap both use it; it never touches the certificate.
+fn admission(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> Result<(ito_http::Config, Gate), String> {
+    let (mut c, tokens) = credentials(cfg, read)?;
     c.tailnet = cfg.tailnet.map(|port| tailnet(cfg, port));
+    Ok((c, Gate { roles: roles(cfg), access: access(cfg), tokens }))
+}
+
+fn start(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> Result<(Server, SharedGate), String> {
+    let (mut c, gate) = admission(cfg, read)?;
     for path in PAGES.iter().map(|(p, ..)| *p).chain([THEME_CSS]) {
         c = c.public_path(path);
     }
@@ -278,13 +391,41 @@ fn start(cfg: &config::Http) -> Result<Server, String> {
         Some(port) => msg::note(msg::N_HTTP_AT_TAILNET, &[&at, &port.to_string()]),
         None => at,
     };
-    let gate = Gate { roles: roles(cfg), access: access(cfg), tokens };
+    let shared: SharedGate = Arc::new(RwLock::new(Arc::new(gate)));
+    let for_handler = Arc::clone(&shared);
     let serve = move |req: ito_http::Request| {
+        // A snapshot: the lock is let go before `serve`. `ask` waits for the engine loop, and the engine loop
+        // runs `tick`, which takes the write lock in [`swap`]; holding the read lock while serving would deadlock.
+        let gate = {
+            let slot = for_handler.read().unwrap_or_else(|e| e.into_inner());
+            Arc::clone(&slot)
+        };
         let by = req.who.clone().unwrap_or_default();
         let ask = |r: &Request| ito_ipc::door::ask(&proto::door(), &Request::Over { by: by.clone(), request: Box::new(r.clone()) });
         gate.serve(&req, ask)
     };
-    Server::start(c, serve, log).map_err(|e| line(msg::HTTP_LISTEN_FAILED, &[&at, &e.to_string(), &RETRY.as_secs().to_string()]))
+    Server::start(c, serve, log)
+        .map(|server| (server, shared))
+        .map_err(|e| line(msg::HTTP_LISTEN_FAILED, &[&at, &e.to_string(), &RETRY.as_secs().to_string()]))
+}
+
+/// Puts `access` into the running `server` and `new` into its `gate`, as one step: the gate's write lock is
+/// held across `set_access`, and the gate is replaced only when ito-http took the access, so on `Err` both
+/// stay as they were. A request that reads the gate meanwhile waits the few microseconds this takes; there is
+/// no deadlock, because `set_access` takes only ito-http's own locks, which it never holds while calling the
+/// handler.
+///
+/// What a swap does not cancel: a request ito-http let in before the swap finishes (its contract). One whose
+/// handler took the gate before the swap finishes with the old gate, as a request already in did across a
+/// restart. One whose handler takes the gate after it reads the new one: a removed name gets 403 ([`allowed`]),
+/// a lowered role or a narrowed `nets` or `roles` applies, and a remade token's old bearer is refused at `/door`,
+/// where the gate's token hash is checked (on another path that same name may still finish that one request).
+/// Every request ito-http lets in after the swap is judged by the new access and the new gate only.
+fn swap(server: &Server, gate: &SharedGate, access: ito_http::Access, new: Gate) -> std::io::Result<()> {
+    let mut slot = gate.write().map_err(|_| std::io::Error::other("gate lock poisoned"))?;
+    server.set_access(access)?;
+    *slot = Arc::new(new);
+    Ok(())
 }
 
 /// The largest body accepted: `POST /door` carries whole files (`Import`, `Save`, a holiday table).
@@ -1621,7 +1762,14 @@ mod tests {
     #[test]
     fn the_listening_notes_start_with_http() {
         for lang in ["ja", "en"] {
-            for n in [msg::N_HTTP_LISTEN_LAN, msg::N_HTTP_LISTEN_LOCAL, msg::N_HTTP_LISTEN_LOCAL_V6, msg::N_HTTP_TAILNET_OPENED] {
+            for n in [
+                msg::N_HTTP_LISTEN_LAN,
+                msg::N_HTTP_LISTEN_LOCAL,
+                msg::N_HTTP_LISTEN_LOCAL_V6,
+                msg::N_HTTP_TAILNET_OPENED,
+                msg::N_HTTP_ACCESS_SWAPPED,
+                msg::N_HTTP_SWAP_SLOW,
+            ] {
                 let text = msg::note_in(lang, n, &["1", "2", "3"]);
                 assert!(text.starts_with("HTTP: "), "{lang}: {text}");
             }
@@ -2103,5 +2251,234 @@ high_contrast = true
         );
         assert!(send_raw(server.port(), &head).starts_with("HTTP/1.1 413"));
         server.stop();
+    }
+
+    // ---- who may come in is swapped live ----
+
+    /// A credential store of a few lines: a secret `x` reads `tok-x`, one named `bad…` is not there.
+    fn fake_read(name: &str) -> Result<String, String> {
+        if name.starts_with("bad") {
+            Err(format!("no secret `{name}`"))
+        } else {
+            Ok(format!("tok-{name}"))
+        }
+    }
+
+    /// Like [`fake_read`], but the secret `hang` never answers.
+    fn hanging_read(name: &str) -> Result<String, String> {
+        if name == "hang" {
+            loop {
+                std::thread::park();
+            }
+        }
+        fake_read(name)
+    }
+
+    /// A loopback `[http]` on port 0 with these users: name, role and the `secret:` the token is kept under.
+    fn live_cfg(users: &[(&str, &str, &str)]) -> config::Http {
+        // Parsing wants a real port; the listener takes port 0 (any free one).
+        let mut text = "[http]\nport = 8790\n".to_owned();
+        for (name, role, secret) in users {
+            text.push_str(&format!("[[http.user]]\nname = \"{name}\"\nrole = \"{role}\"\ntoken = \"secret:{secret}\"\n"));
+        }
+        let mut http = config::Config::parse(&text).unwrap().http.unwrap();
+        http.port = 0;
+        http
+    }
+
+    /// A listener set up as `start` sets up what a swap touches (sessions on, the shared gate), without the pages,
+    /// IPv6 or the tailnet, and with an `ask` that answers "done".
+    fn shared_server(http: &config::Http) -> (Server, SharedGate) {
+        let (mut c, gate) = admission(http, fake_read).unwrap();
+        c.sessions = true;
+        c.max_body = MAX_BODY;
+        let shared: SharedGate = Arc::new(RwLock::new(Arc::new(gate)));
+        let for_handler = Arc::clone(&shared);
+        let serve = move |r: ito_http::Request| {
+            let gate = Arc::clone(&for_handler.read().unwrap());
+            gate.serve(&r, |_: &Request| Ok::<_, String>("done".to_owned()))
+        };
+        (Server::start(c, serve, |_| {}).expect("listen"), shared)
+    }
+
+    fn swap_to(server: &Server, gate: &SharedGate, http: &config::Http) -> std::io::Result<()> {
+        let (c, new) = admission(http, fake_read).unwrap();
+        swap(server, gate, ito_http::Access::of(&c), new)
+    }
+
+    fn status_of(reply: &str) -> u16 {
+        reply.split(' ').nth(1).and_then(|c| c.parse().ok()).unwrap_or(0)
+    }
+
+    fn door_status(port: u16, token: &str, request: &str) -> u16 {
+        status_of(&post_door(port, Some(token), &door_body(serde_json::json!(request))))
+    }
+
+    /// Signs in at `POST /session` with `token` and gives the cookie.
+    fn sign_in(port: u16, token: &str) -> String {
+        let out =
+            send_raw(port, &format!("POST /session HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {token}\r\nContent-Length: 0\r\n\r\n"));
+        assert_eq!(status_of(&out), 200, "{out}");
+        let set = out.lines().find(|l| l.starts_with("Set-Cookie: ")).unwrap_or_else(|| panic!("no cookie in {out}"));
+        set["Set-Cookie: ".len()..].split(';').next().unwrap().to_owned()
+    }
+
+    /// One request with a session cookie (and the CSRF header, which a change needs).
+    fn by_cookie(port: u16, cookie: &str, method: &str, path: &str, body: &str) -> String {
+        send_raw(
+            port,
+            &format!(
+                "{method} {path} HTTP/1.1\r\nHost: x\r\nCookie: {cookie}\r\nX-Ito-Csrf: 1\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{body}",
+                body.len()
+            ),
+        )
+    }
+
+    fn start_run(port: u16, cookie: &str) -> u16 {
+        status_of(&by_cookie(port, cookie, "POST", "/runs", r#"{"net":"g/a"}"#))
+    }
+
+    #[test]
+    fn only_the_users_and_tokens_may_differ_for_the_same_listener() {
+        let mut base = live_cfg(&[("a", "view", "a1")]);
+        base.token = "secret:t".to_owned();
+        base.user[0].tailscale = Some("a@example.com".to_owned());
+        assert!(same_listener(&base, &base.clone()));
+        let mut b = base.clone();
+        b.token = "secret:other".to_owned();
+        assert!(same_listener(&base, &b));
+        b.user[0].role = "admin".to_owned();
+        b.user[0].token = "secret:a2".to_owned();
+        b.user[0].nets = Some(vec!["経理/*".to_owned()]);
+        b.user[0].tailscale = Some("tag:koyomi".to_owned());
+        b.user.push(live_cfg(&[("z", "run", "z1")]).user.remove(0));
+        assert!(same_listener(&base, &b));
+        b.user.clear();
+        assert!(same_listener(&base, &b));
+        let changed: [fn(&mut config::Http); 4] = [|h| h.port = 1, |h| h.ipv6 = !h.ipv6, |h| h.lan = !h.lan, |h| h.tailnet = Some(8791)];
+        for change in changed {
+            let mut b = base.clone();
+            change(&mut b);
+            assert!(!same_listener(&base, &b));
+            assert!(!same_listener(&b, &base));
+        }
+    }
+
+    #[test]
+    fn a_swap_changes_who_comes_in_on_the_same_port() {
+        let (server, gate) = shared_server(&live_cfg(&[("a", "view", "a1")]));
+        let port = server.port();
+        // view reaches Status but not Pause; b is not known.
+        assert_eq!(door_status(port, "tok-a1", "Status"), 200);
+        assert_eq!(door_status(port, "tok-a1", "Pause"), 403);
+        assert_eq!(door_status(port, "tok-b1", "Status"), 401);
+        swap_to(&server, &gate, &live_cfg(&[("a", "admin", "a1"), ("b", "view", "b1")])).unwrap();
+        assert_eq!(server.port(), port);
+        assert_eq!(door_status(port, "tok-a1", "Pause"), 200);
+        assert_eq!(door_status(port, "tok-b1", "Status"), 200);
+        swap_to(&server, &gate, &live_cfg(&[("b", "view", "b1")])).unwrap();
+        assert_eq!(door_status(port, "tok-a1", "Status"), 401);
+        assert_eq!(door_status(port, "tok-b1", "Status"), 200);
+        server.stop();
+    }
+
+    #[test]
+    fn a_session_stays_while_its_user_and_token_stay() {
+        let (server, gate) = shared_server(&live_cfg(&[("a", "view", "a1"), ("b", "admin", "b1")]));
+        let port = server.port();
+        let cookie = sign_in(port, "tok-b1");
+        assert_eq!(start_run(port, &cookie), 202);
+        // Another user changes: b's cookie is untouched.
+        swap_to(&server, &gate, &live_cfg(&[("a", "run", "a1"), ("b", "admin", "b1")])).unwrap();
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 200);
+        assert_eq!(start_run(port, &cookie), 202);
+        // b's role is lowered: the cookie works, with the new role.
+        swap_to(&server, &gate, &live_cfg(&[("a", "run", "a1"), ("b", "view", "b1")])).unwrap();
+        let me = by_cookie(port, &cookie, "GET", "/me", "");
+        assert_eq!(status_of(&me), 200, "{me}");
+        assert!(me.contains("\"role\":\"view\""), "{me}");
+        assert_eq!(start_run(port, &cookie), 403);
+        // b's token is remade: the cookie and the old bearer are turned away, the new bearer comes in.
+        swap_to(&server, &gate, &live_cfg(&[("a", "run", "a1"), ("b", "view", "b2")])).unwrap();
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 401);
+        assert_eq!(door_status(port, "tok-b1", "Status"), 401);
+        assert_eq!(door_status(port, "tok-b2", "Status"), 200);
+        // b is removed: a session made with the new token ends too.
+        let cookie = sign_in(port, "tok-b2");
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 200);
+        swap_to(&server, &gate, &live_cfg(&[("a", "run", "a1")])).unwrap();
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 401);
+        server.stop();
+    }
+
+    #[test]
+    fn a_swap_ito_http_refuses_changes_nothing() {
+        let (server, gate) = shared_server(&live_cfg(&[("a", "view", "a1")]));
+        let port = server.port();
+        let cookie = sign_in(port, "tok-a1");
+        // No token at all on a server without a tailnet listener.
+        let empty = Gate { roles: BTreeMap::new(), access: BTreeMap::new(), tokens: BTreeMap::new() };
+        assert!(swap(&server, &gate, ito_http::Access::default(), empty).is_err());
+        // The old access lets a in, and the old gate (not the empty one) knows them.
+        assert_eq!(door_status(port, "tok-a1", "Status"), 200);
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 200);
+        server.stop();
+    }
+
+    /// Ticks until `done`, up to about five seconds.
+    fn pump(h: &mut Http, cfg: Option<&config::Http>, done: impl Fn(&Http) -> bool) -> bool {
+        for _ in 0..100 {
+            h.tick(cfg);
+            if done(h) {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        false
+    }
+
+    #[test]
+    fn tick_swaps_the_users_and_keeps_the_listener_open() {
+        let first = live_cfg(&[("a", "view", "a1"), ("b", "admin", "b1")]);
+        let mut h = Http { read: fake_read, ..Http::default() };
+        assert!(pump(&mut h, Some(&first), |h| h.line().is_some()), "{:?}", h.notes());
+        let port = h.server.as_ref().unwrap().port();
+        let cookie = sign_in(port, "tok-b1");
+        // Only the users change: the same server, the same port, the cookie still works.
+        let second = live_cfg(&[("a", "admin", "a1"), ("b", "admin", "b1"), ("c", "view", "c1")]);
+        h.tick(Some(&second));
+        assert!(h.line().is_some());
+        assert!(pump(&mut h, Some(&second), |h| h.swapping.is_none()));
+        assert!(h.line().is_some(), "{:?}", h.notes());
+        assert_eq!(h.server.as_ref().unwrap().port(), port);
+        assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 200);
+        assert_eq!(status_of(&post_door(port, Some("tok-c1"), &door_body(serde_json::json!("Status")))), 200);
+        // A user whose secret the store refuses: the swap fails and the restart says why.
+        let third = live_cfg(&[("a", "admin", "a1"), ("d", "view", "bad1")]);
+        assert!(pump(&mut h, Some(&third), |h| h.server.is_none() && !h.notes().is_empty()), "{:?}", h.notes());
+        assert!(h.line().is_none());
+        h.stop();
+    }
+
+    #[test]
+    fn a_swap_that_takes_too_long_falls_back_to_a_restart() {
+        let first = live_cfg(&[("a", "view", "a1")]);
+        let mut h = Http { read: hanging_read, swap_wait: Duration::from_millis(100), ..Http::default() };
+        assert!(pump(&mut h, Some(&first), |h| h.line().is_some()), "{:?}", h.notes());
+        let second = live_cfg(&[("a", "view", "hang")]);
+        h.tick(Some(&second));
+        assert!(h.swapping.is_some());
+        assert!(h.line().is_some());
+        // Another change while the read hangs keeps the first change's clock.
+        let first_clock = h.swapping;
+        let third = live_cfg(&[("a", "view", "hang"), ("b", "view", "b1")]);
+        h.tick(Some(&third));
+        assert_eq!(h.swapping, first_clock);
+        // The reader never answers: after swap_wait the listener is stopped and a restart is asked for.
+        assert!(pump(&mut h, Some(&third), |h| h.server.is_none()));
+        assert!(h.line().is_none());
+        assert!(h.starting && h.tried.is_some() && h.swapping.is_none() && h.gate.is_none());
+        assert_eq!(h.notes(), vec![msg::note(msg::N_HTTP_SWAP_SLOW, &["1"])]);
+        h.stop();
     }
 }

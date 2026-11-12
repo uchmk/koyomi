@@ -1021,6 +1021,8 @@ notes! {
     N_HTTP_TAIL_OPEN = "http_tail_open",
     N_HTTP_TAIL_PENDING = "http_tail_pending",
     N_HTTP_TAILNET_OPENED = "http_tailnet_opened",
+    N_HTTP_ACCESS_SWAPPED = "http_access_swapped",
+    N_HTTP_SWAP_SLOW = "http_swap_slow",
     N_HTTP_AT_LOCAL = "http_at_local",
     N_HTTP_AT_LAN = "http_at_lan",
     N_HTTP_AT_TAILNET = "http_at_tailnet",
