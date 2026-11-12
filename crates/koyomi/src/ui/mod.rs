@@ -38,6 +38,7 @@ mod manage;
 mod net_side;
 pub(crate) mod paths;
 mod runfacts;
+mod runmenu;
 mod users;
 
 /// How long a window waits to ask another PC again after its list could not be read.
@@ -680,6 +681,12 @@ pub struct Browser {
     run_sel: Option<String>,
     /// The run marked to be compared with: the run picked next is shown against it.
     compare_base: Option<String>,
+    /// The runs of the last 30 days the averages were made from (the pool 前の回と比べる looks in).
+    past_rows: Option<Vec<Run>>,
+    /// 前の回と比べる was pressed before those runs came: the run it was pressed on.
+    prev_wait: Option<String>,
+    /// The log's title scrolls into view on the next frame (ログを見る was pressed).
+    log_scroll: bool,
     /// What the window knows of each run's definition copy (asked once per run).
     run_defs: BTreeMap<String, runfacts::DefCopy>,
     /// The job whose log is shown, when one was picked by hand.
@@ -866,6 +873,9 @@ impl Browser {
             selected: None,
             run_sel: None,
             compare_base: None,
+            past_rows: None,
+            prev_wait: None,
+            log_scroll: false,
             run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
@@ -1335,6 +1345,7 @@ impl Browser {
                     match r.and_then(|text| Runs::parse(&text)) {
                         Ok(rs) => {
                             self.past_failed = None;
+                            self.past_rows = Some(rs.runs.clone());
                             // Averaged once here, not at every frame.
                             let nets: BTreeSet<&str> = rs.runs.iter().map(|r| r.jobnet.as_str()).collect();
                             self.past = nets
@@ -1346,10 +1357,16 @@ impl Browser {
                                 h.rows = rs.runs;
                                 h.error = None;
                             }
+                            if let Some(id) = self.prev_wait.take() {
+                                self.compare_previous(&id);
+                            }
                         }
                         // Asked again with a later snapshot, not at once.
                         Err(e) => {
                             self.past_asked = None;
+                            if self.prev_wait.take().is_some() {
+                                self.result = Some(Err(e.clone()));
+                            }
                             self.past_failed = Some(std::time::Instant::now());
                             if let Some(h) = self.hist.as_mut().filter(|h| h.from == from && h.to == to) {
                                 h.rows.clear();
@@ -1469,10 +1486,13 @@ impl Browser {
                     self.run_defs.insert(run, runfacts::DefCopy::of(r));
                 }
                 Msg::Answer(req, r) => {
-                    // A start that went through opens the run.
-                    if let (Request::Run { .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
+                    // A start that went through opens the run, and the page is the answer: no line says its id.
+                    // A dry run starts nothing: its reply is text, and it stays as the result.
+                    if let (Request::Run { dry: false, .. } | Request::Rerun { .. }, Ok(id)) = (&req, &r) {
                         self.run_sel = Some(id.clone());
                         self.job_sel = None;
+                        self.result = None;
+                        continue;
                     }
                     // The tree's pick follows a net that moved, and lets go of one that went.
                     match (&req, &r) {
@@ -1637,9 +1657,36 @@ impl Browser {
         self.find_run(self.run_sel.as_deref()?)
     }
 
-    /// The run `id`, from the runs of today or the history asked for.
+    /// The run `id`, from the runs of today, the history asked for or the last 30 days.
     fn find_run(&self, id: &str) -> Option<&Run> {
-        self.runs.iter().find(|r| r.id == id).or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
+        self.runs
+            .iter()
+            .find(|r| r.id == id)
+            .or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
+            .or_else(|| self.past_rows.as_ref()?.iter().find(|r| r.id == id))
+    }
+
+    /// Every run the window holds: today's, the history asked for and the last 30 days.
+    fn known_runs(&self) -> impl Iterator<Item = &Run> {
+        self.runs.iter().chain(self.hist.iter().flat_map(|h| h.rows.iter())).chain(self.past_rows.iter().flatten())
+    }
+
+    /// The run 前の回と比べる would mark for `run`: its net's newest earlier run that ended.
+    fn previous_of(&self, run: &Run) -> Option<&Run> {
+        runmenu::previous_run(self.known_runs(), run)
+    }
+
+    /// Marks the run before `id` as the base to compare it with (the run page then shows the difference).
+    fn compare_previous(&mut self, id: &str) {
+        let Some(run) = self.find_run(id) else { return };
+        if let Some(p) = self.previous_of(run).map(|r| r.id.clone()) {
+            self.compare_base = Some(p);
+        }
+    }
+
+    /// Whether the last 30 days were read: 前の回と比べる then knows every run there is to know.
+    fn past_read(&self) -> bool {
+        self.past_rows.is_some()
     }
 
     /// The job whose log is shown: the one picked, else the one running, else the last that started.
@@ -3228,6 +3275,8 @@ impl Browser {
             Some(s) => (s.held.clone(), s.held_jobs.clone()),
             None => Default::default(),
         };
+        let job_names: BTreeMap<(String, String), String> =
+            held_jobs.iter().map(|h| ((h.net.clone(), h.job.clone()), runmenu::job_name(self.snap.as_ref(), &h.net, &h.job))).collect();
         let blocked = self.blocked();
         let (mut ask, mut go_net) = (None, None);
         for row in &rows {
@@ -3256,7 +3305,8 @@ impl Browser {
                     ui.close();
                 }
                 for h in held_jobs.iter().filter(|h| h.net == row.net) {
-                    if ui.add_enabled(!blocked, egui::Button::new(t.trf("run.release_job", &[&h.job]))).clicked() {
+                    let name = job_names.get(&(h.net.clone(), h.job.clone())).unwrap_or(&h.job);
+                    if ui.add_enabled(!blocked, egui::Button::new(t.trf("run.release_job", &[name]))).clicked() {
                         ask = Some(Request::Release { id: h.net.clone(), job: Some(h.job.clone()) });
                         ui.close();
                     }
@@ -4158,6 +4208,7 @@ impl Browser {
                 .collect();
             let sort = h.sort;
             let reveal = self.reveal;
+            let base = self.compare_base.clone();
             let none = rows.is_empty() && h.error.is_none();
             let mut sorted = None;
             let tall = ui.available_height();
@@ -4181,6 +4232,22 @@ impl Browser {
                         ito_a11y::say(&r, Role::Row, &said);
                         if r.clicked() {
                             pick = Some(run.id.clone());
+                        }
+                        // While a run is marked as the base, a row can be opened against it.
+                        if base.is_some() {
+                            r.context_menu(|ui| {
+                                let Some(item) = runmenu::history_item(t, base.as_deref(), run) else { return };
+                                let b = ui.add_enabled(item.enabled, egui::Button::new(&item.label));
+                                ito_a11y::say(&b, Role::Button, &item.label);
+                                let b = match &item.why {
+                                    Some(why) if !item.enabled => b.on_disabled_hover_text(why),
+                                    _ => b,
+                                };
+                                if b.clicked() {
+                                    pick = Some(run.id.clone());
+                                    ui.close();
+                                }
+                            });
                         }
                     }
                     ui.spacing_mut().item_spacing.y = gap;
@@ -4209,10 +4276,10 @@ impl Browser {
         self.snap.as_ref().is_some_and(|s| s.held_jobs.iter().any(|h| h.net == net && h.job == job))
     }
 
-    /// 「保留 / 保留を解く」 for one job of a net.
-    fn hold_job_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, net: &str, job: &str) {
+    /// 「保留 / 保留を解く」 for one job of a net: the button says `name`, the request carries `job` (the id).
+    fn hold_job_button(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, net: &str, job: &str, name: &str) {
         let held = self.job_held(net, job);
-        let label = t.trf(if held { "run.release_job" } else { "run.hold_job" }, &[job]);
+        let label = t.trf(if held { "run.release_job" } else { "run.hold_job" }, &[name]);
         let mark = if held { ito_prefs::Mark::Play } else { ito_prefs::Mark::Pause };
         let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| ito_prefs::IconButton::new(mark, &label).show(ui));
         if r.clicked() {
@@ -4276,6 +4343,17 @@ impl Browser {
         ui.heading(&big);
         ui.label(egui::RichText::new(small).small().color(c.dim));
         self.run_header_extra(ui, t, &run);
+        let is_base = self.compare_base.as_deref() == Some(run.id.as_str());
+        if is_base {
+            let chip = t.tr("run.compare_chip");
+            let r = ito_prefs::tag(ui, ito_prefs::Look { c, q: "" }, ito_prefs::Tag::new(chip).color(c.blue));
+            ito_a11y::say(&r, Role::Label, chip);
+        }
+        // A failed job and the run went on past it: why, in one line.
+        if let Some(text) = runmenu::failure_continued(t, &run) {
+            let r = ui.add(egui::Label::new(egui::RichText::new(&text).color(c.wait)).wrap());
+            ito_a11y::say(&r, Role::Label, &text);
+        }
         if run.never_began() {
             self.never_began_block(ui, t, &run);
         }
@@ -4304,6 +4382,8 @@ impl Browser {
                     // Again, once it is over, from one menu: what passed is carried over, or from the picked
                     // job on. A run where everything passed can only go again from a picked job.
                     let picked = self.job_sel.clone().filter(|p| run.jobs.iter().any(|j| &j.id == p));
+                    // The buttons say the picked job's name; the requests carry its id.
+                    let picked_name = picked.as_deref().and_then(|p| run.job(p)).map(|j| j.label().to_owned());
                     if run.is_over() {
                         let head = format!("{} ▾", t.tr("run.rerun"));
                         let rerun = std::cell::RefCell::new(None::<Request>);
@@ -4327,8 +4407,8 @@ impl Browser {
                             if r.clicked() {
                                 *rerun.borrow_mut() = Some(Request::Rerun { run: run.id.clone(), from: None, next: None });
                             }
-                            let label = match &picked {
-                                Some(j) => t.trf("run.rerun_from", &[j]),
+                            let label = match &picked_name {
+                                Some(n) => t.trf("run.rerun_from", &[n]),
                                 None => t.tr("run.rerun_pick").to_owned(),
                             };
                             let r = ui.add_enabled(picked.is_some(), egui::Button::new(&label));
@@ -4338,8 +4418,8 @@ impl Browser {
                             }
                             // From the jobs after the picked one, which ends as スキップ or 警告 without running.
                             for (mark, key) in [(State::Skipped, "run.rerun_next_skip"), (State::Warn, "run.rerun_next_warn")] {
-                                let Some(j) = &picked else { break };
-                                let label = t.trf(key, &[j]);
+                                let Some(n) = &picked_name else { break };
+                                let label = t.trf(key, &[n]);
                                 let r = ui.button(&label);
                                 ito_a11y::say(&r, Role::Button, &label);
                                 if r.clicked() {
@@ -4370,8 +4450,8 @@ impl Browser {
                     }
                     // Skip the picked job before it starts: the jobs after it go on.
                     let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
-                    let label = match &picked {
-                        Some(j) => t.trf("run.skip_from", &[j]),
+                    let label = match &picked_name {
+                        Some(n) => t.trf("run.skip_from", &[n]),
                         None => t.tr("run.skip_pick").to_owned(),
                     };
                     let skip = !run.is_over() && pending && ito_prefs::IconButton::new(ito_prefs::Mark::Skip, &label).show(ui).clicked();
@@ -4380,7 +4460,8 @@ impl Browser {
                     }
                     // Hold the picked job of the net: a run that comes to it waits there (held.toml, every run).
                     if let Some(job) = picked.as_deref().filter(|p| !p.contains('/')) {
-                        self.hold_job_button(ui, t, &run.jobnet, job);
+                        let name = run.job(job).map_or(job, |j| j.label());
+                        self.hold_job_button(ui, t, &run.jobnet, job, name);
                     }
                     // A 確認待ち part waits for the picked answer; with none picked, the only one that waits.
                     let asking: Vec<&str> = run
@@ -4395,7 +4476,7 @@ impl Browser {
                     let answers = [(true, "run.approve", ito_prefs::Mark::Check), (false, "run.reject", ito_prefs::Mark::Close)];
                     for (yes, key, mark) in answers.into_iter().filter(|_| target.is_some()) {
                         let label = match target {
-                            Some(j) => t.trf(&format!("{key}_from"), &[j]),
+                            Some(j) => t.trf(&format!("{key}_from"), &[run.job(j).map_or(j, |x| x.label())]),
                             None => t.tr(key).to_owned(),
                         };
                         if ito_prefs::IconButton::new(mark, &label).show(ui).clicked() {
@@ -4411,8 +4492,28 @@ impl Browser {
                     } else {
                         (t.tr("run.compare_mark"), ito_prefs::Mark::Compare)
                     };
-                    if ito_prefs::IconButton::new(mark, label).show(ui).clicked() {
+                    let r = ito_prefs::IconButton::new(mark, label).show(ui);
+                    let r = if marked { r } else { r.on_hover_text(t.tr("run.compare_hint")) };
+                    if r.clicked() {
                         self.compare_base = (!marked).then(|| run.id.clone());
+                    }
+                    // The run before this one of the same net, as the base in one press.
+                    let prev = self.previous_of(&run).map(|r| r.id.clone());
+                    let waiting = self.prev_wait.as_deref() == Some(run.id.as_str());
+                    let can = prev.is_some() || (!self.past_read() && !waiting);
+                    let button = ito_prefs::IconButton::new(ito_prefs::Mark::Compare, t.tr("run.prev"));
+                    let r = ui.add_enabled(can, |ui: &mut egui::Ui| button.show(ui));
+                    let hover = if prev.is_none() && self.past_read() { t.tr("run.prev_none") } else { t.tr("run.prev_hover") };
+                    let r = if can { r.on_hover_text(hover) } else { r.on_disabled_hover_text(hover) };
+                    if r.clicked() {
+                        match prev {
+                            Some(p) => self.compare_base = Some(p),
+                            None => {
+                                // Not read yet: ask for the days, and the comparison is made when they come.
+                                self.prev_wait = Some(run.id.clone());
+                                self.ask_past();
+                            }
+                        }
                     }
                     if run.is_over() && picked.is_none() && !run.never_began() {
                         ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
@@ -4423,13 +4524,15 @@ impl Browser {
         if let Some(job) = target_job {
             self.ask_block(ui, t, &run, &job);
         }
-        if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
+        if is_base {
+            let hint = t.tr("run.compare_hint");
+            let r = ui.add(egui::Label::new(egui::RichText::new(hint).small().color(c.dim)).wrap());
+            ito_a11y::say(&r, Role::Label, hint);
+        }
+        if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)).cloned() {
             ui.add_space(6.0);
-            let head = t.trf("run.compare_head", &[&base.id]);
-            ui.label(egui::RichText::new(&head).strong());
-            for l in crate::compare::lines(t, base, &run, &[]) {
-                let r = ui.add(egui::Label::new(egui::RichText::new(&l).monospace()).wrap());
-                ito_a11y::say(&r, Role::Label, &l);
+            if compare_block(ui, t, &c, &base, &run) {
+                self.compare_base = None;
             }
         }
         ui.add_space(6.0);
@@ -4447,12 +4550,50 @@ impl Browser {
             .and_then(|d| d.net.as_ref())
             .map(|n| n.jobs.clone());
         let mut pick = None;
-        egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
-            pick = graph::draw(ui, &run, self.vertical, watched, saved.as_deref());
-        });
+        let mut act = None;
+        let env = self.menu_env(&run);
+        {
+            let mut menu = |ui: &mut egui::Ui, job: &str| job_menu(ui, t, &run, job, &env, &mut act);
+            egui::ScrollArea::horizontal().id_salt("graph").auto_shrink([false, true]).show(ui, |ui| {
+                pick = graph::draw(ui, t, &run, self.vertical, watched, saved.as_deref(), Some(&mut menu));
+            });
+        }
         graph::legend(ui, t, &c, &run);
         if pick.is_some() {
             self.job_sel = pick;
+        }
+        self.run_menu_act(&run, act);
+    }
+
+    /// What the right-click menu of a job needs from the window.
+    fn menu_env(&self, run: &Run) -> runmenu::Env {
+        let snap = self.snap.as_ref();
+        runmenu::Env {
+            blocked: self.blocked(),
+            again: self.net_now(run).can_rerun(),
+            held: snap.map(|s| s.held_jobs.iter().filter(|h| h.net == run.jobnet).map(|h| h.job.clone()).collect()).unwrap_or_default(),
+            net_there: snap.is_some_and(|s| s.defs.iter().any(|d| d.id == run.jobnet && d.net.is_some())),
+        }
+    }
+
+    /// Does what a menu item chosen on `run` asked for. The ids are the ones the menu was opened on.
+    fn run_menu_act(&mut self, run: &Run, act: Option<(String, runmenu::Act)>) {
+        let Some((job, act)) = act else { return };
+        match act {
+            runmenu::Act::Send(req) => {
+                self.send(req);
+            }
+            runmenu::Act::Pick => {
+                self.job_sel = Some(job);
+                self.log_scroll = true;
+            }
+            runmenu::Act::Editor => {
+                self.open_editor(&run.jobnet);
+                if let Some(e) = self.editor.as_mut() {
+                    e.open_part(&job);
+                }
+                self.focus = 0;
+            }
         }
     }
 
@@ -4491,6 +4632,8 @@ impl Browser {
             .map(|k| t.tr(k).to_owned())
             .to_vec();
         let mut pick = None;
+        let mut act = None;
+        let env = self.menu_env(run);
         let mut body = |ui: &mut egui::Ui, table: &mut TodayTable| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (i, cells) in &rows {
@@ -4498,9 +4641,11 @@ impl Browser {
                 let on = watched == Some(j.id.as_str());
                 let r = table.cells_of(ui, cells, on, Some(j.state));
                 ito_a11y::say(&r, Role::Row, &graph::words(t, j));
-                if r.clicked() {
+                if r.clicked() || r.secondary_clicked() {
                     pick = Some(j.id.clone());
                 }
+                let id = ui.make_persistent_id(("run_row_menu", run.id.as_str(), j.id.as_str()));
+                egui::Popup::context_menu(&r).id(id).show(|ui| job_menu(ui, t, run, &j.id, &env, &mut act));
             }
         };
         egui::ScrollArea::horizontal().id_salt("run_jobs_scroll").auto_shrink([false, true]).show(ui, |ui| {
@@ -4524,6 +4669,7 @@ impl Browser {
         if pick.is_some() {
             self.job_sel = pick;
         }
+        self.run_menu_act(run, act);
     }
 
     /// The picked job's facts and its log (the job running, else the last that started, when none is picked).
@@ -4538,15 +4684,22 @@ impl Browser {
                     ui.end_row();
                 }
             });
+            for l in runmenu::met_lines(t, run, job) {
+                let r = ui.add(egui::Label::new(&l).wrap());
+                ito_a11y::say(&r, Role::Label, &l);
+            }
             self.definition_section(ui, t, run, job.id.as_str());
         }
         ui.add_space(8.0);
-        let title = match &watched {
-            Some(j) => format!("{}: {j}", t.tr("run.log")),
+        let title = match watched.and_then(|w| run.job(w)) {
+            Some(j) => format!("{}: {}", t.tr("run.log"), j.label()),
             None => t.tr("run.log").to_owned(),
         };
         let r = ui.label(egui::RichText::new(&title).strong());
         ito_a11y::say(&r, Role::Heading, &title);
+        if std::mem::take(&mut self.log_scroll) {
+            r.scroll_to_me(Some(egui::Align::TOP));
+        }
         let text = match (&self.log, &watched) {
             (Some((r, j, text)), Some(w)) if *r == run.id && j == w => text.clone(),
             _ => String::new(),
@@ -4767,7 +4920,8 @@ impl Browser {
             // The job picked on the graph or in the jobs table is held from here too, next to the net's own hold.
             let job = self.job_sel.clone().filter(|p| def.net.as_ref().is_some_and(|n| n.jobs.iter().any(|j| &j.id == p)));
             if let Some(job) = job {
-                self.hold_job_button(ui, t, &def.id, &job);
+                let name = def.net.as_ref().and_then(|n| n.jobs.iter().find(|j| j.id == job)).and_then(|j| j.name.clone());
+                self.hold_job_button(ui, t, &def.id, &job, name.as_deref().filter(|n| !n.is_empty()).unwrap_or(&job));
             }
         });
         if held {
@@ -4862,7 +5016,7 @@ impl Browser {
             let picked = self.job_sel.clone().filter(|p| net.jobs.iter().any(|j| &j.id == p));
             let mut pick = None;
             egui::ScrollArea::horizontal().id_salt(salt).auto_shrink([false, true]).show(ui, |ui| {
-                pick = graph::draw(ui, &preview, self.vertical, picked.as_deref(), Some(&net.jobs));
+                pick = graph::draw(ui, t, &preview, self.vertical, picked.as_deref(), Some(&net.jobs), None);
             });
             if pick.is_some() {
                 self.job_sel = if pick == picked { None } else { pick };
@@ -5806,6 +5960,62 @@ fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
     plain(koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]))
 }
 
+/// The right-click menu of one job of `run`: the items for exactly that run and job (`act` takes the one chosen).
+fn job_menu(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: &str, env: &runmenu::Env, act: &mut Option<(String, runmenu::Act)>) {
+    let Some(j) = run.job(job) else { return };
+    for item in runmenu::menu_items(t, run, j, env) {
+        let r = ui.add_enabled(item.enabled, egui::Button::new(&item.label));
+        ito_a11y::say(&r, Role::Button, &item.label);
+        let r = match &item.why {
+            Some(why) if !item.enabled => r.on_disabled_hover_text(why),
+            _ => r,
+        };
+        if r.clicked() {
+            *act = Some((j.id.clone(), item.act));
+            ui.close();
+        }
+    }
+}
+
+/// The run against the run marked as the base, in its own frame: what it is, the way out and one row a job
+/// (the rows that differ stand out). True when the way out was pressed.
+fn compare_block(ui: &mut egui::Ui, t: &ito_i18n::Table, c: &ito_theme::Colors, a: &Run, b: &Run) -> bool {
+    let mut stop = false;
+    egui::Frame::new()
+        .fill(c.panel)
+        .stroke(egui::Stroke::new(1.0, c.border))
+        .corner_radius(6)
+        .inner_margin(egui::Margin::symmetric(10, 8))
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal_wrapped(|ui| {
+                let head = t.trf("run.compare_head", &[&a.id, &show::word(t, a.state)]);
+                let r = ui.label(egui::RichText::new(&head).strong());
+                ito_a11y::say(&r, Role::Heading, &head);
+                if ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("run.compare_stop")).show(ui).clicked() {
+                    stop = true;
+                }
+            });
+            ui.add_space(4.0);
+            egui::Grid::new("compare_rows").num_columns(3).striped(true).spacing([16.0, 3.0]).show(ui, |ui| {
+                for k in ["run.col_job", "run.compare_col_a", "run.compare_col_b"] {
+                    ui.label(egui::RichText::new(t.tr(k)).small().color(c.dim));
+                }
+                ui.end_row();
+                for row in crate::compare::rows(t, a, b) {
+                    let (name, tint) = if row.differs { (format!("≠ {}", row.name), c.wait) } else { (row.name.clone(), c.fg) };
+                    let first = ui.label(egui::RichText::new(&name).color(tint));
+                    ito_a11y::say(&first, Role::Label, &format!("{name}: {} / {}", row.a, row.b));
+                    for text in [&row.a, &row.b] {
+                        ui.label(egui::RichText::new(text).color(tint));
+                    }
+                    ui.end_row();
+                }
+            });
+        });
+    stop
+}
+
 /// A section's heading (15px bold, D12), told to a reader as a heading. It wraps rather than run past
 /// a narrow pane.
 fn section_head(ui: &mut egui::Ui, text: &str) -> egui::Response {
@@ -5960,6 +6170,9 @@ mod tests {
             selected: None,
             run_sel: None,
             compare_base: None,
+            past_rows: None,
+            prev_wait: None,
+            log_scroll: false,
             run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
@@ -6723,6 +6936,97 @@ run = [\"x.exe\"]
         run.state = state;
         run.ended = Some(run.started);
         run
+    }
+
+    /// E: the bar's labels and the hold button show the job's name; the requests still carry the id.
+    #[test]
+    fn the_run_page_shows_names_and_sends_ids() {
+        let (tx, rx_req) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        let mut run = page_run("20261030-090000-01");
+        run.jobs[0].name = Some("さいころ".into());
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-01".into());
+        b.job_sel = Some("a".into());
+        b.run_defs.insert("20261030-090000-01".into(), runfacts::DefCopy::Asked);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        s.click("再実行 ▾", &mut b);
+        assert!(says(&s, "さいころ から再実行") && !says(&s, "a から再実行"));
+        s.click("さいころ から再実行", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), .. }) if f == "a"));
+        assert!(says(&s, "ジョブ さいころ を保留"));
+        s.click("ジョブ さいころ を保留", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Hold { job: Some(j), .. }) if j == "a"));
+    }
+
+    /// I.1: a start opens its run and leaves no result line; a dry run keeps its text; an error keeps its line.
+    #[test]
+    fn a_start_answer_opens_the_run_and_a_dry_run_keeps_its_text() {
+        let mut b = quiet(defs());
+        b.runs = vec![page_run("20261030-090000-01"), page_run("20261030-090000-02")];
+        b.run_sel = Some("20261030-090000-01".into());
+        let run = |dry| Request::Run { id: "試験/bom".into(), date: None, from: None, dry, params: BTreeMap::new() };
+        let rerun = Request::Rerun { run: "20261030-090000-01".into(), from: None, next: None };
+        b.result = Some(Ok("old".into()));
+        b.io.0.send(Msg::Answer(run(false), Ok("20261030-090000-02".into()))).unwrap();
+        b.drain();
+        assert_eq!(b.run_sel.as_deref(), Some("20261030-090000-02"));
+        assert!(b.result.is_none(), "the page is the answer");
+        b.run_sel = Some("20261030-090000-01".into());
+        b.result = Some(Ok("old".into()));
+        b.io.0.send(Msg::Answer(rerun, Ok("20261030-090000-02".into()))).unwrap();
+        b.drain();
+        assert_eq!(b.run_sel.as_deref(), Some("20261030-090000-02"));
+        assert!(b.result.is_none());
+        b.run_sel = Some("20261030-090000-01".into());
+        b.io.0.send(Msg::Answer(run(true), Ok("dry text".into()))).unwrap();
+        b.drain();
+        assert_eq!(b.run_sel.as_deref(), Some("20261030-090000-01"), "a dry run opens nothing");
+        assert!(matches!(&b.result, Some(Ok(t)) if t == "dry text"));
+        b.io.0.send(Msg::Answer(run(false), Err("no".into()))).unwrap();
+        b.drain();
+        assert!(matches!(&b.result, Some(Err(_))));
+        assert_eq!(b.run_sel.as_deref(), Some("20261030-090000-01"));
+    }
+
+    /// I.2: the compare block shows when a base is set; its button clears the base.
+    #[test]
+    fn the_compare_block_has_a_way_out() {
+        let mut b = quiet(defs());
+        b.runs = vec![page_run("20261030-090000-01"), page_run("20261030-090000-02")];
+        b.run_sel = Some("20261030-090000-02".into());
+        b.run_defs.insert("20261030-090000-01".into(), runfacts::DefCopy::Asked);
+        b.run_defs.insert("20261030-090000-02".into(), runfacts::DefCopy::Asked);
+        b.compare_base = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(says(&s, "と比べています"));
+        s.click("比べるのをやめる", &mut b);
+        assert!(b.compare_base.is_none());
+    }
+
+    /// L: a right click on a job of an over run offers the rerun items for that job.
+    #[test]
+    fn a_right_click_on_a_job_opens_its_menu() {
+        let (tx, rx_req) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        let mut run = page_run("20261030-090000-01");
+        run.jobs[0].name = Some("さいころ".into());
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-01".into());
+        b.run_defs.insert("20261030-090000-01".into(), runfacts::DefCopy::Asked);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        s.right_click("✓ 正常終了  さいころ", &mut b);
+        assert!(says(&s, "ログを見る"), "the menu is open");
+        s.click("さいころ から再実行", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: Some(f), .. }) if f == "a"));
     }
 
     /// The rerun menu of a run that never began has the one item; a left-behind run keeps the whole menu.

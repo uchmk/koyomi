@@ -1,6 +1,6 @@
 # Checklist
 
-1328 checks in TESTING.md, 1322 left for a person.
+1339 checks in TESTING.md, 1333 left for a person.
 
 ## 1. Start
 
@@ -1746,3 +1746,17 @@
 - [ ] **138.4** Run a net whose approval job has a `message`, and one whose approval has none; open each run while it waits → Under the buttons a block shows 判断の材料 (the message, or 「判断の材料は書かれていません。…」), and 直前のジョブ lists each job before it with its state, exit code and a ログを見る link that opens that job's log 〔未訳〕
 - [ ] **138.5** Open a run of a net with a calendar, then one of a net without → The header shows 「カレンダー: <name>」 as a link that opens that calendar on the カレンダー tab; the other shows 「カレンダー: なし（毎日）」 〔未訳〕
 - [ ] **138.6** On a failed run, hover 対応済みにする, then press it → The hover says it counts the failure as seen and leaves the result as it is; after pressing, the result line names the net, the run id and the state 「…を対応済みにしました。ステータスバーの異常の数から外れます。」, the header shows 「✓ 対応済み」, and the status bar's count goes down by one 〔未訳〕
+
+## 139. The run page: names, line labels, the compare block and the job menu (`ui/runmenu.rs`, `ui/graph.rs`, `ui/mod.rs`)
+
+- [ ] **139.1** Open a run whose job has a `name`, pick that job → The 再実行 ▾ items, the 保留 button, the skip and approve buttons and the 「ログ: …」 title show the name (「さいころ から再実行」), never the id; the request each sends still carries the id (see it in the engine's log) 〔未訳〕
+- [ ] **139.2** Open a run where one job failed and another job follows it by a 失敗したら or どちらでも line → The picture labels each non-ok line at its middle (「✖ 失敗したら」, 「* どちらでも」, the code or それ以外 words for a branch) on a plate that stays readable; an ok line has no label 〔未訳〕
+- [ ] **139.3** In that run, pick the job that followed the failure → Under its facts grid a line says 「<失敗した名前>（<状態>）: 「失敗したら」の線を満たしています」 for each line met now, an ok line included (two for a join-any with two met); a line that is not met (an ok line from the failed job) and a job with no `after` list nothing 〔未訳〕
+- [ ] **139.4** Look under the same run's header; then open a run where a job only ran beside the failure → A line says 「<名前> が異常終了しましたが、<線の種類>の線で続いています。」 (only the kinds met), with 「回の結果は … になります。」 once the run is over; the beside-the-failure run shows no such line 〔未訳〕
+- [ ] **139.5** Press 再実行 on a run's page (or 今すぐ実行 on a net) → The new run opens at once with no result line above it 〔未訳〕
+- [ ] **139.6** Press 比べる元にする on a run → The button's hover says what it does beforehand; after pressing, a hint 「この回を比べる元にしました。…」 shows under the bar and the header has a 「比べる元」 chip; marking another run replaces it 〔未訳〕
+- [ ] **139.7** Open another run of the same net → A framed block 「<A>（<状態>）と比べています」 shows a table (ジョブ, A（比べる元）, B（このページの回）) with differing rows marked; 比べるのをやめる closes it and clears the base 〔未訳〕
+- [ ] **139.8** Press 前の回と比べる on a run with an earlier finished run of the same net; then on the net's first run → The first sets that earlier run as A and shows the block (when the history was not read yet it is read first); the second is greyed with the reason 「同じジョブネットに、この回より前に終わった回がありません。」 〔未訳〕
+- [ ] **139.9** With a base set, right-click rows in the 履歴 list → Each offers 「<A> と比べる」 that opens that run against A; on A itself it is greyed with 「比べる元そのものです」; with no base set there is no menu 〔未訳〕
+- [ ] **139.10** Right-click a job on the picture and a row of the job table of a finished run → The job is picked and a menu offers 「<名前> から再実行」, 「… の次から（… はスキップ）」, 「… の次から（… は警告終了）」, 「ジョブ <名前> を保留」, ログを見る (shows that job's log and scrolls to it), and エディターでこのジョブを開く when the net still exists; each acts on that job, not on the one picked before 〔未訳〕
+- [ ] **139.11** Right-click a pending job of a running run, then a job whose approval is waiting, then a job of a never-began run → 「<名前> をスキップ」 for the pending one; 承認する / 却下する for the approval; of the rerun items only 最初から再実行する for the never-began run; a job inside a child net has no 保留 item 〔未訳〕

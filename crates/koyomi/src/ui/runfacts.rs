@@ -235,7 +235,7 @@ pub fn ask(run: &Run, target: &str) -> Option<Ask> {
         .after
         .iter()
         .filter_map(|l| run.job(&l.job))
-        .map(|b| AskRow { id: b.id.clone(), name: b.named(), state: b.state, exit: b.exit })
+        .map(|b| AskRow { id: b.id.clone(), name: b.label().to_owned(), state: b.state, exit: b.exit })
         .collect();
     Some(Ask { message: message.clone().filter(|m| !m.trim().is_empty()), before })
 }
@@ -371,6 +371,7 @@ impl Browser {
                 ito_a11y::say(&r, Role::Button, &words);
                 if r.clicked() {
                     self.job_sel = Some(row.id.clone());
+                    self.log_scroll = true;
                 }
             });
         }

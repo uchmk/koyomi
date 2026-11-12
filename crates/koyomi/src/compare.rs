@@ -57,6 +57,28 @@ fn side(t: &Table, j: Option<&JobRun>) -> String {
     s
 }
 
+/// One row of the window's comparison table: the job, both sides in words, and whether they differ.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TableRow {
+    pub name: String,
+    pub a: String,
+    pub b: String,
+    pub differs: bool,
+}
+
+/// The jobs of both runs as table rows (`a` is the run marked, `b` the run shown).
+pub fn rows(t: &Table, a: &Run, b: &Run) -> Vec<TableRow> {
+    jobs(a, b)
+        .into_iter()
+        .map(|(id, x, y)| TableRow {
+            name: x.or(y).map_or(id, |j| j.label()).to_owned(),
+            a: side(t, x),
+            b: side(t, y),
+            differs: differs(x, y),
+        })
+        .collect()
+}
+
 /// The logs' difference as lines, `+`, `-` or a space and then the line; empty when they are the same.
 pub fn log_lines(a: &str, b: &str) -> Vec<String> {
     if a == b {
@@ -200,6 +222,33 @@ mod tests {
         let b = run("B", &["y", "z"]);
         let ids: Vec<_> = jobs(&a, &b).iter().map(|j| (j.0, j.1.is_some(), j.2.is_some())).collect();
         assert_eq!(ids, vec![("x", true, false), ("y", true, true), ("z", false, true)]);
+    }
+
+    #[test]
+    fn the_table_rows_mark_what_differs() {
+        let (t, _) = crate::i18n::table("ja");
+        let mut a = run("A", &["x", "y"]);
+        let mut b = run("B", &["y", "z"]);
+        end(&mut a, "x", State::Ok, 0, 60);
+        end(&mut a, "y", State::Ok, 0, 60);
+        end(&mut b, "y", State::Error, 1, 70);
+        let rows = rows(&t, &a, &b);
+        let seen: Vec<_> = rows.iter().map(|r| (r.name.as_str(), r.differs)).collect();
+        // x is only in A, y ended differently, z is only in B.
+        assert_eq!(seen, vec![("x", true), ("y", true), ("z", true)]);
+        assert_eq!(rows[0].b, "（なし）");
+        assert!(rows[1].a.starts_with("✓ 正常終了") && rows[1].b.starts_with("✕ 異常終了"));
+        let mut same = run("B2", &["x"]);
+        end(&mut same, "x", State::Ok, 0, 90);
+        let one = self::rows(&t, &run_of_x(&a), &same);
+        assert!(!one[0].differs, "the same state and exit is not a difference even when it took longer");
+    }
+
+    /// `a` cut down to its job x.
+    fn run_of_x(a: &Run) -> Run {
+        let mut r = a.clone();
+        r.jobs.retain(|j| j.id == "x");
+        r
     }
 
     #[test]

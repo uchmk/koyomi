@@ -186,12 +186,46 @@ pub fn subtext(j: &JobRun) -> Option<String> {
     Some(s)
 }
 
-/// Draws the run; the job clicked, when one was.
+/// The point half way along the line.
+pub(crate) fn middle(points: &[Pos2]) -> Option<Pos2> {
+    let half = length(points) / 2.0;
+    let mut walked = 0.0;
+    for w in points.windows(2) {
+        let seg = (w[1] - w[0]).length();
+        if seg > 0.0 && walked + seg >= half {
+            return Some(w[0] + (w[1] - w[0]) * ((half - walked) / seg));
+        }
+        walked += seg;
+    }
+    points.first().copied()
+}
+
+/// A small plate in the background colour with `text` on it, centred at `at`, so it reads over the line.
+fn plate(painter: &egui::Painter, at: Pos2, text: &str, font: egui::FontId, tint: Color32, back: Color32) {
+    let galley = painter.layout_no_wrap(text.to_owned(), font, tint);
+    let rect = Rect::from_center_size(at, galley.size() + Vec2::new(8.0, 2.0));
+    painter.rect_filled(rect, 3.0, back);
+    painter.galley(rect.center() - galley.size() / 2.0, galley, tint);
+}
+
+/// What draws the right-click menu of the node with the given job id.
+pub type NodeMenu<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str);
+
+/// Draws the run; the job clicked (or right-clicked), when one was. Every line but a plain one carries the
+/// editor's mark and word at its middle. A right click opens `menu` for that job, drawn by the caller.
 /// `net` is the net's jobs, for where the editor put them.
-pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>, net: Option<&[Job]>) -> Option<String> {
+pub fn draw(
+    ui: &mut egui::Ui,
+    t: &ito_i18n::Table,
+    run: &Run,
+    vertical: bool,
+    selected: Option<&str>,
+    net: Option<&[Job]>,
+    mut menu: Option<NodeMenu<'_>>,
+) -> Option<String> {
     let c = ito_theme::colors();
     let at = places(run, vertical, net);
-    let (resp, painter) = ui.allocate_painter(size(&at, vertical), Sense::click());
+    let (resp, painter) = ui.allocate_painter(size(&at, vertical), Sense::focusable_noninteractive());
     let origin = resp.rect.min.to_vec2();
     let at: Vec<Pos2> = at.into_iter().map(|p| p + origin).collect();
     let moving = run.jobs.iter().any(|j| j.state.tone() == Tone::Running);
@@ -216,6 +250,14 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
                 painter.add(Shape::line(points, Stroke::new(width, line_colour(&c, pred.state))));
             } else {
                 dashed(&painter, &points, Stroke::new(2.0, c.border_strong()), 2.0, 5.0, 0.0);
+            }
+            if let (Some(label), Some(mid)) = (crate::ui::runmenu::line_label(t, &l.on), middle(&path(at[p], at[i], vertical))) {
+                let tint = match l.on {
+                    On::Error => c.err,
+                    On::Code(_) => c.wait,
+                    _ => c.dim,
+                };
+                plate(&painter, mid, &label, egui::TextStyle::Small.resolve(ui.style()), tint, c.bg);
             }
         }
     }
@@ -266,11 +308,22 @@ pub fn draw(ui: &mut egui::Ui, run: &Run, vertical: bool, selected: Option<&str>
             painter.text(below, a, sub, small.clone(), tint);
         }
     }
+    let mut hit = None;
+    for (i, j) in run.jobs.iter().enumerate() {
+        let rect = Rect::from_center_size(at[i], Vec2::splat(RADIUS * 2.0 + 12.0));
+        let node = ui.interact(rect, resp.id.with(("node", j.id.as_str())), Sense::CLICK);
+        if node.clicked() || node.secondary_clicked() {
+            hit.get_or_insert(i);
+        }
+        if let Some(menu) = menu.as_deref_mut() {
+            // A persistent id: the picture's own ids shift when the page above it changes.
+            let id = ui.make_persistent_id(("run_node_menu", run.id.as_str(), j.id.as_str()));
+            egui::Popup::context_menu(&node).id(id).show(|ui| menu(ui, &j.id));
+        }
+    }
     let summary: Vec<String> = run.jobs.iter().map(|j| format!("{} {}", j.state.mark(), j.label())).collect();
     ito_a11y::say(&resp, ito_a11y::Role::Label, &summary.join(", "));
-    let hit = resp.interact_pointer_pos().filter(|_| resp.clicked())?;
-    let near = (0..run.jobs.len()).find(|&i| Rect::from_center_size(at[i], Vec2::splat(RADIUS * 2.0 + 12.0)).contains(hit))?;
-    Some(run.jobs[near].id.clone())
+    hit.map(|i| run.jobs[i].id.clone())
 }
 
 /// The states the picture shows, once each and in the order they first appear.

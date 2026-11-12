@@ -346,7 +346,7 @@ impl JobRun {
 
     /// The name, or the id when there is none.
     pub fn label(&self) -> &str {
-        self.name.as_deref().unwrap_or(&self.id)
+        self.name.as_deref().filter(|n| !n.is_empty()).unwrap_or(&self.id)
     }
 
     /// For a line that names the job: `name（id）` (the id stays so a log can be searched), the id when there is no name.
@@ -1414,6 +1414,16 @@ mod tests {
     fn net_of(jobs: Vec<Job>) -> Run {
         let net = Jobnet { jobs, ..Default::default() };
         Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
+    }
+
+    #[test]
+    fn a_job_label_is_its_name_and_falls_back_to_the_id_when_the_name_is_empty() {
+        let mut r = net_of(vec![job("a", &[])]);
+        assert_eq!(r.jobs[0].label(), "a");
+        r.jobs[0].name = Some(String::new());
+        assert_eq!(r.jobs[0].label(), "a");
+        r.jobs[0].name = Some("さいころ".into());
+        assert_eq!(r.jobs[0].label(), "さいころ");
     }
 
     #[test]
