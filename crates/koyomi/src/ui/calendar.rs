@@ -249,9 +249,6 @@ impl Browser {
                     .show(ui, |ui| self.month_foot(ui, t, &name, &cal));
             }
             egui::ScrollArea::vertical().id_salt("calendar_page").auto_shrink(false).show(ui, |ui| {
-                // Room above the first row: the focus ring of the day / week / month switch is drawn about
-                // 4.5 px outside it, and the scroll area clips whatever sits above its top edge.
-                ui.add_space(5.0);
                 // This calendar's own cautions in a band: this is where the person looks to fix them. When
                 // the holiday table ends soon, the band carries the button that brings a new one.
                 let cautions: Vec<String> =
