@@ -440,6 +440,26 @@ impl Watch {
     }
 }
 
+/// The connections the window watches, from this PC's koyomi.toml as the window last read it: none when
+/// `watch_remotes` is off, else the trimmed names of the `[[remote]]` whose `watch` is on, in file order.
+pub fn watched(cfg: &koyomi_core::config::Config) -> Vec<String> {
+    if !cfg.watch_remotes {
+        return Vec::new();
+    }
+    cfg.remote.iter().filter(|r| r.watch).map(|r| r.name.trim().to_owned()).collect()
+}
+
+/// The trimmed names of every `[[remote]]` the window does not watch: all of them when `watch_remotes` is off.
+pub fn unwatched(cfg: &koyomi_core::config::Config) -> BTreeSet<String> {
+    cfg.remote.iter().filter(|r| !cfg.watch_remotes || !r.watch).map(|r| r.name.trim().to_owned()).collect()
+}
+
+/// The trimmed names of the `[[remote]]` with `watch = false` of their own (not counting `watch_remotes`): what the
+/// manage box's switches show.
+pub fn rows_off(cfg: &koyomi_core::config::Config) -> BTreeSet<String> {
+    cfg.remote.iter().filter(|r| !r.watch).map(|r| r.name.trim().to_owned()).collect()
+}
+
 /// How many failures nobody has dealt with there are on the PCs the window is not on, counting only the ones that
 /// answer (a PC that is off must not keep a red item; its dot in the list says it).
 pub fn unacked_total(facts: &HashMap<String, Fact>, current: Option<&str>) -> usize {
@@ -766,6 +786,47 @@ mod tests {
         w.tx.send((1, Event::Notes(Box::new(Notes { name: "a".into(), notes: Vec::new(), cfg: Default::default() })))).unwrap();
         assert!(w.drain().is_empty(), "the old thread's notices are dropped");
         assert_ne!(w.facts.get("a"), Some(&stale));
+    }
+
+    fn remotes_cfg(watch_remotes: bool, rows: &[(&str, bool)]) -> koyomi_core::config::Config {
+        let remote = |(name, watch): &(&str, bool)| koyomi_core::config::Remote {
+            name: format!(" {name} "),
+            url: "https://h:1".into(),
+            fingerprint: "ab".repeat(32),
+            token: format!("secret:{name}"),
+            watch: *watch,
+        };
+        koyomi_core::config::Config { watch_remotes, remote: rows.iter().map(remote).collect(), ..Default::default() }
+    }
+
+    #[test]
+    fn what_is_watched_follows_the_file_and_the_global_switch() {
+        let on = remotes_cfg(true, &[("a", true), ("b", false), ("c", true)]);
+        assert_eq!(watched(&on), ["a", "c"]);
+        assert_eq!(unwatched(&on), BTreeSet::from(["b".to_owned()]));
+        assert_eq!(rows_off(&on), BTreeSet::from(["b".to_owned()]));
+        let off = remotes_cfg(false, &[("a", true), ("b", false)]);
+        assert!(watched(&off).is_empty());
+        assert_eq!(unwatched(&off), BTreeSet::from(["a".to_owned(), "b".to_owned()]));
+        assert_eq!(rows_off(&off), BTreeSet::from(["b".to_owned()]), "rows keep their own flag");
+        assert!(watched(&Default::default()).is_empty() && unwatched(&Default::default()).is_empty());
+    }
+
+    #[test]
+    fn a_notice_of_a_thread_that_was_dropped_is_not_returned() {
+        fn make(_: &str) -> Box<dyn Line + Send> {
+            Box::new(Fake(Arc::new(Mutex::new(Script { health_ok: true, ..Script::default() })), Some(Role::Edit)))
+        }
+        let mut w = Watch::with(&egui::Context::default(), make);
+        w.sync(Some(&names(&["a"])), None);
+        let id = w.threads[0].1.id;
+        w.sync(Some(&names(&[])), None);
+        w.tx.send((id, Event::Notes(Box::new(Notes { name: "a".into(), notes: Vec::new(), cfg: Default::default() })))).unwrap();
+        assert!(w.drain().is_empty());
+        w.sync(Some(&names(&["a"])), None);
+        assert_ne!(w.threads[0].1.id, id, "the name added again is a new thread");
+        w.tx.send((id, Event::Notes(Box::new(Notes { name: "a".into(), notes: Vec::new(), cfg: Default::default() })))).unwrap();
+        assert!(w.drain().is_empty());
     }
 
     #[test]

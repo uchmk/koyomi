@@ -999,14 +999,15 @@ impl Browser {
     }
 
     /// The link button and its list: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
-    /// `facts` is what the watch found out about each connection. Returns whether the list was opened just now.
+    /// `facts` is what the watch found out about each connection, `unwatched` the names it does not watch. Returns whether the list was opened just now.
     pub fn link_picker(
         &mut self,
         ui: &mut egui::Ui,
         t: &ito_i18n::Table,
         facts: &std::collections::HashMap<String, crate::watch::Fact>,
+        unwatched: &std::collections::BTreeSet<String>,
     ) -> bool {
-        let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names(), facts);
+        let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names(), facts, unwatched);
         if out.manage && !self.own_box_open() {
             self.far.open_manage();
         }
@@ -1508,9 +1509,15 @@ impl Browser {
         std::mem::take(&mut self.moved_urls)
     }
 
-    /// The `[[remote]]` names once listed (`None` before: the watch keeps what it has).
-    pub fn far_names(&self) -> Option<&[String]> {
-        self.far.listed_names()
+    /// What the manage box's switches show (see [`far::Far::set_watching`]).
+    pub fn set_watching(&mut self, off: std::collections::BTreeSet<String>, all_off: bool) {
+        self.far.set_watching(off, all_off);
+    }
+
+    /// Whether this window wrote koyomi.toml since the last call (the prefs read it again at once).
+    pub fn take_config_written(&mut self) -> bool {
+        self.drain();
+        self.far.take_config_written()
     }
 
     /// Shows run `id` in the detail (a click under the bell).

@@ -32,6 +32,9 @@ pub struct Config {
     pub archive: bool,
     /// Months whose last day is this many days old leave `archive/`; 0 keeps them forever.
     pub archive_days: u32,
+    /// `false` stops this PC's window from watching every `[[remote]]` in the background (no notices, no count).
+    #[serde(default = "yes")]
+    pub watch_remotes: bool,
     /// One job's log stops growing here; the rest of its output is not written.
     pub log_max_mb: u64,
     /// `[notify]` as written: which events are told how. The app reads it.
@@ -376,6 +379,13 @@ pub struct Remote {
     pub fingerprint: String,
     /// `secret:<name>`: the other PC's `[http]` token, kept here in the OS credential store.
     pub token: String,
+    /// `false`: this PC's window does not watch that PC in the background (no notices told, no count in the status bar).
+    #[serde(default = "yes")]
+    pub watch: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 impl Remote {
@@ -487,6 +497,7 @@ impl Default for Config {
             keep_days: 90,
             archive: false,
             archive_days: 0,
+            watch_remotes: true,
             log_max_mb: 10,
             notify: toml::Table::new(),
             ping: None,
@@ -661,6 +672,67 @@ archive_days = 365
         .unwrap();
         assert_eq!((c.archive, c.archive_days, c.keep_days), (true, 365, 90));
         assert!(!Config::default().archive);
+    }
+
+    #[test]
+    fn watching_is_on_unless_written_off() {
+        assert!(Config::default().watch_remotes);
+        let remote = |extra: &str| {
+            format!(
+                "[[remote]]
+name = \"a\"
+url = \"https://h:1\"
+fingerprint = \"{}\"
+token = \"secret:a\"
+{extra}",
+                "ab".repeat(32)
+            )
+        };
+        assert!(Config::parse(&remote("")).unwrap().remote[0].watch);
+        assert!(
+            !Config::parse(&remote(
+                "watch = false
+"
+            ))
+            .unwrap()
+            .remote[0]
+                .watch
+        );
+        assert!(
+            Config::parse(&remote(
+                "watch = true
+"
+            ))
+            .unwrap()
+            .remote[0]
+                .watch
+        );
+        assert!(Config::parse(&remote(
+            "watch = \"no\"
+"
+        ))
+        .is_err());
+        assert!(
+            !Config::parse(
+                "watch_remotes = false
+"
+            )
+            .unwrap()
+            .watch_remotes
+        );
+        assert!(
+            Config::parse(
+                "watch_remotes = true
+"
+            )
+            .unwrap()
+            .watch_remotes
+        );
+        assert!(Config::parse(
+            "watch_remotes = 0
+"
+        )
+        .is_err());
     }
 
     #[test]

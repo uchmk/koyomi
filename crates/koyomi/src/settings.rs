@@ -47,8 +47,9 @@ fn engine_row(page: usize, text: &str, t: &ito_i18n::Table, more: &MoreWords) ->
     match page {
         // The Records section, and the button for koyomi.toml.
         GENERAL => text == CONFIG_FILE || records.contains(&text),
-        // The whole page is `[notify]` of koyomi.toml.
-        NOTIFY => true,
+        // The whole page is `[notify]` of koyomi.toml, but for the watch switch: that is this window's own, on this
+        // PC's koyomi.toml.
+        NOTIFY => !(text == t.tr("settings.watch_section") || text == t.tr("settings.watch_remotes") || text == "watch_remotes"),
         // The state folder's row is this PC's engine's: ito's own card leaves it out on another PC's engine.
         ADVANCED => text == more.state_dir || text == more.state_dir_note,
         _ => false,
@@ -91,6 +92,9 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (THEME, "light_theme"),
         (NOTIFY, "[notify]"),
         (NOTIFY, "koyomi.toml"),
+        (NOTIFY, t.tr("settings.watch_section")),
+        (NOTIFY, t.tr("settings.watch_remotes")),
+        (NOTIFY, "watch_remotes"),
         (USERS, "[[http.user]]"),
         (USERS, "koyomi.toml"),
         (USERS, t.tr("settings.users")),
@@ -117,6 +121,17 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
 /// The one line shown where the engine's settings would be, on another PC's engine.
 fn far_line(ui: &mut Ui, text: &str) {
     ui.add(egui::Label::new(egui::RichText::new(text).color(ito_theme::colors().dim)).wrap());
+}
+
+/// The 通知 page's section for what the window watches: one switch, `watch_remotes` of koyomi.toml. `pick` is what
+/// the switch was turned to.
+fn watch_section(ui: &mut Ui, l: ito_prefs::Look, tr: &dyn Fn(&str) -> String, on: bool, pick: &mut Option<bool>) {
+    section(ui, l, &tr("settings.watch_section"), |ui| {
+        let (label, note) = (tr("settings.watch_remotes"), tr("settings.watch_remotes_note"));
+        if ito_prefs::keyed_row(ui, l, "watch_remotes", &label, &note, |ui| ito_prefs::switch(ui, l, on)) {
+            *pick = Some(!on);
+        }
+    });
 }
 
 pub fn show(ui: &mut Ui, app: &mut App) {
@@ -179,6 +194,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let (config, config_warn, limit_drafts) = (&prefs.config, &prefs.config_warn, &mut prefs.limit_drafts);
     let mut keep_pick: Option<u32> = None;
     let mut archive_pick: Option<bool> = None;
+    // The watch switch of the Notifications page: this window's, whichever PC's engine it shows.
+    let mut watch_pick: Option<bool> = None;
+    let watch_remotes = config.watch_remotes;
     let mut limit_typed: Vec<(&'static str, String)> = Vec::new();
     let mut day_words: Vec<(u32, String)> = KEEP_DAYS.iter().map(|d| (*d, table.trf("settings.days", &[&d.to_string()]))).collect();
     if !KEEP_DAYS.contains(&config.keep_days) {
@@ -269,8 +287,12 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             // Read at the next start: the fonts are loaded once, in the background.
             asked.extend(ito_prefs::mono_font_card(ui, l, more, common.mono_font_or_default()));
         }
-        NOTIFY if far => far_line(ui, &far_text),
+        NOTIFY if far => {
+            watch_section(ui, l, &tr, watch_remotes, &mut watch_pick);
+            far_line(ui, &far_text);
+        }
         NOTIFY => {
+            watch_section(ui, l, &tr, watch_remotes, &mut watch_pick);
             for n in notify_warn {
                 ito_prefs::status(ui, n, l.c.err);
             }
@@ -365,6 +387,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     if let Some(on) = archive_pick {
         limit_edits.push(("archive", on.to_string()));
+    }
+    if let Some(on) = watch_pick {
+        app.prefs.set_watch_remotes(on, &no_folder);
     }
     app.prefs.limits_edit(limit_edits, &no_folder);
     if let Some((what, n)) = test {
@@ -579,7 +604,13 @@ mod tests {
         for k in ["settings.records", "settings.keep_days", "settings.archive", "settings.concurrency", "settings.log_max"] {
             assert!(has(&home, GENERAL, t.tr(k)) && !has(&far, GENERAL, t.tr(k)), "{k}");
         }
-        assert!(far.iter().all(|(p, _)| *p != NOTIFY), "nothing of the Notifications page");
+        // On the Notifications page the only rows left are the window's own watch switch.
+        let mine = [t.tr("settings.watch_section"), t.tr("settings.watch_remotes"), "watch_remotes"];
+        let left: Vec<&str> = far.iter().filter(|(p, _)| *p == NOTIFY).map(|(_, x)| x.as_str()).collect();
+        assert_eq!(left, mine, "{left:?}");
+        for s in mine {
+            assert!(has(&home, NOTIFY, s), "{s}");
+        }
         assert!(home.iter().any(|(p, _)| *p == NOTIFY));
         // The window's own rows stay.
         for (p, s) in [(GENERAL, "language"), (GENERAL, "[window]"), (THEME, "theme"), (KEYS, "keymap.toml")] {

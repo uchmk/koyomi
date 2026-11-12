@@ -210,6 +210,24 @@ enum ClickPlan {
     Drop,
 }
 
+/// Whether `KOYOMI_TEST_WATCH`'s value turns the watch on under `--keys`: only `1` does.
+#[cfg_attr(not(any(test, feature = "test-hooks")), allow(dead_code))]
+fn watch_hook(v: Option<&std::ffi::OsStr>) -> bool {
+    v.is_some_and(|v| v == "1")
+}
+
+/// Lets the measuring harness read the watch of other PCs under a script (`KOYOMI_TEST_WATCH=1`). A normal build
+/// never watches under `--keys` (TESTING 133.12).
+#[cfg(feature = "test-hooks")]
+fn test_watch() -> bool {
+    watch_hook(std::env::var_os("KOYOMI_TEST_WATCH").as_deref())
+}
+
+#[cfg(not(feature = "test-hooks"))]
+fn test_watch() -> bool {
+    false
+}
+
 fn click_plan(current: Option<&str>, name: &str, switching: Option<&link::Link>) -> ClickPlan {
     match switching {
         Some(to) if to.far() == Some(name) => ClickPlan::Retarget,
@@ -279,7 +297,7 @@ impl App {
         // The scale is common.toml's, so egui's own Ctrl+= / Ctrl+- stay out of it.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(prefs.common.scale_or_one());
-        let watch_on = script.is_none();
+        let watch_on = script.is_none() || test_watch();
         let shows = script.is_none().then(|| {
             let ctx = cc.egui_ctx.clone();
             proto::window_door().listen(move || ctx.request_repaint())
@@ -745,13 +763,14 @@ impl App {
         let link_line = self.browser.link_label();
         let sending = self.browser.pending();
         let sending_line = (self.browser.link().is_far() && sending > 0).then(|| self.table.trf("link.sending", &[&sending.to_string()]));
+        let unwatched = watch::unwatched(&self.prefs.config);
         let (browser, table) = (&mut self.browser, &self.table);
         let mut opened = false;
         ito_statusbar::show(
             ui,
             &spec,
             |ui| {
-                opened = browser.link_picker(ui, table, facts);
+                opened = browser.link_picker(ui, table, facts, &unwatched);
                 if let Some(l) = &link_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().strong());
                 }
@@ -1092,7 +1111,11 @@ impl App {
             for name in self.browser.take_moved_urls() {
                 w.reconnect(&name);
             }
-            for gone in w.sync(self.browser.far_names(), self.browser.link().far()) {
+            // One source for what is watched: this PC's koyomi.toml as the prefs last read it. Until it has been read
+            // the watch keeps what it has.
+            let names = watch::watched(&self.prefs.config);
+            let known = self.prefs.config_known;
+            for gone in w.sync(known.then_some(&names[..]), self.browser.link().far()) {
                 self.far_gens.forget(&gone);
             }
         }
@@ -1148,6 +1171,10 @@ impl eframe::App for App {
         self.pump_link(&ctx);
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
+        if self.browser.take_config_written() {
+            self.prefs.reread_config();
+        }
+        self.browser.set_watching(watch::rows_off(&self.prefs.config), !self.prefs.config.watch_remotes);
         self.watching();
         self.far_notices(&ctx);
         self.notice_list(&ctx);
@@ -1416,6 +1443,15 @@ fn reset_for_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_a_one_turns_the_watch_on_under_a_script() {
+        use std::ffi::OsStr;
+        assert!(!watch_hook(None));
+        assert!(watch_hook(Some(OsStr::new("1"))));
+        assert!(!watch_hook(Some(OsStr::new("0"))));
+        assert!(!watch_hook(Some(OsStr::new("true"))));
+    }
 
     #[test]
     fn a_click_on_a_notice_opens_here_switches_there_or_is_left_alone() {

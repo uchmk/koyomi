@@ -4,7 +4,7 @@
 //! What each row says comes from the window-wide watch (`watch.rs`), which asks every `[[remote]]` in the
 //! background whether or not this list is open; opening the list only wakes it.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 
 use ito_a11y::Role;
 use ito_theme::scale::Text;
@@ -43,8 +43,9 @@ pub struct RowFacts {
 }
 
 /// The row of `name` (`None` is this PC) while the window is on `link`, `down` when that engine does not answer,
-/// and `fact` is what the watch found out.
-pub fn row(link: &Link, down: bool, name: Option<&str>, fact: Option<&Fact>) -> RowFacts {
+/// and `fact` is what the watch found out. `watched` is false for a `[[remote]]` the window does not watch (it says
+/// so instead of what the watch found; the one the window is on keeps its row).
+pub fn row(link: &Link, down: bool, name: Option<&str>, fact: Option<&Fact>, watched: bool) -> RowFacts {
     if link.far() == name {
         let (dot, text) = match (name.is_some(), down) {
             (false, false) => (Dot::Good, "link.connected"),
@@ -57,6 +58,7 @@ pub fn row(link: &Link, down: bool, name: Option<&str>, fact: Option<&Fact>) -> 
     let mut count = 0;
     let (dot, text) = match (name, fact.map(|f| (&f.seen, f.unacked))) {
         (None, _) => (Dot::Idle, "link.pc_engine"),
+        (Some(_), _) if !watched => (Dot::Idle, "link.remote_unwatched"),
         (Some(_), None) => (Dot::Idle, "link.remote_checking"),
         (Some(_), Some((Seen::NoAnswer(_), _))) => (Dot::Bad, "link.remote_no_answer"),
         (Some(_), Some((Seen::Refused(_), _))) => (Dot::Bad, "link.remote_refused"),
@@ -91,7 +93,9 @@ impl Hosts {
         Hosts { open: false }
     }
 
-    /// The status-bar button and, when it is open, the list above it. `facts` is what the watch found out.
+    /// The status-bar button and, when it is open, the list above it. `facts` is what the watch found out, `unwatched` the
+    /// `[[remote]]` names it does not watch.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ui: &mut egui::Ui,
@@ -100,11 +104,12 @@ impl Hosts {
         down: bool,
         names: &[String],
         facts: &HashMap<String, Fact>,
+        unwatched: &BTreeSet<String>,
     ) -> Outcome {
         let c = ito_theme::colors();
         let this_pc = t.tr("link.this_pc");
         let current = link.far().unwrap_or(this_pc);
-        let own = row(link, down, link.far(), None);
+        let own = row(link, down, link.far(), None, true);
         let button = ui
             .horizontal(|ui| {
                 ito_statusbar::dot(ui, colour(&c, own.dot));
@@ -137,7 +142,7 @@ impl Hosts {
                 egui::ScrollArea::vertical().max_height(TALL).auto_shrink([false, true]).show(ui, |ui| {
                     for name in std::iter::once(None).chain(names.iter().map(|n| Some(n.as_str()))) {
                         let fact = name.and_then(|n| facts.get(n));
-                        let rf = row(link, down, name, fact);
+                        let rf = row(link, down, name, fact, !name.is_some_and(|n| unwatched.contains(n.trim())));
                         if let Some(to) = draw_row(ui, t, name, &rf, fact.map(|f| &f.seen)) {
                             out.pick = Some(to);
                             close = true;
@@ -225,39 +230,39 @@ mod tests {
 
     #[test]
     fn this_pc_current_is_connected_and_has_no_button() {
-        assert_eq!(row(&Link::Local, false, None, None), rf(Dot::Good, "link.connected", 0, None));
+        assert_eq!(row(&Link::Local, false, None, None, true), rf(Dot::Good, "link.connected", 0, None));
     }
 
     #[test]
     fn this_pc_current_and_down_is_red_with_no_button() {
-        assert_eq!(row(&Link::Local, true, None, None), rf(Dot::Bad, "link.no_answer", 0, None));
+        assert_eq!(row(&Link::Local, true, None, None, true), rf(Dot::Bad, "link.no_answer", 0, None));
     }
 
     #[test]
     fn this_pc_not_current_connects_to_local() {
-        let r = row(&far("kei"), false, None, None);
+        let r = row(&far("kei"), false, None, None, true);
         assert_eq!(r, rf(Dot::Idle, "link.pc_engine", 0, Some((Button::Connect, Link::Local))));
         // What this PC's engine is doing is not known from a remote: the same with a failed link.
-        assert_eq!(row(&far("kei"), true, None, None), r);
+        assert_eq!(row(&far("kei"), true, None, None, true), r);
     }
 
     #[test]
     fn current_remote_disconnects_to_local() {
-        let r = row(&far("kei"), false, Some("kei"), None);
+        let r = row(&far("kei"), false, Some("kei"), None, true);
         assert_eq!(r, rf(Dot::Good, "link.remote_connected", 0, Some((Button::Disconnect, Link::Local))));
     }
 
     #[test]
     fn current_remote_down_is_red_and_still_disconnects() {
         let f = fact(Seen::Answering, Some(4));
-        let r = row(&far("kei"), true, Some("kei"), Some(&f));
+        let r = row(&far("kei"), true, Some("kei"), Some(&f), true);
         assert_eq!(r, rf(Dot::Bad, "link.remote_no_answer", 0, Some((Button::Disconnect, Link::Local))));
     }
 
     #[test]
     fn other_remote_not_checked_yet_is_grey_and_connects() {
         for link in [Link::Local, far("kei")] {
-            let r = row(&link, false, Some("works"), None);
+            let r = row(&link, false, Some("works"), None, true);
             assert_eq!(r, rf(Dot::Idle, "link.remote_checking", 0, Some((Button::Connect, far("works")))));
         }
     }
@@ -265,12 +270,28 @@ mod tests {
     #[test]
     fn other_remote_by_what_the_watch_found() {
         let go = Some((Button::Connect, far("works")));
-        let at = |f: Fact| row(&Link::Local, false, Some("works"), Some(&f));
+        let at = |f: Fact| row(&Link::Local, false, Some("works"), Some(&f), true);
         assert_eq!(at(fact(Seen::Answering, None)), rf(Dot::Good, "link.remote_ok", 0, go.clone()));
         assert_eq!(at(fact(Seen::Answering, Some(0))), rf(Dot::Good, "link.remote_ok", 0, go.clone()));
         assert_eq!(at(fact(Seen::Answering, Some(3))), rf(Dot::Bad, "link.remote_unacked", 3, go.clone()));
         assert_eq!(at(fact(Seen::NoAnswer("timed out".into()), None)), rf(Dot::Bad, "link.remote_no_answer", 0, go.clone()));
         assert_eq!(at(fact(Seen::Refused("token".into()), None)), rf(Dot::Bad, "link.remote_refused", 0, go));
+    }
+
+    #[test]
+    fn an_unwatched_remote_says_so_and_the_current_one_is_unchanged() {
+        let connect = Some((Button::Connect, far("works")));
+        let f = fact(Seen::Answering, Some(3));
+        for fact in [None, Some(&f)] {
+            assert_eq!(row(&Link::Local, false, Some("works"), fact, false), rf(Dot::Idle, "link.remote_unwatched", 0, connect.clone()));
+            assert_eq!(row(&far("kei"), false, Some("works"), fact, false), rf(Dot::Idle, "link.remote_unwatched", 0, connect.clone()));
+        }
+        // This PC's row is never "not watched"; the current link's row is as it was.
+        assert_eq!(row(&far("kei"), false, None, None, false), rf(Dot::Idle, "link.pc_engine", 0, Some((Button::Connect, Link::Local))));
+        assert_eq!(
+            row(&far("kei"), false, Some("kei"), None, false),
+            rf(Dot::Good, "link.remote_connected", 0, Some((Button::Disconnect, Link::Local)))
+        );
     }
 
     #[test]
@@ -292,7 +313,7 @@ mod tests {
         let mut out = None;
         for _ in 0..3 {
             let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
-                out = Some(h.show(ui, &t, &Link::Local, false, &list, &facts));
+                out = Some(h.show(ui, &t, &Link::Local, false, &list, &facts, &BTreeSet::new()));
             });
             full.textures_delta.clear();
         }

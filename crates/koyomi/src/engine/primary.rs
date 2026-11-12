@@ -299,8 +299,13 @@ mod tests {
         p.set(Some(&cfg), &[]);
         assert_eq!(p.hold(), None);
         assert!(msg::PRIMARY_STANDBY_UNKNOWN.is_in(&p.notes()[0]) && p.notes()[0].contains("pc2"), "{:?}", p.notes());
-        let r =
-            config::Remote { name: "pc2".into(), url: "https://pc2:8790".into(), fingerprint: "AB".repeat(32), token: "secret:pc2".into() };
+        let r = config::Remote {
+            name: "pc2".into(),
+            url: "https://pc2:8790".into(),
+            fingerprint: "AB".repeat(32),
+            token: "secret:pc2".into(),
+            watch: true,
+        };
         p.set(Some(&cfg), std::slice::from_ref(&r));
         assert_eq!(p.hold(), Some(Hold::Asking { missed: 0 }));
         assert!(p.notes().is_empty());

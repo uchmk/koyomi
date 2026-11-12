@@ -8,7 +8,9 @@
 //! (minato's prefs.rs, without the backup.)
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ito_common::{common_path, edit_common, themes_dir, write_atomic, Common, CommonChange};
@@ -32,7 +34,8 @@ pub enum Reload {
     Keymap(Result<Option<String>, String>),
     /// koyomi.toml: its limits, its `[notify]` with the `secret:` addresses
     /// read back, and what to warn of; or why the file could not be read.
-    Config(Box<ConfigRead>),
+    /// The number is the order the read was begun in (see [`next_read`]).
+    Config(u64, Box<ConfigRead>),
     Failed(String),
 }
 
@@ -52,6 +55,14 @@ fn read_config(path: &Path) -> ConfigRead {
     let (mut n, mut notes) = crate::notify::parse(&config);
     notes.extend(n.reveal("koyomi"));
     Ok((config, n, notes))
+}
+
+/// A read of koyomi.toml at `path` as a [`Reload`]. It takes the next number of `seq` before it reads the file, so
+/// that [`Prefs::pump`] can drop a read that was begun earlier than one it has applied: an older read slowed by the
+/// credential store must not undo a newer one. Blocks on the store: call it off the UI thread.
+fn next_read(seq: &AtomicU64, path: &Path) -> Reload {
+    let n = seq.fetch_add(1, Ordering::SeqCst) + 1;
+    Reload::Config(n, Box::new(read_config(path)))
 }
 
 /// One lock for every writer of koyomi.toml from the window.
@@ -92,6 +103,16 @@ pub fn write_config(
         write_atomic(path, &new).map_err(at)?;
     }
     Ok(())
+}
+
+/// `text` (koyomi.toml) with the top-level `watch_remotes` as `on` says: off adds `watch_remotes = false`, on removes
+/// the key (it is the default). The rest of the file keeps its lines and comments.
+fn watch_remotes_text(text: &str, on: bool) -> Result<String, String> {
+    if on {
+        ito_common::remove_key(text, None, "watch_remotes")
+    } else {
+        ito_common::set_key(text, None, "watch_remotes", "false")
+    }
 }
 
 /// `text` with `mails` as its `[[notify.mails]]`. A place just added (no
@@ -184,6 +205,13 @@ pub struct Prefs {
     pub config_warn: Option<String>,
     /// The General page's number fields while they are typed in.
     pub limit_drafts: ito_prefs::Drafts,
+    /// Whether koyomi.toml has been read once (or there is no folder to read it from, and the defaults are all there
+    /// is). Until then what [`Prefs::config`] says is a guess, and the watch of other PCs keeps what it has.
+    pub config_known: bool,
+    /// The number of the last read of koyomi.toml begun (see [`next_read`]), shared with the threads that read.
+    seq: Arc<AtomicU64>,
+    /// The number of the newest read of koyomi.toml that has been applied.
+    applied: u64,
     tx: Sender<Reload>,
     rx: Receiver<Reload>,
     wake: Option<egui::Context>,
@@ -218,6 +246,9 @@ impl Prefs {
             config: Config::default(),
             config_warn: None,
             limit_drafts: ito_prefs::Drafts::new(),
+            config_known: true,
+            seq: Arc::new(AtomicU64::new(0)),
+            applied: 0,
             tx,
             rx,
             wake: None,
@@ -233,9 +264,10 @@ impl Prefs {
     pub fn load(base: Option<PathBuf>) -> Self {
         let mut p = Self::empty();
         if let Some(b) = &base {
-            let (tx, path) = (p.tx.clone(), config_path(b));
+            let (tx, path, seq) = (p.tx.clone(), config_path(b), p.seq.clone());
+            p.config_known = false;
             std::thread::spawn(move || {
-                let _ = tx.send(Reload::Config(Box::new(read_config(&path))));
+                let _ = tx.send(next_read(&seq, &path));
             });
             match Common::read(b) {
                 Ok((c, w)) => (p.common, p.common_warn) = (c, w),
@@ -267,7 +299,7 @@ impl Prefs {
         if let Ok(entries) = std::fs::read_dir(&themes) {
             paths.extend(entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "toml")));
         }
-        let (tx, ctx) = (self.tx.clone(), ctx.clone());
+        let (tx, ctx, seq) = (self.tx.clone(), ctx.clone(), self.seq.clone());
         ito_common::watch(paths, WATCH, move |changed| {
             let mut sent = true;
             if changed.contains(&common) {
@@ -282,7 +314,7 @@ impl Prefs {
                 sent &= tx.send(Reload::Keymap(read_keymap(&keymap))).is_ok();
             }
             if changed.contains(&config) {
-                sent &= tx.send(Reload::Config(Box::new(read_config(&config)))).is_ok();
+                sent &= tx.send(next_read(&seq, &config)).is_ok();
             }
             ctx.request_repaint();
             sent
@@ -311,15 +343,22 @@ impl Prefs {
                     self.keymap = t;
                     self.keymap_new = Some(None);
                 }
-                Reload::Config(r) => match *r {
-                    Ok((c, n, w)) => {
+                // Begun before one already applied: dropped, whatever it read.
+                Reload::Config(n, _) if n <= self.applied => {}
+                Reload::Config(n, r) => match *r {
+                    Ok((c, n_cfg, w)) => {
+                        self.applied = n;
+                        self.config_known = true;
                         self.config = c;
                         self.config_warn = None;
-                        (self.notify, self.notify_warn) = (n, w);
+                        (self.notify, self.notify_warn) = (n_cfg, w);
                     }
                     // Unreadable (being written, or a line the engine refuses
                     // too): the page keeps what it had, and says so.
-                    Err(e) => self.notify_warn = vec![e],
+                    Err(e) => {
+                        self.applied = n;
+                        self.notify_warn = vec![e];
+                    }
                 },
                 Reload::Failed(e) => {
                     self.scale_wanted = None;
@@ -416,6 +455,7 @@ impl Prefs {
             return;
         }
         let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let seq = self.seq.clone();
         let Some(base) = self.base.clone() else {
             Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
             return;
@@ -427,7 +467,7 @@ impl Prefs {
             let edits = now.edits(&EVENTS, &page);
             let r = match now.webhooks_to_write("koyomi", &EVENTS, &page) {
                 Ok(webhooks) => match write_config(&path, Some("notify"), &edits, webhooks.as_deref(), None) {
-                    Ok(()) => Reload::Config(Box::new(read_config(&path))),
+                    Ok(()) => next_read(&seq, &path),
                     Err(e) => Reload::Failed(e),
                 },
                 Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
@@ -443,6 +483,7 @@ impl Prefs {
             return;
         }
         let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let seq = self.seq.clone();
         let Some(base) = self.base.clone() else {
             Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
             return;
@@ -451,7 +492,7 @@ impl Prefs {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let path = config_path(&base);
             let r = match write_config(&path, Some("notify"), &[], None, Some(&mails)) {
-                Ok(()) => Reload::Config(Box::new(read_config(&path))),
+                Ok(()) => next_read(&seq, &path),
                 Err(e) => Reload::Failed(e),
             };
             Self::send_back(&tx, &wake, r);
@@ -489,6 +530,7 @@ impl Prefs {
             return;
         }
         let (tx, wake) = (self.tx.clone(), self.wake.clone());
+        let seq = self.seq.clone();
         let Some(base) = self.base.clone() else {
             Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
             return;
@@ -497,7 +539,58 @@ impl Prefs {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let path = config_path(&base);
             let r = match write_config(&path, None, &edits, None, None) {
-                Ok(()) => Reload::Config(Box::new(read_config(&path))),
+                Ok(()) => next_read(&seq, &path),
+                Err(e) => Reload::Failed(e),
+            };
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// Read koyomi.toml again at once (after the window itself wrote it from the manage box), so that the watch of
+    /// other PCs does not lag the 2 s look at the file. The read is numbered like every other (see [`next_read`]).
+    pub fn reread_config(&self) {
+        let Some(base) = self.base.clone() else { return };
+        let (tx, wake, seq) = (self.tx.clone(), self.wake.clone(), self.seq.clone());
+        std::thread::spawn(move || {
+            let r = next_read(&seq, &config_path(&base));
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
+    /// Set whether this window watches the `[[remote]]` PCs at all: off writes `watch_remotes = false` into
+    /// koyomi.toml on a thread, on removes the key (so a file with everything on again is one koyomi 0.37.0 and older
+    /// still read), then the file is read again. Nothing is written when the file already says so.
+    pub fn set_watch_remotes(&self, on: bool, no_folder: &str) {
+        if on == self.config.watch_remotes {
+            return;
+        }
+        let (tx, wake, seq) = (self.tx.clone(), self.wake.clone(), self.seq.clone());
+        let Some(base) = self.base.clone() else {
+            Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
+            return;
+        };
+        std::thread::spawn(move || {
+            let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let _held = crate::remote::edits();
+            let path = config_path(&base);
+            let at = |e: String| format!("{}: {e}", path.display());
+            let done = (|| {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => return Err(at(e.to_string())),
+                };
+                let new = watch_remotes_text(&text, on).map_err(at)?;
+                if new != text {
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
+                    }
+                    write_atomic(&path, &new).map_err(at)?;
+                }
+                Ok(())
+            })();
+            let r = match done {
+                Ok(()) => next_read(&seq, &path),
                 Err(e) => Reload::Failed(e),
             };
             Self::send_back(&tx, &wake, r);
@@ -623,6 +716,49 @@ mod tests {
         let text = write_mails(&text, &[m, both]).unwrap();
         assert!(text.contains("states = [\"failed\"]") && text.contains("states = [\"done\", \"failed\"]"));
         assert!(!write_mails(&text, &[]).unwrap().contains("[[notify.mails]]"));
+    }
+
+    #[test]
+    fn stopping_the_watch_adds_the_key_and_starting_it_again_removes_it() {
+        let text = "# mine
+keep_days = 30 # keep
+
+[vars]
+place = \"x\"
+";
+        let off = watch_remotes_text(text, false).unwrap();
+        assert!(off.contains("# mine") && off.contains("keep_days = 30 # keep") && off.contains("place = \"x\""), "{off}");
+        let cfg = Config::parse(&off).unwrap();
+        assert!(!cfg.watch_remotes);
+        let on = watch_remotes_text(&off, true).unwrap();
+        assert!(!on.contains("watch_remotes") && on.contains("# mine") && on.contains("keep_days = 30 # keep"), "{on}");
+        assert!(Config::parse(&on).unwrap().watch_remotes);
+        // Already as asked: nothing to remove.
+        assert_eq!(watch_remotes_text(text, true).unwrap(), text);
+    }
+
+    /// A read begun earlier but slow to come back does not undo a newer one.
+    #[test]
+    fn an_older_read_of_koyomi_toml_does_not_undo_a_newer_one() {
+        let mut p = Prefs::empty();
+        let read = |off: bool| -> Box<ConfigRead> {
+            let config = Config { watch_remotes: !off, ..Config::default() };
+            let (n, notes) = crate::notify::parse(&config);
+            Box::new(Ok((config, n, notes)))
+        };
+        p.tx.send(Reload::Config(2, read(true))).unwrap();
+        p.tx.send(Reload::Config(1, read(false))).unwrap();
+        p.pump();
+        assert!(!p.config.watch_remotes, "seq 2 stays");
+        // An older failure is dropped too.
+        p.tx.send(Reload::Config(1, Box::new(Err("old".into())))).unwrap();
+        p.pump();
+        assert!(p.notify_warn.is_empty());
+        // A newer one is taken.
+        p.tx.send(Reload::Config(3, read(false))).unwrap();
+        p.pump();
+        assert!(p.config.watch_remotes);
+        assert!(p.config_known);
     }
 
     #[test]

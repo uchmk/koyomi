@@ -122,11 +122,7 @@ pub fn with_remote(text: &str, remotes: &[Remote], new: &Remote) -> Result<Strin
     if !secret.is_empty() && remotes.iter().any(|r| r.secret().eq_ignore_ascii_case(secret)) {
         return Err(line(msg::SECRET_IN_USE, &[secret]));
     }
-    let quote = |s: &str| toml::Value::String(s.to_owned()).to_string();
-    let block = |r: &Remote| -> Vec<(&'static str, String)> {
-        vec![("name", quote(&r.name)), ("url", quote(&r.url)), ("fingerprint", quote(&r.fingerprint)), ("token", quote(&r.token))]
-    };
-    let blocks: Vec<Vec<(&str, String)>> = remotes.iter().chain(std::iter::once(new)).map(block).collect();
+    let blocks = blocks_of(&remotes.iter().chain(std::iter::once(new)).collect::<Vec<_>>());
     let out = ito_common::set_tables(text, "remote", &blocks)?;
     koyomi_core::config::Config::parse(&out)?;
     Ok(out)
@@ -176,12 +172,21 @@ impl SecretStore for Keyring {
     }
 }
 
-/// Every remote of `remotes` as the `[[remote]]` blocks `set_tables` takes.
+/// Every remote of `remotes` as the `[[remote]]` blocks `set_tables` takes. `watch = false` is written (after
+/// `token`) only for a remote that is not watched. Normalisation: a hand-written `watch = true` in a block is removed
+/// by any rewrite of the blocks, because it is the default and the meaning stays.
 fn blocks_of(remotes: &[&Remote]) -> Vec<Vec<(&'static str, String)>> {
     let quote = |s: &str| toml::Value::String(s.to_owned()).to_string();
     remotes
         .iter()
-        .map(|r| vec![("name", quote(&r.name)), ("url", quote(&r.url)), ("fingerprint", quote(&r.fingerprint)), ("token", quote(&r.token))])
+        .map(|r| {
+            let mut block =
+                vec![("name", quote(&r.name)), ("url", quote(&r.url)), ("fingerprint", quote(&r.fingerprint)), ("token", quote(&r.token))];
+            if !r.watch {
+                block.push(("watch", "false".to_owned()));
+            }
+            block
+        })
         .collect()
 }
 
@@ -201,7 +206,10 @@ fn rewrite(text: &str, after: &[&Remote]) -> Result<String, String> {
     let out = ito_common::set_tables(text, "remote", &blocks_of(after))?;
     let now = koyomi_core::config::Config::parse(&out)?.remote;
     let same = now.len() == after.len()
-        && now.iter().zip(after).all(|(a, b)| a.name == b.name && a.url == b.url && a.fingerprint == b.fingerprint && a.token == b.token);
+        && now
+            .iter()
+            .zip(after)
+            .all(|(a, b)| a.name == b.name && a.url == b.url && a.fingerprint == b.fingerprint && a.token == b.token && a.watch == b.watch);
     if !same {
         return Err(line(msg::REWRITE_MISMATCH, &[]));
     }
@@ -228,6 +236,20 @@ pub fn plan_rename(text: &str, old: &str, new: &str) -> Result<String, String> {
     let renamed: Vec<Remote> =
         cfg.remote.iter().map(|r| if r.name.trim() == old { Remote { name: new.to_owned(), ..r.clone() } } else { r.clone() }).collect();
     rewrite(text, &renamed.iter().collect::<Vec<_>>())
+}
+
+/// `text` (koyomi.toml) with the `watch` of the `[[remote]]` called `name` set: `on` removes the key (the default),
+/// otherwise `watch = false` is written. Other tables, comments outside the blocks and the other remotes stay as
+/// [`plan_rename`] leaves them.
+pub fn plan_watch(text: &str, name: &str, on: bool) -> Result<String, String> {
+    let name = name.trim();
+    let cfg = koyomi_core::config::Config::parse(text)?;
+    if !cfg.remote.iter().any(|r| r.name.trim() == name) {
+        return Err(line(msg::REMOTE_GONE, &[name]));
+    }
+    let set: Vec<Remote> =
+        cfg.remote.iter().map(|r| if r.name.trim() == name { Remote { watch: on, ..r.clone() } } else { r.clone() }).collect();
+    rewrite(text, &set.iter().collect::<Vec<_>>())
 }
 
 /// Whether `url` may be a `[[remote]]`'s: `https://` and something after it, no whitespace.
@@ -460,6 +482,31 @@ pub fn rename(old: &str, new: &str, state: Option<&std::path::Path>) -> Result<S
     let paths = Paths::find()?;
     let text = ito_common::read_or_empty(&paths.config)?;
     carry_rename(&paths.config, &text, old, new, state, ito_common::write_atomic)
+}
+
+/// 見張る: the `[[remote]]` called `name` is watched by this PC's window (`on`) or not, in `text` at `path`. Nothing is
+/// written when the file would not change. The caller holds [`edits`].
+fn carry_watch(
+    path: &std::path::Path,
+    text: &str,
+    name: &str,
+    on: bool,
+    write: impl FnOnce(&std::path::Path, String) -> Result<(), String>,
+) -> Result<(), String> {
+    let out = plan_watch(text, name, on)?;
+    if out == text {
+        return Ok(());
+    }
+    write(path, out)
+}
+
+/// 見張る on a row of the manage box: sets `watch` of the `[[remote]]` called `name` in this PC's koyomi.toml. It
+/// blocks: not on the UI thread.
+pub fn set_watch(name: &str, on: bool) -> Result<(), String> {
+    let _held = edits();
+    let paths = Paths::find()?;
+    let text = ito_common::read_or_empty(&paths.config)?;
+    carry_watch(&paths.config, &text, name, on, ito_common::write_atomic)
 }
 
 /// Deletes in `text`: `elsewhere` says whether a file other than koyomi.toml refers to a secret that would go. Writes
@@ -859,6 +906,7 @@ mod tests {
             url: format!("https://{name}:8443"),
             fingerprint: "ab".repeat(32),
             token: format!("secret:{name}-token"),
+            watch: true,
         }
     }
 
@@ -997,8 +1045,13 @@ mod tests {
     fn a_url_change_is_written_only_if_the_token_line_and_fingerprint_are_still_the_ones_checked() {
         let fp = "ab".repeat(32);
         let used = Used { token_line: "secret:kei".into(), fingerprint: fp.clone() };
-        let remote =
-            |token: &str, fp: &str| Remote { name: "kei".into(), url: "https://x:1".into(), fingerprint: fp.into(), token: token.into() };
+        let remote = |token: &str, fp: &str| Remote {
+            name: "kei".into(),
+            url: "https://x:1".into(),
+            fingerprint: fp.into(),
+            token: token.into(),
+            watch: true,
+        };
         assert_eq!(still_the_same("kei", &used, Some(&remote("secret:kei", &fp))), Ok(()));
         // Case of the fingerprint and spaces around the lines do not count.
         assert_eq!(still_the_same("kei", &used, Some(&remote(" secret:kei ", &fp.to_uppercase()))), Ok(()));
@@ -1006,6 +1059,108 @@ mod tests {
             let e = still_the_same("kei", &used, now.as_ref()).unwrap_err();
             assert!(msg::REMOTE_CHANGED_DURING_CHECK.is_in(&e) && e.contains("kei"), "{e}");
         }
+    }
+
+    /// `file_with(names)` where `quiet` are not watched (`watch = false` after the token).
+    fn file_quiet(names: &[&str], quiet: &[&str]) -> String {
+        let mut text = file_with(names, "");
+        for q in quiet {
+            let line = format!(
+                "token = \"secret:{q}-token\"
+"
+            );
+            text = text.replace(
+                &line,
+                &format!(
+                    "{line}watch = false
+"
+                ),
+            );
+        }
+        text
+    }
+
+    fn watch_of(text: &str) -> Vec<(String, bool)> {
+        koyomi_core::config::Config::parse(text).unwrap().remote.into_iter().map(|r| (r.name, r.watch)).collect()
+    }
+
+    #[test]
+    fn plan_watch_writes_watch_false_and_removes_the_key_for_on() {
+        let text = file_with(&["fact", "office"], "");
+        let off = plan_watch(&text, "office", false).unwrap();
+        assert_eq!(watch_of(&off), [("fact".to_owned(), true), ("office".to_owned(), false)]);
+        assert_eq!(off.matches("watch = false").count(), 1);
+        for kept in ["# my settings", "keep_days = 30 # keep", "[vars]", "place = \"x\"", "# the fact", "# the office"] {
+            assert!(
+                off.contains(kept),
+                "{kept} lost:
+{off}"
+            );
+        }
+        let on = plan_watch(&off, " office ", true).unwrap();
+        assert!(!on.contains("watch"), "{on}");
+        assert_eq!(watch_of(&on), [("fact".to_owned(), true), ("office".to_owned(), true)]);
+        let e = plan_watch(&text, "ghost", false).unwrap_err();
+        assert!(msg::REMOTE_GONE.is_in(&e) && e.contains("ghost"), "{e}");
+    }
+
+    #[test]
+    fn watch_false_survives_a_rename_a_url_change_and_a_delete_of_another() {
+        let text = file_quiet(&["fact", "office"], &["fact"]);
+        let out = plan_rename(&text, "fact", "works").unwrap();
+        assert_eq!(watch_of(&out), [("works".to_owned(), false), ("office".to_owned(), true)]);
+        let out = plan_rename(&text, "office", "hq").unwrap();
+        assert_eq!(watch_of(&out), [("fact".to_owned(), false), ("hq".to_owned(), true)]);
+        let out = plan_url(&text, "fact", "https://new:9000", None).unwrap();
+        assert_eq!(watch_of(&out), [("fact".to_owned(), false), ("office".to_owned(), true)]);
+        let out = plan_url(&text, "office", "https://new:9000", None).unwrap();
+        assert_eq!(watch_of(&out), [("fact".to_owned(), false), ("office".to_owned(), true)]);
+        let plan = plan_remove(&text, "office").unwrap();
+        assert_eq!(watch_of(&plan.text), [("fact".to_owned(), false)]);
+    }
+
+    #[test]
+    fn adding_a_connection_keeps_the_others_watch_false_and_their_comments() {
+        let text = file_quiet(&["a"], &["a"]);
+        let have = koyomi_core::config::Config::parse(&text).unwrap().remote;
+        let out = with_remote(&text, &have, &remote_of("b")).unwrap();
+        assert_eq!(watch_of(&out), [("a".to_owned(), false), ("b".to_owned(), true)]);
+        assert!(out.contains("# the a") && out.contains("# my settings"), "{out}");
+        let mut quiet = remote_of("c");
+        quiet.watch = false;
+        let out = with_remote(&out, &koyomi_core::config::Config::parse(&out).unwrap().remote, &quiet).unwrap();
+        assert_eq!(watch_of(&out), [("a".to_owned(), false), ("b".to_owned(), true), ("c".to_owned(), false)]);
+    }
+
+    #[test]
+    fn a_hand_written_watch_true_is_removed_by_a_rewrite_and_the_meaning_stays() {
+        let mut text = file_with(&["fact", "office"], "");
+        text = text.replace(
+            "token = \"secret:fact-token\"
+",
+            "token = \"secret:fact-token\"
+watch = true
+",
+        );
+        let out = plan_rename(&text, "office", "hq").unwrap();
+        assert!(!out.contains("watch"), "{out}");
+        assert_eq!(watch_of(&out), [("fact".to_owned(), true), ("hq".to_owned(), true)]);
+    }
+
+    #[test]
+    fn carry_watch_writes_only_when_the_file_changes() {
+        let text = file_with(&["fact"], "");
+        let path = std::path::Path::new("koyomi.toml");
+        let none = |_: &std::path::Path, _: String| -> Result<(), String> { panic!("nothing should be written") };
+        carry_watch(path, &text, "fact", true, none).unwrap();
+        let mut got = None;
+        carry_watch(path, &text, "fact", false, |_, out| {
+            got = Some(out);
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(watch_of(&got.unwrap()), [("fact".to_owned(), false)]);
+        assert!(carry_watch(path, &text, "nope", false, none).is_err());
     }
 
     #[test]

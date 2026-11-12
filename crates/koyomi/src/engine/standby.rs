@@ -708,7 +708,13 @@ mod tests {
     }
 
     fn remote() -> config::Remote {
-        config::Remote { name: "pc1".into(), url: "https://pc1:8790".into(), fingerprint: "AB".repeat(32), token: "secret:pc1".into() }
+        config::Remote {
+            name: "pc1".into(),
+            url: "https://pc1:8790".into(),
+            fingerprint: "AB".repeat(32),
+            token: "secret:pc1".into(),
+            watch: true,
+        }
     }
 
     fn dir(tag: &str) -> std::path::PathBuf {

@@ -107,8 +107,13 @@ fn limited(mut client: Client) -> Client {
 /// client is built from what was typed: no secret is read, and nothing is written. The token is never put in a
 /// message.
 pub fn probe(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<Role, String> {
-    let r =
-        Remote { name: name.to_owned(), url: url.to_owned(), fingerprint: fingerprint.to_owned(), token: format!("secret:{name}-token") };
+    let r = Remote {
+        name: name.to_owned(),
+        url: url.to_owned(),
+        fingerprint: fingerprint.to_owned(),
+        token: format!("secret:{name}-token"),
+        watch: true,
+    };
     let client = limited(Client::new(url.trim(), fingerprint.trim(), token).map_err(|e| remote::why(&r, &e))?);
     check(&r, &client)
 }
@@ -229,7 +234,7 @@ mod tests {
     use serde_json::json;
 
     fn remote() -> Remote {
-        Remote { name: "kei".into(), url: "https://h:1".into(), fingerprint: "ab".into(), token: "secret:kei-token".into() }
+        Remote { name: "kei".into(), url: "https://h:1".into(), fingerprint: "ab".into(), token: "secret:kei-token".into(), watch: true }
     }
 
     fn reply(status: u16, json: serde_json::Value) -> Reply {
@@ -256,6 +261,7 @@ mod tests {
             url: "https://127.0.0.1:1".into(),
             fingerprint: "ab".repeat(32),
             token: "secret:no-such-secret-for-this-test".into(),
+            watch: true,
         };
         assert!(connect(&found).is_err());
         assert_eq!(local::STARTS.with(std::cell::Cell::get), before);

@@ -7,7 +7,7 @@
 //! exactly when the current link is down. Esc closes the innermost thing: the question, else the editing, else the box.
 //! While a press is carried out the box does not close and takes no new press.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ito_a11y::Role;
@@ -88,6 +88,8 @@ pub(super) enum Pressed {
     Url(String, String),
     /// 同じでした on the fingerprint of the new URL.
     UrlSame,
+    /// The 見張る switch of a row: the row's name and whether the window is to watch it now.
+    Watch(String, bool),
 }
 
 impl Manage {
@@ -178,7 +180,9 @@ fn ask_body(t: &ito_i18n::Table, name: &str, secret: Option<&str>) -> String {
     }
 }
 
-/// Draws the box and returns what was pressed. `used` says whether a row is in use.
+/// Draws the box and returns what was pressed. `used` says whether a row is in use. `off` holds the rows whose own
+/// `watch` is false (their 見張る switch shows off), and `all_off` is `watch_remotes = false`: the rows still show
+/// their own flag, and one line above them says that all watching is off.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn show(
     m: &mut Manage,
@@ -189,6 +193,8 @@ pub(super) fn show(
     urls: &BTreeMap<String, String>,
     unread: Option<&str>,
     used: &dyn Fn(&str) -> bool,
+    off: &BTreeSet<String>,
+    all_off: bool,
 ) -> Pressed {
     let (esc, enter, tab) = ctx.input_mut(|i| {
         let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
@@ -220,12 +226,17 @@ pub(super) fn show(
                     let r = ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
                     ito_a11y::say(&r, Role::Label, e);
                 } else {
+                    if all_off {
+                        let text = t.tr("far.manage_watch_all_off");
+                        let r = ui.add(egui::Label::new(egui::RichText::new(text).color(c.dim)).wrap());
+                        ito_a11y::say(&r, Role::Label, text);
+                    }
                     if names.is_empty() {
                         ui.label(egui::RichText::new(t.tr("far.manage_none")).color(c.dim));
                     }
                     egui::ScrollArea::vertical().id_salt("far-manage-rows").max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
                         for name in names {
-                            row(ui, t, m, name, used(name), &mut press, &mut to_edit, &mut to_ask, &mut to_url);
+                            row(ui, t, m, name, used(name), !off.contains(name.trim()), &mut press, &mut to_edit, &mut to_ask, &mut to_url);
                         }
                     });
                     compare(ui, t, m, &mut press);
@@ -320,6 +331,7 @@ fn row(
     m: &mut Manage,
     name: &str,
     used: bool,
+    watching: bool,
     press: &mut Pressed,
     to_edit: &mut Option<String>,
     to_ask: &mut Option<String>,
@@ -330,6 +342,7 @@ fn row(
     let moving = m.moving.as_ref().is_some_and(|v| v.from == name);
     let form = m.moving.as_ref().is_some_and(|v| v.from == name && v.step == UrlStep::Form);
     let (mut go, mut back, mut rename, mut delete, mut url) = (false, false, false, false, false);
+    let (busy, mut flip) = (m.busy, false);
     egui::Sides::new().height(32.0).show(
         ui,
         |ui| {
@@ -389,9 +402,28 @@ fn row(
                 // Allowed on the connection in use: a PC that moved is exactly when the current link is down.
                 let said = format!("{} {name}", t.tr("far.manage_url"));
                 url = ito_prefs::IconButton::new(ito_prefs::Mark::Link, t.tr("far.manage_url")).said(&said).show(ui).clicked();
+                // On every row, the one in use included; not while a press is carried out.
+                let look = ito_prefs::Look { c, q: "" };
+                let word = t.tr("far.manage_watch");
+                // The scope holds the switch alone, so a press at its centre (`<Click:見張る kei>`, `<ClickId:>`) lands on
+                // the switch; the word sits beside it.
+                let scope = ui.add_enabled_ui(!busy, |ui| {
+                    flip = ito_prefs::switch(ui, look, watching);
+                });
+                ui.label(egui::RichText::new(word).color(c.dim));
+                let said = t.trf("far.manage_watch_name", &[name]);
+                let enabled = scope.response.enabled();
+                scope.response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, watching, &said));
+                let id = format!("manage.watch.{name}");
+                if ito_a11y::is_test_id(&id) {
+                    ito_a11y::test_id(&scope.response, &id);
+                }
             }
         },
     );
+    if flip {
+        *press = Pressed::Watch(name.to_owned(), !watching);
+    }
     if go {
         if let Some(v) = m.moving.as_ref().filter(|v| v.from == name) {
             *press = Pressed::Url(v.from.clone(), v.text.clone());
@@ -518,14 +550,24 @@ mod tests {
         let ctx = egui::Context::default();
         let names = vec!["kei".to_owned(), "works".to_owned()];
         let used = |n: &str| n == "works";
-        let frame = |m: &mut Manage, names: &[String]| {
+        let frame_with = |m: &mut Manage, names: &[String], off: &BTreeSet<String>, all_off: bool| {
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
-                assert_eq!(show(m, ui.ctx(), &t, names, &BTreeMap::new(), &BTreeMap::new(), None, &used), Pressed::Nothing);
+                assert_eq!(show(m, ui.ctx(), &t, names, &BTreeMap::new(), &BTreeMap::new(), None, &used, off, all_off), Pressed::Nothing);
             });
             out.textures_delta.clear();
         };
+        let frame = |m: &mut Manage, names: &[String]| frame_with(m, names, &BTreeSet::new(), false);
         let mut m = Manage::new();
         frame(&mut m, &names);
+        // A switch per row in each state: on, off (own flag), and the all-off line above rows that keep their flag.
+        let off = BTreeSet::from(["kei".to_owned()]);
+        frame_with(&mut m, &names, &off, false);
+        frame_with(&mut m, &names, &off, true);
+        frame_with(&mut m, &names, &BTreeSet::new(), true);
+        // A press while busy does nothing (the switch is disabled and the keys are ignored).
+        m.busy = true;
+        frame_with(&mut m, &names, &off, false);
+        m.busy = false;
         frame(&mut m, &[]);
         m.edit("kei");
         frame(&mut m, &names);
@@ -542,7 +584,18 @@ mod tests {
         m.line = None;
         let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
             assert_eq!(
-                show(&mut m, ui.ctx(), &t, &names, &BTreeMap::new(), &BTreeMap::new(), Some("KOYOMI-E1023 x"), &used),
+                show(
+                    &mut m,
+                    ui.ctx(),
+                    &t,
+                    &names,
+                    &BTreeMap::new(),
+                    &BTreeMap::new(),
+                    Some("KOYOMI-E1023 x"),
+                    &used,
+                    &BTreeSet::new(),
+                    false
+                ),
                 Pressed::Nothing
             );
         });

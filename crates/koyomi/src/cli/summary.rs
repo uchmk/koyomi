@@ -32,6 +32,7 @@ struct Users {
 struct Remote {
     name: String,
     url: String,
+    watch: bool,
 }
 
 #[derive(Serialize)]
@@ -45,6 +46,7 @@ struct Summary {
     file: String,
     exists: bool,
     concurrency: usize,
+    watch_remotes: bool,
     keep_days: u32,
     archive: bool,
     archive_days: u32,
@@ -90,6 +92,7 @@ fn summarize(config: &Config, file: &str, exists: bool) -> Summary {
         file: file.to_owned(),
         exists,
         concurrency: config.concurrency,
+        watch_remotes: config.watch_remotes,
         keep_days: config.keep_days,
         archive: config.archive,
         archive_days: config.archive_days,
@@ -102,7 +105,7 @@ fn summarize(config: &Config, file: &str, exists: bool) -> Summary {
             own_token: !h.token.trim().is_empty(),
         }),
         users: Users { count: users.len(), per_role },
-        remote: config.remote.iter().map(|r| Remote { name: r.name.clone(), url: r.url.clone() }).collect(),
+        remote: config.remote.iter().map(|r| Remote { name: r.name.clone(), url: r.url.clone(), watch: r.watch }).collect(),
         notify: places(&config.notify),
         standby: config.standby.as_ref().map(|s| s.watch.clone()),
         primary: config.primary.as_ref().map(|p| p.standby.clone()),
@@ -143,8 +146,12 @@ fn lines(s: &Summary) -> Vec<String> {
     if s.remote.is_empty() {
         v.push(msg::note(msg::N_CFG_REMOTE_NONE, &[]));
     }
+    if !s.watch_remotes {
+        v.push(msg::note(msg::N_CFG_WATCH_OFF, &[]));
+    }
     for r in &s.remote {
-        v.push(msg::note(msg::N_CFG_REMOTE, &[&r.name, &r.url]));
+        let id = if r.watch { msg::N_CFG_REMOTE } else { msg::N_CFG_REMOTE_UNWATCHED };
+        v.push(msg::note(id, &[&r.name, &r.url]));
     }
     let count = |kind: &str| s.notify.iter().filter(|p| p.kind == kind).count().to_string();
     v.push(msg::note(msg::N_CFG_NOTIFY, &[&s.notify.len().to_string(), &count("webhook"), &count("mail")]));
@@ -280,6 +287,42 @@ token = \"secret:ann-token\"
         assert_eq!(s.users.count, 2);
         assert_eq!(s.users.per_role.get("admin"), Some(&1));
         assert_eq!(s.vars, 1);
+    }
+
+    #[test]
+    fn the_watch_is_told_in_words_and_in_toml() {
+        let text = "watch_remotes = false
+[[remote]]
+name = \"kei\"
+url = \"https://k:1\"
+fingerprint = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"
+token = \"secret:k\"
+watch = false
+[[remote]]
+name = \"works\"
+url = \"https://w:1\"
+fingerprint = \"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"
+token = \"secret:w\"
+";
+        let (v, toml) = build(Some(text), "koyomi.toml").unwrap();
+        let plain = v.join(
+            "
+",
+        );
+        assert!(v.contains(&msg::note(msg::N_CFG_WATCH_OFF, &[])), "{plain}");
+        // kei is told as not watched, works as before.
+        assert!(v.contains(&msg::note(msg::N_CFG_REMOTE_UNWATCHED, &["kei", "https://k:1"])), "{plain}");
+        assert!(v.contains(&msg::note(msg::N_CFG_REMOTE, &["works", "https://w:1"])), "{plain}");
+        assert!(!v.contains(&msg::note(msg::N_CFG_REMOTE, &["kei", "https://k:1"])), "{plain}");
+        assert!(toml.contains("watch_remotes = false") && toml.contains("watch = false") && toml.contains("watch = true"), "{toml}");
+        let (v, toml) = build(None, "koyomi.toml").unwrap();
+        assert!(!v
+            .join(
+                "
+"
+            )
+            .contains("watch_remotes"));
+        assert!(toml.contains("watch_remotes = true"), "{toml}");
     }
 
     #[test]

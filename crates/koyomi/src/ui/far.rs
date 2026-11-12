@@ -38,6 +38,8 @@ pub(super) enum Change {
     Delete(String),
     /// The name and its new URL.
     Url(String, String),
+    /// The name and whether the window is to watch it.
+    Watch(String, bool),
 }
 
 /// Where the add-a-connection box is. Nothing is written before the last step has passed.
@@ -102,6 +104,7 @@ fn join(name: &str, url: &str, fingerprint: &str, token: &str) -> Result<(), Str
         url: url.to_owned(),
         fingerprint: fingerprint.to_owned(),
         token: format!("secret:{secret}"),
+        watch: true,
     };
     let _held = crate::remote::edits();
     let (path, text) = crate::remote::prepare_add(&new).map_err(|e| format!("{name}: {e}"))?;
@@ -125,8 +128,6 @@ fn enter_goes_on(step: AddStep) -> bool {
 pub struct Far {
     /// The `[[remote]]` names, once read.
     names: Vec<String>,
-    /// The names were read (a failed or pending listing leaves them empty, which is not "no connections").
-    listed: bool,
     /// Each name's secret name, for the delete question.
     secrets: std::collections::BTreeMap<String, String>,
     /// Why koyomi.toml did not read at the last listing (`None`: it read).
@@ -147,6 +148,12 @@ pub struct Far {
     moved: Option<String>,
     /// The state folder: a rename moves the acknowledgement file there.
     state: Option<std::path::PathBuf>,
+    /// One of this window's writes of koyomi.toml succeeded (taken by [`Far::take_config_written`]): the prefs read
+    /// the file again at once.
+    config_written: bool,
+    /// The rows whose own `watch` is false, and whether `watch_remotes` is false, for the manage box's switches.
+    watch_off: std::collections::BTreeSet<String>,
+    watch_all_off: bool,
 }
 
 impl Far {
@@ -155,7 +162,6 @@ impl Far {
         let (tx, rx) = mpsc::channel();
         Far {
             names: Vec::new(),
-            listed: false,
             secrets: std::collections::BTreeMap::new(),
             unread: None,
             tx,
@@ -167,6 +173,9 @@ impl Far {
             urls: std::collections::BTreeMap::new(),
             moved: None,
             state: None,
+            config_written: false,
+            watch_off: std::collections::BTreeSet::new(),
+            watch_all_off: false,
         }
     }
 
@@ -199,14 +208,21 @@ impl Far {
         &self.names
     }
 
-    /// The names once listed; `None` before that (the watch keeps what it has).
-    pub fn listed_names(&self) -> Option<&[String]> {
-        self.listed.then_some(self.names.as_slice())
+    /// What the manage box's switches show: the rows whose own `watch` is false, and whether all watching is off.
+    pub fn set_watching(&mut self, off: std::collections::BTreeSet<String>, all_off: bool) {
+        if self.watch_off != off {
+            self.watch_off = off;
+        }
+        self.watch_all_off = all_off;
+    }
+
+    /// Whether a write of koyomi.toml by this window succeeded since the last call.
+    pub fn take_config_written(&mut self) -> bool {
+        std::mem::take(&mut self.config_written)
     }
 
     #[cfg(test)]
     pub(super) fn set_names(&mut self, names: Vec<String>) {
-        self.listed = true;
         self.secrets = names.iter().map(|n| (n.clone(), generated_secret(n))).collect();
         self.names = names;
     }
@@ -230,7 +246,6 @@ impl Far {
         match got {
             Got::Names(Ok(listed)) => {
                 self.names = listed.iter().map(|(n, _)| n.clone()).collect();
-                self.listed = true;
                 self.secrets = listed.into_iter().collect();
                 self.unread = None;
             }
@@ -291,6 +306,7 @@ impl Far {
                 let waiting = self.add.as_ref().is_some_and(|a| a.ticket == ticket && a.step == AddStep::Joining);
                 match r {
                     Ok(()) => {
+                        self.config_written = true;
                         // It is written, so it is a name now, even if the box was given up meanwhile.
                         if !self.names.contains(&name) {
                             self.names.push(name.clone());
@@ -313,6 +329,7 @@ impl Far {
             Got::Managed(ticket, change, r) => {
                 // It is written, so it is so, even if the box was given up meanwhile.
                 if r.is_ok() {
+                    self.config_written = true;
                     match &change {
                         Change::Rename(old, new) => {
                             if let Some(n) = self.names.iter_mut().find(|n| *n == old) {
@@ -331,6 +348,8 @@ impl Far {
                             self.urls.insert(name.clone(), url.clone());
                             self.moved = Some(name.clone());
                         }
+                        // The prefs read the file again; the switch follows what they find.
+                        Change::Watch(..) => {}
                     }
                     if let Change::Rename(old, new) = &change {
                         if let Some(u) = self.urls.remove(old) {
@@ -439,6 +458,24 @@ impl Far {
         });
     }
 
+    /// A press of a row's 見張る switch: written on a thread. Not while another press is carried out.
+    pub(super) fn manage_watch(&mut self, t: &ito_i18n::Table, name: &str, on: bool) {
+        let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
+        let name = name.trim().to_owned();
+        m.busy = true;
+        m.line = None;
+        let ticket = m.ticket;
+        let line = t.trf(if on { "far.manage_watch_on" } else { "far.manage_watch_off" }, &[&name]);
+        // Not in the unit tests, which must not read or write the owner's koyomi.toml.
+        if cfg!(test) {
+            return;
+        }
+        self.spawn(move || {
+            let r = crate::remote::set_watch(&name, on).map(|()| line);
+            Got::Managed(ticket, Change::Watch(name, on), r)
+        });
+    }
+
     /// 消す on the question: written on a thread, unless the connection is in use.
     pub(super) fn manage_delete(&mut self, _t: &ito_i18n::Table, link: Option<&str>, name: &str) {
         let Some(m) = self.manage.as_mut().filter(|m| !m.busy) else { return };
@@ -514,7 +551,8 @@ impl Far {
     pub fn manage_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, link: Option<&str>) {
         let Some(m) = self.manage.as_mut() else { return };
         let used = |n: &str| manage::in_use(link, n);
-        match manage::show(m, ctx, t, &self.names, &self.secrets, &self.urls, self.unread.as_deref(), &used) {
+        let (off, all_off) = (&self.watch_off, self.watch_all_off);
+        match manage::show(m, ctx, t, &self.names, &self.secrets, &self.urls, self.unread.as_deref(), &used, off, all_off) {
             Pressed::Nothing => {}
             Pressed::Close => {
                 if !m.busy {
@@ -526,6 +564,7 @@ impl Far {
             Pressed::Delete(name) => self.manage_delete(t, link, &name),
             Pressed::Url(name, url) => self.manage_url_go(&name, &url),
             Pressed::UrlSame => self.manage_url_same(),
+            Pressed::Watch(name, on) => self.manage_watch(t, &name, on),
         }
     }
 
@@ -750,6 +789,26 @@ mod tests {
         assert_eq!(f.secrets.get("new").map(String::as_str), Some("new-secret"));
         assert_eq!(f.secrets.get("b").map(String::as_str), Some("shared"));
         assert_eq!(f.secrets.len(), 2);
+    }
+
+    #[test]
+    fn a_watch_press_needs_a_box_that_is_not_busy_and_a_write_asks_for_a_re_read() {
+        let t = ja();
+        let mut f = Far::idle(&egui::Context::default());
+        assert!(!f.take_config_written());
+        f.manage_watch(&t, "works", false);
+        assert!(f.manage.is_none());
+        let mut m = Manage::new();
+        m.busy = true;
+        f.manage = Some(m);
+        f.manage_watch(&t, "works", false);
+        assert!(f.manage.as_ref().unwrap().busy && f.manage.as_ref().unwrap().line.is_none());
+        let ticket = f.manage.as_ref().unwrap().ticket;
+        f.take(Got::Managed(ticket, Change::Watch("works".into(), false), Err("no".into())));
+        assert!(!f.take_config_written());
+        f.take(Got::Managed(ticket, Change::Watch("works".into(), false), Ok("ok".into())));
+        assert!(f.take_config_written());
+        assert!(!f.take_config_written());
     }
 
     #[test]
