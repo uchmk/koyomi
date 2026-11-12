@@ -8,6 +8,16 @@ uchmk のアプリ。共通の部品は [ito](https://github.com/uchmk/ito) を�
 
     cargo run
 
+## 画面
+
+![今日のタブ: 今日の実行と予定の表（正常終了・実行中・待ちと、異常終了した売上レポート）、その下のガントチャート、右に選んだジョブネットの次の予定と構成](docs/images/today.png)
+
+![画面を回る動き: 今日の表で失敗した実行を選び、月次締めのジョブネットの流れ、会社のカレンダーの営業日と休み、履歴で失敗したジョブのログを見て、対応済みにする](docs/images/koyomi.gif)
+
+![履歴のタブ: 過去 7 日の実行の一覧と、選んだ失敗した実行のジョブの流れ・状態・終了コード、失敗したジョブのログ](docs/images/history.png)
+
+画像の撮り方は [docs/images/README.md](docs/images/README.md) にあります。
+
 ## Debian でエンジンを動かす
 
 エンジンを Debian 12 以降で systemd のサービスとして動かし、Windows の画面から HTTPS で接続できます。

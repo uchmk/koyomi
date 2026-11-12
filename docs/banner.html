@@ -1,0 +1,65 @@
+<!doctype html>
+<!--
+  koyomi's social preview -- the banner GitHub shows when the repository is
+  linked anywhere. Rendered to docs/social-preview.png and uploaded by hand at
+  Settings > General > Social preview; GitHub has no API for that setting.
+  The same shape as the other uchmk apps' banners (tsumugi, kura, yagura,
+  minato, ito): the kanji, the name and the kana on the left, a real
+  screenshot on the right.
+
+  Kept as source rather than as a PNG alone so the wording can change without
+  anyone having to rebuild it in a drawing program. To re-render, from the
+  repository root, with any Chromium:
+
+      chromium --headless --disable-gpu --hide-scrollbars \
+        --force-device-scale-factor=2 --window-size=1280,640 \
+        --screenshot=docs/social-preview.png docs/banner.html
+
+  then scale the 2560x1280 result down to 1280x640 (GitHub's size), for
+  example `magick docs/social-preview.png -resize 1280x640 docs/social-preview.png`.
+
+  What to keep true when changing it:
+
+  - **The window is a real screenshot** (docs/images/banner-shot.png), taken
+    from a release build at 1600x1000 with the default theme: the 今日 tab,
+    with today's runs, a failed one and the gantt chart. docs/images/README.md
+    says how it was shot. Retake it when the window changes enough that the
+    banner no longer looks like the program.
+  - **The colours are the icon's** (crates/koyomi/src/icon.rs): the rim for the
+    background, the page for the text, the cyan line with the grey day ticks,
+    and the gold dot of today.
+  - **The tagline is the README's own claim.** Do not stretch it into something
+    the program does not do yet.
+  - **No private data in the shot**: only the demo job nets of a box of its
+    own (no user names, host names, addresses or tokens). Look at every corner
+    before using a shot.
+-->
+<html><head><meta charset="utf-8">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{width:1280px;height:640px;overflow:hidden}
+  body{background:#2c3039;position:relative;font-family:"Noto Sans JP",sans-serif;color:#e4e7ee}
+  .kanji{position:absolute;left:62px;top:28px;font-family:"Noto Serif JP",serif;font-weight:500;font-size:250px;line-height:1}
+  .name{position:absolute;left:70px;top:318px;font-weight:700;font-size:76px;letter-spacing:4px;line-height:1}
+  .kana{position:absolute;left:74px;top:420px;font-size:22px;letter-spacing:22px;opacity:.75}
+  .tag{position:absolute;left:73px;top:466px;font-size:22px;line-height:33px}
+  .url{position:absolute;left:73px;top:592px;font-size:18px;letter-spacing:1px;opacity:.7}
+  svg.line{position:absolute;left:0;top:540px}
+  .shot{position:absolute;left:576px;top:76px;width:652px;border-radius:10px;
+        box-shadow:0 24px 60px rgba(0,0,0,.45),0 0 0 1px rgba(0,0,0,.35)}
+</style></head>
+<body>
+  <div class="kanji">暦</div>
+  <div class="name">koyomi</div>
+  <div class="kana">こよみ</div>
+  <div class="tag">Small job scheduler and monitor<br>(a light JP1)</div>
+  <svg class="line" width="1280" height="60" viewBox="0 0 1280 60">
+    <g stroke="#8a90a0" stroke-opacity=".55" stroke-width="2">
+      <path d="M22,24v16M86,24v16M150,24v16M214,24v16M278,24v16M342,24v16M406,24v16M534,24v16M598,24v16M662,24v16M726,24v16M790,24v16M854,24v16M918,24v16M982,24v16M1046,24v16M1110,24v16M1174,24v16M1238,24v16"/>
+    </g>
+    <path d="M0,32H1280" fill="none" stroke="#6fd0d0" stroke-opacity=".7" stroke-width="2"/>
+    <circle cx="470" cy="32" r="8" fill="#e8c87a"/>
+  </svg>
+  <div class="url">github.com/uchmk/koyomi</div>
+  <img class="shot" src="images/banner-shot.png" alt="">
+</body></html>
