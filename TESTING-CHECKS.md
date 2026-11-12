@@ -1618,8 +1618,8 @@
 - [x] **128.7** `sudo dpkg -r koyomi` (what `apt remove` does) → Prints `koyomi のパッケージを削除しました。` and the three kept places with the `sudo rm -rf …` command, which it does not run; `dpkg-query -W -f='${Status}' koyomi` is `deinstall ok config-files`; `systemctl is-enabled koyomi` is `masked`, `is-active` `inactive`; `/usr/bin/koyomi` and `/usr/sbin/koyomi-user` are gone; the keep list is unchanged 〔未訳〕
 - [x] **128.8** After 128.7, `sudo ./install.sh` from an unpacked tar.gz → Exit 1 with `エラー: koyomi の .deb パッケージの登録が残っています。先に sudo dpkg -P koyomi を実行してください (データ、設定、token は残ります)。`; `/etc/systemd/system/koyomi.service` is still the link to `/dev/null`; no `/usr/local/bin/koyomi` 〔未訳〕
 - [x] **128.9** `sudo dpkg -P koyomi`, then `sudo ./install.sh` → After the purge `dpkg-query` knows no koyomi and neither `/etc/systemd/system/koyomi.service` nor `multi-user.target.wants/koyomi.service` exists; after `install.sh` (exit 0) the service is `enabled` and `active`, and `multi-user.target.wants/koyomi.service` points to `/etc/systemd/system/koyomi.service`; the keep list is unchanged 〔未訳〕
-- [ ] **128.10** On a fresh machine, `sudo KOYOMI_PORT=9000 apt install ./koyomi_<version>_amd64.deb` → The URLs at the end show `:9000`; `koyomi.toml` has `port = 9000` and `lan = true` 〔未訳〕
-- [ ] **128.11** After 128.7 (removed, not purged), `sudo apt install ./koyomi_<version>_amd64.deb` → The mask is gone: the service is `enabled` and `active`; the keep list is unchanged 〔未訳〕
+- [x] **128.10** On a fresh machine, `sudo KOYOMI_PORT=9000 apt install ./koyomi_<version>_amd64.deb` → The URLs at the end show `:9000`; `koyomi.toml` has `port = 9000` and `lan = true` 〔未訳〕
+- [x] **128.11** After 128.7 (removed, not purged), `sudo apt install ./koyomi_<version>_amd64.deb` → The mask is gone: the service is `enabled` and `active`; the keep list is unchanged 〔未訳〕
 
 ## 129. HTTPS users from the command line (`koyomi user`, `koyomi-user`)
 
