@@ -286,6 +286,17 @@ impl Browse {
     }
 }
 
+/// The connection names the engine's snapshot lists, for the selects of the job form and the `[[when]]` form. They
+/// are passed together (one small struct) so that `drawer` and `Ctx` do not grow an argument for each list.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Conns<'a> {
+    pub hosts: &'a [crate::proto::HostName],
+    pub buckets: &'a [String],
+    pub mailboxes: &'a [String],
+    pub groups: &'a [crate::proto::GroupName],
+    pub mails: &'a [String],
+}
+
 /// What the fields of one editor frame share: the nets, the net being edited, whether the engine is this PC, the
 /// part (or the net) the pane is about, and the chooser.
 pub struct Ctx<'a> {
@@ -301,6 +312,8 @@ pub struct Ctx<'a> {
     databases: Vec<crate::proto::DatabaseName>,
     /// Whether the engine runs on Windows (`None`: it has not said).
     windows: Option<bool>,
+    /// The `[[host]]`, `[[bucket]]` and `[[mailbox]]` names, the `[groups]` and the `[[notify.mails]]` the engine has.
+    conns: Conns<'a>,
     /// A link asked for this settings page (taken by the drawer after the frame).
     settings: std::cell::Cell<Option<usize>>,
     scope: String,
@@ -318,6 +331,7 @@ impl<'a> Ctx<'a> {
             accounts: Vec::new(),
             databases: Vec::new(),
             windows: None,
+            conns: Conns::default(),
             settings: std::cell::Cell::new(None),
             scope: scope.to_owned(),
             browse: RefCell::new(browse),
@@ -330,6 +344,17 @@ impl<'a> Ctx<'a> {
         self.databases = databases.to_vec();
         self.windows = windows;
         self
+    }
+
+    /// With the hosts, buckets, mailboxes, groups and notify mails the engine has (an engine that lacks them has none).
+    pub fn with_conns(mut self, conns: Conns<'a>) -> Self {
+        self.conns = conns;
+        self
+    }
+
+    /// The registered hosts, buckets and mailboxes, the groups and the notify mails.
+    pub fn conns(&self) -> Conns<'a> {
+        self.conns
     }
 
     /// The registered account names.

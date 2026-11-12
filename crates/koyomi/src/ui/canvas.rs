@@ -157,6 +157,8 @@ pub struct Around<'a> {
     pub accounts: &'a [String],
     pub databases: &'a [crate::proto::DatabaseName],
     pub windows: Option<bool>,
+    /// The registered `[[host]]`, `[[bucket]]` and `[[mailbox]]` names, the groups and the notify mails.
+    pub conns: super::pick::Conns<'a>,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -311,8 +313,133 @@ pub struct Fields {
     /// account's user and secret, and the sql's `db`, `password` and `tls`.
     pub run_as_draft: (String, String),
     pub sql_draft: (String, String, SqlTls),
+    /// The password of an S3 address, apart from [`Fields::password`] (an sftp address's), so that one address does
+    /// not take the other's.
+    pub s3_password: String,
+    /// What the form keeps while another choice is picked, and the names the job had at open.
+    pub kept: Kept,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
+}
+
+/// What a form keeps in memory (never in the job) so that a choice picked away and back finds its words again, and
+/// the registered names the job had when the form opened (a name the engine lacks stays listed until the form closes).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Kept {
+    /// The `on` of an ssh or winrm job at open, when it named a host or a group.
+    pub on: String,
+    /// The `host`, `bucket` and `via` of a job at open.
+    pub host: String,
+    pub bucket: String,
+    pub via: String,
+    /// The `mailbox` of a `[[when]]` mail at open.
+    pub mailbox: String,
+    /// The address an ssh or winrm job has typed, while a host or a group is picked; `typed`: the choice is the address
+    /// (picked, or the job's own at open), whatever is typed in it.
+    pub on_typed: String,
+    pub typed: bool,
+    /// The far side of a send or fetch by category of choice (see [`Far`]), while another is picked.
+    pub far: [String; 4],
+    /// The URL choice is picked (what is typed may not read as an address yet).
+    pub url: bool,
+}
+
+/// Where the far side of a `send` or `fetch` is: the four kinds of choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Far {
+    /// A folder or a share.
+    Share,
+    /// An `sftp` or `s3` address.
+    Url,
+    /// A registered `[[host]]` (and a path on it).
+    Host,
+    /// A registered `[[bucket]]` (and a path below it).
+    Bucket,
+}
+
+impl Far {
+    fn at(self) -> usize {
+        self as usize
+    }
+}
+
+/// `on` when it names a registered host or a group (what a select lists), else nothing.
+fn named_on(on: &str) -> String {
+    if koyomi_core::chore::host_name(on).is_some() || koyomi_core::chore::group(on).is_some() {
+        on.to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// Whether `far` is an `sftp` or an `s3` address.
+fn far_address(far: &str) -> bool {
+    koyomi_core::chore::sftp(far).is_some() || koyomi_core::chore::s3(far).is_some()
+}
+
+impl Fields {
+    /// The far side of a send (`into`) or a fetch (`from`).
+    pub fn far(&self, send: bool) -> &str {
+        if send {
+            &self.into
+        } else {
+            &self.from
+        }
+    }
+
+    fn far_mut(&mut self, send: bool) -> &mut String {
+        if send {
+            &mut self.into
+        } else {
+            &mut self.from
+        }
+    }
+
+    /// Which kind of choice the far side is at. A host or a bucket is by its name; the other two by the choice picked
+    /// (or, at open, by what the job has), not by what is typed, so that typing never changes the rows under the cursor.
+    pub fn far_kind(&self) -> Far {
+        if !self.host.trim().is_empty() {
+            Far::Host
+        } else if !self.bucket.trim().is_empty() {
+            Far::Bucket
+        } else if self.kept.url {
+            Far::Url
+        } else {
+            Far::Share
+        }
+    }
+
+    /// Picks `to` (with the registered `name` for a host or a bucket). Changing the kind keeps the far text of the one
+    /// left and brings back that of the one picked (empty when it had none); the near side and the login stay. An
+    /// address typed as a share stays when the URL is picked.
+    pub fn pick_far(&mut self, send: bool, to: Far, name: &str) {
+        let now = self.far_kind();
+        let carried = now == Far::Share && to == Far::Url && far_address(self.far(send));
+        if now != to && !carried {
+            let left = std::mem::take(self.far_mut(send));
+            self.kept.far[now.at()] = left;
+            *self.far_mut(send) = std::mem::take(&mut self.kept.far[to.at()]);
+        }
+        self.host = if to == Far::Host { name.to_owned() } else { String::new() };
+        self.bucket = if to == Far::Bucket { name.to_owned() } else { String::new() };
+        self.kept.url = to == Far::Url;
+    }
+
+    /// Picks the host or group `on` of an ssh or a winrm, or (`None`) the address typed: the typed one is kept while
+    /// another is picked.
+    pub fn pick_on(&mut self, to: Option<&str>) {
+        match to {
+            Some(on) => {
+                if self.kept.typed {
+                    self.kept.on_typed = std::mem::take(&mut self.on);
+                }
+                self.on = on.to_owned();
+            }
+            None if !self.kept.typed => self.on = std::mem::take(&mut self.kept.on_typed),
+            None => {}
+        }
+        self.kept.typed = to.is_none();
+    }
 }
 
 impl Fields {
@@ -388,11 +515,24 @@ impl Fields {
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
                     f.host_key = host_key.clone().unwrap_or_default();
-                    f.password = password.clone().unwrap_or_default();
                     f.key_id = key_id.clone().unwrap_or_default();
                     f.region = region.clone().unwrap_or_default();
                     f.endpoint = endpoint.clone().unwrap_or_default();
+                    // The password goes to the address it belongs to.
+                    let far = if matches!(c, Chore::Send { .. }) { into } else { from };
+                    let password = password.clone().unwrap_or_default();
+                    if koyomi_core::chore::s3(far).is_some() {
+                        f.s3_password = password;
+                    } else {
+                        f.password = password;
+                    }
                     f.verify = *verify;
+                    f.kept.host = f.host.clone();
+                    f.kept.bucket = f.bucket.clone();
+                    // The URL choice, when the far text is an address or the job has a login the address owns.
+                    let login = [&f.key, &f.host_key, &f.password, &f.s3_password, &f.key_id, &f.region, &f.endpoint];
+                    f.kept.url =
+                        f.host.is_empty() && f.bucket.is_empty() && (far_address(far) || login.iter().any(|v| !v.trim().is_empty()));
                 }
                 Chore::Http { url, method, body, content_type, headers, expect } => {
                     f.url = url.clone();
@@ -407,6 +547,8 @@ impl Fields {
                 }
                 Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                     f.on = on.clone();
+                    f.kept.on = named_on(on);
+                    f.kept.typed = f.kept.on.is_empty();
                     f.command = command.clone();
                     f.key = key.clone().unwrap_or_default();
                     f.host_key = host_key.clone().unwrap_or_default();
@@ -416,6 +558,8 @@ impl Fields {
                 }
                 Chore::Winrm { on, command, cert, password, auth, max, pass } => {
                     f.on = on.clone();
+                    f.kept.on = named_on(on);
+                    f.kept.typed = f.kept.on.is_empty();
                     f.command = command.clone();
                     f.cert = cert.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
@@ -430,6 +574,7 @@ impl Fields {
                     f.body = body.clone().unwrap_or_default();
                     f.files = files.join("\n");
                     f.via = via.clone().unwrap_or_default();
+                    f.kept.via = f.via.clone();
                 }
                 Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
                     f.db = db.clone();
@@ -536,11 +681,25 @@ impl Fields {
                 out.part = Part::Jobnet { use_: self.use_.trim().into() };
             }
             Part::Chore(c) => {
-                // A `[[host]]` or `[[bucket]]` of koyomi.toml owns the login: the drawer hides its rows, so what they
-                // still hold is not written (it stays in the fields while the job is open).
-                let far_named = !self.host.trim().is_empty() || !self.bucket.trim().is_empty();
-                let on_named = koyomi_core::chore::host_name(&self.on).is_some();
-                let login = |named: bool, v: &str| if named { None } else { opt(v) };
+                // Only what the choice picked owns is written: the drawer hides the other rows, and what they still hold
+                // stays in the fields while the job is open (so that the choice picked back finds it).
+                //
+                // An ssh or winrm `on` that names a `[[host]]` owns the login; a group owns `max` and `pass` (and so does
+                // an `on` still to be filled in, which may turn out to be one).
+                let on = self.on.trim();
+                let on_named = koyomi_core::chore::host_name(on).is_some();
+                let group_rows = koyomi_core::chore::group(on).is_some() || on.starts_with('{');
+                let group_max = || if group_rows { self.group_max() } else { Ok(None) };
+                let pass = if group_rows { self.pass } else { Pass::All };
+                let typed_login = |v: &str| if on_named { None } else { opt(v) };
+                // A send or fetch: a host or a bucket owns the path only; a share too; an sftp address owns `key`,
+                // `host_key` and `password`; an s3 address `key_id`, `password`, `region` and `endpoint`.
+                let send = matches!(c, Chore::Send { .. });
+                let url = self.far_kind() == Far::Url;
+                let s3 = url && koyomi_core::chore::s3(self.far(send)).is_some();
+                let sftp = url && !s3;
+                let sftp_login = |v: &str| if sftp { opt(v) } else { None };
+                let s3_login = |v: &str| if s3 { opt(v) } else { None };
                 let chore = match c {
                     Chore::Delete { .. } => {
                         let n = self.keep_days.trim();
@@ -555,12 +714,12 @@ impl Fields {
                     Chore::Send { .. } => Chore::Send {
                         from: self.from.trim().into(),
                         into: self.into.trim().into(),
-                        key: login(far_named, &self.key),
-                        host_key: login(far_named, &self.host_key),
-                        password: login(far_named, &self.password),
-                        key_id: login(far_named, &self.key_id),
-                        region: login(far_named, &self.region),
-                        endpoint: login(far_named, &self.endpoint),
+                        key: sftp_login(&self.key),
+                        host_key: sftp_login(&self.host_key),
+                        password: if s3 { s3_login(&self.s3_password) } else { sftp_login(&self.password) },
+                        key_id: s3_login(&self.key_id),
+                        region: s3_login(&self.region),
+                        endpoint: s3_login(&self.endpoint),
                         verify: self.verify,
                         host: opt(&self.host),
                         bucket: opt(&self.bucket),
@@ -568,12 +727,12 @@ impl Fields {
                     Chore::Fetch { .. } => Chore::Fetch {
                         from: self.from.trim().into(),
                         into: self.into.trim().into(),
-                        key: login(far_named, &self.key),
-                        host_key: login(far_named, &self.host_key),
-                        password: login(far_named, &self.password),
-                        key_id: login(far_named, &self.key_id),
-                        region: login(far_named, &self.region),
-                        endpoint: login(far_named, &self.endpoint),
+                        key: sftp_login(&self.key),
+                        host_key: sftp_login(&self.host_key),
+                        password: if s3 { s3_login(&self.s3_password) } else { sftp_login(&self.password) },
+                        key_id: s3_login(&self.key_id),
+                        region: s3_login(&self.region),
+                        endpoint: s3_login(&self.endpoint),
                         verify: self.verify,
                         host: opt(&self.host),
                         bucket: opt(&self.bucket),
@@ -582,20 +741,20 @@ impl Fields {
                     Chore::Ssh { .. } => Chore::Ssh {
                         on: self.on.trim().into(),
                         command: self.command.clone(),
-                        key: login(on_named, &self.key),
-                        host_key: login(on_named, &self.host_key),
-                        password: login(on_named, &self.password),
-                        max: self.group_max()?,
-                        pass: self.pass,
+                        key: typed_login(&self.key),
+                        host_key: typed_login(&self.host_key),
+                        password: typed_login(&self.password),
+                        max: group_max()?,
+                        pass,
                     },
                     Chore::Winrm { .. } => Chore::Winrm {
                         on: self.on.trim().into(),
                         command: self.command.clone(),
-                        cert: login(on_named, &self.cert),
-                        password: login(on_named, &self.password),
+                        cert: typed_login(&self.cert),
+                        password: typed_login(&self.password),
                         auth: if on_named { WinrmAuth::default() } else { self.auth },
-                        max: self.group_max()?,
-                        pass: self.pass,
+                        max: group_max()?,
+                        pass,
                     },
                     Chore::Mail { .. } => Chore::Mail {
                         to: lines(&self.mail_to),
@@ -1931,7 +2090,7 @@ impl Editor {
             t,
             (calendars, around.stops, around.now),
             (around.nets, around.local, (around.shells, around.shell)),
-            (around.accounts, around.databases, around.windows),
+            (around.accounts, around.databases, around.windows, around.conns),
             power,
             &mut action,
         );
@@ -3231,11 +3390,14 @@ X-Day: 1"
         assert_eq!((again.max.as_str(), again.pass), ("4", Pass::Any));
         fields.max = "65".into();
         assert!(e.apply_fields(&h, &fields).unwrap_err().contains("max が 1 から 64 までの整数ではありません"));
-        // One PC runs alone: no max.
+        // One PC runs alone: the max the group rows still hold is not written (the rows are hidden).
         fields.on = "ssh://ops@db1".into();
         fields.max = "2".into();
+        fields.pass = Pass::Any;
         fields.host_key = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into();
-        assert!(e.apply_fields(&h, &fields).is_err());
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let Part::Chore(Chore::Ssh { max, pass, .. }) = &e.net.jobs[1].part else { panic!() };
+        assert_eq!((*max, *pass), (None, Pass::All));
     }
 
     #[test]

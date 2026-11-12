@@ -1554,7 +1554,13 @@ impl Browser {
                     req @ (Request::AccountPut { .. }
                     | Request::AccountRemove { .. }
                     | Request::DatabasePut { .. }
-                    | Request::DatabaseRemove { .. }),
+                    | Request::DatabaseRemove { .. }
+                    | Request::HostPut { .. }
+                    | Request::HostRemove { .. }
+                    | Request::BucketPut { .. }
+                    | Request::BucketRemove { .. }
+                    | Request::MailboxPut { .. }
+                    | Request::MailboxRemove { .. }),
                     r,
                 ) => {
                     if self.registry.answered(&req, r).reload {
@@ -2412,6 +2418,13 @@ impl Browser {
         let (shells, shell) = self.snap.as_ref().map_or((&[][..], ""), |s| (s.shells.as_slice(), s.shell.as_str()));
         let (accounts, databases, windows) =
             self.snap.as_ref().map_or((&[][..], &[][..], None), |s| (s.accounts.as_slice(), s.databases.as_slice(), s.windows));
+        let conns = self.snap.as_ref().map_or_else(pick::Conns::default, |s| pick::Conns {
+            hosts: &s.hosts,
+            buckets: &s.buckets,
+            mailboxes: &s.mailboxes,
+            groups: &s.groups,
+            mails: &s.mails,
+        });
         let around = canvas::Around {
             calendars,
             power,
@@ -2427,6 +2440,7 @@ impl Browser {
             accounts,
             databases,
             windows,
+            conns,
         };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
@@ -5376,6 +5390,8 @@ impl Browser {
             marks: &[Some(ito_prefs::Mark::Stop), Some(ito_prefs::Mark::Close)],
             focus: Some(self.focus),
             primary: Some(0),
+            // Killing cannot be taken back: the button is in the danger tone, as the Kill button that opens this.
+            danger: true,
             ..Default::default()
         };
         match ito_confirm::show(ctx, &q, &Self::style()).or(key) {

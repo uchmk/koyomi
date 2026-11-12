@@ -10,6 +10,22 @@ use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When}
 
 use super::pick::{self, Ctx, Want};
 
+/// The mailbox choices (the `mailbox` each sets, empty: the address written out, and the words) and the index of the one
+/// the fields are at: the engine's mailboxes, 「直接書く」, then the name the when had at open or has now when the engine
+/// lacks it. Such a name stays listed until the form closes.
+pub fn mailbox_entries(t: &Table, listed: &[String], mailbox: &str, opened: &str) -> (Vec<(String, String)>, usize) {
+    let mut entries: Vec<(String, String)> = listed.iter().map(|n| (n.clone(), n.clone())).collect();
+    entries.push((String::new(), t.tr("when.mailbox_typed").to_owned()));
+    for name in [opened.trim(), mailbox.trim()] {
+        if !name.is_empty() && !entries.iter().any(|(v, _)| v == name) {
+            entries.push((name.to_owned(), t.trf("field.conn_unknown", &[name])));
+        }
+    }
+    let now = mailbox.trim();
+    let at = entries.iter().position(|(v, _)| v == now).unwrap_or(0);
+    (entries, at)
+}
+
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
 pub const KINDS: [&str; 16] = [
     "day",
@@ -69,6 +85,9 @@ pub struct WhenEdit {
     pub mail: String,
     /// `mailbox`: a `[[mailbox]]` of koyomi.toml, which owns `mail` and `password`.
     pub mailbox: String,
+    /// The `mailbox` the when had at open (a name the engine lacks stays listed until the form closes). The typed
+    /// `mail` and `password` stay in their fields while a mailbox is picked, and come back when 「直接書く」 is.
+    pub mailbox_opened: String,
     pub password: String,
     pub sender: String,
     pub subject: String,
@@ -117,6 +136,7 @@ impl Default for WhenEdit {
             source: String::new(),
             mail: String::new(),
             mailbox: String::new(),
+            mailbox_opened: String::new(),
             password: String::new(),
             sender: String::new(),
             subject: String::new(),
@@ -265,6 +285,7 @@ impl WhenEdit {
                 e.kind = "mail".into();
                 e.mail = mail.clone();
                 e.mailbox = mailbox.clone().unwrap_or_default();
+                e.mailbox_opened.clone_from(&e.mailbox);
                 if mailbox.is_none() {
                     e.password = format!("secret:{secret}");
                 }
@@ -714,11 +735,32 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.source"), &mut self.source, 160.0);
             }
             "mail" => {
+                // A select of the engine's mailboxes and 「直接書く」. A mailbox owns the address and the password, so
+                // their rows are not here then (what they hold stays in the fields, and is not written).
+                let listed = pick.conns().mailboxes;
+                let (entries, at) = mailbox_entries(t, listed, &self.mailbox, &self.mailbox_opened);
+                named(ui, t.tr("when.mailbox"));
+                let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+                if let Some(k) = pick::select_index(ui, &format!("when-mailbox-{i}"), t.tr("when.mailbox"), at, &labels) {
+                    if k != at {
+                        self.mailbox.clone_from(&entries[k].0);
+                        changed = true;
+                    }
+                }
+                let name = self.mailbox.trim();
+                if !name.is_empty() && !listed.iter().any(|m| m == name) {
+                    ui.label(t.tr("field.conn_unknown_note"));
+                }
+                let words = t.tr("when.mailbox_register");
+                let link = ui.link(words);
+                ito_a11y::say(&link, ito_a11y::Role::Button, words);
+                ito_a11y::test_id(&link, "when.mailbox_register");
+                if link.clicked() {
+                    pick.ask_settings(crate::settings::MAILBOXES);
+                }
                 if self.mailbox.trim().is_empty() {
                     changed |= field(ui, t.tr("when.mail"), &mut self.mail, 240.0);
                     changed |= field(ui, t.tr("when.password"), &mut self.password, 120.0);
-                } else {
-                    changed |= field(ui, t.tr("when.mailbox"), &mut self.mailbox, 160.0);
                 }
                 changed |= field(ui, t.tr("when.sender"), &mut self.sender, 160.0);
                 changed |= field(ui, t.tr("when.subject"), &mut self.subject, 160.0);
@@ -877,5 +919,46 @@ run = [\"x\"]
         assert_eq!(e.to_when().as_ref(), Ok(&net.when[0]));
         let again = koyomi_core::jobnet::parse(&koyomi_core::write::text(&net)).unwrap();
         assert_eq!(again.when, net.when);
+    }
+
+    fn mail_net(line: &str) -> koyomi_core::jobnet::Jobnet {
+        let text = format!("format = 1\n[[when]]\n{line}subject = \"Invoice\"\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n");
+        koyomi_core::jobnet::parse(&text).unwrap()
+    }
+
+    #[test]
+    fn a_typed_mail_and_an_unknown_mailbox_pass_through_the_edit_unchanged() {
+        for line in ["mail = \"imaps://u@mail.example.com/INBOX\"\npassword = \"secret:m\"\n", "mailbox = \"gone\"\n"] {
+            let net = mail_net(line);
+            let e = WhenEdit::from_when(&net.when[0]);
+            assert_eq!(e.to_when().as_ref(), Ok(&net.when[0]), "{line}");
+        }
+    }
+
+    #[test]
+    fn the_mailbox_choices_are_the_listed_typed_and_a_stranger() {
+        let (t, _) = crate::i18n::table("ja");
+        let listed = vec!["billing".to_owned(), "ops".to_owned()];
+        let (e, at) = mailbox_entries(&t, &listed, "ops", "");
+        let w: Vec<&str> = e.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!((w, at), (vec!["billing", "ops", "直接書く"], 1));
+        assert_eq!(mailbox_entries(&t, &listed, "", "").1, 2);
+        let (e, at) = mailbox_entries(&t, &listed, "gone", "");
+        assert_eq!((e[3].1.as_str(), at), ("gone（登録されていません）", 3));
+        // A stranger the when had at open stays listed after another is picked.
+        let (e, at) = mailbox_entries(&t, &listed, "billing", "gone");
+        assert_eq!((e.len(), e[3].0.as_str(), at), (4, "gone", 0));
+    }
+
+    /// Typed, then a mailbox, then typed again: the typed address and password are still there, and every state saves.
+    #[test]
+    fn a_typed_mail_goes_to_a_mailbox_and_back_without_losing_the_address() {
+        let net = mail_net("mail = \"imaps://u@mail.example.com/INBOX\"\npassword = \"secret:m\"\n");
+        let mut e = WhenEdit::from_when(&net.when[0]);
+        e.mailbox = "billing".into();
+        let Ok(When { kind: Kind::Mail { mail, secret, mailbox, .. }, .. }) = e.to_when() else { panic!() };
+        assert_eq!((mailbox.as_deref(), mail.as_str(), secret.as_str()), (Some("billing"), "", ""));
+        e.mailbox.clear();
+        assert_eq!(e.to_when().as_ref(), Ok(&net.when[0]));
     }
 }

@@ -14,7 +14,7 @@ use koyomi_core::calendar::Calendar;
 use koyomi_core::chore::{Chore, Pass, SqlDb, SqlTls, Verify, WinrmAuth, GROUP_MAX};
 use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
-use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
+use super::{Action, Cmd, Editor, Far, Fields, NetFields, Pane};
 use crate::show;
 use crate::ui::pick::{self, Ctx, Want};
 use crate::ui::whens::WhenEdit;
@@ -244,7 +244,7 @@ impl Editor {
         t: &Table,
         (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
         (nets, local, (shells, default)): (&[pick::NetChoice], bool, (&[crate::proto::Shell], &str)),
-        (accounts, databases, windows): (&[String], &[crate::proto::DatabaseName], Option<bool>),
+        (accounts, databases, windows, conns): (&[String], &[crate::proto::DatabaseName], Option<bool>, pick::Conns),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
@@ -277,7 +277,8 @@ impl Editor {
         };
         let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse))
             .with_shells(shells, default)
-            .with_registry(accounts, databases, windows);
+            .with_registry(accounts, databases, windows)
+            .with_conns(conns);
         let form = Form::new(t, &ctx);
         let mut asked = Asked::default();
         let wide = ui.available_width();
@@ -830,6 +831,330 @@ fn database_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     changed
 }
 
+/// What the PC select of an ssh or a winrm can pick.
+#[derive(Clone, Debug, PartialEq)]
+enum OnChoice {
+    /// A registered `[[host]]` (`group: false`) or `[groups]` entry by its name.
+    Named { group: bool, name: String },
+    /// The address written out.
+    Typed,
+}
+
+impl OnChoice {
+    /// The `on` this choice makes (none: the address written out).
+    fn on(&self) -> Option<String> {
+        match self {
+            OnChoice::Named { group: true, name } => Some(format!("group:{name}")),
+            OnChoice::Named { name, .. } => Some(name.clone()),
+            OnChoice::Typed => None,
+        }
+    }
+}
+
+/// How a name stands against the engine's list of the job's kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Standing {
+    /// Listed, and of the job's kind.
+    Listed,
+    /// Listed, as the other kind (`ssh` for a winrm job and the reverse).
+    Other(&'static str),
+    /// Not listed.
+    Unknown,
+}
+
+/// The kind word the engine lists the hosts and groups of an ssh (`false`) or a winrm (`true`) job by.
+fn on_kind(winrm: bool) -> &'static str {
+    if winrm {
+        "winrm"
+    } else {
+        "ssh"
+    }
+}
+
+fn other_kind(kind: &str) -> &'static str {
+    if kind == "winrm" {
+        "winrm"
+    } else {
+        "ssh"
+    }
+}
+
+/// Where `choice` stands against `conns` for a job of `kind`.
+fn on_standing(conns: pick::Conns, kind: &str, group: bool, name: &str) -> Standing {
+    let found: Option<&str> = if group {
+        conns.groups.iter().find(|g| g.name == name).map(|g| g.kind.as_str())
+    } else {
+        conns.hosts.iter().find(|h| h.name == name).map(|h| h.kind.as_str())
+    };
+    match found {
+        None => Standing::Unknown,
+        Some(k) if k == kind => Standing::Listed,
+        Some(k) => Standing::Other(other_kind(k)),
+    }
+}
+
+/// The choice the fields are at: by the choice picked or the job's own at open, then by what `on` names.
+fn on_now(f: &Fields) -> OnChoice {
+    if f.kept.typed {
+        return OnChoice::Typed;
+    }
+    if let Some(g) = koyomi_core::chore::group(&f.on) {
+        OnChoice::Named { group: true, name: g.to_owned() }
+    } else if let Some(h) = koyomi_core::chore::host_name(&f.on) {
+        OnChoice::Named { group: false, name: h.to_owned() }
+    } else {
+        OnChoice::Typed
+    }
+}
+
+/// The words of a name the engine lacks, or has as the other kind.
+fn conn_words(t: &Table, standing: Standing, shown: &str) -> String {
+    match standing {
+        Standing::Listed => shown.to_owned(),
+        Standing::Other("winrm") => t.trf("field.conn_other_winrm", &[shown]),
+        Standing::Other(_) => t.trf("field.conn_other_ssh", &[shown]),
+        Standing::Unknown => t.trf("field.conn_unknown", &[shown]),
+    }
+}
+
+/// The choices (value and words) and the index of the one the fields are at: the engine's hosts of the job's kind,
+/// its groups, 「直接書く」, then the name the job had at open or has now when the engine lacks it (or has it as the other
+/// kind). Such a name stays listed until the form closes.
+fn on_entries(t: &Table, conns: pick::Conns, winrm: bool, f: &Fields) -> (Vec<(OnChoice, String)>, usize) {
+    let kind = on_kind(winrm);
+    let mut entries: Vec<(OnChoice, String)> = Vec::new();
+    for h in conns.hosts.iter().filter(|h| h.kind == kind) {
+        entries.push((OnChoice::Named { group: false, name: h.name.clone() }, h.name.clone()));
+    }
+    for g in conns.groups.iter().filter(|g| g.kind == kind) {
+        entries.push((OnChoice::Named { group: true, name: g.name.clone() }, t.trf("field.on_group", &[&g.name])));
+    }
+    entries.push((OnChoice::Typed, t.tr("field.on_typed").to_owned()));
+    let now = on_now(f);
+    let opened = match (koyomi_core::chore::group(&f.kept.on), koyomi_core::chore::host_name(&f.kept.on)) {
+        (Some(g), _) => Some(OnChoice::Named { group: true, name: g.to_owned() }),
+        (_, Some(h)) => Some(OnChoice::Named { group: false, name: h.to_owned() }),
+        _ => None,
+    };
+    for extra in opened.into_iter().chain(std::iter::once(now.clone())) {
+        if let OnChoice::Named { group, name } = &extra {
+            if !entries.iter().any(|(c, _)| *c == extra) {
+                let shown = if *group { t.trf("field.on_group", &[name]) } else { name.clone() };
+                entries.push((extra.clone(), conn_words(t, on_standing(conns, kind, *group, name), &shown)));
+            }
+        }
+    }
+    let at = entries.iter().position(|(c, _)| *c == now).unwrap_or(0);
+    (entries, at)
+}
+
+/// The PC an ssh or a winrm runs on: a select of the engine's hosts, its groups and 「直接書く」, what the one picked is,
+/// the link to register a host, and (when the address is written out) its line.
+fn on_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields, winrm: bool) -> bool {
+    let conns = form.pick.conns();
+    let (label, _) = form.label(ui, "field.on_pick", Need::Required);
+    let (entries, at) = on_entries(form.t, conns, winrm, f);
+    let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+    let mut changed = false;
+    if let Some(i) = pick::select_index(ui, "field.on_pick", label, at, &labels) {
+        if i != at {
+            f.pick_on(entries[i].0.on().as_deref());
+            changed = true;
+        }
+    }
+    let now = on_now(f);
+    if let OnChoice::Named { group, name } = &now {
+        match on_standing(conns, on_kind(winrm), *group, name) {
+            Standing::Unknown => form.note(ui, form.t.tr("field.conn_unknown_note")),
+            Standing::Other(_) => form.note(ui, form.t.tr("field.conn_other_note")),
+            Standing::Listed if !*group => form.note(ui, form.t.tr("field.on_host_note")),
+            Standing::Listed => {}
+        }
+    }
+    register_link(ui, form, "field.on_register", crate::settings::HOSTS);
+    ui.add_space(10.0);
+    if now == OnChoice::Typed {
+        let (key, hint, mark) =
+            if winrm { ("field.winrm_on", "winrm://user@server", M::Desktop) } else { ("field.on", "ssh://user@server", M::Server) };
+        changed |= form.line(ui, key, Need::Required, false, &mut f.on, |i| i.mono().hint(hint).mark(mark));
+    }
+    changed
+}
+
+/// What the far side select of a `send` or `fetch` can pick.
+#[derive(Clone, Debug, PartialEq)]
+enum FarChoice {
+    Share,
+    Host(String),
+    Bucket(String),
+    Url,
+}
+
+impl FarChoice {
+    fn kind(&self) -> Far {
+        match self {
+            FarChoice::Share => Far::Share,
+            FarChoice::Host(_) => Far::Host,
+            FarChoice::Bucket(_) => Far::Bucket,
+            FarChoice::Url => Far::Url,
+        }
+    }
+
+    fn name(&self) -> &str {
+        match self {
+            FarChoice::Host(n) | FarChoice::Bucket(n) => n,
+            _ => "",
+        }
+    }
+}
+
+fn far_now(f: &Fields) -> FarChoice {
+    match f.far_kind() {
+        Far::Host => FarChoice::Host(f.host.trim().to_owned()),
+        Far::Bucket => FarChoice::Bucket(f.bucket.trim().to_owned()),
+        Far::Url => FarChoice::Url,
+        Far::Share => FarChoice::Share,
+    }
+}
+
+/// Where a registered host stands for a send or fetch: it has to be an `ssh` one (SFTP).
+fn host_standing(conns: pick::Conns, name: &str) -> Standing {
+    on_standing(conns, "ssh", false, name)
+}
+
+/// The choices (value and words) and the index of the one the fields are at: 「フォルダー・共有」, each ssh host
+/// (`web1（SFTP）`), each bucket (`logs（S3）`), 「URL を直接書く」, then the host or bucket the job had at open or has now when the
+/// engine lacks it (or, for a host, has it as a WinRM one). Such a name stays listed until the form closes.
+fn far_entries(t: &Table, conns: pick::Conns, f: &Fields) -> (Vec<(FarChoice, String)>, usize) {
+    let mut entries: Vec<(FarChoice, String)> = vec![(FarChoice::Share, t.tr("field.far_share").to_owned())];
+    for h in conns.hosts.iter().filter(|h| h.kind == "ssh") {
+        entries.push((FarChoice::Host(h.name.clone()), t.trf("field.far_host", &[&h.name])));
+    }
+    for b in conns.buckets {
+        entries.push((FarChoice::Bucket(b.clone()), t.trf("field.far_bucket", &[b])));
+    }
+    entries.push((FarChoice::Url, t.tr("field.far_url").to_owned()));
+    let now = far_now(f);
+    let opened = [
+        Some(f.kept.host.trim()).filter(|n| !n.is_empty()).map(|n| FarChoice::Host(n.to_owned())),
+        Some(f.kept.bucket.trim()).filter(|n| !n.is_empty()).map(|n| FarChoice::Bucket(n.to_owned())),
+    ];
+    for extra in opened.into_iter().flatten().chain(std::iter::once(now.clone())) {
+        if matches!(extra, FarChoice::Host(_) | FarChoice::Bucket(_)) && !entries.iter().any(|(c, _)| *c == extra) {
+            let standing = match &extra {
+                FarChoice::Host(n) => host_standing(conns, n),
+                _ => Standing::Unknown,
+            };
+            entries.push((extra.clone(), conn_words(t, standing, extra.name())));
+        }
+    }
+    let at = entries.iter().position(|(c, _)| *c == now).unwrap_or(0);
+    (entries, at)
+}
+
+/// The far side of a `send` (`into`) or a `fetch` (`from`): a select of 「フォルダー・共有」, the registered hosts and
+/// buckets and 「URL を直接書く」, the path (or the address) of the one picked, the notes, the links to register, and (for
+/// an address) the rows of its login.
+fn far_rows(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> bool {
+    let conns = form.pick.conns();
+    let key = if send { "field.far_into" } else { "field.far_from" };
+    let (label, _) = form.label(ui, key, Need::Required);
+    let (entries, at) = far_entries(form.t, conns, f);
+    let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+    let mut changed = false;
+    if let Some(i) = pick::select_index(ui, key, label, at, &labels) {
+        if i != at {
+            f.pick_far(send, entries[i].0.kind(), entries[i].0.name());
+            changed = true;
+        }
+    }
+    let now = far_now(f);
+    match &now {
+        FarChoice::Host(n) => match host_standing(conns, n) {
+            Standing::Unknown => form.note(ui, form.t.tr("field.conn_unknown_note")),
+            Standing::Other(_) => form.note(ui, form.t.tr("field.conn_other_note")),
+            Standing::Listed => form.note(ui, form.t.tr("field.far_host_note")),
+        },
+        FarChoice::Bucket(n) => {
+            let note = if conns.buckets.contains(n) { "field.far_bucket_note" } else { "field.conn_unknown_note" };
+            form.note(ui, form.t.tr(note));
+        }
+        _ => {}
+    }
+    register_link(ui, form, "field.far_register_host", crate::settings::HOSTS);
+    register_link(ui, form, "field.far_register_bucket", crate::settings::BUCKETS);
+    ui.add_space(10.0);
+    let (line, hint) = match &now {
+        FarChoice::Share => ("field.far_share_path", ""),
+        FarChoice::Host(_) => ("field.far_host_path", if send { "/in" } else { "~/in" }),
+        FarChoice::Bucket(_) => ("field.far_bucket_path", "in/today.csv"),
+        FarChoice::Url => (if send { "field.send_into" } else { "field.fetch_from" }, ""),
+    };
+    let far = if send { &mut f.into } else { &mut f.from };
+    changed |= form.line(ui, line, Need::Required, false, far, |i| i.mono().hint(hint));
+    if now == FarChoice::Url {
+        let (opt, req) = (Need::Optional, Need::Required);
+        if koyomi_core::chore::s3(f.far(send)).is_some() {
+            changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
+            changed |= form.line(ui, "field.s3_password", req, false, &mut f.s3_password, |i| i.mono().mark(M::Lock));
+            changed |= form.line(ui, "field.region", opt, false, &mut f.region, |i| i.mono().hint("ap-northeast-1"));
+            changed |= form.line(ui, "field.endpoint", opt, false, &mut f.endpoint, |i| i.mono().hint("http://nas:9000").mark(M::Server));
+        } else {
+            changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
+            changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
+            changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+        }
+    }
+    changed
+}
+
+/// The mail `via` choices (the value it sets and the words) and the index of the one the fields are at: the first place
+/// (an empty `via`; its name shown when there is one), each `[[notify.mails]]` by name, then a name the engine lacks
+/// (the one the job had at open, or has now; a `{…}` too) last.
+fn via_entries(t: &Table, mails: &[String], f: &Fields) -> (Vec<(String, String)>, usize) {
+    let first = match mails.first() {
+        Some(n) => t.trf("field.via_first_named", &[n]),
+        None => t.tr("field.via_first_pick").to_owned(),
+    };
+    let mut entries: Vec<(String, String)> = vec![(String::new(), first)];
+    entries.extend(mails.iter().map(|n| (n.clone(), n.clone())));
+    for name in [f.kept.via.trim(), f.via.trim()] {
+        if !name.is_empty() && !entries.iter().any(|(v, _)| v == name) {
+            entries.push((name.to_owned(), t.trf("field.conn_unknown", &[name])));
+        }
+    }
+    let now = f.via.trim();
+    let at = entries.iter().position(|(v, _)| v == now).unwrap_or(0);
+    (entries, at)
+}
+
+/// The place a `mail` goes through: a select of the first place and each `[[notify.mails]]`, and the way to add one (the
+/// notify page for this PC's engine; for another, only a note, since its places are set on its own PC).
+fn via_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
+    let mails = form.pick.conns().mails;
+    let (label, _) = form.label(ui, "field.via_pick", Need::Optional);
+    let (entries, at) = via_entries(form.t, mails, f);
+    let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+    let mut changed = false;
+    if let Some(i) = pick::select_index(ui, "field.via_pick", label, at, &labels) {
+        if i != at {
+            f.via.clone_from(&entries[i].0);
+            changed = true;
+        }
+    }
+    let name = f.via.trim();
+    if !name.is_empty() && !mails.iter().any(|m| m == name) {
+        form.note(ui, form.t.tr("field.conn_unknown_note"));
+    }
+    if form.pick.local {
+        register_link(ui, form, "field.via_register", crate::settings::NOTIFY);
+    } else {
+        form.note(ui, form.t.tr("field.via_far_note"));
+    }
+    ui.add_space(10.0);
+    changed
+}
+
 /// How a `send` or `fetch` checks each file, and what that means for where it goes.
 fn verify_row(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> bool {
     let far = if send { f.into.as_str() } else { f.from.as_str() };
@@ -900,34 +1225,21 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
         Chore::Send { .. } | Chore::Fetch { .. } => {
             let send = matches!(chore, Chore::Send { .. });
             let (from, into) = if send { ("field.send_from", "field.send_into") } else { ("field.fetch_from", "field.fetch_into") };
-            // Send reads this PC's files (a file; the folder or glob is typed). Fetch saves into this PC's folder; what it
-            // reads, and where a send goes, may be an sftp or s3 address, so those two stay typed.
+            // Send reads this PC's files (a file; the folder or glob is typed). Fetch saves into this PC's folder. The far
+            // side (where a send goes, what a fetch reads) is a choice: a share, a registered host or bucket, or an address.
             if send {
                 changed |= form.path(ui, from, req, false, &mut f.from, |i| i.mono(), Want::File);
-                changed |= form.line(ui, into, req, false, &mut f.into, |i| i.mono());
+                changed |= far_rows(ui, form, true, f);
             } else {
-                changed |= form.line(ui, from, req, false, &mut f.from, |i| i.mono());
+                changed |= far_rows(ui, form, false, f);
                 changed |= form.path(ui, into, req, false, &mut f.into, |i| i.mono(), Want::Folder);
-            }
-            // A `[[host]]` or `[[bucket]]` of koyomi.toml owns the login: its rows are not here, and the names pass through.
-            if !f.host.trim().is_empty() || !f.bucket.trim().is_empty() {
-            } else if koyomi_core::chore::s3(if send { &f.into } else { &f.from }).is_some() {
-                changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
-                changed |= form.line(ui, "field.s3_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
-                changed |= form.line(ui, "field.region", opt, false, &mut f.region, |i| i.mono().hint("ap-northeast-1"));
-                changed |=
-                    form.line(ui, "field.endpoint", opt, false, &mut f.endpoint, |i| i.mono().hint("http://nas:9000").mark(M::Server));
-            } else {
-                changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
-                changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
-                changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
             }
             changed |= verify_row(ui, form, send, f);
         }
         Chore::Ssh { .. } => {
             // A group's PCs may each have their host key in koyomi.toml.
+            changed |= on_rows(ui, form, f, false);
             let group = koyomi_core::chore::group(&f.on).is_some();
-            changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Server));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             // A name of a `[[host]]` in koyomi.toml owns the login.
             if koyomi_core::chore::host_name(&f.on).is_none() {
@@ -940,8 +1252,8 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             }
         }
         Chore::Winrm { .. } => {
+            changed |= on_rows(ui, form, f, true);
             let group = koyomi_core::chore::group(&f.on).is_some();
-            changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Desktop));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             // A name of a `[[host]]` in koyomi.toml owns the login.
             if koyomi_core::chore::host_name(&f.on).is_none() {
@@ -976,7 +1288,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.subject", req, false, &mut f.subject, |i| i.hint(form.t.tr("field.subject_hint")));
             changed |= form.code(ui, "field.mail_body", opt, false, &mut f.body, (4, ""));
             changed |= form.files(ui, "field.files", opt, &mut f.files, (2, ""));
-            changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
+            changed |= via_rows(ui, form, f);
         }
         Chore::Sql { .. } => {
             changed |= database_rows(ui, form, f);
@@ -1217,5 +1529,267 @@ mod registry_tests {
         let mut f = Fields { sql_database: "gone".into(), ..Fields::default() };
         pick_db(&mut f, &DbChoice::Unknown("gone".into()));
         assert_eq!(f.sql_database, "gone");
+    }
+}
+
+#[cfg(test)]
+mod conn_tests {
+    use super::*;
+    use crate::proto::{GroupName, HostName};
+    use koyomi_core::chore::{Chore, Pass};
+    use koyomi_core::jobnet::Part;
+
+    const KEY: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn hosts() -> Vec<HostName> {
+        vec![
+            HostName { name: "web1".into(), kind: "ssh".into() },
+            HostName { name: "web2".into(), kind: "ssh".into() },
+            HostName { name: "pc9".into(), kind: "winrm".into() },
+        ]
+    }
+
+    fn groups() -> Vec<GroupName> {
+        vec![GroupName { name: "web".into(), kind: "ssh".into() }, GroupName { name: "desk".into(), kind: "winrm".into() }]
+    }
+
+    fn job(body: &str) -> koyomi_core::jobnet::Job {
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{body}");
+        koyomi_core::jobnet::parse(&text).unwrap().jobs[0].clone()
+    }
+
+    fn fields(body: &str) -> Fields {
+        Fields::of(&job(body))
+    }
+
+    fn ssh_key() -> String {
+        format!("host_key = \"{KEY}\"\n")
+    }
+
+    fn words(e: &[(OnChoice, String)]) -> Vec<&str> {
+        e.iter().map(|(_, w)| w.as_str()).collect()
+    }
+
+    #[test]
+    fn the_pc_choices_are_the_kinds_own_hosts_and_groups_then_typed_then_a_stranger() {
+        let (t, _) = crate::i18n::table("ja");
+        let (h, g) = (hosts(), groups());
+        let conns = pick::Conns { hosts: &h, groups: &g, ..Default::default() };
+        let f = fields(&format!("kind = \"ssh\"\non = \"ssh://ops@x\"\ncommand = \"c\"\n{}", ssh_key()));
+        let (e, at) = on_entries(&t, conns, false, &f);
+        assert_eq!((words(&e), at), (vec!["web1", "web2", "グループ web", "直接書く"], 3));
+        let f = fields("kind = \"ssh\"\non = \"web2\"\ncommand = \"c\"\n");
+        assert_eq!(on_entries(&t, conns, false, &f).1, 1);
+        let f = fields(&format!("kind = \"ssh\"\non = \"group:web\"\ncommand = \"c\"\n{}", ssh_key()));
+        assert_eq!(on_entries(&t, conns, false, &f).1, 2);
+        let f = fields("kind = \"ssh\"\non = \"gone\"\ncommand = \"c\"\n");
+        let (e, at) = on_entries(&t, conns, false, &f);
+        assert_eq!((e[4].1.as_str(), at), ("gone（登録されていません）", 4));
+        let f = fields("kind = \"ssh\"\non = \"pc9\"\ncommand = \"c\"\n");
+        assert_eq!(on_entries(&t, conns, false, &f).0[4].1, "pc9（WinRM の接続先）");
+        let f = fields("kind = \"winrm\"\non = \"web1\"\ncommand = \"c\"\n");
+        let (e, at) = on_entries(&t, conns, true, &f);
+        assert_eq!((words(&e), at), (vec!["pc9", "グループ desk", "直接書く", "web1（SSH の接続先）"], 3));
+        let f = fields(&format!("kind = \"ssh\"\non = \"group:old\"\ncommand = \"c\"\n{}", ssh_key()));
+        assert_eq!(on_entries(&t, conns, false, &f).0[4].1, "グループ old（登録されていません）");
+        let f = fields("kind = \"ssh\"\non = \"web1\"\ncommand = \"c\"\n");
+        let (e, at) = on_entries(&t, pick::Conns::default(), false, &f);
+        assert_eq!((words(&e), at), (vec!["直接書く", "web1（登録されていません）"], 1));
+    }
+
+    #[test]
+    fn a_stranger_the_job_had_stays_listed_after_it_is_left() {
+        let (t, _) = crate::i18n::table("ja");
+        let (h, g) = (hosts(), groups());
+        let conns = pick::Conns { hosts: &h, groups: &g, ..Default::default() };
+        let mut f = fields("kind = \"ssh\"\non = \"gone\"\ncommand = \"c\"\n");
+        f.pick_on(Some("web1"));
+        let (e, at) = on_entries(&t, conns, false, &f);
+        assert_eq!((at, e.last().unwrap().1.as_str()), (0, "gone（登録されていません）"));
+    }
+
+    #[test]
+    fn picking_a_host_or_a_group_keeps_the_typed_address_and_writes_no_hidden_row() {
+        let j = job(&format!("kind = \"ssh\"\non = \"group:web\"\ncommand = \"c\"\nmax = 4\npass = \"any\"\n{}", ssh_key()));
+        let mut f = Fields::of(&j);
+        assert_eq!(f.apply(&j).unwrap().part, j.part);
+        f.pick_on(Some("web1"));
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Ssh { on, host_key, max, pass, .. } = &c else { panic!() };
+        assert_eq!((on.as_str(), host_key.is_none(), *max, *pass), ("web1", true, None, Pass::All));
+        c.check().unwrap();
+        f.pick_on(None);
+        f.on = "ssh://ops@web1".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Ssh { max, pass, host_key, .. } = &c else { panic!() };
+        assert_eq!((*max, *pass, host_key.is_some()), (None, Pass::All, true));
+        c.check().unwrap();
+        f.pick_on(Some("group:web"));
+        assert_eq!(f.kept.on_typed, "ssh://ops@web1");
+        assert_eq!(f.apply(&j).unwrap().part, j.part);
+        f.pick_on(None);
+        assert_eq!(f.on, "ssh://ops@web1");
+    }
+
+    #[test]
+    fn the_written_out_address_stays_a_line_whatever_is_typed_in_it() {
+        let mut f = fields(&format!("kind = \"ssh\"\non = \"ssh://ops@x\"\ncommand = \"c\"\n{}", ssh_key()));
+        f.on = "s".into();
+        assert_eq!(on_now(&f), OnChoice::Typed);
+        let f = fields("kind = \"ssh\"\non = \"web1\"\ncommand = \"c\"\n");
+        assert_eq!(on_now(&f), OnChoice::Named { group: false, name: "web1".into() });
+    }
+
+    fn far_words(e: &[(FarChoice, String)]) -> Vec<&str> {
+        e.iter().map(|(_, w)| w.as_str()).collect()
+    }
+
+    #[test]
+    fn the_far_choices_are_share_hosts_buckets_url_and_a_stranger() {
+        let (t, _) = crate::i18n::table("ja");
+        let (h, b) = (hosts(), names(&["logs"]));
+        let conns = pick::Conns { hosts: &h, buckets: &b, ..Default::default() };
+        let f = fields("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"//srv/share\"\n");
+        let (e, at) = far_entries(&t, conns, &f);
+        assert_eq!((far_words(&e), at), (vec!["フォルダー・共有", "web1（SFTP）", "web2（SFTP）", "logs（S3）", "URL を直接書く"], 0));
+        let f = fields("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"/in\"\nhost = \"web2\"\n");
+        assert_eq!(far_entries(&t, conns, &f).1, 2);
+        let f = fields("kind = \"fetch\"\nfrom = \"in/a.csv\"\ninto = \"D:/in\"\nbucket = \"logs\"\n");
+        assert_eq!(far_entries(&t, conns, &f).1, 3);
+        let f = fields(&format!("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"sftp://ops@web1/in\"\n{}", ssh_key()));
+        assert_eq!(far_entries(&t, conns, &f).1, 4);
+        let f = fields("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"/in\"\nhost = \"gone\"\n");
+        let (e, at) = far_entries(&t, conns, &f);
+        assert_eq!((e[5].1.as_str(), at), ("gone（登録されていません）", 5));
+        let f = fields("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"/in\"\nhost = \"pc9\"\n");
+        assert_eq!(far_entries(&t, conns, &f).0[5].1, "pc9（WinRM の接続先）");
+        let f = fields("kind = \"fetch\"\nfrom = \"in/a.csv\"\ninto = \"D:/in\"\nbucket = \"old\"\n");
+        assert_eq!(far_entries(&t, conns, &f).0[5].1, "old（登録されていません）");
+    }
+
+    #[test]
+    fn the_far_side_keeps_each_choices_words_and_writes_only_what_the_choice_owns() {
+        let j = job(&format!("kind = \"send\"\nfrom = \"D:/out/*.csv\"\ninto = \"sftp://ops@web1/in\"\nkey = \"C:/k\"\n{}", ssh_key()));
+        let mut f = Fields::of(&j);
+        assert_eq!(f.far_kind(), Far::Url);
+        assert_eq!(f.apply(&j).unwrap().part, j.part);
+        // A share: no login.
+        f.pick_far(true, Far::Share, "");
+        assert_eq!(f.into, "");
+        f.into = "//srv/share/in".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { key, host_key, password, key_id, .. } = &c else { panic!() };
+        assert_eq!((key.is_none(), host_key.is_none(), password.is_none(), key_id.is_none()), (true, true, true, true));
+        c.check().unwrap();
+        // The address, picked back: its text and its key are back.
+        f.pick_far(true, Far::Url, "");
+        assert_eq!((f.into.as_str(), f.key.as_str()), ("sftp://ops@web1/in", "C:/k"));
+        assert_eq!(f.apply(&j).unwrap().part, j.part);
+        // An S3 address: its own login only.
+        f.into = "s3://logs/daily/".into();
+        f.key_id = "AKIAEXAMPLE".into();
+        f.s3_password = "secret:s3".into();
+        f.region = "ap-northeast-1".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { key, host_key, password, key_id, region, .. } = &c else { panic!() };
+        assert_eq!((key.is_none(), host_key.is_none()), (true, true));
+        assert_eq!(
+            (password.as_deref(), key_id.as_deref(), region.as_deref()),
+            (Some("secret:s3"), Some("AKIAEXAMPLE"), Some("ap-northeast-1"))
+        );
+        c.check().unwrap();
+        // Back to the SFTP address: the S3 rows are dropped, the key is back.
+        f.into = "sftp://ops@web1/in".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { key, key_id, region, password, .. } = &c else { panic!() };
+        assert_eq!((key.as_deref(), key_id.is_none(), region.is_none(), password.is_none()), (Some("C:/k"), true, true, true));
+        c.check().unwrap();
+        // A host, a bucket, a share: the names are never both set.
+        f.pick_far(true, Far::Host, "web1");
+        assert_eq!(f.into, "");
+        f.into = "/in".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { host, bucket, key, .. } = &c else { panic!() };
+        assert_eq!((host.as_deref(), bucket.is_none(), key.is_none()), (Some("web1"), true, true));
+        c.check().unwrap();
+        f.pick_far(true, Far::Bucket, "logs");
+        assert_eq!((f.host.as_str(), f.bucket.as_str(), f.into.as_str()), ("", "logs", ""));
+        f.into = "in/today.csv".into();
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { host, bucket, .. } = &c else { panic!() };
+        assert_eq!((host.is_none(), bucket.as_deref()), (true, Some("logs")));
+        c.check().unwrap();
+        f.pick_far(true, Far::Share, "");
+        assert_eq!((f.host.as_str(), f.bucket.as_str(), f.into.as_str()), ("", "", "//srv/share/in"));
+        let Part::Chore(c) = f.apply(&j).unwrap().part else { panic!() };
+        let Chore::Send { host, bucket, .. } = &c else { panic!() };
+        assert_eq!((host.is_none(), bucket.is_none()), (true, true));
+        c.check().unwrap();
+        // Back and forth keeps each.
+        f.pick_far(true, Far::Host, "web1");
+        assert_eq!(f.into, "/in");
+        f.pick_far(true, Far::Bucket, "logs");
+        assert_eq!(f.into, "in/today.csv");
+        f.pick_far(true, Far::Url, "");
+        assert_eq!(f.into, "sftp://ops@web1/in");
+        assert_eq!(f.from, "D:/out/*.csv");
+    }
+
+    /// Opening a job and closing it with nothing changed writes back exactly what was there.
+    #[test]
+    fn opening_and_closing_a_connection_job_changes_nothing() {
+        let k = ssh_key();
+        let mail = "kind = \"mail\"\nto = [\"a@example.com\"]\nsubject = \"s\"\n";
+        let bodies = [
+            "kind = \"ssh\"\non = \"web1\"\ncommand = \"c\"\n".to_owned(),
+            format!("kind = \"ssh\"\non = \"group:web\"\ncommand = \"c\"\nmax = 4\npass = \"any\"\n{k}"),
+            format!("kind = \"ssh\"\non = \"ssh://ops@web1\"\ncommand = \"c\"\n{k}"),
+            "kind = \"ssh\"\non = \"gone\"\ncommand = \"c\"\n".to_owned(),
+            "kind = \"winrm\"\non = \"pc9\"\ncommand = \"c\"\n".to_owned(),
+            "kind = \"send\"\nfrom = \"D:/x\"\ninto = \"/in\"\nhost = \"web1\"\n".to_owned(),
+            "kind = \"fetch\"\nfrom = \"in/a.csv\"\ninto = \"D:/in\"\nbucket = \"logs\"\n".to_owned(),
+            "kind = \"send\"\nfrom = \"D:/x\"\ninto = \"//srv/share\"\n".to_owned(),
+            format!("kind = \"send\"\nfrom = \"D:/x\"\ninto = \"sftp://ops@web1/in\"\nkey = \"C:/k\"\n{k}"),
+            "kind = \"send\"\nfrom = \"D:/x\"\ninto = \"s3://logs/d/\"\nkey_id = \"AKIAEXAMPLE\"\npassword = \"secret:s3\"\nregion = \"ap-northeast-1\"\n".to_owned(),
+            mail.to_owned(),
+            format!("{mail}via = \"ops\"\n"),
+            format!("{mail}via = \"gone\"\n"),
+        ];
+        for body in bodies {
+            let j = job(&body);
+            assert_eq!(Fields::of(&j).apply(&j).unwrap().part, j.part, "{body}");
+        }
+    }
+
+    #[test]
+    fn another_host_keeps_the_path_and_a_typed_address_stays_when_the_url_is_picked() {
+        let mut f = fields("kind = \"fetch\"\nfrom = \"~/in\"\ninto = \"D:/in\"\nhost = \"web1\"\n");
+        f.pick_far(false, Far::Host, "web2");
+        assert_eq!((f.host.as_str(), f.from.as_str()), ("web2", "~/in"));
+        let mut f = fields("kind = \"fetch\"\nfrom = \"//srv/in\"\ninto = \"D:/in\"\n");
+        assert_eq!(f.far_kind(), Far::Share);
+        f.from = "sftp://ops@web1/in".into();
+        assert_eq!(f.far_kind(), Far::Share);
+        f.pick_far(false, Far::Url, "");
+        assert_eq!(f.from, "sftp://ops@web1/in");
+    }
+
+    #[test]
+    fn the_via_choices_are_the_first_place_each_name_and_a_stranger() {
+        let (t, _) = crate::i18n::table("ja");
+        let mails = names(&["ops", "boss"]);
+        let base = "kind = \"mail\"\nto = [\"a@example.com\"]\nsubject = \"s\"\n";
+        let w = |e: &[(String, String)]| e.iter().map(|(_, w)| w.clone()).collect::<Vec<_>>();
+        let (e, at) = via_entries(&t, &mails, &fields(base));
+        assert_eq!((w(&e), at), (vec!["最初の送り先（ops）".to_owned(), "ops".into(), "boss".into()], 0));
+        assert_eq!(via_entries(&t, &mails, &fields(&format!("{base}via = \"boss\"\n"))).1, 2);
+        let (e, at) = via_entries(&t, &mails, &fields(&format!("{base}via = \"gone\"\n")));
+        assert_eq!((e[3].1.as_str(), at), ("gone（登録されていません）", 3));
+        let (e, at) = via_entries(&t, &[], &Fields::default());
+        assert_eq!((e.len(), e[0].1.as_str(), at), (1, "最初の送り先", 0));
     }
 }

@@ -21,9 +21,12 @@ pub const NOTIFY: usize = 2;
 pub const USERS: usize = 3;
 pub const ACCOUNTS: usize = 4;
 pub const DATABASES: usize = 5;
-pub const KEYS: usize = 6;
-pub const ADVANCED: usize = 7;
-pub const ABOUT: usize = 8;
+pub const HOSTS: usize = 6;
+pub const BUCKETS: usize = 7;
+pub const MAILBOXES: usize = 8;
+pub const KEYS: usize = 9;
+pub const ADVANCED: usize = 10;
+pub const ABOUT: usize = 11;
 
 /// The keymap's layers and the words that name them on the Keys page.
 const LAYERS: [(&str, &str); 1] = [("app", "keys.main")];
@@ -127,6 +130,35 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (DATABASES, t.tr("registry.secret_field")),
         (DATABASES, t.tr("registry.tls_field")),
         (DATABASES, "database"),
+        (HOSTS, "[[host]]"),
+        (HOSTS, "koyomi.toml"),
+        (HOSTS, t.tr("settings.hosts")),
+        (HOSTS, t.tr("registry.add_host")),
+        (HOSTS, t.tr("registry.host_kind")),
+        (HOSTS, t.tr("registry.host_on")),
+        (HOSTS, t.tr("registry.host_key_field")),
+        (HOSTS, t.tr("registry.key_file")),
+        (HOSTS, t.tr("registry.cert_field")),
+        (HOSTS, t.tr("registry.auth_field")),
+        (HOSTS, t.tr("registry.secret_field")),
+        (HOSTS, "host_key"),
+        (BUCKETS, "[[bucket]]"),
+        (BUCKETS, "koyomi.toml"),
+        (BUCKETS, t.tr("settings.buckets")),
+        (BUCKETS, t.tr("registry.add_bucket")),
+        (BUCKETS, t.tr("registry.bucket_url")),
+        (BUCKETS, t.tr("registry.key_id_field")),
+        (BUCKETS, t.tr("registry.region_field")),
+        (BUCKETS, t.tr("registry.endpoint_field")),
+        (BUCKETS, t.tr("registry.secret_field")),
+        (BUCKETS, "S3"),
+        (MAILBOXES, "[[mailbox]]"),
+        (MAILBOXES, "koyomi.toml"),
+        (MAILBOXES, t.tr("settings.mailboxes")),
+        (MAILBOXES, t.tr("registry.add_mailbox")),
+        (MAILBOXES, t.tr("registry.mailbox_mail")),
+        (MAILBOXES, t.tr("registry.secret_field")),
+        (MAILBOXES, "mailbox"),
         (KEYS, "keymap.toml"),
         (KEYS, "prepend_keymap"),
     ]
@@ -174,7 +206,10 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let users_keys = app.browser.holds_token()
         || (app.prefs.state.page == USERS && app.browser.users_wants_esc())
         || (app.prefs.state.page == ACCOUNTS && app.browser.registry_wants_esc(RegistryPage::Accounts))
-        || (app.prefs.state.page == DATABASES && app.browser.registry_wants_esc(RegistryPage::Databases));
+        || (app.prefs.state.page == DATABASES && app.browser.registry_wants_esc(RegistryPage::Databases))
+        || (app.prefs.state.page == HOSTS && app.browser.registry_wants_esc(RegistryPage::Hosts))
+        || (app.prefs.state.page == BUCKETS && app.browser.registry_wants_esc(RegistryPage::Buckets))
+        || (app.prefs.state.page == MAILBOXES && app.browser.registry_wants_esc(RegistryPage::Mailboxes));
     let keys = if app.prefs.keys_edit.busy() || app.keep_ask.is_some() || app.browser.config_open() || users_keys {
         ito_prefs::Keys::default()
     } else {
@@ -190,6 +225,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         (tr("settings.users"), tr("settings.users_lead")),
         (tr("settings.accounts"), tr("settings.accounts_lead")),
         (tr("settings.databases"), tr("settings.databases_lead")),
+        (tr("settings.hosts"), tr("settings.hosts_lead")),
+        (tr("settings.buckets"), tr("settings.buckets_lead")),
+        (tr("settings.mailboxes"), tr("settings.mailboxes_lead")),
         (tr("settings.keys"), tr("settings.keys_lead")),
         (adv.0.to_owned(), adv.1.to_owned()),
         (about.0.to_owned(), about.1.to_owned()),
@@ -373,6 +411,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
         USERS => app.browser.users_page(ui, table),
         ACCOUNTS => app.browser.registry_page(ui, table, RegistryPage::Accounts),
         DATABASES => app.browser.registry_page(ui, table, RegistryPage::Databases),
+        HOSTS => app.browser.registry_page(ui, table, RegistryPage::Hosts),
+        BUCKETS => app.browser.registry_page(ui, table, RegistryPage::Buckets),
+        MAILBOXES => app.browser.registry_page(ui, table, RegistryPage::Mailboxes),
         KEYS => {
             let layer_name = |n: &str| LAYERS.iter().find(|(id, _)| *id == n).map_or_else(|| n.to_owned(), |(_, k)| tr(k));
             let desc = |d: &str| table.tr_desc(d).to_owned();
@@ -645,7 +686,8 @@ mod tests {
 
     #[test]
     fn pages_follow_ito_default_order() {
-        let ours = [GENERAL, THEME, NOTIFY, USERS, ACCOUNTS, DATABASES, KEYS, ADVANCED, ABOUT];
+        let ours = [GENERAL, THEME, NOTIFY, USERS, ACCOUNTS, DATABASES, HOSTS, BUCKETS, MAILBOXES, KEYS, ADVANCED, ABOUT];
+        assert_eq!(ours, [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
         assert!(ours.windows(2).all(|w| w[0] < w[1]));
         let has = [Page::Theme, Page::Keys, Page::Advanced];
         assert_eq!(ito_prefs::default_order(&has), [Page::General, Page::Theme, Page::Keys, Page::Advanced, Page::About]);
@@ -674,6 +716,23 @@ mod tests {
             assert!(has(ACCOUNTS, t.tr("registry.add_account")) && has(ACCOUNTS, t.tr("registry.secret_field")), "{lang}");
             assert!(has(DATABASES, "[[database]]") && has(DATABASES, t.tr("settings.databases")), "{lang}");
             assert!(has(DATABASES, t.tr("registry.add_database")) && has(DATABASES, t.tr("registry.tls_field")), "{lang}");
+        }
+    }
+
+    /// The Hosts, Buckets and Mailboxes pages are found by their words in both languages.
+    #[test]
+    fn the_search_finds_the_hosts_buckets_and_mailboxes_pages() {
+        for lang in ["en", "ja"] {
+            let (t, errors) = crate::i18n::table(lang);
+            assert!(errors.is_empty(), "{errors:?}");
+            let idx = index(Words::of(lang), MoreWords::of(lang), lang, &t, false);
+            let has = |p: usize, s: &str| idx.iter().any(|(q, x)| *q == p && x == s);
+            assert!(has(HOSTS, "[[host]]") && has(HOSTS, t.tr("settings.hosts")), "{lang}");
+            assert!(has(HOSTS, t.tr("registry.add_host")) && has(HOSTS, t.tr("registry.host_key_field")), "{lang}");
+            assert!(has(BUCKETS, "[[bucket]]") && has(BUCKETS, t.tr("settings.buckets")), "{lang}");
+            assert!(has(BUCKETS, t.tr("registry.add_bucket")) && has(BUCKETS, t.tr("registry.region_field")), "{lang}");
+            assert!(has(MAILBOXES, "[[mailbox]]") && has(MAILBOXES, t.tr("settings.mailboxes")), "{lang}");
+            assert!(has(MAILBOXES, t.tr("registry.add_mailbox")) && has(MAILBOXES, t.tr("registry.mailbox_mail")), "{lang}");
         }
     }
 

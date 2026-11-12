@@ -1,32 +1,42 @@
-//! The アカウント and データベース pages of the settings: the engine's `[[account]]` and `[[database]]` of
-//! koyomi.toml, listed, added, changed and removed through the door's `Registry`, `AccountPut`,
-//! `AccountRemove`, `DatabasePut` and `DatabaseRemove`.
+//! The アカウント, データベース, 接続先 PC, S3 and メールボックス pages of the settings: the engine's `[[account]]`,
+//! `[[database]]`, `[[host]]`, `[[bucket]]` and `[[mailbox]]` of koyomi.toml, listed, added, changed and removed
+//! through the door's `Registry` and the `…Put` and `…Remove` requests of each.
 //!
-//! A job names an entry (`run_as = "batch"`, `database = "sales"`), so the secret's name and the address
-//! are written once. The window only ever handles secret NAMES: no password is read, shown or sent here.
+//! A job names an entry (`run_as = "batch"`, `database = "sales"`, `on = "web1"`), so the secret's name and the
+//! address are written once. The window only ever handles secret NAMES: no password is read, shown or sent here.
 //!
 //! The state is plain data, so the rules are tested without a window (as on the users page): what the page
 //! may do ([`super::users::access`]), how a listing is taken, what an answer does ([`Registry::answered`])
 //! and what a click asks for ([`Registry::act`]). The drawing is [`show`].
 
-use koyomi_core::chore::{self, SqlDb, SqlTls};
+use koyomi_core::chore::{self, SqlDb, SqlTls, WinrmAuth};
+use koyomi_core::registry::{BucketEntry, HostEntry, MailboxEntry};
 use koyomi_core::{jobnet, msg, registry};
 
 use super::users::{self, Access, Under};
-use crate::proto::{AccountRow, DatabaseRow, RegistryBody, Request};
+use crate::proto::{AccountRow, BucketRow, DatabaseRow, HostRow, MailboxRow, RegistryBody, Request};
 
-/// The two pages share one listing (koyomi.toml is read once).
+/// The pages share one listing (koyomi.toml is read once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
     Accounts,
     Databases,
+    Hosts,
+    Buckets,
+    Mailboxes,
 }
 
 impl Page {
+    /// How many pages there are (the size of [`Registry::forms`]).
+    const COUNT: usize = 5;
+
     fn idx(self) -> usize {
         match self {
             Page::Accounts => 0,
             Page::Databases => 1,
+            Page::Hosts => 2,
+            Page::Buckets => 3,
+            Page::Mailboxes => 4,
         }
     }
 
@@ -35,6 +45,9 @@ impl Page {
         match self {
             Page::Accounts => "accounts",
             Page::Databases => "databases",
+            Page::Hosts => "hosts",
+            Page::Buckets => "buckets",
+            Page::Mailboxes => "mailboxes",
         }
     }
 
@@ -43,7 +56,85 @@ impl Page {
         match self {
             Page::Accounts => "[[account]]",
             Page::Databases => "[[database]]",
+            Page::Hosts => "[[host]]",
+            Page::Buckets => "[[bucket]]",
+            Page::Mailboxes => "[[mailbox]]",
         }
+    }
+
+    /// The keys of the words of this page: heading (this PC), heading (another PC), add, none, remove title, body,
+    /// body when nets use it.
+    fn words(self) -> [&'static str; 7] {
+        match self {
+            Page::Accounts => [
+                "registry.accounts_this",
+                "registry.accounts_far",
+                "registry.add_account",
+                "registry.none_accounts",
+                "registry.remove_title_account",
+                "registry.remove_body_account",
+                "registry.remove_used_account",
+            ],
+            Page::Databases => [
+                "registry.databases_this",
+                "registry.databases_far",
+                "registry.add_database",
+                "registry.none_databases",
+                "registry.remove_title_database",
+                "registry.remove_body_database",
+                "registry.remove_used_database",
+            ],
+            Page::Hosts => [
+                "registry.hosts_this",
+                "registry.hosts_far",
+                "registry.add_host",
+                "registry.none_hosts",
+                "registry.remove_title_host",
+                "registry.remove_body_host",
+                "registry.remove_used_host",
+            ],
+            Page::Buckets => [
+                "registry.buckets_this",
+                "registry.buckets_far",
+                "registry.add_bucket",
+                "registry.none_buckets",
+                "registry.remove_title_bucket",
+                "registry.remove_body_bucket",
+                "registry.remove_used_bucket",
+            ],
+            Page::Mailboxes => [
+                "registry.mailboxes_this",
+                "registry.mailboxes_far",
+                "registry.add_mailbox",
+                "registry.none_mailboxes",
+                "registry.remove_title_mailbox",
+                "registry.remove_body_mailbox",
+                "registry.remove_used_mailbox",
+            ],
+        }
+    }
+}
+
+/// The scheme of a host's address, which the kind seg supplies.
+fn scheme(winrm: bool) -> &'static str {
+    if winrm {
+        "winrm://"
+    } else {
+        "ssh://"
+    }
+}
+
+/// A stored `on` as the host form shows it: whether it is a WinRM address (`None` when it is neither), and the rest
+/// after the scheme, VERBATIM. The scheme is found whatever its case; nothing is split further, so rebuilding is
+/// the seg's scheme in front of the rest and nothing else.
+pub(super) fn split_on(on: &str) -> (Option<bool>, String) {
+    let t = on.trim();
+    if chore::ssh(t).is_some() {
+        (Some(false), t[scheme(false).len()..].to_owned())
+    } else if chore::winrm(t).is_some() {
+        (Some(true), t[scheme(true).len()..].to_owned())
+    } else {
+        (None, t.to_owned())
     }
 }
 
@@ -90,11 +181,33 @@ pub(super) struct Form {
     /// The person typed the secret's name: it no longer follows the entry's name.
     secret_typed: bool,
     pub tls: SqlTls,
+    /// The rest of the host, bucket and mailbox forms.
+    pub x: Extra,
     /// What the form opened with: the form is dirty when it differs.
     orig: (String, String, String, SqlTls),
+    orig_x: Extra,
     /// The role or the name at the engine changed under the page: 保存 waits until the person has looked at the new listing.
     pub stale: bool,
     pub error: Option<Line>,
+}
+
+/// What the host, bucket and mailbox forms hold besides the shared fields (`target` is a host's address WITHOUT the
+/// scheme, a bucket's `url`, a mailbox's `mail`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct Extra {
+    /// A host's kind: WinRM (else SSH).
+    pub winrm: bool,
+    /// SSH: `SHA256:…`.
+    pub host_key: String,
+    /// SSH: the private key file.
+    pub key: String,
+    /// WinRM: the certificate's SHA-256.
+    pub cert: String,
+    pub auth: WinrmAuth,
+    /// A bucket's `key_id` (plain, or `secret:<name>`).
+    pub key_id: String,
+    pub region: String,
+    pub endpoint: String,
 }
 
 impl Form {
@@ -107,10 +220,53 @@ impl Form {
             secret: String::new(),
             secret_typed: false,
             tls: SqlTls::Verify,
+            x: Extra::default(),
             orig: (String::new(), String::new(), String::new(), SqlTls::Verify),
+            orig_x: Extra::default(),
             stale: false,
             error: None,
         }
+    }
+
+    fn edit_host(row: &HostRow) -> Form {
+        let (winrm, rest) = split_on(&row.on);
+        let x = Extra {
+            winrm: winrm.unwrap_or(row.kind == "winrm"),
+            host_key: row.host_key.clone().unwrap_or_default(),
+            key: row.key.clone().unwrap_or_default(),
+            cert: row.cert.clone().unwrap_or_default(),
+            auth: row.auth.as_deref().and_then(|a| WinrmAuth::ALL.into_iter().find(|w| w.key() == a)).unwrap_or_default(),
+            ..Extra::default()
+        };
+        // An SSH host may have no password: its form does not make one up.
+        let secret = row.secret.clone().unwrap_or_default();
+        let mut f = Form::of(Page::Hosts, &row.name, &rest, &secret, SqlTls::Verify);
+        f.orig_x = x.clone();
+        f.x = x;
+        f
+    }
+
+    fn edit_bucket(row: &BucketRow) -> Form {
+        let key_id = match (&row.key_id, &row.key_id_secret) {
+            (Some(k), _) => k.clone(),
+            (None, Some(s)) => format!("secret:{s}"),
+            (None, None) => String::new(),
+        };
+        let x = Extra {
+            key_id,
+            region: row.region.clone().unwrap_or_default(),
+            endpoint: row.endpoint.clone().unwrap_or_default(),
+            ..Extra::default()
+        };
+        let secret = row.secret.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| row.name.clone());
+        let mut f = Form::of(Page::Buckets, &row.name, &row.url, &secret, SqlTls::Verify);
+        f.orig_x = x.clone();
+        f.x = x;
+        f
+    }
+
+    fn edit_mailbox(row: &MailboxRow) -> Form {
+        Form::of(Page::Mailboxes, &row.name, &row.mail, &row.secret, SqlTls::Verify)
     }
 
     fn edit_account(row: &AccountRow) -> Form {
@@ -132,7 +288,9 @@ impl Form {
             secret: secret.to_owned(),
             secret_typed: true,
             tls,
+            x: Extra::default(),
             orig: (name.to_owned(), target.to_owned(), secret.to_owned(), tls),
+            orig_x: Extra::default(),
             stale: false,
             error: None,
         }
@@ -140,21 +298,50 @@ impl Form {
 
     pub(super) fn dirty(&self) -> bool {
         (&self.name, &self.target, &self.secret, self.tls) != (&self.orig.0, &self.orig.1, &self.orig.2, self.orig.3)
+            || self.x != self.orig_x
+    }
+
+    /// Whether the secret's name follows the entry's name: a WinRM host needs one, an SSH host does not.
+    fn follows_name(&self) -> bool {
+        !self.secret_typed && (self.page != Page::Hosts || self.x.winrm)
     }
 
     /// The name was typed: the secret's name follows it until the person types the secret's name.
     fn name_typed(&mut self) {
-        if !self.secret_typed {
+        if self.follows_name() {
             self.secret = self.name.trim().to_owned();
         }
     }
 
-    /// The secret's name was typed: an empty one follows the entry's name again.
+    /// The secret's name was typed: an empty one follows the entry's name again (not an SSH host's, which has
+    /// none then).
     fn secret_edited(&mut self) {
         self.secret_typed = !self.secret.trim().is_empty();
-        if !self.secret_typed {
+        if self.follows_name() {
             self.secret = self.name.trim().to_owned();
         }
+    }
+
+    /// The kind seg of a host was picked: a WinRM host's secret follows the name, an SSH host's that does not
+    /// start empty.
+    pub(super) fn set_winrm(&mut self, winrm: bool) {
+        self.x.winrm = winrm;
+        if winrm && self.secret.trim().is_empty() {
+            self.secret_typed = false;
+            self.name_typed();
+        } else if !winrm && !self.secret_typed {
+            self.secret.clear();
+        }
+    }
+
+    /// Whether the form is for a WinRM host.
+    fn is_winrm(&self) -> bool {
+        self.page == Page::Hosts && self.x.winrm
+    }
+
+    /// The `on` this host form writes: the seg's scheme in front of the address as typed.
+    pub(super) fn host_on(&self) -> String {
+        format!("{}{}", scheme(self.x.winrm), self.target.trim())
     }
 
     /// The server a database's `db` is, when it reads.
@@ -167,7 +354,13 @@ impl Form {
         match self.page {
             Page::Accounts => true,
             Page::Databases => matches!(self.db(), Some(SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. })),
+            Page::Hosts | Page::Buckets | Page::Mailboxes => true,
         }
+    }
+
+    /// Whether the secret's name may be left out: an SSH host's (it can log in with a key).
+    fn secret_optional(&self) -> bool {
+        self.page == Page::Hosts && !self.x.winrm
     }
 
     /// Whether the database is a SQLite file: it takes no TLS.
@@ -215,6 +408,70 @@ impl Form {
                 chore::check_db(&db, password.as_deref(), tls.unwrap_or_default())
                     .map_err(|e| Line::Raw(msg::line(msg::CFG_DATABASE_BAD, &[&name, msg::uncoded(&e)])))?;
                 Ok(Request::DatabasePut { name, db, password, tls, base_sha256: base })
+            }
+            Page::Hosts => {
+                let winrm = self.is_winrm();
+                let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+                let password = if self.secret_optional() && secret.is_empty() {
+                    None
+                } else if secret_ok {
+                    Some(format!("secret:{secret}"))
+                } else {
+                    return Err(Line::SecretEmpty);
+                };
+                // Only the keys of the chosen kind go: the other kind's rows are hidden.
+                let entry = HostEntry {
+                    name: name.clone(),
+                    on: self.host_on(),
+                    host_key: if winrm { None } else { opt(&self.x.host_key) },
+                    key: if winrm { None } else { opt(&self.x.key) },
+                    password: password.clone(),
+                    cert: if winrm { opt(&self.x.cert) } else { None },
+                    auth: (winrm && self.x.auth != WinrmAuth::Basic).then_some(self.x.auth),
+                };
+                entry.check().map_err(Line::Raw)?;
+                Ok(Request::HostPut {
+                    name,
+                    on: entry.on,
+                    host_key: entry.host_key,
+                    key: entry.key,
+                    password,
+                    cert: entry.cert,
+                    auth: entry.auth.map(|a| a.key().to_owned()),
+                    base_sha256: base,
+                })
+            }
+            Page::Buckets => {
+                if !secret_ok {
+                    return Err(Line::SecretEmpty);
+                }
+                let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
+                let entry = BucketEntry {
+                    name: name.clone(),
+                    url: self.target.trim().to_owned(),
+                    key_id: opt(&self.x.key_id),
+                    password: Some(format!("secret:{secret}")),
+                    region: opt(&self.x.region),
+                    endpoint: opt(&self.x.endpoint),
+                };
+                entry.check().map_err(Line::Raw)?;
+                Ok(Request::BucketPut {
+                    name,
+                    url: entry.url,
+                    key_id: entry.key_id,
+                    password: format!("secret:{secret}"),
+                    region: entry.region,
+                    endpoint: entry.endpoint,
+                    base_sha256: base,
+                })
+            }
+            Page::Mailboxes => {
+                if !secret_ok {
+                    return Err(Line::SecretEmpty);
+                }
+                let entry = MailboxEntry { name: name.clone(), mail: self.target.trim().to_owned(), password: format!("secret:{secret}") };
+                entry.check().map_err(Line::Raw)?;
+                Ok(Request::MailboxPut { name, mail: entry.mail, password: entry.password, base_sha256: base })
             }
         }
     }
@@ -291,7 +548,11 @@ pub(super) struct Registry {
     pub(super) need: bool,
     error: Option<String>,
     /// The form of each page ([`Page::idx`]).
-    pub(super) forms: [Option<Form>; 2],
+    pub(super) forms: [Option<Form>; Page::COUNT],
+    /// The chooser of a host's key file, while it is open (only for an engine on this PC).
+    key_browse: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    /// The engine is on this PC (set each frame the page is drawn).
+    local: bool,
     /// A write is out and not yet answered.
     write: bool,
     refusal: Option<Line>,
@@ -400,6 +661,9 @@ impl Registry {
             (None, _) => Vec::new(),
             (Some(l), Page::Accounts) => l.accounts.iter().map(|a| a.name.clone()).collect(),
             (Some(l), Page::Databases) => l.databases.iter().map(|d| d.name.clone()).collect(),
+            (Some(l), Page::Hosts) => l.hosts.iter().map(|d| d.name.clone()).collect(),
+            (Some(l), Page::Buckets) => l.buckets.iter().map(|d| d.name.clone()).collect(),
+            (Some(l), Page::Mailboxes) => l.mailboxes.iter().map(|d| d.name.clone()).collect(),
         }
     }
 
@@ -409,6 +673,9 @@ impl Registry {
         match page {
             Page::Accounts => l.accounts.iter().find(|a| a.name == name).map(|a| a.used_by.clone()),
             Page::Databases => l.databases.iter().find(|d| d.name == name).map(|d| d.used_by.clone()),
+            Page::Hosts => l.hosts.iter().find(|d| d.name == name).map(|d| d.used_by.clone()),
+            Page::Buckets => l.buckets.iter().find(|d| d.name == name).map(|d| d.used_by.clone()),
+            Page::Mailboxes => l.mailboxes.iter().find(|d| d.name == name).map(|d| d.used_by.clone()),
         }
     }
 
@@ -432,6 +699,9 @@ impl Registry {
                     let form = self.listing.as_ref().and_then(|l| match page {
                         Page::Accounts => l.accounts.iter().find(|a| a.name == name).map(Form::edit_account),
                         Page::Databases => l.databases.iter().find(|d| d.name == name).map(Form::edit_database),
+                        Page::Hosts => l.hosts.iter().find(|d| d.name == name).map(Form::edit_host),
+                        Page::Buckets => l.buckets.iter().find(|d| d.name == name).map(Form::edit_bucket),
+                        Page::Mailboxes => l.mailboxes.iter().find(|d| d.name == name).map(Form::edit_mailbox),
                     });
                     if form.is_some() {
                         self.forms[i] = form;
@@ -485,6 +755,9 @@ impl Registry {
                     let req = match c.page {
                         Page::Accounts => Request::AccountRemove { name, base_sha256: base, force },
                         Page::Databases => Request::DatabaseRemove { name, base_sha256: base, force },
+                        Page::Hosts => Request::HostRemove { name, base_sha256: base, force },
+                        Page::Buckets => Request::BucketRemove { name, base_sha256: base, force },
+                        Page::Mailboxes => Request::MailboxRemove { name, base_sha256: base, force },
                     };
                     self.refusal = None;
                     self.write = true;
@@ -508,6 +781,9 @@ impl Registry {
         let (page, name) = match req {
             Request::AccountPut { name, .. } | Request::AccountRemove { name, .. } => (Page::Accounts, name),
             Request::DatabasePut { name, .. } | Request::DatabaseRemove { name, .. } => (Page::Databases, name),
+            Request::HostPut { name, .. } | Request::HostRemove { name, .. } => (Page::Hosts, name),
+            Request::BucketPut { name, .. } | Request::BucketRemove { name, .. } => (Page::Buckets, name),
+            Request::MailboxPut { name, .. } | Request::MailboxRemove { name, .. } => (Page::Mailboxes, name),
             _ => return Done { reload: false },
         };
         let name = name.trim().to_owned();
@@ -638,10 +914,7 @@ pub(super) fn nets_word(t: &ito_i18n::Table, used: &[String]) -> String {
 
 /// The question's title and body for removing `name`.
 pub(super) fn remove_words(t: &ito_i18n::Table, c: &Confirm) -> (String, String) {
-    let (title, plain, used) = match c.page {
-        Page::Accounts => ("registry.remove_title_account", "registry.remove_body_account", "registry.remove_used_account"),
-        Page::Databases => ("registry.remove_title_database", "registry.remove_body_database", "registry.remove_used_database"),
-    };
+    let [.., title, plain, used] = c.page.words();
     let body = if c.used_by.is_empty() { t.trf(plain, &[&c.name]) } else { t.trf(used, &[&c.name, &nets_word(t, &c.used_by)]) };
     (t.tr(title).to_owned(), body)
 }
@@ -650,6 +923,7 @@ pub(super) fn remove_words(t: &ito_i18n::Table, c: &Confirm) -> (String, String)
 pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &View, access: &Access, page: Page) -> Option<Click> {
     let c = ito_theme::colors();
     let mut click: Option<Click> = None;
+    r.local = v.far.is_none();
     let tag = page.tag();
     let (esc, enter, tab) = if r.wants_esc(page) {
         ui.ctx().input_mut(|i| {
@@ -670,11 +944,10 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
     } else if tab {
         click = Some(Click::MoveFocus);
     }
-    let heading = match (page, v.far) {
-        (Page::Accounts, None) => t.tr("registry.accounts_this").to_owned(),
-        (Page::Accounts, Some(n)) => t.trf("registry.accounts_far", &[n]),
-        (Page::Databases, None) => t.tr("registry.databases_this").to_owned(),
-        (Page::Databases, Some(n)) => t.trf("registry.databases_far", &[n]),
+    let [this, far, add, none, ..] = page.words();
+    let heading = match v.far {
+        None => t.tr(this).to_owned(),
+        Some(n) => t.trf(far, &[n]),
     };
     let body = ui.vertical(|ui| {
         ui.label(egui::RichText::new(&heading).strong());
@@ -700,7 +973,7 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
                 click.get_or_insert(Click::Reload);
             }
             let can_add = r.forms[page.idx()].is_none() && v.open && !r.write;
-            let words = t.tr(if page == Page::Accounts { "registry.add_account" } else { "registry.add_database" });
+            let words = t.tr(add);
             if users::button(ui, can_add, None, ito_prefs::Mark::Plus, words, ito_prefs::Tone::Plain, &format!("registry.{tag}.add.open")) {
                 click.get_or_insert(Click::OpenAdd);
             }
@@ -726,9 +999,12 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
             let empty = match page {
                 Page::Accounts => l.accounts.is_empty(),
                 Page::Databases => l.databases.is_empty(),
+                Page::Hosts => l.hosts.is_empty(),
+                Page::Buckets => l.buckets.is_empty(),
+                Page::Mailboxes => l.mailboxes.is_empty(),
             };
             if empty && r.error.is_none() && r.asked == 0 {
-                users::say_line(ui, t.tr(if page == Page::Accounts { "registry.none_accounts" } else { "registry.none_databases" }), c.dim);
+                users::say_line(ui, t.tr(none), c.dim);
             }
             match page {
                 Page::Accounts => {
@@ -761,6 +1037,75 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
                                 Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
                                 None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
                             }
+                            used_line(ui, t, &row.used_by);
+                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
+                        });
+                    }
+                }
+                Page::Hosts => {
+                    for row in &l.hosts {
+                        let here = editing.as_deref() == Some(row.name.as_str());
+                        drawn |= here;
+                        card(ui, |ui| {
+                            ui.label(egui::RichText::new(&row.name).strong());
+                            let kind = if row.kind == "winrm" { "WinRM" } else { "SSH" };
+                            line(ui, &t.trf("registry.kind_line", &[kind, &row.on]));
+                            for (key, v) in [
+                                ("registry.host_key_line", &row.host_key),
+                                ("registry.key_line", &row.key),
+                                ("registry.cert_line", &row.cert),
+                                ("registry.auth_line", &row.auth),
+                            ] {
+                                if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+                                    line(ui, &t.trf(key, &[v]));
+                                }
+                            }
+                            match &row.secret {
+                                Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
+                                None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
+                            }
+                            used_line(ui, t, &row.used_by);
+                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
+                        });
+                    }
+                }
+                Page::Buckets => {
+                    for row in &l.buckets {
+                        let here = editing.as_deref() == Some(row.name.as_str());
+                        drawn |= here;
+                        card(ui, |ui| {
+                            ui.label(egui::RichText::new(&row.name).strong());
+                            line(ui, &t.trf("registry.kind_line", &["S3", &row.url]));
+                            for (key, v) in [
+                                ("registry.region_line", &row.region),
+                                ("registry.endpoint_line", &row.endpoint),
+                                ("registry.key_id_line", &row.key_id),
+                            ] {
+                                if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
+                                    line(ui, &t.trf(key, &[v]));
+                                }
+                            }
+                            if let Some(s) = &row.key_id_secret {
+                                let state = row.key_id_state.as_deref().unwrap_or("");
+                                secret_lines_as(ui, t, page, (&row.name, s, state), ("registry.key_id_secret_line", ".keyid"));
+                            }
+                            match &row.secret {
+                                Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
+                                None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
+                            }
+                            used_line(ui, t, &row.used_by);
+                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
+                        });
+                    }
+                }
+                Page::Mailboxes => {
+                    for row in &l.mailboxes {
+                        let here = editing.as_deref() == Some(row.name.as_str());
+                        drawn |= here;
+                        card(ui, |ui| {
+                            ui.label(egui::RichText::new(&row.name).strong());
+                            line(ui, &t.trf("registry.mail_line", &[&row.mail]));
+                            secret_lines(ui, t, page, (&row.name, &row.secret, &row.state));
                             used_line(ui, t, &row.used_by);
                             row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
                         });
@@ -822,13 +1167,24 @@ fn used_line(ui: &mut egui::Ui, t: &ito_i18n::Table, used: &[String]) {
 }
 
 /// The secret's name and state; for a missing one, the command that sets it, with a copy button.
-fn secret_lines(ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, (name, secret, state): (&str, &str, &str)) {
-    line(ui, &t.trf("registry.secret_line", &[secret, state_word(t, state)]));
+fn secret_lines(ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, who: (&str, &str, &str)) {
+    secret_lines_as(ui, t, page, who, ("registry.secret_line", ""));
+}
+
+/// [`secret_lines`] with the key of its words and a tail for the copy button's ID (a second secret of one entry).
+fn secret_lines_as(
+    ui: &mut egui::Ui,
+    t: &ito_i18n::Table,
+    page: Page,
+    (name, secret, state): (&str, &str, &str),
+    (words, tail): (&str, &str),
+) {
+    line(ui, &t.trf(words, &[secret, state_word(t, state)]));
     if state == "missing" {
         let cmd = secret_command(secret);
         ui.horizontal_wrapped(|ui| {
             ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace()).selectable(true));
-            let id = format!("registry.{}.copy.{}", page.tag(), users::tid(name));
+            let id = format!("registry.{}.copy.{}{tail}", page.tag(), users::tid(name));
             if users::button(ui, true, None, ito_prefs::Mark::Copy, t.tr("users.copy"), ito_prefs::Tone::Plain, &id) {
                 ui.ctx().copy_text(cmd.clone());
             }
@@ -878,12 +1234,37 @@ fn row_end(
     });
 }
 
+/// A typed line of the form: its label, the tail of its test ID, its hint.
+fn typed_line(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, (label, tail, hint): (&str, &str, &str), text: &mut String) {
+    ui.horizontal(|ui| {
+        ui.label(t.tr(label));
+        let resp = ui.add(egui::TextEdit::singleline(text).hint_text(t.tr(hint)).desired_width(320.0));
+        ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
+        ito_a11y::test_id(&resp, &format!("{id}.{tail}"));
+    });
+}
+
 /// The add / edit form of `page`.
 fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, can: bool, click: &mut Option<Click>) {
     let busy = r.write;
+    let local = r.local;
     let Some(f) = r.forms[page.idx()].as_mut() else { return };
     let tag = page.tag();
     let id = format!("registry.{tag}.form");
+    // The key file the person picked lands in the host form that is up.
+    if let Some(rx) = &r.key_browse {
+        match rx.try_recv() {
+            Ok(paths) => {
+                r.key_browse = None;
+                if let (Some(p), Page::Hosts) = (paths.first(), page) {
+                    f.x.key = p.display().to_string();
+                }
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => r.key_browse = None,
+        }
+    }
+    let mut browsed = false;
     ui.add_enabled_ui(!busy, |ui| {
         ui.horizontal(|ui| {
             ui.label(t.tr("registry.name_field"));
@@ -895,16 +1276,75 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
                 f.name_typed();
             }
         });
+        if page == Page::Hosts {
+            ui.horizontal(|ui| {
+                ui.label(t.tr("registry.host_kind"));
+                let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+                let options = [(false, "SSH"), (true, "WinRM")];
+                let (to, resp) = ito_prefs::seg_named(ui, look, &format!("{id}.kind"), t.tr("registry.host_kind"), f.x.winrm, &options);
+                ito_a11y::test_id(&resp, &format!("{id}.kind"));
+                if let Some(winrm) = to {
+                    f.set_winrm(winrm);
+                }
+            });
+        }
         ui.horizontal(|ui| {
             let (label, hint) = match page {
                 Page::Accounts => ("registry.user_field", "registry.user_hint"),
                 Page::Databases => ("registry.db_field", "field.sql_db_hint"),
+                Page::Hosts if f.x.winrm => ("registry.host_on", "registry.host_on_hint_winrm"),
+                Page::Hosts => ("registry.host_on", "registry.host_on_hint_ssh"),
+                Page::Buckets => ("registry.bucket_url", "registry.bucket_url_hint"),
+                Page::Mailboxes => ("registry.mailbox_mail", "registry.mailbox_mail_hint"),
             };
             ui.label(t.tr(label));
+            if page == Page::Hosts {
+                ui.label(egui::RichText::new(scheme(f.x.winrm)).monospace());
+            }
             let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
             ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
             ito_a11y::test_id(&resp, &format!("{id}.target"));
         });
+        match page {
+            Page::Hosts if !f.x.winrm => {
+                typed_line(ui, t, &id, ("registry.host_key_field", "host_key", "registry.host_key_hint"), &mut f.x.host_key);
+                ui.horizontal(|ui| {
+                    ui.label(t.tr("registry.key_file"));
+                    let resp = ui.add(egui::TextEdit::singleline(&mut f.x.key).desired_width(320.0));
+                    ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.key_file"));
+                    ito_a11y::test_id(&resp, &format!("{id}.key"));
+                    // The key file is on the engine's PC: it can be picked only when that is this PC.
+                    if local {
+                        let b = ito_prefs::button_with(
+                            ui,
+                            ito_prefs::Look { c: ito_theme::colors(), q: "" },
+                            t.tr("pick.browse"),
+                            ito_prefs::Tone::Plain,
+                        );
+                        ito_a11y::test_id(&b, &format!("{id}.key.browse"));
+                        browsed = b.clicked();
+                    }
+                });
+            }
+            Page::Hosts => {
+                typed_line(ui, t, &id, ("registry.cert_field", "cert", "registry.cert_hint"), &mut f.x.cert);
+                ui.horizontal(|ui| {
+                    ui.label(t.tr("registry.auth_field"));
+                    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+                    // Shown by the protocol's own name, as the job form does (`Basic`, `NTLM`).
+                    let options = WinrmAuth::ALL.map(|a| (a, a.name()));
+                    let (to, resp) = ito_prefs::seg_named(ui, look, &format!("{id}.auth"), t.tr("registry.auth_field"), f.x.auth, &options);
+                    ito_a11y::test_id(&resp, &format!("{id}.auth"));
+                    if let Some(a) = to {
+                        f.x.auth = a;
+                    }
+                });
+            }
+            Page::Buckets => {
+                typed_line(ui, t, &id, ("registry.key_id_field", "key_id", "registry.key_id_hint"), &mut f.x.key_id);
+            }
+            _ => {}
+        }
         if f.needs_secret() {
             ui.horizontal(|ui| {
                 ui.label(t.tr("registry.secret_field"));
@@ -915,8 +1355,14 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
                     f.secret_edited();
                 }
             });
-            let note = egui::RichText::new(t.tr("registry.secret_note")).color(ito_theme::colors().dim);
+            let note =
+                egui::RichText::new(t.tr(if f.secret_optional() { "registry.secret_note_optional" } else { "registry.secret_note" }))
+                    .color(ito_theme::colors().dim);
             ui.add(egui::Label::new(note).wrap());
+        }
+        if page == Page::Buckets {
+            typed_line(ui, t, &id, ("registry.region_field", "region", "registry.region_hint"), &mut f.x.region);
+            typed_line(ui, t, &id, ("registry.endpoint_field", "endpoint", "registry.endpoint_hint"), &mut f.x.endpoint);
         }
         if page == Page::Databases && !f.is_sqlite() {
             ui.horizontal(|ui| {
@@ -931,6 +1377,10 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             });
         }
     });
+    if browsed && r.key_browse.is_none() {
+        let title = t.tr("registry.key_file").to_owned();
+        r.key_browse = Some(ito_dialog::spawn(move || ito_dialog::Dialog::new().title(&title).open_file().into_iter().collect()));
+    }
     if let Some(why) = &f.error {
         users::say_line(ui, &why.text(t), ito_theme::colors().err);
     }
@@ -1087,6 +1537,176 @@ mod tests {
         assert!(r.wants_esc(Page::Accounts) && !r.wants_esc(Page::Databases));
         r.act(Click::Esc, Page::Accounts, &OPEN);
         assert!(!r.wants_esc(Page::Accounts));
+    }
+
+    fn conn_body() -> RegistryBody {
+        RegistryBody {
+            sha256: "base1".into(),
+            hosts: vec![
+                HostRow {
+                    name: "web1".into(),
+                    on: "ssh://ops@web1:2222/".into(),
+                    kind: "ssh".into(),
+                    host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+                    state: "ok".into(),
+                    used_by: vec!["a".into()],
+                    ..HostRow::default()
+                },
+                HostRow {
+                    name: "pc".into(),
+                    on: "winrm://.\\u@pc:5986".into(),
+                    kind: "winrm".into(),
+                    secret: Some("pc".into()),
+                    state: "ok".into(),
+                    ..HostRow::default()
+                },
+            ],
+            buckets: vec![BucketRow {
+                name: "logs".into(),
+                url: "s3://logs/daily/".into(),
+                key_id: Some("AKIAEXAMPLE".into()),
+                region: Some("ap-northeast-1".into()),
+                secret: Some("logs".into()),
+                state: "ok".into(),
+                ..BucketRow::default()
+            }],
+            mailboxes: vec![MailboxRow {
+                name: "billing".into(),
+                mail: "imaps://u@mail.example.com/INBOX".into(),
+                secret: "billing".into(),
+                state: "ok".into(),
+                used_by: vec!["a".into()],
+            }],
+            ..RegistryBody::default()
+        }
+    }
+
+    fn conn_loaded(page: Page) -> Registry {
+        let mut r = Registry::default();
+        r.touch(1, page);
+        r.ask();
+        r.listing_answer(Ok(conn_body().to_toml()));
+        r
+    }
+
+    /// The scheme is the seg's; the rest is kept as it was typed, whatever its case.
+    #[test]
+    fn the_host_forms_scheme_is_stripped_and_rebuilt_without_touching_the_rest() {
+        for (on, winrm, rest) in [
+            ("SSH://web1", false, "web1"),
+            ("ssh://u@web1:2222/", false, "u@web1:2222/"),
+            ("winrm://DOMAIN\\u@pc", true, "DOMAIN\\u@pc"),
+            ("winrm://.\\u@pc:5986", true, ".\\u@pc:5986"),
+        ] {
+            assert_eq!(split_on(on), (Some(winrm), rest.to_owned()), "{on}");
+            let row = HostRow { name: "h".into(), on: on.into(), kind: if winrm { "winrm" } else { "ssh" }.into(), ..HostRow::default() };
+            let f = Form::edit_host(&row);
+            assert_eq!(f.is_winrm(), winrm);
+            assert_eq!(f.host_on(), format!("{}{rest}", scheme(winrm)), "{on}");
+        }
+        assert_eq!(split_on("web1"), (None, "web1".to_owned()));
+    }
+
+    #[test]
+    fn the_host_bucket_and_mailbox_forms_build_their_requests() {
+        let mut r = conn_loaded(Page::Hosts);
+        assert!(matches!(r.act(Click::OpenEdit("web1".into()), Page::Hosts, &OPEN), Do::Nothing));
+        let f = r.forms[Page::Hosts.idx()].as_ref().unwrap();
+        assert!(!f.dirty());
+        match f.request("base1", &[]) {
+            Ok(Request::HostPut { name, on, password, .. }) => {
+                assert_eq!((name.as_str(), on.as_str(), password), ("web1", "ssh://ops@web1:2222/", None));
+            }
+            other => panic!("{other:?}"),
+        }
+        // An empty form is refused, and a WinRM host needs its secret.
+        let f = Form::add(Page::Hosts);
+        assert!(f.request("b", &[]).is_err());
+        let mut f = Form::edit_host(&conn_body().hosts[1]);
+        f.secret.clear();
+        assert_eq!(f.request("b", &[]).err(), Some(Line::SecretEmpty));
+        // A bucket and a mailbox.
+        let f = Form::edit_bucket(&conn_body().buckets[0]);
+        match f.request("b", &[]) {
+            Ok(Request::BucketPut { name, url, password, .. }) => {
+                assert_eq!((name.as_str(), url.as_str(), password.as_str()), ("logs", "s3://logs/daily/", "secret:logs"));
+            }
+            other => panic!("{other:?}"),
+        }
+        let f = Form::edit_mailbox(&conn_body().mailboxes[0]);
+        assert!(matches!(f.request("b", &[]), Ok(Request::MailboxPut { .. })));
+        let mut f = Form::add(Page::Mailboxes);
+        f.name = "billing".into();
+        assert_eq!(f.request("b", &["billing".to_owned()]).err(), Some(Line::NameExists("billing".into())));
+    }
+
+    #[test]
+    fn removing_a_host_bucket_or_mailbox_asks_and_forces_only_when_a_net_names_it() {
+        for (page, name, used) in
+            [(Page::Hosts, "web1", true), (Page::Hosts, "pc", false), (Page::Buckets, "logs", false), (Page::Mailboxes, "billing", true)]
+        {
+            let mut r = conn_loaded(page);
+            assert!(matches!(r.act(Click::Yes, page, &OPEN), Do::Nothing));
+            r.act(Click::AskRemove(name.into()), page, &OPEN);
+            assert_eq!(r.confirm.as_ref().map(|c| c.used_by.is_empty()), Some(!used), "{name}");
+            let Do::Send(req) = r.act(Click::Yes, page, &OPEN) else { panic!() };
+            let (n, force) = match req {
+                Request::HostRemove { name, force, .. }
+                | Request::BucketRemove { name, force, .. }
+                | Request::MailboxRemove { name, force, .. } => (name, force),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!((n.as_str(), force), (name, used));
+        }
+    }
+
+    #[test]
+    fn the_answers_of_the_six_requests_route_to_their_pages() {
+        let mut r = conn_loaded(Page::Hosts);
+        let reqs = [
+            Request::HostPut {
+                name: "web1".into(),
+                on: "ssh://x".into(),
+                host_key: None,
+                key: None,
+                password: None,
+                cert: None,
+                auth: None,
+                base_sha256: "base1".into(),
+            },
+            Request::HostRemove { name: "web1".into(), base_sha256: "base1".into(), force: false },
+            Request::BucketPut {
+                name: "logs".into(),
+                url: "s3://logs/".into(),
+                key_id: None,
+                password: "secret:logs".into(),
+                region: None,
+                endpoint: None,
+                base_sha256: "base1".into(),
+            },
+            Request::BucketRemove { name: "logs".into(), base_sha256: "base1".into(), force: false },
+            Request::MailboxPut {
+                name: "billing".into(),
+                mail: "imaps://bill@mail".into(),
+                password: "secret:bill".into(),
+                base_sha256: "base1".into(),
+            },
+            Request::MailboxRemove { name: "billing".into(), base_sha256: "base1".into(), force: false },
+        ];
+        for req in &reqs {
+            r.write = true;
+            let mut next = conn_body();
+            next.sha256 = "base2".into();
+            let done = r.answered(req, Ok(next.to_toml()));
+            assert!(!done.reload && !r.write(), "{req:?}");
+            assert_eq!(
+                r.listing.as_ref().map(|l| (l.sha256.as_str(), l.hosts.len(), l.buckets.len(), l.mailboxes.len())),
+                Some(("base2", 2, 1, 1))
+            );
+        }
+        r.write = true;
+        let done = r.answered(&reqs[1], Err(msg::line(msg::CONFIG_CHANGED, &[])));
+        assert!(done.reload && r.refusal() == Some(&Line::BaseChanged));
     }
 
     #[test]
