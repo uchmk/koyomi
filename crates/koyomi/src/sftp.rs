@@ -41,7 +41,7 @@ fn hostkey(at: &str) -> i32 {
             return 2;
         }
     };
-    match ito_sftp::fingerprint(&far.host, far.port.unwrap_or(22), Duration::from_secs(15)) {
+    match fingerprint(&far.host, far.port.unwrap_or(22)) {
         Ok(fp) => {
             crate::say(&format!("host_key = \"{fp}\""), false);
             0
@@ -51,6 +51,17 @@ fn hostkey(at: &str) -> i32 {
             1
         }
     }
+}
+
+/// The bare `SHA256:…` host key `host:port` shows, or why not (ito-sftp's words, without the host).
+fn fingerprint(host: &str, port: u16) -> Result<String, String> {
+    ito_sftp::fingerprint(host, port, Duration::from_secs(15)).map_err(|e| e.to_string())
+}
+
+/// The SSH host key `host:port` shows, for the engine to hand to the settings: the bare `SHA256:…`; no
+/// login is made. Err is `<host>:<port>: <error>`.
+pub(crate) fn peek_host_key(host: &str, port: u16) -> Result<String, String> {
+    fingerprint(host, port).map_err(|e| format!("{host}:{port}: {e}"))
 }
 
 fn var(name: &str) -> Option<String> {
@@ -249,6 +260,18 @@ pub(crate) fn password(p: String) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A port that nothing listens on (bound and dropped on the loopback), so no network is touched.
+    fn refused_port() -> u16 {
+        std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
+    }
+
+    #[test]
+    fn a_refused_loopback_port_fails_with_an_error_naming_host_and_port() {
+        let port = refused_port();
+        let e = peek_host_key("127.0.0.1", port).unwrap_err();
+        assert!(e.starts_with(&format!("127.0.0.1:{port}: ")) && e.len() > format!("127.0.0.1:{port}: ").len(), "{e}");
+    }
 
     #[test]
     fn verify_maps_to_how_ito_sftp_checks() {

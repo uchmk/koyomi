@@ -2983,6 +2983,24 @@ text = "{0} of koyomi.toml has no {1}."
 cause = "koyomi.toml has no entry with the given name. It may have been removed by another operation."
 action = "Read the latest content again and check."
 
+[E2252]
+when = "The host name or port of a request to peek a host's key or certificate cannot be used"
+text = "The host name or port cannot be read."
+cause = "The name must be 1 to 253 characters of letters, digits, dots, hyphens and underscores, and the port must not be 0. An IPv6 address, @, :, / and spaces are not allowed."
+action = "Give a name or an IPv4 address, and a port."
+
+[E2253]
+when = "More than 4 requests to peek a host's key or certificate are running at once"
+text = "Another peek has not finished yet."
+cause = "The engine takes at most 4 peeks at hosts at the same time."
+action = "Wait a little and press the button again."
+
+[E2254]
+when = "The work of peeking a host's key or certificate stopped before it gave a result"
+text = "The peek at the host stopped half way."
+cause = "The work ended abnormally, or its thread could not be started."
+action = "Press the button again. If it keeps happening, check the engine's log."
+
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."

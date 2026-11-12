@@ -14,7 +14,7 @@ use koyomi_core::registry::{BucketEntry, HostEntry, MailboxEntry};
 use koyomi_core::{jobnet, msg, registry};
 
 use super::users::{self, Access, Under};
-use crate::proto::{AccountRow, BucketRow, DatabaseRow, HostRow, MailboxRow, RegistryBody, Request};
+use crate::proto::{peek_target_ok, AccountRow, BucketRow, DatabaseRow, HostRow, MailboxRow, PeekKind, RegistryBody, Request};
 
 /// The pages share one listing (koyomi.toml is read once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -189,6 +189,47 @@ pub(super) struct Form {
     /// The role or the name at the engine changed under the page: 保存 waits until the person has looked at the new listing.
     pub stale: bool,
     pub error: Option<Line>,
+    /// The host form's "connect and check": asked, and the answer when it came.
+    pub peek: Option<Peek>,
+}
+
+/// One "connect and check" of a host form. Only an answer with this `ticket` is taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct Peek {
+    pub ticket: u64,
+    pub kind: PeekKind,
+    /// What was asked, as `peek_target` gave it at the click: the peek is dropped when the address no longer reads so.
+    pub asked: (PeekKind, String, u16),
+    /// `None` while the engine has not answered.
+    pub result: Option<Result<String, String>>,
+}
+
+/// How a peeked value stands against what the field holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Verdict {
+    /// The field is empty.
+    Empty,
+    Same,
+    Differs,
+}
+
+/// Compares what a host showed with the field. SSH: the trimmed text, exactly. WinRM: both as fingerprints, so
+/// case and colons do not matter.
+pub(super) fn verdict(winrm: bool, field: &str, shown: &str) -> Verdict {
+    let field = field.trim();
+    if field.is_empty() {
+        return Verdict::Empty;
+    }
+    let same = if winrm {
+        matches!((ito_winrm::fingerprint::parse(field), ito_winrm::fingerprint::parse(shown)), (Some(a), Some(b)) if a == b)
+    } else {
+        field == shown.trim()
+    };
+    if same {
+        Verdict::Same
+    } else {
+        Verdict::Differs
+    }
 }
 
 /// What the host, bucket and mailbox forms hold besides the shared fields (`target` is a host's address WITHOUT the
@@ -225,6 +266,7 @@ impl Form {
             orig_x: Extra::default(),
             stale: false,
             error: None,
+            peek: None,
         }
     }
 
@@ -293,6 +335,41 @@ impl Form {
             orig_x: Extra::default(),
             stale: false,
             error: None,
+            peek: None,
+        }
+    }
+
+    /// The kind, host and port a "connect and check" would go to, when the address reads and passes the engine's rule.
+    pub(super) fn peek_target(&self) -> Option<(PeekKind, String, u16)> {
+        if self.page != Page::Hosts {
+            return None;
+        }
+        let on = self.host_on();
+        let (kind, read, default) =
+            if self.x.winrm { (PeekKind::Winrm, chore::winrm(&on)?, chore::WINRM_PORT) } else { (PeekKind::Ssh, chore::ssh(&on)?, 22) };
+        let far = read.ok()?;
+        let port = far.port.unwrap_or(default);
+        peek_target_ok(&far.host, port).then_some((kind, far.host, port))
+    }
+
+    /// Drops a peek whose address is no longer the one it was asked for.
+    pub(super) fn drop_stale_peek(&mut self) {
+        if self.peek.as_ref().is_some_and(|p| self.peek_target().as_ref() != Some(&p.asked)) {
+            self.peek = None;
+        }
+    }
+
+    /// Whether the "connect and check" button takes a click: the page is open, the address reads, and no ask is waiting.
+    pub(super) fn peek_enabled(&self, open: bool) -> bool {
+        open && self.peek_target().is_some() && !self.peek.as_ref().is_some_and(|p| p.result.is_none())
+    }
+
+    /// The value in the field the peek fills (the host key, or the certificate's fingerprint).
+    fn peek_field(&self) -> &str {
+        if self.x.winrm {
+            &self.x.cert
+        } else {
+            &self.x.host_key
         }
     }
 
@@ -325,6 +402,9 @@ impl Form {
     /// The kind seg of a host was picked: a WinRM host's secret follows the name, an SSH host's that does not
     /// start empty.
     pub(super) fn set_winrm(&mut self, winrm: bool) {
+        if self.x.winrm != winrm {
+            self.peek = None;
+        }
         self.x.winrm = winrm;
         if winrm && self.secret.trim().is_empty() {
             self.secret_typed = false;
@@ -512,6 +592,10 @@ pub(super) enum Click {
     /// Esc: the question, else the form.
     Esc,
     MoveFocus,
+    /// 「接続して確かめる」 of the host form.
+    Peek,
+    /// 「使う」: the value the host showed goes into the field.
+    UsePeek,
 }
 
 /// What the browser does after a click.
@@ -553,9 +637,13 @@ pub(super) struct Registry {
     key_browse: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
     /// The engine is on this PC (set each frame the page is drawn).
     local: bool,
+    /// The access is open (set each frame the page is drawn).
+    open: bool,
     /// A write is out and not yet answered.
     write: bool,
     refusal: Option<Line>,
+    /// The last ticket given to a "connect and check".
+    peek_ticket: u64,
     pub(super) confirm: Option<Confirm>,
 }
 
@@ -636,6 +724,9 @@ impl Registry {
         self.discard = self.asked;
         self.need = true;
         for f in &mut self.forms {
+            if let Some(form) = f {
+                form.peek = None;
+            }
             match f {
                 Some(form) if form.dirty() => form.stale = true,
                 _ => *f = None,
@@ -764,6 +855,30 @@ impl Registry {
                     return Do::Send(req);
                 }
             }
+            Click::Peek => {
+                if v.open && page == Page::Hosts {
+                    let ticket = self.peek_ticket + 1;
+                    if let Some(f) = self.forms[i].as_mut().filter(|f| f.peek.as_ref().is_none_or(|p| p.result.is_some())) {
+                        if let Some((kind, host, port)) = f.peek_target() {
+                            self.peek_ticket = ticket;
+                            f.peek = Some(Peek { ticket, kind, asked: (kind, host.clone(), port), result: None });
+                            return Do::Send(Request::HostPeek { kind, host, port, ticket });
+                        }
+                    }
+                }
+            }
+            Click::UsePeek => {
+                if let Some(f) = self.forms[i].as_mut() {
+                    f.drop_stale_peek();
+                    if let Some(Peek { result: Some(Ok(value)), .. }) = f.peek.clone() {
+                        if f.x.winrm {
+                            f.x.cert = value;
+                        } else {
+                            f.x.host_key = value;
+                        }
+                    }
+                }
+            }
             Click::Esc => {
                 // Only this page's question: one left on the other page is not on the screen.
                 if self.confirm.as_ref().is_some_and(|q| q.page == page) {
@@ -778,6 +893,16 @@ impl Registry {
 
     /// The answer to one of the page's writes. A reply is the new listing; an error is the page's line.
     pub(super) fn answered(&mut self, req: &Request, r: Result<String, String>) -> Done {
+        if let Request::HostPeek { ticket, .. } = req {
+            // Only the answer to the ask the open form is waiting for; any other is late and dropped.
+            if let Some(f) = self.forms[Page::Hosts.idx()].as_mut() {
+                f.drop_stale_peek();
+                if let Some(p) = f.peek.as_mut().filter(|p| p.ticket == *ticket && p.result.is_none()) {
+                    p.result = Some(r);
+                }
+            }
+            return Done { reload: false };
+        }
         let (page, name) = match req {
             Request::AccountPut { name, .. } | Request::AccountRemove { name, .. } => (Page::Accounts, name),
             Request::DatabasePut { name, .. } | Request::DatabaseRemove { name, .. } => (Page::Databases, name),
@@ -824,6 +949,15 @@ impl Registry {
         } else {
             self.write = false;
             self.refusal = Some(Line::Unsent(why));
+        }
+    }
+
+    /// A "connect and check" the thread did not take: the form shows why instead of waiting.
+    pub(super) fn peek_unsent(&mut self, why: String) {
+        if let Some(p) = self.forms[Page::Hosts.idx()].as_mut().and_then(|f| f.peek.as_mut()) {
+            if p.result.is_none() {
+                p.result = Some(Err(why));
+            }
         }
     }
 
@@ -924,6 +1058,7 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
     let c = ito_theme::colors();
     let mut click: Option<Click> = None;
     r.local = v.far.is_none();
+    r.open = v.open;
     let tag = page.tag();
     let (esc, enter, tab) = if r.wants_esc(page) {
         ui.ctx().input_mut(|i| {
@@ -1244,10 +1379,69 @@ fn typed_line(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, (label, tail, hi
     });
 }
 
+/// The "connect and check" button of a host form, and what the host showed.
+fn peek_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, open: bool, click: &mut Option<Click>) {
+    let c = ito_theme::colors();
+    let winrm = f.x.winrm;
+    let target = f.peek_target();
+    let waiting = f.peek.as_ref().is_some_and(|p| p.result.is_none());
+    let on = f.peek_enabled(open);
+    let why = if target.is_none() {
+        t.tr("registry.peek_bad_target")
+    } else {
+        t.tr(if winrm { "registry.peek_hover_winrm" } else { "registry.peek_hover_ssh" })
+    };
+    ui.horizontal_wrapped(|ui| {
+        if users::button(
+            ui,
+            on,
+            Some(why),
+            ito_prefs::Mark::Search,
+            t.tr("registry.peek_button"),
+            ito_prefs::Tone::Plain,
+            &format!("{id}.peek"),
+        ) {
+            click.get_or_insert(Click::Peek);
+        }
+        if waiting {
+            ui.spinner();
+            users::say_line(ui, t.tr("registry.peek_waiting"), c.dim);
+        }
+    });
+    match f.peek.as_ref().and_then(|p| p.result.as_ref()) {
+        Some(Ok(value)) => {
+            users::say_line(ui, &t.trf(if winrm { "registry.peek_got_winrm" } else { "registry.peek_got_ssh" }, &[value]), c.fg);
+            let verdict = verdict(winrm, f.peek_field(), value);
+            match verdict {
+                Verdict::Same => users::say_line(ui, t.tr("registry.peek_same"), c.dim),
+                Verdict::Empty => users::say_line(ui, t.tr("registry.peek_first"), c.wait),
+                Verdict::Differs => users::say_line(ui, t.tr("registry.peek_differs"), c.wait),
+            }
+            if verdict != Verdict::Same
+                && users::button(
+                    ui,
+                    true,
+                    None,
+                    ito_prefs::Mark::Check,
+                    t.tr("registry.peek_use"),
+                    ito_prefs::Tone::Plain,
+                    &format!("{id}.peek.use"),
+                )
+            {
+                click.get_or_insert(Click::UsePeek);
+            }
+        }
+        Some(Err(e)) => users::say_line(ui, e, c.err),
+        None => {}
+    }
+}
+
 /// The add / edit form of `page`.
 fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, can: bool, click: &mut Option<Click>) {
     let busy = r.write;
     let local = r.local;
+    // The page may ask the engine (a read; it needs no listing).
+    let v_open = r.open;
     let Some(f) = r.forms[page.idx()].as_mut() else { return };
     let tag = page.tag();
     let id = format!("registry.{tag}.form");
@@ -1304,10 +1498,16 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
             ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
             ito_a11y::test_id(&resp, &format!("{id}.target"));
+            if resp.changed() {
+                // What a host showed is for the address it was asked of.
+                f.peek = None;
+            }
         });
+        f.drop_stale_peek();
         match page {
             Page::Hosts if !f.x.winrm => {
                 typed_line(ui, t, &id, ("registry.host_key_field", "host_key", "registry.host_key_hint"), &mut f.x.host_key);
+                peek_ui(ui, t, &id, f, v_open, click);
                 ui.horizontal(|ui| {
                     ui.label(t.tr("registry.key_file"));
                     let resp = ui.add(egui::TextEdit::singleline(&mut f.x.key).desired_width(320.0));
@@ -1328,6 +1528,7 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             }
             Page::Hosts => {
                 typed_line(ui, t, &id, ("registry.cert_field", "cert", "registry.cert_hint"), &mut f.x.cert);
+                peek_ui(ui, t, &id, f, v_open, click);
                 ui.horizontal(|ui| {
                     ui.label(t.tr("registry.auth_field"));
                     let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
@@ -1842,5 +2043,238 @@ mod tests {
         r.forms[0].as_mut().unwrap().name = "typed".into();
         assert!(r.role_told((Some(Role::Edit), Some("me".into()))));
         assert!(r.listing.is_none() && r.forms[0].as_ref().is_some_and(|f| f.stale));
+    }
+}
+
+#[cfg(test)]
+mod peek_tests {
+    use super::*;
+
+    const OPEN: View = View { far: None, open: true };
+    const KEY: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+
+    /// An add form for a host, with `target` typed.
+    fn hosts(target: &str) -> Registry {
+        let mut r = Registry::default();
+        r.touch(1, Page::Hosts);
+        r.act(Click::OpenAdd, Page::Hosts, &OPEN);
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().target = target.to_owned();
+        r
+    }
+
+    fn form(r: &Registry) -> &Form {
+        r.forms[Page::Hosts.idx()].as_ref().unwrap()
+    }
+
+    fn click(r: &mut Registry) -> Option<(PeekKind, String, u16, u64)> {
+        match r.act(Click::Peek, Page::Hosts, &OPEN) {
+            Do::Send(Request::HostPeek { kind, host, port, ticket }) => Some((kind, host, port, ticket)),
+            Do::Nothing => None,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn answer(r: &mut Registry, ticket: u64, value: &str) {
+        let req = Request::HostPeek { kind: PeekKind::Ssh, host: "web1".into(), port: 22, ticket };
+        r.answered(&req, Ok(value.to_owned()));
+    }
+
+    #[test]
+    fn the_click_sends_the_address_read_with_its_default_port_and_a_new_ticket() {
+        let mut r = hosts("ops@web1");
+        assert_eq!(click(&mut r), Some((PeekKind::Ssh, "web1".into(), 22, 1)));
+        assert!(form(&r).peek.as_ref().is_some_and(|p| p.ticket == 1 && p.result.is_none()));
+        // One ask at a time: a second click while waiting sends nothing.
+        assert_eq!(click(&mut r), None);
+        let mut r = hosts("CORP\\u@pc");
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().set_winrm(true);
+        assert_eq!(click(&mut r), Some((PeekKind::Winrm, "pc".into(), chore::WINRM_PORT, 1)));
+    }
+
+    #[test]
+    fn the_button_is_off_for_an_address_that_does_not_read_or_the_engine_would_refuse() {
+        for bad in ["", "   ", "web1:0", "[::1]", "a b", "u@", "web1/x"] {
+            let r = hosts(bad);
+            assert_eq!(form(&r).peek_target(), None, "{bad:?}");
+        }
+        let mut r = hosts("");
+        assert_eq!(click(&mut r), None);
+        assert!(form(&r).peek.is_none());
+        // A WinRM address needs its user, as the host form's own check does.
+        let mut r = hosts("pc");
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().set_winrm(true);
+        assert_eq!(form(&r).peek_target(), None);
+        // A closed page asks nothing.
+        let mut r = hosts("web1");
+        let shut = View { far: None, open: false };
+        assert!(matches!(r.act(Click::Peek, Page::Hosts, &shut), Do::Nothing));
+    }
+
+    #[test]
+    fn only_the_waiting_ticket_is_taken() {
+        let mut r = hosts("web1");
+        let (.., ticket) = click(&mut r).unwrap();
+        answer(&mut r, ticket + 1, "SHA256:other");
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, None);
+        answer(&mut r, ticket, KEY);
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, Some(Ok(KEY.to_owned())));
+        // A second answer to the same ticket does not replace the first.
+        answer(&mut r, ticket, "SHA256:later");
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, Some(Ok(KEY.to_owned())));
+    }
+
+    #[test]
+    fn a_late_answer_is_dropped_after_the_address_changes_even_back_to_the_same() {
+        let mut r = hosts("web1");
+        let (.., a) = click(&mut r).unwrap();
+        // The address is changed to B: the model itself drops the peek, with no help from the drawing.
+        set_target(&mut r, "web2");
+        answer(&mut r, a, "SHA256:stale");
+        assert!(form(&r).peek.is_none());
+        // Back to A and asked again: a new ticket; the old ticket's answer is dropped, the new one taken.
+        set_target(&mut r, "web1");
+        let (.., again) = click(&mut r).unwrap();
+        assert_ne!(a, again);
+        answer(&mut r, a, "SHA256:stale");
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, None);
+        answer(&mut r, again, KEY);
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, Some(Ok(KEY.to_owned())));
+    }
+
+    fn set_target(r: &mut Registry, target: &str) {
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().target = target.to_owned();
+    }
+
+    #[test]
+    fn a_result_is_not_used_after_the_address_changes() {
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        answer(&mut r, t, KEY);
+        set_target(&mut r, "web2");
+        r.act(Click::UsePeek, Page::Hosts, &OPEN);
+        assert_eq!(form(&r).x.host_key, "");
+        assert!(form(&r).peek.is_none());
+    }
+
+    #[test]
+    fn the_button_is_on_only_for_an_open_page_a_readable_address_and_no_ask_waiting() {
+        let r = hosts("web1");
+        assert!(form(&r).peek_enabled(true));
+        assert!(!form(&r).peek_enabled(false));
+        let r = hosts("web1:0");
+        assert!(!form(&r).peek_enabled(true));
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        assert!(!form(&r).peek_enabled(true));
+        answer(&mut r, t, KEY);
+        assert!(form(&r).peek_enabled(true));
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        r.answered(&Request::HostPeek { kind: PeekKind::Ssh, host: "web1".into(), port: 22, ticket: t }, Err("E2253".into()));
+        assert!(form(&r).peek.as_ref().unwrap().result.is_some());
+        assert!(form(&r).peek_enabled(true));
+    }
+
+    #[test]
+    fn a_saved_host_drops_the_peek_and_a_late_answer_finds_nothing() {
+        let mut r = hosts("web1");
+        r.listing = Some(RegistryBody::default());
+        let f = r.forms[Page::Hosts.idx()].as_mut().unwrap();
+        f.name = "h1".into();
+        f.x.key = "id_ed25519".into();
+        f.x.host_key = KEY.into();
+        let (.., t) = click(&mut r).unwrap();
+        let Do::Send(put) = r.act(Click::Save, Page::Hosts, &OPEN) else { panic!("the save was not sent: {:?}", form(&r).error.is_some()) };
+        assert!(matches!(put, Request::HostPut { .. }));
+        r.answered(&put, Ok(RegistryBody::default().to_toml()));
+        assert!(r.forms[Page::Hosts.idx()].is_none());
+        answer(&mut r, t, KEY);
+        assert!(r.forms[Page::Hosts.idx()].is_none());
+    }
+
+    #[test]
+    fn a_late_answer_finds_nothing_after_the_kind_changes_or_the_form_is_closed_and_reopened() {
+        let mut r = hosts("u@web1");
+        let (.., t) = click(&mut r).unwrap();
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().set_winrm(true);
+        assert!(form(&r).peek.is_none());
+        answer(&mut r, t, KEY);
+        assert!(form(&r).peek.is_none());
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        r.act(Click::CloseForm, Page::Hosts, &OPEN);
+        r.act(Click::OpenAdd, Page::Hosts, &OPEN);
+        answer(&mut r, t, KEY);
+        assert!(form(&r).peek.is_none());
+        // A role change also drops what was asked.
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        r.dropped();
+        answer(&mut r, t, KEY);
+        assert!(r.forms[Page::Hosts.idx()].as_ref().is_none_or(|f| f.peek.is_none()));
+    }
+
+    #[test]
+    fn use_fills_the_host_key_or_the_certificate_and_nothing_else() {
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        answer(&mut r, t, KEY);
+        assert_eq!(form(&r).x.host_key, "");
+        r.act(Click::UsePeek, Page::Hosts, &OPEN);
+        assert_eq!((form(&r).x.host_key.as_str(), form(&r).x.cert.as_str()), (KEY, ""));
+        // WinRM fills the certificate's field.
+        let mut r = hosts("u@pc");
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().set_winrm(true);
+        let (.., t) = click(&mut r).unwrap();
+        answer(&mut r, t, "AA:BB");
+        r.act(Click::UsePeek, Page::Hosts, &OPEN);
+        assert_eq!((form(&r).x.host_key.as_str(), form(&r).x.cert.as_str()), ("", "AA:BB"));
+        // An error answer fills nothing.
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        r.answered(&Request::HostPeek { kind: PeekKind::Ssh, host: "web1".into(), port: 22, ticket: t }, Err("E2253".into()));
+        r.act(Click::UsePeek, Page::Hosts, &OPEN);
+        assert_eq!(form(&r).x.host_key, "");
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, Some(Err("E2253".to_owned())));
+    }
+
+    #[test]
+    fn a_peek_is_a_read_and_leaves_the_write_flag_alone() {
+        let mut r = hosts("web1");
+        let (.., t) = click(&mut r).unwrap();
+        assert!(!r.write());
+        answer(&mut r, t, KEY);
+        assert!(!r.write());
+        // A request the thread did not take shows as the peek's error, not as the page's.
+        let mut r = hosts("web1");
+        click(&mut r).unwrap();
+        r.peek_unsent("down".into());
+        assert_eq!(form(&r).peek.as_ref().unwrap().result, Some(Err("down".to_owned())));
+        assert!(r.refusal().is_none());
+    }
+
+    #[test]
+    fn empty_same_and_different_are_told_apart() {
+        assert_eq!(verdict(false, "", KEY), Verdict::Empty);
+        assert_eq!(verdict(false, "  ", KEY), Verdict::Empty);
+        assert_eq!(verdict(false, &format!("  {KEY} "), KEY), Verdict::Same);
+        assert_eq!(verdict(false, "SHA256:other", KEY), Verdict::Differs);
+        // SSH is exact: case counts.
+        assert_eq!(verdict(false, &KEY.to_lowercase(), KEY), Verdict::Differs);
+        let hex = "ab".repeat(32);
+        let colons = hex.as_bytes().chunks(2).map(|c| std::str::from_utf8(c).unwrap().to_uppercase()).collect::<Vec<_>>().join(":");
+        assert_eq!(verdict(true, &colons, &hex), Verdict::Same);
+        assert_eq!(verdict(true, &hex.to_uppercase(), &colons), Verdict::Same);
+        assert_eq!(verdict(true, "not a fingerprint", &hex), Verdict::Differs);
+        assert_eq!(verdict(true, &"cd".repeat(32), &hex), Verdict::Differs);
+    }
+
+    #[test]
+    fn the_peek_never_changes_what_is_saved() {
+        let mut r = hosts("web1");
+        let before = form(&r).request("b", &[]);
+        let (.., t) = click(&mut r).unwrap();
+        answer(&mut r, t, KEY);
+        assert_eq!(format!("{:?}", form(&r).request("b", &[])), format!("{before:?}"));
     }
 }

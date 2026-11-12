@@ -110,6 +110,12 @@ fn limited(mut client: Client) -> Client {
     client
 }
 
+/// `client` made to wait [`proto::PEEK_CALL_WAIT`] for a read and for the whole call.
+fn slowed(client: &mut Client) {
+    client.timeout = proto::PEEK_CALL_WAIT;
+    client.deadline = Some(proto::PEEK_CALL_WAIT);
+}
+
 /// The check the add-a-connection box makes before it writes anything: the PC at `url` (its certificate pinned
 /// to `fingerprint`) answers `GET /health`, and `token` is one a window may be driven with (`GET /me`). The
 /// client is built from what was typed: no secret is read, and nothing is written. The token is never put in a
@@ -163,6 +169,15 @@ impl Conn {
         match self.kind {
             Kind::Local => local::running(),
             Kind::Far { .. } => true,
+        }
+    }
+
+    /// Lets this connection wait [`proto::PEEK_CALL_WAIT`] for one answer, as a peek at a host needs (the
+    /// engine answers within [`proto::PEEK_ANSWER_WAIT`]). Another PC's client otherwise gives up on a quiet read
+    /// after its per-step timeout; this PC's pipe has no such limit.
+    pub fn slow(&mut self) {
+        if let Kind::Far { client, .. } = &mut self.kind {
+            slowed(client);
         }
     }
 
@@ -265,6 +280,15 @@ mod tests {
 
     fn reply(status: u16, json: serde_json::Value) -> Reply {
         Reply { status, json }
+    }
+
+    #[test]
+    fn a_slowed_client_waits_for_a_peek_answer_in_every_step_and_in_all() {
+        let mut client = limited(Client::new("https://127.0.0.1:1", &"ab".repeat(32), "t").unwrap());
+        assert!(client.timeout < proto::PEEK_ANSWER_WAIT);
+        slowed(&mut client);
+        assert!(client.timeout > proto::PEEK_ANSWER_WAIT && client.deadline.unwrap() > proto::PEEK_ANSWER_WAIT);
+        assert_eq!((client.timeout, client.deadline), (proto::PEEK_CALL_WAIT, Some(proto::PEEK_CALL_WAIT)));
     }
 
     #[test]

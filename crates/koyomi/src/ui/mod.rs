@@ -236,6 +236,37 @@ fn answer(work: Work, reply: &dyn Fn(&Request) -> Result<String, String>, send: 
     alive
 }
 
+/// A peek at a host takes up to about 20 s, and the thread polls the list every second: a `HostPeek` goes to a
+/// thread of its own, which starts its own connection, waits for the long answer and sends it as the thread would.
+/// Returns `None` for it, and any other work back.
+fn peek_apart(work: Work, link: &Link, tx_msg: &Sender<Msg>, ctx: &egui::Context) -> Option<Work> {
+    if !matches!(work.job, Job::Ask(Request::HostPeek { .. })) {
+        return Some(work);
+    }
+    let Work { job: Job::Ask(request), pending } = work else { return None };
+    let (link, tx, ctx) = (link.clone(), tx_msg.clone(), ctx.clone());
+    let kept = request.clone();
+    let spawned = std::thread::Builder::new().name("koyomi-peek".into()).spawn({
+        let (tx, ctx) = (tx.clone(), ctx.clone());
+        move || {
+            // A failed start comes back as the answer too.
+            let out = link.start().and_then(|mut conn| {
+                conn.slow();
+                conn.call(&request)
+            });
+            let _ = tx.send(Msg::Answer(request, out));
+            ctx.request_repaint();
+            drop(pending);
+        }
+    });
+    if spawned.is_err() {
+        // The closure (and with it `pending`) is gone with the failed spawn; the form must still leave "checking".
+        let _ = tx.send(Msg::Answer(kept, Err(koyomi_core::msg::line(koyomi_core::msg::HOST_PEEK_STOPPED, &[]))));
+        ctx.request_repaint();
+    }
+    None
+}
+
 /// The thread: keeps the link up, answers the window's requests and asks for the list, the runs, the log being
 /// watched and the handover. It ends when the window drops its side of a channel.
 fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui::Context, seen: &Watch) {
@@ -286,8 +317,10 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
         let Some(c) = conn.as_ref() else { continue };
         match rx_req.recv_timeout(wait) {
             Ok(work) => {
-                if !answer(work, &|r| c.call(r), &send) {
-                    return;
+                if let Some(work) = peek_apart(work, link, tx_msg, ctx) {
+                    if !answer(work, &|r| c.call(r), &send) {
+                        return;
+                    }
                 }
             }
             Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -1249,9 +1282,14 @@ impl Browser {
             registry::Do::Nothing => {}
             registry::Do::Ask => self.registry_ask(),
             registry::Do::Send(request) => {
+                let peek = matches!(request, Request::HostPeek { .. });
                 if !self.out.send(request) {
                     let why = self.unsent_why();
-                    self.registry.unsent(false, why);
+                    if peek {
+                        self.registry.peek_unsent(why);
+                    } else {
+                        self.registry.unsent(false, why);
+                    }
                 }
             }
         }
@@ -1565,7 +1603,8 @@ impl Browser {
                     | Request::BucketPut { .. }
                     | Request::BucketRemove { .. }
                     | Request::MailboxPut { .. }
-                    | Request::MailboxRemove { .. }),
+                    | Request::MailboxRemove { .. }
+                    | Request::HostPeek { .. }),
                     r,
                 ) => {
                     if self.registry.answered(&req, r).reload {

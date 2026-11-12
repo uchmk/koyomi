@@ -42,6 +42,7 @@ pub mod http;
 mod idle;
 mod logs;
 mod mails;
+mod peek;
 mod ping;
 mod primary;
 mod retain;
@@ -267,6 +268,8 @@ struct State {
     /// The daily backup of the settings folder.
     backup: Backup,
     alive: alive::Alive,
+    /// The peeks at a host's key or certificate that run on threads of their own (`HostPeek`).
+    peeks: peek::Peeks,
     /// `[ping]`: the outside watcher's address, called while the engine runs.
     ping: ping::Ping,
     ping_cfg: Option<koyomi_core::config::Ping>,
@@ -377,6 +380,7 @@ impl State {
             retain,
             backup,
             alive,
+            peeks: peek::Peeks::new(peek::real()),
             ping: ping::Ping::default(),
             ping_cfg: None,
             ping_plain_ok: false,
@@ -648,6 +652,12 @@ impl State {
         } else if busy == 0 && !waking {
             self.awake = None;
         }
+    }
+
+    /// Answers the peeks that finished and writes each one down in the operations record.
+    fn tick_peeks(&mut self) {
+        let runner = &mut self.runner;
+        self.peeks.drain(|op, target, detail, by| runner.record_op(op, target, detail, by));
     }
 
     /// Reads the power settings and sets the PC to wake a little before the
@@ -3100,8 +3110,23 @@ impl State {
             Request::UserRemove { name, base } => self.user_remove(name, base),
             Request::UserAdd { name, role, nets, roles, base } => self.user_add(name, role, nets.clone(), roles.clone(), base),
             Request::UserReset { name, base } => self.user_reset(name, base),
+            // The loop hands a peek to `peeks` (at most four at once, off the loop); this path never connects.
+            Request::HostPeek { .. } => Err(msg::line(msg::HOST_PEEK_STOPPED, &[])),
             Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
+    }
+}
+
+/// The peek a request asks for, bare or inside an `Over` that HTTP may send: who asked (empty at this PC),
+/// what to ask the host, its name and port.
+fn as_peek(request: &Request) -> Option<(&str, proto::PeekKind, &str, u16)> {
+    match request {
+        Request::HostPeek { kind, host, port, .. } => Some(("", *kind, host, *port)),
+        Request::Over { by, request } if over_http(request) => match &**request {
+            Request::HostPeek { kind, host, port, .. } => Some((by, *kind, host, *port)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3433,9 +3458,14 @@ pub fn run(own_tray: bool) -> i32 {
         match got {
             Ok(Ask { request, reply, expired }) => {
                 let stop = matches!(request, Request::Stop);
-                let out = state.answer(&request);
-                if !expired.load(Ordering::Relaxed) {
-                    let _ = reply.send(out);
+                // A peek at a host takes long: it runs on a thread of its own and answers later.
+                if let Some((by, kind, host, port)) = as_peek(&request) {
+                    state.peeks.start(by, kind, host, port, reply, expired);
+                } else {
+                    let out = state.answer(&request);
+                    if !expired.load(Ordering::Relaxed) {
+                        let _ = reply.send(out);
+                    }
                 }
                 if stop {
                     state.shut_down();
@@ -3463,6 +3493,7 @@ pub fn run(own_tray: bool) -> i32 {
         state.tick_retain();
         state.tick_backup();
         state.alive.tick();
+        state.tick_peeks();
         state.ping.tick(state.ping_cfg.as_ref(), state.ping_plain_ok);
         state.http.tick(state.http_cfg.as_ref());
         state.tick_standby();
@@ -3566,6 +3597,50 @@ mod tests {
         assert_eq!(import_failed(coded.clone()), coded);
         let wrapped = import_failed("bad toml".to_owned());
         assert!(msg::IMPORT_FAILED.is_in(&wrapped) && wrapped.contains("bad toml"), "{wrapped}");
+    }
+
+    /// A peek reaches the manager, bare or over HTTP with the caller's name; the loop-less path never connects,
+    /// and what the manager finds is written down in the operations record under that name.
+    #[test]
+    fn a_host_peek_goes_to_the_manager_with_its_caller_and_answer_never_connects() {
+        let peek = |host: &str| Request::HostPeek { kind: proto::PeekKind::Ssh, host: host.into(), port: 22, ticket: 3 };
+        let over = |by: &str, request: Request| Request::Over { by: by.to_owned(), request: Box::new(request) };
+        assert!(matches!(as_peek(&peek("h")), Some(("", proto::PeekKind::Ssh, "h", 22))));
+        assert!(matches!(as_peek(&over("ito", peek("h"))), Some(("ito", proto::PeekKind::Ssh, "h", 22))));
+        assert!(as_peek(&Request::Status).is_none() && as_peek(&over("ito", Request::Status)).is_none());
+
+        let paths = temp_paths("host-peek");
+        let mut s = State::new(paths);
+        let connected = Arc::new(AtomicBool::new(false));
+        let seen = connected.clone();
+        s.peeks = peek::Peeks::new(Arc::new(move |_, host, port| {
+            seen.store(true, Ordering::Relaxed);
+            Ok(format!("SHA256:key-of-{host}-{port}"))
+        }));
+        // `answer` is not the way a peek goes: it says so and does not connect.
+        let e = s.answer(&peek("h.example")).unwrap_err();
+        assert!(msg::HOST_PEEK_STOPPED.is_in(&e), "{e}");
+        assert!(s.answer(&over("ito", peek("h.example"))).is_err());
+        assert!(!connected.load(Ordering::Relaxed));
+
+        // Through the manager, as the loop does it.
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let asked = over("ito", peek("h.example"));
+        let (by, kind, host, port) = as_peek(&asked).unwrap();
+        s.peeks.start(by, kind, host, port, tx, Arc::new(AtomicBool::new(false)));
+        let end = Instant::now() + Duration::from_secs(5);
+        let answer = loop {
+            s.tick_peeks();
+            if let Ok(a) = rx.try_recv() {
+                break a;
+            }
+            assert!(Instant::now() < end, "the peek did not answer");
+            std::thread::sleep(Duration::from_millis(5));
+        };
+        assert_eq!(answer, Ok("SHA256:key-of-h.example-22".to_owned()));
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap().join("\n");
+        assert!(ops.contains("host-peek") && ops.contains("h.example:22") && ops.contains("ito"), "{ops}");
     }
 
     /// over HTTP only what its paths ask for goes through; never an approval or a save.

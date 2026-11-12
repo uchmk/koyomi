@@ -4,6 +4,7 @@
 //! text: TOML for `List`, `Show`, `Runs`, `History`, `Versions` and `Tray`, the log's tail for `Log`, a line for the rest.
 
 use std::collections::BTreeMap;
+use std::time::Duration;
 
 use chrono::NaiveDateTime;
 use ito_ipc::door::Door;
@@ -17,7 +18,15 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 50;
+pub const PROTO: u32 = 51;
+
+/// How long the door waits for the engine to answer a [`Request::HostPeek`] (the peek itself takes up to
+/// about 20 s).
+pub const PEEK_ANSWER_WAIT: Duration = Duration::from_secs(25);
+
+/// How long the window's far link waits for that answer: above [`PEEK_ANSWER_WAIT`], so the engine's own
+/// reply (or its refusal) arrives before the link gives up.
+pub const PEEK_CALL_WAIT: Duration = Duration::from_secs(30);
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -387,6 +396,15 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Connect from the engine's PC to `host:port` and say what the host shows: the SSH host key
+    /// (`SHA256:…`) or the WinRM certificate's fingerprint. Nothing is logged in and nothing is
+    /// written; no user or password travels. `ticket` is the window's own number: the engine ignores it.
+    HostPeek {
+        kind: PeekKind,
+        host: String,
+        port: u16,
+        ticket: u64,
+    },
     /// Add or change the `[[bucket]]` `name`: an S3 place a `send` / `fetch` uses. `password` (and `key_id`,
     /// when it is not plain) is `secret:<name>`.
     BucketPut {
@@ -604,6 +622,23 @@ pub struct GroupName {
     pub kind: String,
 }
 
+/// What a [`Request::HostPeek`] asks the host for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PeekKind {
+    /// The SSH host key, as `SHA256:…`.
+    Ssh,
+    /// The WinRM (HTTPS) certificate's fingerprint.
+    Winrm,
+}
+
+/// Whether `host` and `port` may be peeked at: 1 to 253 characters of ASCII letters, digits, `.`, `-` and
+/// `_` (so no IPv6 literal, `@`, `:`, `/` or space), and a port that is not 0. The window checks it before
+/// it offers the button and the engine before it connects, with this one rule.
+pub fn peek_target_ok(host: &str, port: u16) -> bool {
+    (1..=253).contains(&host.len()) && host.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_')) && port != 0
+}
+
 /// The role `POST /door` asks for to pass `r` on to the engine; `None`: it cannot be done from there
 /// (it is for this PC alone, or it is not for HTTP to confirm). A `match` without a wildcard: a new
 /// request does not compile until it is placed here.
@@ -660,6 +695,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::DatabaseRemove { .. }
         | Request::HostPut { .. }
         | Request::HostRemove { .. }
+        | Request::HostPeek { .. }
         | Request::BucketPut { .. }
         | Request::BucketRemove { .. }
         | Request::MailboxPut { .. }
@@ -709,6 +745,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::ConfigText
         | Request::Registry
         | Request::Notices { .. }
+        | Request::HostPeek { .. }
         | Request::Tray { .. } => true,
         Request::Stop
         | Request::Approve { .. }
@@ -759,7 +796,19 @@ pub fn is_read(r: &Request) -> bool {
 }
 
 pub fn door() -> Door<Request> {
-    Door::new("koyomi", ENV, PROTO)
+    let mut door = Door::new("koyomi", ENV, PROTO);
+    door.wait = answer_wait;
+    door
+}
+
+/// How long the door waits for the engine's reply to `r`: the peek of a host takes longer than a read from
+/// memory, bare or inside `Over`; every other request keeps the door's usual time.
+fn answer_wait(r: &Request) -> Duration {
+    match r {
+        Request::HostPeek { .. } => PEEK_ANSWER_WAIT,
+        Request::Over { request, .. } if matches!(**request, Request::HostPeek { .. }) => PEEK_ANSWER_WAIT,
+        _ => ito_ipc::door::ANSWER_WAIT,
+    }
 }
 
 /// The variable that names another address for the window's door.
@@ -1116,6 +1165,51 @@ mod tests {
         back
     }
 
+    fn peek(kind: PeekKind, host: &str, port: u16) -> Request {
+        Request::HostPeek { kind, host: host.into(), port, ticket: 7 }
+    }
+
+    #[test]
+    fn a_host_peek_reads_back_through_the_door_and_json_with_its_kind_in_lowercase() {
+        for kind in [PeekKind::Ssh, PeekKind::Winrm] {
+            let Request::HostPeek { kind: got, host, port, ticket } = round(&peek(kind, "h.example", 22)) else { panic!("not a peek") };
+            assert_eq!((got, host.as_str(), port, ticket), (kind, "h.example", 22, 7));
+        }
+        assert_eq!(serde_json::to_string(&PeekKind::Ssh).unwrap(), "\"ssh\"");
+        assert_eq!(serde_json::to_string(&PeekKind::Winrm).unwrap(), "\"winrm\"");
+        let json = serde_json::to_string(&peek(PeekKind::Winrm, "h", 5986)).unwrap();
+        assert!(
+            matches!(serde_json::from_str::<Request>(&json), Ok(Request::HostPeek { kind: PeekKind::Winrm, port: 5986, .. })),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn the_door_waits_longer_for_a_host_peek_bare_or_over_and_not_for_another_request() {
+        let over = |request: Request| Request::Over { by: "x".into(), request: Box::new(request) };
+        let door = door();
+        assert_eq!((door.wait)(&peek(PeekKind::Ssh, "h", 22)), PEEK_ANSWER_WAIT);
+        assert_eq!((door.wait)(&over(peek(PeekKind::Winrm, "h", 5986))), PEEK_ANSWER_WAIT);
+        assert_eq!((door.wait)(&Request::Status), ito_ipc::door::ANSWER_WAIT);
+        assert_eq!((door.wait)(&over(Request::Status)), ito_ipc::door::ANSWER_WAIT);
+        assert!(PEEK_CALL_WAIT > PEEK_ANSWER_WAIT);
+    }
+
+    #[test]
+    fn the_peek_rule_takes_names_and_ipv4_and_refuses_the_rest() {
+        for ok in ["h", "web-1.example.co.jp", "192.168.0.10", "a_b", "Host.Example"] {
+            assert!(peek_target_ok(ok, 22), "{ok}");
+        }
+        let long = "a".repeat(253);
+        assert!(peek_target_ok(&long, 22));
+        let too_long = "a".repeat(254);
+        for bad in ["", "::1", "[::1]", "user@h", "h:22", "h/x", "h x", " h", "ホスト", too_long.as_str()] {
+            assert!(!peek_target_ok(bad, 22), "{bad:?}");
+        }
+        assert!(!peek_target_ok("h", 0));
+        assert!(peek_target_ok("h", 65535));
+    }
+
     #[test]
     fn a_run_reads_back_with_and_without_params() {
         for params in [BTreeMap::new(), BTreeMap::from([("month".to_owned(), "2026-09".to_owned())])] {
@@ -1250,6 +1344,8 @@ c"
             (Request::Notices { boot: None, since: None }, Some(Edit)),
             (Request::Standby { give_back: false }, None),
             (Request::Standby { give_back: true }, None),
+            (peek(PeekKind::Ssh, "h.example", 22), Some(Admin)),
+            (peek(PeekKind::Winrm, "h.example", 5986), Some(Admin)),
             (Request::Over { by: "x".into(), request: Box::new(Request::Status) }, None),
         ];
         for (r, want) in &table {
@@ -1279,6 +1375,7 @@ c"
             Request::ConfigText,
             Request::Tray { since: None },
             Request::Notices { boot: Some("b".into()), since: Some(3) },
+            peek(PeekKind::Ssh, "h.example", 22),
         ];
         for r in &reads {
             assert!(r.is_read() && is_read(r), "{r:?}");

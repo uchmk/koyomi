@@ -44,23 +44,28 @@ fn cert(at: &str) -> i32 {
             return 2;
         }
     };
-    // The connection is tried here first: a refused port must not wait out the time limit
-    // (Windows takes about a second to refuse, longer than the short tries below).
-    let place = format!("{host}:{port}");
-    if let Err(why) = probe(&place, &host, port) {
-        crate::say(&why, true);
-        return 1;
-    }
-    match ito_winrm::peek_fingerprint(&host, port, Duration::from_secs(15), &AtomicBool::new(false)) {
+    match peek_cert(&host, port) {
         Ok(f) => {
-            crate::say(&format!("cert = \"{}\"", ito_winrm::fingerprint::format(&f)), false);
+            crate::say(&format!("cert = \"{f}\""), false);
             0
         }
-        Err(e) => {
-            crate::say(&reason(&e, &place, WinrmAuth::Basic), true);
+        Err(why) => {
+            crate::say(&why, true);
             1
         }
     }
+}
+
+/// The fingerprint of the HTTPS certificate `host:port` shows, as `koyomi winrm cert` prints it (no login
+/// is made); Err is a coded line naming `host:port`.
+pub(crate) fn peek_cert(host: &str, port: u16) -> Result<String, String> {
+    // The connection is tried here first: a refused port must not wait out the time limit
+    // (Windows takes about a second to refuse, longer than the short tries below).
+    let place = format!("{host}:{port}");
+    probe(&place, host, port)?;
+    ito_winrm::peek_fingerprint(host, port, Duration::from_secs(15), &AtomicBool::new(false))
+        .map(|f| ito_winrm::fingerprint::format(&f))
+        .map_err(|e| reason(&e, &place, WinrmAuth::Basic))
 }
 
 /// Whether `host:port` takes a connection, and if not, why as a coded line naming `place`.
@@ -70,8 +75,15 @@ fn probe(place: &str, host: &str, port: u16) -> Result<(), String> {
     let addrs: Vec<_> =
         (host, port).to_socket_addrs().map_err(|e| refused(&note(msg::N_NET_HOST_NOT_FOUND_WITH, &[&plain(&e.to_string())])))?.collect();
     let mut last = None;
+    // One deadline for all the addresses, so many of them cannot add up past the caller's own limit.
+    let end = std::time::Instant::now() + Duration::from_secs(5);
     for a in &addrs {
-        match std::net::TcpStream::connect_timeout(a, Duration::from_secs(5)) {
+        let left = end.saturating_duration_since(std::time::Instant::now());
+        if left.is_zero() {
+            last.get_or_insert_with(|| std::io::Error::from(std::io::ErrorKind::TimedOut));
+            break;
+        }
+        match std::net::TcpStream::connect_timeout(a, left) {
             Ok(_) => return Ok(()),
             Err(e) => last = Some(e),
         }
@@ -207,6 +219,14 @@ fn reason(e: &ito_winrm::Error, host: &str, auth: WinrmAuth) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_refused_loopback_port_fails_with_a_coded_error_naming_host_and_port() {
+        // Bound and dropped on the loopback: nothing listens there, and no network is touched.
+        let port = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port();
+        let e = peek_cert("127.0.0.1", port).unwrap_err();
+        assert!(msg::is_coded(&e) && e.contains(&format!("127.0.0.1:{port}")), "{e}");
+    }
 
     #[test]
     fn cert_takes_a_host_a_port_or_a_winrm_address() {

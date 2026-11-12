@@ -2248,3 +2248,13 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 143.22 | In a mail job, open the 送るのに使う設定 select | It lists 最初の送り先, each registered place, and a name the engine lacks with a note; on another PC's engine the link opens a note, not the settings |
 | 143.23 | In a `[[when]]` of the mail kind, pick a mailbox and then 直接書く | A mailbox hides the address and password rows; 直接書く brings back the address and password typed before; the when saves in both states |
 | 143.24 | Press the register links under the host, bucket, via and when mailbox selects | Each opens the page for that kind in the settings |
+| 143.25 | In the settings, 接続先 PC, open the add form of an SSH host, type a reachable host's address and press 接続して確かめる, then 使う | While it waits, 確かめています… shows and the list keeps updating; then 相手が見せた鍵: SHA256:… shows with the note that this cannot tell whether the host is the real one; 使う puts the key in the ホスト鍵 field; nothing is saved until 保存 |
+| 143.26 | Edit an SSH host whose ホスト鍵 is filled and press 接続して確かめる against a host that shows another key | The line says the value differs and warns of an impostor; 使う is offered and fills the field only when pressed |
+| 143.27 | In the same form press 接続して確かめる against a host that shows the key already written | The line says it is the same as the value written; there is no 使う button |
+| 143.28 | Open the add form of a WinRM host (`winrm://user@host`), press 接続して確かめる, then 使う | 相手が見せた証明書の指紋: … shows (a SHA-256 in hex) and 使う puts it in the 証明書 field; the same host with the field in upper case or with colons is told as the same |
+| 143.29 | Press 接続して確かめる for a host that does not answer (an address with nothing listening) | After a wait of at most 20 seconds, an error line in red names the address and port; the list on the page keeps updating meanwhile; the button works again |
+| 143.30 | Empty the address, or type a space, `[::1]` or a name with `@` in the host part | 接続して確かめる is off, and its hover says the address cannot be read |
+| 143.31 | Press 接続して確かめる and change the address (or the SSH/WinRM seg) before the answer comes | The old answer does not show; the form is as after the change |
+| 143.32 | As a non-Admin (a role below Admin on the far PC), open the settings' 接続先 PC | There is no form and no 接続して確かめる button |
+| 143.33 | With the window on another PC's engine, press 接続して確かめる for a host | The key or fingerprint is the one that engine's PC sees, not this PC's |
+| 143.34 | After 143.25 (a success) and 143.29 (a failure), read the engine's operation log | Each shows `host-peek <host>:<port>`, and no password or secret appears |
