@@ -17,7 +17,7 @@ use crate::{client as local, remote};
 /// How often the engine of this PC is asked for the list and the runs.
 const POLL_LOCAL: Duration = Duration::from_secs(1);
 /// How often another PC is asked: a request costs a TLS handshake there.
-const POLL_FAR: Duration = Duration::from_secs(3);
+pub const POLL_FAR: Duration = Duration::from_secs(3);
 /// The longest one call to another PC may take, from name lookup to the last byte of the answer. When it
 /// fires, the far side may still have acted on the request.
 const CALL_DEADLINE: Duration = Duration::from_secs(30);

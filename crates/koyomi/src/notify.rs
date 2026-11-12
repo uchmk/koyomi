@@ -505,6 +505,10 @@ fn plan<'a>(
         if !note.tag.is_empty() {
             note.tag = tag_of(&note.tag);
         }
+        // Another PC's notice says which PC it is from (a burst already does, in its own title).
+        if let Some(name) = from {
+            note.title = t.trf("notify.title_from", &[&note.title, name]);
+        }
         told.push((Cow::Borrowed(n), note));
     }
     told
@@ -522,9 +526,9 @@ pub fn here_cfg() -> NotifyCfg {
 
 /// What a window on a far link knows of the engine's notices: the `(boot, last)` its last answer
 /// named, `None` until the first one (which only learns, and shows nothing, so the notices
-/// from before the window came are not all shown at once). One per link: a new link starts over. So notices kept
-/// while the window was not on that link are not shown: a link switch, and the reconnect after a URL change, are
-/// a first ask again, which only learns the boot and the last number.
+/// from before the window came are not all shown at once). One lives in each watch thread for the window's life, so a
+/// link switch or a URL change does not start it over; only a new connection name does (a first ask again, which
+/// only learns the boot and the last number).
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct NoticesAt {
     at: Option<(String, u64)>,
@@ -551,8 +555,9 @@ impl NoticesAt {
 /// How many far links' numbers [`FarGens`] remembers.
 const GENS: usize = 64;
 
-/// The number of every link this window has had (one more at each start or switch), and the name
-/// of the far ones, so a click on a notice made under one link finds its PC again.
+/// A number for every far PC the window shows notices of, and the name it stands for, so a click on a notice
+/// finds its PC again. A name keeps its number for the window's life, until it leaves the list of connections (or
+/// [`GENS`] newer names have come since).
 #[derive(Debug, Default)]
 pub struct FarGens {
     gen: u64,
@@ -560,25 +565,27 @@ pub struct FarGens {
 }
 
 impl FarGens {
-    /// The window starts on a link, or switches to one: `far` is its name (`None`: this PC).
-    pub fn enter(&mut self, far: Option<&str>) {
-        self.gen += 1;
-        if let Some(name) = far {
-            self.names.push_back((self.gen, name.to_owned()));
-            if self.names.len() > GENS {
-                self.names.pop_front();
-            }
+    /// The number of the PC `name`: the one it has, else the next. Past [`GENS`] names the oldest is forgotten.
+    pub fn number_of(&mut self, name: &str) -> u64 {
+        if let Some((n, _)) = self.names.iter().find(|(_, x)| x == name) {
+            return *n;
         }
-    }
-
-    /// The number of the link in use.
-    pub fn current(&self) -> u64 {
+        self.gen += 1;
+        self.names.push_back((self.gen, name.to_owned()));
+        if self.names.len() > GENS {
+            self.names.pop_front();
+        }
         self.gen
     }
 
-    /// The far PC link number `gen` was (`None`: this PC, or forgotten).
+    /// The far PC number `gen` was (`None`: forgotten, or never given).
     pub fn name_of(&self, gen: u64) -> Option<&str> {
         self.names.iter().find(|(g, _)| *g == gen).map(|(_, n)| n.as_str())
+    }
+
+    /// The connection `name` is gone (removed or renamed): a click on its old notices finds nothing.
+    pub fn forget(&mut self, name: &str) {
+        self.names.retain(|(_, n)| n != name);
     }
 }
 
@@ -1210,23 +1217,37 @@ run = [\"x\"]
     }
 
     #[test]
-    fn a_click_finds_its_pc_through_a_b_a_and_not_after_the_map_forgot_it() {
+    fn a_name_keeps_its_number_until_forgotten_and_the_map_has_a_cap() {
         let mut g = FarGens::default();
-        g.enter(Some("A"));
-        let a1 = g.current();
-        g.enter(Some("B"));
-        let b = g.current();
-        g.enter(Some("A"));
-        let a2 = g.current();
-        g.enter(None);
-        assert_eq!((g.name_of(a1), g.name_of(b), g.name_of(a2)), (Some("A"), Some("B"), Some("A")));
-        assert_eq!(g.name_of(g.current()), None);
+        let (a, b) = (g.number_of("A"), g.number_of("B"));
+        assert_ne!(a, b);
+        assert_eq!((g.number_of("A"), g.number_of("B")), (a, b), "the same name, the same number");
+        assert_eq!((g.name_of(a), g.name_of(b), g.name_of(99)), (Some("A"), Some("B"), None));
+        g.forget("A");
+        assert_eq!(g.name_of(a), None, "a click on an old notice finds nothing");
+        let again = g.number_of("A");
+        assert!(again != a && g.name_of(again) == Some("A"), "a name that comes back is a new number");
         for i in 0..GENS + 1 {
-            g.enter(Some(&format!("P{i}")));
+            g.number_of(&format!("P{i}"));
         }
-        assert_eq!(g.name_of(a1), None);
-        assert_eq!(g.name_of(g.current()), Some(format!("P{GENS}").as_str()));
         assert_eq!(g.names.len(), GENS);
+        assert_eq!(g.name_of(b), None, "the oldest went");
+        let n = g.number_of(&format!("P{GENS}"));
+        assert_eq!(g.name_of(n), Some(format!("P{GENS}").as_str()));
+    }
+
+    #[test]
+    fn a_single_far_notice_is_titled_with_its_pc_and_the_tray_and_the_burst_are_not() {
+        let (t, _) = crate::i18n::table("en");
+        let n = lists(&["failed", "done"], &[]);
+        let told = plan(&n, &[note(1, "failed", "net a failed")], &t, Some("kei"), |x| x.to_owned());
+        assert_eq!(told[0].1.title, "kei · net a failed");
+        let told = plan(&n, &[note(1, "failed", "net a failed")], &t, None, |x| x.to_owned());
+        assert_eq!(told[0].1.title, "net a failed", "the tray's own notices stay as they are");
+        let burst = [note(1, "failed", "a"), note(2, "done", "b"), note(3, "done", "c")];
+        let told = plan(&n, &burst, &t, Some("kei"), |x| x.to_owned());
+        assert_eq!(told.len(), 1);
+        assert_eq!(told[0].1.title, "🔔 3 notices from kei", "no second prefix");
     }
 
     #[test]

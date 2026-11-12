@@ -125,6 +125,8 @@ fn enter_goes_on(step: AddStep) -> bool {
 pub struct Far {
     /// The `[[remote]]` names, once read.
     names: Vec<String>,
+    /// The names were read (a failed or pending listing leaves them empty, which is not "no connections").
+    listed: bool,
     /// Each name's secret name, for the delete question.
     secrets: std::collections::BTreeMap<String, String>,
     /// Why koyomi.toml did not read at the last listing (`None`: it read).
@@ -153,6 +155,7 @@ impl Far {
         let (tx, rx) = mpsc::channel();
         Far {
             names: Vec::new(),
+            listed: false,
             secrets: std::collections::BTreeMap::new(),
             unread: None,
             tx,
@@ -196,8 +199,14 @@ impl Far {
         &self.names
     }
 
+    /// The names once listed; `None` before that (the watch keeps what it has).
+    pub fn listed_names(&self) -> Option<&[String]> {
+        self.listed.then_some(self.names.as_slice())
+    }
+
     #[cfg(test)]
     pub(super) fn set_names(&mut self, names: Vec<String>) {
+        self.listed = true;
         self.secrets = names.iter().map(|n| (n.clone(), generated_secret(n))).collect();
         self.names = names;
     }
@@ -221,6 +230,7 @@ impl Far {
         match got {
             Got::Names(Ok(listed)) => {
                 self.names = listed.iter().map(|(n, _)| n.clone()).collect();
+                self.listed = true;
                 self.secrets = listed.into_iter().collect();
                 self.unread = None;
             }

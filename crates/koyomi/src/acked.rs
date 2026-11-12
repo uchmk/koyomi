@@ -71,6 +71,17 @@ impl Acked {
         kept::read::<Kept>(&dir.join("acked.toml")).unwrap_or_default().acked.into_iter().collect()
     }
 
+    /// The ids kept for the link `far` under `dir`, for whoever only watches it (the window's watch of the other
+    /// PCs; the one writer is [`Acked`]). A missing file is an empty set; a file that is there and does not read is
+    /// `None`, so the caller keeps the set it had.
+    pub fn read_for(dir: &std::path::Path, far: Option<&str>) -> Option<BTreeSet<String>> {
+        let path = dir.join(file_name(far));
+        if !path.exists() {
+            return Some(BTreeSet::new());
+        }
+        kept::read::<Kept>(&path).map(|k| k.acked.into_iter().collect())
+    }
+
     #[cfg(test)]
     pub fn is_acked(&self, id: &str) -> bool {
         self.ids.contains(id)
@@ -141,6 +152,21 @@ mod tests {
         std::fs::write(d.join(file_name(Some("old"))), "acked = [\"r9\"]\n").unwrap();
         move_file(&d, "old", "keiba").unwrap();
         assert_eq!(std::fs::read_to_string(d.join(file_name(Some("keiba")))).unwrap(), "acked = [\"r9\"]\n");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_watcher_reads_a_links_file_and_tells_a_missing_one_from_an_unreadable_one() {
+        let d = temp("read-for");
+        assert_eq!(Acked::read_for(&d, Some("kei")), Some(BTreeSet::new()), "missing: nothing acked");
+        std::fs::write(d.join(file_name(Some("kei"))), "acked = [\"r1\", \"r2\"]").unwrap();
+        let got = Acked::read_for(&d, Some("kei")).unwrap();
+        assert_eq!(got.into_iter().collect::<Vec<_>>(), ["r1", "r2"]);
+        assert_eq!(Acked::read_for(&d, Some("other")), Some(BTreeSet::new()), "each link has its own file");
+        std::fs::write(d.join(file_name(Some("bad"))), "acked = [not toml").unwrap();
+        assert_eq!(Acked::read_for(&d, Some("bad")), None, "there but unreadable");
+        std::fs::write(d.join(file_name(None)), "acked = [\"m\"]").unwrap();
+        assert_eq!(Acked::read_for(&d, None).map(|s| s.len()), Some(1));
         let _ = std::fs::remove_dir_all(&d);
     }
 

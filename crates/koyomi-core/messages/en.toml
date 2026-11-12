@@ -3311,7 +3311,7 @@ action = "Give one of key and password."
 when = "The check of a link was cut short"
 text = "The check of the link {0} stopped part-way."
 cause = "The task that checks the state of the link ended abnormally."
-action = "Wait a while and check again."
+action = "Close the window and open it again to check once more. If it happens again, report it with F12."
 
 [E3701]
 when = "When the settings folder cannot be determined"

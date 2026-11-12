@@ -241,10 +241,6 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
     let mut conn: Option<Conn> = None;
     let mut wait = poll;
     let mut ha_at: Option<std::time::Instant> = None;
-    // What this link knows of the engine's notices; only a far link asks (this PC's own are the tray's).
-    let mut told = crate::notify::NoticesAt::default();
-    // This PC's `[notify]`, read here (not on the UI thread) and again after `REREAD`.
-    let mut here: Option<(ito_prefs::NotifyCfg, std::time::Instant)> = None;
     loop {
         if conn.as_ref().is_none_or(|c| !c.running()) {
             conn = None;
@@ -313,21 +309,6 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
                 return;
             }
         }
-        if link.is_far() && c.role().is_some_and(|r| r.allows(koyomi_core::role::Role::Edit)) {
-            let view = c.call(&told.request()).and_then(|t| proto::NoticesView::parse(&t));
-            if let Ok(view) = view {
-                let new = told.take(view);
-                if !new.is_empty() {
-                    if here.as_ref().is_none_or(|(_, at)| at.elapsed() >= crate::notify::REREAD) {
-                        here = Some((crate::notify::here_cfg(), std::time::Instant::now()));
-                    }
-                    let cfg = here.as_ref().map(|(c, _)| c.clone()).unwrap_or_default();
-                    if !send(Msg::Notices(new, Box::new(cfg))) {
-                        return;
-                    }
-                }
-            }
-        }
         let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
         if let Some((run, job)) = target {
             if let Ok(text) = c.call(&Request::Log { run: run.clone(), job: job.clone() }) {
@@ -353,8 +334,6 @@ enum Msg {
     Role(Option<koyomi_core::role::Role>, Option<String>),
     Snapshot(Box<Snapshot>),
     Runs(Runs),
-    /// The notices a far engine kept that are new to this window, to show as this PC's own.
-    Notices(Vec<proto::Note>, Box<ito_prefs::NotifyCfg>),
     /// The tail of one job's log: run, job, text.
     Log(String, String, String),
     Down(String),
@@ -725,10 +704,10 @@ pub struct Browser {
     /// The engine's notes about `[notify]` seen so far, and the ones not yet taken.
     seen_notes: BTreeSet<String>,
     notes: Vec<String>,
-    /// The far engine's notices not shown yet (`take_far_notes`).
-    far_notes: Vec<proto::Note>,
-    /// This PC's `[notify]` as the worker read it with the last of them.
-    far_cfg: Option<ito_prefs::NotifyCfg>,
+    /// The engine's runs were taken once (`has_runs`).
+    runs_known: bool,
+    /// Connections whose URL moved, until [`Browser::take_moved_urls`] (the watch connects to them afresh).
+    moved_urls: Vec<String>,
     /// A net runs on a schedule, but koyomi does not start at sign-in: the band says so.
     autostart_off: bool,
     /// The lines the cautions band held last frame (`None` until the first snapshot): it opens
@@ -852,7 +831,7 @@ impl Browser {
         Browser {
             far,
             config_edit: None,
-            hosts: hosts::Hosts::new(&io.1),
+            hosts: hosts::Hosts::new(),
             rx,
             io,
             want_link: None,
@@ -890,8 +869,8 @@ impl Browser {
             done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
-            far_notes: Vec::new(),
-            far_cfg: None,
+            runs_known: false,
+            moved_urls: Vec::new(),
             autostart_off: false,
             band_seen: None,
             cal_sel: None,
@@ -1020,8 +999,14 @@ impl Browser {
     }
 
     /// The link button and its list: this PC and every `[[remote]]`. A pick is taken by [`Browser::take_link_wish`].
-    pub fn link_picker(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
-        let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names());
+    /// `facts` is what the watch found out about each connection. Returns whether the list was opened just now.
+    pub fn link_picker(
+        &mut self,
+        ui: &mut egui::Ui,
+        t: &ito_i18n::Table,
+        facts: &std::collections::HashMap<String, crate::watch::Fact>,
+    ) -> bool {
+        let out = self.hosts.show(ui, t, &self.link, self.down.is_some(), self.far.names(), facts);
         if out.manage && !self.own_box_open() {
             self.far.open_manage();
         }
@@ -1030,6 +1015,7 @@ impl Browser {
             self.far.close_manage();
             self.want_link = Some(l);
         }
+        out.opened
     }
 
     /// Hands a request to the thread. A request that is not a read is counted until the thread has finished
@@ -1237,6 +1223,7 @@ impl Browser {
             self.want_link = Some(Link::Far(name));
         }
         if let Some(name) = self.far.take_moved() {
+            self.moved_urls.push(name.clone());
             // The window is on the connection whose URL moved: it reconnects at the new one. The box stays, so the
             // outcome (and the reconnecting) is still read.
             if self.link.far().is_some_and(|l| l.trim() == name.trim()) {
@@ -1281,10 +1268,7 @@ impl Browser {
                     }
                     self.over = Some(now);
                     self.runs = r.runs;
-                }
-                Msg::Notices(notes, cfg) => {
-                    self.far_notes.extend(notes);
-                    self.far_cfg = Some(*cfg);
+                    self.runs_known = true;
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
                 Msg::Done(r) => self.done = Some(r),
@@ -1450,7 +1434,7 @@ impl Browser {
 
     /// The ids of the loaded runs that ended abnormally (the status bar's count).
     pub fn failed_ids(&self) -> impl Iterator<Item = &str> {
-        self.runs.iter().filter(|r| r.state.is_error()).map(|r| r.id.as_str())
+        crate::watch::failed_ids(&self.runs)
     }
 
     /// How many definitions are not approved or do not read (the status bar's count).
@@ -1513,13 +1497,20 @@ impl Browser {
         std::mem::take(&mut self.notes)
     }
 
-    /// The far engine's notices not taken before, each once; the app shows them as this PC's notifications.
-    pub fn take_far_notes(&mut self) -> (Vec<proto::Note>, ito_prefs::NotifyCfg) {
+    /// Whether the engine's runs have been taken once (a notice's run can be opened from then on).
+    pub fn has_runs(&self) -> bool {
+        self.runs_known
+    }
+
+    /// The connections whose URL was changed, each once: the app's watch connects to them afresh.
+    pub fn take_moved_urls(&mut self) -> Vec<String> {
         self.drain();
-        let notes = std::mem::take(&mut self.far_notes);
-        // Cloned only when there is something to show: this runs every frame.
-        let cfg = if notes.is_empty() { ito_prefs::NotifyCfg::default() } else { self.far_cfg.clone().unwrap_or_default() };
-        (notes, cfg)
+        std::mem::take(&mut self.moved_urls)
+    }
+
+    /// The `[[remote]]` names once listed (`None` before: the watch keeps what it has).
+    pub fn far_names(&self) -> Option<&[String]> {
+        self.far.listed_names()
     }
 
     /// Shows run `id` in the detail (a click under the bell).
@@ -5798,7 +5789,7 @@ mod tests {
         Browser {
             far: far::Far::idle(&egui::Context::default()),
             config_edit: None,
-            hosts: hosts::Hosts::new(&egui::Context::default()),
+            hosts: hosts::Hosts::new(),
             rx,
             io: (tx_msg, egui::Context::default()),
             out: Outbox { tx, pending: Arc::default(), switching: Cell::new(false), refused: Cell::new(false) },
@@ -5836,8 +5827,8 @@ mod tests {
             done: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
-            far_notes: Vec::new(),
-            far_cfg: None,
+            runs_known: false,
+            moved_urls: Vec::new(),
             autostart_off: false,
             band_seen: None,
             cal_sel: None,

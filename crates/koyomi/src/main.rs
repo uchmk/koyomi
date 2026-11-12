@@ -42,6 +42,7 @@ mod sql;
 mod ssh;
 mod troubleshoot;
 mod ui;
+mod watch;
 mod winrm;
 
 use std::path::PathBuf;
@@ -120,8 +121,12 @@ struct App {
     /// The command palette while it is open (Ctrl+Shift+P, or the bar's box).
     palette: Option<ito_palette::View>,
     browser: ui::Browser,
-    /// The number of each link this window has had, for the tags of a far engine's notices.
+    /// The number of each connection's name, for the tags of its notices.
     far_gens: notify::FarGens,
+    /// The background watch of every `[[remote]]` (none while a `--keys` script plays).
+    watch: Option<watch::Watch>,
+    /// What a click on another PC's notice asks to open once that PC's window is up (see [`Opening`]).
+    opening: Option<Opening>,
     /// `ito_prefs::notify_window` has been called.
     notify_ready: bool,
     /// The state folder (none while a script plays) and the one writer of its `state.toml`, which every
@@ -156,6 +161,62 @@ struct Switching {
     /// How many times the token box had opened when the wait began: a box that opens during the wait calls the
     /// switch off (a token shown once must not go with the old window).
     tokens: u64,
+    /// What to open on the new link once its runs are in (a notice's tag, see [`Opening`]).
+    open: Option<String>,
+}
+
+/// How long a click on a notice of another PC waits for that PC's runs before it gives up opening.
+const OPEN_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// A click on a notice of another PC, after the window went there: the run or 今日 it names is opened
+/// in the first frame that has the runs.
+struct Opening {
+    /// The notice's tag without the link's number.
+    rest: String,
+    since: std::time::Instant,
+}
+
+/// What an [`Opening`] does this frame.
+#[derive(Debug, PartialEq, Eq)]
+enum OpenStep {
+    Wait,
+    Apply,
+    Drop,
+}
+
+impl Opening {
+    fn step(&self, has_runs: bool, now: std::time::Instant) -> OpenStep {
+        if now.saturating_duration_since(self.since) >= OPEN_WAIT {
+            OpenStep::Drop
+        } else if has_runs {
+            OpenStep::Apply
+        } else {
+            OpenStep::Wait
+        }
+    }
+}
+
+/// What a click on a notice of the connection `name` does, the window being on `current` (`None`: this PC), and a
+/// switch to `switching` being on its way (`None`: none; a switch to this PC is one to another PC).
+#[derive(Debug, PartialEq, Eq)]
+enum ClickPlan {
+    /// The window is there: open it (once its runs are in).
+    Open,
+    /// Start the switch (the question about unsaved edits comes first), then open.
+    StartSwitch,
+    /// The switch on its way goes there already: it opens this when it is done.
+    Retarget,
+    /// A switch to another PC (or to this one) is on its way: the click is left alone.
+    Drop,
+}
+
+fn click_plan(current: Option<&str>, name: &str, switching: Option<&link::Link>) -> ClickPlan {
+    match switching {
+        Some(to) if to.far() == Some(name) => ClickPlan::Retarget,
+        Some(_) => ClickPlan::Drop,
+        None if current == Some(name) => ClickPlan::Open,
+        None => ClickPlan::StartSwitch,
+    }
 }
 
 /// What the palette can do. Add a variant and an entry in `commands` for each
@@ -218,6 +279,7 @@ impl App {
         // The scale is common.toml's, so egui's own Ctrl+= / Ctrl+- stay out of it.
         cc.egui_ctx.options_mut(|o| o.zoom_with_keyboard = false);
         cc.egui_ctx.set_zoom_factor(prefs.common.scale_or_one());
+        let watch_on = script.is_none();
         let shows = script.is_none().then(|| {
             let ctx = cc.egui_ctx.clone();
             proto::window_door().listen(move || ctx.request_repaint())
@@ -243,12 +305,10 @@ impl App {
             bell_open: false,
             bell_at: egui::Rect::NOTHING,
             palette: None,
-            // A script plays on a window that keeps no state of its own.
-            far_gens: {
-                let mut g = notify::FarGens::default();
-                g.enter(link.far());
-                g
-            },
+            // A script plays on a window that keeps no state of its own, and asks no other PC.
+            far_gens: notify::FarGens::default(),
+            watch: watch_on.then(|| watch::Watch::new(&cc.egui_ctx)),
+            opening: None,
             notify_ready: false,
             browser: ui::Browser::start(&cc.egui_ctx, state.clone(), link, state_writer.clone()),
             state,
@@ -265,14 +325,19 @@ impl App {
         }
     }
 
+    /// Starts a switch of the link; `open` is what to open there once the runs are in.
+    fn begin_switch(&mut self, to: link::Link, open: Option<String>) {
+        let waiting = !self.browser.has_unsaved();
+        self.switching = Some(Switching { to, waiting, tokens: self.browser.tokens_opened(), open });
+    }
+
     /// A switch of the link, the only place it happens: the question about unsaved edits, the wait for what is
     /// still being sent (no way to switch without waiting), then a new browser with its own notices and
     /// acknowledgements, and the link written to `state.toml`.
     fn pump_link(&mut self, ctx: &egui::Context) {
         if self.switching.is_none() {
             if let Some(to) = self.browser.take_link_wish() {
-                let waiting = !self.browser.has_unsaved();
-                self.switching = Some(Switching { to, waiting, tokens: self.browser.tokens_opened() });
+                self.begin_switch(to, None);
             }
         }
         let Some(sw) = &self.switching else { return };
@@ -344,15 +409,17 @@ impl App {
                 self.browser.cancel_switch();
                 return;
             }
-            self.switch_link(ctx, sw.to);
+            self.switch_link(ctx, sw.to, sw.open);
         }
     }
 
     /// The new browser, with a clone of the one writer of `state.toml`; the bell and the acknowledgements
     /// of the old link go.
-    fn switch_link(&mut self, ctx: &egui::Context, to: link::Link) {
+    fn switch_link(&mut self, ctx: &egui::Context, to: link::Link, open: Option<String>) {
+        // An earlier click's wish is for the earlier window: a later switch drops it.
+        self.opening = None;
         self.browser = ui::Browser::start(ctx, self.state.clone(), to.clone(), self.state_writer.clone());
-        self.far_gens.enter(to.far());
+        self.opening = open.map(|rest| Opening { rest, since: std::time::Instant::now() });
         reset_for_link(&mut self.notices, &mut self.bell_open, &mut self.acked, self.state.clone(), &to);
         self.browser.save_state();
     }
@@ -671,15 +738,20 @@ impl App {
         let ok_line = engine.is_none().then(|| self.table.tr("status.engine_ok").to_owned());
         let ha = self.browser.ha_fact(&self.table);
         let line = (waiting > 0).then(|| self.table.trf("status.unacked", &[&waiting.to_string()]));
+        let empty = std::collections::HashMap::new();
+        let facts = self.watch.as_ref().map_or(&empty, watch::Watch::facts);
+        let far_waiting = watch::unacked_total(facts, self.browser.link().far());
+        let far_line = (far_waiting > 0).then(|| self.table.trf("status.unacked_far", &[&far_waiting.to_string()]));
         let link_line = self.browser.link_label();
         let sending = self.browser.pending();
         let sending_line = (self.browser.link().is_far() && sending > 0).then(|| self.table.trf("link.sending", &[&sending.to_string()]));
         let (browser, table) = (&mut self.browser, &self.table);
+        let mut opened = false;
         ito_statusbar::show(
             ui,
             &spec,
             |ui| {
-                browser.link_picker(ui, table);
+                opened = browser.link_picker(ui, table, facts);
                 if let Some(l) = &link_line {
                     ito_statusbar::item(ui, l, ito_theme::colors().strong());
                 }
@@ -707,9 +779,18 @@ impl App {
                 if let Some(l) = &line {
                     ito_statusbar::item(ui, l, ito_theme::colors().err);
                 }
+                if let Some(l) = &far_line {
+                    ito_statusbar::item(ui, l, ito_theme::colors().err);
+                }
             },
             |_| {},
         );
+        // A PC that came back is seen at once when the list is opened.
+        if opened {
+            if let Some(w) = &self.watch {
+                w.wake_all();
+            }
+        }
     }
 
     /// The window's own bar: the name, the palette box, the bell and the
@@ -952,11 +1033,13 @@ impl App {
         }
     }
 
-    /// The notices a far engine kept, shown as this PC's system notifications (a burst of them, as after a
-    /// gap, as one that says how many there are and opens 今日); a click on one opens its run
-    /// here when the link it was made under is the one in use. Only the notices of a far engine: the window
-    /// never takes the local tray's clicks (their tags are not `far_tag`s and are dropped), and a click that
-    /// is dropped still brings the window forward (the notifier does that; accepted).
+    /// The window keeps watch on every `[[remote]]` (see `watch.rs`): the notices they kept are shown as this PC's
+    /// system notifications, titled with the PC they came from (a burst of them, as after a gap, as one that says
+    /// how many there are and opens 今日). A click on one opens its run: here when the window is on that PC, else
+    /// the window goes there first (the question about unsaved edits included) and opens it when the runs are in.
+    /// Only the notices of a far engine: the window never takes the local tray's clicks (their tags are not
+    /// `far_tag`s and are dropped), and a click that is dropped still brings the window forward (the notifier
+    /// does that; accepted).
     fn far_notices(&mut self, ctx: &egui::Context) {
         if !self.notify_ready {
             self.notify_ready = true;
@@ -964,22 +1047,65 @@ impl App {
         }
         for tag in ito_prefs::take_clicks() {
             let Some((gen, rest)) = notify::far_parse(&tag) else { continue };
-            let here = self.browser.link().far();
-            if here.is_some() && self.far_gens.name_of(gen) == here {
-                self.settings_open = false;
-                if rest == notify::TODAY_TAG {
-                    self.browser.show_today();
-                } else {
-                    self.browser.link_run(notify::run_of(rest));
+            let Some(name) = self.far_gens.name_of(gen).map(str::to_owned) else { continue };
+            let switching = self.switching.as_ref().map(|s| &s.to);
+            match click_plan(self.browser.link().far(), &name, switching) {
+                // The newest click wins over one still waiting; before the runs are in, it waits too.
+                ClickPlan::Open if self.browser.has_runs() => {
+                    self.opening = None;
+                    self.open_notice(rest);
+                }
+                ClickPlan::Open => self.opening = Some(Opening { rest: rest.to_owned(), since: std::time::Instant::now() }),
+                ClickPlan::StartSwitch => self.begin_switch(link::Link::Far(name), Some(rest.to_owned())),
+                ClickPlan::Retarget => {
+                    if let Some(sw) = &mut self.switching {
+                        sw.open = Some(rest.to_owned());
+                    }
+                }
+                ClickPlan::Drop => {}
+            }
+            ctx.request_repaint();
+        }
+        // `[notify]` was read by the watch's threads, off the UI thread; only the toast and the sound run here.
+        let Some(w) = &mut self.watch else { return };
+        for n in w.drain() {
+            let gen = self.far_gens.number_of(&n.name);
+            // Without a place to open (or too long a tag to keep) a notice only shows.
+            notify::tell_all_here(&n.cfg, &n.notes, &self.table, Some(&n.name), |tag| notify::far_tag(gen, tag).unwrap_or_default());
+        }
+    }
+
+    /// Opens what a notice's tag names on the browser: 今日, or the run.
+    fn open_notice(&mut self, rest: &str) {
+        self.settings_open = false;
+        if rest == notify::TODAY_TAG {
+            self.browser.show_today();
+        } else {
+            self.browser.link_run(notify::run_of(rest));
+        }
+    }
+
+    /// Keeps the watch's threads as the list of connections says, and opens what a click asked for once the new
+    /// window has its runs.
+    fn watching(&mut self) {
+        if let Some(w) = &mut self.watch {
+            for name in self.browser.take_moved_urls() {
+                w.reconnect(&name);
+            }
+            for gone in w.sync(self.browser.far_names(), self.browser.link().far()) {
+                self.far_gens.forget(&gone);
+            }
+        }
+        let Some(o) = &self.opening else { return };
+        match o.step(self.browser.has_runs(), std::time::Instant::now()) {
+            OpenStep::Wait => {}
+            OpenStep::Drop => self.opening = None,
+            OpenStep::Apply => {
+                if let Some(o) = self.opening.take() {
+                    self.open_notice(&o.rest);
                 }
             }
         }
-        // `[notify]` was read by the worker, off the UI thread; only the toast and the sound run here.
-        let (notes, cfg) = self.browser.take_far_notes();
-        let gen = self.far_gens.current();
-        let name = self.browser.link().far().map(str::to_owned);
-        // Without a place to open (or too long a tag to keep) a notice only shows.
-        notify::tell_all_here(&cfg, &notes, &self.table, name.as_deref(), |tag| notify::far_tag(gen, tag).unwrap_or_default());
     }
 
     /// F12: the browser opens the issue form filled with the version, the OS
@@ -1022,6 +1148,7 @@ impl eframe::App for App {
         self.pump_link(&ctx);
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
+        self.watching();
         self.far_notices(&ctx);
         self.notice_list(&ctx);
         if !taking {
@@ -1289,6 +1416,31 @@ fn reset_for_link(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_click_on_a_notice_opens_here_switches_there_or_is_left_alone() {
+        let (kei, works, here) = (link::Link::Far("kei".into()), link::Link::Far("works".into()), link::Link::Local);
+        assert_eq!(click_plan(Some("kei"), "kei", None), ClickPlan::Open);
+        assert_eq!(click_plan(None, "kei", None), ClickPlan::StartSwitch);
+        assert_eq!(click_plan(Some("works"), "kei", None), ClickPlan::StartSwitch);
+        assert_eq!(click_plan(None, "kei", Some(&kei)), ClickPlan::Retarget);
+        assert_eq!(click_plan(Some("kei"), "kei", Some(&kei)), ClickPlan::Retarget);
+        assert_eq!(click_plan(None, "kei", Some(&works)), ClickPlan::Drop);
+        assert_eq!(click_plan(Some("kei"), "kei", Some(&works)), ClickPlan::Drop, "the window is leaving");
+        assert_eq!(click_plan(Some("kei"), "kei", Some(&here)), ClickPlan::Drop, "going to this PC is not overridden");
+        assert_eq!(click_plan(Some("works"), "kei", Some(&here)), ClickPlan::Drop);
+    }
+
+    #[test]
+    fn what_a_click_asked_for_is_opened_only_once_the_runs_are_in_and_not_after_the_wait() {
+        let t0 = std::time::Instant::now();
+        let o = Opening { rest: "run-1".into(), since: t0 };
+        assert_eq!(o.step(false, t0), OpenStep::Wait);
+        assert_eq!(o.step(true, t0), OpenStep::Apply);
+        assert_eq!(o.step(false, t0 + OPEN_WAIT / 2), OpenStep::Wait);
+        assert_eq!(o.step(false, t0 + OPEN_WAIT), OpenStep::Drop);
+        assert_eq!(o.step(true, t0 + OPEN_WAIT), OpenStep::Drop, "late is dropped, not applied to whatever shows");
+    }
 
     #[test]
     fn the_keys_argument_is_a_script_and_anything_after_it_is_refused() {
