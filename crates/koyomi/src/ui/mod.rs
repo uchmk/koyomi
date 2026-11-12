@@ -1217,6 +1217,20 @@ impl Browser {
         self.far.open_manage();
     }
 
+    /// The reconnect after the URL of the current connection moved: when this browser is on the same link as `old`,
+    /// the manage box of `old` comes along (see [`far::Far::carry_manage_from`]), so the outcome is still read.
+    /// A different link, or a box that is busy, leaves it with `old`, which goes.
+    /// On any switch, what `old` has for the app and the app has not taken yet comes along: the connections whose
+    /// URL moved (the watch connects to them afresh) and a write of koyomi.toml (the prefs read it again). The
+    /// switch can come in the frame after the drain that found them, before the app takes them.
+    pub fn keep_from(&mut self, old: &mut Browser) {
+        self.moved_urls.append(&mut old.moved_urls);
+        self.far.carry_written_from(&mut old.far);
+        if self.link == old.link {
+            self.far.carry_manage_from(&mut old.far);
+        }
+    }
+
     pub fn drain(&mut self) {
         self.far.drain();
         if let Some(name) = self.far.take_joined() {
@@ -1226,7 +1240,7 @@ impl Browser {
         if let Some(name) = self.far.take_moved() {
             self.moved_urls.push(name.clone());
             // The window is on the connection whose URL moved: it reconnects at the new one. The box stays, so the
-            // outcome (and the reconnecting) is still read.
+            // outcome (and the reconnecting) is still read: `switch_link` carries it into the new browser (`keep_from`).
             if self.link.far().is_some_and(|l| l.trim() == name.trim()) {
                 self.want_link = Some(Link::Far(name));
                 if let Some(Ok(line)) = self.far.manage.as_mut().and_then(|m| m.line.as_mut()) {
@@ -7759,6 +7773,57 @@ run = [\"x.exe\"]
         assert!(b.far.manage.is_some() && b.far.add.is_none());
         b.add_remote_box();
         assert!(b.far.add.is_some() && b.far.manage.is_none());
+    }
+
+    /// A browser on `kei` whose manage box is open with an outcome line.
+    fn kei_with_box(busy: bool) -> Browser {
+        let mut b = quiet(defs());
+        b.link = Link::Far("kei".into());
+        b.manage_remotes_box();
+        let m = b.far.manage.as_mut().unwrap();
+        m.line = Some(Ok("moved".to_owned()));
+        m.busy = busy;
+        b
+    }
+
+    #[test]
+    fn the_manage_box_is_carried_into_the_reconnect_on_the_same_link() {
+        let mut old = kei_with_box(false);
+        let mut fresh = quiet(defs());
+        fresh.link = Link::Far("kei".into());
+        fresh.keep_from(&mut old);
+        let line = fresh.far.manage.as_ref().and_then(|m| m.line.clone());
+        assert_eq!(line, Some(Ok("moved".to_owned())));
+        assert!(old.far.manage.is_none());
+    }
+
+    #[test]
+    fn the_manage_box_is_not_carried_to_another_link() {
+        let mut old = kei_with_box(false);
+        let mut fresh = quiet(defs());
+        fresh.link = Link::Local;
+        fresh.keep_from(&mut old);
+        assert!(fresh.far.manage.is_none());
+    }
+
+    #[test]
+    fn the_moved_urls_not_taken_yet_go_with_any_switch() {
+        let mut old = kei_with_box(false);
+        old.moved_urls.push("kei".into());
+        let mut fresh = quiet(defs());
+        fresh.link = Link::Local;
+        fresh.keep_from(&mut old);
+        assert_eq!(fresh.take_moved_urls(), ["kei"]);
+        assert!(old.moved_urls.is_empty());
+    }
+
+    #[test]
+    fn a_busy_manage_box_is_not_carried() {
+        let mut old = kei_with_box(true);
+        let mut fresh = quiet(defs());
+        fresh.link = Link::Far("kei".into());
+        fresh.keep_from(&mut old);
+        assert!(fresh.far.manage.is_none());
     }
 
     const FAKE_TOKEN: &str = "fake-token-0123456789";

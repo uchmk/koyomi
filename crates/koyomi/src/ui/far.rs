@@ -407,6 +407,29 @@ impl Far {
         }
     }
 
+    /// Takes the manage box of `old` (the browser this one replaces), with what its rows are drawn from, so the box
+    /// does not look empty until this one's own listing answers. Not a box that is busy: its answer would come on
+    /// `old`'s channel. Returns whether the box was taken.
+    pub(super) fn carry_manage_from(&mut self, old: &mut Far) -> bool {
+        if old.manage.is_none() || old.manage_busy() {
+            return false;
+        }
+        self.manage = old.manage.take();
+        self.names = std::mem::take(&mut old.names);
+        self.secrets = std::mem::take(&mut old.secrets);
+        self.urls = std::mem::take(&mut old.urls);
+        self.unread = old.unread.take();
+        self.watch_off = std::mem::take(&mut old.watch_off);
+        self.watch_all_off = old.watch_all_off;
+        true
+    }
+
+    /// Takes `old`'s word that one of its writes of koyomi.toml succeeded and was not taken yet: the prefs still read
+    /// the file again when the link is switched in the same frame.
+    pub(super) fn carry_written_from(&mut self, old: &mut Far) {
+        self.config_written |= std::mem::take(&mut old.config_written);
+    }
+
     /// Closes the manage box, unless a change is being carried out. A pick of another link does this: the box goes
     /// with this browser anyway, and its Enter must not rename anything while the switch waits behind a question.
     pub fn close_manage(&mut self) {
@@ -809,6 +832,23 @@ mod tests {
         f.take(Got::Managed(ticket, Change::Watch("works".into(), false), Ok("ok".into())));
         assert!(f.take_config_written());
         assert!(!f.take_config_written());
+    }
+
+    #[test]
+    fn a_write_not_taken_yet_and_the_rows_go_with_a_carried_box() {
+        let ctx = egui::Context::default();
+        let mut old = Far::idle(&ctx);
+        old.config_written = true;
+        old.names = vec!["kei".into()];
+        old.manage = Some(Manage::new());
+        let mut fresh = Far::idle(&ctx);
+        fresh.carry_written_from(&mut old);
+        assert!(fresh.carry_manage_from(&mut old));
+        assert!(fresh.take_config_written() && !old.take_config_written());
+        assert_eq!(fresh.names, ["kei"]);
+        assert!(fresh.manage.is_some() && old.manage.is_none());
+        // Nothing to carry: the box stays shut.
+        assert!(!Far::idle(&ctx).carry_manage_from(&mut old));
     }
 
     #[test]

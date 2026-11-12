@@ -436,7 +436,11 @@ impl App {
     fn switch_link(&mut self, ctx: &egui::Context, to: link::Link, open: Option<String>) {
         // An earlier click's wish is for the earlier window: a later switch drops it.
         self.opening = None;
-        self.browser = ui::Browser::start(ctx, self.state.clone(), to.clone(), self.state_writer.clone());
+        let mut fresh = ui::Browser::start(ctx, self.state.clone(), to.clone(), self.state_writer.clone());
+        // What the old browser found for the app and the app has not taken yet comes along. On the reconnect after
+        // the URL of this very link moved, the manage box stays over it too.
+        fresh.keep_from(&mut self.browser);
+        self.browser = fresh;
         self.opening = open.map(|rest| Opening { rest, since: std::time::Instant::now() });
         reset_for_link(&mut self.notices, &mut self.bell_open, &mut self.acked, self.state.clone(), &to);
         self.browser.save_state();
