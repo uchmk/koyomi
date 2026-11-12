@@ -391,6 +391,7 @@ no_log = "(no log yet)"
 
 [today]
 open_net = "Open the net's page"
+net_gone = "This net is not there now (removed or renamed). Double-click the row to open this run."
 unhandled = "Unhandled"
 filter_on = "Show only these"
 filter_off = "Show all"

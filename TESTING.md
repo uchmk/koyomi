@@ -435,6 +435,10 @@ The window's 履歴 (a row under 今日) and `koyomi history` show the runs that
 | 28.18 | Narrator / NVDA over 履歴 | The 履歴 row, the 検索 button and each run row are read (row: the date, the state, the title, the times) |
 | 28.19 | [x] `koyomi --keys` report with 履歴 open | A `history: 2026-10-23..2026-10-30 * * 12` line (the days, the net or `*`, the state key or `*`, the rows shown) |
 | 28.20 | A job whose reason has line breaks (a `[[when]] eventlog` net started by an event whose message has several lines, e.g. from PowerShell `eventcreate /L APPLICATION /SO MyApp /T ERROR /ID 100 /D "line 1$([char]10)line 2"`); `koyomi history`, `koyomi show <net>` and `koyomi run <net> --date <a week ago>..<today> --only missing --dry` | Each run and job is one row: the reason's line breaks read as spaces. `koyomi show <run> <job>`'s 理由 keeps them (BLOCKED: `eventcreate` needs administrator) |
+| 28.21 | Double-click a row in 履歴, also one older than 30 days (set the range to cover it), then press 戻る | The row's run page opens as a double click on 今日 does (the net marked in the tree; a run of a net removed since opens too, without 再実行); 戻る comes back to 履歴 with that row picked |
+| 28.22 | Right-click a row in 履歴 and choose ジョブネットのページを開く | The net's page opens; 戻る comes back to 履歴 |
+| 28.23 | Remove a net, then right-click one of its rows in 履歴 | ジョブネットのページを開く is greyed and its hover says the net is not there now and to double-click the row; pressing it moves nothing |
+| 28.24 | Right-click a 今日 row of a net removed today | ジョブネットのページを開く is greyed with the same hover and nothing moves; a double click on the row still opens its run |
 
 ## 29. Editor (`ui/canvas.rs`, `koyomi new` / `versions` / `restore`)
 
@@ -2148,7 +2152,7 @@ Rows need this PC with the window on この PC.
 | 139.6 | Press 比べる元にする on a run | The button's hover says what it does beforehand; after pressing, a hint 「この回を比べる元にしました。…」 shows under the bar and the header has a 「比べる元」 chip; marking another run replaces it |
 | 139.7 | Open another run of the same net | A framed block 「<A>（<状態>）と比べています」 shows a table (ジョブ, A（比べる元）, B（このページの回）) with differing rows marked; 比べるのをやめる closes it and clears the base |
 | 139.8 | Press 前の回と比べる on a run with an earlier finished run of the same net; then on the net's first run | The first sets that earlier run as A and shows the block (when the history was not read yet it is read first); the second is greyed with the reason 「同じジョブネットに、この回より前に終わった回がありません。」 |
-| 139.9 | With a base set, right-click rows in the 履歴 list | Each offers 「<A> と比べる」 that opens that run against A; on A itself it is greyed with 「比べる元そのものです」; with no base set there is no menu |
+| 139.9 | With a base set, right-click rows in the 履歴 list | Each offers 「<A> と比べる」 that opens that run against A; on A itself it is greyed with 「比べる元そのものです」; with no base set the menu has only ジョブネットのページを開く (28.22) |
 | 139.10 | Right-click a job on the picture and a row of the job table of a finished run | The job is picked and a menu offers 「<名前> から再実行」, 「… の次から（… はスキップ）」, 「… の次から（… は警告終了）」, 「ジョブ <名前> を保留」, ログを見る (shows that job's log and scrolls to it), and エディターでこのジョブを開く when the net still exists; each acts on that job, not on the one picked before |
 | 139.11 | Right-click a pending job of a running run, then a job whose approval is waiting, then a job of a never-began run | 「<名前> をスキップ」 for the pending one; 承認する / 却下する for the approval; of the rerun items only 最初から再実行する for the never-began run; a job inside a child net has no 保留 item |
 

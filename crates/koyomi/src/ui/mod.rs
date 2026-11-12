@@ -620,6 +620,8 @@ struct Place {
     cal_sel: Option<String>,
     cal_month: Option<(i32, u32)>,
     cal_day: Option<chrono::NaiveDate>,
+    /// The run only the history held, so 戻る to its page finds it after the history is gone.
+    opened_run: Option<Run>,
 }
 
 impl Place {
@@ -691,6 +693,8 @@ pub struct Browser {
     compare_base: Option<String>,
     /// The runs of the last 30 days the averages were made from (the pool 前の回と比べる looks in).
     past_rows: Option<Vec<Run>>,
+    /// The run opened from the history that no other list holds (older than 30 days): kept so the page does not lose it.
+    opened_run: Option<Run>,
     /// 前の回と比べる was pressed before those runs came: the run it was pressed on.
     prev_wait: Option<String>,
     /// The log's title scrolls into view on the next frame (ログを見る was pressed).
@@ -884,6 +888,7 @@ impl Browser {
             run_sel: None,
             compare_base: None,
             past_rows: None,
+            opened_run: None,
             prev_wait: None,
             log_scroll: false,
             run_defs: BTreeMap::new(),
@@ -1695,9 +1700,14 @@ impl Browser {
     /// Shows run `id` in the detail (a click under the bell).
     pub fn open_run(&mut self, id: &str) {
         // Mark its net in the tree too, so the run shows where it belongs.
-        if let Some(net) = self.runs.iter().find(|r| r.id == id).map(|r| r.jobnet.clone()) {
+        let found = self.find_run(id).map(|r| r.jobnet.clone());
+        if let Some(net) = found {
             self.selected = Some(net);
         }
+        // A run only the history held would be lost with it: keep a copy.
+        let only_history = !self.runs.iter().any(|r| r.id == id) && !self.past_rows.iter().flatten().any(|r| r.id == id);
+        // The kept copy itself counts, when the same run is opened again after the history went.
+        self.opened_run = if only_history { self.find_run(id).cloned() } else { None };
         self.run_sel = Some(id.to_owned());
         self.cal_sel = None;
         self.result = None;
@@ -1763,11 +1773,22 @@ impl Browser {
             .find(|r| r.id == id)
             .or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
             .or_else(|| self.past_rows.as_ref()?.iter().find(|r| r.id == id))
+            .or(self.opened_run.as_ref().filter(|r| r.id == id))
+    }
+
+    /// Whether the net `id` is in the engine's list now (a def with an error counts: its page shows the error).
+    fn net_listed(&self, id: &str) -> bool {
+        net_in(self.snap.as_ref(), id)
     }
 
     /// Every run the window holds: today's, the history asked for and the last 30 days.
     fn known_runs(&self) -> impl Iterator<Item = &Run> {
-        self.runs.iter().chain(self.hist.iter().flat_map(|h| h.rows.iter())).chain(self.past_rows.iter().flatten())
+        self.runs
+            .iter()
+            .chain(self.hist.iter().flat_map(|h| h.rows.iter()))
+            .chain(self.past_rows.iter().flatten())
+            // The kept copy only while no list holds that run again (find_run then gives the live one).
+            .chain(self.opened_run.iter().filter(|o| self.find_run(&o.id).is_some_and(|r| std::ptr::eq(r, *o))))
     }
 
     /// The run 前の回と比べる would mark for `run`: its net's newest earlier run that ended.
@@ -3077,6 +3098,7 @@ impl Browser {
             cal_sel: self.cal_sel.clone(),
             cal_month: self.cal_month,
             cal_day: self.cal_day,
+            opened_run: self.opened_run.clone(),
         }
     }
 
@@ -3095,6 +3117,7 @@ impl Browser {
         self.cal_sel = p.cal_sel;
         self.cal_month = p.cal_month;
         self.cal_day = p.cal_day;
+        self.opened_run = p.opened_run;
         self.result = None;
         self.cal_result = None;
         self.cal_inline = None;
@@ -3424,6 +3447,7 @@ impl Browser {
             } else if r.clicked() {
                 pick = Some((row.run.clone(), row.net.clone()));
             }
+            let listed = self.net_listed(&row.net);
             r.context_menu(|ui| {
                 let net_held = held.contains(&row.net);
                 let key = if net_held { "run.release" } else { "run.hold" };
@@ -3440,7 +3464,11 @@ impl Browser {
                     }
                 }
                 ui.separator();
-                if ui.button(t.tr("today.open_net")).clicked() {
+                let label = t.tr("today.open_net");
+                let b = ui.add_enabled(listed, egui::Button::new(label));
+                ito_a11y::say(&b, Role::Button, label);
+                let b = if listed { b } else { b.on_disabled_hover_text(t.tr("today.net_gone")) };
+                if b.clicked() {
                     go_net = Some(row.net.clone());
                     ui.close();
                 }
@@ -4337,7 +4365,11 @@ impl Browser {
             let sort = h.sort;
             let reveal = self.reveal;
             let base = self.compare_base.clone();
+            let listed: BTreeSet<String> =
+                rows.iter().filter(|r| net_in(self.snap.as_ref(), &r.jobnet)).map(|r| r.jobnet.clone()).collect();
             let none = rows.is_empty() && h.error.is_none();
+            let mut open = None;
+            let mut go_net = None;
             let mut sorted = None;
             let tall = ui.available_height();
             ui.allocate_ui(egui::vec2(room, tall), |ui| {
@@ -4351,19 +4383,31 @@ impl Browser {
                         let date = run.started.date().to_string();
                         let word = show::tag(t, run.state);
                         let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
-                        let r = table.row(ui, run.state, &word, &run.title, &cells, on, true);
+                        let r = table.row(ui, run.state, &word, &run.title, &cells, on, true).on_hover_text(t.tr("today.open_hint"));
                         if on && reveal {
                             reveal_row(ui, &r);
                         }
                         let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
                         let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
                         ito_a11y::say(&r, Role::Row, &said);
-                        if r.clicked() {
+                        if r.double_clicked() {
+                            open = Some(run.id.clone());
+                        } else if r.clicked() {
                             pick = Some(run.id.clone());
                         }
-                        // While a run is marked as the base, a row can be opened against it.
-                        if base.is_some() {
-                            r.context_menu(|ui| {
+                        r.context_menu(|ui| {
+                            let is_listed = listed.contains(&run.jobnet);
+                            let label = t.tr("today.open_net");
+                            let b = ui.add_enabled(is_listed, egui::Button::new(label));
+                            ito_a11y::say(&b, Role::Button, label);
+                            let b = if is_listed { b } else { b.on_disabled_hover_text(t.tr("today.net_gone")) };
+                            if b.clicked() {
+                                go_net = Some(run.jobnet.clone());
+                                ui.close();
+                            }
+                            // While a run is marked as the base, a row can be opened against it.
+                            if base.is_some() {
+                                ui.separator();
                                 let Some(item) = runmenu::history_item(t, base.as_deref(), run) else { return };
                                 let b = ui.add_enabled(item.enabled, egui::Button::new(&item.label));
                                 ito_a11y::say(&b, Role::Button, &item.label);
@@ -4375,8 +4419,8 @@ impl Browser {
                                     pick = Some(run.id.clone());
                                     ui.close();
                                 }
-                            });
-                        }
+                            }
+                        });
                     }
                     ui.spacing_mut().item_spacing.y = gap;
                     if none {
@@ -4389,6 +4433,16 @@ impl Browser {
             });
             if let (Some(col), Some(h)) = (sorted, self.hist.as_mut()) {
                 h.sort = TodayTable::next_sort(h.sort, col);
+            }
+            if let Some(id) = go_net {
+                self.follow(|b| b.open_net(&id));
+                ui.ctx().request_repaint();
+                return;
+            }
+            if let Some(id) = open {
+                self.follow(|b| b.open_run(&id));
+                ui.ctx().request_repaint();
+                return;
             }
             if pick.is_some() {
                 self.run_sel = pick;
@@ -5881,6 +5935,12 @@ pub(super) fn folded_pane(ui: &mut egui::Ui, id: &str, title: &str, words: &str)
     open
 }
 
+/// Whether the net `id` is among the defs of `snap` (the field alone, so a caller holding another field of the browser can ask).
+/// Before the engine's list came it counts as there: the menu does not say it was removed when that is not known.
+fn net_in(snap: Option<&Snapshot>, id: &str) -> bool {
+    snap.is_none_or(|s| s.defs.iter().any(|d| d.id == id))
+}
+
 /// Scrolls a table's row to the middle of the view, up or down only. `scroll_to_me` would also
 /// centre a row wider than the view sideways, and cut off the table's first columns.
 fn reveal_row(ui: &egui::Ui, r: &egui::Response) {
@@ -6303,6 +6363,7 @@ mod tests {
             run_sel: None,
             compare_base: None,
             past_rows: None,
+            opened_run: None,
             prev_wait: None,
             log_scroll: false,
             run_defs: BTreeMap::new(),
@@ -7776,6 +7837,82 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         s.click("履歴", &mut b);
         assert!(b.hist.is_some() && b.back.is_empty(), "a tab is not a link");
+    }
+
+    fn old_run(id: &str, net: &str) -> Run {
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 1, 5).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        Run::new(id, net, "t", "2026-01-05", koyomi_core::run::How::Manual, &koyomi_core::jobnet::Jobnet::default(), at)
+    }
+
+    #[test]
+    fn a_history_run_older_than_30_days_stays_open_and_back_returns_to_the_history() {
+        let mut b = quiet(defs());
+        b.open_history();
+        b.hist.as_mut().unwrap().rows = vec![old_run("old1", "試験/bom")];
+        // The first click of a double click picks the row.
+        b.run_sel = Some("old1".into());
+        assert!(b.runs.is_empty() && b.past_rows.is_none());
+        b.follow(|b| b.open_run("old1"));
+        assert_eq!(b.selected_run().map(|r| r.id.as_str()), Some("old1"), "the run is found though the history is gone");
+        assert_eq!(b.selected.as_deref(), Some("試験/bom"), "its net is marked in the tree");
+        assert!(b.hist.is_none(), "the run page replaces the history");
+        assert!(b.opened_run.is_some());
+        b.go_back();
+        assert!(b.hist.is_some(), "back brings the history again");
+        assert_eq!(b.run_sel.as_deref(), Some("old1"), "with the run picked");
+    }
+
+    #[test]
+    fn a_run_that_the_runs_hold_leaves_no_opened_copy() {
+        let mut b = quiet(defs());
+        b.open_history();
+        let run = old_run("r1", "試験/bom");
+        b.hist.as_mut().unwrap().rows = vec![run.clone()];
+        b.runs = vec![run];
+        b.follow(|b| b.open_run("r1"));
+        assert!(b.opened_run.is_none());
+        assert_eq!(b.selected_run().map(|r| r.id.as_str()), Some("r1"));
+    }
+
+    #[test]
+    fn back_through_other_pages_finds_a_history_only_run_again() {
+        let mut b = quiet(defs());
+        b.open_history();
+        b.hist.as_mut().unwrap().rows = vec![old_run("old1", "試験/bom")];
+        b.follow(|b| b.open_run("old1"));
+        // Its net's page, then today's run of the net: the copy goes with the old run's page.
+        b.follow(|b| b.open_net("試験/bom"));
+        b.runs = vec![old_run("r1", "試験/bom")];
+        b.follow(|b| b.open_run("r1"));
+        assert!(b.opened_run.is_none());
+        b.go_back();
+        b.go_back();
+        assert_eq!(b.selected_run().map(|r| r.id.as_str()), Some("old1"), "戻る finds the old run again");
+        // Opened again with no history held, the copy stays.
+        b.open_run("old1");
+        assert_eq!(b.selected_run().map(|r| r.id.as_str()), Some("old1"));
+    }
+
+    #[test]
+    fn a_net_counts_as_listed_while_the_engine_lists_it_even_with_an_error_or_before_its_list_came() {
+        let mut b = quiet(defs());
+        assert!(b.net_listed("試験/bom"));
+        b.snap.as_mut().unwrap().defs[0].net = None;
+        assert!(b.net_listed("試験/bom"), "a def with an error still counts");
+        assert!(!b.net_listed("試験/removed"));
+        b.snap = None;
+        assert!(b.net_listed("試験/removed"), "no list yet: not said to be removed");
+    }
+
+    #[test]
+    fn the_kept_copy_is_not_counted_twice_once_a_list_holds_the_run_again() {
+        let mut b = quiet(defs());
+        b.open_history();
+        b.hist.as_mut().unwrap().rows = vec![old_run("old1", "試験/bom")];
+        b.follow(|b| b.open_run("old1"));
+        assert_eq!(b.known_runs().filter(|r| r.id == "old1").count(), 1);
+        b.past_rows = Some(vec![old_run("old1", "試験/bom")]);
+        assert_eq!(b.known_runs().filter(|r| r.id == "old1").count(), 1, "the live copy only");
     }
 
     #[test]
