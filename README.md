@@ -2,30 +2,39 @@
 
 Small job scheduler and monitor (a light JP1)
 
-uchmk のアプリ。共通の部品は [ito](https://github.com/uchmk/ito) を使う。
+One of the uchmk apps. Its shared parts come from [ito](https://github.com/uchmk/ito).
 
-エラーや警告が出たときは [こんな時はどうする](docs/troubleshooting.md) を、メッセージの先頭の ID（`KOYOMI-E2101` など）で検索してください。
+When koyomi shows an error or a warning, search [こんな時はどうする](docs/troubleshooting.md)
+(what to do when…, in Japanese) for the ID at the start of the message, such as `KOYOMI-E2101`.
 
     cargo run
 
-## 画面
+## What it looks like
 
-![今日のタブ: 今日の実行と予定の表（正常終了・実行中・待ちと、異常終了した売上レポート）、その下のガントチャート、右に選んだジョブネットの次の予定と構成](docs/images/today.png)
+![The Today tab: today's runs and the ones still to come (ended, running, waiting, and the sales report that failed), the gantt chart below them, and on the right the selected job net's next runs and its jobs](docs/images/today.png)
 
-![画面を回る動き: 今日の表で失敗した実行を選び、月次締めのジョブネットの流れ、会社のカレンダーの営業日と休み、履歴で失敗したジョブのログを見て、対応済みにする](docs/images/koyomi.gif)
+![Going round the window: picking the failed run in today's table, the flow of the month-end closing job net, the working days and holidays of the company calendar, the failed job's log in History, and marking the failure as handled](docs/images/koyomi.gif)
 
-![履歴のタブ: 過去 7 日の実行の一覧と、選んだ失敗した実行のジョブの流れ・状態・終了コード、失敗したジョブのログ](docs/images/history.png)
+![The History tab: the runs of the past 7 days, and for the selected failed run the flow of its jobs, their states and exit codes, and the failed job's log](docs/images/history.png)
 
-画像の撮り方は [docs/images/README.md](docs/images/README.md) にあります。
+How the images were taken is in [docs/images/README.md](docs/images/README.md) (in Japanese).
 
-## Debian でエンジンを動かす
+## Running the engine on Debian
 
-エンジンを Debian 12 以降で systemd のサービスとして動かし、Windows の画面から HTTPS で接続できます。
+The engine can run on Debian 12 or later as a systemd service, and the window on Windows
+connects to it over HTTPS.
 
-1. [Releases](https://github.com/uchmk/koyomi/releases) から `koyomi_<版>_amd64.deb` (または `koyomi-<版>-linux-x86_64.tar.gz`) を Debian に置きます。
-2. `sudo apt install ./koyomi_<版>_amd64.deb` を実行します (tar.gz は展開して `sudo ./install.sh`)。最後に、接続する URL、証明書の指紋、token の読み込み方法が表示されます。
-3. Windows の画面で、状態バーの接続先 →「接続先を管理…」→「接続先を追加する…」から、URL と token を入力します。
+1. From [Releases](https://github.com/uchmk/koyomi/releases), put `koyomi_<version>_amd64.deb`
+   (or `koyomi-<version>-linux-x86_64.tar.gz`) on the Debian machine.
+2. Run `sudo apt install ./koyomi_<version>_amd64.deb` (for the tar.gz, unpack it and run
+   `sudo ./install.sh`). At the end it prints the URL to connect to, the certificate's
+   fingerprint and how to load the token.
+3. In the window on Windows, click the connection in the status bar, then
+   **Manage connections...** and **Add a connection...**, and enter the URL and the token.
 
-利用者ごとに役割（`view`・`run`・`edit`・`admin`）を決めて、できる操作を分けられます。利用者の名前は koyomi の中だけの名前で、Linux の利用者とは関係ありません。
+Each user is given a role (`view`, `run`, `edit` or `admin`) that decides what they can do.
+The user names exist only inside koyomi; they have nothing to do with the Linux users.
 
-詳しい手順（利用者と役割、ファイルの場所、更新、削除、制約）は [koyomi エンジンを Debian にインストールする](packaging/linux/README.md) にあります。
+The full steps (users and roles, where the files are, updating, removing, and the limits)
+are in [koyomi エンジンを Debian にインストールする](packaging/linux/README.md)
+(installing the koyomi engine on Debian, in Japanese).
