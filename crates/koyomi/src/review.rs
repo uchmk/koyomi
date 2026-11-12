@@ -216,6 +216,14 @@ fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
     Some(format!("  {}: {}", t.tr("review.run_as"), text))
 }
 
+/// An `on` of ssh or winrm: a `[[host]]` of koyomi.toml is shown by its name and a word saying so.
+fn on_text(t: &Table, on: &str) -> String {
+    match chore::host_name(on) {
+        Some(name) => t.trf("review.host_named", &[name]),
+        None => on.to_owned(),
+    }
+}
+
 /// What a chore works on, one line each.
 fn chore(t: &Table, c: &Chore) -> Vec<String> {
     chore_pairs(t, c).into_iter().map(|(label, v)| format!("  {label}: {v}")).collect()
@@ -248,9 +256,16 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
             v
         }
         Chore::Empty { path } => vec![line("path", path)],
-        Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify }
-        | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify } => {
+        Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket }
+        | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket } => {
             let mut v = vec![line("from", from), line("into", into)];
+            // A registered PC or bucket owns the login: only its name is shown, never its keys.
+            if let Some(h) = host {
+                v.push(line("host", &t.trf("review.host_named", &[h])));
+            }
+            if let Some(b) = bucket {
+                v.push(line("bucket", &t.trf("review.bucket_named", &[b])));
+            }
             let fields = [
                 ("key", key),
                 ("host_key", host_key),
@@ -270,7 +285,7 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
             v
         }
         Chore::Ssh { on, command, key, host_key, password, max, pass } => {
-            let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
+            let mut v = vec![line("on", &on_text(t, on)), line("command", &command.replace('\n', " ⏎ "))];
             for (name, value) in [("key", key), ("host_key", host_key), ("password", password)] {
                 if let Some(x) = value {
                     v.push(line(name, x));
@@ -280,7 +295,7 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
             v
         }
         Chore::Winrm { on, command, cert, password, auth, max, pass } => {
-            let mut v = vec![line("on", on), line("command", &command.replace('\n', " ⏎ "))];
+            let mut v = vec![line("on", &on_text(t, on)), line("command", &command.replace('\n', " ⏎ "))];
             v.extend(fan(on, *max, *pass));
             if let Some(c) = cert {
                 v.push(line("cert", c));
@@ -646,6 +661,39 @@ database = \"main\"
         let all = jobs(&table(), &d);
         assert!(all.iter().any(|l| l == "  実行のアカウント: ops（登録済みのアカウント）"), "{all:#?}");
         assert!(all.iter().any(|l| l.contains("データベース（登録済み）") && l.contains("main")), "{all:#?}");
+    }
+
+    /// A registered PC or bucket is shown by its name and a word saying so; no login row is there.
+    #[test]
+    fn a_registered_host_and_bucket_are_shown_by_name() {
+        let text = format!(
+            "{NET}[[job]]
+id = \"s\"
+kind = \"send\"
+from = \"D:/out/*.csv\"
+into = \"/in\"
+host = \"web1\"
+[[job]]
+id = \"f\"
+kind = \"fetch\"
+from = \"in/*.csv\"
+into = \"D:/in\"
+bucket = \"logs\"
+[[job]]
+id = \"x\"
+kind = \"ssh\"
+on = \"web1\"
+command = \"uptime\"
+"
+        );
+        let d = def(&text, &Store::default());
+        assert!(d.net.is_some(), "{:?}", d.problems);
+        let all = jobs(&table(), &d);
+        assert!(all.iter().any(|l| l == "  接続先: web1（設定の接続先）"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "  S3: logs（設定の S3）"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "  先: /in"), "{all:#?}");
+        assert!(all.iter().any(|l| l.ends_with(": web1（設定の接続先）") && l.contains("実行")), "{all:#?}");
+        assert!(!all.iter().any(|l| l.contains("SSH の鍵") || l.contains("パスワード")), "{all:#?}");
     }
 
     /// An approval's message is what the person approving reads (`koyomi show`, the approve command).

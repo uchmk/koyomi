@@ -67,6 +67,8 @@ pub struct WhenEdit {
     /// `mail`: the mailbox, the password as `secret:<name>`, and the texts
     /// the sender / subject hold.
     pub mail: String,
+    /// `mailbox`: a `[[mailbox]]` of koyomi.toml, which owns `mail` and `password`.
+    pub mailbox: String,
     pub password: String,
     pub sender: String,
     pub subject: String,
@@ -114,6 +116,7 @@ impl Default for WhenEdit {
             ids: String::new(),
             source: String::new(),
             mail: String::new(),
+            mailbox: String::new(),
             password: String::new(),
             sender: String::new(),
             subject: String::new(),
@@ -258,10 +261,13 @@ impl WhenEdit {
                 e.ids = join(ids);
                 e.source = source.clone().unwrap_or_default();
             }
-            Kind::Mail { mail, secret, sender, subject } => {
+            Kind::Mail { mail, secret, mailbox, sender, subject } => {
                 e.kind = "mail".into();
                 e.mail = mail.clone();
-                e.password = format!("secret:{secret}");
+                e.mailbox = mailbox.clone().unwrap_or_default();
+                if mailbox.is_none() {
+                    e.password = format!("secret:{secret}");
+                }
                 e.sender = sender.clone().unwrap_or_default();
                 e.subject = subject.clone().unwrap_or_default();
             }
@@ -383,6 +389,14 @@ impl WhenEdit {
                 }
                 Kind::EventLog { eventlog: self.eventlog.trim().into(), ids, source }
             }
+            "mail" if !self.mailbox.trim().is_empty() => {
+                let text = |s: &str| Some(s.to_owned()).filter(|s| !s.trim().is_empty());
+                let (sender, subject) = (text(&self.sender), text(&self.subject));
+                if sender.is_none() && subject.is_none() {
+                    return Err(msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
+                }
+                Kind::Mail { mail: String::new(), secret: String::new(), mailbox: Some(self.mailbox.trim().into()), sender, subject }
+            }
             "mail" => {
                 when::mailbox(&self.mail)?;
                 let secret = match self.password.trim().strip_prefix("secret:") {
@@ -395,7 +409,7 @@ impl WhenEdit {
                 if sender.is_none() && subject.is_none() {
                     return Err(msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
                 }
-                Kind::Mail { mail: self.mail.trim().into(), secret, sender, subject }
+                Kind::Mail { mail: self.mail.trim().into(), secret, mailbox: None, sender, subject }
             }
             "on_start" => Kind::OnStart,
             "idle" => {
@@ -700,8 +714,12 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.source"), &mut self.source, 160.0);
             }
             "mail" => {
-                changed |= field(ui, t.tr("when.mail"), &mut self.mail, 240.0);
-                changed |= field(ui, t.tr("when.password"), &mut self.password, 120.0);
+                if self.mailbox.trim().is_empty() {
+                    changed |= field(ui, t.tr("when.mail"), &mut self.mail, 240.0);
+                    changed |= field(ui, t.tr("when.password"), &mut self.password, 120.0);
+                } else {
+                    changed |= field(ui, t.tr("when.mailbox"), &mut self.mailbox, 160.0);
+                }
                 changed |= field(ui, t.tr("when.sender"), &mut self.sender, 160.0);
                 changed |= field(ui, t.tr("when.subject"), &mut self.subject, 160.0);
             }
@@ -840,5 +858,24 @@ mod tests {
             e.dates = "2026-04-01".into();
             assert!(e.to_when().is_ok(), "{k}: {:?}", e.to_when());
         }
+    }
+
+    /// A `[[when]] mailbox` goes through the edit and back, and into the text, as it is.
+    #[test]
+    fn a_registered_mailbox_passes_through_the_edit() {
+        let text = "format = 1
+[[when]]
+mailbox = \"billing\"
+subject = \"Invoice\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+        let net = koyomi_core::jobnet::parse(text).unwrap();
+        let e = WhenEdit::from_when(&net.when[0]);
+        assert_eq!(e.mailbox, "billing");
+        assert_eq!(e.to_when().as_ref(), Ok(&net.when[0]));
+        let again = koyomi_core::jobnet::parse(&koyomi_core::write::text(&net)).unwrap();
+        assert_eq!(again.when, net.when);
     }
 }

@@ -205,7 +205,7 @@ enum Drag {
         from: String,
     },
     /// A part from the shelf follows the pointer.
-    Shelf(Part),
+    Shelf(Box<Part>),
     /// A range from `from` selects what it covers.
     Range {
         from: Pos2,
@@ -263,6 +263,9 @@ pub struct Fields {
     pub password: String,
     /// A `send`'s or a `fetch`'s S3 access key ID, region and S3-compatible server.
     pub key_id: String,
+    /// A `send`'s or `fetch`'s `[[host]]` or `[[bucket]]` of koyomi.toml; carried through unchanged.
+    pub host: String,
+    pub bucket: String,
     pub region: String,
     pub endpoint: String,
     /// How a `send` or `fetch` checks each file; none: not at all.
@@ -377,8 +380,10 @@ impl Fields {
                     f.into = into.clone();
                     f.pattern = pattern.clone().unwrap_or_default();
                 }
-                Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify }
-                | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify } => {
+                Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket }
+                | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket } => {
+                    f.host = host.clone().unwrap_or_default();
+                    f.bucket = bucket.clone().unwrap_or_default();
                     f.from = from.clone();
                     f.into = into.clone();
                     f.key = key.clone().unwrap_or_default();
@@ -531,6 +536,11 @@ impl Fields {
                 out.part = Part::Jobnet { use_: self.use_.trim().into() };
             }
             Part::Chore(c) => {
+                // A `[[host]]` or `[[bucket]]` of koyomi.toml owns the login: the drawer hides its rows, so what they
+                // still hold is not written (it stays in the fields while the job is open).
+                let far_named = !self.host.trim().is_empty() || !self.bucket.trim().is_empty();
+                let on_named = koyomi_core::chore::host_name(&self.on).is_some();
+                let login = |named: bool, v: &str| if named { None } else { opt(v) };
                 let chore = match c {
                     Chore::Delete { .. } => {
                         let n = self.keep_days.trim();
@@ -545,41 +555,45 @@ impl Fields {
                     Chore::Send { .. } => Chore::Send {
                         from: self.from.trim().into(),
                         into: self.into.trim().into(),
-                        key: opt(&self.key),
-                        host_key: opt(&self.host_key),
-                        password: opt(&self.password),
-                        key_id: opt(&self.key_id),
-                        region: opt(&self.region),
-                        endpoint: opt(&self.endpoint),
+                        key: login(far_named, &self.key),
+                        host_key: login(far_named, &self.host_key),
+                        password: login(far_named, &self.password),
+                        key_id: login(far_named, &self.key_id),
+                        region: login(far_named, &self.region),
+                        endpoint: login(far_named, &self.endpoint),
                         verify: self.verify,
+                        host: opt(&self.host),
+                        bucket: opt(&self.bucket),
                     },
                     Chore::Fetch { .. } => Chore::Fetch {
                         from: self.from.trim().into(),
                         into: self.into.trim().into(),
-                        key: opt(&self.key),
-                        host_key: opt(&self.host_key),
-                        password: opt(&self.password),
-                        key_id: opt(&self.key_id),
-                        region: opt(&self.region),
-                        endpoint: opt(&self.endpoint),
+                        key: login(far_named, &self.key),
+                        host_key: login(far_named, &self.host_key),
+                        password: login(far_named, &self.password),
+                        key_id: login(far_named, &self.key_id),
+                        region: login(far_named, &self.region),
+                        endpoint: login(far_named, &self.endpoint),
                         verify: self.verify,
+                        host: opt(&self.host),
+                        bucket: opt(&self.bucket),
                     },
                     Chore::Http { .. } => self.http()?,
                     Chore::Ssh { .. } => Chore::Ssh {
                         on: self.on.trim().into(),
                         command: self.command.clone(),
-                        key: opt(&self.key),
-                        host_key: opt(&self.host_key),
-                        password: opt(&self.password),
+                        key: login(on_named, &self.key),
+                        host_key: login(on_named, &self.host_key),
+                        password: login(on_named, &self.password),
                         max: self.group_max()?,
                         pass: self.pass,
                     },
                     Chore::Winrm { .. } => Chore::Winrm {
                         on: self.on.trim().into(),
                         command: self.command.clone(),
-                        cert: opt(&self.cert),
-                        password: opt(&self.password),
-                        auth: self.auth,
+                        cert: login(on_named, &self.cert),
+                        password: login(on_named, &self.password),
+                        auth: if on_named { WinrmAuth::default() } else { self.auth },
                         max: self.group_max()?,
                         pass: self.pass,
                     },
@@ -1904,7 +1918,7 @@ impl Editor {
                     let icon = part_icon(part.key()).unwrap_or(ito_prefs::Mark::Terminal);
                     let r = ito_prefs::IconButton::new(icon, name).wide().drag().show(ui);
                     if r.drag_started() {
-                        self.drag = Drag::Shelf(part.clone());
+                        self.drag = Drag::Shelf(Box::new(part.clone()));
                     } else if r.clicked() {
                         let after = self.cursor.clone();
                         self.add(part.clone(), after.as_deref(), None);
@@ -2040,7 +2054,7 @@ impl Editor {
                 Drag::Shelf(part) => {
                     if let Some(p) = pointer.filter(|p| rect.contains(*p)) {
                         let pos = self.to_model(origin, p, vertical);
-                        self.add(part, None, Some((pos.0.max(0.0), pos.1.max(0.0))));
+                        self.add(*part, None, Some((pos.0.max(0.0), pos.1.max(0.0))));
                     }
                 }
                 Drag::None | Drag::Pan => {}
@@ -2053,7 +2067,7 @@ impl Editor {
                 self.drag = Drag::None;
                 if let Some(p) = ui.input(|i| i.pointer.latest_pos()).filter(|p| rect.contains(*p)) {
                     let pos = self.to_model(origin, p, vertical);
-                    self.add(part, None, Some((pos.0.max(0.0), pos.1.max(0.0))));
+                    self.add(*part, None, Some((pos.0.max(0.0), pos.1.max(0.0))));
                 }
             } else if let Some(p) = ui.input(|i| i.pointer.latest_pos()) {
                 painter.circle(p, RADIUS, c.panel, Stroke::new(1.5, accent));
@@ -3418,5 +3432,83 @@ X-Day: 1"
         assert!(lines[0].2 && !lines[1].2, "only the error line is dashed");
         // Too short to show.
         assert!(e.minimap_lines(&pts, |p| Pos2::new(p.x * 0.001, p.y * 0.001), &c).is_empty());
+    }
+
+    /// A `host` or `bucket` of a send or fetch, and the host name of an ssh, go through the fields and back as they are.
+    #[test]
+    fn registered_hosts_and_buckets_pass_through_the_fields() {
+        let text = "format = 1
+            [[job]]
+id = \"s\"
+kind = \"send\"
+from = \"D:/out/*.csv\"
+into = \"/in\"
+host = \"web1\"
+            [[job]]
+id = \"f\"
+kind = \"fetch\"
+from = \"in/*.csv\"
+into = \"D:/in\"
+bucket = \"logs\"
+            [[job]]
+id = \"x\"
+kind = \"ssh\"
+on = \"web1\"
+command = \"uptime\"
+";
+        let n = net(text);
+        for job in &n.jobs {
+            let f = Fields::of(job);
+            let back = f.apply(job).unwrap();
+            assert_eq!(back.part, job.part, "{}", job.id);
+        }
+        let f = Fields::of(&n.jobs[0]);
+        assert_eq!(f.host, "web1");
+        let f = Fields::of(&n.jobs[1]);
+        assert_eq!(f.bucket, "logs");
+        let out = koyomi_core::write::text(&n);
+        let again = net(&out);
+        assert_eq!(again.jobs.iter().map(|j| &j.part).collect::<Vec<_>>(), n.jobs.iter().map(|j| &j.part).collect::<Vec<_>>());
+    }
+
+    /// When `on` becomes a host name, the login rows the drawer hides are not written, but stay in the fields.
+    #[test]
+    fn a_host_name_drops_the_hidden_login_rows_but_keeps_them_in_the_fields() {
+        let text = "format = 1
+            [[job]]
+id = \"x\"
+kind = \"ssh\"
+on = \"ssh://ops@web1\"
+command = \"uptime\"
+key = \"C:/k\"
+host_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"
+            [[job]]
+id = \"w\"
+kind = \"winrm\"
+on = \"winrm://ops@web9\"
+command = \"ipconfig\"
+cert = \"0000000000000000000000000000000000000000000000000000000000000000\"
+password = \"secret:w\"
+auth = \"ntlm\"
+";
+        let n = net(text);
+        for job in &n.jobs {
+            let mut f = Fields::of(job);
+            f.on = "web1".into();
+            let back = f.apply(job).unwrap();
+            match &back.part {
+                Part::Chore(c @ Chore::Ssh { key, host_key, password, .. }) => {
+                    assert_eq!((key, host_key, password), (&None, &None, &None));
+                    c.check().unwrap();
+                }
+                Part::Chore(c @ Chore::Winrm { cert, password, auth, .. }) => {
+                    assert_eq!((cert, password, *auth), (&None, &None, WinrmAuth::default()));
+                    c.check().unwrap();
+                }
+                other => panic!("{other:?}"),
+            }
+            // The fields keep what was typed, for when `on` goes back to an address.
+            assert!(!f.password.is_empty() || !f.key.is_empty(), "{}", job.id);
+        }
     }
 }

@@ -331,7 +331,7 @@ ito に頼んで待っているもの（2026-11-02）。
 
 ## あとで直すもの（2026-11-13、アカウントとデータベースの監査から）
 
-- [ ] B1. 接続先の URL に書いたパスワードがエラーに出る（S）: `sqlserver://user:pass@host/db` や `sftp://user:pass@host` のように URL の中にパスワードを書くと、読めない URL として断る `KOYOMI-E3592`（`CHORE_PORT_BAD`）が URL をそのまま言うので、パスワードが画面・ログ・`koyomi check` に出る。`[[database]]` の `KOYOMI-E1076` もその文を中に含む。0.37.0 以前からある（SQL のジョブ・送る・受けるでも同じ）。直し方: URL の `user:…@` の `:` から `@` までを `***` にして言う（`chore::read_sftp` の誤りの文で）。テストは SQL・SFTP・`[[database]]` の 3 つ。
+- [ ] B1. 接続先の URL に書いたパスワードがエラーに出る（S）: `sqlserver://user:pass@host/db` や `sftp://user:pass@host` のように URL の中にパスワードを書くと、読めない URL として断る `KOYOMI-E3592`（`CHORE_PORT_BAD`）が URL をそのまま言うので、パスワードが画面・ログ・`koyomi check` に出る。`[[database]]` の `KOYOMI-E1076` もその文を中に含む。0.37.0 以前からある（SQL のジョブ・送る・受けるでも同じ）。直し方: URL の `user:…@` の `:` から `@` までを `***` にして言う（`chore::read_sftp` の誤りの文で）。テストは SQL・SFTP・`[[database]]` の 3 つ。起動条件のメール（`when::mailbox`）も同じ: `imaps://me:pass@host` の形が読めないとき `MAIL_SHAPE` が URL をそのまま言い、`[[mailbox]]` の `KOYOMI-E1081` もそれを含む（形が読めるときは `me:pass` を利用者の名前として受けてしまうので、`:` を含む利用者の名前は断る）。テストは `[[when]]` と `[[mailbox]]` を足す。
 - [ ] B2. `koyomi account` / `koyomi database` の CLI と、データベースにつながるかを試すボタン（M）: 設計の「範囲の外」に置いたもの。窓の設定ページができてから決める。
 
 ## 雛形の配線

@@ -835,8 +835,9 @@ fn verify_row(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> boo
     let far = if send { f.into.as_str() } else { f.from.as_str() };
     let note = match f.verify {
         None => "field.verify_note_off",
+        Some(_) if !f.bucket.trim().is_empty() => "field.verify_note_s3",
         Some(_) if koyomi_core::chore::s3(far).is_some() => "field.verify_note_s3",
-        Some(_) if koyomi_core::chore::sftp(far).is_none() => "field.verify_note_share",
+        Some(_) if f.host.trim().is_empty() && koyomi_core::chore::sftp(far).is_none() => "field.verify_note_share",
         Some(Verify::Sha256) => "field.verify_note_sha256",
         Some(Verify::Readback) => "field.verify_note_readback",
     };
@@ -908,8 +909,9 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
                 changed |= form.line(ui, from, req, false, &mut f.from, |i| i.mono());
                 changed |= form.path(ui, into, req, false, &mut f.into, |i| i.mono(), Want::Folder);
             }
-            // S3 logs in with an access key, not with SSH's.
-            if koyomi_core::chore::s3(if send { &f.into } else { &f.from }).is_some() {
+            // A `[[host]]` or `[[bucket]]` of koyomi.toml owns the login: its rows are not here, and the names pass through.
+            if !f.host.trim().is_empty() || !f.bucket.trim().is_empty() {
+            } else if koyomi_core::chore::s3(if send { &f.into } else { &f.from }).is_some() {
                 changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
                 changed |= form.line(ui, "field.s3_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
                 changed |= form.line(ui, "field.region", opt, false, &mut f.region, |i| i.mono().hint("ap-northeast-1"));
@@ -927,9 +929,12 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let group = koyomi_core::chore::group(&f.on).is_some();
             changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Server));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
-            changed |= form.line(ui, "field.host_key", if group { opt } else { req }, false, &mut f.host_key, |i| i.mono());
-            changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
-            changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            // A name of a `[[host]]` in koyomi.toml owns the login.
+            if koyomi_core::chore::host_name(&f.on).is_none() {
+                changed |= form.line(ui, "field.host_key", if group { opt } else { req }, false, &mut f.host_key, |i| i.mono());
+                changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
+                changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
+            }
             if group {
                 changed |= group_rows(ui, form, f);
             }
@@ -938,15 +943,18 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let group = koyomi_core::chore::group(&f.on).is_some();
             changed |= form.line(ui, "field.winrm_on", req, false, &mut f.on, |i| i.mono().hint("winrm://user@server").mark(M::Desktop));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
-            let bad = !f.cert.trim().is_empty() && koyomi_core::chore::cert_ok(f.cert.trim()).is_err();
-            changed |= form.line(ui, "field.cert", if group { opt } else { req }, bad, &mut f.cert, |i| i.mono());
-            changed |= form.line(ui, "field.winrm_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
-            let options = WinrmAuth::ALL.map(|a| (a, a.name()));
-            let note = form.t.tr(match f.auth {
-                WinrmAuth::Basic => "field.winrm_auth_basic",
-                WinrmAuth::Ntlm => "field.winrm_auth_ntlm",
-            });
-            changed |= form.choice(ui, "field.winrm_auth", &mut f.auth, &options, note);
+            // A name of a `[[host]]` in koyomi.toml owns the login.
+            if koyomi_core::chore::host_name(&f.on).is_none() {
+                let bad = !f.cert.trim().is_empty() && koyomi_core::chore::cert_ok(f.cert.trim()).is_err();
+                changed |= form.line(ui, "field.cert", if group { opt } else { req }, bad, &mut f.cert, |i| i.mono());
+                changed |= form.line(ui, "field.winrm_password", req, false, &mut f.password, |i| i.mono().mark(M::Lock));
+                let options = WinrmAuth::ALL.map(|a| (a, a.name()));
+                let note = form.t.tr(match f.auth {
+                    WinrmAuth::Basic => "field.winrm_auth_basic",
+                    WinrmAuth::Ntlm => "field.winrm_auth_ntlm",
+                });
+                changed |= form.choice(ui, "field.winrm_auth", &mut f.auth, &options, note);
+            }
             if group {
                 changed |= group_rows(ui, form, f);
             }

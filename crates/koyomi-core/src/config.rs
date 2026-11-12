@@ -64,6 +64,15 @@ pub struct Config {
     /// `[[database]]`: the databases a sql job's `database = "<name>"` connects to.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub database: Vec<crate::registry::DatabaseEntry>,
+    /// `[[host]]`: the PCs a job's `on = "<name>"` or `host = "<name>"` reaches over SSH or WinRM.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub host: Vec<crate::registry::HostEntry>,
+    /// `[[bucket]]`: the S3 buckets a `send` or `fetch`'s `bucket = "<name>"` uses.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub bucket: Vec<crate::registry::BucketEntry>,
+    /// `[[mailbox]]`: the mailboxes a `[[when]]`'s `mailbox = "<name>"` watches.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub mailbox: Vec<crate::registry::MailboxEntry>,
     /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blackout: Vec<crate::blackout::Blackout>,
@@ -520,6 +529,9 @@ impl Default for Config {
             work_dir: None,
             account: Vec::new(),
             database: Vec::new(),
+            host: Vec::new(),
+            bucket: Vec::new(),
+            mailbox: Vec::new(),
             blackout: Vec::new(),
             vars: toml::Table::new(),
             groups: toml::Table::new(),
@@ -587,6 +599,24 @@ impl Config {
             d.check()?;
             if c.database[..i].iter().any(|o| o.name == d.name) {
                 return Err(msg::line(msg::CFG_DUPLICATE, &["[[database]]", "name", &d.name]));
+            }
+        }
+        for (i, h) in c.host.iter().enumerate() {
+            h.check()?;
+            if c.host[..i].iter().any(|o| o.name == h.name) {
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[host]]", "name", &h.name]));
+            }
+        }
+        for (i, b) in c.bucket.iter().enumerate() {
+            b.check()?;
+            if c.bucket[..i].iter().any(|o| o.name == b.name) {
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[bucket]]", "name", &b.name]));
+            }
+        }
+        for (i, m) in c.mailbox.iter().enumerate() {
+            m.check()?;
+            if c.mailbox[..i].iter().any(|o| o.name == m.name) {
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[mailbox]]", "name", &m.name]));
             }
         }
         if let Some(s) = &c.standby {

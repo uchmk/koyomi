@@ -237,9 +237,14 @@ fn when(w: &When, out: &mut String) {
                 push(out, "source", &q(s));
             }
         }
-        Kind::Mail { mail, secret, sender, subject } => {
-            push(out, "mail", &q(mail));
-            push(out, "password", &q(&format!("secret:{secret}")));
+        Kind::Mail { mail, secret, mailbox, sender, subject } => {
+            // A mailbox of koyomi.toml is named; its address and password are not written here.
+            if let Some(name) = mailbox {
+                push(out, "mailbox", &q(name));
+            } else {
+                push(out, "mail", &q(mail));
+                push(out, "password", &q(&format!("secret:{secret}")));
+            }
             if let Some(s) = sender {
                 push(out, "sender", &q(s));
             }
@@ -345,12 +350,18 @@ fn job(j: &Job, out: &mut String) {
         Part::Chore(c) => {
             match c {
                 Chore::Delete { path, .. } | Chore::Empty { path } => push(out, "path", &q(path)),
-                Chore::Zip { from, into }
-                | Chore::Copy { from, into, .. }
-                | Chore::Send { from, into, .. }
-                | Chore::Fetch { from, into, .. } => {
+                Chore::Zip { from, into } | Chore::Copy { from, into, .. } => {
                     push(out, "from", &q(from));
                     push(out, "into", &q(into));
+                }
+                Chore::Send { from, into, host, bucket, .. } | Chore::Fetch { from, into, host, bucket, .. } => {
+                    push(out, "from", &q(from));
+                    push(out, "into", &q(into));
+                    for (name, value) in [("host", host), ("bucket", bucket)] {
+                        if let Some(v) = value {
+                            push(out, name, &q(v));
+                        }
+                    }
                 }
                 Chore::Http { url, method, body, content_type, headers, expect } => {
                     push(out, "url", &q(url));

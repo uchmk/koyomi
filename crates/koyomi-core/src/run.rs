@@ -232,6 +232,12 @@ pub struct JobRun {
     /// The `[[database]]` name a sql job connects to; looked up when the job starts.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub database: Option<String>,
+    /// The `[[host]]` name an `ssh`, `winrm`, `send` or `fetch` job reaches; looked up when the job starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
+    /// The `[[bucket]]` name a `send` or `fetch` job uses; looked up when the job starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bucket: Option<String>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -317,6 +323,15 @@ impl JobRun {
             run_as: job.run_as.clone(),
             database: match &job.part {
                 Part::Chore(Chore::Sql { database, .. }) => database.clone(),
+                _ => None,
+            },
+            host: match &job.part {
+                Part::Chore(Chore::Ssh { on, .. } | Chore::Winrm { on, .. }) => crate::chore::host_name(on).map(str::to_owned),
+                Part::Chore(Chore::Send { host, .. } | Chore::Fetch { host, .. }) => host.clone(),
+                _ => None,
+            },
+            bucket: match &job.part {
+                Part::Chore(Chore::Send { bucket, .. } | Chore::Fetch { bucket, .. }) => bucket.clone(),
                 _ => None,
             },
             retried: 0,
@@ -2303,5 +2318,72 @@ database = \"main\"
         let again = Run::rerun("r2", &r, &net, None, at("2026-10-30 10:00:00")).unwrap();
         assert_eq!(again.job("b").unwrap().run_as, Some(RunAs::Named("ops".into())));
         assert_eq!(again.job("q").unwrap().database.as_deref(), Some("main"));
+    }
+
+    /// A job that names a host or a bucket keeps the names in its run; a run saved before them has none.
+    #[test]
+    fn a_run_keeps_the_host_and_bucket_a_job_names() {
+        let net = crate::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"s\"
+kind = \"send\"
+from = \"D:/out/*.csv\"
+into = \"in\"
+host = \"web1\"
+[[job]]
+id = \"f\"
+kind = \"fetch\"
+from = \"logs/a.csv\"
+into = \"D:/in\"
+bucket = \"logs\"
+[[job]]
+id = \"c\"
+kind = \"ssh\"
+on = \"web1\"
+command = \"df -h\"
+[[job]]
+id = \"w\"
+kind = \"winrm\"
+on = \"app01\"
+command = \"dir\"
+[[job]]
+id = \"i\"
+kind = \"ssh\"
+on = \"ssh://ops@web1\"
+host_key = \"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"
+command = \"df -h\"
+",
+        )
+        .unwrap_or_else(|p| panic!("{p:?}"));
+        let r = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
+        let get = |id: &str| (r.job(id).unwrap().host.clone(), r.job(id).unwrap().bucket.clone());
+        assert_eq!(get("s"), (Some("web1".to_owned()), None));
+        assert_eq!(get("f"), (None, Some("logs".to_owned())));
+        assert_eq!(get("c"), (Some("web1".to_owned()), None));
+        assert_eq!(get("w"), (Some("app01".to_owned()), None));
+        assert_eq!(get("i"), (None, None));
+        let text = toml::to_string(&r).unwrap();
+        assert_eq!(toml::from_str::<Run>(&text).unwrap(), r);
+        // An old record has neither key.
+        let old = text
+            .replace(
+                "host = \"web1\"
+",
+                "",
+            )
+            .replace(
+                "host = \"app01\"
+",
+                "",
+            )
+            .replace(
+                "bucket = \"logs\"
+",
+                "",
+            );
+        let back: Run = toml::from_str(&old).unwrap();
+        assert_eq!(back.job("s").unwrap().host, None);
+        assert_eq!(back.job("f").unwrap().bucket, None);
     }
 }

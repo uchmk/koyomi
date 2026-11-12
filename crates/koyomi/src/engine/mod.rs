@@ -2387,14 +2387,14 @@ impl State {
     fn registry_uses(&self) -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
         let (mut accounts, mut databases): (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) = Default::default();
         let mut note = |id: &str, net: &koyomi_core::jobnet::Jobnet| {
-            let (a, d) = koyomi_core::registry::names_used(net);
-            for n in a {
+            let names = koyomi_core::registry::names_used(net);
+            for n in names.accounts {
                 let v = accounts.entry(n).or_default();
                 if !v.iter().any(|x| x == id) {
                     v.push(id.to_owned());
                 }
             }
-            for n in d {
+            for n in names.databases {
                 let v = databases.entry(n).or_default();
                 if !v.iter().any(|x| x == id) {
                     v.push(id.to_owned());

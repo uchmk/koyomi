@@ -220,6 +220,8 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                         to: Vec::new(),
                         run_as: None,
                         database: None,
+                        host: None,
+                        bucket: None,
                         retried: 0,
                         state: State::NotRun,
                         started: None,

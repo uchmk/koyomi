@@ -69,6 +69,13 @@ pub enum Chore {
         /// the bucket then goes in the path.
         #[serde(default)]
         endpoint: Option<String>,
+        /// A `[[host]]` of koyomi.toml (an ssh one): `into` is then only the path on it, and the
+        /// engine joins them when the job starts. The login is the entry's.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+        /// A `[[bucket]]` of koyomi.toml: `into` is then only the path below its folder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bucket: Option<String>,
         /// Make sure each file arrived as it left, before it gets its name; none: as
         /// before, not checked.
         #[serde(default)]
@@ -92,6 +99,12 @@ pub enum Chore {
         region: Option<String>,
         #[serde(default)]
         endpoint: Option<String>,
+        /// A `[[host]]` of koyomi.toml: `from` is then only the path on it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        host: Option<String>,
+        /// A `[[bucket]]` of koyomi.toml: `from` is then only the path below its folder.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bucket: Option<String>,
         #[serde(default)]
         verify: Option<Verify>,
     },
@@ -117,7 +130,8 @@ pub enum Chore {
     /// comes, and its exit code is judged as a job's (`judge`). `on` may name a
     /// group of PCs instead (`group:web`, koyomi.toml's `[groups]`): the command
     /// runs on each, `max` at a time, and `pass` says whether every one must end
-    /// with 0 or one is enough.
+    /// with 0 or one is enough. `on` may also be the name of a `[[host]]` of
+    /// koyomi.toml ([`host_name`]), which owns the login.
     Ssh {
         on: String,
         command: String,
@@ -435,12 +449,12 @@ impl Chore {
         matches!(self, Chore::Ssh { .. } | Chore::Winrm { .. })
     }
 
-    /// Whether it is a `send` into S3 or a `fetch` from it (`s3://`), which koyomi
-    /// runs itself as `koyomi cloud run`.
+    /// Whether it is a `send` into S3 or a `fetch` from it (`s3://`, or a `bucket` of
+    /// koyomi.toml), which koyomi runs itself as `koyomi cloud run`.
     pub fn cloud(&self) -> bool {
         match self {
-            Chore::Send { into, .. } => s3(into).is_some(),
-            Chore::Fetch { from, .. } => s3(from).is_some(),
+            Chore::Send { into, bucket, .. } => bucket.is_some() || s3(into).is_some(),
+            Chore::Fetch { from, bucket, .. } => bucket.is_some() || s3(from).is_some(),
             _ => false,
         }
     }
@@ -477,6 +491,8 @@ impl Chore {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                host: None,
+                bucket: None,
                 verify: None,
             },
             "fetch" => Chore::Fetch {
@@ -488,6 +504,8 @@ impl Chore {
                 key_id: None,
                 region: None,
                 endpoint: None,
+                host: None,
+                bucket: None,
                 verify: None,
             },
             "http" => Chore::Http {
@@ -531,7 +549,9 @@ impl Chore {
         })
     }
 
-    /// Every path of it, to fill in `{date}`, `{param:…}` and `{var:…}`.
+    /// Every text of it that is a template, to fill in `{date}`, `{param:…}` and `{var:…}`. (The
+    /// name of a `[[host]]`, `[[bucket]]` or `[[database]]` is not one, and is not here; the far
+    /// path of a `send` or `fetch` with a name is, and stays what is written until the job starts.)
     pub fn paths_mut(&mut self) -> Vec<(&'static str, &mut String)> {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![("path", path)],
@@ -592,7 +612,8 @@ impl Chore {
         }
     }
 
-    /// Every path of it, as it is.
+    /// Every template text of it, as it is: what [`Chore::paths_mut`] fills in, and what the
+    /// parser and the window check. None of them is looked up as a place on this PC.
     pub fn paths(&self) -> Vec<&String> {
         match self {
             Chore::Delete { path, .. } | Chore::Empty { path } => vec![path],
@@ -644,45 +665,54 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
             }
-            Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, .. } => {
+            Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, host, bucket, .. } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(from).is_some() || s3(from).is_some() {
                     return Err(msg::line(msg::CHORE_LOCAL_ONLY, &["send", "from", "into"]));
                 }
-                if let Some(at) = s3(into).transpose()? {
+                let own = [
+                    ("key", key),
+                    ("host_key", host_key),
+                    ("password", password),
+                    ("key_id", key_id),
+                    ("region", region),
+                    ("endpoint", endpoint),
+                ];
+                if named_far(true, host, bucket, into, &own)? {
+                    // The entry owns the login; the path is all that is here.
+                } else if s3(into).transpose()?.is_some() {
                     s3_login(key, host_key, password, key_id, region, endpoint)?;
-                    if at.key.contains(['*', '?']) {
-                        return Err(msg::line(msg::CHORE_S3_KEY_WILDCARD, &[into]));
-                    }
+                    far_path_ok(true, into, into)?;
                 } else {
                     not_s3(key_id, region, endpoint)?;
                     let far = sftp(into).transpose()?;
                     login("sftp://", far.is_some(), true, key, host_key, password)?;
                 }
             }
-            Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, .. } => {
+            Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, host, bucket, .. } => {
                 need("from", from)?;
                 need("into", into)?;
                 if sftp(into).is_some() || s3(into).is_some() {
                     return Err(msg::line(msg::CHORE_LOCAL_ONLY, &["fetch", "into", "from"]));
                 }
-                if let Some(at) = s3(from).transpose()? {
+                let own = [
+                    ("key", key),
+                    ("host_key", host_key),
+                    ("password", password),
+                    ("key_id", key_id),
+                    ("region", region),
+                    ("endpoint", endpoint),
+                ];
+                if named_far(false, host, bucket, from, &own)? {
+                    // The entry owns the login; the path is all that is here.
+                } else if s3(from).transpose()?.is_some() {
                     s3_login(key, host_key, password, key_id, region, endpoint)?;
-                    if at.key.is_empty() || at.key.ends_with('/') {
-                        return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[from]));
-                    }
-                    if at.key[..at.key.rfind('/').map_or(0, |i| i + 1)].contains(['*', '?']) {
-                        return Err(msg::line(msg::CHORE_S3_WILDCARD_FOLDER, &[from]));
-                    }
+                    far_path_ok(false, from, from)?;
                 } else {
                     not_s3(key_id, region, endpoint)?;
                     let far = sftp(from).transpose()?;
-                    if let Some(at) = &far {
-                        if at.path == "." || at.path.ends_with('/') {
-                            return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[from]));
-                        }
-                    }
+                    far_path_ok(false, from, from)?;
                     login("sftp://", far.is_some(), true, key, host_key, password)?;
                 }
             }
@@ -717,41 +747,36 @@ impl Chore {
                     return Err(msg::line(msg::CHORE_ON_EMPTY, &["ssh://[user@]host[:port]"]));
                 }
                 let group = fan(on, *max, *pass)?;
+                if let Some(name) = host_name(on) {
+                    // A `[[host]]` of koyomi.toml owns the address and the login.
+                    named_on(name, &[("key", is_set(key)), ("host_key", is_set(host_key)), ("password", is_set(password))])?;
+                    far_command(command)?;
+                    return Ok(());
+                }
                 // An `on` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 if !group && ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
                     return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", on]));
                 }
                 far_command(command)?;
                 // A group's PCs may each have their own host key in `[groups]`.
-                login("ssh://", true, !group, key, host_key, password)?;
+                ssh_login(!group, key, host_key, password)?;
             }
-            Chore::Winrm { on, command, cert, password, max, pass, .. } => {
+            Chore::Winrm { on, command, cert, password, auth, max, pass } => {
                 if on.trim().is_empty() {
                     return Err(msg::line(msg::CHORE_ON_EMPTY, &["winrm://user@host[:port]"]));
                 }
                 let group = fan(on, *max, *pass)?;
+                if let Some(name) = host_name(on) {
+                    named_on(name, &[("cert", is_set(cert)), ("password", is_set(password)), ("auth", *auth != WinrmAuth::default())])?;
+                    far_command(command)?;
+                    return Ok(());
+                }
                 if !group && winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
                     return Err(msg::line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", on]));
                 }
                 far_command(command)?;
-                match cert.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
-                    // Each PC of a group may have its own in `[groups]`.
-                    None if group => {}
-                    None => {
-                        return Err(msg::line(msg::CHORE_WINRM_CERT_MISSING, &[]));
-                    }
-                    Some(c) if c.starts_with('{') => {}
-                    Some(c) => cert_ok(c)?,
-                }
-                match password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-                    None => {
-                        return Err(msg::line(msg::CHORE_PASSWORD_MISSING, &["winrm://"]));
-                    }
-                    Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => {
-                        return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
-                    }
-                    Some(_) => {}
-                }
+                // Each PC of a group may have its own certificate in `[groups]`.
+                winrm_login(group, cert, password)?;
             }
             Chore::Mail { to, cc, subject, body, files, .. } => {
                 if to.is_empty() {
@@ -873,11 +898,13 @@ impl Chore {
                 );
                 (s, None)
             }
-            Chore::Send { from, into, verify, .. } | Chore::Fetch { from, into, verify, .. } => {
+            Chore::Send { from, into, verify, host, .. } | Chore::Fetch { from, into, verify, host, .. } => {
                 let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
                 let s = match (self, sftp(from).or_else(|| sftp(into))) {
                     // Not a script (fill()): only its judge.
                     _ if self.cloud() => String::new(),
+                    // A `[[host]]`: the same, with the address built when the job starts.
+                    _ if host.is_some() => SFTP_SCRIPT.to_owned(),
                     // What to do is in the environment (env()): no path or secret is written here.
                     (_, Some(Ok(_))) => SFTP_SCRIPT.to_owned(),
                     (Chore::Send { .. }, _) => shared(from, into, "send", "sent", verify.is_some()),
@@ -904,12 +931,14 @@ impl Chore {
     /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
     /// for `koyomi mail run`, a list one per line, each after [`MAIL_TEXT`]; a `sql`
     /// as `KOYOMI_SQL_*` for `koyomi sql run`, each text after [`MAIL_TEXT`] but the
-    /// password (a `secret:`) and `tls`.
+    /// password (a `secret:`) and `tls`. With a `[[host]]`, `[[bucket]]` or `[[database]]` of koyomi.toml
+    /// named, the login (and for a `host` or `bucket` the address) is not here: [`crate::registry::far_env`]
+    /// adds it when the job starts, so the far side is as written (the path alone).
     pub fn env(&self) -> Vec<(String, String)> {
         match self {
             Chore::Http { headers, .. } => headers.values().enumerate().map(|(i, v)| (format!("KOYOMI_HEADER_{i}"), v.clone())).collect(),
-            Chore::Send { from, into, password, key_id, region, endpoint, verify, .. }
-            | Chore::Fetch { from, into, password, key_id, region, endpoint, verify, .. }
+            Chore::Send { from, into, password, key_id, region, endpoint, verify, bucket, .. }
+            | Chore::Fetch { from, into, password, key_id, region, endpoint, verify, bucket, .. }
                 if self.cloud() =>
             {
                 let mut v = vec![
@@ -917,8 +946,9 @@ impl Chore {
                     ("KOYOMI_CLOUD_FROM".to_owned(), from.trim().to_owned()),
                     ("KOYOMI_CLOUD_INTO".to_owned(), into.trim().to_owned()),
                 ];
+                // A `bucket` owns the login: the engine adds it when the job starts.
                 for (name, value) in [("KEY_ID", key_id), ("REGION", region), ("ENDPOINT", endpoint), ("PASSWORD", password)] {
-                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()).filter(|_| bucket.is_none()) {
                         v.push((format!("KOYOMI_CLOUD_{name}"), x.to_owned()));
                     }
                 }
@@ -927,17 +957,18 @@ impl Chore {
                 }
                 v
             }
-            Chore::Send { from, into, key, host_key, password, verify, .. }
-            | Chore::Fetch { from, into, key, host_key, password, verify, .. }
-                if sftp(from).or_else(|| sftp(into)).is_some() =>
+            Chore::Send { from, into, key, host_key, password, verify, host, .. }
+            | Chore::Fetch { from, into, key, host_key, password, verify, host, .. }
+                if host.is_some() || sftp(from).or_else(|| sftp(into)).is_some() =>
             {
                 let mut v = vec![
                     ("KOYOMI_SFTP_OP".to_owned(), self.key().to_owned()),
                     ("KOYOMI_SFTP_FROM".to_owned(), from.trim().to_owned()),
                     ("KOYOMI_SFTP_INTO".to_owned(), into.trim().to_owned()),
                 ];
+                // A `host` owns the login: the engine adds it when the job starts.
                 for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
-                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()).filter(|_| host.is_none()) {
                         v.push((format!("KOYOMI_SFTP_{name}"), x.to_owned()));
                     }
                 }
@@ -948,8 +979,10 @@ impl Chore {
             }
             Chore::Ssh { on, command, key, host_key, password, max, pass } => {
                 let mut v = vec![("KOYOMI_SSH_ON".to_owned(), on.trim().to_owned()), ("KOYOMI_SSH_COMMAND".to_owned(), command.clone())];
+                // With a `[[host]]` name `on` is the name, and the entry owns the login.
+                let named = host_name(on).is_some();
                 for (name, value) in [("KEY", key), ("HOST_KEY", host_key), ("PASSWORD", password)] {
-                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()).filter(|_| !named) {
                         v.push((format!("KOYOMI_SSH_{name}"), x.to_owned()));
                     }
                 }
@@ -962,8 +995,9 @@ impl Chore {
                     ("KOYOMI_WINRM_COMMAND".to_owned(), command.clone()),
                     ("KOYOMI_WINRM_AUTH".to_owned(), auth.key().to_owned()),
                 ];
+                let named = host_name(on).is_some();
                 for (name, value) in [("CERT", cert), ("PASSWORD", password)] {
-                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
+                    if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()).filter(|_| !named) {
                         v.push((format!("KOYOMI_WINRM_{name}"), x.to_owned()));
                     }
                 }
@@ -1437,6 +1471,184 @@ pub fn sql_rows(s: &str) -> Result<Vec<(u64, u64)>, String> {
         .collect()
 }
 
+/// Whether an optional text is written (not empty).
+fn is_set(v: &Option<String>) -> bool {
+    v.as_deref().is_some_and(|x| !x.trim().is_empty())
+}
+
+/// The name of a `[[host]]` when `on` is one: not a group, not empty, not a template, and no `:` or
+/// `@` (so not an address such as `ssh://web1`, nor `admin@web1` written without its scheme, which is
+/// told as an address that does not read). Whether it is a name a registration can have is
+/// [`crate::registry::valid_name`]'s to say.
+pub fn host_name(on: &str) -> Option<&str> {
+    let t = on.trim();
+    if group(t).is_some() || t.is_empty() || t.starts_with('{') || t.contains([':', '@']) {
+        None
+    } else {
+        Some(t)
+    }
+}
+
+/// An `ssh` or `winrm` with a host name: the name is one, and nothing the entry owns is written
+/// (`own` is each such key and whether the job has it).
+fn named_on(name: &str, own: &[(&str, bool)]) -> Result<(), String> {
+    if !crate::registry::valid_name(name) {
+        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &["on", name]));
+    }
+    match own.iter().find(|(_, set)| *set) {
+        Some((key, _)) => Err(msg::line(msg::DEF_NAMED_OWNS, &[key, "on", "host"])),
+        None => Ok(()),
+    }
+}
+
+/// Whether a `send` or `fetch` names a `[[host]]` or a `[[bucket]]`; if it does, everything that
+/// can be told without the entry: not both, a name that is one, a far side (`far`: `into` of a
+/// send, `from` of a fetch) that is a path and not an address, none of `own` (the login keys the
+/// entry owns), a bucket path that does not start with `/`, and the path's own rules ([`far_path_ok`])
+/// as they would read after the join. A path with `{` is told once it is filled in.
+fn named_far(
+    send: bool,
+    host: &Option<String>,
+    bucket: &Option<String>,
+    far: &str,
+    own: &[(&str, &Option<String>)],
+) -> Result<bool, String> {
+    let (key, name) = match (host, bucket) {
+        (Some(_), Some(_)) => return Err(msg::line(msg::DEF_HOST_AND_BUCKET, &[])),
+        (Some(h), None) => ("host", h.as_str()),
+        (None, Some(b)) => ("bucket", b.as_str()),
+        (None, None) => return Ok(false),
+    };
+    if !crate::registry::valid_name(name) {
+        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &[key, name]));
+    }
+    if far.contains("://") {
+        return Err(msg::line(msg::DEF_NAMED_FAR_URL, &[if send { "into" } else { "from" }, key]));
+    }
+    if let Some((k, _)) = own.iter().find(|(_, v)| is_set(v)) {
+        return Err(msg::line(msg::DEF_NAMED_OWNS, &[k, key, key]));
+    }
+    if key == "bucket" && far.trim().starts_with('/') {
+        return Err(msg::line(msg::DEF_BUCKET_PATH_SLASH, &[far.trim()]));
+    }
+    if !far.contains('{') {
+        // A valid address of the same kind stands in for the entry's.
+        let url = if key == "host" { sftp_join("ssh://placeholder", far)? } else { s3_join("s3://placeholder", far)? };
+        far_path_ok(send, &url, far)?;
+    }
+    Ok(true)
+}
+
+/// The rules of the far side of a `send` or `fetch` that hold however its address comes about, written
+/// whole (`url` is then what is written) or built from a registration ([`sftp_join`], [`s3_join`]).
+/// `shown` is the text the lines show: the address as written, or the path alone. S3: a `send`'s key has
+/// no `*` or `?`; a `fetch`'s key names a file (not empty, not a folder) and has a wildcard only in its
+/// name. SFTP: the address reads, and a `fetch` names a file, not the home or a folder.
+pub fn far_path_ok(send: bool, url: &str, shown: &str) -> Result<(), String> {
+    if let Some(at) = s3(url).transpose()? {
+        if send {
+            if at.key.contains(['*', '?']) {
+                return Err(msg::line(msg::CHORE_S3_KEY_WILDCARD, &[shown]));
+            }
+        } else {
+            if at.key.is_empty() || at.key.ends_with('/') {
+                return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[shown]));
+            }
+            if at.key[..at.key.rfind('/').map_or(0, |i| i + 1)].contains(['*', '?']) {
+                return Err(msg::line(msg::CHORE_S3_WILDCARD_FOLDER, &[shown]));
+            }
+        }
+    } else if let Some(at) = sftp(url).transpose()? {
+        if !send && (at.path == "." || at.path.ends_with('/')) {
+            return Err(msg::line(msg::CHORE_FETCH_FROM_NAME, &[shown]));
+        }
+    }
+    Ok(())
+}
+
+/// The `sftp://` address of `path` on the PC `host_on` (`ssh://[user@]host[:port]`, a `[[host]]`'s
+/// `on`), built from what [`ssh`] reads of it: `/x` is `sftp://A/x`, nothing, `~` and `~/` the home
+/// (`sftp://A/~`), `~/x` and `x` below the home (`sftp://A/~/x`). The result reads as [`sftp`] does.
+pub fn sftp_join(host_on: &str, path: &str) -> Result<String, String> {
+    let at = match ssh(host_on) {
+        Some(r) => r?,
+        None => return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", host_on])),
+    };
+    let mut auth = String::new();
+    if let Some(u) = &at.user {
+        auth.push_str(u);
+        auth.push('@');
+    }
+    auth.push_str(&at.host);
+    if let Some(p) = at.port {
+        auth.push_str(&format!(":{p}"));
+    }
+    let p = path.trim();
+    let tail = if p.starts_with('/') {
+        p.to_owned()
+    } else if p.is_empty() || p == "~" || p == "~/" {
+        "/~".to_owned()
+    } else if p.starts_with("~/") {
+        format!("/{p}")
+    } else {
+        format!("/~/{p}")
+    };
+    let url = format!("sftp://{auth}{tail}");
+    sftp(&url).transpose()?;
+    Ok(url)
+}
+
+/// The `s3://` address of `path` in the `[[bucket]]` whose `url` is `bucket_url`: the bucket, its
+/// folder ([`crate::registry::bucket_prefix`]) and the path. A path that starts with `/` is refused
+/// (it is not stripped).
+pub fn s3_join(bucket_url: &str, path: &str) -> Result<String, String> {
+    let at = match s3(bucket_url) {
+        Some(r) => r?,
+        None => return Err(msg::line(msg::CHORE_S3_BUCKET, &[bucket_url])),
+    };
+    let prefix = crate::registry::bucket_prefix(bucket_url)?;
+    let p = path.trim();
+    if p.starts_with('/') {
+        return Err(msg::line(msg::DEF_BUCKET_PATH_SLASH, &[p]));
+    }
+    let url = format!("s3://{}/{prefix}{p}", at.bucket);
+    s3(&url).transpose()?;
+    Ok(url)
+}
+
+/// How an `ssh` logs in (also a `[[host]]`'s): `host_key` is needed unless `need_host_key` is false,
+/// `password` is a `secret:`, and `key` and `password` go one at a time.
+pub fn ssh_login(need_host_key: bool, key: &Option<String>, host_key: &Option<String>, password: &Option<String>) -> Result<(), String> {
+    login("ssh://", true, need_host_key, key, host_key, password)
+}
+
+/// How a `winrm` logs in (also a `[[host]]`'s): `cert` is needed unless `group`, a SHA-256; `password`
+/// is needed, as a `secret:`.
+pub fn winrm_login(group: bool, cert: &Option<String>, password: &Option<String>) -> Result<(), String> {
+    match cert.as_deref().map(str::trim).filter(|c| !c.is_empty()) {
+        None if group => {}
+        None => return Err(msg::line(msg::CHORE_WINRM_CERT_MISSING, &[])),
+        Some(c) if c.starts_with('{') => {}
+        Some(c) => cert_ok(c)?,
+    }
+    match password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        None => Err(msg::line(msg::CHORE_PASSWORD_MISSING, &["winrm://"])),
+        Some(p) if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) => Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[])),
+        Some(_) => Ok(()),
+    }
+}
+
+/// How an S3 place (also a `[[bucket]]`'s) logs in: `key_id`, `password` (the secret access key, a
+/// `secret:`), and `region` unless `endpoint` is written.
+pub fn s3_account(
+    key_id: &Option<String>,
+    region: &Option<String>,
+    endpoint: &Option<String>,
+    password: &Option<String>,
+) -> Result<(), String> {
+    s3_login(&None, &None, password, key_id, region, endpoint)
+}
+
 /// `max` and `pass` of an `ssh` or `winrm` for `koyomi ssh run` or `koyomi winrm
 /// run`, as `<prefix>MAX` and `<prefix>PASS`, when they are written.
 fn fan_env(prefix: &str, max: Option<u32>, pass: Pass) -> Vec<(String, String)> {
@@ -1684,6 +1896,8 @@ mod tests {
                 region: None,
                 endpoint: None,
                 verify: None,
+                host: None,
+                bucket: None,
             }
             .check()
         };
@@ -1698,6 +1912,8 @@ mod tests {
                 region: None,
                 endpoint: None,
                 verify: None,
+                host: None,
+                bucket: None,
             }
             .check()
         };
@@ -1725,6 +1941,8 @@ mod tests {
                 region: None,
                 endpoint: None,
                 verify: None,
+                host: None,
+                bucket: None,
             }
             .check()
         };
@@ -1753,6 +1971,8 @@ mod tests {
             region: None,
             endpoint: None,
             verify: Some(Verify::Sha256),
+            host: None,
+            bucket: None,
         };
         let (script, judge) = s.script();
         assert!(script.contains("& $env:KOYOMI_EXE sftp run | ForEach-Object"), "{script}");
@@ -1777,6 +1997,8 @@ mod tests {
             region: None,
             endpoint: None,
             verify: None,
+            host: None,
+            bucket: None,
         };
         assert!(f.env().contains(&("KOYOMI_SFTP_OP".to_owned(), "fetch".to_owned())));
         assert!(f.env().contains(&("KOYOMI_SFTP_KEY".to_owned(), "C:\\keys\\id".to_owned())));
@@ -1791,6 +2013,8 @@ mod tests {
             region: None,
             endpoint: None,
             verify: None,
+            host: None,
+            bucket: None,
         };
         let (script, judge) = share.script();
         assert!(script.contains("Copy-Item -LiteralPath $x.FullName -Destination $into -Force"), "{script}");
@@ -1832,6 +2056,8 @@ mod tests {
             region: region.map(Into::into),
             endpoint: endpoint.map(Into::into),
             verify: None,
+            host: None,
+            bucket: None,
         }
     }
 
@@ -1898,6 +2124,8 @@ mod tests {
             region: None,
             endpoint: None,
             verify: None,
+            host: None,
+            bucket: None,
         };
         assert!(msg::CHORE_LOCAL_ONLY.is_in(&back.check().unwrap_err()));
     }
@@ -1914,6 +2142,8 @@ mod tests {
             region: Some("ap-northeast-1".into()),
             endpoint: None,
             verify: None,
+            host: None,
+            bucket: None,
         };
         assert_eq!(fetch("s3://logs/daily/*.csv", "D:\\in").check(), Ok(()));
         assert_eq!(fetch("s3://logs/a.csv", "D:\\in").check(), Ok(()));
@@ -1991,6 +2221,7 @@ mod tests {
         assert_eq!(ok("{param:pc}", "df -h"), Ok(()));
         assert_eq!(ok("{var:pc}", "df -h"), Ok(()));
         assert!(msg::CHORE_ON_EMPTY.is_in(&ok("", "df -h").unwrap_err()));
+        assert!(msg::DEF_NAMED_OWNS.is_in(&ok("web1", "df -h").unwrap_err()));
         assert!(msg::CHORE_ON_BAD.is_in(&ok("u@h", "df -h").unwrap_err()));
         assert!(msg::CHORE_ON_BAD.is_in(&ok("sftp://u@h/in", "df -h").unwrap_err()));
         assert!(msg::CHORE_ADDR_PATH.is_in(&ok("ssh://h/x", "df -h").unwrap_err()));
@@ -2450,5 +2681,167 @@ mod tests {
         assert_eq!(q.run, ["C:\\koyomi\\koyomi.exe", "sql", "run"]);
         assert_eq!(q.env.get("KOYOMI_SQL_TEXT").map(String::as_str), Some("|delete from log"));
         assert!(!q.env.contains_key("KOYOMI_SQL_ENV"));
+    }
+
+    fn send_to(host: Option<&str>, bucket: Option<&str>, into: &str) -> Chore {
+        Chore::Send {
+            from: "D:\\out\\*.csv".into(),
+            into: into.into(),
+            key: None,
+            host_key: None,
+            password: None,
+            key_id: None,
+            region: None,
+            endpoint: None,
+            verify: None,
+            host: host.map(Into::into),
+            bucket: bucket.map(Into::into),
+        }
+    }
+
+    fn fetch_from(host: Option<&str>, bucket: Option<&str>, from: &str) -> Chore {
+        Chore::Fetch {
+            from: from.into(),
+            into: "D:\\in".into(),
+            key: None,
+            host_key: None,
+            password: None,
+            key_id: None,
+            region: None,
+            endpoint: None,
+            verify: None,
+            host: host.map(Into::into),
+            bucket: bucket.map(Into::into),
+        }
+    }
+
+    #[test]
+    fn a_bare_name_is_a_host_and_an_address_a_group_or_a_template_is_not() {
+        assert_eq!(host_name("web1"), Some("web1"));
+        assert_eq!(host_name("  web1 "), Some("web1"));
+        assert_eq!(host_name("売上 サーバー"), Some("売上 サーバー"));
+        for not in ["", "ssh://u@h", "winrm://u@h", "h:22", "{web}", "{date}", "group:web", "admin@web1"] {
+            assert_eq!(host_name(not), None, "{not:?}");
+        }
+        // An address written without its scheme is told as one that does not read, not as an unknown host.
+        let job = Chore::Ssh {
+            on: "admin@web1".into(),
+            command: "uptime".into(),
+            key: None,
+            host_key: Some("SHA256:x".into()),
+            password: None,
+            max: None,
+            pass: Pass::All,
+        };
+        assert!(msg::CHORE_ON_BAD.is_in(&job.check().unwrap_err()));
+    }
+
+    #[test]
+    fn the_sftp_address_of_a_host_and_a_path_reads_back_as_sftp() {
+        for (on, path, want) in [
+            ("ssh://web1", "/in/a.csv", "sftp://web1/in/a.csv"),
+            ("ssh://ops@web1", "/in", "sftp://ops@web1/in"),
+            ("ssh://ops@web1:2222", "in/a.csv", "sftp://ops@web1:2222/~/in/a.csv"),
+            ("ssh://ops@web1", "~/in", "sftp://ops@web1/~/in"),
+            ("ssh://ops@web1", "", "sftp://ops@web1/~"),
+            ("ssh://ops@web1", "~", "sftp://ops@web1/~"),
+            ("ssh://ops@[::1]:22", "x.csv", "sftp://ops@[::1]:22/~/x.csv"),
+        ] {
+            let url = sftp_join(on, path).unwrap();
+            assert_eq!(url, want, "{on} {path:?}");
+            // It reads as the address written whole would.
+            assert!(sftp(&url).unwrap().is_ok(), "{url}");
+        }
+        let at = sftp(&sftp_join("ssh://ops@web1:2222", "in/a.csv").unwrap()).unwrap().unwrap();
+        assert_eq!(at, Sftp { user: Some("ops".into()), host: "web1".into(), port: Some(2222), path: "in/a.csv".into() });
+        assert!(sftp_join("winrm://ops@web1", "x").is_err());
+    }
+
+    #[test]
+    fn the_s3_address_of_a_bucket_and_a_path_keeps_the_folder_and_refuses_a_slash() {
+        assert_eq!(s3_join("s3://bkt", "a/b.csv").unwrap(), "s3://bkt/a/b.csv");
+        assert_eq!(s3_join("s3://bkt/app/", "a.csv").unwrap(), "s3://bkt/app/a.csv");
+        assert_eq!(s3_join("s3://bkt/app", "a.csv").unwrap(), "s3://bkt/app/a.csv");
+        assert!(msg::DEF_BUCKET_PATH_SLASH.is_in(&s3_join("s3://bkt/app/", "/a.csv").unwrap_err()));
+        assert!(s3_join("sftp://h/x", "a").is_err());
+        let at = s3(&s3_join("s3://bkt/app/", "x/*.csv").unwrap()).unwrap().unwrap();
+        assert_eq!(at.key, "app/x/*.csv");
+    }
+
+    #[test]
+    fn a_send_or_fetch_with_a_host_or_bucket_is_checked_as_the_path_it_would_be() {
+        assert!(send_to(Some("web1"), None, "/in").check().is_ok());
+        assert!(send_to(None, Some("logs"), "out/a.csv").check().is_ok());
+        assert!(fetch_from(Some("web1"), None, "in/*.csv").check().is_ok());
+        assert!(fetch_from(None, Some("logs"), "in/a.csv").check().is_ok());
+        let bad = |c: Chore| c.check().unwrap_err();
+        assert!(msg::DEF_HOST_AND_BUCKET.is_in(&bad(send_to(Some("web1"), Some("logs"), "x"))));
+        assert!(msg::DEF_NAMED_FAR_URL.is_in(&bad(send_to(Some("web1"), None, "sftp://h/x"))));
+        assert!(msg::DEF_BUCKET_PATH_SLASH.is_in(&bad(send_to(None, Some("logs"), "/x"))));
+        assert!(msg::DEF_REGISTERED_NAME_BAD.is_in(&bad(send_to(Some("a/b"), None, "x"))));
+        // The far-path rules hold after the join: an S3 key to send has no wildcard, one to fetch names a file.
+        assert!(msg::CHORE_S3_KEY_WILDCARD.is_in(&bad(send_to(None, Some("logs"), "out/*.csv"))));
+        assert!(msg::CHORE_FETCH_FROM_NAME.is_in(&bad(fetch_from(None, Some("logs"), "in/"))));
+        assert!(msg::CHORE_FETCH_FROM_NAME.is_in(&bad(fetch_from(Some("web1"), None, "in/"))));
+        // The entry owns the login: a key written next to the name is refused.
+        let mut c = send_to(Some("web1"), None, "/in");
+        if let Chore::Send { key, .. } = &mut c {
+            *key = Some("C:/k".into());
+        }
+        assert!(msg::DEF_NAMED_OWNS.is_in(&bad(c)));
+        // A name for an ssh and a winrm, and what the entry owns.
+        let ssh = |on: &str, key: Option<&str>| Chore::Ssh {
+            on: on.into(),
+            command: "uptime".into(),
+            key: key.map(Into::into),
+            host_key: None,
+            password: None,
+            max: None,
+            pass: Pass::All,
+        };
+        assert!(ssh("web1", None).check().is_ok());
+        assert!(msg::DEF_NAMED_OWNS.is_in(&bad(ssh("web1", Some("C:/k")))));
+        assert!(msg::DEF_REGISTERED_NAME_BAD.is_in(&bad(ssh("a b/c", None))) || host_name("a b/c").is_none());
+    }
+
+    #[test]
+    fn the_script_env_and_paths_of_a_named_send_or_fetch_carry_the_names_and_the_path_only() {
+        let s = send_to(Some("web1"), None, "in/a.csv");
+        let (script, _) = s.script();
+        assert!(script.contains("sftp run"), "{script}");
+        let env = s.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_SFTP_OP"), Some("send"));
+        // The far side is the path as written; the address is built when the job starts.
+        assert_eq!(get("KOYOMI_SFTP_INTO"), Some("in/a.csv"));
+        assert_eq!(get("KOYOMI_SFTP_PASSWORD"), None);
+        let b = fetch_from(None, Some("logs"), "in/a.csv");
+        let (script, _) = b.script();
+        assert!(!script.contains("sftp run"), "{script}");
+        let env = b.env();
+        let get = |name: &str| env.iter().find(|(k, _)| k == name).map(|(_, v)| v.as_str());
+        assert_eq!(get("KOYOMI_CLOUD_OP"), Some("fetch"));
+        assert_eq!(get("KOYOMI_CLOUD_FROM"), Some("in/a.csv"));
+        // `paths()` holds the templates only: the far path is kept, the names are not.
+        assert!(s.paths().iter().any(|p| p.as_str() == "in/a.csv"));
+        assert!(!s.paths().iter().any(|p| p.as_str() == "web1"));
+        assert!(!b.paths().iter().any(|p| p.as_str() == "logs"));
+    }
+
+    #[test]
+    fn fill_runs_a_named_host_bucket_or_ssh_as_koyomi_with_the_names_recorded() {
+        let mut net = crate::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"s\"\nkind = \"send\"\nfrom = 'D:/out/*.csv'\ninto = \"in/{date}\"\nhost = \"web1\"\n[[job]]\nid = \"f\"\nkind = \"fetch\"\nfrom = \"in/a.csv\"\ninto = 'D:/in'\nbucket = \"logs\"\n[[job]]\nid = \"x\"\nkind = \"ssh\"\non = \"web1\"\ncommand = \"uptime\"\n",
+        )
+        .unwrap();
+        fill(&mut net, "C:/koyomi.exe").unwrap();
+        assert!(net.jobs[0].script.as_deref().is_some_and(|s| s.contains("sftp run")), "{:?}", net.jobs[0]);
+        assert_eq!(net.jobs[1].run, ["C:/koyomi.exe", "cloud", "run"]);
+        assert_eq!(net.jobs[2].run, ["C:/koyomi.exe", "ssh", "run"]);
+        // The environment holds the path as written (the address is built when the job starts), and no login.
+        assert_eq!(net.jobs[0].env.get("KOYOMI_SFTP_INTO").map(String::as_str), Some("in/{date}"));
+        assert_eq!(net.jobs[1].env.get("KOYOMI_CLOUD_FROM").map(String::as_str), Some("in/a.csv"));
+        assert_eq!(net.jobs[2].env.get("KOYOMI_SSH_ON").map(String::as_str), Some("web1"));
+        assert!(!net.jobs[0].env.contains_key("KOYOMI_SFTP_PASSWORD") && !net.jobs[1].env.contains_key("KOYOMI_CLOUD_PASSWORD"));
     }
 }

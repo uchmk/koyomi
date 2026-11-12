@@ -2700,6 +2700,8 @@ id = \"a\"
             region: Some("us-east-1".into()),
             endpoint: None,
             verify: None,
+            host: None,
+            bucket: None,
         });
         assert_eq!(grace(&s3), grace(&ssh));
     }

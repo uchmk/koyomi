@@ -396,6 +396,8 @@ pub enum Wait {
 
 /// What a `[[job]]` is: a job that runs a command, or a part of the flow that runs nothing.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+// `Chore` is the big one (a `send` or `fetch` holds a login and now the names of a host or bucket); boxing it would touch every match on `Part::Chore(c)`.
+#[allow(clippy::large_enum_variant)]
 #[serde(tag = "kind", rename_all = "lowercase")]
 pub enum Part {
     /// Runs `run` (or `shell` + `script`).
@@ -670,6 +672,7 @@ struct RawWhen {
     ids: Field,
     source: Field,
     mail: Field,
+    mailbox: Field,
     password: Field,
     sender: Field,
     subject: Field,
@@ -711,6 +714,8 @@ struct RawJob {
     keep_days: Field,
     from: Field,
     into: Field,
+    host: Field,
+    bucket: Field,
     key: Field,
     host_key: Field,
     key_id: Field,
@@ -1083,6 +1088,8 @@ impl Checker<'_> {
             self.only(&j.host_key, "host_key", "\"send\", \"fetch\", \"ssh\"");
         }
         if kind != "send" && kind != "fetch" {
+            self.only(&j.host, "host", "\"send\", \"fetch\"");
+            self.only(&j.bucket, "bucket", "\"send\", \"fetch\"");
             for (field, name) in [(&j.key_id, "key_id"), (&j.region, "region"), (&j.endpoint, "endpoint"), (&j.verify, "verify")] {
                 self.only(field, name, "\"send\", \"fetch\"");
             }
@@ -1277,6 +1284,8 @@ impl Checker<'_> {
             s
         };
         let pattern = self.string(&j.pattern, "match").filter(|p| !p.trim().is_empty());
+        // Said at the key, so that `Chore::check` does not say the same again.
+        let mut owned_told = false;
         let chore = match kind {
             "delete" => {
                 let path = path_of(self, &j.path, "path");
@@ -1328,9 +1337,39 @@ impl Checker<'_> {
                     "ssh" => None,
                     _ => self.choice(&j.verify, "verify", &Verify::ALL.map(Verify::key)).and_then(Verify::of),
                 };
+                let (host, bucket) =
+                    if kind == "ssh" { (None, None) } else { (self.string(&j.host, "host"), self.string(&j.bucket, "bucket")) };
+                // A `[[host]]` or `[[bucket]]` of koyomi.toml owns the login: none of its keys is written here.
+                let named = match (kind, &host, &bucket) {
+                    ("ssh", ..) => crate::chore::host_name(&from).map(|_| "on"),
+                    (_, Some(_), None) => Some("host"),
+                    (_, None, Some(_)) => Some("bucket"),
+                    _ => None,
+                };
+                if let Some(named) = named {
+                    let table = if named == "bucket" { "bucket" } else { "host" };
+                    let own: &[(&Field, &str)] = if kind == "ssh" {
+                        &[(&j.key, "key"), (&j.host_key, "host_key"), (&j.password, "password")]
+                    } else {
+                        &[
+                            (&j.key, "key"),
+                            (&j.host_key, "host_key"),
+                            (&j.password, "password"),
+                            (&j.key_id, "key_id"),
+                            (&j.region, "region"),
+                            (&j.endpoint, "endpoint"),
+                        ]
+                    };
+                    for (field, name) in own {
+                        if let Some(f) = field {
+                            self.add(f.span().start, msg::line(msg::DEF_NAMED_OWNS, &[name, named, table]));
+                            owned_told = true;
+                        }
+                    }
+                }
                 match kind {
-                    "send" => Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify },
-                    "fetch" => Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify },
+                    "send" => Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket },
+                    "fetch" => Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket },
                     _ => {
                         let (max, pass) = self.fan(j);
                         Chore::Ssh { on: from, command: into, key, host_key, password, max, pass }
@@ -1347,6 +1386,14 @@ impl Checker<'_> {
                 }
                 let password = self.string(&j.password, "password").map(|p| p.trim().to_owned()).filter(|p| !p.is_empty());
                 let auth = self.choice(&j.auth, "auth", &WinrmAuth::ALL.map(WinrmAuth::key)).and_then(WinrmAuth::of).unwrap_or_default();
+                if crate::chore::host_name(&on).is_some() {
+                    for (field, name) in [(&j.cert, "cert"), (&j.password, "password"), (&j.auth, "auth")] {
+                        if let Some(f) = field {
+                            self.add(f.span().start, msg::line(msg::DEF_NAMED_OWNS, &[name, "on", "host"]));
+                            owned_told = true;
+                        }
+                    }
+                }
                 let (max, pass) = self.fan(j);
                 Chore::Winrm { on, command, cert, password, auth, max, pass }
             }
@@ -1357,7 +1404,7 @@ impl Checker<'_> {
             _ => Chore::Empty { path: path_of(self, &j.path, "path") },
         };
         // A missing field is already told; what is left is a root or a zip's name.
-        if chore.paths().iter().all(|p| !p.trim().is_empty()) {
+        if !owned_told && chore.paths().iter().all(|p| !p.trim().is_empty()) {
             if let Err(e) = chore.check() {
                 self.add(start, e);
             }
@@ -1923,7 +1970,7 @@ impl Checker<'_> {
                 "log"
             } else if w.eventlog.is_some() {
                 "eventlog"
-            } else if w.mail.is_some() {
+            } else if w.mail.is_some() || w.mailbox.is_some() {
                 "mail"
             } else if w.on_start.is_some() {
                 "on_start"
@@ -1941,7 +1988,7 @@ impl Checker<'_> {
                 "file" => &["file", "settle"],
                 "log" => &["log", "contains"],
                 "eventlog" => &["eventlog", "ids", "source"],
-                "mail" => &["mail", "password", "sender", "subject"],
+                "mail" => &["mail", "mailbox", "password", "sender", "subject"],
                 "on_start" => &["on_start"],
                 "idle" => &["idle"],
                 "session" => &["session", "user"],
@@ -1977,6 +2024,7 @@ impl Checker<'_> {
                 (&w.ids, "ids"),
                 (&w.source, "source"),
                 (&w.mail, "mail"),
+                (&w.mailbox, "mailbox"),
                 (&w.password, "password"),
                 (&w.sender, "sender"),
                 (&w.subject, "subject"),
@@ -2249,6 +2297,29 @@ impl Checker<'_> {
     /// `sender` or `subject` (or both): text the mail's sender / subject holds.
     fn mail(&mut self, w: &RawWhen, head: usize) -> Option<Kind> {
         let before = self.problems.len();
+        if let Some(f) = &w.mailbox {
+            // A `[[mailbox]]` of koyomi.toml owns the address and the password.
+            let at = f.span().start;
+            for (field, key) in [(&w.mail, "mail"), (&w.password, "password")] {
+                if field.is_some() {
+                    self.add(at, msg::line(msg::DEF_NAMED_OWNS, &[key, "mailbox", "mailbox"]));
+                }
+            }
+            let name = self.string(&w.mailbox, "mailbox")?;
+            if !crate::registry::valid_name(&name) {
+                self.add(at, msg::line(msg::DEF_REGISTERED_NAME_BAD, &["mailbox", &name]));
+            }
+            let sender = self.mail_text(&w.sender, "sender");
+            let subject = self.mail_text(&w.subject, "subject");
+            if self.problems.len() != before {
+                return None;
+            }
+            if sender.is_none() && subject.is_none() {
+                self.add(head, msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
+                return None;
+            }
+            return Some(Kind::Mail { mail: String::new(), secret: String::new(), mailbox: Some(name), sender, subject });
+        }
         let pos = w.mail.as_ref().map_or(head, |f| f.span().start);
         let mail = self.string(&w.mail, "mail")?;
         if let Err(e) = when::mailbox(&mail) {
@@ -2281,7 +2352,7 @@ impl Checker<'_> {
             self.add(head, msg::line(msg::DEF_EITHER_REQUIRED, &["mail", "sender", "subject", "subject = \"Invoice\""]));
             return None;
         }
-        Some(Kind::Mail { mail, secret: secret?, sender, subject })
+        Some(Kind::Mail { mail, secret: secret?, mailbox: None, sender, subject })
     }
 
     /// `user` of a `session` start: `Some(None)` when not written (anyone's),
@@ -3673,7 +3744,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 region: None,
                 endpoint: None,
                 verify: Some(Verify::Readback),
-            }))
+                host: None, bucket: None,
+}))
         );
         {
             let s = ToString::to_string(&(bad("send", "from = 'a'\ninto = 'b'\nverify = \"md5\"\n")));
@@ -3696,6 +3768,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 region: None,
                 endpoint: None,
                 verify: None,
+                host: None,
+                bucket: None,
             }))
         );
         assert!(msg::CHORE_LOCAL_ONLY.is_in(&bad("send", "from = 'sftp://h/out'\ninto = 'D:\\in'\n")));
@@ -3724,7 +3798,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 region: None,
                 endpoint: Some("http://nas:9000".into()),
                 verify: None,
-            }))
+                host: None, bucket: None,
+}))
         );
         assert!(msg::CHORE_S3_KEY_ID_MISSING
             .is_in(&bad("send", "from = 'a'\ninto = 's3://logs/in/'\npassword = 'secret:s3'\nregion = 'us-east-1'\n")));
@@ -3831,7 +3906,11 @@ after = [{ job = \"way\", code = \"else\" }]
         assert!(bad(&format!("on = 'ssh://h'\ncommand = ' '\n{hk}")).contains("command が空"));
         assert!(msg::CHORE_HOST_KEY_MISSING.is_in(&bad("on = 'ssh://h'\ncommand = 'x'\n")));
         assert!(bad("on = 'ssh://h'\ncommand = 'x'\nhost_key = 'abc'\n").contains("SHA256:"));
-        assert!(msg::CHORE_ON_BAD.is_in(&bad(&format!("on = 'h'\ncommand = 'x'\n{hk}"))));
+        assert!(msg::DEF_NAMED_OWNS.is_in(&bad(&format!(
+            "on = 'h'
+command = 'x'
+{hk}"
+        ))));
         assert!(msg::CHORE_ADDR_PATH.is_in(&bad(&format!("on = 'ssh://h/tmp'\ncommand = 'x'\n{hk}"))));
         assert!(msg::CHORE_PASSWORD_SECRET.is_in(&bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}password = 'hunter2'\n"))));
         assert!(bad(&format!("on = 'ssh://h'\ncommand = 'x'\n{hk}run = ['y']\n")).contains("run"));
@@ -4667,7 +4746,8 @@ after = [{ job = \"way\", code = \"else\" }]
                 mail: "imaps://me@example.com@imap.example.com".to_owned(),
                 secret: "mail".to_owned(),
                 sender: None,
-                subject: Some("請求書".to_owned())
+                subject: Some("請求書".to_owned()),
+                mailbox: None,
             }
         );
         assert!(net.when[0].is_event());
@@ -4829,5 +4909,78 @@ run = [\"x\"]
         assert_eq!(old, Part::Approval { message: None });
         let new: Part = toml::from_str("kind = \"approval\"\nmessage = \"x\"").unwrap();
         assert_eq!(new, Part::Approval { message: Some("x".into()) });
+    }
+
+    const HK_TEXT: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+
+    fn problem_text(text: &str) -> String {
+        match parse(text) {
+            Ok(_) => String::new(),
+            Err(p) => p.iter().map(|p| p.message.as_str()).collect::<Vec<_>>().join("\n"),
+        }
+    }
+
+    /// A net with one job of `body` (after `id = "a"`).
+    fn one(body: &str) -> String {
+        format!("format = 1\n[[job]]\nid = \"a\"\n{body}")
+    }
+
+    #[test]
+    fn a_host_bucket_or_mailbox_name_is_read_and_what_it_owns_is_refused() {
+        // The named forms parse and write back the same.
+        let ok = format!(
+            "format = 1\n[[when]]\nmailbox = \"billing\"\nsender = \"a@\"\n\
+             [[job]]\nid = \"s\"\nkind = \"send\"\nfrom = \"D:/o/*.csv\"\ninto = \"in\"\nhost = \"web1\"\nverify = \"sha256\"\n\
+             [[job]]\nid = \"f\"\nkind = \"fetch\"\nfrom = \"in/a.csv\"\ninto = \"D:/in\"\nbucket = \"logs\"\n\
+             [[job]]\nid = \"x\"\nkind = \"ssh\"\non = \"web1\"\ncommand = \"uptime\"\n\
+             [[job]]\nid = \"w\"\nkind = \"winrm\"\non = \"win1\"\ncommand = \"hostname\"\n\
+             [[job]]\nid = \"g\"\nkind = \"ssh\"\non = \"{{grp}}\"\ncommand = \"uptime\"\nkey = \"C:/k\"\nhost_key = \"{HK_TEXT}\"\n"
+        );
+        let net = parse(&ok).unwrap_or_else(|p| panic!("{p:?}"));
+        match &net.jobs[0].part {
+            Part::Chore(Chore::Send { host, bucket, .. }) => assert_eq!((host.as_deref(), bucket.as_deref()), (Some("web1"), None)),
+            other => panic!("{other:?}"),
+        }
+        match &net.jobs[1].part {
+            Part::Chore(Chore::Fetch { host, bucket, .. }) => assert_eq!((host.as_deref(), bucket.as_deref()), (None, Some("logs"))),
+            other => panic!("{other:?}"),
+        }
+        assert!(matches!(&net.when[0].kind, crate::when::Kind::Mail { mailbox: Some(m), .. } if m == "billing"));
+        let again = parse(&crate::write::text(&net)).unwrap_or_else(|p| panic!("{p:?}"));
+        assert_eq!(again.jobs.iter().map(|j| &j.part).collect::<Vec<_>>(), net.jobs.iter().map(|j| &j.part).collect::<Vec<_>>());
+        assert_eq!(again.when, net.when);
+        // The text keeps the names and none of what the entries own.
+        let written = crate::write::text(&net);
+        assert!(
+            written.contains("host = \"web1\"") && written.contains("bucket = \"logs\"") && written.contains("mailbox = \"billing\""),
+            "{written}"
+        );
+
+        // Host and bucket belong to send and fetch only.
+        assert!(problem_text(&one("run = [\"x\"]\nhost = \"web1\"\n")).contains(&msg::DEF_ONLY_FOR_KINDS.code()));
+        // Not both; a send's login keys are the entry's; an address is not a path.
+        let send = |extra: &str| one(&format!("kind = \"send\"\nfrom = \"D:/o/a.csv\"\ninto = \"in\"\n{extra}"));
+        assert!(problem_text(&send("host = \"web1\"\nbucket = \"logs\"\n")).contains(&msg::DEF_HOST_AND_BUCKET.code()));
+        assert!(problem_text(&send("host = \"web1\"\nkey = \"C:/k\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        assert!(problem_text(&send("bucket = \"logs\"\nregion = \"ap-northeast-1\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        assert!(problem_text(&one("kind = \"send\"\nfrom = \"D:/o/a.csv\"\ninto = \"sftp://h/x\"\nhost = \"web1\"\n"))
+            .contains(&msg::DEF_NAMED_FAR_URL.code()));
+        assert!(problem_text(&one("kind = \"send\"\nfrom = \"D:/o/a.csv\"\ninto = \"/x\"\nbucket = \"logs\"\n"))
+            .contains(&msg::DEF_BUCKET_PATH_SLASH.code()));
+        assert!(problem_text(&send("host = \"a/b\"\n")).contains(&msg::DEF_REGISTERED_NAME_BAD.code()));
+        // An ssh or winrm with a name owns nothing else.
+        let ssh = |extra: &str| one(&format!("kind = \"ssh\"\non = \"web1\"\ncommand = \"uptime\"\n{extra}"));
+        assert!(problem_text(&ssh("key = \"C:/k\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        assert!(problem_text(&ssh("host_key = \"x\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        let winrm = |extra: &str| one(&format!("kind = \"winrm\"\non = \"win1\"\ncommand = \"hostname\"\n{extra}"));
+        assert!(problem_text(&winrm("password = \"secret:x\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        // A mailbox owns the address and the password.
+        let when = |extra: &str| {
+            format!("format = 1\n[[when]]\nmailbox = \"billing\"\nsubject = \"Invoice\"\n{extra}[[job]]\nid = \"a\"\nrun = [\"x\"]\n")
+        };
+        assert!(problem_text(&when("")).is_empty());
+        assert!(problem_text(&when("mail = \"imaps://u@m.example.com\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        assert!(problem_text(&when("password = \"secret:m\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
+        assert!(problem_text(&when("").replace("billing", "a/b")).contains(&msg::DEF_REGISTERED_NAME_BAD.code()));
     }
 }

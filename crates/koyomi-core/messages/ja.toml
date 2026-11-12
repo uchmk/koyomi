@@ -1511,7 +1511,7 @@ action = "shared には true または false を指定してください。true 
 when = "[[when]] に、実行の条件を表す項目が指定されていないとき"
 text = "[[when]] に、実行の条件を表す項目が指定されていません。"
 cause = "実行の条件を表す項目が、[[when]] にないためです。"
-action = "once、every、dates、file、log、eventlog、mail、on_start、after_jobnet、idle、session のいずれかを指定してください。"
+action = "once、every、dates、file、log、eventlog、mail（または koyomi.toml の [[mailbox]] を指す mailbox）、on_start、after_jobnet、idle、session のいずれかを指定してください。"
 
 [E3332]
 when = "[[when]] に、その種類では使用しない項目が指定されているとき"
@@ -2942,7 +2942,7 @@ cause = "koyomi.toml の [[database]] に、この name の項目がありませ
 action = "[[database]] に {0} を登録するか、ジョブの database を変更してください。"
 
 [E1073]
-when = "[[account]] または [[database]] の name が使用できないとき"
+when = "[[account]]、[[database]]、[[host]]、[[bucket]]、[[mailbox]] の name が使用できないとき"
 text = "{0} の name {1} は使用できません。"
 cause = "name が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。"
 action = "前後に空白がなく、{ } とファイル名に使用できない文字を含まない名前を指定してください。"
@@ -2954,7 +2954,7 @@ cause = "user が空であるか、空白、制御文字、\" / [ ] : ; | = , + 
 action = "user は CORP\\batch、batch@corp.local、batch のように指定してください。"
 
 [E1075]
-when = "[[account]] の password が secret:<名前> の形式でないとき"
+when = "[[account]]、[[host]]、[[bucket]]、[[mailbox]]、[[database]] の password が secret:<名前> の形式でないとき"
 text = "{0} {1} の password が secret:<名前> の形式で指定されていません。"
 cause = "password には、パスワードそのものではなく、資格情報ストアに保存したシークレットの名前を secret:<名前> の形式で指定します。"
 action = "password を secret:<名前> の形式で指定し、値は koyomi secret set <名前> で保存してください。"
@@ -2984,10 +2984,10 @@ cause = "指定された名前の項目が、koyomi.toml にありません。�
 action = "最新の内容を読み込み直して、確認してください。"
 
 [E3395]
-when = "run_as または database に指定した名前が使用できないとき"
+when = "run_as、database、on、host、bucket、mailbox に指定した名前が使用できないとき"
 text = "{0} の名前 {1} は使用できません。"
 cause = "名前が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。"
-action = "koyomi.toml の [[account]] または [[database]] の name と同じ名前を指定してください。"
+action = "koyomi.toml の [[account]]、[[database]]、[[host]]、[[bucket]]、[[mailbox]] のいずれかの name と同じ名前を指定してください。"
 
 [E3396]
 when = "sql に db と database の両方を指定したとき"
@@ -4021,6 +4021,108 @@ text = "接続先 {0} で最後に読み込めた実行中の実行が古すぎ�
 cause = "最後に読み込めてから 30 秒以上経過しており、その間に終了した実行が含まれている可能性があるためです。"
 action = "引き継いだあとの実行の状況を確認し、必要な場合は再度実行してください。"
 
+[E1078]
+when = "[[host]] の設定が使用できないとき"
+text = "[[host]] {0} の設定が正しくありません。（{1}）"
+cause = "on、host_key、key、password、cert、auth のいずれかが正しくないか、組み合わせが合っていません。"
+action = "on（ssh://[user@]host[:port] または winrm://user@host[:port]）と、その接続先に合った項目を確認してください。"
+
+[E1079]
+when = "[[host]] に、接続先の種類に使用できない項目が指定されているとき"
+text = "[[host]] {0} の {1} は、{2} の接続先には指定できません。"
+cause = "host_key と key は ssh の接続先に、cert と auth は winrm の接続先に使用する項目です。"
+action = "{1} を削除してください。"
+
+[E1080]
+when = "[[bucket]] の設定が使用できないとき"
+text = "[[bucket]] {0} の設定が正しくありません。（{1}）"
+cause = "url、key_id、password、region、endpoint のいずれかが正しくないか、組み合わせが合っていません。"
+action = "url（s3://バケット/フォルダー/）と、key_id、password、region または endpoint を確認してください。"
+
+[E1081]
+when = "[[mailbox]] の設定が使用できないとき"
+text = "[[mailbox]] {0} の設定が正しくありません。（{1}）"
+cause = "mail または password が正しくありません。"
+action = "mail に受信するメールボックスの指定を、password に secret:<名前> を指定してください。"
+
+[E1082]
+when = "[[host]]、[[bucket]]、[[mailbox]] の項目に { または } が含まれているとき"
+text = "{0} {1} の {2} に { または } を使用できません。"
+cause = "{0} はテンプレートではないため、{param:…} や {var:…} を指定できません。"
+action = "{2} には、{param:…} や {var:…} を使用せず、値そのものを指定してください。"
+
+[E3399]
+when = "登録済みの接続先の名前を指定したジョブやトリガーに、その登録が持つ項目を指定したとき"
+text = "{1} に名前を指定したときは、{0} を指定できません。"
+cause = "名前を指定した {1} は koyomi.toml の [[{2}]] を使うため、{0} は登録の側が持っています。"
+action = "{0} を削除するか、{1} の名前の代わりに完全な指定を書いてください。"
+
+[E3400]
+when = "send または fetch に host と bucket の両方を指定したとき"
+text = "host と bucket は、どちらか一方だけを指定できます。"
+cause = "host は koyomi.toml の [[host]]（SFTP）を、bucket は [[bucket]]（S3）を指す名前で、同時には使用できません。"
+action = "どちらか一方を削除してください。"
+
+[E3485]
+when = "host または bucket を指定した send または fetch の、接続先の側に scheme:// の付いたアドレスを指定したとき"
+text = "{1} を指定したときは、{0} にアドレスではなくパスを指定します。"
+cause = "接続先は koyomi.toml の登録が持つため、ジョブにはその中のパスだけを書きます。"
+action = "{0} を、sftp:// や s3:// を付けないパスに変更してください。"
+
+[E3486]
+when = "bucket を指定した send または fetch のパスが / で始まっているとき"
+text = "bucket のパス {0} を / で始めることはできません。"
+cause = "パスは [[bucket]] の url の続きとして結合されるため、/ で始まるパスはバケットの先頭を指すのか曖昧になります。"
+action = "先頭の / を取り除いたパスを指定してください。"
+
+[E3296]
+when = "send、fetch、ssh、winrm の host が、koyomi.toml の [[host]] にない名前を指定しているとき"
+text = "host {0} が koyomi.toml の [[host]] にないため、ジョブを開始できません。"
+cause = "koyomi.toml の [[host]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。"
+action = "[[host]] に {0} を登録するか、ジョブの host または on を変更してください。"
+
+[E3297]
+when = "send または fetch の bucket が、koyomi.toml の [[bucket]] にない名前を指定しているとき"
+text = "bucket {0} が koyomi.toml の [[bucket]] にないため、ジョブを開始できません。"
+cause = "koyomi.toml の [[bucket]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。"
+action = "[[bucket]] に {0} を登録するか、ジョブの bucket を変更してください。"
+
+[E3298]
+when = "ジョブの種類に合わない接続先の [[host]] を指定しているとき"
+text = "host {0} は {2} の接続先のため、{1} のジョブでは使用できません。"
+cause = "send と fetch は ssh の接続先（SFTP）、ssh は ssh の接続先、winrm は winrm の接続先に使用できます。"
+action = "ジョブの種類に合った [[host]] を指定してください。"
+
+[E3299]
+when = "登録済みの接続先とジョブのパスを結合できないとき"
+text = "{0} とパス {1} を結合できません。（{2}）"
+cause = "結合した結果のアドレスが正しくありません。"
+action = "（）内の理由を確認して、ジョブのパスまたは登録の url を修正してください。"
+
+[W3792]
+when = "ジョブネットのジョブが、koyomi.toml にない [[host]] を指定しているとき"
+text = "ジョブネット {0} のジョブ {1} は host に {2} を指定していますが、koyomi.toml の [[host]] にありません。"
+cause = "koyomi.toml の [[host]] に、この name の項目がありません。"
+action = "[[host]] に {2} を登録するか、ジョブの host または on を変更してください。"
+
+[W3793]
+when = "ジョブネットの send または fetch が、koyomi.toml にない [[bucket]] を指定しているとき"
+text = "ジョブネット {0} のジョブ {1} は bucket に {2} を指定していますが、koyomi.toml の [[bucket]] にありません。"
+cause = "koyomi.toml の [[bucket]] に、この name の項目がありません。"
+action = "[[bucket]] に {2} を登録するか、ジョブの bucket を変更してください。"
+
+[W3794]
+when = "ジョブネットのジョブが、ジョブの種類に合わない [[host]] を指定しているとき"
+text = "ジョブネット {0} のジョブ {1} が指定した host {2} は {3} の接続先のため、このジョブでは使用できません。"
+cause = "send、fetch、ssh は ssh の接続先を、winrm は winrm の接続先を使用します。"
+action = "ジョブの種類に合った [[host]] を指定してください。"
+
+[W3795]
+when = "ジョブネットの [[when]] が、koyomi.toml にない [[mailbox]] を指定しているとき"
+text = "ジョブネット {0} の [[when]] は mailbox に {1} を指定していますが、koyomi.toml の [[mailbox]] にありません。"
+cause = "koyomi.toml の [[mailbox]] に、この name の項目がありません。"
+action = "[[mailbox]] に {1} を登録するか、[[when]] の mailbox を変更してください。"
+
 [note]
 status_head = "定義 {0} 件（確認済み {1} 件）、実行中 {2} 件。"
 status_paused = "スケジュールを停止しています（koyomi resume で再開できます）。"
@@ -4217,6 +4319,8 @@ run_line_unmet = "{0} の線の条件に一致しませんでした"
 run_waiting_for = "{0} の終了を待っています"
 run_list_join = "・"
 chore_shared_differs = "コピーした内容が一致しません: {0}（コピー元 {1}、コピー先 {2}）"
+bucket_prefix_segment = "{0} のフォルダー部分に空の区切りがあります（// は使用できません）"
+bucket_prefix_wildcard = "{0} のフォルダー部分に * または ? を使用できません"
 ssh_stopped = "停止しました（コマンドが開始されていた場合は、TERM で停止するよう要求しました）"
 winrm_stopped = "停止しました（コマンドが開始されていた場合は停止を要求し、接続先のシェルを削除しました）"
 group_start = "グループ {0} の {1} 台で実行します（同時に {2} 台まで。ジョブは {3} の結果に合わせて終了します）。"

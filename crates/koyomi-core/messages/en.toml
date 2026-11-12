@@ -1511,7 +1511,7 @@ action = "Give shared true or false. With true the lock is a shared lock for rea
 when = "A [[when]] has no key that tells when to run"
 text = "The [[when]] has no key that tells when to run."
 cause = "The [[when]] has none of the keys that tell when to run."
-action = "Give one of once, every, dates, file, log, eventlog, mail, on_start, after_jobnet, idle and session."
+action = "Give one of once, every, dates, file, log, eventlog, mail (or mailbox, naming a [[mailbox]] of koyomi.toml), on_start, after_jobnet, idle and session."
 
 [E3332]
 when = "A [[when]] has a key its kind does not use"
@@ -2942,7 +2942,7 @@ cause = "[[database]] of koyomi.toml has no entry with this name. It may have be
 action = "Register {0} in [[database]], or change the database of the job."
 
 [E1073]
-when = "The name of an [[account]] or [[database]] cannot be used"
+when = "The name of an [[account]], [[database]], [[host]], [[bucket]] or [[mailbox]] cannot be used"
 text = "The name {1} of {0} cannot be used."
 cause = "The name is empty, has spaces at its ends, contains { or }, or contains a character that a file name cannot hold."
 action = "Give a name without spaces at its ends and without { }, or characters a file name cannot hold."
@@ -2954,7 +2954,7 @@ cause = "The user is empty, or contains a space, a control character, or one of 
 action = "Give user as CORP\\batch, batch@corp.local or batch."
 
 [E1075]
-when = "The password of an [[account]] or [[database]] is not in the form secret:<name>"
+when = "The password of an [[account]], [[host]], [[bucket]], [[mailbox]] or [[database]] is not in the form secret:<name>"
 text = "The password of {0} {1} is not given as secret:<name>."
 cause = "password holds the name of a secret kept in the credential store, written as secret:<name>, not the password itself."
 action = "Give password as secret:<name>, and store the value with koyomi secret set <name>."
@@ -2984,10 +2984,10 @@ cause = "koyomi.toml has no entry with the given name. It may have been removed 
 action = "Read the latest content again and check."
 
 [E3395]
-when = "The name given in run_as or database cannot be used"
+when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."
 cause = "The name is empty, has spaces at its ends, contains { or }, or contains a character that a file name cannot hold."
-action = "Give the same name as the name of the [[account]] or [[database]] of koyomi.toml."
+action = "Give the same name as the name of an [[account]], [[database]], [[host]], [[bucket]] or [[mailbox]] of koyomi.toml."
 
 [E3396]
 when = "A sql gives both db and database"
@@ -4021,6 +4021,108 @@ text = "The runs last read from {0} are too old, so they are not used for the ta
 cause = "More than 30 seconds have passed since they were read, and some of them may have ended since."
 action = "Check the runs after the takeover, and run them again if necessary."
 
+[E1078]
+when = "The settings of a [[host]] cannot be used"
+text = "The settings of [[host]] {0} are not valid. ({1})"
+cause = "One of on, host_key, key, password, cert and auth is not valid, or they do not fit together."
+action = "Check on (ssh://[user@]host[:port] or winrm://user@host[:port]) and the keys that fit that kind of host."
+
+[E1079]
+when = "A [[host]] has a key that its kind of host cannot take"
+text = "{1} of [[host]] {0} cannot be given to a {2} host."
+cause = "host_key and key are for an ssh host, cert and auth for a winrm host."
+action = "Remove {1}."
+
+[E1080]
+when = "The settings of a [[bucket]] cannot be used"
+text = "The settings of [[bucket]] {0} are not valid. ({1})"
+cause = "One of url, key_id, password, region and endpoint is not valid, or they do not fit together."
+action = "Check url (s3://bucket/folder/), key_id, password, and region or endpoint."
+
+[E1081]
+when = "The settings of a [[mailbox]] cannot be used"
+text = "The settings of [[mailbox]] {0} are not valid. ({1})"
+cause = "mail or password is not valid."
+action = "Give mail the mailbox to watch and password as secret:<name>."
+
+[E1082]
+when = "A key of a [[host]], [[bucket]] or [[mailbox]] contains { or }"
+text = "{2} of {0} {1} cannot contain { or }."
+cause = "{0} is not a template, so {param:...} and {var:...} cannot be used."
+action = "Give the value itself in {2}, without {param:...} or {var:...}."
+
+[E3399]
+when = "A job or a trigger that names a registered place also gives a key the registration owns"
+text = "{0} cannot be given when {1} gives a name."
+cause = "A {1} with a name uses [[{2}]] of koyomi.toml, which owns {0}."
+action = "Remove {0}, or write the whole setting instead of the name of {1}."
+
+[E3400]
+when = "A send or fetch gives both host and bucket"
+text = "Give either host or bucket, not both."
+cause = "host names a [[host]] (SFTP) of koyomi.toml and bucket names a [[bucket]] (S3); they cannot be used together."
+action = "Remove one of them."
+
+[E3485]
+when = "The far side of a send or fetch with host or bucket is written as an address with scheme://"
+text = "With {1}, give a path in {0}, not an address."
+cause = "The registration of koyomi.toml holds where to connect, so the job only gives the path in it."
+action = "Change {0} to a path without sftp:// or s3://."
+
+[E3486]
+when = "The path of a send or fetch with bucket starts with /"
+text = "The path {0} of a bucket cannot start with /."
+cause = "The path is joined after the url of the [[bucket]], so a path that starts with / does not say whether it means the top of the bucket."
+action = "Give the path without the leading /."
+
+[E3296]
+when = "The host of a send, fetch, ssh or winrm job names a host that is not in [[host]] of koyomi.toml"
+text = "The job cannot start because the host {0} is not in [[host]] of koyomi.toml."
+cause = "[[host]] of koyomi.toml has no entry with this name. It may have been removed, or the name may be wrong."
+action = "Register {0} in [[host]], or change the host or on of the job."
+
+[E3297]
+when = "The bucket of a send or fetch names a bucket that is not in [[bucket]] of koyomi.toml"
+text = "The job cannot start because the bucket {0} is not in [[bucket]] of koyomi.toml."
+cause = "[[bucket]] of koyomi.toml has no entry with this name. It may have been removed, or the name may be wrong."
+action = "Register {0} in [[bucket]], or change the bucket of the job."
+
+[E3298]
+when = "A job names a [[host]] that does not fit its kind"
+text = "The host {0} is a {2} host, so a {1} job cannot use it."
+cause = "send, fetch and ssh use an ssh host, and winrm uses a winrm host."
+action = "Name a [[host]] that fits the kind of the job."
+
+[E3299]
+when = "A registered place and the path of a job cannot be joined"
+text = "{0} and the path {1} cannot be joined. ({2})"
+cause = "The address that results is not valid."
+action = "Check the reason in the parentheses, and fix the path of the job or the url of the registration."
+
+[W3792]
+when = "A job of a jobnet names a [[host]] that is not in koyomi.toml"
+text = "Job {1} of jobnet {0} names {2} as its host, but it is not in [[host]] of koyomi.toml."
+cause = "[[host]] of koyomi.toml has no entry with this name."
+action = "Register {2} in [[host]], or change the host or on of the job."
+
+[W3793]
+when = "A send or fetch of a jobnet names a [[bucket]] that is not in koyomi.toml"
+text = "Job {1} of jobnet {0} gives {2} as bucket, but it is not in [[bucket]] of koyomi.toml."
+cause = "[[bucket]] of koyomi.toml has no entry with this name."
+action = "Register {2} in [[bucket]], or change the bucket of the job."
+
+[W3794]
+when = "A job of a jobnet names a [[host]] that does not fit its kind"
+text = "The host {2} that job {1} of jobnet {0} names is a {3} host, so this job cannot use it."
+cause = "send, fetch and ssh use an ssh host, and winrm uses a winrm host."
+action = "Name a [[host]] that fits the kind of the job."
+
+[W3795]
+when = "A [[when]] of a jobnet names a [[mailbox]] that is not in koyomi.toml"
+text = "A [[when]] of jobnet {0} gives {1} as mailbox, but it is not in [[mailbox]] of koyomi.toml."
+cause = "[[mailbox]] of koyomi.toml has no entry with this name."
+action = "Register {1} in [[mailbox]], or change the mailbox of the [[when]]."
+
 [note]
 status_head = "{0} definitions ({1} confirmed), {2} runs going."
 status_paused = "The schedules are paused (koyomi resume resumes them)."
@@ -4217,6 +4319,8 @@ run_line_unmet = "The condition of the line from {0} was not met"
 run_waiting_for = "Waiting for {0} to end"
 run_list_join = ", "
 chore_shared_differs = "The copied content does not match: {0} (source {1}, destination {2})"
+bucket_prefix_segment = "The folder part of {0} has an empty segment (// cannot be used)"
+bucket_prefix_wildcard = "The folder part of {0} cannot contain * or ?"
 ssh_stopped = "Stopped. (If the command had started, it was asked to stop with TERM.)"
 winrm_stopped = "Stopped. (If the command had started, it was asked to stop, and its shell on the connection was deleted.)"
 group_start = "Running on the {1} PCs of the group {0} ({2} at a time; the job ends as {3} does)."

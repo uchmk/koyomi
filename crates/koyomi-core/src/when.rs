@@ -105,9 +105,13 @@ pub enum Kind {
     /// arriving in the mailbox (an event). Only mail that comes while the
     /// engine watches counts; each poll with such mail starts the net once.
     /// `secret` is the name in ito-secret, never the password itself.
+    /// `mailbox = "<name>"` names a `[[mailbox]]` of koyomi.toml instead; `mail` and `secret` are then
+    /// empty and the engine reads the entry when it polls.
     Mail {
         mail: String,
         secret: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        mailbox: Option<String>,
         #[serde(default)]
         sender: Option<String>,
         #[serde(default)]

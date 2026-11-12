@@ -72,10 +72,32 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let (region, endpoint) = (var("REGION"), var("ENDPOINT"));
     let verify = var("VERIFY").and_then(|v| Verify::of(&v));
     let job = match op.as_str() {
-        "send" => Chore::Send { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint, verify },
-        "fetch" => {
-            Chore::Fetch { from, into, key: None, host_key: None, password: password_mark, key_id: id_mark, region, endpoint, verify }
-        }
+        "send" => Chore::Send {
+            from,
+            into,
+            key: None,
+            host_key: None,
+            password: password_mark,
+            key_id: id_mark,
+            region,
+            endpoint,
+            verify,
+            host: None,
+            bucket: None,
+        },
+        "fetch" => Chore::Fetch {
+            from,
+            into,
+            key: None,
+            host_key: None,
+            password: password_mark,
+            key_id: id_mark,
+            region,
+            endpoint,
+            verify,
+            host: None,
+            bucket: None,
+        },
         _ => return Err(line(msg::DEF_CHOICE_BAD, &["KOYOMI_CLOUD_OP", "\"send\", \"fetch\""])),
     };
     go(&job, key_id, password, stop)
@@ -265,6 +287,8 @@ mod tests {
             region: None,
             endpoint: Some(endpoint(s3)),
             verify: None,
+            host: None,
+            bucket: None,
         }
     }
 
@@ -279,6 +303,8 @@ mod tests {
             region: None,
             endpoint: Some(format!("{}/", endpoint(s3))),
             verify: None,
+            host: None,
+            bucket: None,
         }
     }
 
