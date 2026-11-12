@@ -363,6 +363,65 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Add or change the `[[host]]` `name`: a PC an `ssh` / `winrm` job runs on or an SFTP `send` / `fetch` uses.
+    /// `password` is `secret:<name>`. Everything else in the file stays as written.
+    HostPut {
+        name: String,
+        on: String,
+        #[serde(default)]
+        host_key: Option<String>,
+        #[serde(default)]
+        key: Option<String>,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        cert: Option<String>,
+        #[serde(default)]
+        auth: Option<String>,
+        base_sha256: String,
+    },
+    /// Remove the `[[host]]` `name`. Refused while a net names it, unless `force`.
+    HostRemove {
+        name: String,
+        base_sha256: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Add or change the `[[bucket]]` `name`: an S3 place a `send` / `fetch` uses. `password` (and `key_id`,
+    /// when it is not plain) is `secret:<name>`.
+    BucketPut {
+        name: String,
+        url: String,
+        #[serde(default)]
+        key_id: Option<String>,
+        password: String,
+        #[serde(default)]
+        region: Option<String>,
+        #[serde(default)]
+        endpoint: Option<String>,
+        base_sha256: String,
+    },
+    /// Remove the `[[bucket]]` `name`. Refused while a net names it, unless `force`.
+    BucketRemove {
+        name: String,
+        base_sha256: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Add or change the `[[mailbox]]` `name`: a mailbox a `[[when]] mailbox` watches. `password` is `secret:<name>`.
+    MailboxPut {
+        name: String,
+        mail: String,
+        password: String,
+        base_sha256: String,
+    },
+    /// Remove the `[[mailbox]]` `name`. Refused while a net names it, unless `force`.
+    MailboxRemove {
+        name: String,
+        base_sha256: String,
+        #[serde(default)]
+        force: bool,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -420,6 +479,69 @@ pub struct RegistryBody {
     pub accounts: Vec<AccountRow>,
     #[serde(default)]
     pub databases: Vec<DatabaseRow>,
+    #[serde(default)]
+    pub hosts: Vec<HostRow>,
+    #[serde(default)]
+    pub buckets: Vec<BucketRow>,
+    #[serde(default)]
+    pub mailboxes: Vec<MailboxRow>,
+}
+
+/// One `[[host]]`; `kind` is `ssh` or `winrm` (empty when `on` does not read), `secret` the password's
+/// `secret:` name, `state` is `ok`, `missing`, `unreadable` or `not-needed` (no password), and `used_by` the
+/// nets that name it. The login keys are shown as written (a key file path and the fingerprints, never a secret).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostRow {
+    pub name: String,
+    pub on: String,
+    pub kind: String,
+    #[serde(default)]
+    pub host_key: Option<String>,
+    #[serde(default)]
+    pub key: Option<String>,
+    #[serde(default)]
+    pub cert: Option<String>,
+    #[serde(default)]
+    pub auth: Option<String>,
+    #[serde(default)]
+    pub secret: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub used_by: Vec<String>,
+}
+
+/// One `[[bucket]]`. `key_id` is as written when it is plain, and `None` when it is a `secret:<name>`: then
+/// `key_id_secret` is that name and `key_id_state` its state. `secret` is the password's name and `state` its state.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BucketRow {
+    pub name: String,
+    pub url: String,
+    #[serde(default)]
+    pub key_id: Option<String>,
+    #[serde(default)]
+    pub key_id_secret: Option<String>,
+    #[serde(default)]
+    pub key_id_state: Option<String>,
+    #[serde(default)]
+    pub region: Option<String>,
+    #[serde(default)]
+    pub endpoint: Option<String>,
+    #[serde(default)]
+    pub secret: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub used_by: Vec<String>,
+}
+
+/// One `[[mailbox]]`; `secret` is the password's `secret:` name.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MailboxRow {
+    pub name: String,
+    pub mail: String,
+    pub secret: String,
+    pub state: String,
+    #[serde(default)]
+    pub used_by: Vec<String>,
 }
 
 /// One `[[account]]`; `state` is `ok`, `missing`, `unreadable` (its secret), and `used_by` the nets that name it.
@@ -464,6 +586,20 @@ impl RegistryBody {
 /// A `[[database]]` as a window may list it for a sql job: its name and kind, nothing else.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DatabaseName {
+    pub name: String,
+    pub kind: String,
+}
+
+/// A `[[host]]` as a window may list it for a job form: its name and kind (`ssh` / `winrm`), nothing else.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostName {
+    pub name: String,
+    pub kind: String,
+}
+
+/// A `[groups]` entry as a window may list it: its name and the kind of its members (`ssh` / `winrm`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GroupName {
     pub name: String,
     pub kind: String,
 }
@@ -522,6 +658,12 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::AccountRemove { .. }
         | Request::DatabasePut { .. }
         | Request::DatabaseRemove { .. }
+        | Request::HostPut { .. }
+        | Request::HostRemove { .. }
+        | Request::BucketPut { .. }
+        | Request::BucketRemove { .. }
+        | Request::MailboxPut { .. }
+        | Request::MailboxRemove { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -603,6 +745,12 @@ pub fn is_read(r: &Request) -> bool {
         | Request::AccountRemove { .. }
         | Request::DatabasePut { .. }
         | Request::DatabaseRemove { .. }
+        | Request::HostPut { .. }
+        | Request::HostRemove { .. }
+        | Request::BucketPut { .. }
+        | Request::BucketRemove { .. }
+        | Request::MailboxPut { .. }
+        | Request::MailboxRemove { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -705,6 +853,23 @@ pub struct Snapshot {
     /// Whether the engine runs on Windows (`run_as` works only there); `None` when the engine is too old to say.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub windows: Option<bool>,
+    /// The `[[host]]`s of koyomi.toml by name and kind (what an `ssh` / `winrm` `on` or a `send` / `fetch` `host`
+    /// may name); never their address, login or secret.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hosts: Vec<HostName>,
+    /// The names of the `[[bucket]]`s (what a `send` / `fetch` `bucket` may name); never their address or login.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub buckets: Vec<String>,
+    /// The names of the `[[mailbox]]`es (what a `[[when]]`'s `mailbox` may name); never their address or secret.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mailboxes: Vec<String>,
+    /// The `[groups]` an `ssh` / `winrm` `on = "group:<name>"` may name, with the kind of their members; a group
+    /// whose members cannot be read is left out.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub groups: Vec<GroupName>,
+    /// The names of the `[[notify.mails]]` in file order: the first is the default `via` of a `mail` job.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mails: Vec<String>,
 }
 
 /// One shell the engine found on its PC.
@@ -1140,9 +1305,45 @@ c"
             Request::AccountRemove { name: "a".into(), base_sha256: "b".into(), force: false },
             Request::DatabasePut { name: "d".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
             Request::DatabaseRemove { name: "d".into(), base_sha256: "b".into(), force: false },
+            Request::HostPut {
+                name: "h".into(),
+                on: "h.example".into(),
+                host_key: Some("SHA256:x".into()),
+                key: None,
+                password: None,
+                cert: None,
+                auth: Some("ntlm".into()),
+                base_sha256: "b".into(),
+            },
+            Request::HostRemove { name: "h".into(), base_sha256: "b".into(), force: false },
+            Request::BucketPut {
+                name: "bk".into(),
+                url: "s3://x".into(),
+                key_id: None,
+                password: "secret:s".into(),
+                region: None,
+                endpoint: None,
+                base_sha256: "b".into(),
+            },
+            Request::BucketRemove { name: "bk".into(), base_sha256: "b".into(), force: false },
+            Request::MailboxPut { name: "mb".into(), mail: "imaps://u@h".into(), password: "secret:s".into(), base_sha256: "b".into() },
+            Request::MailboxRemove { name: "mb".into(), base_sha256: "b".into(), force: true },
         ];
         for r in &writes {
             assert!(!r.is_read(), "{r:?}");
+            if matches!(
+                r,
+                Request::HostPut { .. }
+                    | Request::HostRemove { .. }
+                    | Request::BucketPut { .. }
+                    | Request::BucketRemove { .. }
+                    | Request::MailboxPut { .. }
+                    | Request::MailboxRemove { .. }
+            ) {
+                assert_eq!(door_needs(r), Some(Role::Admin), "{r:?}");
+            }
+            // Each one reads back through JSON as what it was.
+            assert_eq!(format!("{:?}", round(r)), format!("{r:?}"));
         }
     }
 
@@ -1202,6 +1403,37 @@ port = 1
         assert_eq!(door_needs(&put), Some(Role::Admin));
     }
 
+    /// The new rows and the names-only snapshot lists read back, and an older snapshot or body without them still reads.
+    #[test]
+    fn the_connections_read_back_and_an_old_text_reads_without_them() {
+        let body = RegistryBody {
+            sha256: "x".into(),
+            hosts: vec![HostRow { name: "h".into(), ..HostRow::default() }],
+            buckets: vec![BucketRow { name: "bk".into(), ..BucketRow::default() }],
+            mailboxes: vec![MailboxRow { name: "mb".into(), ..MailboxRow::default() }],
+            ..RegistryBody::default()
+        };
+        assert_eq!(RegistryBody::parse(&body.to_toml()).unwrap(), body);
+        let snap = Snapshot {
+            hosts: vec![HostName { name: "h".into(), kind: "winrm".into() }],
+            buckets: vec!["bk".into()],
+            mailboxes: vec!["mb".into()],
+            groups: vec![GroupName { name: "web".into(), kind: "ssh".into() }],
+            mails: vec!["m".into()],
+            ..Snapshot::default()
+        };
+        assert_eq!(Snapshot::parse(&snap.to_toml()).unwrap(), snap);
+        let old = Snapshot::parse(
+            "defs = []
+warnings = []
+",
+        )
+        .unwrap();
+        assert!(
+            old.hosts.is_empty() && old.buckets.is_empty() && old.mailboxes.is_empty() && old.groups.is_empty() && old.mails.is_empty()
+        );
+    }
+
     /// The registry body reads back with every field and state, and an older body without the lists reads as empty.
     #[test]
     fn the_registry_body_round_trips_with_every_state() {
@@ -1229,6 +1461,7 @@ port = 1
                     used_by: Vec::new(),
                 })
                 .collect(),
+            ..RegistryBody::default()
         };
         assert_eq!(RegistryBody::parse(&body.to_toml()).unwrap(), body);
         assert_eq!(RegistryBody::parse("sha256 = \"x\"\n").unwrap(), RegistryBody { sha256: "x".into(), ..Default::default() });

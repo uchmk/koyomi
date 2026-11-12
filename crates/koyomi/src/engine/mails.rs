@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use koyomi_core::msg::{self, line};
+use koyomi_core::registry::MailboxEntry;
 use koyomi_core::scan::{Def, Standing};
 use koyomi_core::when::{self, Kind, Mailbox};
 
@@ -51,6 +52,9 @@ enum Msg {
 struct Watch {
     def_id: String,
     kind: Kind,
+    /// The mailbox read and the name of its secret: the when's own, or the `[[mailbox]]` entry's it names.
+    mail: String,
+    secret: String,
     rx: Receiver<Msg>,
     /// Dropped with the watch, which ends its thread.
     _stop: Sender<()>,
@@ -68,36 +72,63 @@ impl Mails {
         Mails::with(Arc::new(imap), POLL)
     }
 
+    /// A `Mails` that opens nothing (the open fails with a plain text) and polls rarely: no network, no traffic.
+    #[cfg(test)]
+    pub(super) fn quiet() -> Mails {
+        Mails::with(Arc::new(|_: &str, _: &Mailbox, _: &str| Err("quiet".to_owned())), Duration::from_secs(3600))
+    }
+
+    /// What is watched now: the net and the mailbox address read for it.
+    #[cfg(test)]
+    pub(super) fn watched(&self) -> Vec<(String, String)> {
+        self.watches.iter().map(|w| (w.def_id.clone(), w.mail.clone())).collect()
+    }
+
     fn with(open: Open, every: Duration) -> Mails {
         Mails { watches: Vec::new(), open, every }
     }
 
-    /// Takes the `mail` whens of the confirmed nets as the mailboxes to read.
-    /// A rule kept from before reads on; a new one from the mailbox's newest mail now.
-    pub fn set_rules(&mut self, defs: &[Def]) {
-        let mut wanted: Vec<(String, Kind)> = Vec::new();
+    /// Takes the `mail` whens of the confirmed nets as the mailboxes to read: the address and secret a when
+    /// writes, or those of the `[[mailbox]]` entry (of `mailboxes`) it names. A watch is kept only while its
+    /// net, rule, address and secret are all the same, so a changed or removed entry ends it (a changed one
+    /// is read again from the mailbox's newest mail, as a new one is). A name no entry has is not watched
+    /// and not told here (the net's caution W3795 says it).
+    pub fn set_rules(&mut self, defs: &[Def], mailboxes: &[MailboxEntry]) {
+        // (net, rule, address, secret name)
+        let mut wanted: Vec<(String, Kind, String, String)> = Vec::new();
         for d in defs.iter().filter(|d| d.standing == Standing::Confirmed) {
             for w in d.net.iter().flat_map(|n| &n.when) {
-                if matches!(w.kind, Kind::Mail { .. }) && !wanted.iter().any(|(id, k)| *id == d.id && *k == w.kind) {
-                    wanted.push((d.id.clone(), w.kind.clone()));
+                let Kind::Mail { mail, secret, mailbox, .. } = &w.kind else { continue };
+                let (mail, secret) = match mailbox {
+                    None => (mail.clone(), secret.clone()),
+                    Some(name) => match mailboxes.iter().find(|m| m.name == *name) {
+                        Some(m) => (m.mail.trim().to_owned(), m.secret().unwrap_or_default().to_owned()),
+                        None => continue,
+                    },
+                };
+                if !wanted.iter().any(|(id, k, _, _)| *id == d.id && *k == w.kind) {
+                    wanted.push((d.id.clone(), w.kind.clone(), mail, secret));
                 }
             }
         }
-        self.watches.retain(|w| wanted.iter().any(|(id, k)| *id == w.def_id && *k == w.kind));
-        for (def_id, kind) in wanted {
-            if self.watches.iter().any(|w| w.def_id == def_id && w.kind == kind) {
+        let same = |w: &Watch, (id, k, mail, secret): &(String, Kind, String, String)| {
+            w.def_id == *id && w.kind == *k && w.mail == *mail && w.secret == *secret
+        };
+        self.watches.retain(|w| wanted.iter().any(|x| same(w, x)));
+        for want in wanted {
+            if self.watches.iter().any(|w| same(w, &want)) {
                 continue;
             }
-            let Kind::Mail { mail, secret, .. } = &kind else { continue };
-            let Ok(mailbox) = when::mailbox(mail) else { continue };
+            let (def_id, kind, mail, secret) = want;
+            let Ok(mailbox) = when::mailbox(&mail) else { continue };
             let (tx, rx) = mpsc::channel();
             let (stop, stopped) = mpsc::channel();
-            let (open, every, secret, jobnet) = (Arc::clone(&self.open), self.every, secret.clone(), def_id.clone());
+            let (open, every, jobnet, secret_name) = (Arc::clone(&self.open), self.every, def_id.clone(), secret.clone());
             let spawned = std::thread::Builder::new()
                 .name("mail".into())
-                .spawn(move || read_on(&jobnet, &mailbox, &secret, open.as_ref(), every, &tx, &stopped));
+                .spawn(move || read_on(&jobnet, &mailbox, &secret_name, open.as_ref(), every, &tx, &stopped));
             let problem = spawned.err().map(|e| e.to_string());
-            self.watches.push(Watch { def_id, kind, rx, _stop: stop, problem });
+            self.watches.push(Watch { def_id, kind, mail, secret, rx, _stop: stop, problem });
         }
     }
 
@@ -126,10 +157,12 @@ impl Mails {
         self.watches
             .iter()
             .filter_map(|w| {
-                let Kind::Mail { mail, .. } = &w.kind else { return None };
+                let Kind::Mail { mail, mailbox, .. } = &w.kind else { return None };
                 let p = w.problem.as_ref()?;
+                // The mailbox as the when wrote it: its registered name, or its address.
+                let shown = mailbox.as_deref().unwrap_or(mail);
                 // A coded line already names the mailbox and keeps its ID at the head.
-                Some(if msg::is_coded(p) { p.clone() } else { line(msg::MAIL_UNREADABLE, &[&w.def_id, mail, p]) })
+                Some(if msg::is_coded(p) { p.clone() } else { line(msg::MAIL_UNREADABLE, &[&w.def_id, shown, p]) })
             })
             .collect()
     }
@@ -293,7 +326,7 @@ mod tests {
         });
         let mut mails = Mails::with(open, Duration::from_millis(10));
         let d = def("g/m", NET);
-        mails.set_rules(std::slice::from_ref(&d));
+        mails.set_rules(std::slice::from_ref(&d), &[]);
         queue.lock().unwrap().extend([
             mail("Billing <BILLING@corp.example>", "11月の請求書"),
             mail("billing@corp.example", "お知らせ"),
@@ -306,11 +339,11 @@ mod tests {
         assert_eq!(hits[0].first, "Billing <BILLING@corp.example>「11月の請求書」");
         assert!(mails.problems().is_empty());
         // Kept across a rescan: opened once, not again.
-        mails.set_rules(std::slice::from_ref(&d));
+        mails.set_rules(std::slice::from_ref(&d), &[]);
         queue.lock().unwrap().push(mail("billing@x", "請求"));
         assert_eq!(wait(&mut mails)[0].first, "billing@x「請求」");
         assert_eq!(*seen.lock().unwrap(), [("me@example.com".to_owned(), "imap.example.com".to_owned(), "m".to_owned())]);
-        mails.set_rules(&[]);
+        mails.set_rules(&[], &[]);
         assert!(mails.watches.is_empty());
     }
 
@@ -328,7 +361,7 @@ mod tests {
             }
         });
         let mut mails = Mails::with(open, Duration::from_millis(10));
-        mails.set_rules(&[def("g/m", NET)]);
+        mails.set_rules(&[def("g/m", NET)], &[]);
         let start = Instant::now();
         while mails.problems().is_empty() && start.elapsed() < Duration::from_secs(1) {
             mails.due();
@@ -343,5 +376,63 @@ mod tests {
         assert!(at_jobnet.is_some() && at_jobnet < at_mailbox, "{problems:?}");
         assert_eq!(wait(&mut mails).len(), 1);
         assert!(mails.problems().is_empty());
+    }
+
+    const NAMED: &str = "format = 1
+[[when]]
+mailbox = \"ops\"
+sender = \"billing@\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+";
+
+    fn entry(mail: &str, password: &str) -> MailboxEntry {
+        MailboxEntry { name: "ops".into(), mail: mail.into(), password: password.into() }
+    }
+
+    /// A mailbox a when names is read with the entry's address and secret; changing the entry replaces the watch,
+    /// removing it ends the watch, adding it again starts one. An inline when is untouched by all of it.
+    #[test]
+    fn a_named_mailbox_is_watched_with_the_entrys_values_and_follows_it() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let s = Arc::clone(&seen);
+        let open: Open = Arc::new(move |_: &str, m: &Mailbox, secret: &str| {
+            s.lock().unwrap().push((m.user.clone(), m.host.clone(), secret.to_owned()));
+            Ok(Box::new(Fake(Arc::new(Mutex::new(Vec::new())))) as Box<dyn Inbox>)
+        });
+        let mut mails = Mails::with(open, Duration::from_millis(10));
+        let named = def("g/n", NAMED);
+        let inline = def("g/m", NET);
+        let defs = [named, inline];
+        type Seen = Arc<Mutex<Vec<(String, String, String)>>>;
+        let waited = |seen: &Seen, n: usize| {
+            let start = Instant::now();
+            while seen.lock().unwrap().len() < n && start.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            seen.lock().unwrap().len()
+        };
+        let a = entry("imaps://a@one.example", "secret:pa");
+        mails.set_rules(&defs, std::slice::from_ref(&a));
+        assert_eq!(mails.watches.len(), 2);
+        assert_eq!(waited(&seen, 2), 2);
+        assert!(seen.lock().unwrap().contains(&("a".to_owned(), "one.example".to_owned(), "pa".to_owned())));
+        // The same entry again: nothing is reopened (the inline one too).
+        mails.set_rules(&defs, std::slice::from_ref(&a));
+        assert_eq!((mails.watches.len(), waited(&seen, 3)), (2, 2));
+        // A changed address: the named watch is replaced, the inline one is kept.
+        let b = entry("imaps://b@two.example", "secret:pb");
+        mails.set_rules(&defs, std::slice::from_ref(&b));
+        assert_eq!((mails.watches.len(), waited(&seen, 3)), (2, 3));
+        assert!(seen.lock().unwrap().contains(&("b".to_owned(), "two.example".to_owned(), "pb".to_owned())));
+        // Removed: only the inline one is left, and no problem is told here.
+        mails.set_rules(&defs, &[]);
+        assert_eq!(mails.watches.len(), 1);
+        assert!(mails.problems().is_empty());
+        // Added again: watched again.
+        mails.set_rules(&defs, std::slice::from_ref(&b));
+        assert_eq!(mails.watches.len(), 2);
+        assert_eq!(waited(&seen, 4), 4);
     }
 }

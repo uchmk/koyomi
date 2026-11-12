@@ -2353,6 +2353,13 @@ kind = \"ssh\"
 on = \"ssh://ops@web1\"
 host_key = \"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"
 command = \"df -h\"
+[[job]]
+id = \"g\"
+kind = \"ssh\"
+on = \"group:web\"
+key = \"C:/k\"
+host_key = \"SHA256:AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"
+command = \"uptime\"
 ",
         )
         .unwrap_or_else(|p| panic!("{p:?}"));
@@ -2363,6 +2370,8 @@ command = \"df -h\"
         assert_eq!(get("c"), (Some("web1".to_owned()), None));
         assert_eq!(get("w"), (Some("app01".to_owned()), None));
         assert_eq!(get("i"), (None, None));
+        // A group is not a name: its PCs are looked up as before.
+        assert_eq!(get("g"), (None, None));
         let text = toml::to_string(&r).unwrap();
         assert_eq!(toml::from_str::<Run>(&text).unwrap(), r);
         // An old record has neither key.

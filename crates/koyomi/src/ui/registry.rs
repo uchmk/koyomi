@@ -988,6 +988,7 @@ mod tests {
                 state: "ok".into(),
                 used_by: vec!["a".into()],
             }],
+            ..RegistryBody::default()
         }
     }
 

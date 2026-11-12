@@ -444,7 +444,10 @@ impl State {
                 self.primary.set(c.primary.as_ref(), &c.remote);
                 self.blackouts = c.blackout.clone();
                 self.shell_written = c.shell.clone();
+                // A changed or removed `[[mailbox]]` reaches the mail watcher here, whichever way the file changed.
+                let mailboxes = c.mailbox.clone();
                 self.runner.set_config(c);
+                self.mails.set_rules(&self.defs, &mailboxes);
                 self.bad_config = None;
             }
             Err(e) => self.bad_config = Some(e),
@@ -1272,7 +1275,7 @@ impl State {
             }
         }
         self.logs.set_rules(&self.defs);
-        self.mails.set_rules(&self.defs);
+        self.mails.set_rules(&self.defs, &self.runner.config().mailbox);
         self.idle.set_rules(&self.defs);
         self.sessions.set_rules(&self.defs);
         let files: Vec<PathBuf> = self.defs.iter().map(|d| self.paths.jobnets.join(&d.file)).collect();
@@ -1354,6 +1357,17 @@ impl State {
                 .map(|d| proto::DatabaseName { name: d.name.clone(), kind: d.kind().unwrap_or_default().to_owned() })
                 .collect(),
             windows: Some(cfg!(windows)),
+            hosts: self
+                .runner
+                .config()
+                .host
+                .iter()
+                .map(|h| proto::HostName { name: h.name.clone(), kind: h.kind().map_or("", |k| k.key()).to_owned() })
+                .collect(),
+            buckets: self.runner.config().bucket.iter().map(|b| b.name.clone()).collect(),
+            mailboxes: self.runner.config().mailbox.iter().map(|m| m.name.clone()).collect(),
+            groups: group_names(self.runner.config()),
+            mails: self.notify_raw.as_ref().map(|n| n.mail_places.iter().map(|m| m.name.clone()).collect()).unwrap_or_default(),
         }
     }
 
@@ -2383,21 +2397,24 @@ impl State {
         Ok(msg::note(msg::N_CONFIG_WRITTEN, &[]))
     }
 
-    /// The nets (confirmed or not) and staged definitions that name each account / database, by id.
-    fn registry_uses(&self) -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
-        let (mut accounts, mut databases): (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) = Default::default();
+    /// The nets (confirmed or not) and staged definitions that name each registered entry, by id: for each
+    /// table, the entry's name to the ids.
+    fn registry_uses(&self) -> BTreeMap<Table, BTreeMap<String, Vec<String>>> {
+        let mut uses: BTreeMap<Table, BTreeMap<String, Vec<String>>> = BTreeMap::new();
         let mut note = |id: &str, net: &koyomi_core::jobnet::Jobnet| {
             let names = koyomi_core::registry::names_used(net);
-            for n in names.accounts {
-                let v = accounts.entry(n).or_default();
-                if !v.iter().any(|x| x == id) {
-                    v.push(id.to_owned());
-                }
-            }
-            for n in names.databases {
-                let v = databases.entry(n).or_default();
-                if !v.iter().any(|x| x == id) {
-                    v.push(id.to_owned());
+            for (table, set) in [
+                (Table::Account, names.accounts),
+                (Table::Database, names.databases),
+                (Table::Host, names.hosts),
+                (Table::Bucket, names.buckets),
+                (Table::Mailbox, names.mailboxes),
+            ] {
+                for n in set {
+                    let v = uses.entry(table).or_default().entry(n).or_default();
+                    if !v.iter().any(|x| x == id) {
+                        v.push(id.to_owned());
+                    }
                 }
             }
         };
@@ -2411,7 +2428,7 @@ impl State {
                 note(&e.id, &net);
             }
         }
-        (accounts, databases)
+        uses
     }
 
     /// See [`Request::Registry`]; `get` reads a secret (the credential store, or a test's own).
@@ -2426,7 +2443,8 @@ impl State {
                 Err(_) => "unreadable",
             },
         };
-        let (au, du) = self.registry_uses();
+        let uses = self.registry_uses();
+        let used = |table: Table, name: &str| uses.get(&table).and_then(|m| m.get(name)).cloned().unwrap_or_default();
         let accounts = config
             .account
             .iter()
@@ -2435,7 +2453,7 @@ impl State {
                 user: a.user.clone(),
                 secret: a.secret().unwrap_or_default().to_owned(),
                 state: if a.secret().is_none() { "missing" } else { state(a.secret()) }.to_owned(),
-                used_by: au.get(&a.name).cloned().unwrap_or_default(),
+                used_by: used(Table::Account, &a.name),
             })
             .collect();
         let databases = config
@@ -2448,22 +2466,76 @@ impl State {
                 secret: d.secret().map(str::to_owned),
                 tls: d.tls.map(|t| t.key().to_owned()),
                 state: state(d.secret()).to_owned(),
-                used_by: du.get(&d.name).cloned().unwrap_or_default(),
+                used_by: used(Table::Database, &d.name),
             })
             .collect();
-        Ok(proto::RegistryBody { sha256: koyomi_core::users::sha256(&text), accounts, databases }.to_toml())
+        let secret_of = |p: &Option<String>| {
+            p.as_deref().map(str::trim).and_then(|p| p.strip_prefix("secret:")).map(|n| n.trim().to_owned()).filter(|n| !n.is_empty())
+        };
+        let hosts = config
+            .host
+            .iter()
+            .map(|h| {
+                let secret = secret_of(&h.password);
+                proto::HostRow {
+                    name: h.name.clone(),
+                    on: h.on.clone(),
+                    kind: h.kind().map_or("", |k| k.key()).to_owned(),
+                    host_key: h.host_key.clone(),
+                    key: h.key.clone(),
+                    cert: h.cert.clone(),
+                    auth: h.auth.map(|a| a.key().to_owned()),
+                    state: state(secret.as_deref()).to_owned(),
+                    secret,
+                    used_by: used(Table::Host, &h.name),
+                }
+            })
+            .collect();
+        let buckets = config
+            .bucket
+            .iter()
+            .map(|b| {
+                let secret = secret_of(&b.password);
+                // A `key_id` that is a `secret:<n>` shows only that name, with its own state.
+                let key_id_secret = secret_of(&b.key_id);
+                proto::BucketRow {
+                    name: b.name.clone(),
+                    url: b.url.clone(),
+                    key_id: if key_id_secret.is_some() { None } else { b.key_id.clone() },
+                    key_id_state: key_id_secret.as_deref().map(|n| state(Some(n)).to_owned()),
+                    key_id_secret,
+                    region: b.region.clone(),
+                    endpoint: b.endpoint.clone(),
+                    state: state(secret.as_deref()).to_owned(),
+                    secret,
+                    used_by: used(Table::Bucket, &b.name),
+                }
+            })
+            .collect();
+        let mailboxes = config
+            .mailbox
+            .iter()
+            .map(|m| proto::MailboxRow {
+                name: m.name.clone(),
+                mail: m.mail.clone(),
+                secret: m.secret().unwrap_or_default().to_owned(),
+                state: if m.secret().is_none() { "missing" } else { state(m.secret()) }.to_owned(),
+                used_by: used(Table::Mailbox, &m.name),
+            })
+            .collect();
+        Ok(proto::RegistryBody { sha256: koyomi_core::users::sha256(&text), accounts, databases, hosts, buckets, mailboxes }.to_toml())
     }
 
-    /// The four writes of [`Request::AccountPut`] and its kin. In order, each refusal writing nothing: the
-    /// base hash (CONFIG_CHANGED), the edit itself, the file reading as a whole, a name still in use (unless
-    /// `force`; `remove` is `(account?, name)`). Then the file is written, read again, and the new
-    /// registry is the reply.
+    /// The writes of [`Request::AccountPut`] and its kin (accounts, databases, hosts, buckets, mailboxes). In
+    /// order, each refusal writing nothing: the base hash (CONFIG_CHANGED), the edit itself, the file reading as
+    /// a whole, a name still in use (unless `force`; `remove` is `(table, name)`). Then the file is written,
+    /// read again, and the new registry is the reply.
     fn registry_write(
         &mut self,
         base: &str,
         force: bool,
         build: &dyn Fn(&str) -> Result<String, String>,
-        remove: Option<(bool, &str)>,
+        remove: Option<(Table, &str)>,
         get: &dyn Fn(&str) -> std::io::Result<Option<String>>,
     ) -> Result<String, String> {
         let _edit = crate::remote::edits();
@@ -2473,13 +2545,11 @@ impl State {
         }
         let new = build(&old)?;
         koyomi_core::config::Config::parse(&new)?;
-        if let (Some((account, name)), false) = (remove, force) {
-            let (au, du) = self.registry_uses();
-            let users = if account { au } else { du }.remove(name).unwrap_or_default();
+        if let (Some((table, name)), false) = (remove, force) {
+            let users = self.registry_uses().remove(&table).and_then(|mut m| m.remove(name)).unwrap_or_default();
             if !users.is_empty() {
                 let shown = users.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
-                let table = if account { "[[account]]" } else { "[[database]]" };
-                return Err(msg::line(msg::REGISTRY_IN_USE, &[table, name, &shown, &users.len().to_string()]));
+                return Err(msg::line(msg::REGISTRY_IN_USE, &[table.word(), name, &shown, &users.len().to_string()]));
             }
         }
         self.users_write(&new)?;
@@ -2943,7 +3013,7 @@ impl State {
                 base_sha256,
                 *force,
                 &|t| koyomi_core::registry::remove_account(t, name.trim()),
-                Some((true, name.trim())),
+                Some((Table::Account, name.trim())),
                 &read_secret,
             ),
             Request::DatabasePut { name, db, password, tls, base_sha256 } => {
@@ -2959,7 +3029,71 @@ impl State {
                 base_sha256,
                 *force,
                 &|t| koyomi_core::registry::remove_database(t, name.trim()),
-                Some((false, name.trim())),
+                Some((Table::Database, name.trim())),
+                &read_secret,
+            ),
+            Request::HostPut { name, on, host_key, key, password, cert, auth, base_sha256 } => {
+                let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned);
+                let auth = match opt(auth) {
+                    None => None,
+                    Some(a) => match koyomi_core::chore::WinrmAuth::of(&a) {
+                        Some(a) => Some(a),
+                        None => {
+                            let list = koyomi_core::chore::WinrmAuth::ALL.map(|a| format!("\"{}\"", a.key())).join(", ");
+                            return Err(msg::line(msg::DEF_CHOICE_BAD, &["auth", &list]));
+                        }
+                    },
+                };
+                let entry = koyomi_core::registry::HostEntry {
+                    name: name.trim().to_owned(),
+                    on: on.trim().to_owned(),
+                    host_key: opt(host_key),
+                    key: opt(key),
+                    password: opt(password),
+                    cert: opt(cert),
+                    auth,
+                };
+                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_host(t, &entry), None, &read_secret)
+            }
+            Request::HostRemove { name, base_sha256, force } => self.registry_write(
+                base_sha256,
+                *force,
+                &|t| koyomi_core::registry::remove_host(t, name.trim()),
+                Some((Table::Host, name.trim())),
+                &read_secret,
+            ),
+            Request::BucketPut { name, url, key_id, password, region, endpoint, base_sha256 } => {
+                let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned);
+                let entry = koyomi_core::registry::BucketEntry {
+                    name: name.trim().to_owned(),
+                    url: url.trim().to_owned(),
+                    key_id: opt(key_id),
+                    password: Some(password.trim().to_owned()).filter(|p| !p.is_empty()),
+                    region: opt(region),
+                    endpoint: opt(endpoint),
+                };
+                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_bucket(t, &entry), None, &read_secret)
+            }
+            Request::BucketRemove { name, base_sha256, force } => self.registry_write(
+                base_sha256,
+                *force,
+                &|t| koyomi_core::registry::remove_bucket(t, name.trim()),
+                Some((Table::Bucket, name.trim())),
+                &read_secret,
+            ),
+            Request::MailboxPut { name, mail, password, base_sha256 } => {
+                let entry = koyomi_core::registry::MailboxEntry {
+                    name: name.trim().to_owned(),
+                    mail: mail.trim().to_owned(),
+                    password: password.trim().to_owned(),
+                };
+                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_mailbox(t, &entry), None, &read_secret)
+            }
+            Request::MailboxRemove { name, base_sha256, force } => self.registry_write(
+                base_sha256,
+                *force,
+                &|t| koyomi_core::registry::remove_mailbox(t, name.trim()),
+                Some((Table::Mailbox, name.trim())),
                 &read_secret,
             ),
             Request::UserSet { name, role, nets, roles, base } => self.user_set(name, role, nets.clone(), roles.clone(), base),
@@ -2977,6 +3111,42 @@ impl State {
 fn over_http(request: &Request) -> bool {
     proto::door_needs(request).is_some()
         || matches!(request, Request::List | Request::Show { .. } | Request::Propose { .. } | Request::Handover { .. })
+}
+
+/// A table of koyomi.toml that registers names a job uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Table {
+    Account,
+    Database,
+    Host,
+    Bucket,
+    Mailbox,
+}
+
+impl Table {
+    /// How the table is written in koyomi.toml, for the messages.
+    fn word(self) -> &'static str {
+        match self {
+            Table::Account => "[[account]]",
+            Table::Database => "[[database]]",
+            Table::Host => "[[host]]",
+            Table::Bucket => "[[bucket]]",
+            Table::Mailbox => "[[mailbox]]",
+        }
+    }
+}
+
+/// The `[groups]` of `config` by name and the kind of their members (`ssh` or `winrm`); a group whose members do
+/// not read as one kind is left out.
+fn group_names(config: &koyomi_core::config::Config) -> Vec<proto::GroupName> {
+    config
+        .groups
+        .keys()
+        .filter_map(|name| {
+            let kind = ["ssh", "winrm"].into_iter().find(|k| config.members(name, k).is_ok())?;
+            Some(proto::GroupName { name: name.clone(), kind: kind.to_owned() })
+        })
+        .collect()
 }
 
 /// A secret as the credential store has it.
@@ -3048,6 +3218,12 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::AccountRemove { name, .. } => ("account-remove", name.trim().to_owned()),
         Request::DatabasePut { name, .. } => ("database-put", name.trim().to_owned()),
         Request::DatabaseRemove { name, .. } => ("database-remove", name.trim().to_owned()),
+        Request::HostPut { name, .. } => ("host-put", name.trim().to_owned()),
+        Request::HostRemove { name, .. } => ("host-remove", name.trim().to_owned()),
+        Request::BucketPut { name, .. } => ("bucket-put", name.trim().to_owned()),
+        Request::BucketRemove { name, .. } => ("bucket-remove", name.trim().to_owned()),
+        Request::MailboxPut { name, .. } => ("mailbox-put", name.trim().to_owned()),
+        Request::MailboxRemove { name, .. } => ("mailbox-remove", name.trim().to_owned()),
         Request::UserSet { name, .. } => ("user-set", name.clone()),
         Request::UserRemove { name, .. } => ("user-remove", name.clone()),
         Request::UserAdd { name, .. } => ("user-add", name.trim().to_owned()),
@@ -4314,6 +4490,11 @@ run = [\"x.exe\"]
             shell: "bash".into(),
             accounts: vec!["batch".into()],
             databases: vec![proto::DatabaseName { name: "sales".into(), kind: "sqlserver".into() }],
+            hosts: vec![proto::HostName { name: "web1".into(), kind: "ssh".into() }],
+            buckets: vec!["backup".into()],
+            mailboxes: vec!["ops".into()],
+            groups: vec![proto::GroupName { name: "web".into(), kind: "ssh".into() }],
+            mails: vec!["ops-mail".into()],
             windows: Some(true),
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
@@ -4596,6 +4777,212 @@ db = \"sqlite://C:\\\\data\\\\a.db\"
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
+    const FAR_NET: &str = "format = 1
+[[when]]
+mailbox = \"ops\"
+subject = \"x\"
+[[job]]
+id = \"s\"
+kind = \"send\"
+from = \"D:/o/*.csv\"
+into = \"x\"
+host = \"web1\"
+[[job]]
+id = \"b\"
+kind = \"fetch\"
+from = \"in/*.csv\"
+into = \"D:/in\"
+bucket = \"logs\"
+";
+
+    /// A host, a bucket or a mailbox a net names but koyomi.toml does not have (or has as the wrong kind of host)
+    /// is a caution of its net (W3792 to W3795), whatever the OS (`unknown_lines` runs before the `cfg!(windows)`
+    /// branch of `os_cautions`), and the snapshot lists the names only.
+    #[test]
+    fn the_cautions_name_a_host_a_bucket_or_a_mailbox_that_is_not_registered() {
+        let paths = temp_paths("far-cautions");
+        std::fs::create_dir_all(paths.jobnets.join("g")).unwrap();
+        std::fs::write(paths.jobnets.join("g").join("a.toml"), FAR_NET).unwrap();
+        std::fs::write(
+            paths.jobnets.join("g").join("k.toml"),
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"winrm\"\non = \"web1\"\ncommand = \"ipconfig\"\n",
+        )
+        .unwrap();
+        let mut s = State::new(paths.clone());
+        let snap = s.snapshot();
+        let has = |m: &dyn Fn(&str) -> bool, c: &str| snap.cautions.iter().any(|x| m(x) && x.contains(c));
+        assert!(
+            has(&|x| msg::OS_HOST_UNKNOWN.is_in(x), "web1")
+                && has(&|x| msg::OS_BUCKET_UNKNOWN.is_in(x), "logs")
+                && has(&|x| msg::OS_MAILBOX_UNKNOWN.is_in(x), "ops"),
+            "{:?}",
+            snap.cautions
+        );
+        assert!(snap.warnings.iter().all(|w| !msg::OS_HOST_UNKNOWN.is_in(w)));
+        // An ssh host named by a winrm job: the wrong kind.
+        s.runner.set_config(
+            Config::parse(
+                "[[host]]\nname = \"web1\"\non = \"ssh://u@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n",
+            )
+            .unwrap(),
+        );
+        let snap = s.snapshot();
+        assert!(snap.cautions.iter().any(|c| msg::OS_HOST_KIND.is_in(c) && c.contains("web1")), "{:?}", snap.cautions);
+        assert!(!snap.cautions.iter().any(|c| msg::OS_HOST_UNKNOWN.is_in(c)), "{:?}", snap.cautions);
+        // Names only: the kind of the host, the buckets and mailboxes, never an address or a secret.
+        assert_eq!(snap.hosts, [proto::HostName { name: "web1".into(), kind: "ssh".into() }]);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// Hosts, buckets and mailboxes are written one entry at a time through the same request path: the rest of the
+    /// file and its comments stay, a stale base is refused, a removal a net still names is refused without `force`,
+    /// a bad `auth` is a coded line, and the snapshot lists names only.
+    #[test]
+    fn hosts_buckets_and_mailboxes_are_written_one_entry_at_a_time() {
+        let paths = temp_paths("far-registry");
+        std::fs::create_dir_all(paths.jobnets.join("g")).unwrap();
+        std::fs::write(paths.jobnets.join("g").join("a.toml"), FAR_NET).unwrap();
+        let mut s = State::new(paths.clone());
+        std::fs::write(&paths.config, "# keep me\nconcurrency = 2\n").unwrap();
+        let get = |_: &str| -> std::io::Result<Option<String>> { Ok(Some("pw".into())) };
+        let body = |s: &State| proto::RegistryBody::parse(&s.registry(&get).unwrap()).unwrap();
+        let ok = |s: &mut State, r: Request| proto::RegistryBody::parse(&s.answer(&r).unwrap()).unwrap();
+        let base = body(&s).sha256;
+        let r = ok(
+            &mut s,
+            Request::HostPut {
+                name: "web1".into(),
+                on: " ssh://deploy@web1.example ".into(),
+                host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+                key: Some("".into()),
+                password: None,
+                cert: None,
+                auth: None,
+                base_sha256: base.clone(),
+            },
+        );
+        assert_eq!((r.hosts.len(), r.hosts[0].name.as_str(), r.hosts[0].used_by.clone()), (1, "web1", vec!["g/a".to_owned()]));
+        let r = ok(
+            &mut s,
+            Request::BucketPut {
+                name: "logs".into(),
+                url: "s3://logs/in/".into(),
+                key_id: Some("AKIAEXAMPLE".into()),
+                password: "secret:s3".into(),
+                region: Some("ap-northeast-1".into()),
+                endpoint: None,
+                base_sha256: r.sha256,
+            },
+        );
+        let r = ok(
+            &mut s,
+            Request::MailboxPut {
+                name: "ops".into(),
+                mail: "imaps://u@imap.example".into(),
+                password: "secret:m".into(),
+                base_sha256: r.sha256,
+            },
+        );
+        assert_eq!((r.buckets.len(), r.mailboxes.len()), (1, 1));
+        assert_eq!((r.buckets[0].used_by.clone(), r.mailboxes[0].used_by.clone()), (vec!["g/a".to_owned()], vec!["g/a".to_owned()]));
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("# keep me") && text.contains("concurrency = 2") && text.contains("web1.example"), "{text}");
+        // A bad auth, and a stale base.
+        let bad = Request::HostPut {
+            name: "win1".into(),
+            on: "winrm://ops@win1.example".into(),
+            host_key: None,
+            key: None,
+            password: Some("secret:w".into()),
+            cert: Some("AB".into()),
+            auth: Some("kerberos".into()),
+            base_sha256: r.sha256.clone(),
+        };
+        assert!(msg::DEF_CHOICE_BAD.is_in(&s.answer(&bad).unwrap_err()));
+        let stale = Request::HostRemove { name: "web1".into(), base_sha256: base, force: true };
+        assert!(msg::CONFIG_CHANGED.is_in(&s.answer(&stale).unwrap_err()));
+        // The names are in the snapshot, nothing else of them.
+        let snap = s.snapshot();
+        assert_eq!((snap.buckets.clone(), snap.mailboxes.clone()), (vec!["logs".to_owned()], vec!["ops".to_owned()]));
+        let text = snap.to_toml();
+        assert!(!text.contains("SHA256") && !text.contains("secret:") && !text.contains("imap.example"), "{text}");
+        // In use: refused without force, with the table word; with force it goes.
+        let mut sha = r.sha256;
+        for (word, remove) in [
+            (
+                "[[host]]",
+                Box::new(|b: &str, f| Request::HostRemove { name: "web1".into(), base_sha256: b.into(), force: f })
+                    as Box<dyn Fn(&str, bool) -> Request>,
+            ),
+            ("[[bucket]]", Box::new(|b: &str, f| Request::BucketRemove { name: "logs".into(), base_sha256: b.into(), force: f })),
+            ("[[mailbox]]", Box::new(|b: &str, f| Request::MailboxRemove { name: "ops".into(), base_sha256: b.into(), force: f })),
+        ] {
+            let e = s.answer(&remove(&sha, false)).unwrap_err();
+            assert!(msg::REGISTRY_IN_USE.is_in(&e) && e.contains("g/a") && e.contains(word), "{e}");
+            sha = proto::RegistryBody::parse(&s.answer(&remove(&sha, true)).unwrap()).unwrap().sha256;
+            let e = s.answer(&remove(&sha, true)).unwrap_err();
+            assert!(msg::REGISTRY_NAME_UNKNOWN.is_in(&e) && e.contains(word), "{e}");
+        }
+        let r = body(&s);
+        assert!(r.hosts.is_empty() && r.buckets.is_empty() && r.mailboxes.is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// The mail watcher follows the `[[mailbox]]` entries: a put starts a watch with the entry's address, a changed
+    /// address replaces it, a forced removal ends it, and an outside edit of koyomi.toml reaches it by a rescan.
+    #[test]
+    fn the_mail_watcher_follows_the_mailbox_entries() {
+        let paths = temp_paths("far-watch");
+        std::fs::create_dir_all(paths.jobnets.join("g")).unwrap();
+        std::fs::write(
+            paths.jobnets.join("g").join("m.toml"),
+            "format = 1
+[[when]]
+mailbox = \"ops\"
+subject = \"x\"
+[[job]]
+id = \"a\"
+run = [\"x\"]
+",
+        )
+        .unwrap();
+        let mut s = State::new(paths.clone());
+        s.mails = mails::Mails::quiet();
+        let sha = s.defs.iter().find(|d| d.id == "g/m").unwrap().sha256.clone();
+        s.approve("g/m", &sha).unwrap();
+        s.rescan();
+        assert!(s.defs.iter().any(|d| d.id == "g/m" && d.standing == Standing::Confirmed));
+        assert!(s.mails.watched().is_empty());
+        let get = |_: &str| -> std::io::Result<Option<String>> { Ok(Some("pw".into())) };
+        let base = proto::RegistryBody::parse(&s.registry(&get).unwrap()).unwrap().sha256;
+        let put = |mail: &str, base: &str| Request::MailboxPut {
+            name: "ops".into(),
+            mail: mail.into(),
+            password: "secret:m".into(),
+            base_sha256: base.into(),
+        };
+        let sha_of = |r: String| proto::RegistryBody::parse(&r).unwrap().sha256;
+        let b = sha_of(s.answer(&put("imaps://a@one.example", &base)).unwrap());
+        assert_eq!(s.mails.watched(), [("g/m".to_owned(), "imaps://a@one.example".to_owned())]);
+        let b = sha_of(s.answer(&put("imaps://b@two.example", &b)).unwrap());
+        assert_eq!(s.mails.watched(), [("g/m".to_owned(), "imaps://b@two.example".to_owned())]);
+        s.answer(&Request::MailboxRemove { name: "ops".into(), base_sha256: b, force: true }).unwrap();
+        assert!(s.mails.watched().is_empty());
+        // An outside edit of koyomi.toml is picked up by the rescan.
+        std::fs::write(
+            &paths.config,
+            "[[mailbox]]
+name = \"ops\"
+mail = \"imaps://c@three.example\"
+password = \"secret:m\"
+",
+        )
+        .unwrap();
+        s.rescan();
+        assert_eq!(s.mails.watched(), [("g/m".to_owned(), "imaps://c@three.example".to_owned())]);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
     /// W1: what a window of another PC does is written down under the caller's name, and what the
     /// door lets through is let through `Over`.
     #[test]
@@ -4796,11 +5183,12 @@ port = 8700
         assert_eq!((r.databases[0].kind.as_str(), r.databases[0].used_by.clone()), ("sqlserver", vec!["g/a".to_owned()]));
         // A name a net uses is not removed without force; an unused one is.
         let remove = |s: &mut State, base: &str, account: bool, name: &str, force: bool| {
+            let table = if account { Table::Account } else { Table::Database };
             s.registry_write(
                 base,
                 force,
                 &|t| if account { koyomi_core::registry::remove_account(t, name) } else { koyomi_core::registry::remove_database(t, name) },
-                Some((account, name)),
+                Some((table, name)),
                 &get,
             )
         };

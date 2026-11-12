@@ -1114,7 +1114,8 @@ impl Runner {
         let (command, mut missing) = self.program(&r.jobnet, j);
         // A registered account or database is looked up now, in the settings as they are now; a
         // retry or a loop pass reuses what is found here.
-        let (run_as, env, gone) = resolve_names(&self.config, j.run_as.as_ref(), j.database.as_deref(), &j.env);
+        let (run_as, env, gone) =
+            resolve_names(&self.config, j.run_as.as_ref(), j.database.as_deref(), j.host.as_deref(), j.bucket.as_deref(), &j.env);
         if gone.is_some() {
             missing = missing.or(gone);
         }
@@ -1941,11 +1942,15 @@ fn attempt(
 }
 
 /// What a job's registered names stand for, now: the account to run as, the environment (a registered database
-/// replaces `KOYOMI_SQL_DB`, `_TLS` and `_PASSWORD`), and the coded line for the first name not registered.
+/// replaces `KOYOMI_SQL_DB`, `_TLS` and `_PASSWORD`; a registered host or bucket replaces the address and login
+/// of an `ssh`, `winrm`, SFTP or S3 job, by [`koyomi_core::registry::far_env`]), and the coded line for the first
+/// name not registered (or a host of the other kind, or a path that cannot be joined).
 fn resolve_names(
     config: &Config,
     run_as: Option<&RunAs>,
     database: Option<&str>,
+    host: Option<&str>,
+    bucket: Option<&str>,
     env: &std::collections::BTreeMap<String, String>,
 ) -> (Option<Account>, std::collections::BTreeMap<String, String>, Option<String>) {
     let mut env = env.clone();
@@ -1971,6 +1976,14 @@ fn resolve_names(
             }
             None => {
                 gone.get_or_insert_with(|| msg::line(msg::RUN_DATABASE_UNKNOWN, &[n]));
+            }
+        }
+    }
+    if host.is_some() || bucket.is_some() {
+        match koyomi_core::registry::far_env(config, host, bucket, &env) {
+            Ok(e) => env = e,
+            Err(line) => {
+                gone.get_or_insert(line);
             }
         }
     }
@@ -2444,7 +2457,7 @@ retry = { count = 2, wait = \"1s\" }
         }
         let named = RunAs::Named("ops".into());
         let cfg = entry_config("batch", "sqlite://C:/data/a.db", Some("secret:dbpw"));
-        let (acc, out, gone) = resolve_names(&cfg, Some(&named), Some("main"), &env);
+        let (acc, out, gone) = resolve_names(&cfg, Some(&named), Some("main"), None, None, &env);
         assert_eq!(acc, Some(Account { user: "batch".into(), secret: "ops".into() }));
         assert_eq!(gone, None);
         assert!(out["KOYOMI_SQL_DB"].ends_with("sqlite://C:/data/a.db"), "{out:?}");
@@ -2453,19 +2466,166 @@ retry = { count = 2, wait = \"1s\" }
         assert_eq!(out.get("KEEP").map(String::as_str), Some("1"));
         // No password in the entry: none is left of the job's.
         let cfg2 = entry_config("other", "sqlite://C:/data/b.db", None);
-        let (acc2, out2, _) = resolve_names(&cfg2, Some(&named), Some("main"), &env);
+        let (acc2, out2, _) = resolve_names(&cfg2, Some(&named), Some("main"), None, None, &env);
         assert_eq!(acc2.map(|a| a.user), Some("other".into()));
         assert!(!out2.contains_key("KOYOMI_SQL_PASSWORD") && out2["KOYOMI_SQL_TLS"] == "verify", "{out2:?}");
         assert!(out2["KOYOMI_SQL_DB"].ends_with("sqlite://C:/data/b.db"), "{out2:?}");
         // Not registered: no account, the env as it was, the coded line.
-        let (acc3, out3, gone3) = resolve_names(&Config::default(), Some(&named), Some("main"), &env);
+        let (acc3, out3, gone3) = resolve_names(&Config::default(), Some(&named), Some("main"), None, None, &env);
         assert_eq!((acc3, out3), (None, env.clone()));
         assert!(gone3.is_some_and(|g| msg::RUN_ACCOUNT_UNKNOWN.is_in(&g)));
-        let (_, _, gone4) = resolve_names(&Config::default(), None, Some("main"), &env);
+        let (_, _, gone4) = resolve_names(&Config::default(), None, Some("main"), None, None, &env);
         assert!(gone4.is_some_and(|g| msg::RUN_DATABASE_UNKNOWN.is_in(&g) && g.contains("main")));
         let inline = RunAs::Inline(Account { user: "me".into(), secret: "s".into() });
-        let (acc5, out5, gone5) = resolve_names(&Config::default(), Some(&inline), None, &env);
+        let (acc5, out5, gone5) = resolve_names(&Config::default(), Some(&inline), None, None, None, &env);
         assert_eq!((acc5.map(|a| a.user), out5, gone5), (Some("me".into()), env, None));
+    }
+
+    fn far_config() -> Config {
+        use koyomi_core::registry::{BucketEntry, HostEntry};
+        Config {
+            host: vec![
+                HostEntry {
+                    name: "web1".into(),
+                    on: "ssh://deploy@web1.example:2222".into(),
+                    host_key: Some("SHA256:abc".into()),
+                    key: Some("C:/keys/id".into()),
+                    password: None,
+                    cert: None,
+                    auth: None,
+                },
+                HostEntry {
+                    name: "win1".into(),
+                    on: "winrm://ops@win1.example".into(),
+                    host_key: None,
+                    key: None,
+                    password: Some("secret:w".into()),
+                    cert: Some("AB12".into()),
+                    auth: Some(koyomi_core::chore::WinrmAuth::Ntlm),
+                },
+            ],
+            bucket: vec![BucketEntry {
+                name: "logs".into(),
+                url: "s3://logs/in/".into(),
+                key_id: Some("AKIA".into()),
+                password: Some("secret:s3".into()),
+                region: Some("ap-northeast-1".into()),
+                endpoint: None,
+            }],
+            ..Config::default()
+        }
+    }
+
+    fn env_of(pairs: &[(&str, &str)]) -> std::collections::BTreeMap<String, String> {
+        pairs.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect()
+    }
+
+    /// A host or a bucket a job names is put into its env at the start: the entry's address and login replace the
+    /// job's, the rest is kept; an unknown name, the wrong kind of host and a path the prefix makes wrong are coded
+    /// lines with the env untouched; a changed entry is what the next start sees; a job with no name is untouched.
+    #[test]
+    fn hosts_and_buckets_are_resolved_into_the_job_env() {
+        let cfg = far_config();
+        let ssh = env_of(&[("KOYOMI_SSH_COMMAND", "df"), ("KOYOMI_SSH_ON", "ghost"), ("KEEP", "1")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, Some("web1"), None, &ssh);
+        assert_eq!(gone, None);
+        assert_eq!(out["KOYOMI_SSH_ON"], "ssh://deploy@web1.example:2222");
+        assert_eq!(
+            (out["KOYOMI_SSH_KEY"].as_str(), out["KOYOMI_SSH_HOST_KEY"].as_str(), out["KEEP"].as_str()),
+            ("C:/keys/id", "SHA256:abc", "1")
+        );
+        let winrm = env_of(&[("KOYOMI_WINRM_COMMAND", "ipconfig")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, Some("win1"), None, &winrm);
+        assert_eq!((gone, out["KOYOMI_WINRM_AUTH"].as_str(), out["KOYOMI_WINRM_CERT"].as_str()), (None, "ntlm", "AB12"));
+        assert_eq!(out["KOYOMI_WINRM_PASSWORD"], "secret:w");
+        // SFTP send and fetch: the entry's address is joined with the job's path.
+        let send = env_of(&[("KOYOMI_SFTP_OP", "send"), ("KOYOMI_SFTP_INTO", "out/")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, Some("web1"), None, &send);
+        assert_eq!(gone, None);
+        assert!(out["KOYOMI_SFTP_INTO"].starts_with("sftp://") && out["KOYOMI_SFTP_INTO"].contains("web1.example"), "{out:?}");
+        let fetch = env_of(&[("KOYOMI_SFTP_OP", "fetch"), ("KOYOMI_SFTP_FROM", "a.txt")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, Some("web1"), None, &fetch);
+        assert!(gone.is_none() && out["KOYOMI_SFTP_FROM"].contains("web1.example"), "{out:?}");
+        // S3 send and fetch.
+        let put = env_of(&[("KOYOMI_CLOUD_OP", "send"), ("KOYOMI_CLOUD_INTO", "a/")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, None, Some("logs"), &put);
+        assert_eq!(
+            (gone, out["KOYOMI_CLOUD_INTO"].as_str(), out["KOYOMI_CLOUD_REGION"].as_str()),
+            (None, "s3://logs/in/a/", "ap-northeast-1")
+        );
+        assert_eq!(out["KOYOMI_CLOUD_PASSWORD"], "secret:s3");
+        let get = env_of(&[("KOYOMI_CLOUD_OP", "fetch"), ("KOYOMI_CLOUD_FROM", "a.txt")]);
+        let (_, out, gone) = resolve_names(&cfg, None, None, None, Some("logs"), &get);
+        assert!(gone.is_none() && out["KOYOMI_CLOUD_FROM"] == "s3://logs/in/a.txt", "{out:?}");
+        // Unknown names: the coded line, the env as it was.
+        let (_, out, gone) = resolve_names(&cfg, None, None, Some("ghost"), None, &ssh);
+        assert!(gone.is_some_and(|g| msg::RUN_HOST_UNKNOWN.is_in(&g) && g.contains("ghost")));
+        assert_eq!(out, ssh);
+        let (_, _, gone) = resolve_names(&cfg, None, None, None, Some("ghost"), &put);
+        assert!(gone.is_some_and(|g| msg::RUN_BUCKET_UNKNOWN.is_in(&g)));
+        // The wrong kind of host: a winrm host for an ssh job.
+        let (_, _, gone) = resolve_names(&cfg, None, None, Some("win1"), None, &ssh);
+        assert!(gone.is_some_and(|g| msg::RUN_HOST_KIND.is_in(&g)));
+        // A leading slash is refused by the join (E3299 wraps it).
+        let up = env_of(&[("KOYOMI_CLOUD_OP", "send"), ("KOYOMI_CLOUD_INTO", "/abs")]);
+        let (_, _, gone) = resolve_names(&cfg, None, None, None, Some("logs"), &up);
+        assert!(gone.is_some_and(|g| msg::RUN_NAMED_PATH_BAD.is_in(&g)));
+        // A fetch whose path came out empty: the key is the prefix `in/`.
+        let empty = env_of(&[("KOYOMI_CLOUD_OP", "fetch"), ("KOYOMI_CLOUD_FROM", "")]);
+        let (_, _, gone) = resolve_names(&cfg, None, None, None, Some("logs"), &empty);
+        assert!(gone.is_some_and(|g| msg::RUN_NAMED_PATH_BAD.is_in(&g)));
+        // An entry changed since: the next start sees the new one.
+        let mut cfg2 = far_config();
+        cfg2.host[0].on = "ssh://deploy@web9.example".into();
+        let (_, out, _) = resolve_names(&cfg2, None, None, Some("web1"), None, &ssh);
+        assert_eq!(out["KOYOMI_SSH_ON"], "ssh://deploy@web9.example");
+        // No name (a group ssh job, an inline one): untouched.
+        let (_, out, gone) = resolve_names(&cfg, None, None, None, None, &ssh);
+        assert_eq!((out, gone), (ssh, None));
+    }
+
+    /// A job naming a host that is not registered fails at its start with the coded reason, with no process and
+    /// no retry.
+    #[test]
+    fn an_unregistered_host_fails_without_a_process() {
+        let dir = scratch("nohost");
+        let d = def(
+            "net",
+            "format = 1
+[[job]]
+id = \"s\"
+kind = \"ssh\"
+on = \"ghost\"
+command = \"df -h\"
+retry = { count = 2, wait = \"1s\" }
+",
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let j = run.job("s").unwrap();
+        assert_eq!((j.state, j.exit, j.retried), (State::Error, None, 0));
+        assert!(msg::RUN_HOST_UNKNOWN.is_in(&j.reason) && j.reason.contains("ghost"), "{}", j.reason);
+        assert_eq!(j.host.as_deref(), Some("ghost"));
+        let d = def(
+            "net2",
+            "format = 1
+[[job]]
+id = \"f\"
+kind = \"fetch\"
+from = \"in/*.csv\"
+into = \"D:/in\"
+bucket = \"ghost\"
+retry = { count = 2, wait = \"1s\" }
+",
+        );
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let j = run.job("f").unwrap();
+        assert_eq!((j.state, j.exit, j.retried), (State::Error, None, 0));
+        assert!(msg::RUN_BUCKET_UNKNOWN.is_in(&j.reason) && j.reason.contains("ghost"), "{}", j.reason);
+        assert_eq!(j.bucket.as_deref(), Some("ghost"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A rerun of a run that failed for an unregistered name looks the name up again, in the settings as they are.

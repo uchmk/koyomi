@@ -2972,13 +2972,13 @@ cause = "[[database]] はテンプレートではないため、{param:…} や 
 action = "db には、sqlserver://ホスト/データベース のように、完全な接続先を指定してください。"
 
 [E2250]
-when = "ジョブネットが使用している [[account]] または [[database]] を削除しようとしたとき"
+when = "ジョブネットが使用している [[account]]・[[database]]・[[host]]・[[bucket]]・[[mailbox]] のいずれかを削除しようとしたとき"
 text = "{0} {1} は {3} 件のジョブネットまたは未確認の定義で使用されているため、削除できません。（{2}）"
 cause = "ジョブがこの名前を指定しています。削除すると、そのジョブは開始時に失敗します。"
 action = "ジョブの指定を変更してから削除するか、使用中でも削除する場合は force を指定してください。"
 
 [E2251]
-when = "koyomi.toml にない [[account]] または [[database]] を削除しようとしたとき"
+when = "koyomi.toml にない [[account]]・[[database]]・[[host]]・[[bucket]]・[[mailbox]] のいずれかを削除しようとしたとき"
 text = "koyomi.toml の {0} に {1} がありません。"
 cause = "指定された名前の項目が、koyomi.toml にありません。ほかの操作で削除された可能性があります。"
 action = "最新の内容を読み込み直して、確認してください。"

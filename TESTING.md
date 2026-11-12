@@ -2215,3 +2215,21 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 142.21 | Pick 「URL を直接書く」 again on that job | The URL, password and TLS come back as they were |
 | 142.22 | Click アカウントを登録… or データベースを登録… in a job's pane | The settings open at that page |
 | 142.23 | Open a job that names a database or account the engine lacks, and close it | Nothing changes in the net; the name stays in the file |
+
+## 143. Hosts, buckets and mailboxes registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`, `engine/mails.rs`)
+
+| # | Do | Expect |
+|---|---|---|
+| 143.1 | Write an ssh job with `on = "web1"` (a registered ssh `[[host]]`) and run it | The command runs on that PC with the entry's address, host key, key file and password; those set in the job's own env are not used |
+| 143.2 | Write a winrm job with `on = "win1"` (a registered winrm `[[host]]`) and run it | The command runs on that PC with the entry's address, certificate, auth and password |
+| 143.3 | Write an SFTP send and a fetch with `host = "web1"`, once with a path `/x` and once with `x` | `/x` is taken as an absolute path on that PC and `x` as below the login's home; the job's own address is not used |
+| 143.4 | Write an S3 send and a fetch with `bucket = "logs"` (`url = "s3://logs/in/"`) and a path, and a fetch whose `from` is a `{…}` that is filled in to nothing | The path is joined below the bucket's `url` and the entry's key id, region, endpoint and password are used; a fetch whose `from` is filled in (`{…}`) to nothing (the key is then the prefix `in/`) fails with E3299 and no process |
+| 143.5 | Run a job naming a host or a bucket that is not registered | The job is 異常 with E3296 (host) or E3297 (bucket) naming it; no process was made; no retry |
+| 143.6 | Run an ssh job naming a winrm host, or a winrm job naming an ssh host | The job is 異常 with E3298; no process |
+| 143.7 | Edit a host or bucket entry while a job waits for its time | The job starts with the entry as it is at start |
+| 143.8 | Write a `[[when]]` with `mailbox = "ops"` and send a matching mail | The net starts from that mailbox with the entry's address and secret |
+| 143.9 | Change `mail` or `password` of that `[[mailbox]]`, then remove it, then add it again | The old read ends and the new address is read from its newest mail; with the entry gone nothing is read; added again it is read again |
+| 143.10 | Run `koyomi check` with jobs naming a host, a bucket and a mailbox that are not registered, and an ssh job naming a winrm host | W3792, W3793, W3795 and W3794 are printed on the net, on every OS |
+| 143.11 | Remove a host, a bucket or a mailbox a net uses, without force | The request is refused (E2250) with the table word; with force the entry goes and the net gets W3792, W3793 or W3795 |
+| 143.12 | Send HostPut, BucketPut or MailboxPut (or their removals) as a non-Admin user, by `/door` and by REST | It is refused |
+| 143.13 | Read the snapshot (`List`) as a narrowed user | It lists the names of hosts, buckets, mailboxes, groups and mails only: no address, key, certificate or secret name |

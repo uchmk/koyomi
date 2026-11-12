@@ -603,6 +603,11 @@ fn narrow(
                 // The names a job form offers are the PC's too (never their user or secret).
                 accounts: s.accounts,
                 databases: s.databases,
+                hosts: s.hosts,
+                buckets: s.buckets,
+                mailboxes: s.mailboxes,
+                groups: s.groups,
+                mails: s.mails,
                 windows: s.windows,
                 ..Snapshot::default()
             }
@@ -1326,6 +1331,29 @@ mod tests {
             Request::AccountRemove { name: "ops".into(), base_sha256: "b".into(), force: false },
             Request::DatabasePut { name: "m".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
             Request::DatabaseRemove { name: "m".into(), base_sha256: "b".into(), force: false },
+            Request::HostPut {
+                name: "web1".into(),
+                on: "web1.example".into(),
+                host_key: None,
+                key: None,
+                password: None,
+                cert: None,
+                auth: None,
+                base_sha256: "b".into(),
+            },
+            Request::HostRemove { name: "web1".into(), base_sha256: "b".into(), force: false },
+            Request::BucketPut {
+                name: "bk".into(),
+                url: "s3://x".into(),
+                key_id: None,
+                password: "secret:s".into(),
+                region: None,
+                endpoint: None,
+                base_sha256: "b".into(),
+            },
+            Request::BucketRemove { name: "bk".into(), base_sha256: "b".into(), force: false },
+            Request::MailboxPut { name: "mb".into(), mail: "imaps://u@h".into(), password: "secret:s".into(), base_sha256: "b".into() },
+            Request::MailboxRemove { name: "mb".into(), base_sha256: "b".into(), force: false },
         ] {
             assert!(narrow(&r, "sato", &nets, Role::Edit, &ask).is_err(), "{r:?}");
         }
@@ -1364,6 +1392,11 @@ mod tests {
                 defs: vec![def("経理/a"), def("人事/b")],
                 accounts: vec!["ops".into()],
                 databases: vec![proto::DatabaseName { name: "main".into(), kind: "sqlite".into() }],
+                hosts: vec![proto::HostName { name: "web1".into(), kind: "ssh".into() }],
+                buckets: vec!["bk".into()],
+                mailboxes: vec!["mb".into()],
+                groups: vec![proto::GroupName { name: "web".into(), kind: "ssh".into() }],
+                mails: vec!["ops-mail".into()],
                 windows: Some(true),
                 ..Default::default()
             }
@@ -1374,6 +1407,11 @@ mod tests {
         let text = narrow(&Request::List, "sato", &nets, Role::View, &ask).unwrap().unwrap();
         let snap = Snapshot::parse(&text).unwrap();
         assert_eq!(snap.accounts, ["ops"]);
+        assert_eq!(
+            (snap.hosts.len(), snap.buckets.clone(), snap.mailboxes.clone(), snap.groups.len()),
+            (1, vec!["bk".to_owned()], vec!["mb".to_owned()], 1)
+        );
+        assert_eq!(snap.mails, ["ops-mail"]);
         assert_eq!((snap.databases.len(), snap.databases[0].name.as_str(), snap.databases[0].kind.as_str()), (1, "main", "sqlite"));
         assert_eq!(snap.windows, Some(true));
     }
@@ -2234,6 +2272,12 @@ high_contrast = true
             serde_json::json!({"AccountRemove": {"name": "ops", "base_sha256": "b", "force": false}}),
             serde_json::json!({"DatabasePut": {"name": "main", "db": "sqlite://x", "password": null, "tls": null, "base_sha256": "b"}}),
             serde_json::json!({"DatabaseRemove": {"name": "main", "base_sha256": "b", "force": false}}),
+            serde_json::json!({"HostPut": {"name": "web1", "on": "web1.example", "base_sha256": "b"}}),
+            serde_json::json!({"HostRemove": {"name": "web1", "base_sha256": "b", "force": false}}),
+            serde_json::json!({"BucketPut": {"name": "bk", "url": "s3://x", "password": "secret:s", "base_sha256": "b"}}),
+            serde_json::json!({"BucketRemove": {"name": "bk", "base_sha256": "b", "force": false}}),
+            serde_json::json!({"MailboxPut": {"name": "mb", "mail": "imaps://u@h", "password": "secret:s", "base_sha256": "b"}}),
+            serde_json::json!({"MailboxRemove": {"name": "mb", "base_sha256": "b", "force": false}}),
         ];
         for b in bodies {
             let body = door_body(b);

@@ -2972,13 +2972,13 @@ cause = "A [[database]] is not a template, so {param:...} and {var:...} cannot b
 action = "Give the whole target in db, such as sqlserver://host/database."
 
 [E2250]
-when = "An [[account]] or [[database]] that jobnets use is about to be removed"
+when = "An [[account]], [[database]], [[host]], [[bucket]] or [[mailbox]] that jobnets use is about to be removed"
 text = "{0} {1} cannot be removed because {3} jobnets or unconfirmed definitions use it. ({2})"
 cause = "Jobs name it. If it is removed, those jobs fail when they start."
 action = "Change those jobs and then remove it, or give force to remove it while it is in use."
 
 [E2251]
-when = "An [[account]] or [[database]] that is not in koyomi.toml is about to be removed"
+when = "An [[account]], [[database]], [[host]], [[bucket]] or [[mailbox]] that is not in koyomi.toml is about to be removed"
 text = "{0} of koyomi.toml has no {1}."
 cause = "koyomi.toml has no entry with the given name. It may have been removed by another operation."
 action = "Read the latest content again and check."
