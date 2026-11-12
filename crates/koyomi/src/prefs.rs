@@ -684,7 +684,7 @@ impl Prefs {
     }
 }
 
-fn open_path(path: &Path) -> Result<(), String> {
+pub(crate) fn open_path(path: &Path) -> Result<(), String> {
     ito_openin::open_default(path)
 }
 

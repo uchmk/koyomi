@@ -94,6 +94,10 @@ ito-glossary = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e052
 ito-match = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f" }
 ito-a11y = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f", features = ["egui"] }
 ito-openin = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f" }
+# The path buttons: "copy path" goes through the one clipboard writer.
+ito-clipboard = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f" }
+# The holiday table's file chooser: the OS open dialog, off the UI thread.
+ito-dialog = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f" }
 ito-fonts = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f", features = ["egui"] }
 # `koyomi mcp`: Claude Code reads the runs and (after the person agrees) starts and stops them.
 ito-mcp = { git = "https://github.com/uchmk/ito", rev = "6a9ab2c6736123e0529e8c9383a560584546b64f" }

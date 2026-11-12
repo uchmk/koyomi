@@ -249,6 +249,9 @@ impl Browser {
                     .show(ui, |ui| self.month_foot(ui, t, &name, &cal));
             }
             egui::ScrollArea::vertical().id_salt("calendar_page").auto_shrink(false).show(ui, |ui| {
+                // Room above the first row: the focus ring of the day / week / month switch is drawn about
+                // 4.5 px outside it, and the scroll area clips whatever sits above its top edge.
+                ui.add_space(5.0);
                 // This calendar's own cautions in a band: this is where the person looks to fix them. When
                 // the holiday table ends soon, the band carries the button that brings a new one.
                 let cautions: Vec<String> =
@@ -404,7 +407,7 @@ impl Browser {
                             crate::plan::mark(&mut days, &s.blackouts, |b| show::stop_mark(t, b));
                         }
                         self.result = Some(Ok(t.tr("run.writing").to_owned()));
-                        Self::background(&self.io, move || super::print_plan(&days, y, m));
+                        Self::background_file(&self.io, move || super::print_plan(&days, y, m));
                     }
                     Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
                     None => {}
@@ -1126,7 +1129,7 @@ impl Browser {
         let mut pressed = None;
         ui.add_space(6.0);
         ui.horizontal_wrapped(|ui| {
-            let (label, hint, text, fresh) = match inline {
+            let (label, hint, text, fresh) = match &mut *inline {
                 Inline::Name { day, text, fresh, .. } => {
                     (t.trf("calendar.name_of", &[&day.to_string()]), t.tr("calendar.name_hint"), text, fresh)
                 }
@@ -1144,6 +1147,21 @@ impl Browser {
             // The field gives up the keyboard on Esc itself, in the same frame.
             if (r.has_focus() || r.lost_focus()) && ui.input(|i| i.key_pressed(egui::Key::Escape)) {
                 pressed = Some(1);
+            }
+            if let Inline::Table { cal, .. } = &*inline {
+                let open = self.cal_picking.is_some();
+                let button = ui.add_enabled(!open, |ui: &mut egui::Ui| {
+                    ito_prefs::IconButton::new(ito_prefs::Mark::File, t.tr("calendar.table_pick")).show(ui)
+                });
+                if open {
+                    button.on_disabled_hover_text(t.tr("calendar.table_picking"));
+                } else if button.clicked() {
+                    let (title, filter) = (t.tr("calendar.table_pick_title").to_owned(), t.tr("calendar.table_pick_filter").to_owned());
+                    let rx = ito_dialog::spawn(move || {
+                        ito_dialog::Dialog::new().title(&title).filter(ito_dialog::Filter::new(&filter, &["csv"])).open_file()
+                    });
+                    self.cal_picking = Some((cal.clone(), rx));
+                }
             }
             if let Some(i) = super::go_or_cancel(ui, ito_prefs::Mark::Check, t.tr("calendar.inline_go"), t.tr("make.cancel")) {
                 pressed = Some(i);

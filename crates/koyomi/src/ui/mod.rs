@@ -36,6 +36,7 @@ mod ha;
 mod hosts;
 mod manage;
 mod net_side;
+pub(crate) mod paths;
 mod users;
 
 /// How long a window waits to ask another PC again after its list could not be read.
@@ -343,6 +344,8 @@ enum Msg {
     CalendarDone(Result<String, String>),
     /// File work done off the UI thread: a line for under the detail, or why not.
     Done(Result<Said, Said>),
+    /// The same, for work that made a file on this PC: the line, and the file's path (told with buttons).
+    DoneAt(Result<(Said, PathBuf), Said>),
     /// The file the 取り込む box was told to read: its text, or why it could not be read.
     PortText(String, Result<String, String>),
     /// What a `[[remote]]` PC has of the net 別の PC に送る asked for: PC, net, what it has.
@@ -385,6 +388,8 @@ struct Port {
     text: Option<String>,
     plan: Option<proto::Plan>,
     error: Option<String>,
+    /// The path last read: `error` is about this file, whatever the field holds now.
+    read: Option<String>,
     /// A plan or the import itself is on the way to the engine.
     waiting: bool,
     /// The path field takes the keyboard on the first frame.
@@ -650,6 +655,8 @@ pub struct Browser {
     io: (Sender<Msg>, egui::Context),
     /// What [`Msg::Done`] brought, until [`Browser::show`] has the words for it.
     done: Option<Result<Said, Said>>,
+    /// The file [`Msg::DoneAt`] brought, taken with `done`.
+    done_path: Option<PathBuf>,
     out: Outbox,
     /// The link the person picked, until [`Browser::take_link_wish`].
     want_link: Option<Link>,
@@ -692,6 +699,8 @@ pub struct Browser {
     close_asked: bool,
     /// The last answer to an approval or a start, shown under the detail.
     result: Option<Result<String, String>>,
+    /// The file the result line is about, with the line's text; shown only while that line is the result.
+    result_path: Option<paths::Made>,
     /// The runs that were over at the last poll; `None` before the first, so
     /// what was over before the window opened is not told of again.
     over: Option<BTreeSet<String>>,
@@ -727,6 +736,9 @@ pub struct Browser {
     cal_result: Option<Result<String, String>>,
     /// A day's name or a holiday table's path being typed under the month.
     cal_inline: Option<calendar::Inline>,
+    /// The holiday table's file chooser while it is open, with the name of the calendar it was opened for. The OS
+    /// chooser outlives the field, so it is kept here; its answer (`None` for a cancel) comes on the channel.
+    cal_picking: Option<(String, std::sync::mpsc::Receiver<Option<PathBuf>>)>,
     /// The runs of the last 30 days, for the average time of a net, and the day they were asked for.
     past: std::collections::HashMap<String, chrono::Duration>,
     past_asked: Option<chrono::NaiveDate>,
@@ -862,11 +874,13 @@ impl Browser {
             focus: 0,
             close_asked: false,
             result: None,
+            result_path: None,
             over: None,
             ended: Vec::new(),
             to_ack: Vec::new(),
             acked: BTreeSet::new(),
             done: None,
+            done_path: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             runs_known: false,
@@ -880,6 +894,7 @@ impl Browser {
             cal_day: None,
             cal_result: None,
             cal_inline: None,
+            cal_picking: None,
             hist: None,
             gantt: true,
             today_kind: None,
@@ -1286,7 +1301,20 @@ impl Browser {
                     self.runs_known = true;
                 }
                 Msg::Log(run, job, text) => self.log = Some((run, job, text)),
-                Msg::Done(r) => self.done = Some(r),
+                Msg::Done(r) => {
+                    self.done = Some(r);
+                    self.done_path = None;
+                }
+                Msg::DoneAt(r) => match r {
+                    Ok((said, path)) => {
+                        self.done = Some(Ok(said));
+                        self.done_path = Some(path);
+                    }
+                    Err(e) => {
+                        self.done = Some(Err(e));
+                        self.done_path = None;
+                    }
+                },
                 Msg::PortText(path, r) => self.port_text(&path, r),
                 Msg::There(pc, id, got) => self.send_read(pc, id, got),
                 Msg::Ha(v) => self.ha = v,
@@ -1703,13 +1731,15 @@ impl Browser {
     pub fn export(&mut self, t: &ito_i18n::Table) {
         self.result = Some(Ok(t.tr("run.writing").to_owned()));
         let link = self.link.clone();
-        Self::background(&self.io, move || export_all(&link).map(|(path, n)| ("port.exported", vec![path, n.to_string()])));
+        Self::background_file(&self.io, move || {
+            export_all(&link).map(|(path, n)| (("port.exported", vec![path.display().to_string(), n.to_string()]), path))
+        });
     }
 
     /// The palette's 取り込む: opens the box with the path field.
     pub fn import_box(&mut self) {
         if !self.box_open() {
-            self.port = Some(Port { path: String::new(), text: None, plan: None, error: None, waiting: false, fresh: true });
+            self.port = Some(Port { path: String::new(), text: None, plan: None, error: None, read: None, waiting: false, fresh: true });
             self.focus = 0;
         }
     }
@@ -1963,11 +1993,40 @@ impl Browser {
         }
     }
 
+    /// Looks for the answer of the holiday table's file chooser, every frame (the chooser outlives the field). A
+    /// picked file fills the field only when the table field of the same calendar is open now; a cancel changes nothing.
+    fn poll_picking(&mut self, ctx: &egui::Context) {
+        let Some((name, rx)) = &self.cal_picking else { return };
+        let chosen = match rx.try_recv() {
+            Ok(chosen) => chosen,
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        if let (Some(file), Some(calendar::Inline::Table { cal, path, .. })) = (chosen, &mut self.cal_inline) {
+            if cal == name {
+                *path = file.display().to_string();
+            }
+        }
+        self.cal_picking = None;
+    }
+
     /// Runs file work on its own thread; the line it returns shows under the detail.
     fn background(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<Said, Said> + Send + 'static) {
         let (tx, ctx) = io.clone();
         std::thread::spawn(move || {
             let _ = tx.send(Msg::Done(work()));
+            ctx.request_repaint();
+        });
+    }
+
+    /// [`Browser::background`] for work that makes a file on this PC: the line and the file's path.
+    fn background_file(io: &(Sender<Msg>, egui::Context), work: impl FnOnce() -> Result<(Said, PathBuf), Said> + Send + 'static) {
+        let (tx, ctx) = io.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::DoneAt(work()));
             ctx.request_repaint();
         });
     }
@@ -1998,6 +2057,7 @@ impl Browser {
         if p.path.trim().trim_matches('"') != path {
             return;
         }
+        p.read = Some(path.to_owned());
         match read {
             Ok(text) => {
                 p.error = None;
@@ -2043,6 +2103,11 @@ impl Browser {
                     }
                     if let Some(e) = &p.error {
                         ui.add(egui::Label::new(egui::RichText::new(e).color(c.err)).wrap());
+                        // The error is about the file last read, not the field (which may have been edited since):
+                        // it is on this PC (the window read it).
+                        if let Some(file) = p.read.as_deref().filter(|f| !f.is_empty()) {
+                            paths::path_buttons(ui, t, std::path::Path::new(file), paths::Place::Here, true);
+                        }
                     }
                     pressed = box_answer(ui, ito_prefs::Mark::Import, t.tr("port.read"), t.tr("port.cancel"));
                 });
@@ -2319,7 +2384,13 @@ impl Browser {
         self.drain();
         if let Some(done) = self.done.take() {
             let words = |(key, args): Said| t.trf(key, &args.iter().map(String::as_str).collect::<Vec<_>>());
-            self.result = Some(done.map(words).map_err(words));
+            let result = done.map(words).map_err(words);
+            // A file this window wrote is on this PC, whichever engine it talks to.
+            self.result_path = match (&result, self.done_path.take()) {
+                (Ok(text), Some(path)) => Some(paths::Made { text: text.clone(), path, place: paths::Place::Here }),
+                _ => None,
+            };
+            self.result = Some(result);
         }
         if self.out.refused.take() {
             self.result = Some(Err(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[])));
@@ -2519,7 +2590,7 @@ impl Browser {
                     // Above the scrolling table, so an answer (the palette's 書き出す …) stays in sight.
                     // The open inspector says it under the picked net's buttons instead.
                     if !(self.inspector && self.inspected().is_some()) {
-                        self.show_result(ui);
+                        self.show_result(ui, t);
                     }
                     // Both ways: with the inspector open the table may be wider than what is left.
                     egui::ScrollArea::both().id_salt("gantt_page").auto_shrink(false).show(ui, |ui| {
@@ -2554,7 +2625,7 @@ impl Browser {
                     } else {
                         // The pane shows the answer under the picked net's buttons; otherwise it is said here.
                         if !(self.net_pane && self.side_net().is_some()) {
-                            self.show_result(ui);
+                            self.show_result(ui, t);
                         }
                         self.nets_overview(ui, t);
                     }
@@ -2563,6 +2634,7 @@ impl Browser {
             // The row 戻る came back to is in sight now.
             self.reveal = false;
         });
+        self.poll_picking(&ctx);
         // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
         // open one, so a single Enter cannot decide two of them.
         let open = [
@@ -3973,7 +4045,9 @@ impl Browser {
                 shown.reverse();
                 let table = crate::sheet::runs(t, &shown.into_iter().cloned().collect::<Vec<_>>());
                 self.result = Some(Ok(t.tr("run.writing").to_owned()));
-                Self::background(&self.io, move || export_csv("history", &table).map(|path| ("run.history_csv_done", vec![path])));
+                Self::background_file(&self.io, move || {
+                    export_csv("history", &table).map(|path| (("run.history_csv_done", vec![path.display().to_string()]), path))
+                });
             }
             // Nothing is asked before the engine's date is known: the days would be this PC's.
             if search && !waiting {
@@ -4104,7 +4178,7 @@ impl Browser {
                         ui.label(egui::RichText::new(t.tr("run.history_none")).color(c.dim));
                     }
                     ui.add_space(8.0);
-                    self.show_result(ui);
+                    self.show_result(ui, t);
                 });
             });
             if let (Some(col), Some(h)) = (sorted, self.hist.as_mut()) {
@@ -4309,7 +4383,7 @@ impl Browser {
                     }
                 });
             });
-        self.show_result(ui);
+        self.show_result(ui, t);
         if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
             ui.add_space(6.0);
             let head = t.trf("run.compare_head", &[&base.id]);
@@ -4532,6 +4606,7 @@ impl Browser {
                 ito_a11y::say(&r, Role::Label, &text);
             }
             ui.label(egui::RichText::new(&def.file).small().color(c.dim));
+            self.net_file_buttons(ui, t, &def.file);
         });
         let held = self.snap.as_ref().is_some_and(|s| s.held.contains(&def.id));
         ui.add_space(8.0);
@@ -4549,7 +4624,7 @@ impl Browser {
         }
         self.staged_note(ui, t, &def.id);
         self.sending_note(ui, t);
-        self.show_result(ui);
+        self.show_result(ui, t);
         let section = |ui: &mut egui::Ui, key: &str| {
             ui.add_space(12.0);
             let r = ui.label(egui::RichText::new(t.tr(key)).strong().color(c.fg));
@@ -4641,6 +4716,7 @@ impl Browser {
         }
         ui.heading(&head);
         ui.label(egui::RichText::new(&def.file).color(c.dim));
+        self.net_file_buttons(ui, t, &def.file);
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             self.approve_button(ui, t, &def);
@@ -4661,7 +4737,7 @@ impl Browser {
         }
         self.staged_note(ui, t, &def.id);
         self.sending_note(ui, t);
-        self.show_result(ui);
+        self.show_result(ui, t);
         ui.add_space(6.0);
         for p in &def.problems {
             let line = p.in_file(&def.file);
@@ -4886,12 +4962,26 @@ impl Browser {
         }
     }
 
+    /// The open and copy buttons for a net's definition file; only when the engine is on this PC, whose
+    /// `jobnets` folder holds it.
+    pub(super) fn net_file_buttons(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, file: &str) {
+        if self.link.is_far() {
+            return;
+        }
+        if let Some(path) = paths::net_file(file) {
+            paths::path_buttons(ui, t, &path, paths::Place::Engine, true);
+        }
+    }
+
     /// The engine's answer to the last request (approve, run, rerun), under the buttons.
-    fn show_result(&self, ui: &mut egui::Ui) {
+    fn show_result(&self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         let c = ito_theme::colors();
         match &self.result {
             Some(Ok(m)) => {
                 ui.label(egui::RichText::new(format!("{} {m}", ito_a11y::State::Done.mark())).color(c.done));
+                if let Some(made) = paths::Made::for_result(&self.result_path, &self.result) {
+                    paths::path_buttons(ui, t, &made.path, made.place, !self.link.is_far());
+                }
             }
             Some(Err(e)) => {
                 ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
@@ -5631,7 +5721,7 @@ fn is_changed_elsewhere(m: &str) -> bool {
 }
 
 /// Everything the engine of `link` has, written to `exports/<YYYYMMDD-HHMMSS>.toml` in this PC's state folder.
-fn export_all(link: &Link) -> Result<(String, usize), Said> {
+fn export_all(link: &Link) -> Result<(PathBuf, usize), Said> {
     let text = link.start().and_then(|c| c.call(&Request::ExportAll)).map_err(plain)?;
     let b = koyomi_core::bundle::parse(&text).map_err(plain)?;
     if b.is_empty() {
@@ -5641,28 +5731,28 @@ fn export_all(link: &Link) -> Result<(String, usize), Said> {
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{}.toml", ito_common::now::now_local().format("%Y%m%d-%H%M%S")));
     ito_common::write_atomic(&path, text).map_err(plain)?;
-    Ok((path.display().to_string(), b.len()))
+    Ok((path, b.len()))
 }
 
 /// `table` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
-fn export_csv(what: &str, table: &ito_table::Table) -> Result<String, Said> {
+fn export_csv(what: &str, table: &ito_table::Table) -> Result<PathBuf, Said> {
     let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
-    let path = dir.join(format!("{what}-{}.csv", ito_common::now::now_local().format("%Y%m%d-%H%M%S"))).display().to_string();
-    crate::sheet::write(&path, table).map_err(plain)?;
+    let path = dir.join(format!("{what}-{}.csv", ito_common::now::now_local().format("%Y%m%d-%H%M%S")));
+    crate::sheet::write(&path.display().to_string(), table).map_err(plain)?;
     Ok(path)
 }
 
 /// The month's sheet written as a PDF under `exports` and handed to the OS to print; where it went.
-fn print_plan(days: &[crate::plan::Day], year: i32, m: u32) -> Result<Said, Said> {
+fn print_plan(days: &[crate::plan::Day], year: i32, m: u32) -> Result<(Said, PathBuf), Said> {
     let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("plan-{year}-{m:02}.pdf"));
     crate::plan::pdf(days, year, m, &path).map_err(plain)?;
     let shown = path.display().to_string();
     match ito_export::print(&path).map_err(plain)? {
-        ito_export::Printed::Sent => Ok(("calendar.printed", vec![shown])),
-        _ => Ok(("calendar.print_opened", vec![shown])),
+        ito_export::Printed::Sent => Ok((("calendar.printed", vec![shown]), path)),
+        _ => Ok((("calendar.print_opened", vec![shown]), path)),
     }
 }
 
@@ -5841,11 +5931,13 @@ mod tests {
             focus: 0,
             close_asked: false,
             result: None,
+            result_path: None,
             over: None,
             ended: Vec::new(),
             to_ack: Vec::new(),
             acked: BTreeSet::new(),
             done: None,
+            done_path: None,
             seen_notes: BTreeSet::new(),
             notes: Vec::new(),
             runs_known: false,
@@ -5859,6 +5951,7 @@ mod tests {
             cal_day: None,
             cal_result: None,
             cal_inline: None,
+            cal_picking: None,
             hist: None,
             gantt: false,
             today_kind: None,
@@ -6130,6 +6223,119 @@ run = [\"x.exe\"]
         b.cal_inline = Some(calendar::Inline::Name { cal: "工場".into(), day, text: String::new(), fresh: true });
         s.settle(&mut b);
         assert!(b.cal_inline.is_none(), "another calendar's field goes");
+    }
+
+    /// The holiday table's file chooser: while it is open the button is off, a chosen file fills the field
+    /// (which stays editable), and a cancel leaves the field as it was.
+    #[test]
+    fn the_holiday_table_s_file_chooser_fills_the_field_or_leaves_it() {
+        let mut b = quiet(defs());
+        let cal = koyomi_core::calendar::Calendar::parse("会社", "format = 1\n");
+        b.snap.as_mut().unwrap().calendars.insert("会社".into(), cal.unwrap());
+        let mut s = Screen::new();
+        b.cal_sel = Some("会社".into());
+        b.cal_month = Some((2026, 11));
+        let (tx, rx) = std::sync::mpsc::channel();
+        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: "C:/typed.csv".into(), fresh: false });
+        b.cal_picking = Some(("会社".into(), rx));
+        s.settle(&mut b);
+        let path = |b: &Browser| match &b.cal_inline {
+            Some(calendar::Inline::Table { path, .. }) => path.clone(),
+            _ => panic!("the field is open"),
+        };
+        let open = |b: &Browser| b.cal_picking.is_some();
+        assert!(open(&b) && path(&b) == "C:/typed.csv", "waiting: nothing changed, no second dialog");
+        tx.send(None).unwrap();
+        s.settle(&mut b);
+        assert!(!open(&b) && path(&b) == "C:/typed.csv", "a cancel leaves the field");
+        // Pick again: the file fills the field.
+        let (tx, rx) = std::sync::mpsc::channel();
+        b.cal_picking = Some(("会社".into(), rx));
+        tx.send(Some(std::path::PathBuf::from("C:/picked/syukujitsu.csv"))).unwrap();
+        s.settle(&mut b);
+        assert!(!open(&b) && path(&b) == "C:/picked/syukujitsu.csv", "{}", path(&b));
+    }
+
+    /// The OS chooser outlives the field: closing the field keeps the chooser's record (so the button stays off
+    /// for any field), and the answer fills only the same calendar's table field if it is open again.
+    #[test]
+    fn an_open_file_chooser_outlives_its_field() {
+        let mut b = quiet(defs());
+        let cal = koyomi_core::calendar::Calendar::parse(
+            "会社",
+            "format = 1
+",
+        );
+        b.snap.as_mut().unwrap().calendars.insert("会社".into(), cal.unwrap());
+        let mut s = Screen::new();
+        b.cal_sel = Some("会社".into());
+        b.cal_month = Some((2026, 11));
+        let table = |path: &str| calendar::Inline::Table { cal: "会社".into(), path: path.into(), fresh: false };
+        let field = |b: &Browser| match &b.cal_inline {
+            Some(calendar::Inline::Table { path, .. }) => Some(path.clone()),
+            _ => None,
+        };
+        // (c) While the chooser is open and the field is open, the button is off.
+        let (tx, rx) = std::sync::mpsc::channel();
+        b.cal_inline = Some(table("C:/typed.csv"));
+        b.cal_picking = Some(("会社".into(), rx));
+        s.settle(&mut b);
+        assert!(b.cal_picking.is_some() && field(&b).is_some());
+        // (a) The field is closed (Esc, やめる, another calendar) before the answer: the chooser is still known,
+        // and the answer reopens nothing.
+        b.cal_inline = None;
+        s.settle(&mut b);
+        assert!(b.cal_picking.is_some(), "the chooser is still open");
+        tx.send(Some(std::path::PathBuf::from("C:/picked/a.csv"))).unwrap();
+        s.settle(&mut b);
+        assert!(b.cal_picking.is_none() && b.cal_inline.is_none(), "answered, and no field is open");
+        // (b) The same calendar's field is reopened before the answer: the path fills it.
+        let (tx, rx) = std::sync::mpsc::channel();
+        b.cal_picking = Some(("会社".into(), rx));
+        b.cal_inline = None;
+        s.settle(&mut b);
+        b.cal_inline = Some(table(""));
+        tx.send(Some(std::path::PathBuf::from("C:/picked/b.csv"))).unwrap();
+        s.settle(&mut b);
+        assert!(b.cal_picking.is_none());
+        assert_eq!(field(&b).as_deref(), Some("C:/picked/b.csv"));
+    }
+
+    /// A file the window wrote comes with its path, as `Here`; the path belongs to its line only.
+    #[test]
+    fn a_result_carries_the_path_of_the_file_written_and_loses_it_with_the_line() {
+        use paths::{Made, Place};
+        let mut b = quiet(defs());
+        let mut s = Screen::new();
+        let copies = |s: &Screen| s.nodes.values().filter(|(l, _)| l.contains("パスをコピー")).count();
+        s.settle(&mut b);
+        let none = copies(&s);
+        // The three things the window writes: the export, a CSV, the printed PDF.
+        for (key, args, file) in [
+            ("port.exported", vec!["C:/s/exports/a.toml".to_owned(), "3".to_owned()], "C:/s/exports/a.toml"),
+            ("run.history_csv_done", vec!["C:/s/exports/history-1.csv".to_owned()], "C:/s/exports/history-1.csv"),
+            ("calendar.print_opened", vec!["C:/s/exports/plan-2026-11.pdf".to_owned()], "C:/s/exports/plan-2026-11.pdf"),
+        ] {
+            b.io.0.send(Msg::DoneAt(Ok(((key, args), PathBuf::from(file))))).unwrap();
+            s.settle(&mut b);
+            let text = match &b.result {
+                Some(Ok(m)) => m.clone(),
+                other => panic!("{other:?}"),
+            };
+            assert_eq!(copies(&s), none + 1, "the line has its copy button");
+            let made = Made::for_result(&b.result_path, &b.result).expect("the line carries its path");
+            assert_eq!((made.path.as_path(), made.place, &made.text), (std::path::Path::new(file), Place::Here, &text));
+        }
+        // A file written on this PC (`Here`) has its buttons whichever engine the window talks to.
+        assert!(paths::buttons_shown(Place::Here, false));
+        // The next result without a path shows no old path.
+        b.io.0.send(Msg::Done(Ok(("run.history_csv_done", vec!["C:/other.csv".to_owned()])))).unwrap();
+        s.settle(&mut b);
+        assert!(b.result_path.is_none() && Made::for_result(&b.result_path, &b.result).is_none());
+        // A failure carries none either.
+        b.io.0.send(Msg::DoneAt(Err(plain("x".to_owned())))).unwrap();
+        s.settle(&mut b);
+        assert!(b.result_path.is_none());
     }
 
     /// The band has a header for each kind of line: the writable-by warning keeps its own, a file that did not read

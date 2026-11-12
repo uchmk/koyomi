@@ -1,6 +1,6 @@
 # Checklist
 
-1297 checks in TESTING.md, 1291 left for a person.
+1306 checks in TESTING.md, 1300 left for a person.
 
 ## 1. Start
 
@@ -1700,3 +1700,15 @@
 - [x] **133.15** Write `watch = false` into kei's block by hand while the window is open; then rename kei and change its URL in `接続先を管理…` → Within about 2 s the same as 133.13. After the rename and the URL change `watch = false` stays 〔未訳〕
 - [x] **133.16** With the window on kei and kei not watched, fail a job on kei → No notification of kei is told; the page of kei works as before (runs, bell) 〔未訳〕
 - [x] **133.17** With an engine on kei newer than 0.37.0, its service running under `LANG=en_US.UTF-8` (`systemctl show koyomi -p Environment`, or `/etc/default/locale`) and no `language` in its user's common.toml: with the window on この PC, fail a job on kei (as 133.1) → The notification reads `kei · ✕ 異常終了  <net>` and its body is Japanese throughout (`… 0秒  終了コード 1`), the language of kei's log (`journalctl -u koyomi`: `HTTP: … 待ち受けています`); no word of it is English 〔未訳〕
+
+## 134. Paths open and copy, the holiday table is picked, focus rings, parts added in the editor (`ui/paths.rs`, `ui/mod.rs`, `ui/calendar.rs`, `ui/canvas/drawer.rs`, `ui/canvas.rs`)
+
+- [ ] **134.1** On the Calendar tab, press `この月の予定を印刷…` → The line `PDF を開きました（印刷はそこから行います）: <path>` has `開く` and `パスをコピー` after it. `開く` opens that PDF; `パスをコピー` puts the plain path (no quotes) on the clipboard (paste it into a text box to see it) and `パスをコピーしました` shows beside the buttons for a few seconds, then goes 〔未訳〕
+- [ ] **134.2** Press `全件書き出し` (the palette's 書き出す), then export the history as CSV → Each line `<path>` has `開く` and `パスをコピー`, with the same results as 134.1; the next line (for example a different action's answer) shows no buttons of the old file 〔未訳〕
+- [ ] **134.3** Switch the window to kei, then export all and print the month as in 134.1 and 134.2; open a net's page → The export and the printed PDF still have both buttons (the files are on this PC). The net's page shows no `開く` / `パスをコピー` for the definition file (kei's folders are not this PC's) 〔未訳〕
+- [ ] **134.4** On この PC, delete the exported file of 134.2 (or the folder `exports`), then press `開く` on its line → The nearest folder above it that still exists opens (its button reads `フォルダーを開く` and the hover says the file does not exist); nothing fails 〔未訳〕
+- [ ] **134.5** On この PC, open a net's page (the tree, or 今日): the file name under its heading → `開く` opens the definition file with the program the OS opens `.toml` with; `パスをコピー` copies the full path under the settings folder's `jobnets`. In 取り込む, give a path that does not exist and press `読み込む`: the error shows `開く` for the nearest folder and `パスをコピー` 〔未訳〕
+- [ ] **134.6** On the Calendar tab, 祝日の表を取り込む…, press `ファイルを選ぶ…`; pick a `.csv`; open it again and cancel → The field holds the picked file's path and stays editable. After the cancel the field is as it was. While the chooser is open the window stays responsive (switch tabs, move it), `ファイルを選ぶ…` is off, with the hover `ファイルを選ぶウィンドウが開いています`, and no second chooser opens. The list in the chooser shows `*.csv`. Close the field with Esc while the chooser is open: `ファイルを選ぶ…` stays off until the chooser is answered; a file picked then does not open the field again. Reopen the field before answering: the picked path fills it 〔未訳〕
+- [ ] **134.7** On the Calendar tab, click `日`｜`週`｜`月` one after the other (and move to each with the keyboard) → The focus ring of each shows all four edges; the top edge is not cut off 〔未訳〕
+- [ ] **134.8** In the job editor, open an SQL job and move to the TLS choice `verify`｜`trust`｜`off` with Tab → The focus ring goes all round the choice and does not cross the note under it 〔未訳〕
+- [ ] **134.9** In the job editor, choose the last job and press `a`; then copy a job and paste it with Ctrl+V; drop a part from the shelf onto the canvas; choose the new job and press Delete; then Ctrl+Z and Ctrl+Y → The window does not close at any step; each new part and its line show at once, and a removed part goes with its lines 〔未訳〕

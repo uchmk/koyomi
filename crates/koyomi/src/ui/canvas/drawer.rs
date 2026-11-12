@@ -84,6 +84,8 @@ impl<'a> Form<'a> {
     fn choice<T: PartialEq + Copy>(&self, ui: &mut egui::Ui, key: &'a str, now: &mut T, options: &[(T, &str)], note: &str) -> bool {
         let (label, _) = self.label(ui, key, Need::Plain);
         let (to, _) = seg_named(ui, self.look, key, label, *now, options);
+        // The switch's focus ring is drawn about 4.5 px outside it: room so it does not cross the note.
+        ui.add_space(4.0);
         self.note(ui, note);
         ui.add_space(10.0);
         match to {

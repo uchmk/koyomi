@@ -1451,7 +1451,7 @@ impl Editor {
         let from = self.connect.as_ref().and_then(|t| t.clone()).or_else(|| self.cursor.clone());
         let Some(from) = from else { return self.net.jobs.first().map(|j| j.id.clone()) };
         let i = self.index(&from)?;
-        let p = at[i];
+        let p = *at.get(i)?;
         let mut best: Option<(f32, usize)> = None;
         for (k, q) in at.iter().enumerate() {
             if k == i {
@@ -1468,7 +1468,7 @@ impl Editor {
                 best = Some((score, k));
             }
         }
-        best.map(|(_, k)| self.net.jobs[k].id.clone())
+        best.and_then(|(_, k)| self.net.jobs.get(k)).map(|j| j.id.clone())
     }
 
     // ---- the screen ---------------------------------------------------
@@ -1495,8 +1495,9 @@ impl Editor {
         }
     }
 
+    /// The part under `p`: only one the net still has, whatever `at` was taken from.
     fn hit_part(&self, at: &[Pos2], p: Pos2) -> Option<usize> {
-        (0..at.len()).rev().find(|&i| (at[i] - p).length() <= RADIUS + 4.0)
+        (0..at.len().min(self.net.jobs.len())).rev().find(|&i| (at[i] - p).length() <= RADIUS + 4.0)
     }
 
     fn hit_port(&self, at: &[Pos2], p: Pos2, vertical: bool) -> Option<usize> {
@@ -1507,8 +1508,8 @@ impl Editor {
     fn hit_line(&self, at: &[Pos2], p: Pos2) -> Option<(usize, usize)> {
         for (i, j) in self.net.jobs.iter().enumerate() {
             for (k, l) in j.after.iter().enumerate() {
-                if let Some(f) = self.index(&l.job) {
-                    if dist(p, at[f], at[i]) <= NEAR {
+                if let Some((&from, &to)) = self.index(&l.job).and_then(|f| at.get(f).zip(at.get(i))) {
+                    if dist(p, from, to) <= NEAR {
                         return Some((i, k));
                     }
                 }
@@ -1804,7 +1805,10 @@ impl Editor {
                 }
             }
         }
-        let at: Vec<Pos2> = self.positions().into_iter().map(|p| self.to_screen(origin, p, vertical)).collect();
+        // Where each part is on the screen, by its index in the net. A part added or removed in this frame
+        // (the shelf, the keys) makes it stale, so it is taken again after those.
+        let place = |e: &Self| -> Vec<Pos2> { e.positions().into_iter().map(|p| e.to_screen(origin, p, vertical)).collect() };
+        let mut at = place(self);
         let pointer = resp.hover_pos().or_else(|| resp.interact_pointer_pos());
         let (command, shift) = ui.input(|i| (i.modifiers.command, i.modifiers.shift));
 
@@ -1874,8 +1878,8 @@ impl Editor {
                         if !command {
                             self.selected.clear();
                         }
-                        for (i, j) in self.net.jobs.iter().enumerate() {
-                            if r.contains(at[i]) {
+                        for (j, q) in self.net.jobs.iter().zip(&at) {
+                            if r.contains(*q) {
                                 self.selected.insert(j.id.clone());
                             }
                         }
@@ -1904,6 +1908,7 @@ impl Editor {
                 painter.circle(p, RADIUS, c.panel, Stroke::new(1.5, accent));
             }
         }
+        at = place(self);
         if resp.clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
                 self.menu = None;
@@ -1934,7 +1939,7 @@ impl Editor {
         if resp.double_clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
                 match self.hit_part(&at, p) {
-                    // `at` is from the start of the frame; a job removed since then leaves it longer.
+                    // `hit_part` gives only a part the net still has.
                     Some(i) if i < self.net.jobs.len() => {
                         let id = self.net.jobs[i].id.clone();
                         if let Part::Jobnet { use_ } = &self.net.jobs[i].part {
@@ -1970,6 +1975,8 @@ impl Editor {
         let typing = ui.memory(|m| m.focused().is_some_and(|f| f != resp.id));
         if !typing && self.menu.is_none() {
             self.keys(ui, &at, &mut action);
+            // `a`, a paste, Delete, undo and redo add or remove parts.
+            at = place(self);
         }
 
         // The lines.
@@ -2574,6 +2581,25 @@ run = [\"x\"]
         e.open_part("a");
         assert!(matches!(&e.pane, Some(Pane::Part(p, _)) if p == "a"));
         assert!(!e.fold);
+    }
+
+    /// A part a key adds is drawn in the same frame, with its line: where each part is is taken again after
+    /// the keys (it was taken at the frame's start, one short, and drawing the line failed). One a key removes
+    /// is gone, and the frames after draw without it.
+    #[test]
+    fn a_part_a_key_adds_is_drawn_in_the_same_frame() {
+        let ctx = egui::Context::default();
+        let mut e = two();
+        canvas_frame(&ctx, &mut e, Vec::new());
+        let key = |key| egui::Event::Key { key, physical_key: None, pressed: true, repeat: false, modifiers: Default::default() };
+        e.cursor = Some("b".to_owned());
+        canvas_frame(&ctx, &mut e, vec![key(egui::Key::A)]);
+        assert_eq!(e.net.jobs.len(), 3, "`a` adds a part after the cursor's");
+        assert!(!e.net.jobs[2].after.is_empty(), "the new part comes with its line, which is drawn too");
+        e.selected = BTreeSet::from([e.net.jobs[2].id.clone()]);
+        canvas_frame(&ctx, &mut e, vec![key(egui::Key::Delete)]);
+        assert_eq!(e.net.jobs.len(), 2);
+        canvas_frame(&ctx, &mut e, Vec::new());
     }
 
     #[test]

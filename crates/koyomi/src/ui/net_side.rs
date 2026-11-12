@@ -104,6 +104,7 @@ impl Browser {
             }
             let r = ui.add(egui::Label::new(egui::RichText::new(&def.file).small().color(c.dim)).wrap());
             ito_a11y::say(&r, Role::Label, &def.file);
+            self.net_file_buttons(ui, t, &def.file);
         });
         if !opened {
             ui.add_space(8.0);
@@ -118,7 +119,7 @@ impl Browser {
                 let r = ui.label(egui::RichText::new(&text).color(graph::colour(&c, koyomi_core::run::State::Held)));
                 ito_a11y::say(&r, Role::Label, &text);
             }
-            self.show_result(ui);
+            self.show_result(ui, t);
             for p in &def.problems {
                 let line = format!("{} {}", ito_a11y::State::Error.mark(), p.in_file(&def.file));
                 let r = ui.add(egui::Label::new(egui::RichText::new(&line).color(c.err)).wrap());
