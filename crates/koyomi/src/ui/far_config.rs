@@ -64,7 +64,8 @@ pub(super) struct ConfigEdit {
     /// The last refusal or reading failure, kept under the field.
     line: Option<String>,
     ask: Option<Ask>,
-    /// The field takes the focus once, when it appears.
+    /// The field takes the focus once: when it appears, and when a question goes away with the text kept (the
+    /// question took the focus from it).
     fresh: bool,
 }
 
@@ -190,6 +191,7 @@ impl ConfigEdit {
     /// Esc: the question first, else the box.
     pub(super) fn esc(&mut self) -> Act {
         if self.ask.take().is_some() {
+            self.fresh = true;
             return Act::Nothing;
         }
         self.wish_close()
@@ -206,6 +208,7 @@ impl ConfigEdit {
             return Act::Nothing;
         };
         if choice != 0 {
+            self.fresh = true;
             return Act::Nothing;
         }
         match ask.then {
@@ -536,6 +539,26 @@ mod tests {
         m.wish_close();
         m.move_focus();
         assert_eq!(m.enter(), Act::Close);
+    }
+
+    #[test]
+    fn keeping_the_text_gives_the_field_the_focus_again() {
+        let mut m = editing("a = 1\n");
+        // The field took the focus when it appeared.
+        m.fresh = false;
+        m.text.push('x');
+        m.wish_close();
+        assert!(!m.fresh, "asking leaves the focus to the question");
+        assert_eq!(m.answer(1), Act::Nothing);
+        assert!(m.fresh, "keep editing");
+        m.fresh = false;
+        m.wish_reload();
+        assert_eq!(m.esc(), Act::Nothing);
+        assert!(m.fresh, "Esc on the question");
+        m.fresh = false;
+        m.wish_close();
+        assert_eq!(m.answer(0), Act::Close);
+        assert!(!m.fresh, "discarding closes the box");
     }
 
     #[test]
