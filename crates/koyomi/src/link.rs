@@ -4,7 +4,7 @@
 //! never starts anything: it reads the `[[remote]]` of that name, checks with `GET /me` that the token may
 //! drive a window, and then sends each request as `POST /door`.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use ito_http::client::{self, Client, Reply};
 use koyomi_core::config::Remote;
@@ -23,6 +23,14 @@ pub const POLL_FAR: Duration = Duration::from_secs(3);
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
 /// The largest answer taken from another PC: a year of `History` is more than the 4 MiB default.
 const MAX_REPLY: usize = 64 * 1024 * 1024;
+/// How long a read that could not reach another PC waits before it is sent once more. The engine there restarts its
+/// listener when `[http]` changes (a user added or a token made again on 利用者), and a read that comes in at that
+/// moment is refused or cut off.
+const READ_AGAIN: Duration = Duration::from_secs(1);
+/// A read is sent once more only when it failed sooner than this: an address no one answers or a network that drops
+/// the packets fails slowly, and waiting for it twice would only make the person wait longer. A PC whose engine is
+/// stopped refuses at once, so its read is sent once more too, and fails again a second later.
+const QUICK_FAIL: Duration = Duration::from_secs(3);
 
 /// Which engine a window talks to.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -164,13 +172,31 @@ impl Conn {
             Kind::Local => local::call(request),
             Kind::Far { remote, client } => {
                 let body = serde_json::json!({ "proto": proto::PROTO, "request": request });
-                match client.post_json("/door", &body) {
+                match send(request.is_read(), || client.post_json("/door", &body), std::thread::sleep) {
                     Ok(reply) => read_reply(remote, request, &reply),
                     Err(e) => Err(unsure(remote, request, &e)),
                 }
             }
         }
     }
+}
+
+/// Calls `post`; when `read` and it could not reach the other PC quickly ([`send_again`]), `wait`s [`READ_AGAIN`] and
+/// calls it once more. A request that is not a read is called once whatever happens: it may have arrived ([`unsure`]).
+fn send<T>(read: bool, mut post: impl FnMut() -> Result<T, client::Error>, wait: impl FnOnce(Duration)) -> Result<T, client::Error> {
+    let started = Instant::now();
+    let sent = post();
+    if read && send_again(&sent, started.elapsed()) {
+        wait(READ_AGAIN);
+        return post();
+    }
+    sent
+}
+
+/// Whether a call that ended with `sent` after `took` failed in the way a restarting listener makes it fail: it could
+/// not reach the other PC (refused or cut off), and quickly. Only [`send`] asks, and only for a read.
+fn send_again<T>(sent: &Result<T, client::Error>, took: Duration) -> bool {
+    matches!(sent, Err(client::Error::Connect(_))) && took < QUICK_FAIL
 }
 
 /// The `who` of a `GET /me` answer: only a non-empty string is a name.
@@ -369,5 +395,76 @@ mod tests {
         let t = remote::why(&r, &client::Error::Deadline);
         assert!(msg::TIMED_OUT.is_in(&t) && t.contains("kei"), "{t}");
         assert!(!msg::MAY_HAVE_ARRIVED.is_in(&t), "{t}");
+    }
+
+    #[test]
+    fn only_a_quick_failure_to_reach_the_pc_is_sent_again() {
+        let quick = Duration::from_millis(80);
+        let cut: Result<(), _> = Err(client::Error::Connect("os error 10054".into()));
+        assert!(send_again(&cut, quick), "the listener was restarting");
+        assert!(!send_again(&cut, QUICK_FAIL), "a PC that is off fails slowly");
+        assert!(!send_again(&Ok(()), quick));
+        for e in [
+            client::Error::Deadline,
+            client::Error::Bad("b".into()),
+            client::Error::Tls("t".into()),
+            client::Error::Fingerprint("f".into()),
+            client::Error::Url("u".into()),
+        ] {
+            assert!(!send_again(&Err::<(), _>(e.clone()), quick), "{e}");
+        }
+    }
+
+    #[test]
+    fn only_a_read_is_sent_again_and_only_once() {
+        let cut = || Err::<u16, _>(client::Error::Connect("os error 10054".into()));
+        // A read cut off at once: one wait of READ_AGAIN, then the second answer is the answer.
+        let (mut calls, mut waited) = (0, Vec::new());
+        let r = send(
+            true,
+            || {
+                calls += 1;
+                if calls == 1 {
+                    cut()
+                } else {
+                    Ok(200)
+                }
+            },
+            |d| waited.push(d),
+        );
+        assert_eq!((r, calls, waited), (Ok(200), 2, vec![READ_AGAIN]));
+        // Cut off twice: the second failure is the answer, and there is no third call.
+        let (mut calls, mut waited) = (0, Vec::new());
+        let r = send(
+            true,
+            || {
+                calls += 1;
+                cut()
+            },
+            |d| waited.push(d),
+        );
+        assert_eq!((r, calls, waited.len()), (cut(), 2, 1));
+        // Not a read: one call, no wait, whatever the failure.
+        let (mut calls, mut waited) = (0, Vec::new());
+        let r = send(
+            false,
+            || {
+                calls += 1;
+                cut()
+            },
+            |d| waited.push(d),
+        );
+        assert_eq!((r, calls, waited.len()), (cut(), 1, 0));
+        // A read that worked, or failed in another way: one call.
+        let mut calls = 0;
+        let r = send(
+            true,
+            || {
+                calls += 1;
+                Err::<u16, _>(client::Error::Deadline)
+            },
+            |_| panic!("no wait"),
+        );
+        assert_eq!((r, calls), (Err(client::Error::Deadline), 1));
     }
 }
