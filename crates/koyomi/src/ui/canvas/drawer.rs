@@ -16,6 +16,7 @@ use koyomi_core::jobnet::{self, Encoding, Missed, Overlap, Part, Wait};
 
 use super::{Action, Cmd, Editor, Fields, NetFields, Pane};
 use crate::show;
+use crate::ui::pick::{self, Ctx, Want};
 use crate::ui::whens::WhenEdit;
 
 /// A note longer than this goes under the field, wrapped, instead of after the label.
@@ -26,11 +27,18 @@ struct Form<'a> {
     t: &'a Table,
     look: Look<'static>,
     words: FormWords<'static>,
+    /// The nets, the file chooser and where the engine is.
+    pick: &'a Ctx<'a>,
 }
 
 impl<'a> Form<'a> {
-    fn new(t: &'a Table) -> Self {
-        Form { t, look: Look { c: ito_theme::colors(), q: "" }, words: FormWords::of(t.tr("app.lang")) }
+    fn new(t: &'a Table, pick: &'a Ctx<'a>) -> Self {
+        Form { t, look: Look { c: ito_theme::colors(), q: "" }, words: FormWords::of(t.tr("app.lang")), pick }
+    }
+
+    /// Whether the person is typing in the field `key` just now: its picker waits until they leave it.
+    fn typing(&self, ui: &egui::Ui, key: &str) -> bool {
+        ui.memory(|m| m.has_focus(egui::Id::new(("ito-input", key))))
     }
 
     /// The label of `key` (its note in brackets split off) and how much it must be filled in.
@@ -62,12 +70,53 @@ impl<'a> Form<'a> {
         s: &mut String,
         how: impl FnOnce(InputField<'a>) -> InputField<'a>,
     ) -> bool {
+        self.line_with(ui, key, need, bad, s, how, None)
+    }
+
+    /// [`Form::line`] with 参照… at its right (a path of this PC): a chooser of the kind `want`.
+    #[allow(clippy::too_many_arguments)]
+    fn path(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        bad: bool,
+        s: &mut String,
+        how: impl FnOnce(InputField<'a>) -> InputField<'a>,
+        want: Want,
+    ) -> bool {
+        self.line_with(ui, key, need, bad, s, how, Some(want))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn line_with(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        bad: bool,
+        s: &mut String,
+        how: impl FnOnce(InputField<'a>) -> InputField<'a>,
+        browse: Option<Want>,
+    ) -> bool {
         let (label, note) = self.label(ui, key, need);
         let wrong = bad || (need == Need::Required && s.trim().is_empty());
-        let r = how(InputField::new(key).name(label).error(wrong)).show(ui, s);
+        let mut changed = false;
+        match browse.filter(|_| self.pick.local) {
+            Some(want) => {
+                // The button takes its room first, at the right; the field fills what is left.
+                ui.horizontal(|ui| {
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        changed |= self.pick.browse_button(ui, self.t, key, label, want, s);
+                        changed |= how(InputField::new(key).name(label).error(wrong)).show(ui, s).changed();
+                    });
+                });
+            }
+            None => changed = how(InputField::new(key).name(label).error(wrong)).show(ui, s).changed(),
+        }
         self.note(ui, note);
         ui.add_space(10.0);
-        r.changed()
+        changed
     }
 
     /// A labelled box of code `rows` high, numbered by line; `aside` is said at its top right (the shell).
@@ -78,6 +127,19 @@ impl<'a> Form<'a> {
         self.note(ui, note);
         ui.add_space(10.0);
         r.changed()
+    }
+
+    /// [`Form::code`] with a 参照… row under it: the files chosen are added a line each.
+    fn files(&self, ui: &mut egui::Ui, key: &'a str, need: Need, s: &mut String, (rows, aside): (usize, &str)) -> bool {
+        let (label, note) = self.label(ui, key, need);
+        let mut changed = CodeBox::new(key).name(label).aside(aside).rows(rows).show(ui, s).changed();
+        if self.pick.local {
+            ui.add_space(4.0);
+            changed |= self.pick.browse_button(ui, self.t, key, label, Want::Files, s);
+        }
+        self.note(ui, note);
+        ui.add_space(10.0);
+        changed
     }
 
     /// A labelled row of choices; `note` under it (what the choice picked does). True when another was picked.
@@ -134,10 +196,12 @@ impl Editor {
         ui: &mut egui::Ui,
         t: &Table,
         (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
+        (nets, local): (&[pick::NetChoice], bool),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
         let c = ito_theme::colors();
+        self.browse.poll(ui.ctx());
         let gone = match &self.pane {
             Some(Pane::Part(id, _)) => self.index(id).is_none(),
             Some(Pane::Net(_)) => false,
@@ -154,10 +218,17 @@ impl Editor {
             if crate::ui::folded_pane(ui, "fields_strip", &title, t.tr("inspect.open")) {
                 self.fold = false;
             }
+            // A chosen file has no field to land in while the pane is folded.
+            self.browse.drop_answer();
             return;
         }
         let Some(mut pane) = self.pane.take() else { return };
-        let form = Form::new(t);
+        let scope = match &pane {
+            Pane::Part(id, _) => id.clone(),
+            Pane::Net(_) => String::new(),
+        };
+        let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse));
+        let form = Form::new(t, &ctx);
         let mut asked = Asked::default();
         let wide = ui.available_width();
         let room = Frame::new().inner_margin(Margin::symmetric(14, 10));
@@ -199,6 +270,9 @@ impl Editor {
                     });
                 });
             });
+        self.browse = ctx.into_browse();
+        // An answer the field it was opened for did not take (another part is open now) is dropped.
+        self.browse.drop_answer();
         let part = match &pane {
             Pane::Part(id, _) => Some(id.clone()),
             Pane::Net(_) => None,
@@ -287,7 +361,7 @@ impl Editor {
             }
             Part::File { .. } => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
-                    let mut changed = form.line(ui, "review.file_wait", Need::Required, false, &mut f.file, |i| i.mono());
+                    let mut changed = form.path(ui, "review.file_wait", Need::Required, false, &mut f.file, |i| i.mono(), Want::File);
                     changed |= form.line(ui, "review.settle", Need::Optional, false, &mut f.settle, |i| i.hint("30s").width(120.0));
                     changed
                 });
@@ -295,9 +369,23 @@ impl Editor {
             Part::Jobnet { .. } => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
                     let bad = !f.use_.trim().is_empty() && !jobnet::is_id(f.use_.trim());
-                    let changed = form.line(ui, "review.use", Need::Required, bad, &mut f.use_, |i| i.mono().hint(t.tr("review.use_hint")));
-                    if IconButton::new(M::ArrowRight, t.tr("canvas.enter")).show(ui).clicked() && jobnet::is_id(f.use_.trim()) {
-                        *action = Some(Action::Enter(f.use_.trim().to_owned()));
+                    let mut changed = false;
+                    // A select of the engine's nets while the text reads (or is empty); a text that does not read stays typed.
+                    if !bad && !form.typing(ui, "review.use") {
+                        let (label, note) = form.label(ui, "review.use", Need::Required);
+                        ui.horizontal(|ui| {
+                            changed = form.pick.net_select(ui, t, "field-use", label, &mut f.use_, false);
+                            if IconButton::new(M::ArrowRight, t.tr("canvas.enter")).show(ui).clicked() && jobnet::is_id(f.use_.trim()) {
+                                *action = Some(Action::Enter(f.use_.trim().to_owned()));
+                            }
+                        });
+                        form.note(ui, note);
+                        ui.add_space(10.0);
+                    } else {
+                        changed = form.line(ui, "review.use", Need::Required, bad, &mut f.use_, |i| i.mono().hint(t.tr("review.use_hint")));
+                        if IconButton::new(M::ArrowRight, t.tr("canvas.enter")).show(ui).clicked() && jobnet::is_id(f.use_.trim()) {
+                            *action = Some(Action::Enter(f.use_.trim().to_owned()));
+                        }
                     }
                     changed
                 });
@@ -383,9 +471,11 @@ impl Editor {
                 ui.push_id(i, |ui| {
                     crate::ui::card(&c).show(ui, |ui| {
                         ui.set_min_width(ui.available_width());
-                        changed |= w.show(ui, t, i);
+                        changed |= w.show(ui, t, i, form.pick);
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if IconButton::new(M::Trash, t.tr("when.remove")).show(ui).clicked() {
+                            // The chooser's answer is kept by the [[when]]'s number, so none is removed while one is open.
+                            let gone = ui.add_enabled_ui(!form.pick.busy(), |ui| IconButton::new(M::Trash, t.tr("when.remove")).show(ui));
+                            if gone.inner.on_disabled_hover_text(t.tr("pick.browsing")).clicked() {
                                 remove = Some(i);
                             }
                         });
@@ -424,7 +514,7 @@ fn loop_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let file_need = if file || !count { Need::Required } else { Need::Plain };
     let count_need = if count || !file { Need::Required } else { Need::Plain };
     let both = file && count;
-    let mut changed = form.line(ui, "field.loop_file", file_need, both, &mut f.file, |i| i.mono().hint("D:\\in\\*.csv"));
+    let mut changed = form.path(ui, "field.loop_file", file_need, both, &mut f.file, |i| i.mono().hint("D:\\in\\*.csv"), Want::File);
     changed |= form.line(ui, "field.count", count_need, both, &mut f.count, |i| i.width(140.0).unit(form.t.tr("canvas.unit_times")));
     changed |= form.line(ui, "field.loop_max", Need::Optional, false, &mut f.max, |i| i.width(140.0));
     changed
@@ -451,7 +541,7 @@ fn run_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let script_need = if shell { Need::Required } else { Need::Optional };
     let aside = f.shell.trim().to_owned();
     changed |= form.code(ui, "field.script", script_need, !shell && script, &mut f.script, (5, &aside));
-    changed |= form.line(ui, "field.dir", Need::Optional, false, &mut f.dir, |i| i.mono());
+    changed |= form.path(ui, "field.dir", Need::Optional, false, &mut f.dir, |i| i.mono(), Want::Folder);
     let keys: Vec<String> =
         [Encoding::Auto, Encoding::Sjis, Encoding::Utf8].iter().map(|e| format!("field.encoding_{}", e.text())).collect();
     let options: Vec<(Encoding, &str)> =
@@ -481,7 +571,7 @@ fn judge_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
         |ui| form.line(ui, "field.error", Need::Plain, false, &mut f.error, |i| i.mono().hint("2-255")),
     );
     changed |= form.line(ui, "field.error_output", Need::Plain, false, &mut f.error_output, |i| i.mono());
-    changed |= form.line(ui, "field.ok_file", Need::Plain, false, &mut f.ok_file, |i| i.mono());
+    changed |= form.path(ui, "field.ok_file", Need::Plain, false, &mut f.ok_file, |i| i.mono(), Want::File);
     changed
 }
 
@@ -512,32 +602,66 @@ fn verify_row(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> boo
     form.choice(ui, "field.verify", &mut f.verify, &options, form.t.tr(note))
 }
 
+/// Whether a method text is refused: core reads the six words as written (upper case), and an empty one is the default.
+fn method_bad(now: &str) -> bool {
+    !now.is_empty() && !koyomi_core::chore::METHODS.contains(&now)
+}
+
+/// An http job's method: the six words to pick (an empty one shows GET, the default, and stays empty until another is
+/// picked). Text that is not one of them stays a typed field, and says so.
+fn method_row(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
+    let methods = koyomi_core::chore::METHODS;
+    let now = f.method.trim();
+    let at = if now.is_empty() { Some(0) } else { methods.iter().position(|m| *m == now) };
+    match at.filter(|_| !form.typing(ui, "field.method")) {
+        Some(mut at) => {
+            let options: Vec<(usize, &str)> = methods.iter().copied().enumerate().collect();
+            let picked = form.choice(ui, "field.method", &mut at, &options, "");
+            if picked {
+                f.method = methods[at].to_owned();
+            }
+            picked
+        }
+        None => {
+            let bad = method_bad(now);
+            form.line(ui, "field.method", Need::Optional, bad, &mut f.method, |i| i.mono().hint("GET").width(140.0))
+        }
+    }
+}
+
 /// The fields of a chore, by what it does.
 fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> bool {
     let (req, opt) = (Need::Required, Need::Optional);
     let mut changed = false;
     match chore {
         Chore::Delete { .. } => {
-            changed |= form.line(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder));
+            changed |= form.path(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder), Want::Folder);
             changed |= form.line(ui, "field.match", opt, false, &mut f.pattern, |i| i.mono().hint("*.log"));
             let bad = !f.keep_days.trim().is_empty() && f.keep_days.trim().parse::<u32>().is_err();
             changed |= form.line(ui, "field.keep_days", req, bad, &mut f.keep_days, |i| i.width(140.0));
         }
-        Chore::Empty { .. } => changed |= form.line(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder)),
+        Chore::Empty { .. } => changed |= form.path(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder), Want::Folder),
         Chore::Zip { .. } => {
-            changed |= form.line(ui, "field.zip_from", req, false, &mut f.from, |i| i.mono());
-            changed |= form.line(ui, "field.zip_into", req, false, &mut f.into, |i| i.mono());
+            changed |= form.path(ui, "field.zip_from", req, false, &mut f.from, |i| i.mono(), Want::File);
+            changed |= form.path(ui, "field.zip_into", req, false, &mut f.into, |i| i.mono(), Want::Save);
         }
         Chore::Copy { .. } => {
-            changed |= form.line(ui, "field.from", req, false, &mut f.from, |i| i.mono().mark(M::Folder));
-            changed |= form.line(ui, "field.into", req, false, &mut f.into, |i| i.mono().mark(M::Folder));
+            changed |= form.path(ui, "field.from", req, false, &mut f.from, |i| i.mono().mark(M::Folder), Want::Folder);
+            changed |= form.path(ui, "field.into", req, false, &mut f.into, |i| i.mono().mark(M::Folder), Want::Folder);
             changed |= form.line(ui, "field.match", opt, false, &mut f.pattern, |i| i.mono().hint("*.csv"));
         }
         Chore::Send { .. } | Chore::Fetch { .. } => {
             let send = matches!(chore, Chore::Send { .. });
             let (from, into) = if send { ("field.send_from", "field.send_into") } else { ("field.fetch_from", "field.fetch_into") };
-            changed |= form.line(ui, from, req, false, &mut f.from, |i| i.mono());
-            changed |= form.line(ui, into, req, false, &mut f.into, |i| i.mono());
+            // Send reads this PC's files (a file; the folder or glob is typed). Fetch saves into this PC's folder; what it
+            // reads, and where a send goes, may be an sftp or s3 address, so those two stay typed.
+            if send {
+                changed |= form.path(ui, from, req, false, &mut f.from, |i| i.mono(), Want::File);
+                changed |= form.line(ui, into, req, false, &mut f.into, |i| i.mono());
+            } else {
+                changed |= form.line(ui, from, req, false, &mut f.from, |i| i.mono());
+                changed |= form.path(ui, into, req, false, &mut f.into, |i| i.mono(), Want::Folder);
+            }
             // S3 logs in with an access key, not with SSH's.
             if koyomi_core::chore::s3(if send { &f.into } else { &f.from }).is_some() {
                 changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
@@ -546,7 +670,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
                 changed |=
                     form.line(ui, "field.endpoint", opt, false, &mut f.endpoint, |i| i.mono().hint("http://nas:9000").mark(M::Server));
             } else {
-                changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
+                changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
                 changed |= form.line(ui, "field.host_key", opt, false, &mut f.host_key, |i| i.mono());
                 changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
             }
@@ -558,7 +682,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.on", req, false, &mut f.on, |i| i.mono().hint("ssh://user@server").mark(M::Server));
             changed |= form.code(ui, "field.command", req, false, &mut f.command, (2, ""));
             changed |= form.line(ui, "field.host_key", if group { opt } else { req }, false, &mut f.host_key, |i| i.mono());
-            changed |= form.line(ui, "field.key", opt, false, &mut f.key, |i| i.mono());
+            changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
             changed |= form.line(ui, "field.password", opt, false, &mut f.password, |i| i.mono().mark(M::Lock));
             if group {
                 changed |= group_rows(ui, form, f);
@@ -583,7 +707,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
         }
         Chore::Http { .. } => {
             changed |= form.line(ui, "field.url", req, false, &mut f.url, |i| i.mono().mark(M::Globe));
-            changed |= form.line(ui, "field.method", opt, false, &mut f.method, |i| i.mono().hint("GET").width(140.0));
+            changed |= method_row(ui, form, f);
             changed |= form.code(ui, "field.body", opt, false, &mut f.body, (3, ""));
             changed |= form.code(ui, "field.headers", opt, false, &mut f.headers, (2, ""));
             changed |= form.line(ui, "field.content_type", opt, false, &mut f.content_type, |i| i.mono());
@@ -597,7 +721,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.code(ui, "field.mail_cc", opt, cc_bad, &mut f.mail_cc, (1, ""));
             changed |= form.line(ui, "field.subject", req, false, &mut f.subject, |i| i.hint(form.t.tr("field.subject_hint")));
             changed |= form.code(ui, "field.mail_body", opt, false, &mut f.body, (4, ""));
-            changed |= form.code(ui, "field.files", opt, false, &mut f.files, (2, ""));
+            changed |= form.files(ui, "field.files", opt, &mut f.files, (2, ""));
             changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
         }
         Chore::Sql { .. } => {
@@ -616,8 +740,8 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let need = if file { opt } else { req };
             changed |= form.code(ui, "field.sql_text", need, text && file, &mut f.sql, (5, aside));
             let need = if text { opt } else { req };
-            changed |= form.line(ui, "field.sql_file", need, text && file, &mut f.file, |i| i.mono());
-            changed |= form.line(ui, "field.sql_out", opt, false, &mut f.out, |i| i.mono().hint("D:\\out\\{date}.csv"));
+            changed |= form.path(ui, "field.sql_file", need, text && file, &mut f.file, |i| i.mono(), Want::File);
+            changed |= form.path(ui, "field.sql_out", opt, false, &mut f.out, |i| i.mono().hint("D:\\out\\{date}.csv"), Want::Save);
             let rows_bad = !f.rows.trim().is_empty() && koyomi_core::chore::sql_rows(f.rows.trim()).is_err();
             changed |= form.line(ui, "field.sql_rows", opt, rows_bad, &mut f.rows, |i| i.mono().hint("1..").width(180.0));
             // SQL Server signs in as the job's account when the address has no user.
@@ -645,7 +769,15 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
 
 #[cfg(test)]
 mod tests {
-    use super::split_label;
+    use super::{method_bad, split_label};
+
+    #[test]
+    fn a_method_that_core_would_refuse_is_bad() {
+        assert!(!method_bad(""));
+        assert!(!method_bad("POST"));
+        assert!(method_bad("post"));
+        assert!(method_bad("FETCH"));
+    }
 
     #[test]
     fn a_label_splits_off_its_note() {

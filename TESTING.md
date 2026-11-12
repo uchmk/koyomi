@@ -2151,3 +2151,22 @@ Rows need this PC with the window on この PC.
 | 139.9 | With a base set, right-click rows in the 履歴 list | Each offers 「<A> と比べる」 that opens that run against A; on A itself it is greyed with 「比べる元そのものです」; with no base set there is no menu |
 | 139.10 | Right-click a job on the picture and a row of the job table of a finished run | The job is picked and a menu offers 「<名前> から再実行」, 「… の次から（… はスキップ）」, 「… の次から（… は警告終了）」, 「ジョブ <名前> を保留」, ログを見る (shows that job's log and scrolls to it), and エディターでこのジョブを開く when the net still exists; each acts on that job, not on the one picked before |
 | 139.11 | Right-click a pending job of a running run, then a job whose approval is waiting, then a job of a never-began run | 「<名前> をスキップ」 for the pending one; 承認する / 却下する for the approval; of the rerun items only 最初から再実行する for the never-began run; a job inside a child net has no 保留 item |
+
+## 140. Pick instead of typing (`ui/pick.rs`, `ui/canvas/drawer.rs`, `ui/whens.rs`, `ui/users.rs`)
+
+Rows need this PC with the window on この PC unless a row says otherwise.
+
+| # | Do | Expect |
+|---|---|---|
+| 140.1 | Open a net with a ジョブネット job (使う定義) and with a [[when]] 「他のジョブネットの後」 and 先行の終了を待つ | Each is a select of the engine's nets (`グループ/名前` and the title), sorted as the tree sorts them, without the net being edited; 先行の終了を待つ has 「なし」 first, the other two show 「選んでください」 while empty and have no empty choice once set; 「→ 入る」 still opens the net |
+| 140.2 | Put a net id that no longer exists in 使う定義 and in 先行の終了を待つ (by editing the file), open them, then close without picking | Each shows the id as written with 「（ありません）」 after it; nothing is changed (no 未保存 mark); picking another net replaces it |
+| 140.3 | Type text that is not an id (a space inside) into 使う定義 | The select gives way to the typed field with its error; once the text reads and the cursor leaves the field, the select is back |
+| 140.4 | Open the users page, edit a user's ジョブネット and press 追加 ▾ | The choices are 「すべて（空）」, each group as `<group>/*`, then each net id; picking one appends it after a space and picking it again adds nothing; 「すべて（空）」 empties the field; the typed field still works; both are greyed for the admin |
+| 140.5 | Open an http job | メソッド is a row of GET・POST・PUT・PATCH・DELETE・HEAD; an empty method shows GET picked and stays empty until another is picked; a lower-case or odd word in the file keeps the typed field with its error |
+| 140.6 | Open a [[when]] 毎時 or 毎分 and a 毎週 one | Seven toggles 月 … 日 show; for 毎時 and 毎分 a 毎日 toggle is on while the list is empty, turning a day on turns it off, turning the last day off turns it on, pressing it empties the list; 毎週 has no 毎日 and an empty list shows its error; days are saved in week order (`mon, tue …`) |
+| 140.7 | Open a 毎月 [[when]] with each of the rules | The 第 n 週 rule has selects 第 1 … 第 5 and 月 … 日; 日付 is one select 1 … 31; no label mentions commas |
+| 140.8 | Open a 毎年 [[when]] and pick 2 月, then 29 日; then 4 月 | The day select holds the days of the month picked (29 for 2 月); moving to 4 月 keeps the day at 30 at most; the file gets `MM-DD` |
+| 140.9 | On this PC press 参照… beside a folder field, a file field, a file-to-write field and the mail 添付ファイル | The folder chooser, the open chooser, the save chooser and a multi-file chooser open in the folder the field names when it exists; the answer fills the field (attachments are added one per line) |
+| 140.10 | Cancel a chooser; while one is open look at the other 参照… buttons and the [[when]] remove buttons | A cancel changes nothing; every other 参照… and every [[when]] remove button is greyed with the reason |
+| 140.11 | Open a chooser, close the job (or open another), then pick a path | The answer is dropped; the other job's field is unchanged |
+| 140.12 | Switch the window to a far engine | No 参照… button shows anywhere; the fields stay typed |

@@ -145,6 +145,10 @@ pub struct Around<'a> {
     /// The engine's date and time now (not this PC's, when the window is on another PC's engine): every "today" of
     /// the editor, and where its next starts are counted from.
     pub now: chrono::NaiveDateTime,
+    /// Every net as a choice (sorted), for the fields that name a net.
+    pub nets: &'a [super::pick::NetChoice],
+    /// The engine is this PC: a path can be browsed for.
+    pub local: bool,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -751,6 +755,8 @@ pub struct Editor {
     connect: Option<Option<String>>,
     menu: Option<Menu>,
     pane: Option<Pane>,
+    /// The file chooser of the fields' pane, when one is open.
+    browse: super::pick::Browse,
     /// The fields' pane is folded to its strip.
     fold: bool,
     clip: Vec<Job>,
@@ -950,6 +956,7 @@ impl Editor {
             connect: None,
             menu: None,
             pane,
+            browse: super::pick::Browse::default(),
             fold: false,
             clip: Vec::new(),
             dirty: false,
@@ -965,6 +972,12 @@ impl Editor {
     /// The file this would save.
     pub fn text(&self) -> String {
         write::text(&self.net)
+    }
+
+    /// A file chooser is open, for a test.
+    #[cfg(test)]
+    pub fn hold_chooser(&mut self) {
+        self.browse = super::pick::Browse::pending("n\u{1}when.file-0");
     }
 
     /// Saved now: changed, sound, and not being staged for a day instead.
@@ -1857,7 +1870,7 @@ impl Editor {
                 }
             });
         });
-        self.drawer(ui, t, (calendars, around.stops, around.now), power, &mut action);
+        self.drawer(ui, t, (calendars, around.stops, around.now), (around.nets, around.local), power, &mut action);
         egui::Panel::bottom("editor-foot").show(ui, |ui| {
             let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
             self.foot(ui, t, cal, around.now);

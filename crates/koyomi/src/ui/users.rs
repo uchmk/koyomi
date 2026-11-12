@@ -279,6 +279,8 @@ pub(super) struct View<'a> {
     pub who: Option<&'a str>,
     /// The access is [`Access::Open`].
     pub open: bool,
+    /// The ids of the engine's nets: what the nets field can be filled from.
+    pub nets: &'a [String],
 }
 
 /// What a click on the page asks for.
@@ -856,7 +858,7 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
         }
         let can = u.can_write(v);
         if u.add.is_some() {
-            add_form(u, ui, t, can, &mut click);
+            add_form(u, ui, t, (can, v.nets), &mut click);
         }
         let mut drawn = false;
         let users: Vec<Listed> = u.listing.as_ref().map(|l| l.user.clone()).unwrap_or_default();
@@ -885,7 +887,7 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
                 let editing = u.edit.as_ref().is_some_and(|e| &e.name == name);
                 if editing {
                     drawn = true;
-                    edit_form(u, ui, t, can, &mut click);
+                    edit_form(u, ui, t, (can, v.nets), &mut click);
                 } else {
                     let id = tid(name);
                     let why = locked.then(|| t.tr("users.self_locked"));
@@ -933,7 +935,7 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
         if u.edit.is_some() && !drawn {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
-                edit_form(u, ui, t, can, &mut click);
+                edit_form(u, ui, t, (can, v.nets), &mut click);
             });
         }
         if let Some(line) = &u.refusal {
@@ -967,12 +969,14 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
     click
 }
 
-fn nets_row(ui: &mut egui::Ui, t: &ito_i18n::Table, nets: &mut String, admin: bool, id: &str) {
+fn nets_row(ui: &mut egui::Ui, t: &ito_i18n::Table, nets: &mut String, ids: &[String], admin: bool, id: &str) {
     ui.horizontal(|ui| {
         ui.label(t.tr("users.nets_field"));
         let r = ui.add_enabled(!admin, egui::TextEdit::singleline(nets).hint_text(t.tr("users.nets_hint")).desired_width(280.0));
         ito_a11y::say(&r, ito_a11y::Role::Label, t.tr("users.nets_field"));
         ito_a11y::test_id(&r, id);
+        // Beside the typed field (patterns and ids stay typeable): pick what to add. Off with the field.
+        ui.add_enabled_ui(!admin, |ui| super::pick::net_adder(ui, t, &format!("{id}.add"), nets, ids));
     });
 }
 
@@ -998,7 +1002,7 @@ fn stale_row(ui: &mut egui::Ui, t: &ito_i18n::Table, note: &str, id: &str, can_s
     });
 }
 
-fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, can: bool, click: &mut Option<Click>) {
+fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): (bool, &[String]), click: &mut Option<Click>) {
     let can_see = can;
     let busy = u.write.is_some();
     let Some(e) = u.edit.as_mut() else { return };
@@ -1010,7 +1014,7 @@ fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, can: bool, c
             e.normalize();
         }
         let admin = e.is_admin();
-        nets_row(ui, t, &mut e.nets, admin, &format!("{id}.nets"));
+        nets_row(ui, t, &mut e.nets, ids, admin, &format!("{id}.nets"));
     });
     let roles = roles_word(e.roles.as_ref());
     ui.label(format!("{}: {roles}", msg::note(msg::N_USER_LABEL_ROLES, &[])));
@@ -1040,7 +1044,7 @@ fn edit_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, can: bool, c
     });
 }
 
-fn add_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, can: bool, click: &mut Option<Click>) {
+fn add_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, (can, ids): (bool, &[String]), click: &mut Option<Click>) {
     let busy = u.write.is_some();
     let Some(a) = u.add.as_mut() else { return };
     egui::Frame::group(ui.style()).show(ui, |ui| {
@@ -1057,7 +1061,7 @@ fn add_form(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, can: bool, cl
                 a.nets.clear();
             }
             let admin = a.is_admin();
-            nets_row(ui, t, &mut a.nets, admin, "users.add.nets");
+            nets_row(ui, t, &mut a.nets, ids, admin, "users.add.nets");
         });
         if let Some(why) = &a.error {
             say_line(ui, why, ito_theme::colors().err);
@@ -1127,7 +1131,7 @@ mod tests {
     }
 
     fn view<'a>(far: Option<&'a str>, who: Option<&'a str>) -> View<'a> {
-        View { far, who, open: true }
+        View { far, who, open: true, nets: &[] }
     }
 
     /// A page that asked for the list and was answered.
@@ -1611,7 +1615,7 @@ mod tests {
         let _ = req;
         // A link that is down opens no form.
         let mut u3 = loaded("b1", &[("kei", "view")]);
-        u3.act(Click::OpenAdd, &View { far: Some("pc"), who: None, open: false });
+        u3.act(Click::OpenAdd, &View { far: Some("pc"), who: None, open: false, nets: &[] });
         assert!(u3.add.is_none());
     }
 

@@ -8,6 +8,8 @@ use koyomi_core::duration;
 use koyomi_core::msg;
 use koyomi_core::when::{self, AfterOn, Kind, MonthRule, OnClosed, Session, When};
 
+use super::pick::{self, Ctx, Want};
+
 /// The kinds in the order the chooser lists them (also the `when.kind_*` keys).
 pub const KINDS: [&str; 16] = [
     "day",
@@ -445,8 +447,8 @@ impl WhenEdit {
         })
     }
 
-    /// The fields; `true` when one changed.
-    pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, i: usize) -> bool {
+    /// The fields; `true` when one changed. `pick` holds the nets and the file chooser.
+    pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, i: usize, pick: &Ctx) -> bool {
         let mut changed = false;
         let field = |ui: &mut egui::Ui, label: &str, s: &mut String, width: f32| -> bool {
             let mut hit = false;
@@ -457,6 +459,157 @@ impl WhenEdit {
                 hit = r.changed();
             });
             hit
+        };
+        // A field that has a picker beside it: typed only while its text does not read (or while it is typed in), under
+        // an id of its own so the picker can wait for the person to leave it.
+        let typed_id = |key: &str| egui::Id::new(("when-typed", key.to_owned()));
+        let typing = |ui: &egui::Ui, key: &str| ui.memory(|m| m.has_focus(typed_id(key)));
+        let typed = |ui: &mut egui::Ui, label: &str, s: &mut String, width: f32, key: &str| -> bool {
+            let mut hit = false;
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let r = ui.add(egui::TextEdit::singleline(s).desired_width(width).id(typed_id(key)));
+                ito_a11y::say(&r, ito_a11y::Role::Label, label);
+                hit = r.changed();
+            });
+            hit
+        };
+        // A path field with 参照… at its right (on this PC's engine).
+        let path = |ui: &mut egui::Ui, label: &str, s: &mut String, width: f32, key: &str, want: Want| -> bool {
+            let mut hit = false;
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let r = ui.add(egui::TextEdit::singleline(s).desired_width(width));
+                ito_a11y::say(&r, ito_a11y::Role::Label, label);
+                hit = r.changed();
+                hit |= pick.browse_button(ui, t, &format!("{key}-{i}"), label, want, s);
+            });
+            hit
+        };
+        // A label on its own line, then the choices.
+        let named = |ui: &mut egui::Ui, label: &str| {
+            let r = ui.label(label);
+            ito_a11y::say(&r, ito_a11y::Role::Label, label);
+        };
+        // A number out of a short list, when the text is one of them and is not being typed.
+        let nth = |ui: &mut egui::Ui, label: &str, s: &mut String| -> bool {
+            let key = format!("nth-{i}");
+            match pick::number_in(s, 1, 5).filter(|_| !typing(ui, &key)) {
+                Some(n) => {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let words: Vec<String> = (1..=5).map(|n| t.tr(&format!("pick.nth_{n}")).to_owned()).collect();
+                        match pick::select_index(ui, &format!("when-nth-{i}"), label, n as usize - 1, &words) {
+                            Some(k) => {
+                                *s = (k + 1).to_string();
+                                true
+                            }
+                            None => false,
+                        }
+                    })
+                    .inner
+                }
+                None => typed(ui, label, s, 50.0, &key),
+            }
+        };
+        let weekday = |ui: &mut egui::Ui, label: &str, s: &mut String| -> bool {
+            let key = format!("weekday-{i}");
+            match pick::weekday_index(s).filter(|_| !typing(ui, &key)) {
+                Some(at) => {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let words: Vec<String> = pick::DAYS.iter().map(|d| t.tr(&format!("weekday.{d}")).to_owned()).collect();
+                        match pick::select_index(ui, &format!("when-weekday-{i}"), label, at, &words) {
+                            Some(k) => {
+                                *s = pick::DAYS[k].to_owned();
+                                true
+                            }
+                            None => false,
+                        }
+                    })
+                    .inner
+                }
+                None => typed(ui, label, s, 70.0, &key),
+            }
+        };
+        let month_day = |ui: &mut egui::Ui, label: &str, s: &mut String| -> bool {
+            let key = format!("day-{i}");
+            match pick::number_in(s, 1, 31).filter(|_| !typing(ui, &key)) {
+                Some(n) => {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let words: Vec<String> = (1..=31).map(|n| t.trf("pick.day_n", &[&n.to_string()])).collect();
+                        match pick::select_index(ui, &format!("when-day-{i}"), label, n as usize - 1, &words) {
+                            Some(k) => {
+                                *s = (k + 1).to_string();
+                                true
+                            }
+                            None => false,
+                        }
+                    })
+                    .inner
+                }
+                None => typed(ui, label, s, 50.0, &key),
+            }
+        };
+        let year_date = |ui: &mut egui::Ui, label: &str, s: &mut String| -> bool {
+            let key = format!("date-{i}");
+            match pick::month_day_parts(s).filter(|_| !typing(ui, &key)) {
+                Some((m, d)) => {
+                    ui.horizontal(|ui| {
+                        ui.label(label);
+                        let mut hit = false;
+                        let months: Vec<String> = (1..=12).map(|m| t.tr(&format!("pick.month_{m}")).to_owned()).collect();
+                        if let Some(k) = pick::select_index(
+                            ui,
+                            &format!("when-month-{i}"),
+                            &format!("{label} {}", t.tr("pick.date_month")),
+                            m as usize - 1,
+                            &months,
+                        ) {
+                            *s = pick::month_day_text(k as u32 + 1, d);
+                            hit = true;
+                        }
+                        let days: Vec<String> = (1..=pick::days_in_month(m)).map(|n| t.trf("pick.day_n", &[&n.to_string()])).collect();
+                        if let Some(k) = pick::select_index(
+                            ui,
+                            &format!("when-monthday-{i}"),
+                            &format!("{label} {}", t.tr("pick.date_day")),
+                            d as usize - 1,
+                            &days,
+                        ) {
+                            *s = pick::month_day_text(m, k as u32 + 1);
+                            hit = true;
+                        }
+                        hit
+                    })
+                    .inner
+                }
+                None => typed(ui, label, s, 70.0, &key),
+            }
+        };
+        // The weekdays: seven switches (and 毎日 first where an empty list means every day).
+        let days = |ui: &mut egui::Ui, s: &mut String, every: bool| -> bool {
+            let (label, key) = (t.tr("when.days"), format!("days-{i}"));
+            if pick::days_set(s).is_some() && !typing(ui, &key) {
+                named(ui, label);
+                pick::day_toggles(ui, t, label, s, every.then(|| t.tr("pick.everyday")))
+            } else {
+                typed(ui, label, s, 160.0, &key)
+            }
+        };
+        // A net out of the engine's list, when the text is empty or reads as one and is not being typed.
+        let net = |ui: &mut egui::Ui, label: &str, s: &mut String, key: &str, optional: bool| -> bool {
+            let typed_key = format!("{key}-{i}");
+            if (s.trim().is_empty() || koyomi_core::jobnet::is_id(s.trim())) && !typing(ui, &typed_key) {
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    pick.net_select(ui, t, &typed_key, label, s, optional)
+                })
+                .inner
+            } else {
+                typed(ui, label, s, 200.0, &typed_key)
+            }
         };
         // A date field: typed, or picked on a month grid; `many` is a comma-separated list where a click
         // toggles a day. Each `[[when]]` has its own grid.
@@ -490,10 +643,10 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.n"), &mut self.n, 50.0);
                 changed |= field(ui, t.tr("when.from"), &mut self.from, 70.0);
                 changed |= field(ui, t.tr("when.to"), &mut self.to, 70.0);
-                changed |= field(ui, t.tr("when.days"), &mut self.days, 160.0);
+                changed |= days(ui, &mut self.days, true);
             }
             "week" => {
-                changed |= field(ui, t.tr("when.days"), &mut self.days, 160.0);
+                changed |= days(ui, &mut self.days, false);
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "month" => {
@@ -513,12 +666,12 @@ impl WhenEdit {
                 });
                 match self.rule.as_str() {
                     "day" => {
-                        changed |= field(ui, t.tr("when.day"), &mut self.day, 50.0);
+                        changed |= month_day(ui, t.tr("when.day"), &mut self.day);
                         changed |= field(ui, t.tr("when.shift"), &mut self.shift, 50.0);
                     }
                     "nth" => {
-                        changed |= field(ui, t.tr("when.nth"), &mut self.nth, 50.0);
-                        changed |= field(ui, t.tr("when.weekday"), &mut self.weekday, 70.0);
+                        changed |= nth(ui, t.tr("when.nth"), &mut self.nth);
+                        changed |= weekday(ui, t.tr("when.weekday"), &mut self.weekday);
                     }
                     "business_day" => changed |= field(ui, t.tr("when.business_day"), &mut self.n, 50.0),
                     _ => {}
@@ -526,7 +679,7 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "year" => {
-                changed |= field(ui, t.tr("when.date"), &mut self.date, 70.0);
+                changed |= year_date(ui, t.tr("when.date"), &mut self.date);
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "dates" => {
@@ -534,11 +687,11 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
             }
             "file" => {
-                changed |= field(ui, t.tr("when.file"), &mut self.file, 200.0);
+                changed |= path(ui, t.tr("when.file"), &mut self.file, 200.0, "when.file", Want::File);
                 changed |= field(ui, t.tr("when.settle"), &mut self.settle, 70.0);
             }
             "log" => {
-                changed |= field(ui, t.tr("when.log"), &mut self.log, 200.0);
+                changed |= path(ui, t.tr("when.log"), &mut self.log, 200.0, "when.log", Want::File);
                 changed |= field(ui, t.tr("when.contains"), &mut self.contains, 160.0);
             }
             "eventlog" => {
@@ -553,7 +706,7 @@ impl WhenEdit {
                 changed |= field(ui, t.tr("when.subject"), &mut self.subject, 160.0);
             }
             "after_jobnet" => {
-                changed |= field(ui, t.tr("when.jobnet"), &mut self.jobnet, 160.0);
+                changed |= net(ui, t.tr("when.jobnet"), &mut self.jobnet, "jobnet", false);
                 ui.horizontal(|ui| {
                     ui.label(t.tr("when.on"));
                     let options = [
@@ -587,7 +740,7 @@ impl WhenEdit {
             changed |= date(ui, t.tr("when.except"), &mut self.except, "except", true);
             changed |= date(ui, t.tr("when.start"), &mut self.start, "start", false);
             changed |= date(ui, t.tr("when.end"), &mut self.end, "end", false);
-            changed |= field(ui, t.tr("when.wait_for"), &mut self.wait_for, 200.0);
+            changed |= net(ui, t.tr("when.wait_for"), &mut self.wait_for, "wait_for", true);
             changed |= field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0);
             ui.horizontal(|ui| {
                 ui.label(t.tr("when.on_closed"));

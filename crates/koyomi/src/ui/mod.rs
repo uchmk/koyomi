@@ -29,6 +29,7 @@ pub mod canvas;
 pub mod far;
 pub mod gantt;
 pub mod graph;
+pub mod pick;
 pub mod whens;
 
 mod far_config;
@@ -1160,7 +1161,8 @@ impl Browser {
             self.users_ask();
         }
         let (far, who) = (self.link.far().map(str::to_owned), self.who.clone());
-        let view = users::View { far: far.as_deref(), who: who.as_deref(), open };
+        let nets: Vec<String> = self.snap.as_ref().map(|s| s.defs.iter().map(|d| d.id.clone()).collect()).unwrap_or_default();
+        let view = users::View { far: far.as_deref(), who: who.as_deref(), open, nets: &nets };
         let Some(click) = users::show(&mut self.users, ui, t, &view, &access) else {
             return;
         };
@@ -2313,7 +2315,9 @@ impl Browser {
         let stops = self.snap.as_ref().map(|s| s.blackouts.as_slice()).unwrap_or(&[]);
         let staged = self.snap.as_ref().map(|s| s.staged.as_slice()).unwrap_or(&[]);
         let now = self.engine_now();
-        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now };
+        let nets = pick::net_choices(defs);
+        let local = !self.link.is_far();
+        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now, nets: &nets, local };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -8197,6 +8201,75 @@ run = [\"x.exe\"]
         let e = b.editor.as_ref().unwrap();
         assert_eq!(e.result, Some(Ok("暦を書いた: calendars/工場.toml".to_owned())));
         assert!(b.cal_sel.is_none(), "the editor stays, the calendar page is not opened");
+    }
+
+    #[test]
+    fn opening_a_job_and_the_whens_with_pickers_changes_nothing() {
+        let text = r#"format = 1
+[[job]]
+id = "a"
+run = ["x.exe"]
+[[job]]
+id = "n"
+kind = "jobnet"
+use = "gone/net"
+[[when]]
+every = "week"
+days = ["mon", "fri"]
+at = ["09:00"]
+wait_for = "gone/other"
+[[when]]
+every = "month"
+nth = 2
+weekday = "tue"
+at = ["09:00"]
+[[when]]
+every = "month"
+day = 15
+at = ["09:00"]
+[[when]]
+every = "year"
+date = "02-29"
+at = ["09:00"]
+[[when]]
+after_jobnet = "gone/net"
+"#;
+        let net = koyomi_core::jobnet::parse(text).expect("the test net reads");
+        let mut b = quiet(defs());
+        let mut e = canvas::Editor::over("試験/a", net);
+        let before = e.text();
+        e.open_part("n");
+        b.editor = Some(e);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert_eq!(b.editor.as_ref().unwrap().text(), before, "a job open and drawn is unchanged");
+        b.editor.as_mut().unwrap().open_net();
+        s.settle(&mut b);
+        assert_eq!(b.editor.as_ref().unwrap().text(), before, "the [[when]]s open and drawn are unchanged");
+        assert!(!b.editor.as_ref().unwrap().can_save(), "and the editor is not marked changed");
+    }
+
+    #[test]
+    fn a_when_cannot_be_removed_while_a_chooser_is_open() {
+        let text = "format = 1\n[[job]]\nid = \"n\"\nrun = [\"x.exe\"]\n[[when]]\nfile = \"C:\\\\in\\\\a.csv\"\n";
+        let make = || {
+            let mut e = canvas::Editor::new_net("試験/a", koyomi_core::jobnet::parse(text).expect("reads"));
+            e.open_net();
+            let mut b = quiet(defs());
+            b.editor = Some(e);
+            b
+        };
+        let mut s = Screen::new();
+        let mut b = make();
+        let before = b.editor.as_ref().unwrap().text();
+        s.settle(&mut b);
+        s.click("この「いつ」を削除する", &mut b);
+        assert_ne!(b.editor.as_ref().unwrap().text(), before, "control: with no chooser open it removes");
+        let mut b = make();
+        b.editor.as_mut().unwrap().hold_chooser();
+        s.settle(&mut b);
+        s.click("この「いつ」を削除する", &mut b);
+        assert_eq!(b.editor.as_ref().unwrap().text(), before, "greyed while a chooser is open");
     }
 
     #[test]
