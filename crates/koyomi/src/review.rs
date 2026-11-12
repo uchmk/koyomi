@@ -366,7 +366,14 @@ pub fn jobs(t: &Table, d: &Def) -> Vec<String> {
                     out.push(format!("  {}: {n}", t.tr("review.loop_max")));
                 }
             }
-            Part::Branch | Part::Notify | Part::Approval => continue,
+            Part::Branch | Part::Notify => continue,
+            Part::Approval { message } => {
+                for (i, line) in message.iter().flat_map(|m| m.lines()).enumerate() {
+                    let head = if i == 0 { format!("  {}: ", t.tr("review.message")) } else { "    ".to_owned() };
+                    out.push(format!("{head}{line}"));
+                }
+                continue;
+            }
             Part::Join { wait } => {
                 let how = t.tr(if *wait == Wait::All { "review.wait_all" } else { "review.wait_any" });
                 out.push(format!("  {}: {how}", t.tr("review.wait")));
@@ -609,6 +616,28 @@ run_as = {{ user = \"batch\", password = \"secret:batch\" }}
         let all = jobs(&table(), &d);
         assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードはシークレット batch）"), "{all:#?}");
         assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードはシークレット batch）"), "{all:#?}");
+    }
+
+    /// An approval's message is what the person approving reads (`koyomi show`, the approve command).
+    #[test]
+    fn an_approval_shows_its_message() {
+        let text = format!(
+            "{NET}[[job]]
+id = \"ask\"
+kind = \"approval\"
+message = \"請求書の金額を確かめる\\n宛先も見る\"
+after = [\"a\"]
+[[job]]
+id = \"z\"
+run = [\"x\"]
+after = [\"ask\"]
+"
+        );
+        let d = def(&text, &Store::default());
+        assert!(d.net.is_some(), "{:?}", d.problems);
+        let all = jobs(&table(), &d);
+        assert!(all.iter().any(|l| l == "  判断の材料: 請求書の金額を確かめる"), "{all:#?}");
+        assert!(all.iter().any(|l| l == "    宛先も見る"), "{all:#?}");
     }
 
     /// A winrm shows its PC, command, certificate, how it logs in and the secret's name.

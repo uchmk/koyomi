@@ -431,7 +431,11 @@ pub enum Part {
     /// 通知: sends the run's notification as it stands, then ends.
     Notify,
     /// 確認待ち: waits for a person to approve or reject (screen, or `koyomi approve-step`).
-    Approval,
+    /// `message` is what the person decides on, shown with the question.
+    Approval {
+        #[serde(default)]
+        message: Option<String>,
+    },
     /// 子ジョブネット: `use = "グループ/名前"`'s jobs run here, in its place.
     Jobnet {
         #[serde(rename = "use")]
@@ -461,7 +465,7 @@ impl Part {
             Part::Time { .. } => "time",
             Part::File { .. } => "file",
             Part::Notify => "notify",
-            Part::Approval => "approval",
+            Part::Approval { .. } => "approval",
             Part::Jobnet { .. } => "jobnet",
             Part::Chore(c) => c.key(),
         }
@@ -474,7 +478,7 @@ impl Part {
 
     /// Waits for the clock or a file: the engine polls it.
     pub fn waits(&self) -> bool {
-        matches!(self, Part::Time { .. } | Part::File { .. } | Part::Approval)
+        matches!(self, Part::Time { .. } | Part::File { .. } | Part::Approval { .. })
     }
 }
 
@@ -685,6 +689,7 @@ struct RawJob {
     settle: Field,
     count: Field,
     max: Field,
+    message: Field,
     to: Field,
     path: Field,
     #[serde(rename = "match")]
@@ -1106,6 +1111,9 @@ impl Checker<'_> {
         if kind != "loop" {
             self.only(&j.count, "count", "\"loop\"");
         }
+        if kind != "approval" {
+            self.only(&j.message, "message", "\"approval\"");
+        }
         if !["loop", "ssh", "winrm"].contains(&kind) {
             self.only(&j.max, "max", "\"loop\", \"ssh\", \"winrm\"");
         }
@@ -1191,7 +1199,19 @@ impl Checker<'_> {
                 Part::File { file: file.unwrap_or_default(), settle }
             }
             "notify" => Part::Notify,
-            "approval" => Part::Approval,
+            "approval" => {
+                let message = match &j.message {
+                    Some(f) => self.string(&j.message, "message").filter(|m| {
+                        let ok = !m.trim().is_empty();
+                        if !ok {
+                            self.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &["message"]));
+                        }
+                        ok
+                    }),
+                    None => None,
+                };
+                Part::Approval { message }
+            }
             "jobnet" => {
                 let use_ = match &j.use_ {
                     Some(f) => self.string(&j.use_, "use").filter(|u| {
@@ -2680,7 +2700,7 @@ impl Checker<'_> {
             // A part that nothing leads to, or that leads nowhere, does nothing: a mistake, not a quiet no-op.
             let (needs_after, needs_next) = match job.part {
                 Part::Branch | Part::Join { .. } => (true, true),
-                Part::Time { .. } | Part::File { .. } | Part::Approval => (false, true),
+                Part::Time { .. } | Part::File { .. } | Part::Approval { .. } => (false, true),
                 Part::Notify => (true, false),
                 Part::Job | Part::Loop { .. } | Part::Jobnet { .. } | Part::Chore(_) => (false, false),
             };
@@ -4683,5 +4703,31 @@ run = [\"x\"]
             .unwrap_err();
             assert!(msg::DEF_REQUIRE_BAD.is_in(&e[0].message), "{}", e[0].message);
         }
+    }
+
+    #[test]
+    fn an_approval_takes_a_message_and_old_forms_still_read() {
+        let net = |extra: &str| {
+            parse(&format!(
+                "format = 1\n[[job]]\nid = \"ok\"\nkind = \"approval\"\n{extra}\n[[job]]\nid = \"b\"\nrun = [\"x\"]\nafter = [\"ok\"]\n"
+            ))
+        };
+        let part = |n: &Jobnet| n.jobs[0].part.clone();
+        assert_eq!(part(&net("").unwrap()), Part::Approval { message: None });
+        let with = net("message = \"請求書の金額を確かめる\"").unwrap();
+        assert_eq!(part(&with), Part::Approval { message: Some("請求書の金額を確かめる".into()) });
+        assert_eq!(parse(&crate::write::text(&with)).unwrap(), with, "written back and read again");
+        for bad in ["message = 3", "message = \"\"", "message = \"  \""] {
+            let e = net(bad).unwrap_err();
+            assert!(msg::DEF_STRING_BAD.is_in(&e[0].message) || msg::DEF_VALUE_EMPTY.is_in(&e[0].message), "{bad}: {}", e[0].message);
+        }
+        // Only an approval has one.
+        let e = parse("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nmessage = \"hi\"\n").unwrap_err();
+        assert!(e[0].message.contains("message"), "{}", e[0].message);
+        // A part stored by an older koyomi (a run's file, a history day) holds a bare `kind = "approval"`.
+        let old: Part = toml::from_str("kind = \"approval\"").unwrap();
+        assert_eq!(old, Part::Approval { message: None });
+        let new: Part = toml::from_str("kind = \"approval\"\nmessage = \"x\"").unwrap();
+        assert_eq!(new, Part::Approval { message: Some("x".into()) });
     }
 }

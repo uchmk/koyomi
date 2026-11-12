@@ -231,6 +231,8 @@ pub struct Fields {
     pub days: String,
     pub file: String,
     pub settle: String,
+    /// An approval's `message`, as typed (empty: not written).
+    pub message: String,
     /// A loop's `count` and `max`; its `file` is [`Fields::file`]. `max` is also how
     /// many PCs of a group an `ssh` or a `winrm` runs at once.
     pub count: String,
@@ -332,6 +334,7 @@ impl Fields {
                 f.max = max.map(|n| n.to_string()).unwrap_or_default();
             }
             Part::Jobnet { use_ } => f.use_ = use_.clone(),
+            Part::Approval { message } => f.message = message.clone().unwrap_or_default(),
             Part::Chore(c) => match c {
                 Chore::Delete { path, pattern, keep_days } => {
                     f.path = path.clone();
@@ -585,7 +588,11 @@ impl Fields {
                 out.timeout = opt_secs(&self.timeout)?;
                 out.retry = retry()?;
             }
-            Part::Branch | Part::Notify | Part::Approval => {}
+            Part::Approval { .. } => {
+                let message = Some(self.message.clone()).filter(|m| !m.trim().is_empty());
+                out.part = Part::Approval { message };
+            }
+            Part::Branch | Part::Notify => {}
         }
         Ok(out)
     }
@@ -773,7 +780,7 @@ pub fn shelf() -> [Part; 20] {
         Part::Join { wait: Wait::All },
         Part::Time { at: chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap(), days: 0 },
         Part::File { file: String::new(), settle: None },
-        Part::Approval,
+        Part::Approval { message: None },
         Part::Chore(Chore::blank("delete").unwrap()),
         Part::Chore(Chore::blank("zip").unwrap()),
         Part::Chore(Chore::blank("copy").unwrap()),
@@ -795,7 +802,7 @@ fn prefix(p: &Part) -> &'static str {
         Part::Time { .. } => "time",
         Part::File { .. } => "file",
         Part::Notify => "notify",
-        Part::Approval => "approval",
+        Part::Approval { .. } => "approval",
         Part::Jobnet { .. } => "net",
         Part::Chore(c) => c.key(),
     }
@@ -2767,6 +2774,21 @@ run = [\"x\"]
         assert_eq!(e.net.name.as_deref(), Some("集計"), "the rest stays");
         e.undo();
         assert_ne!(e.net.calendar.as_deref(), Some("工場"), "undone with the net's other edits");
+    }
+
+    #[test]
+    fn an_approvals_message_is_read_edited_and_written_back() {
+        let mut e = Editor::over("a/b", net("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n"));
+        let ask = e.add(Part::Approval { message: Some("金額を確かめる".into()) }, Some("a"), None);
+        let mut fields = Fields::of(&e.net.jobs[1]);
+        assert_eq!(fields.message, "金額を確かめる");
+        fields.message = "宛先も見る".into();
+        assert!(e.apply_fields(&ask, &fields).is_ok());
+        assert_eq!(e.net.jobs[1].part, Part::Approval { message: Some("宛先も見る".into()) });
+        assert!(e.text().contains("message = \"宛先も見る\""), "{}", e.text());
+        fields.message = "  ".into();
+        assert!(e.apply_fields(&ask, &fields).is_ok());
+        assert_eq!(e.net.jobs[1].part, Part::Approval { message: None }, "blank: not written");
     }
 
     #[test]

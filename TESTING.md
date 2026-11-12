@@ -2106,3 +2106,17 @@ Rows need this PC with the window on この PC.
 | 136.1 | In the job editor, choose a command job and look at the fields under its name | The fields are named 実行するコマンド, 作業フォルダー, 時間の上限, やり直す回数 and やり直すまでの間隔, each with its key (`run`, `dir`, `timeout`, `retry`) at the start of the note; the note of 作業フォルダー says that an empty field runs the job in the folder of koyomi.toml's `work_dir`, or without one in the engine's working folder (C:\Windows\System32 for a Windows service, /var/lib/koyomi on Debian), and that a relative path is read from that folder |
 | 136.2 | Choose a job with `shell = "powershell"` | シェル says only powershell for now and that it runs the script; スクリプト says it is what the shell runs; each long note sits under its field and does not cross the frame or the next field |
 | 136.3 | Set `language = "en"` in common.toml, open the window again and look at the same jobs | The names are Command, Working folder, Time limit, Retries, Wait before a retry, Shell and Script, with the same notes in English |
+
+## 137. Rerunning a run that never began, the approval's message, and coded file errors (`engine`, `jobnet`, `review`)
+
+Rows need this PC's engine (a throwaway net in a scratch folder).
+
+| # | Do | Expect |
+|---|---|---|
+| 137.1 | Make a net miss its time (stop the engine over its start time, start it again), then `koyomi rerun <run id>` | A new run of the same date starts from the first job; no `os error 3` |
+| 137.2 | Same missed run: `koyomi rerun <run id> --from <job>` | Refused with the new KOYOMI code (E3287) and words saying to rerun from the start |
+| 137.3 | Delete the definition.toml of a finished run's folder, then `koyomi rerun <run id>` | Refused with a KOYOMI code (E3288) that names the path and says to start the net instead |
+| 137.4 | Write `message = "請求書の金額を確かめる"` on an approval job, start the net | The approval notice starts with the message; `koyomi show <net>` shows it under 判断の材料 |
+| 137.5 | In the job editor, choose the approval job | Its 判断の材料 field shows the message; change it and save; the file has the new message and nothing else changed |
+| 137.6 | Start a net whose group has a calendar, then read the run's TOML in its folder | It records the calendar's name (`went_by`), and a net with no calendar records `every` |
+| 137.7 | With `[[http.user]]` narrowed to one net with `edit`, `GET /runs/<id>/definition` of a run of that net; then the same as a `view` user | 200 with `{"run", "text"}` holding the copy for the `edit` user; 403 for the `view` user (and 404 `KOYOMI-E3277` for a run of another net) |

@@ -626,6 +626,12 @@ ids! {
     LOG_CREATE_FAILED = "E3284",
     RUN_COMMAND_EMPTY = "E3285",
     EXE_START_FAILED = "E3286",
+    RERUN_NEVER_BEGAN_PARTIAL = "E3287",
+    RERUN_COPY_UNREADABLE = "E3288",
+    RUN_DEFINITION_NEVER_BEGAN = "E3289",
+    RUN_DEFINITION_GONE = "E3290",
+    FILE_RENAME_FAILED = "E3291",
+    WEBHOOK_STORE_FAILED = "E3292",
     SFTP_USER_UNKNOWN = "E3220",
     CHORE_KEY_EMPTY = "E3530",
     CHORE_ON_EMPTY = "E3531",
@@ -927,6 +933,7 @@ notes! {
     N_RUN_TAKEN_OVER = "run_taken_over",
     N_RUN_LEFT_RUNNING = "run_left_running",
     N_RUN_LEFT_OVER = "run_left_over",
+    N_JOB_NAMED = "job_named",
     N_RUN_WAIT_SLOT = "run_wait_slot",
     N_RUN_EXIT_WARN = "run_exit_warn",
     N_RUN_EXIT = "run_exit",
@@ -1302,6 +1309,16 @@ pub fn uncoded(s: &str) -> &str {
     rest.strip_prefix(' ').unwrap_or(rest)
 }
 
+/// `why` as a line with a KOYOMI code: a coded one as it is, a raw OS error under `id` with the
+/// path it is about (`id`'s text takes the path as `{0}` and the reason as `{1}`).
+pub fn coded_at(id: Id, path: &std::path::Path, why: &str) -> String {
+    if is_coded(why) {
+        why.to_owned()
+    } else {
+        line(id, &[&path.display().to_string(), why])
+    }
+}
+
 /// The language `say` and `line` use, process-wide: `en` or `ja`; anything else means `ja`.
 pub fn set_language(code: &str) {
     let l = if code == "en" { "en" } else { "ja" };
@@ -1385,6 +1402,17 @@ mod tests {
         assert_eq!(uncoded("plain text"), "plain text");
         assert_eq!(uncoded("KOYOMI-E2101"), "");
         assert_eq!(uncoded("a KOYOMI-E2101 b"), "a KOYOMI-E2101 b");
+    }
+
+    /// A coded line is left as it is; a raw reason gets the code and the path.
+    #[test]
+    fn coded_at_keeps_a_coded_line_and_codes_a_raw_one() {
+        let path = std::path::Path::new("a/b.toml");
+        let coded = line(FILE_READ_FAILED, &["x", "y"]);
+        assert_eq!(coded_at(FILE_WRITE_FAILED, path, &coded), coded);
+        let raw = coded_at(FILE_WRITE_FAILED, path, "denied");
+        assert!(FILE_WRITE_FAILED.is_in(&raw) && raw.contains("b.toml") && raw.contains("denied"), "{raw}");
+        assert_eq!(raw, line(FILE_WRITE_FAILED, &[&path.display().to_string(), "denied"]));
     }
 
     fn tables_parse() {

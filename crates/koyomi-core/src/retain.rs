@@ -121,7 +121,7 @@ pub fn old_history(history: &Path, cutoff: NaiveDate) -> Vec<(NaiveDate, PathBuf
 /// the disk: call it off the engine's loop.
 pub fn sweep(state_dir: &Path, cutoff: NaiveDate, busy: &[NaiveDate], archive: Archive) -> Swept {
     let mut out = Swept::default();
-    let at = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_DELETE_FAILED, p, &e.to_string());
     let logs: Vec<_> = old_logs(&state_dir.join("logs"), cutoff).into_iter().filter(|(d, _)| !busy.contains(d)).collect();
     let history: Vec<_> = old_history(&state_dir.join("history"), cutoff).into_iter().filter(|(d, _)| !busy.contains(d)).collect();
     let failed = if archive.on { put_away(state_dir, &logs, &history, &mut out) } else { BTreeSet::new() };
@@ -203,7 +203,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
     }
     let dir = archive_dir(state_dir);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        out.errors.push(format!("{}: {e}", dir.display()));
+        out.errors.push(msg::coded_at(msg::DIR_CREATE_FAILED, &dir, &e.to_string()));
         return months.into_keys().collect();
     }
     for (month, (sources, days)) in months {
@@ -214,7 +214,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
         match ito_zip::add(&zip, &sources, OnExisting::Replace) {
             Ok(_) => out.archived += days.len(),
             Err(e) => {
-                out.errors.push(format!("{}: {e}", zip.display()));
+                out.errors.push(msg::coded_at(msg::FILE_WRITE_FAILED, &zip, &e.to_string()));
                 failed.insert(month);
             }
         }
@@ -225,7 +225,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
 /// Every file under `dir`, named `<prefix>/<path under dir>`, in name order.
 /// A name that is not UTF-8 is an error: the zip would not hold it as it is.
 fn files(dir: &Path, prefix: &str, out: &mut Vec<Source>) -> Result<(), String> {
-    let at = |p: &Path, e: std::io::Error| format!("{}: {e}", p.display());
+    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_READ_FAILED, p, &e.to_string());
     let mut entries: Vec<_> = std::fs::read_dir(dir).and_then(Iterator::collect).map_err(|e| at(dir, e))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for e in entries {
@@ -276,7 +276,7 @@ pub fn log_entry(run: &str, job: &str) -> Option<(NaiveDate, String)> {
 /// The days a month's zip holds: those with a history file, and those with logs.
 pub fn days_in(zip: &Path) -> Result<(Vec<NaiveDate>, Vec<NaiveDate>), String> {
     let (mut history, mut logs) = (BTreeSet::new(), BTreeSet::new());
-    for e in ito_zip::list(zip).map_err(|e| e.to_string())? {
+    for e in ito_zip::list(zip).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, zip, &e.to_string()))? {
         let parts: Vec<&str> = e.name.split('/').collect();
         match parts.as_slice() {
             ["history", y, m, f] => history.extend(history_day(y, m, f)),
@@ -292,9 +292,9 @@ pub fn days_in(zip: &Path) -> Result<(Vec<NaiveDate>, Vec<NaiveDate>), String> {
 pub fn archived_day(state_dir: &Path, day: NaiveDate) -> Result<Option<Day>, String> {
     let zip = archive_dir(state_dir).join(day.format("%Y-%m.zip").to_string());
     match ito_zip::read(&zip, &history_entry(day)) {
-        Ok(bytes) => Day::parse(&String::from_utf8_lossy(&bytes)).map(Some).map_err(|e| format!("{}: {e}", zip.display())),
+        Ok(bytes) => Day::parse(&String::from_utf8_lossy(&bytes)).map(Some).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, &zip, &e)),
         Err(ito_zip::Error::NotFound(_)) => Ok(None),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(msg::coded_at(msg::FILE_READ_FAILED, &zip, &e.to_string())),
     }
 }
 
@@ -302,7 +302,7 @@ pub fn archived_day(state_dir: &Path, day: NaiveDate) -> Result<Option<Day>, Str
 pub fn archived_log(state_dir: &Path, run: &str, job: &str) -> Result<Vec<u8>, String> {
     let (day, name) = log_entry(run, job).ok_or_else(|| msg::line(msg::RETAIN_RUN_ID_BAD, &[run]))?;
     let zip = archive_dir(state_dir).join(day.format("%Y-%m.zip").to_string());
-    ito_zip::read(&zip, &name).map_err(|e| e.to_string())
+    ito_zip::read(&zip, &name).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, &zip, &e.to_string()))
 }
 
 /// Adds to `runs` the runs of the days from `from` to `to` that it has none of

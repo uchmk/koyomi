@@ -17,7 +17,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 49;
+pub const PROTO: u32 = 50;
 
 pub const ENV: &str = "KOYOMI_ADDRESS";
 
@@ -61,6 +61,12 @@ pub enum Request {
         run: String,
         from: Option<String>,
         next: Option<State>,
+    },
+    /// The text of `definition.toml` as it was written when `run` started (`secret:<name>` stays a
+    /// reference). The reply is that text. Refused for a run that never began and for one whose
+    /// copy is gone.
+    RunDefinition {
+        run: String,
     },
     /// Stop one job of a run, or the whole run.
     Kill {
@@ -391,6 +397,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::SkipNext { .. }
         | Request::Shift { .. } => Some(Role::Run),
         Request::List
+        | Request::RunDefinition { .. }
         | Request::Show { .. }
         | Request::Versions { .. }
         | Request::VersionText { .. }
@@ -452,6 +459,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::Ops { .. }
         | Request::Handover { release: false }
         | Request::List
+        | Request::RunDefinition { .. }
         | Request::Show { .. }
         | Request::Versions { .. }
         | Request::VersionText { .. }
@@ -912,6 +920,7 @@ c"
             (Request::SkipNext { id: id(), cancel: false }, Some(Run)),
             (Request::Shift { id: id(), from: "2026-11-01 09:00".into(), to: None }, Some(Run)),
             (Request::List, Some(Edit)),
+            (Request::RunDefinition { run: "r".into() }, Some(Edit)),
             (Request::Show { id: id() }, Some(Edit)),
             (Request::Versions { id: id() }, Some(Edit)),
             (Request::VersionText { id: id(), version: "current".into() }, Some(Edit)),
@@ -967,6 +976,7 @@ c"
             Request::Ops { from: "a".into(), to: "b".into() },
             Request::Handover { release: false },
             Request::List,
+            Request::RunDefinition { run: "r".into() },
             Request::Show { id: id() },
             Request::Versions { id: id() },
             Request::VersionText { id: id(), version: "v".into() },

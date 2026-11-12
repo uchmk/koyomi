@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::jobnet::{Line, Part};
 use crate::late::Delay;
-use crate::run::{How, JobRun, Moved, Run, State};
+use crate::run::{How, JobRun, Moved, Run, State, WentBy};
 
 /// One line of history.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -27,6 +27,9 @@ pub enum Event {
         date: String,
         how: How,
         planned: Option<NaiveDateTime>,
+        /// The calendar the run went by; absent in a day written before this was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        went_by: Option<WentBy>,
         jobs: Vec<JobBrief>,
     },
     JobStart {
@@ -155,6 +158,7 @@ pub fn run_start(run: &Run) -> Event {
         date: run.date.clone(),
         how: run.how,
         planned: run.planned,
+        went_by: run.went_by.clone(),
         jobs: run
             .jobs
             .iter()
@@ -195,7 +199,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     for ev in events {
         match ev {
-            Event::RunStart { at, run, jobnet, title, date, how, planned, jobs } => {
+            Event::RunStart { at, run, jobnet, title, date, how, planned, went_by, jobs } => {
                 let jobs = jobs
                     .iter()
                     .map(|b| JobRun {
@@ -226,6 +230,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                     .collect();
                 let mut r = Run::with_jobs(run, jobnet, title, date, *how, jobs, *at);
                 r.planned = *planned;
+                r.went_by = went_by.clone();
                 runs.retain(|x| x.id != r.id);
                 runs.push(r);
             }
@@ -354,6 +359,24 @@ mod tests {
         assert!(runs[0].job("b").unwrap().moved.is_empty());
         assert_eq!(runs[0].job("c").unwrap().state, State::NotRun);
         assert_eq!(runs[0].job("c").unwrap().reason, "先行の bの名 が異常終了しました");
+    }
+
+    #[test]
+    fn the_calendar_a_run_went_by_comes_back_and_an_old_event_reads_as_not_recorded() {
+        for went in [None, Some(WentBy::Every), Some(WentBy::Calendar("会社".into()))] {
+            let mut r = Run::new("r", "g/n", "n", "2026-10-30", How::Manual, &net(), at("2026-10-30 09:00:00"));
+            r.went_by = went.clone();
+            let day = Day { events: vec![run_start(&r)] };
+            let text = day.to_toml();
+            assert_eq!(text.contains("went_by"), went.is_some(), "{text}");
+            assert_eq!(Day::parse(&text).unwrap_or_else(|e| panic!("{e}: {went:?} {text}")).runs()[0].went_by, went);
+        }
+        let old = "[[event]]\nkind = \"run_start\"\nat = \"2026-10-30T09:00:00\"\nrun = \"r\"\njobnet = \"g/n\"\ntitle = \"n\"\ndate = \"2026-10-30\"\nhow = \"manual\"\njobs = []\n";
+        assert_eq!(Day::parse(old).unwrap().runs()[0].went_by, None);
+        // A day written before an approval had a message holds a bare `kind = "approval"` in its brief.
+        let bare = old.replace("jobs = []\n", "[[event.jobs]]\nid = \"ok\"\npart = { kind = \"approval\" }\n");
+        let runs = Day::parse(&bare).unwrap().runs();
+        assert_eq!(runs[0].jobs[0].part, Part::Approval { message: None });
     }
 
     #[test]

@@ -48,13 +48,16 @@ pub fn check(
         };
         if let Some(exe) = exe.filter(|e| !e.contains('{')) {
             if find_exe(exe, path_var, exts).is_none() {
-                out.push(fault(msg::line(msg::PREFLIGHT_EXE_MISSING, &[&j.id, exe])));
+                out.push(fault(msg::line(msg::PREFLIGHT_EXE_MISSING, &[&crate::run::named(&j.id, j.name.as_deref()), exe])));
             }
         }
         if let Some(dir) = j.dir.as_deref().filter(|d| !d.contains('{')) {
             let at = work.map_or_else(|| PathBuf::from(dir), |w| w.join(dir));
             if !at.is_dir() {
-                out.push(fault(msg::line(msg::PREFLIGHT_DIR_MISSING, &[&j.id, &at.display().to_string()])));
+                out.push(fault(msg::line(
+                    msg::PREFLIGHT_DIR_MISSING,
+                    &[&crate::run::named(&j.id, j.name.as_deref()), &at.display().to_string()],
+                )));
             }
         }
         without_dir |= j.dir.is_none() && j.part.runs_process() && !matches!(j.part, Part::Chore(_));
@@ -62,7 +65,10 @@ pub fn check(
             if !file.contains('{') {
                 let dir = watched_dir(file);
                 if !dir.as_os_str().is_empty() && !dir.is_dir() {
-                    out.push(fault(msg::line(msg::PREFLIGHT_WATCH_MISSING, &[&j.id, &dir.display().to_string()])));
+                    out.push(fault(msg::line(
+                        msg::PREFLIGHT_WATCH_MISSING,
+                        &[&crate::run::named(&j.id, j.name.as_deref()), &dir.display().to_string()],
+                    )));
                 }
             }
         }
@@ -133,15 +139,15 @@ mod tests {
         let t = tmp.display().to_string().replace(std::path::MAIN_SEPARATOR, "/");
         let text = format!(
             "format = 1\n[[job]]\nid = \"a\"\nrun = ['{t}/tool.exe']\ndir = '{t}'\n\
-             [[job]]\nid = \"b\"\nafter = [\"a\"]\nrun = ['{t}/gone.exe']\ndir = '{t}/nope'\n\
+             [[job]]\nid = \"b\"\nname = \"取込\"\nafter = [\"a\"]\nrun = ['{t}/gone.exe']\ndir = '{t}/nope'\n\
              [[job]]\nid = \"c\"\nafter = [\"b\"]\nkind = \"file\"\nfile = '{t}/in/*.csv'\n\
              [[job]]\nid = \"d\"\nafter = [\"c\"]\nrun = [\"ok\", \"{{date}}\"]\ndir = '{t}/{{month}}'\n"
         );
         let net = parse(&text).unwrap();
         let got = check(&net, &Calendars::default(), today(), 60, &t, &[".exe"], None);
         let texts: Vec<_> = got.iter().map(|f| f.text.as_str()).collect();
-        assert!(texts.iter().any(|x| msg::PREFLIGHT_EXE_MISSING.is_in(x) && x.contains("ジョブ b の実行ファイル")), "{texts:?}");
-        assert!(texts.iter().any(|x| msg::PREFLIGHT_DIR_MISSING.is_in(x) && x.contains("ジョブ b の作業フォルダー")), "{texts:?}");
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_EXE_MISSING.is_in(x) && x.contains("ジョブ 取込（b） の実行ファイル")), "{texts:?}");
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_DIR_MISSING.is_in(x) && x.contains("ジョブ 取込（b） の作業フォルダー")), "{texts:?}");
         assert!(texts.iter().any(|x| msg::PREFLIGHT_WATCH_MISSING.is_in(x) && x.contains("ジョブ c が監視するフォルダー")), "{texts:?}");
         // `a` is all there, `d` finds `ok` on PATH only by its suffix (it is not there) but its dir has a token.
         assert!(!texts.iter().any(|x| x.contains("ジョブ a ")), "{texts:?}");

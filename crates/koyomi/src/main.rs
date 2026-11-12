@@ -1276,7 +1276,7 @@ fn load_keys(own: Option<&std::path::Path>) -> (keymap::Keys, Vec<String>) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
         Err(e) => {
-            notes.push(format!("{}: {e}", p.display()));
+            notes.push(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&p.display().to_string(), &e.to_string()]));
             None
         }
     });

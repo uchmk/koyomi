@@ -470,7 +470,12 @@ fn job(j: &Job, out: &mut String) {
                 push(out, "keep_days", &keep_days.to_string());
             }
         }
-        Part::Job | Part::Branch | Part::Notify | Part::Approval => {}
+        Part::Approval { message } => {
+            if let Some(m) = message {
+                push(out, "message", &q(m));
+            }
+        }
+        Part::Job | Part::Branch | Part::Notify => {}
     }
     if !j.run.is_empty() {
         push(out, "run", &format!("[{}]", j.run.iter().map(|s| q(s)).collect::<Vec<_>>().join(", ")));
@@ -817,6 +822,17 @@ after = [\"ok\"]
 ";
         let net = jobnet::parse(src).unwrap();
         assert_eq!(jobnet::parse(&text(&net)).unwrap().jobs.len(), 2);
+        let with = jobnet::parse(&src.replace(
+            "kind = \"approval\"
+",
+            "kind = \"approval\"
+message = \"金額を確かめる\"
+",
+        ))
+        .unwrap();
+        let back = jobnet::parse(&text(&with)).unwrap();
+        assert_eq!(back, with);
+        assert_eq!(back.jobs[0].part, Part::Approval { message: Some("金額を確かめる".into()) });
     }
 
     #[test]

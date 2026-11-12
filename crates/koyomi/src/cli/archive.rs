@@ -64,7 +64,7 @@ fn list() -> i32 {
                 history: days(history),
                 logs: days(logs),
             }),
-            Err(e) => errors.push(format!("{}: {e}", path.display())),
+            Err(e) => errors.push(e),
         }
     }
     let code = i32::from(!errors.is_empty());

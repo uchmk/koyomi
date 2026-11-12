@@ -187,8 +187,8 @@ fn glob(pattern: &str, text: &str) -> bool {
     p[i..].iter().all(|&c| c == '*')
 }
 
-/// The role a request needs. Reads need `view`, but a definition's text needs `edit` (it is what
-/// would run); starting, stopping, rerunning and skipping runs and holding nets or skipping their
+/// The role a request needs. Reads need `view`, but a definition's text (`/nets/text`, and the copy a
+/// run kept, `/runs/<id>/definition`) needs `edit` (it is what would run); starting, stopping, rerunning and skipping runs and holding nets or skipping their
 /// next run need `run`, as does an HA primary taking the schedules back (`POST /standby/release`);
 /// `POST /door` needs `view` only as the gate: which request it carries is checked after, by
 /// `proto::door_needs`; anything else, including what this table does not know yet, needs `edit`.
@@ -197,6 +197,7 @@ pub fn needs(method: &str, path: &str) -> Role {
     let run_part: Option<Vec<&str>> = path.strip_prefix("/runs/").map(|rest| rest.split('/').collect());
     match method {
         "GET" | "HEAD" if path == "/nets/text" => Role::Edit,
+        "GET" | "HEAD" if matches!(run_part.as_deref(), Some([id, "definition"]) if !id.is_empty()) => Role::Edit,
         "GET" | "HEAD" => Role::View,
         "POST" if path == "/door" => Role::View,
         "POST" if matches!(path, "/runs" | "/nets/hold" | "/nets/release" | "/nets/skip-next" | "/standby/release") => Role::Run,
@@ -243,6 +244,9 @@ mod tests {
         assert_eq!(needs("DELETE", "/runs"), Role::Edit);
         assert_eq!(needs("POST", "/something-new"), Role::Edit);
         assert_eq!(needs("GET", "/nets/text/"), Role::Edit);
+        assert_eq!(needs("GET", "/runs/x/definition"), Role::Edit);
+        assert_eq!(needs("HEAD", "/runs/x/definition/"), Role::Edit);
+        assert_eq!(needs("GET", "/runs//definition"), Role::View);
         assert_eq!(needs("POST", "/nets/propose"), Role::Edit);
         assert_eq!(needs("POST", "/standby/release"), Role::Run);
         assert_eq!(needs("POST", "/door"), Role::View);

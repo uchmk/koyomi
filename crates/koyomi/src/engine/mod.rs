@@ -1466,6 +1466,16 @@ impl State {
     /// had, but only while the net is still confirmed as it stands now.
     fn rerun(&mut self, run: &str, from: Option<&str>, next: Option<RunState>) -> Result<String, String> {
         let prev = self.runner.previous(run)?;
+        if prev.never_began() {
+            // Nothing ran, so there is no saved definition to continue from: only a fresh start of
+            // the net as it stands now (and only while it may be started).
+            if from.is_some() || next.is_some() {
+                return Err(msg::line(msg::RERUN_NEVER_BEGAN_PARTIAL, &[]));
+            }
+            let def = self.startable(&prev.jobnet)?.clone();
+            let date = prev.date.parse().map_err(|_| msg::line(msg::RUN_DATE_UNREADABLE, &[&prev.id]))?;
+            return self.runner.start_manual(&def, date, None, &BTreeMap::new());
+        }
         self.startable(&prev.jobnet)?;
         self.runner.rerun(run, from, next)
     }
@@ -1532,7 +1542,9 @@ impl State {
             .map(|j| j.name.clone().unwrap_or_else(|| j.id.clone()))
             .ok_or_else(|| msg::line(msg::NET_JOB_MISSING, &[id, job]))?;
         if !self.held.hold_job(id, job) {
-            return Err(msg::line(msg::HOLD_JOB_ALREADY, &[id, job]));
+            let shown =
+                net.jobs.iter().find(|j| j.id == job).map_or_else(|| job.to_owned(), |j| koyomi_core::run::named(&j.id, j.name.as_deref()));
+            return Err(msg::line(msg::HOLD_JOB_ALREADY, &[id, &shown]));
         }
         self.save_held()?;
         self.runner.set_held(&self.held);
@@ -1541,7 +1553,14 @@ impl State {
     fn release_job(&mut self, id: &str, job: &str) -> Result<String, String> {
         self.held_writable()?;
         if !self.held.release_job(id, job) {
-            return Err(msg::line(msg::HOLD_JOB_NOT, &[id, job]));
+            let shown = self
+                .defs
+                .iter()
+                .find(|d| d.id == id)
+                .and_then(|d| d.net.as_ref())
+                .and_then(|n| n.jobs.iter().find(|j| j.id == job))
+                .map_or_else(|| job.to_owned(), |j| koyomi_core::run::named(&j.id, j.name.as_deref()));
+            return Err(msg::line(msg::HOLD_JOB_NOT, &[id, &shown]));
         }
         self.save_held()?;
         self.runner.set_held(&self.held);
@@ -2714,6 +2733,7 @@ impl State {
             Request::Approve { id, sha256 } => self.approve(id, sha256),
             Request::Run { id, date, from, dry, params } => self.start(id, date.as_deref(), from.as_deref(), *dry, params),
             Request::Rerun { run, from, next } => self.rerun(run, from.as_deref(), *next),
+            Request::RunDefinition { run } => self.runner.run_definition(run),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::History { from, to } => {
@@ -3350,6 +3370,103 @@ run = [\"x\"]
 
     fn standing_of(s: &State, id: &str) -> Option<Standing> {
         s.defs.iter().find(|d| d.id == id).map(|d| d.standing)
+    }
+
+    /// A run that never began reruns from the start as a new run of the same day, not from the middle, and a
+    /// held net stays refused; a run that began and lost its copy is refused with the path.
+    #[test]
+    fn a_run_that_never_began_reruns_from_the_start() {
+        let paths = temp_paths("rerun-never-began");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"koyomi-no-such-program\"]\n";
+        s.save("経理/集計", net, None, false).unwrap();
+        let def = s.defs.iter().find(|d| d.id == "経理/集計").cloned().unwrap();
+        let planned = NaiveDate::from_ymd_opt(2026, 10, 29).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        let missed = s.runner.not_run(&def, planned, RunState::Missed, "past its time").unwrap();
+        // From the middle: refused with the new code, and no run is made.
+        for (from, next) in [(Some("a"), None), (None, Some(RunState::Skipped)), (Some("a"), Some(RunState::Skipped))] {
+            let e = s.rerun(&missed, from, next).unwrap_err();
+            assert!(msg::RERUN_NEVER_BEGAN_PARTIAL.is_in(&e), "{e}");
+        }
+        // From the start: a new run of the same business day, started by hand.
+        let again = s.rerun(&missed, None, None).unwrap();
+        assert_ne!(again, missed);
+        let run = s.runner.previous(&again).unwrap();
+        assert_eq!((run.date.as_str(), run.how, run.jobnet.as_str()), ("2026-10-29", How::Manual, "経理/集計"));
+        for _ in 0..300 {
+            s.runner.tick();
+            if s.runner.previous(&again).unwrap().is_over() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // A held net stays refused.
+        s.hold("経理/集計").unwrap();
+        let e = s.rerun(&missed, None, None).unwrap_err();
+        assert!(msg::RUN_HELD.is_in(&e), "{e}");
+        s.release("経理/集計").unwrap();
+        // A run that began but whose copy is gone: the new code, with the path.
+        let copy = s.runner.log_path(&again, "a").parent().unwrap().join("definition.toml");
+        assert_eq!(s.runner.run_definition(&again).unwrap(), net);
+        std::fs::remove_file(&copy).unwrap();
+        let e = s.rerun(&again, None, None).unwrap_err();
+        assert!(msg::RERUN_COPY_UNREADABLE.is_in(&e) && e.contains("definition.toml"), "{e}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// `Request::RunDefinition` answers the text of the copy as written, and says why when there is none.
+    #[test]
+    fn a_run_definition_is_the_copy_and_says_why_when_there_is_none() {
+        let paths = temp_paths("run-definition");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"koyomi-no-such-program\"]\nenv = { K = \"secret:token\" }\n";
+        s.save("経理/集計", net, None, false).unwrap();
+        let def = s.defs.iter().find(|d| d.id == "経理/集計").cloned().unwrap();
+        let planned = NaiveDate::from_ymd_opt(2026, 10, 29).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        let missed = s.runner.not_run(&def, planned, RunState::Missed, "past its time").unwrap();
+        let ask = |s: &mut State, run: &str| s.answer(&Request::RunDefinition { run: run.to_owned() });
+        let e = ask(&mut s, &missed).unwrap_err();
+        assert!(msg::RUN_DEFINITION_NEVER_BEGAN.is_in(&e), "{e}");
+        let e = ask(&mut s, "20200101-000000-00").unwrap_err();
+        assert!(msg::RUN_NOT_FOUND.is_in(&e), "{e}");
+        let id = s.runner.start_manual(&def, planned.date(), None, &BTreeMap::new()).unwrap();
+        // The reply is the file's text, the reference to the secret as it was written.
+        let copy = s.runner.log_path(&id, "a").parent().unwrap().join("definition.toml");
+        let text = ask(&mut s, &id).unwrap();
+        assert_eq!(text, std::fs::read_to_string(&copy).unwrap());
+        assert!(text.contains("secret:token"));
+        std::fs::remove_file(&copy).unwrap();
+        let e = ask(&mut s, &id).unwrap_err();
+        assert!(msg::RUN_DEFINITION_GONE.is_in(&e) && e.contains("definition.toml"), "{e}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// Every start records the calendar the net counts by, as the real scan resolved it (the group's
+    /// `_group.toml` calendar for a net that names none); a net with none records every.
+    #[test]
+    fn a_start_records_the_calendar_the_run_went_by() {
+        use koyomi_core::run::WentBy;
+        let paths = temp_paths("went-by");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1\n\n[[job]]\nid = \"a\"\nrun = [\"koyomi-no-such-program\"]\n";
+        // The calendar and the group's file are on disk, and the engine's own scan hands the runner the table.
+        std::fs::write(paths.calendars.join("会社.toml"), "format = 1\nholidays = \"japan\"\n").unwrap();
+        std::fs::create_dir_all(paths.jobnets.join("経理")).unwrap();
+        std::fs::write(paths.jobnets.join("経理").join("_group.toml"), "format = 1\ncalendar = \"会社\"\n").unwrap();
+        s.rescan();
+        s.save("経理/集計", net, None, false).unwrap();
+        s.save("人事/月次", net, None, false).unwrap();
+        s.rescan();
+        assert_eq!(s.defs.iter().find(|d| d.id == "経理/集計").and_then(|d| d.calendar.as_deref()), Some("会社"));
+        let day = NaiveDate::from_ymd_opt(2026, 10, 29).unwrap();
+        for (net, want) in [("経理/集計", WentBy::Calendar("会社".to_owned())), ("人事/月次", WentBy::Every)] {
+            let def = s.defs.iter().find(|d| d.id == net).cloned().unwrap();
+            let manual = s.runner.start_manual(&def, day, None, &BTreeMap::new()).unwrap();
+            assert_eq!(s.runner.previous(&manual).unwrap().went_by, Some(want.clone()), "{net}");
+            let missed = s.runner.not_run(&def, day.and_hms_opt(9, 0, 0).unwrap(), RunState::Missed, "x").unwrap();
+            assert_eq!(s.runner.previous(&missed).unwrap().went_by, Some(want));
+        }
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
     /// H1: a job is held and let go through held.toml, which keeps the jobs.

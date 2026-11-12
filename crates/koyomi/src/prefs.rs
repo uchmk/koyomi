@@ -21,6 +21,7 @@ use ito_theme::Theme;
 use koyomi_core::config::Config;
 
 use crate::notify::EVENTS;
+use koyomi_core::msg;
 
 /// How often the files are looked at.
 const WATCH: Duration = Duration::from_secs(2);
@@ -51,7 +52,7 @@ pub fn config_path(base: &Path) -> PathBuf {
 /// the page shows it, the `secret:` addresses read back from the credential
 /// store. Blocks on the store: call it off the UI thread.
 fn read_config(path: &Path) -> ConfigRead {
-    let config = Config::load(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let config = Config::load(path).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, path, &e))?;
     let (mut n, mut notes) = crate::notify::parse(&config);
     notes.extend(n.reveal("koyomi"));
     Ok((config, n, notes))
@@ -79,12 +80,12 @@ pub fn write_config(
     webhooks: Option<&[Place]>,
     mails: Option<&[Mail]>,
 ) -> Result<(), String> {
-    let at = |e: String| format!("{}: {e}", path.display());
+    let at = |e: String| msg::coded_at(msg::FILE_WRITE_FAILED, path, &e);
     let _held = crate::remote::edits();
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(at(e.to_string())),
+        Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, path, &e.to_string())),
     };
     let mut new = text.clone();
     for (key, value) in edits {
@@ -98,7 +99,7 @@ pub fn write_config(
     }
     if new != text {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
         }
         write_atomic(path, &new).map_err(at)?;
     }
@@ -135,7 +136,7 @@ fn read_keymap(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(format!("{}: {e}", path.display())),
+        Err(e) => Err(msg::coded_at(msg::FILE_READ_FAILED, path, &e.to_string())),
     }
 }
 
@@ -146,12 +147,12 @@ static KEYMAP_ONE_AT_A_TIME: std::sync::Mutex<()> = std::sync::Mutex::new(());
 /// Make `edits` in the keymap.toml at `path` (none yet is an empty one),
 /// written only when that changes it. Call it off the UI thread.
 pub fn write_keymap(path: &Path, edits: &[ito_keymap::Edit]) -> Result<(), String> {
-    let at = |e: String| format!("{}: {e}", path.display());
+    let at = |e: String| msg::coded_at(msg::FILE_WRITE_FAILED, path, &e);
     let text = read_keymap(path)?.unwrap_or_default();
     let new = ito_keymap::edit(&text, &crate::keymap::SPEC, edits, crate::keymap::NOOP).map_err(at)?;
     if new != text {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
         }
         write_atomic(path, &new).map_err(at)?;
     }
@@ -470,7 +471,7 @@ impl Prefs {
                     Ok(()) => next_read(&seq, &path),
                     Err(e) => Reload::Failed(e),
                 },
-                Err(e) => Reload::Failed(format!("{}: {e}", path.display())),
+                Err(e) => Reload::Failed(msg::line(msg::WEBHOOK_STORE_FAILED, &[&e.to_string()])),
             };
             Self::send_back(&tx, &wake, r);
         });
@@ -573,17 +574,17 @@ impl Prefs {
             let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
             let _held = crate::remote::edits();
             let path = config_path(&base);
-            let at = |e: String| format!("{}: {e}", path.display());
+            let at = |e: String| msg::coded_at(msg::FILE_WRITE_FAILED, &path, &e);
             let done = (|| {
                 let text = match std::fs::read_to_string(&path) {
                     Ok(t) => t,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(e) => return Err(at(e.to_string())),
+                    Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, &path, &e.to_string())),
                 };
                 let new = watch_remotes_text(&text, on).map_err(at)?;
                 if new != text {
                     if let Some(dir) = path.parent() {
-                        std::fs::create_dir_all(dir).map_err(|e| at(e.to_string()))?;
+                        std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
                     }
                     write_atomic(&path, &new).map_err(at)?;
                 }
@@ -612,8 +613,8 @@ impl Prefs {
                 Ok(())
             } else {
                 path.parent()
-                    .map_or(Ok(()), |d| std::fs::create_dir_all(d).map_err(|e| e.to_string()))
-                    .and_then(|()| write_atomic(&path, ""))
+                    .map_or(Ok(()), |d| std::fs::create_dir_all(d).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, d, &e.to_string())))
+                    .and_then(|()| write_atomic(&path, "").map_err(|e| msg::coded_at(msg::FILE_WRITE_FAILED, &path, &e)))
             };
             if let Err(e) = made.and_then(|()| open_path(&path)) {
                 Self::send_back(&tx, &wake, Reload::Failed(e));
@@ -648,7 +649,7 @@ impl Prefs {
             for path in [common_path(&base), keymap_path(&base)] {
                 if path.exists() {
                     if let Err(e) = std::fs::rename(&path, aside(&path, stamp)) {
-                        failed.push(format!("{}: {e}", path.display()));
+                        failed.push(msg::coded_at(msg::FILE_RENAME_FAILED, &path, &e.to_string()));
                     }
                 }
             }

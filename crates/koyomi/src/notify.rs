@@ -20,7 +20,7 @@ use ito_i18n::Table;
 use ito_notify::toast::App;
 use ito_prefs::{Event, NotifyCfg, DONE_FAILED};
 use koyomi_core::config::Config;
-use koyomi_core::jobnet::Jobnet;
+use koyomi_core::jobnet::{Jobnet, Part};
 use koyomi_core::late::{self, Delay};
 use koyomi_core::run::{Run, State};
 
@@ -171,10 +171,16 @@ pub fn recovery_words(t: &Table, r: &Run, prev: &Run) -> (&'static str, String, 
 pub fn ask_words(t: &Table, r: &Run, job: &str) -> (&'static str, String, String) {
     let label = r.job(job).map_or(job, |j| j.label());
     let title = format!("{}  {}: {label}", t.tr("notify.ask_title"), r.title);
-    let body = [t.trf("notify.ask", &[&r.title, label]), format!("{}  {}", r.id, r.date)].join(
-        "
+    // What the person decides on comes first.
+    let message = r.job(job).and_then(|j| match &j.part {
+        Part::Approval { message } => message.clone(),
+        _ => None,
+    });
+    let body =
+        message.into_iter().chain([t.trf("notify.ask", &[&r.title, label]), format!("{}  {}", r.id, r.date)]).collect::<Vec<_>>().join(
+            "
 ",
-    );
+        );
     ("failed", title, body)
 }
 
@@ -776,6 +782,26 @@ mod tests {
         n.system = v(system);
         n.sound = v(sound);
         n
+    }
+
+    #[test]
+    fn the_approval_notice_starts_with_the_message() {
+        let (t, _) = crate::i18n::table("ja");
+        let net = koyomi_core::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"ask\"\nkind = \"approval\"\nmessage = \"請求書の金額を確かめる\"\n[[job]]\nid = \"b\"\nrun = [\"x\"]\nafter = [\"ask\"]\n",
+        )
+        .unwrap();
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 11, 13).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        let r = Run::new("r1", "g/n", "n", "2026-11-13", How::Manual, &net, at);
+        let (_, _, body) = ask_words(&t, &r, "ask");
+        assert_eq!(body.lines().next(), Some("請求書の金額を確かめる"), "{body}");
+        let bare = koyomi_core::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"ask\"\nkind = \"approval\"\n[[job]]\nid = \"b\"\nrun = [\"x\"]\nafter = [\"ask\"]\n",
+        )
+        .unwrap();
+        let r = Run::new("r1", "g/n", "n", "2026-11-13", How::Manual, &bare, at);
+        let (_, _, body) = ask_words(&t, &r, "ask");
+        assert!(body.lines().next().is_some_and(|l| l.contains("ask")), "no message: the question comes first: {body}");
     }
 
     #[test]

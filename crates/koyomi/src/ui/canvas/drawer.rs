@@ -315,7 +315,12 @@ impl Editor {
                     changed |= fieldset(ui, look, t.tr("canvas.sec_account"), "", |ui| account_rows(ui, form, f));
                 }
             }
-            Part::Branch | Part::Notify | Part::Approval => {}
+            Part::Approval { .. } => {
+                changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
+                    form.code(ui, "field.approval_message", Need::Optional, false, &mut f.message, (3, ""))
+                });
+            }
+            Part::Branch | Part::Notify => {}
         }
         if changed {
             let before = f.msg.clone();

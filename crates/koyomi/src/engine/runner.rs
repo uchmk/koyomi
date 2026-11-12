@@ -41,7 +41,7 @@ use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
 use koyomi_core::lock::{admit, Holder};
 use koyomi_core::msg;
-use koyomi_core::run::{verdict, How, JobRun, Moved, Outcome, Run, State};
+use koyomi_core::run::{verdict, How, JobRun, Moved, Outcome, Run, State, WentBy};
 use koyomi_core::scan::Def;
 use koyomi_core::template;
 
@@ -363,12 +363,13 @@ impl Runner {
 
     /// A person answers the 確認待ち part `job` of `run`: `yes` ends it 正常, else 異常 (却下).
     pub fn answer(&mut self, run: &str, job: &str, yes: bool) -> Result<String, String> {
-        let i = self
-            .waits
-            .iter()
-            .position(|w| w.run == run && w.job == job && matches!(w.due, Due::Person))
-            .ok_or_else(|| msg::line(msg::APPROVAL_NOT_WAITING, &[run, job]))?;
+        let i = self.waits.iter().position(|w| w.run == run && w.job == job && matches!(w.due, Due::Person)).ok_or_else(|| {
+            let shown = self.runs.iter().find(|r| r.id == run).and_then(|r| r.job(job)).map_or_else(|| job.to_owned(), JobRun::named);
+            msg::line(msg::APPROVAL_NOT_WAITING, &[run, &shown])
+        })?;
         self.waits.remove(i);
+        // Read before the state changes: the name is the job's own.
+        let shown = self.runs.iter().find(|r| r.id == run).and_then(|r| r.job(job)).map_or_else(|| job.to_owned(), JobRun::named);
         let now = ito_common::now::now_local().naive_local();
         let (state, reason) =
             if yes { (State::Ok, msg::note(msg::N_APPROVED, &[])) } else { (State::Error, msg::note(msg::N_REJECTED, &[])) };
@@ -376,7 +377,15 @@ impl Runner {
             self.ended(r);
         }
         self.start_ready();
-        Ok(msg::note(if yes { msg::N_APPROVE_DONE } else { msg::N_REJECT_DONE }, &[run, job]))
+        Ok(msg::note(if yes { msg::N_APPROVE_DONE } else { msg::N_REJECT_DONE }, &[run, &shown]))
+    }
+
+    /// Which calendar `jobnet` counts its days by, from the resolved table: a run records it.
+    fn went_by(&self, jobnet: &str) -> WentBy {
+        match self.calendar_of.get(jobnet) {
+            Some(c) => WentBy::Calendar(c.clone()),
+            None => WentBy::Every,
+        }
     }
 
     pub fn take_notices(&mut self) -> Vec<(String, String)> {
@@ -555,7 +564,7 @@ impl Runner {
             .unwrap_or_default();
         self.not_running(&prev.jobnet, &prev.title, lock.as_deref(), shared)?;
         let path = self.run_dir(previous).join("definition.toml");
-        let text = std::fs::read_to_string(&path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let text = std::fs::read_to_string(&path).map_err(|_| msg::line(msg::RERUN_COPY_UNREADABLE, &[&path.display().to_string()]))?;
         let net =
             jobnet::parse(&text).map_err(|ps| ps.iter().map(|p| p.in_file(&path.display().to_string())).collect::<Vec<_>>().join(" / "))?;
         // The values a person gave the first time go again (`params.toml` beside the definition).
@@ -620,6 +629,17 @@ impl Runner {
         id
     }
 
+    /// The text of the definition copy `run` was started with (`definition.toml` beside its
+    /// logs). A run that never began has none; a run that began may have lost it.
+    pub fn run_definition(&self, run: &str) -> Result<String, String> {
+        let prev = self.previous(run)?;
+        if prev.never_began() {
+            return Err(msg::line(msg::RUN_DEFINITION_NEVER_BEGAN, &[]));
+        }
+        let path = self.run_dir(run).join("definition.toml");
+        std::fs::read_to_string(&path).map_err(|_| msg::line(msg::RUN_DEFINITION_GONE, &[&path.display().to_string()]))
+    }
+
     /// The run `id`: one kept here, or one read back from the history of the day in its id.
     pub fn previous(&self, id: &str) -> Result<Run, String> {
         if let Some(r) = self.runs.iter().find(|r| r.id == id) {
@@ -652,13 +672,18 @@ impl Runner {
     /// Keeps the definition beside the run's logs, records the start (and the
     /// jobs that are over from the start: skipped, or carried over from a
     /// previous run), and starts what is ready.
-    fn launch(&mut self, run: Run, text: &str) -> Result<String, String> {
+    fn launch(&mut self, mut run: Run, text: &str) -> Result<String, String> {
+        run.went_by = Some(self.went_by(&run.jobnet));
         let dir = self.run_dir(&run.id);
-        std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-        std::fs::write(dir.join("definition.toml"), text).map_err(|e| format!("{}: {e}", dir.display()))?;
+        let shown = |p: &std::path::Path| p.display().to_string();
+        std::fs::create_dir_all(&dir).map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&shown(&dir), &e.to_string()]))?;
+        let def_path = dir.join("definition.toml");
+        std::fs::write(&def_path, text).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&def_path), &e.to_string()]))?;
         if !run.params.is_empty() {
-            let kept = toml::to_string(&run.params).map_err(|e| e.to_string())?;
-            std::fs::write(dir.join(PARAMS), kept).map_err(|e| format!("{}: {e}", dir.display()))?;
+            let params_path = dir.join(PARAMS);
+            let kept =
+                toml::to_string(&run.params).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&params_path), &e.to_string()]))?;
+            std::fs::write(&params_path, kept).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&params_path), &e.to_string()]))?;
         }
         self.record(&run, history::run_start(&run));
         let over: Vec<JobRun> = run.jobs.iter().filter(|j| j.ended.is_some()).cloned().collect();
@@ -794,7 +819,8 @@ impl Runner {
         let net = def.net.as_ref()?;
         let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
-        let run = Run::not_run(&id, &def.id, def.label(), &planned.format("%Y-%m-%d").to_string(), planned, state, reason, net, now);
+        let mut run = Run::not_run(&id, &def.id, def.label(), &planned.format("%Y-%m-%d").to_string(), planned, state, reason, net, now);
+        run.went_by = Some(self.went_by(&def.id));
         self.record(&run, history::run_start(&run));
         self.record(&run, history::run_end(&run));
         self.runs.push(run.clone());
@@ -853,8 +879,9 @@ impl Runner {
         match job {
             Some(job) => {
                 let j = r.job(job).ok_or_else(|| msg::line(msg::RUN_JOB_NONE, &[job]))?;
+                let named = j.named();
                 if j.state != State::Running {
-                    return Err(msg::line(msg::JOB_NOT_RUNNING, &[j.label()]));
+                    return Err(msg::line(msg::JOB_NOT_RUNNING, &[&named]));
                 }
                 if j.part.waits() {
                     // A wait has no process: it ends here.
@@ -862,11 +889,12 @@ impl Runner {
                     if let Some(r) = self.end_part(run, job, State::Killed, &msg::note(msg::N_RUN_KILLED, &[]), None, now) {
                         self.ended(r);
                     }
-                    return Ok(msg::note(msg::N_KILL_DONE, &[run, job]));
+                    return Ok(msg::note(msg::N_KILL_DONE, &[run, &named]));
                 }
-                let a = self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| msg::line(msg::JOB_NOT_RUNNING, &[job]))?;
+                let a =
+                    self.active.iter().find(|a| a.run == run && a.job == job).ok_or_else(|| msg::line(msg::JOB_NOT_RUNNING, &[&named]))?;
                 ask_stop(&a.why, &a.stop, WHY_KILLED);
-                Ok(msg::note(msg::N_KILL_ASKED_JOB, &[run, job]))
+                Ok(msg::note(msg::N_KILL_ASKED_JOB, &[run, &named]))
             }
             None => {
                 r.kill_pending(now);
@@ -1015,7 +1043,7 @@ impl Runner {
                         )),
                     }
                 }
-                Part::Approval => {
+                Part::Approval { .. } => {
                     self.wait_on(&run_id, &job_id, &msg::note(msg::N_WAIT_APPROVAL, &[]), Due::Person, now);
                     self.asks.push((run_id.clone(), job_id.clone()));
                 }
@@ -3366,6 +3394,7 @@ after = [\"none\"]
                 "format = 1
 [[job]]
 id = \"ok\"
+name = \"承認\"
 kind = \"approval\"
 [[job]]
 id = \"b\"
@@ -3381,7 +3410,8 @@ after = [\"ok\"]
         r.tick();
         assert_eq!(r.take_asks(), vec![(id.clone(), "ok".to_owned())]);
         assert!(r.answer(&id, "nope", true).is_err());
-        r.answer(&id, "ok", true).unwrap();
+        // The reply shows the job by its name with its id kept.
+        assert_eq!(r.answer(&id, "ok", true).unwrap(), msg::note(msg::N_APPROVE_DONE, &[&id, "承認（ok）"]));
         assert_eq!(wait_over(&mut r, &id).state, State::Ok);
         // A rejection ends the run 異常 and the job after it does not run.
         let id2 = r.start(&d, day, How::Manual, None).unwrap();
@@ -3644,7 +3674,7 @@ id = \"b\"
     fn a_waiting_part_is_killed_by_hand_and_the_run_ends_abnormally() {
         let dir = scratch("killwait");
         let text = format!(
-            "format = 1\n[[job]]\nid = \"t\"\nkind = \"time\"\nat = \"00:00\"\ndays = 1\n[[job]]\nid = \"b\"\n{}\nafter = [\"t\"]\n",
+            "format = 1\n[[job]]\nid = \"t\"\nname = \"待ち\"\nkind = \"time\"\nat = \"00:00\"\ndays = 1\n[[job]]\nid = \"b\"\n{}\nafter = [\"t\"]\n",
             echo("two")
         );
         let d = def("net", &text);
@@ -3652,7 +3682,8 @@ id = \"b\"
         let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
         wait_running(&mut r, &id, "t");
         assert!(msg::JOB_NOT_RUNNING.is_in(&r.kill(&id, Some("b")).unwrap_err()));
-        assert_eq!(r.kill(&id, Some("t")).unwrap(), msg::note(msg::N_KILL_DONE, &[&id, "t"]));
+        // The reply shows the job by its name with its id kept.
+        assert_eq!(r.kill(&id, Some("t")).unwrap(), msg::note(msg::N_KILL_DONE, &[&id, "待ち（t）"]));
         let run = r.run(&id).unwrap().clone();
         assert!(run.is_over());
         assert_eq!(run.job("t").unwrap().state, State::Killed);

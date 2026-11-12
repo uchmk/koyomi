@@ -625,6 +625,17 @@ fn narrow(
             let within = access.nets.as_ref().map(|n| n.patterns().join(&msg::note(msg::N_HTTP_NETS_JOIN, &[]))).unwrap_or_default();
             return Err(line(msg::OUTSIDE_NETS, &[who, id, &within]));
         }
+        // A definition copy is definition text: Edit on the run's net, whatever route asked.
+        Request::RunDefinition { run } => match run_net(run, ask) {
+            Some(net) if sees(&net) => {
+                let has = access.role_on(&net);
+                if !has.allows(Role::Edit) {
+                    return Err(line(msg::ROLE_TOO_LOW_ON_NET, &[who, &net, has.name(), Role::Edit.name()]));
+                }
+                ask(r)
+            }
+            _ => Err(line(msg::RUN_NOT_FOUND, &[run])),
+        },
         Request::Kill { run, .. } | Request::Rerun { run, .. } | Request::Skip { run, .. } | Request::Log { run, .. } => {
             match run_net(run, ask) {
                 Some(net) if sees(&net) => {
@@ -755,7 +766,7 @@ fn wrong_method(method: &str, path: &str) -> bool {
         "/nets/hold" | "/nets/release" | "/nets/skip-next" | "/nets/propose" | "/standby/release" => posts(method),
         _ => match path.strip_prefix("/runs/").map(|r| r.split('/').collect::<Vec<_>>()).as_deref() {
             Some([id]) if !id.is_empty() => reads(method),
-            Some([id, "log"]) if !id.is_empty() => reads(method),
+            Some([id, "log" | "definition"]) if !id.is_empty() => reads(method),
             Some([id, "stop" | "rerun" | "skip"]) if !id.is_empty() => posts(method),
             _ => return false,
         },
@@ -763,7 +774,7 @@ fn wrong_method(method: &str, path: &str) -> bool {
     !ok
 }
 
-const PATHS: &str = "POST /runs, GET /runs, GET /runs/<id>, GET /runs/<id>/log, POST /runs/<id>/stop|rerun|skip, GET /nets, GET /nets/text, POST /nets/hold|release|skip-next|propose, POST /standby/release, GET /health";
+const PATHS: &str = "POST /runs, GET /runs, GET /runs/<id>, GET /runs/<id>/log, GET /runs/<id>/definition, POST /runs/<id>/stop|rerun|skip, GET /nets, GET /nets/text, POST /nets/hold|release|skip-next|propose, POST /standby/release, GET /health";
 
 /// 405: the path takes only `methods`.
 fn not_allowed(methods: &str) -> Response {
@@ -868,6 +879,7 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         ("POST", "/nets/skip-next", ..) => skip_next(req, ask),
         ("POST", "/nets/propose", ..) => propose(req, ask),
         ("GET", "/nets/text", ..) => def_text(req, ask),
+        ("GET", ..) if run_part(path, "definition").is_some() => run_def(run_part(path, "definition").unwrap_or_default(), ask),
         ("POST", "/standby/release", ..) => release_standby(ask),
         ("POST", ..) if act.is_some() => match act.unwrap_or_default() {
             ("stop", id) => stop_run(id, ask),
@@ -885,6 +897,7 @@ fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, Stri
         (_, "/nets/skip-next", ..) => not_allowed("POST"),
         (_, "/nets/propose", ..) => not_allowed("POST"),
         (_, "/nets/text", ..) => not_allowed("GET"),
+        _ if run_part(path, "definition").is_some() => not_allowed("GET"),
         (_, "/standby/release", ..) => not_allowed("POST"),
         _ if act.is_some() => not_allowed("POST"),
         _ => Response::error(404, &line(msg::HTTP_PATH_UNKNOWN, &[PATHS])),
@@ -1124,6 +1137,16 @@ fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, St
     }
 }
 
+/// `GET /runs/<id>/definition`: the copy of the definition the run kept (`definition.toml`), as it
+/// was when the run began. Edit, like `/nets/text`. 404 when the run is not there, never began or kept
+/// no copy.
+fn run_def(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    match ask(&Request::RunDefinition { run: id.to_owned() }) {
+        Ok(text) => Response::ok(serde_json::json!({ "run": id, "text": text })),
+        Err(e) => Response::error(404, &e),
+    }
+}
+
 /// `POST /nets/propose`: writes the definition but leaves it unconfirmed (TODO 83). 409 when the
 /// file changed since `base`, 422 when it cannot be written as it is.
 fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
@@ -1294,6 +1317,77 @@ mod tests {
         let all = handle(&req("GET", "/nets", ""), ask);
         assert_eq!((all.json["nets"].as_array().map(Vec::len), all.json["nets"][0].get("role")), (Some(2), None));
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "人事/new", "text": "x"}"#), ask).status, 200);
+    }
+
+    /// A run's definition copy is definition text: the door lets it through to Edit only, and a narrowed
+    /// caller reaches it on a net they see with Edit there; for any other run it is as if it were not there.
+    #[test]
+    fn a_run_definition_needs_edit_on_the_runs_net() {
+        let ask = |r: &Request| match r {
+            Request::Runs => Ok(runs_of(&[("20261031-090000-01", "経理/a"), ("20261031-090000-02", "人事/b")])),
+            Request::History { .. } => Ok(runs_of(&[])),
+            _ => Ok("copy".to_owned()),
+        };
+        let one = Request::RunDefinition { run: "20261031-090000-01".into() };
+        let other = Request::RunDefinition { run: "20261031-090000-02".into() };
+        let nets = |role| Access { role, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
+        assert_eq!(narrow(&one, "sato", &nets(Role::Edit), Role::Edit, &ask), Ok(Ok("copy".to_owned())));
+        let outside = narrow(&other, "sato", &nets(Role::Edit), Role::Edit, &ask).unwrap().unwrap_err();
+        assert!(msg::RUN_NOT_FOUND.is_in(&outside), "{outside}");
+        for low in [Role::View, Role::Run] {
+            let e = narrow(&one, "sato", &nets(low), Role::Edit, &ask).unwrap_err();
+            assert!(msg::ROLE_TOO_LOW_ON_NET.is_in(&e), "{e}");
+        }
+        // Over the door: Edit and no less.
+        let need = proto::door_needs(&one).unwrap();
+        assert!(need == Role::Edit && !Role::View.allows(need) && !Role::Run.allows(need));
+    }
+
+    /// `GET /runs/<id>/definition` is reached over HTTP: Edit on the run's net answers 200 with the copy,
+    /// a run of another net is not there (404), a narrowed View or Run caller is refused (403), and a
+    /// caller who is not narrowed needs Edit from the role table.
+    #[test]
+    fn a_run_definition_is_read_over_http_by_edit_only() {
+        let ask = |r: &Request| match r {
+            Request::Runs => Ok(runs_of(&[("20261031-090000-01", "経理/a"), ("20261031-090000-02", "人事/b")])),
+            Request::History { .. } => Ok(runs_of(&[])),
+            Request::RunDefinition { run } if run.ends_with("-01") => Ok("[[job]]
+id = \"x\"
+"
+            .to_owned()),
+            _ => Err("never".to_owned()),
+        };
+        let nets = |role| Access { role, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
+        let get = |access: &Access, id: &str| within(&req("GET", &format!("/runs/{id}/definition"), ""), access, ask);
+
+        let ok = get(&nets(Role::Edit), "20261031-090000-01");
+        assert_eq!(
+            (ok.status, ok.json["run"].as_str(), ok.json["text"].as_str()),
+            (
+                200,
+                Some("20261031-090000-01"),
+                Some(
+                    "[[job]]
+id = \"x\"
+"
+                )
+            )
+        );
+        let other = get(&nets(Role::Edit), "20261031-090000-02");
+        assert_eq!(other.status, 404);
+        assert!(other.json["error"].as_str().is_some_and(|e| msg::RUN_NOT_FOUND.is_in(e)), "{:?}", other.json);
+        for low in [Role::View, Role::Run] {
+            assert_eq!(get(&nets(low), "20261031-090000-01").status, 403);
+        }
+        // Not narrowed: straight to the engine, and a refusal there is "not there".
+        assert_eq!(handle(&req("GET", "/runs/20261031-090000-01/definition/", ""), ask).status, 200);
+        assert_eq!(handle(&req("GET", "/runs/20261031-090000-02/definition", ""), ask).status, 404);
+        assert_eq!(handle(&req("POST", "/runs/20261031-090000-01/definition", ""), ask).status, 405);
+        // A View user who is not narrowed is stopped by the role table.
+        let roles = BTreeMap::from([("default".to_owned(), Role::View)]);
+        assert_eq!(allowed(&req("GET", "/runs/20261031-090000-01/definition", ""), &roles).map(|r| r.status), Some(403));
+        let roles = BTreeMap::from([("default".to_owned(), Role::Edit)]);
+        assert!(allowed(&req("GET", "/runs/20261031-090000-01/definition", ""), &roles).is_none());
     }
 
     /// On the tailnet a login or a tag is the person who wrote it, so their role and `nets` hold.

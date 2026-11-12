@@ -284,6 +284,14 @@ impl Moved {
     }
 }
 
+/// A job as a line names it: `name（id）` when it has a name (the id stays so a log can be searched), else the id.
+pub fn named(id: &str, name: Option<&str>) -> String {
+    match name.filter(|n| !n.is_empty() && *n != id) {
+        Some(n) => msg::note(msg::N_JOB_NAMED, &[n, id]),
+        None => id.to_owned(),
+    }
+}
+
 impl JobRun {
     pub fn from_job(job: &Job) -> JobRun {
         JobRun {
@@ -341,6 +349,11 @@ impl JobRun {
         self.name.as_deref().unwrap_or(&self.id)
     }
 
+    /// For a line that names the job: `name（id）` (the id stays so a log can be searched), the id when there is no name.
+    pub fn named(&self) -> String {
+        named(&self.id, self.name.as_deref())
+    }
+
     /// Still may start.
     pub fn pending(&self) -> bool {
         matches!(self.state, State::NotRun | State::Waiting) && self.ended.is_none()
@@ -377,6 +390,15 @@ pub fn verdict(judge: Option<&Judge>, code: i32) -> State {
         _ if code == 0 => State::Ok,
         _ => State::Error,
     }
+}
+
+/// Which calendar a run went by: every day (the net has none, nor its group), or the named one.
+/// A run that does not say (`Run::went_by` is `None`) is from before the engine recorded it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WentBy {
+    Every,
+    Calendar(String),
 }
 
 /// One run of one net.
@@ -423,6 +445,9 @@ pub struct Run {
     /// What it was late in (`late_start`, `late_end`, `late_slow`), each told once.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub delays: Vec<Delay>,
+    /// The calendar the run went by; `None` for a run from before this was recorded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub went_by: Option<WentBy>,
 }
 
 fn default_priority() -> u8 {
@@ -530,6 +555,7 @@ impl Run {
             require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),
             delays: Vec::new(),
+            went_by: None,
         };
         run.settle(now);
         run
@@ -569,6 +595,7 @@ impl Run {
             require: crate::jobnet::Require::default(),
             params: BTreeMap::new(),
             delays: Vec::new(),
+            went_by: None,
         }
     }
 
@@ -684,7 +711,8 @@ impl Run {
             j.reason = msg::note(word, &[]);
         }
         if run.jobs.iter().all(|j| j.ended.is_some()) {
-            return Err(msg::line(msg::RUN_NOTHING_AFTER, &[&previous.id, job]));
+            let shown = previous.job(job).map_or_else(|| job.to_owned(), JobRun::named);
+            return Err(msg::line(msg::RUN_NOTHING_AFTER, &[&previous.id, &shown]));
         }
         run.reason = msg::note(msg::N_RUN_RERUN_AFTER, &[&previous.id, job]);
         Ok(run)
@@ -739,6 +767,32 @@ impl Run {
         forms(msg::N_RUN_LATE, LEGACY_LATE).iter().any(|f| self.reason.starts_with(f.as_str()))
     }
 
+    /// A run [`Run::left_over`] wrote down: the jobs that had ended are kept, and its saved
+    /// definition lets it go on from where it was.
+    pub fn left_behind(&self) -> bool {
+        // The note starts with a name (`{0}`), so its head is empty and tells nothing. Read it by all
+        // its fixed words instead: each non-empty piece between the values must be found, in order.
+        ["ja", "en"].iter().any(|lang| {
+            let text = msg::note_in(lang, msg::N_RUN_LEFT_OVER, &["\u{1}", "\u{1}", "\u{1}"]);
+            let pieces: Vec<&str> = text.split('\u{1}').filter(|p| !p.trim().is_empty()).collect();
+            let mut rest = self.reason.as_str();
+            !pieces.is_empty()
+                && pieces.iter().all(|piece| match rest.find(piece) {
+                    Some(at) => {
+                        rest = &rest[at + piece.len()..];
+                        true
+                    }
+                    None => false,
+                })
+        })
+    }
+
+    /// A run of the schedule that never began (time passed, skipped, locked, held): it has no
+    /// definition copy to rerun from, unlike a [`Run::left_behind`] one.
+    pub fn never_began(&self) -> bool {
+        self.not_started() && !self.left_behind()
+    }
+
     pub fn job(&self, id: &str) -> Option<&JobRun> {
         self.jobs.iter().find(|j| j.id == id)
     }
@@ -762,14 +816,14 @@ impl Run {
     pub fn skip(&mut self, id: &str, now: NaiveDateTime) -> Result<(), String> {
         let j = self.jobs.iter_mut().find(|j| j.id == id).ok_or_else(|| msg::line(msg::RUN_JOB_NONE, &[id]))?;
         if j.state == State::Running {
-            return Err(msg::line(msg::RUN_SKIP_RUNNING, &[j.label()]));
+            return Err(msg::line(msg::RUN_SKIP_RUNNING, &[&j.named()]));
         }
         // A skipped branch has no exit code to choose a way by, and a skipped station would leave its children running.
         if matches!(j.part, Part::Branch | Part::Jobnet { .. }) {
-            return Err(msg::line(msg::RUN_SKIP_STRUCTURE, &[j.label()]));
+            return Err(msg::line(msg::RUN_SKIP_STRUCTURE, &[&j.named()]));
         }
         if !j.pending() && !(j.state == State::Held && j.ended.is_none()) {
-            return Err(msg::line(msg::RUN_SKIP_ENDED, &[j.label()]));
+            return Err(msg::line(msg::RUN_SKIP_ENDED, &[&j.named()]));
         }
         j.state = State::Skipped;
         j.ended = Some(now);
@@ -1746,6 +1800,57 @@ mod tests {
         assert_eq!((d.state, d.reason.as_str()), (State::NotRun, ""));
         assert_eq!(l.job("a").unwrap().state, State::Ok);
         assert!(l.not_started() && l.is_over());
+    }
+
+    /// A job is named by its name with its id kept, or by its id when it has no other name.
+    #[test]
+    fn a_job_is_named_by_its_name_with_its_id_kept() {
+        assert_eq!(named("b", Some("取込")), "取込（b）");
+        assert_eq!(named("b", None), "b");
+        assert_eq!(named("b", Some("b")), "b");
+        assert_eq!(named("b", Some("")), "b");
+    }
+
+    /// Missed, skipped, locked and held runs never began; one the standby left behind did, and
+    /// keeps its definition; a run that started is neither.
+    #[test]
+    fn a_run_that_never_began_is_told_from_one_left_behind() {
+        let now = at("2026-10-30 10:00:00");
+        let mut r = diamond();
+        for state in [State::Missed, State::Skipped, State::Locked, State::Held] {
+            r.state = state;
+            assert!(r.not_started() && r.never_began() && !r.left_behind(), "{state:?}");
+        }
+        let mut theirs = diamond();
+        ended(&mut theirs, "a", 0, "2026-10-30 09:00:01");
+        let l = Run::left_over("r3", &theirs, "pc-a", "why", now);
+        assert!(l.not_started() && l.left_behind() && !l.never_began());
+        let mut en = l.clone();
+        en.reason = msg::note_in("en", msg::N_RUN_LEFT_OVER, &["pc-a", "r1", "why"]);
+        assert!(en.left_behind() && !en.never_began());
+        assert!(!diamond().never_began() && !diamond().left_behind(), "a run that started");
+        // A reason that holds only the first fixed piece of the note is not one left behind.
+        let text = msg::note_in("ja", msg::N_RUN_LEFT_OVER, &["\u{1}", "\u{1}", "\u{1}"]);
+        let first = text.split('\u{1}').find(|p| !p.trim().is_empty()).unwrap();
+        let mut partial = diamond();
+        partial.state = State::Held;
+        partial.reason = format!("pc-a{first}");
+        assert!(!partial.left_behind() && partial.never_began(), "{}", partial.reason);
+    }
+
+    /// Runs and events from before the calendar was recorded read as not recorded.
+    #[test]
+    fn went_by_reads_old_runs_as_not_recorded_and_round_trips() {
+        let mut run = diamond();
+        assert_eq!(run.went_by, None);
+        let text = toml::to_string(&run).unwrap();
+        assert!(!text.contains("went_by"), "{text}");
+        assert_eq!(toml::from_str::<Run>(&text).unwrap().went_by, None);
+        for w in [WentBy::Every, WentBy::Calendar("会社".into())] {
+            run.went_by = Some(w.clone());
+            let back: Run = toml::from_str(&toml::to_string(&run).unwrap()).unwrap();
+            assert_eq!(back.went_by, Some(w));
+        }
     }
 
     /// From the jobs after a failed one: it ends as スキップ or 警告 without running, and the next go.

@@ -2887,6 +2887,42 @@ text = "{0} cannot be started. ({1})"
 cause = "An error occurred while starting the program."
 action = "Check the path of the program and its permissions."
 
+[E3287]
+when = "A run that never began is rerun from the middle"
+text = "This run never began, so it cannot be rerun from the middle. Rerun it from the start."
+cause = "A run that did not begin (past its time, skipped, held) has no earlier run to continue from."
+action = "Rerun it from the start, without --from or --next."
+
+[E3288]
+when = "The definition copy of a run that began cannot be read, so it cannot be rerun"
+text = "The definition copy {0} of this run cannot be read, so it cannot be rerun."
+cause = "definition.toml is gone from the run's folder, or cannot be read."
+action = "Start the net itself instead."
+
+[E3289]
+when = "The definition copy of a run that never began is asked for"
+text = "This run never began, so it has no definition copy."
+cause = "A run that did not begin keeps no copy of the definition."
+action = "Check the net's definition as it stands now."
+
+[E3290]
+when = "The definition copy of a run that began is no longer there"
+text = "The definition copy of this run is gone. ({0})"
+cause = "The run's folder was removed after the kept days, or the copy was deleted."
+action = "Check the net's definition as it stands now."
+
+[E3291]
+when = "A file cannot be renamed"
+text = "{0} cannot be renamed. ({1})"
+cause = "An error occurred while renaming the file."
+action = "Check that the file is not open elsewhere and that you have the permission."
+
+[E3292]
+when = "A notification webhook address cannot be saved to the credential store"
+text = "The notification webhook address cannot be saved to the credential store. ({0})"
+cause = "The credential store may be unreachable, or it refused the write."
+action = "Check the state of the credential store and save again."
+
 [E3355]
 when = "A jobnet whose definition has errors is about to run"
 text = "The definition of {0} has errors, so it cannot run."
@@ -4054,6 +4090,7 @@ run_after_warned = "Marked ended with a warning because the rerun started from t
 run_taken_over = "Continues {1}, which {0} was running"
 run_left_running = "Was running on {0} (it is not known whether it ended)"
 run_left_over = "Was running on {0} and was not taken over ({1} / {2})"
+job_named = "{0} ({1})"
 run_wait_slot = "Waiting for a free place among the {0} jobs allowed to run at once"
 run_exit_warn = "Exit code {0} (warning)"
 run_exit = "Exit code {0}"

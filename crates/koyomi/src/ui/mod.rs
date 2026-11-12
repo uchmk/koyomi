@@ -4351,7 +4351,7 @@ impl Browser {
                     let asking: Vec<&str> = run
                         .jobs
                         .iter()
-                        .filter(|j| j.state == State::Running && j.part == koyomi_core::jobnet::Part::Approval)
+                        .filter(|j| j.state == State::Running && matches!(j.part, koyomi_core::jobnet::Part::Approval { .. }))
                         .map(|j| j.id.as_str())
                         .collect();
                     let target =
