@@ -308,8 +308,12 @@ struct State {
     reveal_gen: u64,
     reveal_tx: mpsc::Sender<(u64, NotifyCfg, Vec<String>)>,
     reveal_rx: mpsc::Receiver<(u64, NotifyCfg, Vec<String>)>,
-    /// The words a run is told in: common.toml's language.
+    /// The words a run is told in (a notice's title and body, `koyomi status`): the engine's language,
+    /// the same as its messages and reasons, so one notice is in one language (see [`engine_words`]).
     words: ito_i18n::Table,
+    /// The words of the tray on this PC (its tip and menu): this PC's language (common.toml's, else
+    /// the OS's), as `koyomi tray`'s own menu is, since only someone at this PC reads them.
+    tray_words: ito_i18n::Table,
     /// `acked.toml` as last read by the tray look, and when.
     acked: std::sync::Mutex<(Option<std::time::Instant>, std::collections::BTreeSet<String>)>,
     /// When the runs were last looked at for being late (every [`LATE_EVERY`]).
@@ -393,7 +397,8 @@ impl State {
             reveal_gen: 0,
             reveal_tx,
             reveal_rx,
-            words: crate::cli::table(),
+            words: engine_words(),
+            tray_words: crate::cli::table(),
             acked: std::sync::Mutex::new((None, std::collections::BTreeSet::new())),
             late_look: None,
             usual: HashMap::new(),
@@ -595,7 +600,7 @@ impl State {
             }
             c.1.clone()
         };
-        tray::look(&self.words, &self.runner.today(), &acked, self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
+        tray::look(&self.tray_words, &self.runner.today(), &acked, self.held.paused, self.runner.busy(), next.map(|(at, _)| at))
     }
 
     /// What `koyomi tray` asks for: the look, and the notices kept for it after `since`.
@@ -2964,6 +2969,13 @@ fn why_key(why: ito_power::WhyNot) -> Option<&'static str> {
     }
 }
 
+/// The words the engine tells a run in (notices, `koyomi status`): the language its messages are in,
+/// which [`run`] sets once at start from common.toml (`en`, else Japanese, `auto` too). Not the OS's:
+/// under a service with `LANG=en_US.UTF-8` a notice read "✕ ended abnormally … 終了コード 1".
+fn engine_words() -> ito_i18n::Table {
+    crate::i18n::table(&msg::language()).0
+}
+
 /// Runs until `koyomi engine stop`. The exit code: 0 after a stop, 1 when another engine is already up.
 /// Without `own_tray` (`koyomi engine --no-tray`) there is no icon here, and the
 /// system's notifications and the sounds are kept for `koyomi tray` to show.
@@ -3031,7 +3043,7 @@ pub fn run(own_tray: bool) -> i32 {
         notify::hand_to_tray();
     }
     let mut state = State::new(paths);
-    let mut tray = if own_tray { tray::Tray::start(&state.words) } else { None };
+    let mut tray = if own_tray { tray::Tray::start(&state.tray_words) } else { None };
     let mut last_scan = Instant::now();
     let mut changed_at: Option<Instant> = None;
     loop {
@@ -3099,7 +3111,7 @@ pub fn run(own_tray: bool) -> i32 {
             }
             if tr.due() {
                 let look = state.tray_look();
-                tr.show(&state.words, look);
+                tr.show(&state.tray_words, look);
             }
         }
         if let Ok(false) = mine_rx.try_recv() {
@@ -3150,6 +3162,16 @@ fn followed<'a>(runs: &'a [Run], id: &str, date: &str) -> Option<&'a Run> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A notice's state word and its reason come in one language: the messages' (tests never set it,
+    /// so Japanese), whatever the OS this runs on speaks.
+    #[test]
+    fn the_engine_tells_a_run_in_its_messages_language() {
+        assert_eq!(msg::language(), "ja");
+        let words = engine_words();
+        assert_eq!(crate::show::word(&words, koyomi_core::run::State::Error), "異常終了");
+        assert_eq!(msg::note(msg::N_RUN_EXIT, &["1"]), "終了コード 1");
+    }
 
     #[test]
     fn warnings_are_joined_without_their_ids() {
