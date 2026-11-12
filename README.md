@@ -13,9 +13,11 @@ When koyomi shows an error or a warning, search [こんな時はどうする](do
 
 ![The Today tab: today's runs and the ones still to come (ended, running, waiting, and the sales report that failed), the gantt chart below them, and on the right the selected job net's next runs and its jobs](docs/images/today.png)
 
-![Going round the window: picking the failed run in today's table, the flow of the month-end closing job net, the working days and holidays of the company calendar, the failed job's log in History, and marking the failure as handled](docs/images/koyomi.gif)
+![Going round the window: picking the failed run in today's table, the flow of the month-end closing job net, editing it and adding a job after its monthly report, the working days and days off of the company calendar, the failed job's log in History, and marking the failure as dealt with](docs/images/koyomi.gif)
 
 ![The History tab: the runs of the past 7 days, and for the selected failed run the flow of its jobs, their states and exit codes, and the failed job's log](docs/images/history.png)
+
+![Editing the month-end closing job net: the parts to add on the left, the flow in the middle with a new job after the monthly report, and on the right that job's id, name and command, one argument per line](docs/images/edit.png)
 
 How the images were taken is in [docs/images/README.md](docs/images/README.md) (in Japanese).
 
