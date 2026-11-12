@@ -215,7 +215,12 @@ fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
 
 /// What a chore works on, one line each.
 fn chore(t: &Table, c: &Chore) -> Vec<String> {
-    let line = |key: &str, v: &str| format!("  {}: {v}", t.tr(&format!("review.{key}")));
+    chore_pairs(t, c).into_iter().map(|(label, v)| format!("  {label}: {v}")).collect()
+}
+
+/// What a chore works on as `(label, value)` pairs, in the words of the review.
+pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
+    let line = |key: &str, v: &str| (t.tr(&format!("review.{key}")).to_owned(), v.to_owned());
     // A group's PCs are koyomi.toml's, the machine's own; how many run at once and when
     // the job passes are part of what is approved.
     let fan = |on: &str, max: Option<u32>, pass: Pass| {

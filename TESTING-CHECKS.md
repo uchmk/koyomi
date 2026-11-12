@@ -1,6 +1,6 @@
 # Checklist
 
-1322 checks in TESTING.md, 1316 left for a person.
+1328 checks in TESTING.md, 1322 left for a person.
 
 ## 1. Start
 
@@ -1737,3 +1737,12 @@
 - [ ] **137.5** In the job editor, choose the approval job → Its 判断の材料 field shows the message; change it and save; the file has the new message and nothing else changed 〔未訳〕
 - [ ] **137.6** Start a net whose group has a calendar, then read the run's TOML in its folder → It records the calendar's name (`went_by`), and a net with no calendar records `every` 〔未訳〕
 - [ ] **137.7** With `[[http.user]]` narrowed to one net with `edit`, `GET /runs/<id>/definition` of a run of that net; then the same as a `view` user → 200 with `{"run", "text"}` holding the copy for the `edit` user; 403 for the `view` user (and 404 `KOYOMI-E3277` for a run of another net) 〔未訳〕
+
+## 138. The run page says why a run is what it is (`ui/runfacts.rs`, `ui/mod.rs`)
+
+- [ ] **138.1** Make a net with `missed = "skip"` miss its time (stop the engine over its start time, start it again) and open that 時刻を過ぎた run → Under the header line a block says the scheduled time had passed, the engine's reason, 「いまの設定（missed = "skip"）では、時刻を過ぎた回を後から実行しません。」 and 「再実行すると、いまの定義でこの日（<date>）の回を最初から始めます。」; the 再実行 ▾ menu has the one item 最初から再実行する (no 停止したところから, no job items) and it starts a new run of that day; hold the net and the block says 「保留を解いてから再実行できます。」 and the item is greyed 〔未訳〕
+- [ ] **138.2** Open a run that ran, pick a command job in its table → Under the job's facts, 「この回の定義（始まったときのもの）」 lists the kind, the command, the 作業フォルダー with the open buttons (none on another PC's engine), the time limit, retries, the env as written (`secret:<name>` stays a reference) and the 付箋; a moment after opening the page there is no repeated request in the engine's log 〔未訳〕
+- [ ] **138.3** Pick a job of a run that never began; then pick a job inside a child net → 「この回は始まっていないので、定義の写しはありません。」 and an エディターで開く button that opens the net in the editor; for the child's job, 「子ジョブネットの中のジョブです。…」 and the parent job's 使う定義 〔未訳〕
+- [ ] **138.4** Run a net whose approval job has a `message`, and one whose approval has none; open each run while it waits → Under the buttons a block shows 判断の材料 (the message, or 「判断の材料は書かれていません。…」), and 直前のジョブ lists each job before it with its state, exit code and a ログを見る link that opens that job's log 〔未訳〕
+- [ ] **138.5** Open a run of a net with a calendar, then one of a net without → The header shows 「カレンダー: <name>」 as a link that opens that calendar on the カレンダー tab; the other shows 「カレンダー: なし（毎日）」 〔未訳〕
+- [ ] **138.6** On a failed run, hover 対応済みにする, then press it → The hover says it counts the failure as seen and leaves the result as it is; after pressing, the result line names the net, the run id and the state 「…を対応済みにしました。ステータスバーの異常の数から外れます。」, the header shows 「✓ 対応済み」, and the status bar's count goes down by one 〔未訳〕

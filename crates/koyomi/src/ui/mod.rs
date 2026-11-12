@@ -37,6 +37,7 @@ mod hosts;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
+mod runfacts;
 mod users;
 
 /// How long a window waits to ask another PC again after its list could not be read.
@@ -679,6 +680,8 @@ pub struct Browser {
     run_sel: Option<String>,
     /// The run marked to be compared with: the run picked next is shown against it.
     compare_base: Option<String>,
+    /// What the window knows of each run's definition copy (asked once per run).
+    run_defs: BTreeMap<String, runfacts::DefCopy>,
     /// The job whose log is shown, when one was picked by hand.
     job_sel: Option<String>,
     /// What the log search box holds (a regular expression, smart case).
@@ -863,6 +866,7 @@ impl Browser {
             selected: None,
             run_sel: None,
             compare_base: None,
+            run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
             log: None,
@@ -1277,7 +1281,10 @@ impl Browser {
                 }
                 Msg::Snapshot(s) => {
                     self.starting = false;
-                    self.down = None;
+                    if self.down.take().is_some() {
+                        // The link is back: a definition copy that could not be read meanwhile is asked again.
+                        self.run_defs.retain(|_, d| !matches!(d, runfacts::DefCopy::Got(Err(_))));
+                    }
                     for n in &s.notes {
                         if self.seen_notes.insert(n.clone()) {
                             self.notes.push(n.clone());
@@ -1456,6 +1463,10 @@ impl Browser {
                         self.config_edit = None;
                         self.result = Some(Ok(note));
                     }
+                }
+                Msg::Answer(Request::RunDefinition { run }, r) => {
+                    // The copy is read by the run page; it says nothing in the result line.
+                    self.run_defs.insert(run, runfacts::DefCopy::of(r));
                 }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run.
@@ -4264,8 +4275,13 @@ impl Browser {
         let (big, small) = show::run_head(t, &run);
         ui.heading(&big);
         ui.label(egui::RichText::new(small).small().color(c.dim));
+        self.run_header_extra(ui, t, &run);
+        if run.never_began() {
+            self.never_began_block(ui, t, &run);
+        }
         ui.add_space(6.0);
         // The actions on this run, as one bar: which run they act on at the left, then the buttons.
+        let mut target_job: Option<String> = None;
         egui::Frame::new()
             .fill(c.panel)
             .stroke(egui::Stroke::new(1.0, c.border))
@@ -4293,7 +4309,18 @@ impl Browser {
                         let rerun = std::cell::RefCell::new(None::<Request>);
                         let button = ito_prefs::IconButton::new(ito_prefs::Mark::Rerun, &head);
                         let r = ui.add_enabled(!self.blocked(), |ui: &mut egui::Ui| button.show(ui));
+                        let again = self.net_now(&run).can_rerun();
                         egui::Popup::menu(&r).show(|ui| {
+                            // A run that never began has nothing to carry over or pick from: only the whole run again.
+                            if run.never_began() {
+                                let words = t.tr("run.rerun_whole");
+                                let r = ui.add_enabled(again, egui::Button::new(words));
+                                ito_a11y::say(&r, Role::Button, words);
+                                if r.clicked() {
+                                    *rerun.borrow_mut() = Some(Request::Rerun { run: run.id.clone(), from: None, next: None });
+                                }
+                                return;
+                            }
                             let rest = !run.jobs.iter().all(|j| j.state.passed());
                             let r = ui.add_enabled(rest, egui::Button::new(t.tr("run.rerun_rest")));
                             ito_a11y::say(&r, Role::Button, t.tr("run.rerun_rest"));
@@ -4328,10 +4355,18 @@ impl Browser {
                     // A failure dealt with: it leaves the count in the status bar.
                     let done = self.acked.contains(&run.id);
                     let words = t.tr(if done { "run.acked_already" } else { "run.ack" });
-                    if run.is_over() && run.state.is_error() && primary(ui, !done, ito_prefs::Mark::Check, words).clicked() {
+                    let ack = (run.is_over() && run.state.is_error()).then(|| {
+                        let r = primary(ui, !done, ito_prefs::Mark::Check, words);
+                        if done {
+                            r
+                        } else {
+                            r.on_hover_text(t.tr("run.ack_hover"))
+                        }
+                    });
+                    if ack.is_some_and(|r| r.clicked()) {
                         self.acked.insert(run.id.clone());
                         self.to_ack.push(run.id.clone());
-                        self.result = Some(Ok(t.tr("run.acked").to_owned()));
+                        self.result = Some(Ok(runfacts::acked_said(t, &run)));
                     }
                     // Skip the picked job before it starts: the jobs after it go on.
                     let pending = picked.as_deref().and_then(|p| run.job(p)).is_some_and(|j| j.pending() && j.state != State::Running);
@@ -4356,6 +4391,7 @@ impl Browser {
                         .collect();
                     let target =
                         picked.as_deref().filter(|p| asking.contains(p)).or(if asking.len() == 1 { asking.first().copied() } else { None });
+                    target_job = target.map(str::to_owned);
                     let answers = [(true, "run.approve", ito_prefs::Mark::Check), (false, "run.reject", ito_prefs::Mark::Close)];
                     for (yes, key, mark) in answers.into_iter().filter(|_| target.is_some()) {
                         let label = match target {
@@ -4378,12 +4414,15 @@ impl Browser {
                     if ito_prefs::IconButton::new(mark, label).show(ui).clicked() {
                         self.compare_base = (!marked).then(|| run.id.clone());
                     }
-                    if run.is_over() && picked.is_none() {
+                    if run.is_over() && picked.is_none() && !run.never_began() {
                         ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
                     }
                 });
             });
         self.show_result(ui, t);
+        if let Some(job) = target_job {
+            self.ask_block(ui, t, &run, &job);
+        }
         if let Some(base) = self.compare_base.as_deref().filter(|b| *b != run.id).and_then(|b| self.find_run(b)) {
             ui.add_space(6.0);
             let head = t.trf("run.compare_head", &[&base.id]);
@@ -4499,6 +4538,7 @@ impl Browser {
                     ui.end_row();
                 }
             });
+            self.definition_section(ui, t, run, job.id.as_str());
         }
         ui.add_space(8.0);
         let title = match &watched {
@@ -5920,6 +5960,7 @@ mod tests {
             selected: None,
             run_sel: None,
             compare_base: None,
+            run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
             log: None,
@@ -6636,6 +6677,8 @@ run = [\"x.exe\"]
         b.out.tx = tx;
         b.runs = vec![run];
         b.run_sel = Some("20261030-090000-01".into());
+        // The run's definition copy was asked for already (see the_definition_copy_is_asked_once…).
+        b.run_defs.insert("20261030-090000-01".into(), runfacts::DefCopy::Asked);
         let mut s = Screen::new();
         s.settle(&mut b);
         let menu_says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
@@ -6659,6 +6702,230 @@ run = [\"x.exe\"]
         s.settle(&mut b);
         s.click("ジョブ a の保留を解除する", &mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::Release { id, job: Some(j) }) if id == "試験/bom" && j == "a"));
+    }
+
+    /// A run of `jobnet` with one job `a` that passed, over.
+    fn page_run(id: &str) -> Run {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{How, Outcome};
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = ito_common::now::now_local().naive_local();
+        let mut run = Run::new(id, "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        run.finish("a", Outcome::Exited(0), now);
+        run
+    }
+
+    /// A run that never began: over, with no job started.
+    fn never_run(id: &str, state: State) -> Run {
+        let mut run = page_run(id);
+        run.jobs.clear();
+        run.state = state;
+        run.ended = Some(run.started);
+        run
+    }
+
+    /// The rerun menu of a run that never began has the one item; a left-behind run keeps the whole menu.
+    #[test]
+    fn a_run_that_never_began_reruns_only_from_the_start() {
+        let (tx, rx_req) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        let mut missed = never_run("20261030-090000-01", State::Missed);
+        missed.reason = "予定の時刻を過ぎた".into();
+        let mut left = never_run("20261030-090000-02", State::Missed);
+        left.reason = koyomi_core::msg::note(koyomi_core::msg::N_RUN_LEFT_OVER, &["bom", "a", "b"]);
+        assert!(missed.never_began() && !left.never_began());
+        b.runs = vec![missed, left];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(says(&s, "予定の時刻を過ぎていたため"), "the block is there");
+        assert!(says(&s, "再実行すると、いまの定義でこの日（2026-10-30）"), "what a rerun does");
+        assert!(!says(&s, "ジョブを選ぶと、そのジョブから再実行します。"), "no job hint for a run with no jobs");
+        s.click("再実行 ▾", &mut b);
+        assert!(says(&s, "最初から再実行する"));
+        assert!(!says(&s, "停止したところから") && !says(&s, "選んだジョブから"), "no rest / from-picked item");
+        s.click("最初から再実行する", &mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::Rerun { from: None, next: None, .. })));
+        // The left-behind run keeps today's page: no block, the whole menu.
+        b.run_sel = Some("20261030-090000-02".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(!says(&s, "予定の時刻を過ぎていたため"));
+        s.click("再実行 ▾", &mut b);
+        assert!(says(&s, "停止したところから"));
+        assert!(!says(&s, "最初から再実行する"));
+    }
+
+    /// The copy is asked once per run, read by the answer arm without touching the result line, and not asked
+    /// for a run that never began or by a caller below Edit on another PC.
+    #[test]
+    fn the_definition_copy_is_asked_once_and_stored_by_the_answer() {
+        let (tx, rx_req) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.runs = vec![page_run("20261030-090000-01")];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::RunDefinition { run }) if run == "20261030-090000-01"));
+        assert!(s.nodes.values().any(|(l, _)| l.contains("読み込み中")), "the loading line");
+        s.settle(&mut b);
+        assert!(rx_req.try_recv().is_err(), "not every frame");
+        // Another pick of a job of the same run does not ask again.
+        b.job_sel = Some("a".into());
+        s.settle(&mut b);
+        assert!(rx_req.try_recv().is_err(), "once per run");
+        // The reply is stored; the result line is left alone.
+        b.result = Some(Ok("before".into()));
+        let text = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"tool.exe\", \"--all\"]\n";
+        b.io.0.send(Msg::Answer(Request::RunDefinition { run: "20261030-090000-01".into() }, Ok(text.into()))).unwrap();
+        b.drain();
+        assert_eq!(b.result, Some(Ok("before".into())));
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l.contains("tool.exe")), "the command as written");
+        assert!(s.nodes.values().any(|(l, _)| l.contains("この回の定義（始まったときのもの）")));
+        // A run that never began is not asked about.
+        b.runs.push(never_run("20261030-090000-02", State::Skipped));
+        b.run_sel = Some("20261030-090000-02".into());
+        b.job_sel = None;
+        s.settle(&mut b);
+        assert!(rx_req.try_recv().is_err());
+        // Nor is a run by a caller below Edit on another PC.
+        b.runs.push(page_run("20261030-090000-03"));
+        b.run_sel = Some("20261030-090000-03".into());
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Run);
+        s.settle(&mut b);
+        assert!(rx_req.try_recv().is_err(), "a Run role is refused by the engine, so it is not asked");
+        assert!(s.nodes.values().any(|(l, _)| l.contains("edit の権限が要ります")));
+        b.role = Some(koyomi_core::role::Role::View);
+        s.settle(&mut b);
+        assert!(rx_req.try_recv().is_err());
+    }
+
+    /// A copy that could not be read while the link was down is asked again once the engine answers;
+    /// one that came is kept.
+    #[test]
+    fn a_definition_copy_that_failed_is_asked_again_when_the_link_is_back() {
+        let mut b = quiet(defs());
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Got(Err("E2101".into())));
+        b.run_defs.insert("r2".into(), runfacts::DefCopy::of(Ok("format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\n".into())));
+        // Still up: a snapshot keeps what is there.
+        b.io.0.send(Msg::Snapshot(Box::<Snapshot>::default())).unwrap();
+        b.drain();
+        assert!(b.run_defs.contains_key("r1"));
+        b.io.0.send(Msg::Down("E2101".into())).unwrap();
+        b.io.0.send(Msg::Snapshot(Box::<Snapshot>::default())).unwrap();
+        b.drain();
+        assert!(!b.run_defs.contains_key("r1"), "the failed copy is asked again");
+        assert!(matches!(b.run_defs.get("r2"), Some(runfacts::DefCopy::Got(Ok(_)))));
+    }
+
+    /// A run that never began has no copy to show, and says so with a way into the editor.
+    #[test]
+    fn the_definition_section_says_why_there_is_none() {
+        let mut b = quiet(defs());
+        let mut run = never_run("20261030-090000-02", State::Skipped);
+        run.jobs = page_run("x").jobs;
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-02".into());
+        b.job_sel = Some("a".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l.contains("この回は始まっていないので、定義の写しはありません。")));
+        assert!(s.nodes.values().any(|(l, _)| l == "エディターで開く"), "the net is in the list");
+        // Without the net there is no button.
+        b.snap.as_mut().unwrap().defs.clear();
+        s.settle(&mut b);
+        assert!(!s.nodes.values().any(|(l, _)| l == "エディターで開く"));
+    }
+
+    /// 対応済みにする says what it dealt with, and the header then shows the chip.
+    #[test]
+    fn dealing_with_a_failure_says_which_run_and_marks_the_header() {
+        let mut b = quiet(defs());
+        let mut run = page_run("20261030-090000-01");
+        run.state = State::Error;
+        b.runs = vec![run];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(!s.nodes.values().any(|(l, _)| l == "✓ 対応済み"), "no chip before");
+        s.click("対応済みにする", &mut b);
+        let said = b.result.clone().unwrap().unwrap();
+        assert!(
+            said.starts_with("bom の回 20261030-090000-01（")
+                && said.ends_with("を対応済みにしました。ステータスバーの異常の数から外れます。"),
+            "{said}"
+        );
+        assert_eq!(b.take_acks(), vec!["20261030-090000-01".to_owned()]);
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l == "✓ 対応済み"), "the chip");
+    }
+
+    /// The calendar the run went by sits in its header.
+    #[test]
+    fn the_run_header_names_the_calendar() {
+        let mut b = quiet(defs());
+        let mut run = page_run("20261030-090000-01");
+        run.went_by = Some(koyomi_core::run::WentBy::Calendar("会社".into()));
+        let mut every = page_run("20261030-090000-02");
+        every.went_by = Some(koyomi_core::run::WentBy::Every);
+        b.runs = vec![run, every, page_run("20261030-090000-03")];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l == w);
+        assert!(says(&s, "カレンダー: 会社"));
+        b.run_sel = Some("20261030-090000-02".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(says(&s, "カレンダー: なし（毎日）") && !says(&s, "カレンダー: 会社"));
+        b.run_sel = Some("20261030-090000-03".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(!s.nodes.values().any(|(l, _)| l.starts_with("カレンダー:")), "not recorded: nothing");
+    }
+
+    /// An approval that waits shows its message (or says there is none) and the jobs before it.
+    #[test]
+    fn a_waiting_approval_shows_what_to_decide_on() {
+        use koyomi_core::jobnet::{Job, Jobnet, Line, Part};
+        use koyomi_core::run::{How, Outcome};
+        let job = |id: &str, after: &[&str]| Job {
+            id: id.into(),
+            run: vec!["x".into()],
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
+        };
+        let appr = Job { part: Part::Approval { message: None }, ..job("ok", &["a", "b"]) };
+        let net = Jobnet { jobs: vec![job("a", &[]), job("b", &[]), appr], ..Default::default() };
+        let now = ito_common::now::now_local().naive_local();
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.start("a", now);
+        run.finish("a", Outcome::Exited(0), now);
+        run.start("b", now);
+        run.finish("b", Outcome::Exited(1), now);
+        run.start("ok", now);
+        let mut b = quiet(defs());
+        b.runs = vec![run.clone()];
+        b.run_sel = Some("20261030-090000-01".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let says = |s: &Screen, w: &str| s.nodes.values().any(|(l, _)| l.contains(w));
+        assert!(says(&s, "判断の材料は書かれていません。"));
+        assert!(says(&s, "終了コード 1"), "the job before it, with its exit code");
+        // One log link per job before it, each named after its job.
+        let count = |w: &str| s.nodes.values().filter(|(l, _)| l == w).count();
+        assert!(count("直前のジョブ") >= 1);
+        assert!(count("a のログを見る") >= 1 && count("b のログを見る") >= 1, "each link names its job");
+        assert_eq!(count("a  ✓ 正常終了  終了コード 0"), count("直前のジョブ"));
+        b.runs[0].jobs[2].part = Part::Approval { message: Some("本番に反映してよいか".into()) };
+        s.settle(&mut b);
+        assert!(says(&s, "本番に反映してよいか") && !says(&s, "判断の材料は書かれていません。"));
     }
 
     /// The kill box starts on the safe button: a plain Enter does not kill.
@@ -6712,6 +6979,7 @@ run = [\"x.exe\"]
         b.out.tx = tx;
         b.runs = vec![run];
         b.run_sel = Some("r1".into());
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
         b.killing = Some("r1".into());
         b.focus = 1;
         let ctx = egui::Context::default();
@@ -6883,6 +7151,7 @@ run = [\"x.exe\"]
         assert!(matches!(rx_req.try_recv(), Ok(Request::Delete { id }) if id == "試験/bom"));
 
         b.run_sel = Some("r1".into());
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
         b.killing = Some("r1".into());
         s.settle(&mut b);
         s.click("キャンセル", &mut b);
@@ -7092,8 +7361,12 @@ run = [\"x.exe\"]
         assert!(inside, "the button is on the screen");
         s.click("対応済みにする", &mut b);
         assert_eq!(b.take_acks(), vec!["r1".to_owned()]);
-        assert!(matches!(&b.result, Some(Ok(m)) if m == "対応済みにしました。"));
+        assert!(
+            matches!(&b.result, Some(Ok(m)) if m.starts_with("bom の回 r1（") && m.ends_with("を対応済みにしました。ステータスバーの異常の数から外れます。"))
+        );
         // Dealt with: the button says so and is off.
+        // The chip moved the row down, so the screen is read again from the start.
+        let mut s = Screen::new();
         s.settle(&mut b);
         assert!(s.nodes.values().any(|n| n.0 == "対応済み"));
         assert!(!s.nodes.values().any(|n| n.0 == "対応済みにする"));
