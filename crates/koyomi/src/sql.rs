@@ -55,6 +55,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let password = std::env::var("KOYOMI_SQL_PASSWORD").ok().filter(|p| !p.is_empty());
     let job = Chore::Sql {
         db,
+        database: None,
         // Checked as written: the value itself is not a `secret:`.
         password: password.as_ref().map(|_| "secret:password".to_owned()),
         sql: var("TEXT"),
@@ -249,6 +250,7 @@ mod tests {
 
     fn lite(db: &Path, sql: Option<&str>, file: Option<&Path>, out: Option<&Path>, rows: Option<&str>) -> Chore {
         Chore::Sql {
+            database: None,
             db: format!("sqlite://{}", db.display()),
             password: None,
             sql: sql.map(Into::into),

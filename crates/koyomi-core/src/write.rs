@@ -408,8 +408,12 @@ fn job(j: &Job, out: &mut String) {
                         push(out, "via", &q(v));
                     }
                 }
-                Chore::Sql { db, sql, file, out: csv, rows, tls, .. } => {
-                    push(out, "db", &q(db));
+                Chore::Sql { db, database, sql, file, out: csv, rows, tls, .. } => {
+                    if let Some(d) = database {
+                        push(out, "database", &q(d));
+                    } else {
+                        push(out, "db", &q(db));
+                    }
                     if let Some(s) = sql {
                         push(out, "sql", &q(s));
                     }
@@ -522,8 +526,12 @@ fn job(j: &Job, out: &mut String) {
     if !j.encoding.is_auto() {
         push(out, "encoding", &q(j.encoding.text()));
     }
-    if let Some(r) = &j.run_as {
-        push(out, "run_as", &format!("{{ user = {}, password = {} }}", q(&r.user), q(&format!("secret:{}", r.secret))));
+    match &j.run_as {
+        Some(crate::jobnet::RunAs::Named(n)) => push(out, "run_as", &q(n)),
+        Some(crate::jobnet::RunAs::Inline(r)) => {
+            push(out, "run_as", &format!("{{ user = {}, password = {} }}", q(&r.user), q(&format!("secret:{}", r.secret))));
+        }
+        None => {}
     }
     if let Some((x, y)) = j.pos {
         push(out, "pos", &format!("[{x:?}, {y:?}]"));

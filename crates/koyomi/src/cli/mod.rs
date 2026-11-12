@@ -530,6 +530,10 @@ fn check(args: &[String]) -> i32 {
             for v in koyomi_core::template::vars_of(net).into_iter().filter(|v| !vars.contains_key(v)) {
                 out(&named(&name, &msg::line(msg::CHECK_VAR_MISSING, &[&v])), true);
             }
+            // A `run_as` or a `database` that names an entry koyomi.toml does not have.
+            for w in koyomi_core::registry::unknown_lines(&config, &name, net) {
+                out(&named(&name, &w), true);
+            }
             // An `ssh` or a `winrm` on a group: the group must be there, and each PC needs a key.
             for (job, w) in group_warnings(&config, net) {
                 out(&named(&msg::note(msg::N_CHECK_PLACE_JOB, &[&name, &job]), &w), true);

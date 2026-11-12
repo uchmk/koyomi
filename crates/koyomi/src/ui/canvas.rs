@@ -294,6 +294,10 @@ pub struct Fields {
     /// The `run_as` account, and the name of the secret with its password.
     pub run_as_user: String,
     pub run_as_secret: String,
+    /// The name of a registered `[[account]]`; empty when the account is written out above.
+    pub run_as_name: String,
+    /// The name of a registered `[[database]]` a sql uses instead of `db`.
+    pub sql_database: String,
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -316,9 +320,13 @@ impl Fields {
         f.shell = job.shell.clone().unwrap_or_default();
         f.script = job.script.clone().unwrap_or_default();
         f.encoding = job.encoding;
-        if let Some(r) = &job.run_as {
-            f.run_as_user = r.user.clone();
-            f.run_as_secret = r.secret.clone();
+        match &job.run_as {
+            Some(RunAs::Named(n)) => f.run_as_name = n.clone(),
+            Some(RunAs::Inline(r)) => {
+                f.run_as_user = r.user.clone();
+                f.run_as_secret = r.secret.clone();
+            }
+            None => {}
         }
         if let Some(j) = &job.judge {
             f.warn = Judge::list(&j.warn);
@@ -408,8 +416,9 @@ impl Fields {
                     f.files = files.join("\n");
                     f.via = via.clone().unwrap_or_default();
                 }
-                Chore::Sql { db, password, sql, file, out, rows, tls } => {
+                Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
                     f.db = db.clone();
+                    f.sql_database = database.clone().unwrap_or_default();
                     f.password = password.clone().unwrap_or_default();
                     f.sql = sql.clone().unwrap_or_default();
                     f.file = file.clone().unwrap_or_default();
@@ -574,6 +583,7 @@ impl Fields {
                     },
                     Chore::Sql { .. } => Chore::Sql {
                         db: self.db.trim().into(),
+                        database: opt(&self.sql_database),
                         password: opt(&self.password),
                         sql: if self.sql.trim().is_empty() { None } else { Some(self.sql.clone()) },
                         file: opt(&self.file),
@@ -612,12 +622,22 @@ impl Fields {
         const RUN_AS_SHAPE: &str = "{ user = 'CORP\\batch', password = \"secret:batch\" }";
         let (user, secret) = (self.run_as_user.trim(), self.run_as_secret.trim());
         let secret = secret.strip_prefix("secret:").unwrap_or(secret).trim();
+        let name = self.run_as_name.trim();
+        if !name.is_empty() {
+            if !user.is_empty() || !secret.is_empty() {
+                return Err(msg::line(msg::DEF_RUN_AS_NAME_AND_ACCOUNT, &[]));
+            }
+            if !koyomi_core::registry::valid_name(name) {
+                return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &["run_as", name]));
+            }
+            return Ok(Some(RunAs::Named(name.into())));
+        }
         match (user.is_empty(), secret.is_empty()) {
             (true, true) => Ok(None),
             (false, true) => Err(msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "password", RUN_AS_SHAPE])),
             (true, false) => Err(msg::line(msg::DEF_SUBKEY_MISSING, &["run_as", "user", RUN_AS_SHAPE])),
             _ if !jobnet::valid_account(user) => Err(msg::line(msg::DEF_RUN_AS_USER_BAD, &[])),
-            _ => Ok(Some(RunAs { user: user.into(), secret: secret.into() })),
+            _ => Ok(Some(RunAs::Inline(jobnet::Account { user: user.into(), secret: secret.into() }))),
         }
     }
 
@@ -2911,7 +2931,7 @@ run = [\"x\"]
         assert!(e.apply_fields("a", &fields).unwrap_err().contains("run_as に password が指定されていません"));
         fields.run_as_secret = "secret:batch".into();
         assert_eq!(e.apply_fields("a", &fields), Ok(()));
-        assert_eq!(e.net.jobs[0].run_as, Some(RunAs { user: "CORP\\batch".into(), secret: "batch".into() }));
+        assert_eq!(e.net.jobs[0].run_as, Some(RunAs::Inline(jobnet::Account { user: "CORP\\batch".into(), secret: "batch".into() })));
         assert!(e.text().contains("run_as = { user = \"CORP\\\\batch\", password = \"secret:batch\" }"), "{}", e.text());
         assert_eq!(Fields::of(&e.net.jobs[0]).run_as_secret, "batch");
         fields.run_as_user = "bad user".into();
@@ -2919,6 +2939,52 @@ run = [\"x\"]
         fields.run_as_user.clear();
         fields.run_as_secret.clear();
         assert_eq!(e.apply_fields("a", &fields), Ok(()));
+        assert_eq!(e.net.jobs[0].run_as, None);
+    }
+
+    /// A `run_as` by name and a sql job's `database` go through the fields and back as they were; a name beside a
+    /// user or a secret is refused (E3398), and a bad name too.
+    #[test]
+    fn a_registered_account_and_database_round_trip_through_the_fields() {
+        let mut e = Editor::over(
+            "a/b",
+            net("format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+run_as = \"ops\"
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+"),
+        );
+        let before = e.net.jobs.clone();
+        for i in 0..2 {
+            let fields = Fields::of(&e.net.jobs[i]);
+            assert_eq!(e.apply_fields(&e.net.jobs[i].id.clone(), &fields), Ok(()));
+        }
+        assert_eq!(e.net.jobs, before);
+        let fields = Fields::of(&e.net.jobs[0]);
+        assert_eq!((fields.run_as_name.as_str(), fields.run_as_user.as_str()), ("ops", ""));
+        assert_eq!(Fields::of(&e.net.jobs[1]).sql_database, "main");
+        assert!(e.text().contains("run_as = \"ops\"") && e.text().contains("database = \"main\""), "{}", e.text());
+        // A name and a user, or a name and a secret.
+        let mut both = Fields::of(&e.net.jobs[0]);
+        both.run_as_user = "batch".into();
+        assert!(e.apply_fields("a", &both).unwrap_err().contains("E3398"));
+        let mut both = Fields::of(&e.net.jobs[0]);
+        both.run_as_secret = "secret:x".into();
+        assert!(e.apply_fields("a", &both).unwrap_err().contains("E3398"));
+        let mut bad = Fields::of(&e.net.jobs[0]);
+        bad.run_as_name = "a/b".into();
+        assert!(e.apply_fields("a", &bad).unwrap_err().contains("E3395"));
+        assert_eq!(e.net.jobs, before);
+        // Emptying the name takes the account off.
+        let mut none = Fields::of(&e.net.jobs[0]);
+        none.run_as_name.clear();
+        assert_eq!(e.apply_fields("a", &none), Ok(()));
         assert_eq!(e.net.jobs[0].run_as, None);
     }
 
@@ -3026,8 +3092,14 @@ X-Day: 1"
         (fields.run_as_user, fields.run_as_secret) = ("CORP\\batch".into(), "secret:batch".into());
         assert_eq!(e.apply_fields(&h, &fields), Ok(()));
         let j = &e.net.jobs[1];
-        assert_eq!(j.run_as.as_ref().map(|r| r.user.as_str()), Some("CORP\\batch"));
-        let Part::Chore(Chore::Sql { db, password, sql, file, out, rows, tls }) = &j.part else { panic!() };
+        assert_eq!(
+            j.run_as.as_ref().map(|r| match r {
+                RunAs::Inline(a) => a.user.as_str(),
+                RunAs::Named(n) => n.as_str(),
+            }),
+            Some("CORP\\batch")
+        );
+        let Part::Chore(Chore::Sql { db, password, sql, file, out, rows, tls, .. }) = &j.part else { panic!() };
         assert_eq!((db.as_str(), password.as_deref()), ("sqlserver://ops@db01/売上", Some("secret:db")));
         assert_eq!(sql.as_deref(), Some("update 売上 set 済 = 1 where 日 = '{date}'\nGO\n"));
         assert_eq!((file, out.as_deref(), rows.as_deref(), *tls), (&None, Some("D:\\out\\{date}.csv"), Some("1.."), SqlTls::Trust));

@@ -216,7 +216,7 @@ pos = [240, 180]
   - `every = "year", date = "04-01"`
   - `dates = [2026-11-30, 2026-12-28]`
   - `file = 'D:\受信\*.csv', settle = "10s"`
-  - `log = 'D:pppp.log', contains = "ERROR"`
+  - `log = 'D:\app\app.log', contains = "ERROR"`
   - `eventlog = "Security", ids = [4625]` ／ `eventlog = "Application", source = "MyApp"`
   - `on_start = true`
   - `idle = "10m"`（PC がその間使われなかったとき）
@@ -1170,3 +1170,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - このエンジンにないシェルのジョブは、プロセスを作らずに異常終了にする（E3293）。ジョブネットには注意（W3752）を出し、確定はできる。
 - 新しいスクリプトの既定のシェルは `koyomi.toml` の `shell`。書かなければ、この PC で見つかったものから選ぶ（Windows は `powershell`・`pwsh`・`bash`・`sh`・`zsh` の順、それ以外は `bash`・`sh`・`zsh`・`pwsh` の順。何も見つからなければ Windows は `powershell`、それ以外は `sh`）。書いたシェルがこのエンジンになければ注意（W3753）を出して、書いていないときの既定を使う。既定が効くのは、窓の棚から足す新しいジョブだけ。選んだシェルを既定で置き換えることはしない。
 - エンジンとの約束の版は 50 のまま（`Snapshot` の `shells`・`shell` は無くても読める）。
+
+## アカウントとデータベースは koyomi.toml に登録し、名前で使う（2026-11-13）
+
+- `koyomi.toml` の `[[account]]`（`name`・`user`・`password`）と `[[database]]`（`name`・`db`・`password`・`tls`）。`password` は `secret:<名前>` の形に登録する。パスワードは OS の資格情報ストアに置き、ファイルにも通信にも出さない。
+- ジョブは `run_as = "<名前>"`、SQL は `database = "<名前>"` で使う。従来の `run_as = { user, secret }` の表と `db` の直書きも読める（`RunAs::Inline`）。
+- 名前はジョブの開始のときに引く。見つからなければ、プロセスを作らずに異常終了にし（E3294・E3295）、再試行しない。登録を直すと、次の開始から効く。待っているジョブにも効く。
+- 使っている名前を消すと、`force` がなければ断る（E2250）。ジョブネットには注意（W3754・W3755）を、どの OS でも出す。`koyomi check` も同じ行を出す。
+- 新しい要求 `Registry`・`AccountPut`・`AccountRemove`・`DatabasePut`・`DatabaseRemove` は管理者だけ。`Snapshot` は `accounts`・`databases`・`windows` を持つ（無くても読める）。エンジンとの約束の版は 50 のまま。

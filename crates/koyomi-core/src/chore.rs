@@ -174,9 +174,13 @@ pub enum Chore {
     /// SQL Server without a user logs in as the Windows account the job runs as.
     /// The rows of a result go to the CSV file `out`, and `rows` says how many
     /// rows (a result's, else the changed ones) are 正常. koyomi runs it itself
-    /// (`koyomi sql run`).
+    /// (`koyomi sql run`). Instead of `db` (with its `password` and `tls`), `database`
+    /// names an `[[database]]` of koyomi.toml, which the engine reads when the job starts.
     Sql {
+        #[serde(default)]
         db: String,
+        #[serde(default)]
+        database: Option<String>,
         #[serde(default)]
         password: Option<String>,
         #[serde(default)]
@@ -513,7 +517,16 @@ impl Chore {
                 pass: Pass::All,
             },
             "mail" => Chore::Mail { to: Vec::new(), cc: Vec::new(), subject: String::new(), body: None, files: Vec::new(), via: None },
-            "sql" => Chore::Sql { db: String::new(), password: None, sql: None, file: None, out: None, rows: None, tls: SqlTls::Verify },
+            "sql" => Chore::Sql {
+                db: String::new(),
+                database: None,
+                password: None,
+                sql: None,
+                file: None,
+                out: None,
+                rows: None,
+                tls: SqlTls::Verify,
+            },
             _ => return None,
         })
     }
@@ -568,8 +581,9 @@ impl Chore {
                 v.extend(files.iter_mut().map(|f| ("files", f)));
                 v
             }
-            Chore::Sql { db, sql, file, out, .. } => {
-                let mut v = vec![("db", db)];
+            Chore::Sql { db, database, sql, file, out, .. } => {
+                // A `database` is a name, not a template: only the address written here is filled in.
+                let mut v = if database.is_some() { Vec::new() } else { vec![("db", db)] };
                 v.extend(sql.iter_mut().map(|s| ("sql", s)));
                 v.extend(file.iter_mut().map(|f| ("file", f)));
                 v.extend(out.iter_mut().map(|o| ("out", o)));
@@ -593,7 +607,9 @@ impl Chore {
             Chore::Mail { to, cc, subject, body, files, .. } => {
                 [subject].into_iter().chain(to).chain(cc).chain(body).chain(files).collect()
             }
-            Chore::Sql { db, sql, file, out, .. } => [db].into_iter().chain(sql).chain(file).chain(out).collect(),
+            Chore::Sql { db, database, sql, file, out, .. } => {
+                [db].into_iter().filter(|_| database.is_none()).chain(sql).chain(file).chain(out).collect()
+            }
         }
     }
 
@@ -760,34 +776,27 @@ impl Chore {
                     return Err(msg::line(msg::CHORE_FILES_EMPTY, &[]));
                 }
             }
-            Chore::Sql { db, password, sql, file, out, rows, tls } => {
-                if db.trim().is_empty() {
-                    return Err(msg::line(msg::CHORE_SQL_DB_EMPTY, &[]));
-                }
-                let password = password.as_deref().map(str::trim).filter(|p| !p.is_empty());
-                if let Some(p) = password {
-                    if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
-                        return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
+            Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
+                match database {
+                    // A name of koyomi.toml's `[[database]]`: the entry holds the address, the password and the TLS.
+                    Some(name) => {
+                        if !db.trim().is_empty() {
+                            return Err(msg::line(msg::DEF_SQL_DB_AND_DATABASE, &[]));
+                        }
+                        if !crate::registry::valid_name(name) {
+                            return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &["database", name]));
+                        }
+                        // (An explicit `tls = "verify"` is the parser's to refuse; here only what differs from it.)
+                        if password.as_deref().is_some_and(|p| !p.trim().is_empty()) {
+                            return Err(msg::line(msg::DEF_SQL_DATABASE_OWNS, &["password"]));
+                        }
+                        if *tls != SqlTls::Verify {
+                            return Err(msg::line(msg::DEF_SQL_DATABASE_OWNS, &["tls"]));
+                        }
                     }
-                }
-                // A `db` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
-                if !db.trim().starts_with('{') {
-                    let parsed = sql_db(db)?;
-                    match &parsed {
-                        SqlDb::SqlServer { user: None, .. } if password.is_some() => {
-                            return Err(msg::line(msg::CHORE_SQL_WINDOWS_PASSWORD, &[]));
-                        }
-                        SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. } if password.is_none() => {
-                            let scheme = if matches!(parsed, SqlDb::Postgres { .. }) { "postgres://" } else { "sqlserver://" };
-                            return Err(msg::line(msg::CHORE_PASSWORD_MISSING, &[scheme]));
-                        }
-                        SqlDb::SqlServer { .. } if *tls == SqlTls::Off => {
-                            return Err(msg::line(msg::CHORE_SQL_TLS_OFF, &[]));
-                        }
-                        SqlDb::Sqlite { .. } if password.is_some() => return Err(msg::line(msg::CHORE_SQLITE_NO, &["password"])),
-                        SqlDb::Sqlite { .. } if *tls != SqlTls::Verify => return Err(msg::line(msg::CHORE_SQLITE_NO, &["tls"])),
-                        _ => {}
-                    }
+                    // A `db` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
+                    None if db.trim().starts_with('{') => check_db_text(db, password.as_deref())?,
+                    None => check_db(db, password.as_deref(), *tls)?,
                 }
                 match (sql, file) {
                     (None, None) | (Some(_), Some(_)) => return Err(msg::line(msg::CHORE_SQL_ONE_OF, &[])),
@@ -979,9 +988,10 @@ impl Chore {
                 }
                 v
             }
-            Chore::Sql { db, password, sql, file, out, rows, tls } => {
+            Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
                 let text = |s: &str| format!("{MAIL_TEXT}{s}");
-                let mut v = vec![("KOYOMI_SQL_DB".to_owned(), text(db.trim())), ("KOYOMI_SQL_TLS".to_owned(), tls.key().to_owned())];
+                // With a `database` the engine adds DB, TLS and PASSWORD when the job starts.
+                let mut v = if database.is_some() { Vec::new() } else { crate::registry::sql_target_env(db, password.as_deref(), *tls) };
                 if let Some(s) = sql {
                     v.push(("KOYOMI_SQL_TEXT".to_owned(), text(s)));
                 }
@@ -989,9 +999,6 @@ impl Chore {
                     if let Some(x) = value.as_deref().map(str::trim).filter(|x| !x.is_empty()) {
                         v.push((format!("KOYOMI_SQL_{name}"), text(x)));
                     }
-                }
-                if let Some(p) = password.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
-                    v.push(("KOYOMI_SQL_PASSWORD".to_owned(), p.to_owned()));
                 }
                 v
             }
@@ -1325,6 +1332,42 @@ fn not_s3(key_id: &Option<String>, region: &Option<String>, endpoint: &Option<St
     match [("key_id", key_id), ("region", region), ("endpoint", endpoint)].into_iter().find(|(_, v)| set(v)) {
         Some((name, _)) => Err(msg::line(msg::CHORE_ONLY_FOR, &[name, "s3://"])),
         None => Ok(()),
+    }
+}
+
+/// What can be told of a `sql`'s `db` and `password` without reading the address: `db` is given, and a
+/// `password` is a `secret:<name>`. (A `db` that is a template is told once it is filled in.)
+fn check_db_text(db: &str, password: Option<&str>) -> Result<(), String> {
+    if db.trim().is_empty() {
+        return Err(msg::line(msg::CHORE_SQL_DB_EMPTY, &[]));
+    }
+    let password = password.map(str::trim).filter(|p| !p.is_empty());
+    if let Some(p) = password {
+        if p.strip_prefix("secret:").is_none_or(|n| n.trim().is_empty()) {
+            return Err(msg::line(msg::CHORE_PASSWORD_SECRET, &[]));
+        }
+    }
+    Ok(())
+}
+
+/// The connection of a `sql`, whether written in the job (`db`, `password`, `tls`) or registered as a
+/// `[[database]]`: `db` is given and reads (`sql_db`), `password` is a `secret:<name>`, and the user,
+/// the password and the TLS fit the kind of server (a login needs its password; SQL Server without a
+/// user takes none, and never `tls = "off"`; SQLite takes neither a password nor any TLS but `verify`).
+pub fn check_db(db: &str, password: Option<&str>, tls: SqlTls) -> Result<(), String> {
+    check_db_text(db, password)?;
+    let password = password.map(str::trim).filter(|p| !p.is_empty());
+    let parsed = sql_db(db)?;
+    match &parsed {
+        SqlDb::SqlServer { user: None, .. } if password.is_some() => Err(msg::line(msg::CHORE_SQL_WINDOWS_PASSWORD, &[])),
+        SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. } if password.is_none() => {
+            let scheme = if matches!(parsed, SqlDb::Postgres { .. }) { "postgres://" } else { "sqlserver://" };
+            Err(msg::line(msg::CHORE_PASSWORD_MISSING, &[scheme]))
+        }
+        SqlDb::SqlServer { .. } if tls == SqlTls::Off => Err(msg::line(msg::CHORE_SQL_TLS_OFF, &[])),
+        SqlDb::Sqlite { .. } if password.is_some() => Err(msg::line(msg::CHORE_SQLITE_NO, &["password"])),
+        SqlDb::Sqlite { .. } if tls != SqlTls::Verify => Err(msg::line(msg::CHORE_SQLITE_NO, &["tls"])),
+        _ => Ok(()),
     }
 }
 
@@ -2281,6 +2324,7 @@ mod tests {
     fn query(db: &str, password: Option<&str>, sql: Option<&str>, file: Option<&str>) -> Chore {
         Chore::Sql {
             db: db.into(),
+            database: None,
             password: password.map(Into::into),
             sql: sql.map(Into::into),
             file: file.map(Into::into),

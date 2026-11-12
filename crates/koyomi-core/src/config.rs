@@ -58,6 +58,12 @@ pub struct Config {
     /// absolute path, for every net.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub work_dir: Option<String>,
+    /// `[[account]]`: the accounts a job's `run_as = "<name>"` runs as (the password is a `secret:<name>`).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub account: Vec<crate::registry::AccountEntry>,
+    /// `[[database]]`: the databases a sql job's `database = "<name>"` connects to.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub database: Vec<crate::registry::DatabaseEntry>,
     /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub blackout: Vec<crate::blackout::Blackout>,
@@ -512,6 +518,8 @@ impl Default for Config {
             primary: None,
             locks: toml::Table::new(),
             work_dir: None,
+            account: Vec::new(),
+            database: Vec::new(),
             blackout: Vec::new(),
             vars: toml::Table::new(),
             groups: toml::Table::new(),
@@ -567,6 +575,18 @@ impl Config {
             r.check()?;
             if c.remote[..i].iter().any(|o| o.name.trim() == r.name.trim()) {
                 return Err(msg::line(msg::CFG_DUPLICATE, &["[[remote]]", "name", r.name.trim()]));
+            }
+        }
+        for (i, a) in c.account.iter().enumerate() {
+            a.check()?;
+            if c.account[..i].iter().any(|o| o.name == a.name) {
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[account]]", "name", &a.name]));
+            }
+        }
+        for (i, d) in c.database.iter().enumerate() {
+            d.check()?;
+            if c.database[..i].iter().any(|o| o.name == d.name) {
+                return Err(msg::line(msg::CFG_DUPLICATE, &["[[database]]", "name", &d.name]));
             }
         }
         if let Some(s) = &c.standby {
@@ -1350,5 +1370,22 @@ token = \"secret:pc2\"
         let c = Config::parse("[notify]\nsystem = [\"failed\"]\n").unwrap();
         assert_eq!(c.notify.get("system").and_then(|v| v.as_array()).map(Vec::len), Some(1));
         assert!(Config::default().notify.is_empty());
+    }
+
+    #[test]
+    fn accounts_and_databases_are_read_and_a_repeated_name_is_refused() {
+        let c = Config::parse(
+            "[[account]]\nname = \"ops\"\nuser = \"ops\"\npassword = \"secret:koyomi-ops\"\n\n[[database]]\nname = \"main\"\ndb = \"sqlite://C:\\\\data\\\\a.db\"\n",
+        )
+        .unwrap();
+        assert_eq!((c.account.len(), c.database.len()), (1, 1));
+        assert_eq!(c.account[0].name, "ops");
+        assert_eq!(c.database[0].name, "main");
+        let one = "[[account]]\nname = \"a\"\nuser = \"u\"\npassword = \"secret:s\"\n";
+        let twice = Config::parse(&format!("{one}{one}"));
+        assert!(twice.is_err_and(|e| msg::CFG_DUPLICATE.is_in(&e)));
+        let bad = Config::parse("[[account]]\nname = \"a/b\"\nuser = \"u\"\npassword = \"secret:s\"\n");
+        assert!(bad.is_err_and(|e| msg::CFG_ENTRY_NAME_BAD.is_in(&e)));
+        assert!(Config::default().account.is_empty() && Config::default().database.is_empty());
     }
 }

@@ -2929,6 +2929,96 @@ text = "シェル {0} がこのエンジンにないため、ジョブを開始�
 cause = "ジョブが指定したシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。"
 action = "{1} をインストールするか、定義の shell を変更してください。"
 
+[E3294]
+when = "ジョブの run_as が、koyomi.toml の [[account]] にない名前を指定しているとき"
+text = "run_as のアカウント {0} が koyomi.toml の [[account]] にないため、ジョブを開始できません。"
+cause = "koyomi.toml の [[account]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。"
+action = "[[account]] に {0} を登録するか、ジョブの run_as を変更してください。"
+
+[E3295]
+when = "sql ジョブの database が、koyomi.toml の [[database]] にない名前を指定しているとき"
+text = "database {0} が koyomi.toml の [[database]] にないため、ジョブを開始できません。"
+cause = "koyomi.toml の [[database]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。"
+action = "[[database]] に {0} を登録するか、ジョブの database を変更してください。"
+
+[E1073]
+when = "[[account]] または [[database]] の name が使用できないとき"
+text = "{0} の name {1} は使用できません。"
+cause = "name が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。"
+action = "前後に空白がなく、{ } とファイル名に使用できない文字を含まない名前を指定してください。"
+
+[E1074]
+when = "[[account]] の user がアカウント名として使用できないとき"
+text = "[[account]] {0} の user が正しくありません。"
+cause = "user が空であるか、空白、制御文字、\" / [ ] : ; | = , + * ? < > のいずれかを含んでいます。"
+action = "user は CORP\\batch、batch@corp.local、batch のように指定してください。"
+
+[E1075]
+when = "[[account]] の password が secret:<名前> の形式でないとき"
+text = "{0} {1} の password が secret:<名前> の形式で指定されていません。"
+cause = "password には、パスワードそのものではなく、資格情報ストアに保存したシークレットの名前を secret:<名前> の形式で指定します。"
+action = "password を secret:<名前> の形式で指定し、値は koyomi secret set <名前> で保存してください。"
+
+[E1076]
+when = "[[database]] の db、password、tls の組み合わせが使用できないとき"
+text = "[[database]] {0} の設定が正しくありません。（{1}）"
+cause = "db、password、tls のいずれかが正しくないか、組み合わせが合っていません。"
+action = "db、password、tls を確認してください。"
+
+[E1077]
+when = "[[database]] の db に { または } が含まれているとき"
+text = "[[database]] {0} の db に { または } を使用できません。"
+cause = "[[database]] はテンプレートではないため、{param:…} や {var:…} を db に指定できません。"
+action = "db には、sqlserver://ホスト/データベース のように、完全な接続先を指定してください。"
+
+[E2250]
+when = "ジョブネットが使用している [[account]] または [[database]] を削除しようとしたとき"
+text = "{0} {1} は {3} 件のジョブネットまたは未確認の定義で使用されているため、削除できません。（{2}）"
+cause = "ジョブがこの名前を指定しています。削除すると、そのジョブは開始時に失敗します。"
+action = "ジョブの指定を変更してから削除するか、使用中でも削除する場合は force を指定してください。"
+
+[E2251]
+when = "koyomi.toml にない [[account]] または [[database]] を削除しようとしたとき"
+text = "koyomi.toml の {0} に {1} がありません。"
+cause = "指定された名前の項目が、koyomi.toml にありません。ほかの操作で削除された可能性があります。"
+action = "最新の内容を読み込み直して、確認してください。"
+
+[E3395]
+when = "run_as または database に指定した名前が使用できないとき"
+text = "{0} の名前 {1} は使用できません。"
+cause = "名前が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。"
+action = "koyomi.toml の [[account]] または [[database]] の name と同じ名前を指定してください。"
+
+[E3396]
+when = "sql に db と database の両方を指定したとき"
+text = "db と database は、どちらか一方だけを指定できます。"
+cause = "db は接続先を直接書く指定で、database は koyomi.toml の [[database]] を名前で指定するものです。両方を指定できません。"
+action = "どちらか一方を削除してください。"
+
+[E3397]
+when = "database を指定した sql に password または tls を指定したとき"
+text = "database を指定したときは、{0} を指定できません。"
+cause = "password と tls は、koyomi.toml の [[database]] の項目が持っています。"
+action = "{0} を削除するか、database の代わりに db を指定してください。"
+
+[W3754]
+when = "ジョブネットのジョブが、koyomi.toml にないアカウントを run_as に指定しているとき"
+text = "ジョブネット {0} のジョブ {1} は run_as に {2} を指定していますが、koyomi.toml の [[account]] にありません。"
+cause = "koyomi.toml の [[account]] に、この name の項目がありません。"
+action = "[[account]] に {2} を登録するか、ジョブの run_as を変更してください。"
+
+[W3755]
+when = "ジョブネットの sql ジョブが、koyomi.toml にないデータベースを database に指定しているとき"
+text = "ジョブネット {0} のジョブ {1} は database に {2} を指定していますが、koyomi.toml の [[database]] にありません。"
+cause = "koyomi.toml の [[database]] に、この name の項目がありません。"
+action = "[[database]] に {2} を登録するか、ジョブの database を変更してください。"
+
+[E3398]
+when = "ウィンドウで run_as に登録済みのアカウントの名前と、user または password の両方を指定したとき"
+text = "run_as に、登録済みのアカウントの名前と user・password を同時に指定できません。"
+cause = "名前を指定した run_as は koyomi.toml の [[account]] を使うため、user と password を同時に指定できません。"
+action = "名前か、user と password のどちらかを空にしてください。"
+
 [E3355]
 when = "エラーのある定義のジョブネットを実行しようとしたとき"
 text = "{0} の定義にエラーがあるため、実行できません。"
@@ -3110,10 +3200,10 @@ cause = "files に、空または空白だけの項目が含まれています�
 action = "files の空の項目を削除するか、ファイルのパスを指定してください。"
 
 [E3558]
-when = "sql の db が空のとき"
-text = "db が指定されていません。"
-cause = "db が未指定、または空白だけです。"
-action = "接続先を、sqlserver://ホスト/データベース、postgres://ユーザー@ホスト/データベース、または sqlite://C:\\data\\app.db の形式で db に指定してください。"
+when = "sql の db も database も指定されていないとき"
+text = "db または database が指定されていません。"
+cause = "db も database も、未指定または空白だけです。"
+action = "接続先を、sqlserver://ホスト/データベース、postgres://ユーザー@ホスト/データベース、または sqlite://C:\\data\\app.db の形式で db に指定するか、koyomi.toml の [[database]] の名前を database に指定してください。"
 
 [E3559]
 when = "ユーザーを指定しない sqlserver:// に password を指定したとき"

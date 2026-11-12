@@ -566,18 +566,32 @@ pub struct Retry {
     pub wait: u64,
 }
 
-/// `run_as = { user = 'CORP\batch', password = "secret:batch" }`: the account a
-/// job runs as instead of the engine's. The password is never in the file:
-/// `password` names the OS credential store's secret that holds it.
+/// A logon: `DOMAIN\user` and the name of the secret that holds its password.
+/// The password is never in the file: `secret` names the OS credential store's
+/// secret (what follows `secret:`). Written inline as
+/// `run_as = { user = 'CORP\batch', password = "secret:batch" }`, or once in
+/// koyomi.toml's `[[account]]` and named by a job (`run_as = "batch"`).
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct RunAs {
+pub struct Account {
     /// `DOMAIN\user`, `user@domain`, or a local `user`.
     pub user: String,
     /// The secret's name (what follows `secret:`).
     pub secret: String,
 }
 
-impl RunAs {
+/// The account a job runs as instead of the engine's: one registered in
+/// koyomi.toml's `[[account]]` and named (`run_as = "batch"`), or written in
+/// the job (`run_as = { user = …, password = "secret:…" }`). `untagged`, so a
+/// `{ user, secret }` stored before the names existed reads as `Inline`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum RunAs {
+    /// The `name` of an `[[account]]`; the engine reads it when the job starts.
+    Named(String),
+    Inline(Account),
+}
+
+impl Account {
     /// The domain and the user as Windows' logon takes them: `None` for a local
     /// account (`batch`, `.\batch`) or a `user@domain` one.
     pub fn split(&self) -> (Option<&str>, &str) {
@@ -720,6 +734,7 @@ struct RawJob {
     files: Field,
     via: Field,
     db: Field,
+    database: Field,
     sql: Field,
     out: Field,
     rows: Field,
@@ -945,11 +960,20 @@ impl Checker<'_> {
     }
 
     /// `run_as = { user = 'CORP\batch', password = "secret:batch" }`: both are
-    /// required, and the password only as a secret's name.
+    /// required, and the password only as a secret's name. Or `run_as = "batch"`, the
+    /// name of an `[[account]]` of koyomi.toml.
     fn run_as(&mut self, field: &Field) -> Option<RunAs> {
         const SHAPE: &str = "{ user = 'CORP\\batch', password = \"secret:batch\" }";
         let f = field.as_ref()?;
         let at = f.span().start;
+        if let toml::Value::String(name) = f.get_ref() {
+            let name = name.trim();
+            if !crate::registry::valid_name(name) {
+                self.add(at, msg::line(msg::DEF_REGISTERED_NAME_BAD, &["run_as", name]));
+                return None;
+            }
+            return Some(RunAs::Named(name.to_owned()));
+        }
         let toml::Value::Table(t) = f.get_ref() else {
             self.add(at, msg::line(msg::DEF_TABLE_BAD, &["run_as", SHAPE]));
             return None;
@@ -994,7 +1018,7 @@ impl Checker<'_> {
             }
         };
         match (ok, user, secret) {
-            (true, Some(user), Some(secret)) => Some(RunAs { user, secret }),
+            (true, Some(user), Some(secret)) => Some(RunAs::Inline(Account { user, secret })),
             _ => None,
         }
     }
@@ -1091,7 +1115,9 @@ impl Checker<'_> {
             }
         }
         if kind != "sql" {
-            for (field, name) in [(&j.db, "db"), (&j.sql, "sql"), (&j.out, "out"), (&j.rows, "rows"), (&j.tls, "tls")] {
+            for (field, name) in
+                [(&j.db, "db"), (&j.database, "database"), (&j.sql, "sql"), (&j.out, "out"), (&j.rows, "rows"), (&j.tls, "tls")]
+            {
                 self.only(field, name, "\"sql\"");
             }
         }
@@ -1428,11 +1454,39 @@ impl Checker<'_> {
     /// number), `tls`, `password`; then the whole, once they all read.
     fn sql_job(&mut self, j: &RawJob, start: usize) -> Chore {
         let before = self.problems.len();
-        let db = match &j.db {
-            None => {
-                self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["sql", "db", "db = \"sqlserver://db01/sales\""]));
-                String::new()
+        // `database = "sales"` names an `[[database]]` of koyomi.toml; `db` is the address written here.
+        // Exactly one of them; with a name, the entry owns the password and the TLS.
+        let database = match (&j.db, &j.database) {
+            (Some(_), Some(f)) => {
+                self.add(f.span().start, msg::line(msg::DEF_SQL_DB_AND_DATABASE, &[]));
+                None
             }
+            (None, None) => {
+                self.add(start, msg::line(msg::CHORE_SQL_DB_EMPTY, &[]));
+                None
+            }
+            (None, Some(f)) => match f.get_ref().as_str().map(str::trim) {
+                Some(name) if crate::registry::valid_name(name) => Some(name.to_owned()),
+                Some(name) => {
+                    self.add(f.span().start, msg::line(msg::DEF_REGISTERED_NAME_BAD, &["database", name]));
+                    None
+                }
+                None => {
+                    self.add(f.span().start, msg::line(msg::DEF_STRING_BAD, &["database"]));
+                    None
+                }
+            },
+            (Some(_), None) => None,
+        };
+        if j.database.is_some() && j.db.is_none() {
+            for (field, key) in [(&j.tls, "tls"), (&j.password, "password")] {
+                if let Some(f) = field {
+                    self.add(f.span().start, msg::line(msg::DEF_SQL_DATABASE_OWNS, &[key]));
+                }
+            }
+        }
+        let db = match &j.db {
+            None => String::new(),
             Some(_) => self.sql_text(&j.db, "db").unwrap_or_default(),
         };
         if let Some(f) = &j.db {
@@ -1462,7 +1516,7 @@ impl Checker<'_> {
             Some(rows)
         });
         let tls = self.choice(&j.tls, "tls", &SqlTls::ALL.map(SqlTls::key)).and_then(SqlTls::of).unwrap_or_default();
-        let chore = Chore::Sql { db, password, sql, file, out, rows, tls };
+        let chore = Chore::Sql { db, database, password, sql, file, out, rows, tls };
         if self.problems.len() == before {
             if let Err(e) = chore.check() {
                 self.add(start, e);
@@ -3114,11 +3168,11 @@ after = ["extract"]
     fn run_as_takes_an_account_and_a_secret_never_a_password() {
         let head = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
         let net = parse(&format!("{head}run_as = {{ user = 'CORP\\batch', password = \"secret:batch\" }}\n")).unwrap();
-        let r = net.jobs[0].run_as.clone().unwrap();
-        assert_eq!(r, RunAs { user: "CORP\\batch".into(), secret: "batch".into() });
+        let RunAs::Inline(r) = net.jobs[0].run_as.clone().unwrap() else { panic!("inline") };
+        assert_eq!(r, Account { user: "CORP\\batch".into(), secret: "batch".into() });
         assert_eq!(r.split(), (Some("CORP"), "batch"));
         for (user, split) in [(".\\batch", (None, "batch")), ("batch@corp.local", (None, "batch@corp.local")), ("batch", (None, "batch"))] {
-            assert_eq!(RunAs { user: user.into(), secret: "s".into() }.split(), split);
+            assert_eq!(Account { user: user.into(), secret: "s".into() }.split(), split);
         }
         let chore = "format = 1\n[[job]]\nid = \"a\"\nkind = \"copy\"\nfrom = 'D:\\a'\ninto = '\\\\nas\\b'\n";
         assert!(parse(&format!("{chore}run_as = {{ user = \"batch\", password = \"secret:b\" }}\n")).unwrap().jobs[0].run_as.is_some());
@@ -3131,7 +3185,7 @@ after = ["extract"]
             ("run_as = { user = '\\batch', password = \"secret:b\" }", msg::DEF_RUN_AS_USER_BAD),
             ("run_as = { user = 'A\\B\\c', password = \"secret:b\" }", msg::DEF_RUN_AS_USER_BAD),
             ("run_as = { user = \"b\", password = \"secret:b\", shell = \"x\" }", msg::DEF_SUBKEY_UNKNOWN),
-            ("run_as = \"batch\"", msg::DEF_TABLE_BAD),
+            ("run_as = 3", msg::DEF_TABLE_BAD),
         ] {
             let p = problems(&format!("{head}{bad}\n"));
             assert!(p.len() == 1 && want.is_in(&p[0]), "{bad}: {p:?}");
@@ -3988,6 +4042,45 @@ after = [{ job = \"way\", code = \"else\" }]
         .contains(&msg::line(msg::DEF_ONLY_FOR_KINDS, &["body", "\"http\", \"mail\""])));
     }
 
+    #[test]
+    fn run_as_and_database_may_be_names_and_old_forms_still_read() {
+        // RunAs serde: a string is Named, an old { user, secret } table is Inline, both directions.
+        #[derive(Debug, PartialEq, Serialize, Deserialize)]
+        struct W {
+            r: RunAs,
+        }
+        let named: W = toml::from_str("r = \"batch\"").unwrap();
+        assert_eq!(named.r, RunAs::Named("batch".into()));
+        assert_eq!(toml::from_str::<W>(&toml::to_string(&named).unwrap()).unwrap(), named);
+        let old: W = toml::from_str("r = { user = 'CORP\\b', secret = \"s\" }").unwrap();
+        assert_eq!(old.r, RunAs::Inline(Account { user: "CORP\\b".into(), secret: "s".into() }));
+        assert_eq!(toml::from_str::<W>(&toml::to_string(&old).unwrap()).unwrap(), old);
+
+        let head = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
+        let net = parse(&format!("{head}run_as = \" batch \"\n")).unwrap();
+        assert_eq!(net.jobs[0].run_as, Some(RunAs::Named("batch".into())));
+        let p = problems(&format!("{head}run_as = \"{{x}}\"\n"));
+        assert!(p.len() == 1 && msg::DEF_REGISTERED_NAME_BAD.is_in(&p[0]), "{p:?}");
+        let p = problems(&format!("{head}run_as = \"\"\n"));
+        assert!(p.len() == 1 && msg::DEF_REGISTERED_NAME_BAD.is_in(&p[0]), "{p:?}");
+
+        let sql = |extra: &str| format!("format = 1\n[[job]]\nid = \"q\"\nkind = \"sql\"\n{extra}");
+        let net = parse(&sql("database = \" sales \"\nsql = \"select 1\"\n")).unwrap();
+        let Part::Chore(Chore::Sql { db, database, .. }) = &net.jobs[0].part else { panic!() };
+        assert_eq!((db.as_str(), database.as_deref()), ("", Some("sales")));
+        for (extra, want) in [
+            ("db = 'sqlite://C:\\a.db'\ndatabase = \"sales\"\nsql = \"select 1\"\n", msg::DEF_SQL_DB_AND_DATABASE),
+            ("database = \"{x}\"\nsql = \"select 1\"\n", msg::DEF_REGISTERED_NAME_BAD),
+            ("database = \"sales\"\nsql = \"select 1\"\ntls = \"verify\"\n", msg::DEF_SQL_DATABASE_OWNS),
+            ("database = \"sales\"\nsql = \"select 1\"\npassword = \"\"\n", msg::DEF_SQL_DATABASE_OWNS),
+            ("database = \"sales\"\nsql = \"select 1\"\npassword = \"secret:x\"\n", msg::DEF_SQL_DATABASE_OWNS),
+            ("sql = \"select 1\"\n", msg::CHORE_SQL_DB_EMPTY),
+        ] {
+            let p = problems(&sql(extra));
+            assert!(p.iter().any(|m| want.is_in(m)), "{extra}: {p:?}");
+        }
+    }
+
     /// `kind = "sql"` takes its database, SQL or file, out file, rows and tls,
     /// the password of a login, and the `retry`, `timeout` and `run_as` of a part;
     /// not an `env` or `judge`.
@@ -4008,6 +4101,7 @@ after = [{ job = \"way\", code = \"else\" }]
             j.part,
             Part::Chore(Chore::Sql {
                 db: "sqlserver://ops@db01:14330/売上".into(),
+                database: None,
                 password: Some("secret:db".into()),
                 sql: Some("select * from t where d = '{param:day}'\n".into()),
                 file: None,
@@ -4024,7 +4118,7 @@ after = [{ job = \"way\", code = \"else\" }]
         let bad = |extra: &str| parse_sql(extra).unwrap_err();
         {
             let s = ToString::to_string(&(bad("sql = 'select 1'\n")));
-            assert!(msg::DEF_JOB_KEY_REQUIRED.is_in(&s) && s.contains("sql"), "{s}");
+            assert!(msg::CHORE_SQL_DB_EMPTY.is_in(&s), "{s}");
         }
         assert!(msg::CHORE_DB_SCHEME.is_in(&bad("db = 'mysql://x/y'\nsql = 'select 1'\n")));
         assert!(msg::CHORE_SQL_ONE_OF.is_in(&bad("db = 'sqlite://C:\\a.db'\n")));

@@ -209,8 +209,11 @@ fn quoted(w: &str) -> String {
 
 /// The account a job runs as, when it is not koyomi's own.
 fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
-    let r = j.run_as.as_ref()?;
-    Some(format!("  {}: {}", t.tr("review.run_as"), t.trf("review.run_as_text", &[&r.user, &r.secret])))
+    let text = match j.run_as.as_ref()? {
+        jobnet::RunAs::Named(n) => t.trf("review.run_as_named", &[n]),
+        jobnet::RunAs::Inline(r) => t.trf("review.run_as_text", &[&r.user, &r.secret]),
+    };
+    Some(format!("  {}: {}", t.tr("review.run_as"), text))
 }
 
 /// What a chore works on, one line each.
@@ -323,8 +326,11 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
             v
         }
         // Where it runs and what: the SQL itself is approved, as a command is.
-        Chore::Sql { db, password, sql, file, out, rows, tls } => {
-            let mut v = vec![line("sql_db", db)];
+        Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
+            let mut v = vec![match database {
+                Some(d) => line("sql_database", d),
+                None => line("sql_db", db),
+            }];
             if let Some(s) = sql {
                 v.push(line("sql", &s.trim().replace('\n', " ⏎ ")));
             }
@@ -621,6 +627,25 @@ run_as = {{ user = \"batch\", password = \"secret:batch\" }}
         let all = jobs(&table(), &d);
         assert!(all.iter().any(|l| l == "  実行のアカウント: CORP\\batch（パスワードはシークレット batch）"), "{all:#?}");
         assert!(all.iter().any(|l| l == "  実行のアカウント: batch（パスワードはシークレット batch）"), "{all:#?}");
+    }
+
+    /// A `run_as` by name and a sql job's registered `database` are told by name, with nothing of a secret.
+    #[test]
+    fn a_registered_account_and_database_are_shown_by_name() {
+        let text = format!(
+            "{NET}run_as = \"ops\"
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+"
+        );
+        let d = def(&text, &Store::default());
+        assert!(d.net.is_some(), "{:?}", d.problems);
+        let all = jobs(&table(), &d);
+        assert!(all.iter().any(|l| l == "  実行のアカウント: ops（登録済みのアカウント）"), "{all:#?}");
+        assert!(all.iter().any(|l| l.contains("データベース（登録済み）") && l.contains("main")), "{all:#?}");
     }
 
     /// An approval's message is what the person approving reads (`koyomi show`, the approve command).

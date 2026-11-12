@@ -24,6 +24,7 @@ pub mod msg;
 pub mod next;
 pub mod preflight;
 pub mod quiet;
+pub mod registry;
 pub mod rename;
 pub mod replace;
 pub mod report;

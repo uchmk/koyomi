@@ -37,7 +37,7 @@ use koyomi_core::calendar::Calendar;
 use koyomi_core::config::Config;
 use koyomi_core::held::Held;
 use koyomi_core::history::{self, Day};
-use koyomi_core::jobnet::{self, Jobnet, Judge, Part, Retry, RunAs};
+use koyomi_core::jobnet::{self, Account, Jobnet, Judge, Part, Retry, RunAs};
 use koyomi_core::late::Delay;
 use koyomi_core::lock::{admit, Holder};
 use koyomi_core::msg;
@@ -438,6 +438,11 @@ impl Runner {
 
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
+    }
+
+    /// The settings the runner uses now (the registered accounts and databases are looked up in them).
+    pub fn config(&self) -> &Config {
+        &self.config
     }
 
     /// The shells this PC has: a job starts the path found for its shell, and one that is not here does not start.
@@ -1106,7 +1111,13 @@ impl Runner {
             grace: wait,
         });
         let log = self.log_path(run_id, job_id);
-        let (command, missing) = self.program(&r.jobnet, j);
+        let (command, mut missing) = self.program(&r.jobnet, j);
+        // A registered account or database is looked up now, in the settings as they are now; a
+        // retry or a loop pass reuses what is found here.
+        let (run_as, env, gone) = resolve_names(&self.config, j.run_as.as_ref(), j.database.as_deref(), &j.env);
+        if gone.is_some() {
+            missing = missing.or(gone);
+        }
         let job = JobSpec {
             run: run_id.to_owned(),
             jobnet: r.jobnet.clone(),
@@ -1119,9 +1130,9 @@ impl Runner {
             grace: wait,
             retry: j.retry,
             judge: j.judge.clone(),
-            env: j.env.clone(),
+            env,
             encoding: j.encoding,
-            run_as: j.run_as.clone(),
+            run_as,
             file: r.file_for(job_id),
             each: match &j.part {
                 Part::Loop { file: Some(f), .. } => Some(Each::Files(f.clone())),
@@ -1273,7 +1284,7 @@ struct JobSpec {
     /// How the process's output is read.
     encoding: jobnet::Encoding,
     /// The account it runs as; its password is read when it starts.
-    run_as: Option<RunAs>,
+    run_as: Option<Account>,
     /// The file a `kind = "file"` part before it found: `KOYOMI_FILE`.
     file: Option<String>,
     /// A loop part's passes; `None` for a job, which runs once.
@@ -1663,7 +1674,7 @@ fn resolve_env(env: &BTreeMap<String, String>, get: &dyn Fn(&str) -> std::io::Re
 /// (and to what the log hides). A missing secret is an error.
 fn resolve_logon(
     mut env: Resolved,
-    run_as: Option<&RunAs>,
+    run_as: Option<&Account>,
     get: &dyn Fn(&str) -> std::io::Result<Option<String>>,
 ) -> Result<Resolved, String> {
     let Some(r) = run_as else { return Ok(env) };
@@ -1684,7 +1695,7 @@ fn resolve_logon(
 /// kills it at once (`ito_proc` ends it as `Killed`).
 fn run_as(
     cmd: std::process::Command,
-    account: &RunAs,
+    account: &Account,
     password: &str,
     stop: &AtomicBool,
     grace: Duration,
@@ -1721,7 +1732,7 @@ struct Resolved {
     vars: Vec<(String, String)>,
     secrets: Vec<String>,
     /// The `run_as` account and its password.
-    logon: Option<(RunAs, String)>,
+    logon: Option<(Account, String)>,
 }
 
 /// Whether the `ok_file` of a job's `judge` exists (a relative one is read from the job's `dir`).
@@ -1927,6 +1938,43 @@ fn attempt(
             (Outcome::Failed, msg::line(msg::EXE_START_FAILED, &[exe, &e.to_string()]))
         }
     }
+}
+
+/// What a job's registered names stand for, now: the account to run as, the environment (a registered database
+/// replaces `KOYOMI_SQL_DB`, `_TLS` and `_PASSWORD`), and the coded line for the first name not registered.
+fn resolve_names(
+    config: &Config,
+    run_as: Option<&RunAs>,
+    database: Option<&str>,
+    env: &std::collections::BTreeMap<String, String>,
+) -> (Option<Account>, std::collections::BTreeMap<String, String>, Option<String>) {
+    let mut env = env.clone();
+    let mut gone = None;
+    let account = match run_as {
+        None => None,
+        Some(RunAs::Inline(a)) => Some(a.clone()),
+        Some(RunAs::Named(n)) => match config.account.iter().find(|a| a.name == *n).and_then(|a| a.account()) {
+            Some(a) => Some(a),
+            None => {
+                gone = Some(msg::line(msg::RUN_ACCOUNT_UNKNOWN, &[n]));
+                None
+            }
+        },
+    };
+    if let Some(n) = database {
+        match config.database.iter().find(|d| d.name == n) {
+            Some(d) => {
+                for k in ["KOYOMI_SQL_DB", "KOYOMI_SQL_TLS", "KOYOMI_SQL_PASSWORD"] {
+                    env.remove(k);
+                }
+                env.extend(d.env());
+            }
+            None => {
+                gone.get_or_insert_with(|| msg::line(msg::RUN_DATABASE_UNKNOWN, &[n]));
+            }
+        }
+    }
+    (account, env, gone)
 }
 
 #[cfg(test)]
@@ -2366,6 +2414,122 @@ retry = { count = 2, wait = \"1s\" }
             ),
             "the script did not run: {log}"
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn entry_config(account_user: &str, db: &str, password: Option<&str>) -> Config {
+        Config {
+            account: vec![koyomi_core::registry::AccountEntry {
+                name: "ops".into(),
+                user: account_user.into(),
+                password: "secret:ops".into(),
+            }],
+            database: vec![koyomi_core::registry::DatabaseEntry {
+                name: "main".into(),
+                db: db.into(),
+                password: password.map(str::to_owned),
+                tls: None,
+            }],
+            ..Config::default()
+        }
+    }
+
+    /// A registered database replaces `KOYOMI_SQL_DB`, `_TLS` and `_PASSWORD` of the job's env and keeps the rest; an
+    /// entry with no password leaves none; a changed entry is what the next start sees; an inline account is kept.
+    #[test]
+    fn names_are_resolved_over_the_job_env_and_the_settings_as_they_are() {
+        let mut env = std::collections::BTreeMap::new();
+        for (k, v) in [("KOYOMI_SQL_DB", "old"), ("KOYOMI_SQL_TLS", "off"), ("KOYOMI_SQL_PASSWORD", "secret:old"), ("KEEP", "1")] {
+            env.insert(k.to_owned(), v.to_owned());
+        }
+        let named = RunAs::Named("ops".into());
+        let cfg = entry_config("batch", "sqlite://C:/data/a.db", Some("secret:dbpw"));
+        let (acc, out, gone) = resolve_names(&cfg, Some(&named), Some("main"), &env);
+        assert_eq!(acc, Some(Account { user: "batch".into(), secret: "ops".into() }));
+        assert_eq!(gone, None);
+        assert!(out["KOYOMI_SQL_DB"].ends_with("sqlite://C:/data/a.db"), "{out:?}");
+        assert_eq!(out.get("KOYOMI_SQL_PASSWORD").map(String::as_str), Some("secret:dbpw"));
+        assert_eq!(out["KOYOMI_SQL_TLS"], "verify");
+        assert_eq!(out.get("KEEP").map(String::as_str), Some("1"));
+        // No password in the entry: none is left of the job's.
+        let cfg2 = entry_config("other", "sqlite://C:/data/b.db", None);
+        let (acc2, out2, _) = resolve_names(&cfg2, Some(&named), Some("main"), &env);
+        assert_eq!(acc2.map(|a| a.user), Some("other".into()));
+        assert!(!out2.contains_key("KOYOMI_SQL_PASSWORD") && out2["KOYOMI_SQL_TLS"] == "verify", "{out2:?}");
+        assert!(out2["KOYOMI_SQL_DB"].ends_with("sqlite://C:/data/b.db"), "{out2:?}");
+        // Not registered: no account, the env as it was, the coded line.
+        let (acc3, out3, gone3) = resolve_names(&Config::default(), Some(&named), Some("main"), &env);
+        assert_eq!((acc3, out3), (None, env.clone()));
+        assert!(gone3.is_some_and(|g| msg::RUN_ACCOUNT_UNKNOWN.is_in(&g)));
+        let (_, _, gone4) = resolve_names(&Config::default(), None, Some("main"), &env);
+        assert!(gone4.is_some_and(|g| msg::RUN_DATABASE_UNKNOWN.is_in(&g) && g.contains("main")));
+        let inline = RunAs::Inline(Account { user: "me".into(), secret: "s".into() });
+        let (acc5, out5, gone5) = resolve_names(&Config::default(), Some(&inline), None, &env);
+        assert_eq!((acc5.map(|a| a.user), out5, gone5), (Some("me".into()), env, None));
+    }
+
+    /// A rerun of a run that failed for an unregistered name looks the name up again, in the settings as they are.
+    #[test]
+    fn a_rerun_looks_the_name_up_again() {
+        let dir = scratch("nameschange");
+        let d = def(
+            "net",
+            "format = 1
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+",
+        );
+        let today = ito_common::now::now_local().date_naive();
+        let mut r = Runner::new(&dir, Config::default());
+        let first = r.start(&d, today, How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &first);
+        assert!(msg::RUN_DATABASE_UNKNOWN.is_in(&run.job("q").unwrap().reason));
+        let third = r.rerun(&first, None, None).unwrap();
+        let run = wait_over(&mut r, &third);
+        assert!(msg::RUN_DATABASE_UNKNOWN.is_in(&run.job("q").unwrap().reason), "{}", run.job("q").unwrap().reason);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A job naming an account or a database that is not registered fails at its start with the coded reason, with
+    /// no process and no retry.
+    #[test]
+    fn an_unregistered_account_or_database_fails_without_a_process() {
+        let dir = scratch("noaccount");
+        let d = def(
+            "net",
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"cmd\", \"/c\", \"echo hi\"]
+run_as = \"ghost\"
+retry = { count = 2, wait = \"1s\" }
+",
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let j = run.job("a").unwrap();
+        assert_eq!((run.state, j.state, j.exit, j.retried), (State::Error, State::Error, None, 0));
+        assert!(msg::RUN_ACCOUNT_UNKNOWN.is_in(&j.reason) && j.reason.contains("ghost"), "{}", j.reason);
+        let d = def(
+            "net2",
+            "format = 1
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"ghost\"
+",
+        );
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        let j = run.job("q").unwrap();
+        assert_eq!((j.state, j.exit), (State::Error, None));
+        assert!(msg::RUN_DATABASE_UNKNOWN.is_in(&j.reason), "{}", j.reason);
+        assert_eq!(j.database.as_deref(), Some("ghost"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -3695,14 +3859,14 @@ after = [\"a\"]
     #[test]
     fn the_run_as_password_is_read_from_the_store_and_hidden() {
         let store = |n: &str| Ok((n == "batch").then(|| "s3cret".to_owned()));
-        let account = RunAs { user: r"CORP\batch".into(), secret: "batch".into() };
+        let account = Account { user: r"CORP\batch".into(), secret: "batch".into() };
         let got = resolve_logon(Resolved::default(), Some(&account), &store).unwrap();
         let (who, password) = got.logon.as_ref().unwrap();
         assert_eq!((who, password.as_str()), (&account, "s3cret"));
         let hidden: Vec<&str> = got.secrets.iter().map(String::as_str).collect();
         assert_eq!(ito_secret::mask("pass s3cret", &hidden), "pass ***");
         assert!(got.vars.is_empty(), "the password is not handed to the job");
-        let missing = RunAs { user: "batch".into(), secret: "none".into() };
+        let missing = Account { user: "batch".into(), secret: "none".into() };
         let e = resolve_logon(Resolved::default(), Some(&missing), &store).err().unwrap();
         assert!(e.contains("koyomi secret set none"), "{e}");
         assert!(resolve_logon(Resolved::default(), None, &store).unwrap().logon.is_none());

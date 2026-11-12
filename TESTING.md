@@ -2187,3 +2187,17 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 141.10 | Run a job whose shell is missing on this PC | The job is 異常 with E3293 naming the shell and the net; the log file exists; no child process was made; jobs after it read 未実行 |
 | 141.11 | Write `shell = "cmd"` on a job and run `koyomi check` | check refuses it with the line and the five shells that are allowed |
 | 141.12 | Write `shell = "zsh"` in koyomi.toml on a PC without zsh | The default is the first shell this PC has (Windows: powershell, pwsh, bash, sh, zsh; elsewhere: bash, sh, zsh, pwsh) and the caution W3753 is listed |
+
+## 142. Accounts and databases registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`)
+
+| # | Do | Expect |
+|---|---|---|
+| 142.1 | Add `[[account]] name = "ops"` with a user and a `password = "secret:…"`, and a job with `run_as = "ops"`; run it | The job runs as that user; the password is read from the credential store and appears in no file or reply |
+| 142.2 | Write a job with `run_as = "nobody"` (not registered) and run it | The job is 異常 with E3294 naming the account; no child process was made; no retry |
+| 142.3 | Write an SQL job with `database = "main"` (registered) and run it | The query runs against that database with its TLS and password; `KOYOMI_SQL_PASSWORD` set elsewhere is not used |
+| 142.4 | Write `database = "nope"` and run it | The job is 異常 with E3295; no process |
+| 142.5 | Edit an entry while a job waits for its time | The job starts with the entry as it is at start |
+| 142.6 | Run `koyomi check` with a job naming an unregistered account and database | Lines W3754 and W3755 are printed, on every OS |
+| 142.7 | Remove an account a job uses, without force | The request is refused (E2250); with force the entry goes and the job gets W3754 |
+| 142.8 | Send AccountPut as a non-Admin user, by `/door` and by REST | It is refused |
+| 142.9 | Open a job with a registered `run_as` in the window | The name is kept as written; typing a user as well shows E3398 |

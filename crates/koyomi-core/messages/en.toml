@@ -2929,6 +2929,96 @@ text = "The job cannot start because this engine does not have the shell {0}. ({
 cause = "The shell the job names is not found on the PATH of this PC (on Windows, nor in the usual places of Windows PowerShell and Git for Windows)."
 action = "Install {1}, or change the shell in the definition."
 
+[E3294]
+when = "The run_as of a job names an account that is not in [[account]] of koyomi.toml"
+text = "The job cannot start because the run_as account {0} is not in [[account]] of koyomi.toml."
+cause = "[[account]] of koyomi.toml has no entry with this name. It may have been removed, or the name may be wrong."
+action = "Register {0} in [[account]], or change the run_as of the job."
+
+[E3295]
+when = "The database of a sql job names a database that is not in [[database]] of koyomi.toml"
+text = "The job cannot start because the database {0} is not in [[database]] of koyomi.toml."
+cause = "[[database]] of koyomi.toml has no entry with this name. It may have been removed, or the name may be wrong."
+action = "Register {0} in [[database]], or change the database of the job."
+
+[E1073]
+when = "The name of an [[account]] or [[database]] cannot be used"
+text = "The name {1} of {0} cannot be used."
+cause = "The name is empty, has spaces at its ends, contains { or }, or contains a character that a file name cannot hold."
+action = "Give a name without spaces at its ends and without { }, or characters a file name cannot hold."
+
+[E1074]
+when = "The user of an [[account]] cannot be used as an account name"
+text = "The user of [[account]] {0} is not valid."
+cause = "The user is empty, or contains a space, a control character, or one of \" / [ ] : ; | = , + * ? < >."
+action = "Give user as CORP\\batch, batch@corp.local or batch."
+
+[E1075]
+when = "The password of an [[account]] or [[database]] is not in the form secret:<name>"
+text = "The password of {0} {1} is not given as secret:<name>."
+cause = "password holds the name of a secret kept in the credential store, written as secret:<name>, not the password itself."
+action = "Give password as secret:<name>, and store the value with koyomi secret set <name>."
+
+[E1076]
+when = "The combination of db, password and tls of a [[database]] cannot be used"
+text = "The settings of [[database]] {0} are not valid. ({1})"
+cause = "One of db, password and tls is not valid, or they do not fit together."
+action = "Check db, password and tls."
+
+[E1077]
+when = "The db of a [[database]] contains { or }"
+text = "The db of [[database]] {0} cannot contain { or }."
+cause = "A [[database]] is not a template, so {param:...} and {var:...} cannot be used in db."
+action = "Give the whole target in db, such as sqlserver://host/database."
+
+[E2250]
+when = "An [[account]] or [[database]] that jobnets use is about to be removed"
+text = "{0} {1} cannot be removed because {3} jobnets or unconfirmed definitions use it. ({2})"
+cause = "Jobs name it. If it is removed, those jobs fail when they start."
+action = "Change those jobs and then remove it, or give force to remove it while it is in use."
+
+[E2251]
+when = "An [[account]] or [[database]] that is not in koyomi.toml is about to be removed"
+text = "{0} of koyomi.toml has no {1}."
+cause = "koyomi.toml has no entry with the given name. It may have been removed by another operation."
+action = "Read the latest content again and check."
+
+[E3395]
+when = "The name given in run_as or database cannot be used"
+text = "The name {1} of {0} cannot be used."
+cause = "The name is empty, has spaces at its ends, contains { or }, or contains a character that a file name cannot hold."
+action = "Give the same name as the name of the [[account]] or [[database]] of koyomi.toml."
+
+[E3396]
+when = "A sql gives both db and database"
+text = "Only one of db and database can be given."
+cause = "db writes the target directly, and database names a [[database]] of koyomi.toml. They cannot both be given."
+action = "Remove one of them."
+
+[E3397]
+when = "A sql with database gives password or tls"
+text = "{0} cannot be given when database is given."
+cause = "password and tls belong to the entry of [[database]] in koyomi.toml."
+action = "Remove {0}, or give db instead of database."
+
+[W3754]
+when = "A job of a jobnet gives run_as an account that is not in koyomi.toml"
+text = "Job {1} of jobnet {0} gives {2} as run_as, but it is not in [[account]] of koyomi.toml."
+cause = "[[account]] of koyomi.toml has no entry with this name."
+action = "Register {2} in [[account]], or change the run_as of the job."
+
+[W3755]
+when = "A sql job of a jobnet gives database a database that is not in koyomi.toml"
+text = "Job {1} of jobnet {0} gives {2} as database, but it is not in [[database]] of koyomi.toml."
+cause = "[[database]] of koyomi.toml has no entry with this name."
+action = "Register {2} in [[database]], or change the database of the job."
+
+[E3398]
+when = "The window gives run_as both the name of a registered account and a user or password"
+text = "Give run_as either the name of a registered account, or a user and a password."
+cause = "A run_as with a name uses [[account]] of koyomi.toml, so a user and a password cannot be given with it."
+action = "Empty the name, or empty the user and password."
+
 [E3355]
 when = "A jobnet whose definition has errors is about to run"
 text = "The definition of {0} has errors, so it cannot run."
@@ -3110,10 +3200,10 @@ cause = "files holds an item that is empty or only spaces."
 action = "Remove the empty item from files, or give a file path."
 
 [E3558]
-when = "db of a sql is empty"
-text = "db is not given."
-cause = "db is not given, or holds only spaces."
-action = "Give the database in db as sqlserver://host/database, postgres://user@host/database or sqlite://C:\\data\\app.db."
+when = "Neither db nor database of a sql is given"
+text = "db or database is not given."
+cause = "Neither db nor database is given, or the one given holds only spaces."
+action = "Give the database in db as sqlserver://host/database, postgres://user@host/database or sqlite://C:\\data\\app.db, or give the name of a [[database]] of koyomi.toml in database."
 
 [E3559]
 when = "password is given to a sqlserver:// without a user"

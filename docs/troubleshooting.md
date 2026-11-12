@@ -488,6 +488,41 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - 原因: token が secret:<名前> または sha256:<ハッシュ> の形式でないためです。
 - 対処: token には secret:<名前> を指定し、値は koyomi secret set <名前> で OS の資格情報に保存してください。sha256:<ハッシュ> も指定できます。koyomi user add は、この形式で書きます。
 
+### KOYOMI-E1073 [[account]] または [[database]] の name が使用できないとき
+
+- 種類: エラー
+- メッセージ: … の name … は使用できません。
+- 原因: name が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。
+- 対処: 前後に空白がなく、{ } とファイル名に使用できない文字を含まない名前を指定してください。
+
+### KOYOMI-E1074 [[account]] の user がアカウント名として使用できないとき
+
+- 種類: エラー
+- メッセージ: [[account]] … の user が正しくありません。
+- 原因: user が空であるか、空白、制御文字、" / [ ] : ; | = , + * ? < > のいずれかを含んでいます。
+- 対処: user は CORP\batch、batch@corp.local、batch のように指定してください。
+
+### KOYOMI-E1075 [[account]] の password が secret:<名前> の形式でないとき
+
+- 種類: エラー
+- メッセージ: … … の password が secret:<名前> の形式で指定されていません。
+- 原因: password には、パスワードそのものではなく、資格情報ストアに保存したシークレットの名前を secret:<名前> の形式で指定します。
+- 対処: password を secret:<名前> の形式で指定し、値は koyomi secret set <名前> で保存してください。
+
+### KOYOMI-E1076 [[database]] の db、password、tls の組み合わせが使用できないとき
+
+- 種類: エラー
+- メッセージ: [[database]] … の設定が正しくありません。（…）
+- 原因: db、password、tls のいずれかが正しくないか、組み合わせが合っていません。
+- 対処: db、password、tls を確認してください。
+
+### KOYOMI-E1077 [[database]] の db に { または } が含まれているとき
+
+- 種類: エラー
+- メッセージ: [[database]] … の db に { または } を使用できません。
+- 原因: [[database]] はテンプレートではないため、{param:…} や {var:…} を db に指定できません。
+- 対処: db には、sqlserver://ホスト/データベース のように、完全な接続先を指定してください。
+
 ### KOYOMI-W1068 ジョブネットが指定した通知先が、koyomi.toml の [notify] に存在しないとき
 
 - 種類: 警告
@@ -1107,6 +1142,20 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - メッセージ: HTTPS からは、[http] の port・lan・ipv6・tailnet と、自分自身の [[http.user]] … を変更できないため、何も書き込んでいません。
 - 原因: 変更を送っているこの接続が切れ、ここから元に戻せなくなるためです。
 - 対処: エンジンが動いている PC で変更するか、ほかの admin に頼んでください。
+
+### KOYOMI-E2250 ジョブネットが使用している [[account]] または [[database]] を削除しようとしたとき
+
+- 種類: エラー
+- メッセージ: … … は … 件のジョブネットまたは未確認の定義で使用されているため、削除できません。（…）
+- 原因: ジョブがこの名前を指定しています。削除すると、そのジョブは開始時に失敗します。
+- 対処: ジョブの指定を変更してから削除するか、使用中でも削除する場合は force を指定してください。
+
+### KOYOMI-E2251 koyomi.toml にない [[account]] または [[database]] を削除しようとしたとき
+
+- 種類: エラー
+- メッセージ: koyomi.toml の … に … がありません。
+- 原因: 指定された名前の項目が、koyomi.toml にありません。ほかの操作で削除された可能性があります。
+- 対処: 最新の内容を読み込み直して、確認してください。
 
 ## ジョブネットの保存・確認（31xx）
 
@@ -1931,6 +1980,20 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - 原因: ジョブが指定したシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。
 - 対処: … をインストールするか、定義の shell を変更してください。
 
+### KOYOMI-E3294 ジョブの run_as が、koyomi.toml の [[account]] にない名前を指定しているとき
+
+- 種類: エラー
+- メッセージ: run_as のアカウント … が koyomi.toml の [[account]] にないため、ジョブを開始できません。
+- 原因: koyomi.toml の [[account]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。
+- 対処: [[account]] に … を登録するか、ジョブの run_as を変更してください。
+
+### KOYOMI-E3295 sql ジョブの database が、koyomi.toml の [[database]] にない名前を指定しているとき
+
+- 種類: エラー
+- メッセージ: database … が koyomi.toml の [[database]] にないため、ジョブを開始できません。
+- 原因: koyomi.toml の [[database]] に、この name の項目がありません。削除されたか、名前が違う可能性があります。
+- 対処: [[database]] に … を登録するか、ジョブの database を変更してください。
+
 ### KOYOMI-W3213 接続先が、ジョブの env に指定した環境変数を受け付けなかったとき
 
 - 種類: 警告
@@ -2563,6 +2626,34 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - 原因: ポートが、1 から 65535 までの数でないためです。
 - 対処: ポートには 1 から 65535 までの数を指定してください。
 
+### KOYOMI-E3395 run_as または database に指定した名前が使用できないとき
+
+- 種類: エラー
+- メッセージ: … の名前 … は使用できません。
+- 原因: 名前が空であるか、前後に空白があるか、{ または } を含むか、ファイル名に使用できない文字を含んでいます。
+- 対処: koyomi.toml の [[account]] または [[database]] の name と同じ名前を指定してください。
+
+### KOYOMI-E3396 sql に db と database の両方を指定したとき
+
+- 種類: エラー
+- メッセージ: db と database は、どちらか一方だけを指定できます。
+- 原因: db は接続先を直接書く指定で、database は koyomi.toml の [[database]] を名前で指定するものです。両方を指定できません。
+- 対処: どちらか一方を削除してください。
+
+### KOYOMI-E3397 database を指定した sql に password または tls を指定したとき
+
+- 種類: エラー
+- メッセージ: database を指定したときは、… を指定できません。
+- 原因: password と tls は、koyomi.toml の [[database]] の項目が持っています。
+- 対処: … を削除するか、database の代わりに db を指定してください。
+
+### KOYOMI-E3398 ウィンドウで run_as に登録済みのアカウントの名前と、user または password の両方を指定したとき
+
+- 種類: エラー
+- メッセージ: run_as に、登録済みのアカウントの名前と user・password を同時に指定できません。
+- 原因: 名前を指定した run_as は koyomi.toml の [[account]] を使うため、user と password を同時に指定できません。
+- 対処: 名前か、user と password のどちらかを空にしてください。
+
 ## ジョブの定義（34xx）
 
 ### KOYOMI-E3401 ジョブに、その kind では使用しない項目が指定されているとき
@@ -3127,12 +3218,12 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - 原因: files に、空または空白だけの項目が含まれています。
 - 対処: files の空の項目を削除するか、ファイルのパスを指定してください。
 
-### KOYOMI-E3558 sql の db が空のとき
+### KOYOMI-E3558 sql の db も database も指定されていないとき
 
 - 種類: エラー
-- メッセージ: db が指定されていません。
-- 原因: db が未指定、または空白だけです。
-- 対処: 接続先を、sqlserver://ホスト/データベース、postgres://ユーザー@ホスト/データベース、または sqlite://C:\data\app.db の形式で db に指定してください。
+- メッセージ: db または database が指定されていません。
+- 原因: db も database も、未指定または空白だけです。
+- 対処: 接続先を、sqlserver://ホスト/データベース、postgres://ユーザー@ホスト/データベース、または sqlite://C:\data\app.db の形式で db に指定するか、koyomi.toml の [[database]] の名前を database に指定してください。
 
 ### KOYOMI-E3559 ユーザーを指定しない sqlserver:// に password を指定したとき
 
@@ -4369,6 +4460,20 @@ koyomi が表示するエラーと警告を、メッセージ ID ごとにまと
 - メッセージ: koyomi.toml の shell に指定された … がこのエンジンにないため、… を既定のシェルにします。
 - 原因: 指定されたシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。
 - 対処: シェルをインストールするか、koyomi.toml の shell を変更してください。
+
+### KOYOMI-W3754 ジョブネットのジョブが、koyomi.toml にないアカウントを run_as に指定しているとき
+
+- 種類: 警告
+- メッセージ: ジョブネット … のジョブ … は run_as に … を指定していますが、koyomi.toml の [[account]] にありません。
+- 原因: koyomi.toml の [[account]] に、この name の項目がありません。
+- 対処: [[account]] に … を登録するか、ジョブの run_as を変更してください。
+
+### KOYOMI-W3755 ジョブネットの sql ジョブが、koyomi.toml にないデータベースを database に指定しているとき
+
+- 種類: 警告
+- メッセージ: ジョブネット … のジョブ … は database に … を指定していますが、koyomi.toml の [[database]] にありません。
+- 原因: koyomi.toml の [[database]] に、この name の項目がありません。
+- 対処: [[database]] に … を登録するか、ジョブの database を変更してください。
 
 ### KOYOMI-W3769 [http] の tailnet のポートをまだ開けないとき
 

@@ -328,6 +328,41 @@ pub enum Request {
         text: String,
         base_sha256: String,
     },
+    /// The registered accounts and databases of koyomi.toml with the state of their secrets and the nets
+    /// that name them, as a [`RegistryBody`]. Never a password: only its `secret:` name.
+    Registry,
+    /// Add or change the `[[account]]` `name` (`password` is `secret:<name>`), if koyomi.toml still hashes
+    /// to `base_sha256`. Everything else in the file stays as written.
+    AccountPut {
+        name: String,
+        user: String,
+        password: String,
+        base_sha256: String,
+    },
+    /// Remove the `[[account]]` `name`. Refused while a net names it, unless `force`.
+    AccountRemove {
+        name: String,
+        base_sha256: String,
+        #[serde(default)]
+        force: bool,
+    },
+    /// Add or change the `[[database]]` `name`.
+    DatabasePut {
+        name: String,
+        db: String,
+        #[serde(default)]
+        password: Option<String>,
+        #[serde(default)]
+        tls: Option<koyomi_core::chore::SqlTls>,
+        base_sha256: String,
+    },
+    /// Remove the `[[database]]` `name`. Refused while a net names it, unless `force`.
+    DatabaseRemove {
+        name: String,
+        base_sha256: String,
+        #[serde(default)]
+        force: bool,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -374,6 +409,64 @@ impl ConfigBody {
     pub fn parse(text: &str) -> Result<ConfigBody, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
+}
+
+/// What `Registry` and the four writes answer.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RegistryBody {
+    /// SHA-256 of koyomi.toml as read: the `base_sha256` of the next write.
+    pub sha256: String,
+    #[serde(default)]
+    pub accounts: Vec<AccountRow>,
+    #[serde(default)]
+    pub databases: Vec<DatabaseRow>,
+}
+
+/// One `[[account]]`; `state` is `ok`, `missing`, `unreadable` (its secret), and `used_by` the nets that name it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccountRow {
+    pub name: String,
+    pub user: String,
+    /// The secret's name (the `secret:` is taken off).
+    pub secret: String,
+    pub state: String,
+    #[serde(default)]
+    pub used_by: Vec<String>,
+}
+
+/// One `[[database]]`; `state` is `ok`, `missing`, `unreadable` or `not-needed` (no password).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseRow {
+    pub name: String,
+    /// `sqlserver`, `postgres` or `sqlite`.
+    pub kind: String,
+    pub db: String,
+    #[serde(default)]
+    pub secret: Option<String>,
+    #[serde(default)]
+    pub tls: Option<String>,
+    pub state: String,
+    #[serde(default)]
+    pub used_by: Vec<String>,
+}
+
+impl RegistryBody {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    /// Read by a window of another PC, which is wired apart from the engine.
+    #[allow(dead_code)] // the window of worker B reads it; the engine's tests do now
+    pub fn parse(text: &str) -> Result<RegistryBody, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// A `[[database]]` as a window may list it for a sql job: its name and kind, nothing else.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DatabaseName {
+    pub name: String,
+    pub kind: String,
 }
 
 /// The role `POST /door` asks for to pass `r` on to the engine; `None`: it cannot be done from there
@@ -425,6 +518,11 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::Users
         | Request::ConfigText
         | Request::ConfigPut { .. }
+        | Request::Registry
+        | Request::AccountPut { .. }
+        | Request::AccountRemove { .. }
+        | Request::DatabasePut { .. }
+        | Request::DatabaseRemove { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -468,6 +566,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::ExportAll
         | Request::Users
         | Request::ConfigText
+        | Request::Registry
         | Request::Notices { .. }
         | Request::Tray { .. } => true,
         Request::Stop
@@ -501,6 +600,10 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarDelete { .. }
         | Request::HolidayTable { .. }
         | Request::ConfigPut { .. }
+        | Request::AccountPut { .. }
+        | Request::AccountRemove { .. }
+        | Request::DatabasePut { .. }
+        | Request::DatabaseRemove { .. }
         | Request::UserSet { .. }
         | Request::UserRemove { .. }
         | Request::UserAdd { .. }
@@ -594,6 +697,15 @@ pub struct Snapshot {
     /// engine is too old to say.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub shell: String,
+    /// The names of the `[[account]]`s of koyomi.toml (what a job's `run_as` may name); never their user or secret.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accounts: Vec<String>,
+    /// The `[[database]]`s of koyomi.toml by name and kind (what a sql job's `database` may name).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub databases: Vec<DatabaseName>,
+    /// Whether the engine runs on Windows (`run_as` works only there); `None` when the engine is too old to say.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub windows: Option<bool>,
 }
 
 /// One shell the engine found on its PC.
@@ -1025,6 +1137,10 @@ c"
             Request::UserRemove { name: "u".into(), base: "b".into() },
             Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
             Request::UserReset { name: "u".into(), base: "b".into() },
+            Request::AccountPut { name: "a".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
+            Request::AccountRemove { name: "a".into(), base_sha256: "b".into(), force: false },
+            Request::DatabasePut { name: "d".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
+            Request::DatabaseRemove { name: "d".into(), base_sha256: "b".into(), force: false },
         ];
         for r in &writes {
             assert!(!r.is_read(), "{r:?}");
@@ -1078,6 +1194,45 @@ port = 1
             sha256: "abc".into(),
         };
         assert_eq!(ConfigBody::parse(&cfg.to_toml()).unwrap(), cfg);
+        assert!(matches!(round(&Request::Registry), Request::Registry));
+        let put = Request::AccountPut { name: "a".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() };
+        let Request::AccountPut { name, user, .. } = round(&put) else { panic!("not an account put") };
+        assert_eq!((name.as_str(), user.as_str()), ("a", "u"));
+        assert!(Request::Registry.is_read());
+        assert_eq!(door_needs(&Request::Registry), Some(Role::Admin));
+        assert_eq!(door_needs(&put), Some(Role::Admin));
+    }
+
+    /// The registry body reads back with every field and state, and an older body without the lists reads as empty.
+    #[test]
+    fn the_registry_body_round_trips_with_every_state() {
+        let body = RegistryBody {
+            sha256: "abc".into(),
+            accounts: ["ok", "missing", "unreadable"]
+                .iter()
+                .map(|s| AccountRow {
+                    name: format!("a-{s}"),
+                    user: "CORP-batch".into(),
+                    secret: "s".into(),
+                    state: (*s).into(),
+                    used_by: vec!["g/n".into()],
+                })
+                .collect(),
+            databases: ["ok", "missing", "unreadable", "not-needed"]
+                .iter()
+                .map(|s| DatabaseRow {
+                    name: format!("d-{s}"),
+                    kind: "sqlite".into(),
+                    db: "sqlite://x".into(),
+                    secret: (*s != "not-needed").then(|| "pw".to_owned()),
+                    tls: (*s == "ok").then(|| "verify".to_owned()),
+                    state: (*s).into(),
+                    used_by: Vec::new(),
+                })
+                .collect(),
+        };
+        assert_eq!(RegistryBody::parse(&body.to_toml()).unwrap(), body);
+        assert_eq!(RegistryBody::parse("sha256 = \"x\"\n").unwrap(), RegistryBody { sha256: "x".into(), ..Default::default() });
     }
 
     /// the snapshot reads back with the engine's blocked nets and offset, and without them (an older engine).

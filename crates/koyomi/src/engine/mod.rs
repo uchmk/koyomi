@@ -1345,6 +1345,15 @@ impl State {
             utc_offset_min: ito_common::now::now_local().offset().local_minus_utc() / 60,
             shells: shells::listed(&self.shells),
             shell: self.default_shell().0,
+            accounts: self.runner.config().account.iter().map(|a| a.name.clone()).collect(),
+            databases: self
+                .runner
+                .config()
+                .database
+                .iter()
+                .map(|d| proto::DatabaseName { name: d.name.clone(), kind: d.kind().unwrap_or_default().to_owned() })
+                .collect(),
+            windows: Some(cfg!(windows)),
         }
     }
 
@@ -1374,6 +1383,7 @@ impl State {
                 told.push(shell);
                 out.push(msg::line(msg::OS_NO_SHELL, &[&d.id, &j.id, shell]));
             }
+            out.extend(koyomi_core::registry::unknown_lines(self.runner.config(), &d.id, net));
             if cfg!(windows) {
                 continue;
             }
@@ -2373,6 +2383,113 @@ impl State {
         Ok(msg::note(msg::N_CONFIG_WRITTEN, &[]))
     }
 
+    /// The nets (confirmed or not) and staged definitions that name each account / database, by id.
+    fn registry_uses(&self) -> (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) {
+        let (mut accounts, mut databases): (BTreeMap<String, Vec<String>>, BTreeMap<String, Vec<String>>) = Default::default();
+        let mut note = |id: &str, net: &koyomi_core::jobnet::Jobnet| {
+            let (a, d) = koyomi_core::registry::names_used(net);
+            for n in a {
+                let v = accounts.entry(n).or_default();
+                if !v.iter().any(|x| x == id) {
+                    v.push(id.to_owned());
+                }
+            }
+            for n in d {
+                let v = databases.entry(n).or_default();
+                if !v.iter().any(|x| x == id) {
+                    v.push(id.to_owned());
+                }
+            }
+        };
+        for d in &self.defs {
+            if let Some(net) = &d.net {
+                note(&d.id, net);
+            }
+        }
+        for e in &self.staged.next {
+            if let Ok(net) = koyomi_core::jobnet::parse(&e.text) {
+                note(&e.id, &net);
+            }
+        }
+        (accounts, databases)
+    }
+
+    /// See [`Request::Registry`]; `get` reads a secret (the credential store, or a test's own).
+    fn registry(&self, get: &dyn Fn(&str) -> std::io::Result<Option<String>>) -> Result<String, String> {
+        let text = self.users_text()?.unwrap_or_default();
+        let config = koyomi_core::config::Config::parse(&text)?;
+        let state = |name: Option<&str>| match name {
+            None => "not-needed",
+            Some(n) => match get(n) {
+                Ok(Some(v)) if !v.is_empty() => "ok",
+                Ok(_) => "missing",
+                Err(_) => "unreadable",
+            },
+        };
+        let (au, du) = self.registry_uses();
+        let accounts = config
+            .account
+            .iter()
+            .map(|a| proto::AccountRow {
+                name: a.name.clone(),
+                user: a.user.clone(),
+                secret: a.secret().unwrap_or_default().to_owned(),
+                state: if a.secret().is_none() { "missing" } else { state(a.secret()) }.to_owned(),
+                used_by: au.get(&a.name).cloned().unwrap_or_default(),
+            })
+            .collect();
+        let databases = config
+            .database
+            .iter()
+            .map(|d| proto::DatabaseRow {
+                name: d.name.clone(),
+                kind: d.kind().unwrap_or_default().to_owned(),
+                db: d.db.clone(),
+                secret: d.secret().map(str::to_owned),
+                tls: d.tls.map(|t| t.key().to_owned()),
+                state: state(d.secret()).to_owned(),
+                used_by: du.get(&d.name).cloned().unwrap_or_default(),
+            })
+            .collect();
+        Ok(proto::RegistryBody { sha256: koyomi_core::users::sha256(&text), accounts, databases }.to_toml())
+    }
+
+    /// The four writes of [`Request::AccountPut`] and its kin. In order, each refusal writing nothing: the
+    /// base hash (CONFIG_CHANGED), the edit itself, the file reading as a whole, a name still in use (unless
+    /// `force`; `remove` is `(account?, name)`). Then the file is written, read again, and the new
+    /// registry is the reply.
+    fn registry_write(
+        &mut self,
+        base: &str,
+        force: bool,
+        build: &dyn Fn(&str) -> Result<String, String>,
+        remove: Option<(bool, &str)>,
+        get: &dyn Fn(&str) -> std::io::Result<Option<String>>,
+    ) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let old = self.users_text()?.unwrap_or_default();
+        if koyomi_core::users::sha256(&old) != base {
+            return Err(msg::line(msg::CONFIG_CHANGED, &[]));
+        }
+        let new = build(&old)?;
+        koyomi_core::config::Config::parse(&new)?;
+        if let (Some((account, name)), false) = (remove, force) {
+            let (au, du) = self.registry_uses();
+            let users = if account { au } else { du }.remove(name).unwrap_or_default();
+            if !users.is_empty() {
+                let shown = users.iter().take(3).cloned().collect::<Vec<_>>().join(", ");
+                let table = if account { "[[account]]" } else { "[[database]]" };
+                return Err(msg::line(msg::REGISTRY_IN_USE, &[table, name, &shown, &users.len().to_string()]));
+            }
+        }
+        self.users_write(&new)?;
+        self.reload_config();
+        if let Some(e) = &self.bad_config {
+            return Err(e.clone());
+        }
+        self.registry(get)
+    }
+
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
         self.paths.state.join("versions").join(group).join(name)
     }
@@ -2813,6 +2930,38 @@ impl State {
             Request::Users => self.users(),
             Request::ConfigText => self.config_text(),
             Request::ConfigPut { text, base_sha256 } => self.config_put(text, base_sha256, by),
+            Request::Registry => self.registry(&read_secret),
+            Request::AccountPut { name, user, password, base_sha256 } => {
+                let entry = koyomi_core::registry::AccountEntry {
+                    name: name.trim().to_owned(),
+                    user: user.trim().to_owned(),
+                    password: password.trim().to_owned(),
+                };
+                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_account(t, &entry), None, &read_secret)
+            }
+            Request::AccountRemove { name, base_sha256, force } => self.registry_write(
+                base_sha256,
+                *force,
+                &|t| koyomi_core::registry::remove_account(t, name.trim()),
+                Some((true, name.trim())),
+                &read_secret,
+            ),
+            Request::DatabasePut { name, db, password, tls, base_sha256 } => {
+                let entry = koyomi_core::registry::DatabaseEntry {
+                    name: name.trim().to_owned(),
+                    db: db.trim().to_owned(),
+                    password: password.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned),
+                    tls: *tls,
+                };
+                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_database(t, &entry), None, &read_secret)
+            }
+            Request::DatabaseRemove { name, base_sha256, force } => self.registry_write(
+                base_sha256,
+                *force,
+                &|t| koyomi_core::registry::remove_database(t, name.trim()),
+                Some((false, name.trim())),
+                &read_secret,
+            ),
             Request::UserSet { name, role, nets, roles, base } => self.user_set(name, role, nets.clone(), roles.clone(), base),
             Request::UserRemove { name, base } => self.user_remove(name, base),
             Request::UserAdd { name, role, nets, roles, base } => self.user_add(name, role, nets.clone(), roles.clone(), base),
@@ -2828,6 +2977,11 @@ impl State {
 fn over_http(request: &Request) -> bool {
     proto::door_needs(request).is_some()
         || matches!(request, Request::List | Request::Show { .. } | Request::Propose { .. } | Request::Handover { .. })
+}
+
+/// A secret as the credential store has it.
+fn read_secret(name: &str) -> std::io::Result<Option<String>> {
+    ito_secret::get("koyomi", name)
 }
 
 /// Whether the credential store holds a non-empty token under `name` (ito-http refuses to start with an empty one).
@@ -2890,6 +3044,10 @@ fn by_hand(request: &Request) -> Option<(&'static str, String)> {
         Request::CalendarDelete { name, .. } => ("calendar-delete", name.clone()),
         Request::HolidayTable { .. } => ("holiday-table", String::new()),
         Request::ConfigPut { .. } => ("config-put", String::new()),
+        Request::AccountPut { name, .. } => ("account-put", name.trim().to_owned()),
+        Request::AccountRemove { name, .. } => ("account-remove", name.trim().to_owned()),
+        Request::DatabasePut { name, .. } => ("database-put", name.trim().to_owned()),
+        Request::DatabaseRemove { name, .. } => ("database-remove", name.trim().to_owned()),
         Request::UserSet { name, .. } => ("user-set", name.clone()),
         Request::UserRemove { name, .. } => ("user-remove", name.clone()),
         Request::UserAdd { name, .. } => ("user-add", name.trim().to_owned()),
@@ -4154,6 +4312,9 @@ run = [\"x.exe\"]
             utc_offset_min: 540,
             shells: vec![proto::Shell { name: "bash".into(), path: "/bin/bash".into() }],
             shell: "bash".into(),
+            accounts: vec!["batch".into()],
+            databases: vec![proto::DatabaseName { name: "sales".into(), kind: "sqlserver".into() }],
+            windows: Some(true),
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
@@ -4388,6 +4549,53 @@ script = \"w\"
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
+    /// A `run_as` or a `database` that koyomi.toml does not register is a caution of its net (W3754, W3755) on
+    /// every OS, and not once it is registered.
+    #[test]
+    fn the_cautions_name_an_account_or_a_database_that_is_not_registered() {
+        let paths = temp_paths("unregistered");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+run_as = \"ops\"
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+";
+        s.save("経理/a", net, None, false).unwrap();
+        let snap = s.snapshot();
+        let acc: Vec<&String> = snap.cautions.iter().filter(|c| msg::OS_ACCOUNT_UNKNOWN.is_in(c)).collect();
+        let dbs: Vec<&String> = snap.cautions.iter().filter(|c| msg::OS_DATABASE_UNKNOWN.is_in(c)).collect();
+        assert_eq!((acc.len(), dbs.len()), (1, 1), "{:?}", snap.cautions);
+        assert!(acc[0].contains("経理/a") && acc[0].contains("ops"), "{}", acc[0]);
+        assert!(dbs[0].contains("main"), "{}", dbs[0]);
+        // Not a warning: the net can still be confirmed.
+        assert!(snap.warnings.iter().all(|w| !msg::OS_ACCOUNT_UNKNOWN.is_in(w) && !msg::OS_DATABASE_UNKNOWN.is_in(w)));
+        let config = Config::parse(
+            "[[account]]
+name = \"ops\"
+user = \"batch\"
+password = \"secret:ops\"
+[[database]]
+name = \"main\"
+db = \"sqlite://C:\\\\data\\\\a.db\"
+",
+        )
+        .unwrap();
+        s.runner.set_config(config);
+        let snap = s.snapshot();
+        assert!(
+            !snap.cautions.iter().any(|c| msg::OS_ACCOUNT_UNKNOWN.is_in(c) || msg::OS_DATABASE_UNKNOWN.is_in(c)),
+            "{:?}",
+            snap.cautions
+        );
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
     /// W1: what a window of another PC does is written down under the caller's name, and what the
     /// door lets through is let through `Over`.
     #[test]
@@ -4506,6 +4714,109 @@ port = 8700
         } else {
             Request::Over { by: by.to_owned(), request: Box::new(put) }
         }
+    }
+
+    /// Accounts and databases are written through the door, one entry at a time: the rest of the file stays,
+    /// a removal that a net still names is refused without `force`, and the snapshot lists names only.
+    #[test]
+    fn accounts_and_databases_are_written_one_entry_at_a_time() {
+        let paths = temp_paths("door-registry");
+        std::fs::create_dir_all(paths.jobnets.join("g")).unwrap();
+        std::fs::write(
+            paths.jobnets.join("g").join("a.toml"),
+            "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x\"]\nrun_as = \"batch\"\n[[job]]\nid = \"q\"\nkind = \"sql\"\ndatabase = \"sales\"\nsql = \"select 1\"\n",
+        )
+        .unwrap();
+        let mut s = State::new(paths.clone());
+        let head = "# keep me\nconcurrency = 2\n";
+        std::fs::write(&paths.config, head).unwrap();
+        let get = |n: &str| -> std::io::Result<Option<String>> {
+            match n {
+                "batch" => Ok(Some("pw".into())),
+                "gone" => Ok(None),
+                _ => Err(std::io::Error::other("no")),
+            }
+        };
+        let body = |s: &State| proto::RegistryBody::parse(&s.registry(&get).unwrap()).unwrap();
+        let base = body(&s).sha256;
+        let put_account = |s: &mut State, base: &str| {
+            s.registry_write(
+                base,
+                false,
+                &|t| {
+                    koyomi_core::registry::put_account(
+                        t,
+                        &koyomi_core::registry::AccountEntry {
+                            name: "batch".into(),
+                            user: "CORP\\b".into(),
+                            password: "secret:batch".into(),
+                        },
+                    )
+                },
+                None,
+                &get,
+            )
+        };
+        // A stale base writes nothing.
+        let e = put_account(&mut s, "0000").unwrap_err();
+        assert!(koyomi_core::msg::CONFIG_CHANGED.is_in(&e), "{e}");
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), head);
+        let reply = proto::RegistryBody::parse(&put_account(&mut s, &base).unwrap()).unwrap();
+        assert!(std::fs::read_to_string(&paths.config).unwrap().starts_with(head));
+        let a = &reply.accounts[0];
+        assert_eq!(
+            (a.name.as_str(), a.secret.as_str(), a.state.as_str(), a.used_by.clone()),
+            ("batch", "batch", "ok", vec!["g/a".to_owned()])
+        );
+        // The runner took the new settings up at once.
+        assert_eq!(s.runner.config().account.len(), 1);
+        let snap = Snapshot::parse(&s.snapshot().to_toml()).unwrap();
+        assert_eq!((snap.accounts, snap.windows), (vec!["batch".to_owned()], Some(cfg!(windows))));
+        // A database with a missing secret, and one without a password.
+        let put_db = |s: &mut State, base: &str, name: &str, db: &str, pw: Option<&str>| {
+            s.registry_write(
+                base,
+                false,
+                &|t| {
+                    koyomi_core::registry::put_database(
+                        t,
+                        &koyomi_core::registry::DatabaseEntry { name: name.into(), db: db.into(), password: pw.map(Into::into), tls: None },
+                    )
+                },
+                None,
+                &get,
+            )
+        };
+        let r =
+            proto::RegistryBody::parse(&put_db(&mut s, &reply.sha256, "sales", "sqlserver://ops@db01/sales", Some("secret:gone")).unwrap())
+                .unwrap();
+        let r = proto::RegistryBody::parse(&put_db(&mut s, &r.sha256, "plain", "sqlite://C:\\data\\a.db", None).unwrap()).unwrap();
+        let states: Vec<(&str, &str)> = r.databases.iter().map(|d| (d.name.as_str(), d.state.as_str())).collect();
+        assert_eq!(states, [("sales", "missing"), ("plain", "not-needed")]);
+        assert_eq!((r.databases[0].kind.as_str(), r.databases[0].used_by.clone()), ("sqlserver", vec!["g/a".to_owned()]));
+        // A name a net uses is not removed without force; an unused one is.
+        let remove = |s: &mut State, base: &str, account: bool, name: &str, force: bool| {
+            s.registry_write(
+                base,
+                force,
+                &|t| if account { koyomi_core::registry::remove_account(t, name) } else { koyomi_core::registry::remove_database(t, name) },
+                Some((account, name)),
+                &get,
+            )
+        };
+        let e = remove(&mut s, &r.sha256, true, "batch", false).unwrap_err();
+        assert!(koyomi_core::msg::REGISTRY_IN_USE.is_in(&e) && e.contains("g/a"), "{e}");
+        assert!(remove(&mut s, &r.sha256, false, "plain", false).is_ok());
+        let base = body(&s).sha256;
+        let r = proto::RegistryBody::parse(&remove(&mut s, &base, true, "batch", true).unwrap()).unwrap();
+        assert!(r.accounts.is_empty());
+        let e = remove(&mut s, &r.sha256, true, "batch", true).unwrap_err();
+        assert!(koyomi_core::msg::REGISTRY_NAME_UNKNOWN.is_in(&e), "{e}");
+        // No password is ever in a reply.
+        assert!(!s.registry(&get).unwrap().contains("pw"));
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("# keep me") && text.contains("concurrency = 2"), "{text}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 
     /// koyomi.toml is read with its hash (a missing one as the empty text), written back only against that

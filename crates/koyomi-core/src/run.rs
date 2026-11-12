@@ -12,6 +12,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
 
+use crate::chore::Chore;
 use crate::jobnet::{Encoding, Job, Jobnet, Judge, Line, On, Part, Range, Retry, RunAs, Wait};
 use crate::late::Delay;
 use crate::msg;
@@ -228,6 +229,9 @@ pub struct JobRun {
     /// The account its process runs as, when not the engine's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub run_as: Option<RunAs>,
+    /// The `[[database]]` name a sql job connects to; looked up when the job starts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub database: Option<String>,
     /// How many times the engine ran it again.
     #[serde(default)]
     pub retried: u32,
@@ -311,6 +315,10 @@ impl JobRun {
             encoding: job.encoding,
             to: job.to.clone(),
             run_as: job.run_as.clone(),
+            database: match &job.part {
+                Part::Chore(Chore::Sql { database, .. }) => database.clone(),
+                _ => None,
+            },
             retried: 0,
             state: State::NotRun,
             started: None,
@@ -2251,5 +2259,49 @@ echo b"
         let text = toml::to_string(&r).unwrap();
         let back: Run = toml::from_str(&text).unwrap();
         assert_eq!(back, r);
+    }
+
+    /// A run saved before registered names (no `database`, a `run_as` table) reads as it was written; a run of a
+    /// definition that names an account and a database keeps both names, and a rerun carries them.
+    #[test]
+    fn an_old_run_reads_and_the_names_of_a_new_one_are_kept() {
+        let net = crate::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+run_as = { user = \"batch\", password = \"secret:b\" }
+[[job]]
+id = \"b\"
+run = [\"x.exe\"]
+run_as = \"ops\"
+[[job]]
+id = \"q\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+",
+        )
+        .unwrap();
+        let mut r = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"));
+        assert_eq!(r.job("a").unwrap().run_as, Some(RunAs::Inline(crate::jobnet::Account { user: "batch".into(), secret: "b".into() })));
+        assert_eq!(r.job("b").unwrap().run_as, Some(RunAs::Named("ops".into())));
+        assert_eq!(r.job("q").unwrap().database.as_deref(), Some("main"));
+        assert_eq!(r.job("a").unwrap().database, None);
+        let text = toml::to_string(&r).unwrap();
+        assert_eq!(toml::from_str::<Run>(&text).unwrap(), r);
+        // The old shape: the `{ user, secret }` table, and no `database` key at all.
+        let old = text.replace("database = \"main\"\n", "").replace("password = \"secret:b\"", "secret = \"b\"");
+        assert!(!old.contains("database"), "{old}");
+        let back: Run = toml::from_str(&old).unwrap();
+        assert_eq!(back.job("a").unwrap().run_as, Some(RunAs::Inline(crate::jobnet::Account { user: "batch".into(), secret: "b".into() })));
+        assert_eq!(back.job("q").unwrap().database, None);
+        for id in ["a", "b", "q"] {
+            r.start(id, at("2026-10-30 09:00:01"));
+            r.finish(id, Outcome::Exited(1), at("2026-10-30 09:00:02"));
+        }
+        let again = Run::rerun("r2", &r, &net, None, at("2026-10-30 10:00:00")).unwrap();
+        assert_eq!(again.job("b").unwrap().run_as, Some(RunAs::Named("ops".into())));
+        assert_eq!(again.job("q").unwrap().database.as_deref(), Some("main"));
     }
 }

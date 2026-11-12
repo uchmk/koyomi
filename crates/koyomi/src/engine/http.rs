@@ -600,6 +600,10 @@ fn narrow(
                 // The shells are the whole PC's too: a job form lists them whoever may see which net.
                 shells: s.shells,
                 shell: s.shell,
+                // The names a job form offers are the PC's too (never their user or secret).
+                accounts: s.accounts,
+                databases: s.databases,
+                windows: s.windows,
                 ..Snapshot::default()
             }
             .to_toml()
@@ -1312,8 +1316,17 @@ mod tests {
         assert!(asked.borrow().iter().any(|a| a.starts_with("Propose") && a.contains("経理/new")));
 
         // What this does not name, or what is about every net, is refused.
-        for r in [Request::Pause, Request::Stop, Request::Delete { id: "経理/a".into() }, Request::Ops { from: "a".into(), to: "b".into() }]
-        {
+        for r in [
+            Request::Pause,
+            Request::Stop,
+            Request::Delete { id: "経理/a".into() },
+            Request::Ops { from: "a".into(), to: "b".into() },
+            Request::Registry,
+            Request::AccountPut { name: "ops".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
+            Request::AccountRemove { name: "ops".into(), base_sha256: "b".into(), force: false },
+            Request::DatabasePut { name: "m".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
+            Request::DatabaseRemove { name: "m".into(), base_sha256: "b".into(), force: false },
+        ] {
             assert!(narrow(&r, "sato", &nets, Role::Edit, &ask).is_err(), "{r:?}");
         }
         // With no `nets`, every net, as before, and no role per net.
@@ -1340,6 +1353,29 @@ mod tests {
         let snap = Snapshot::parse(&text).unwrap();
         assert_eq!(snap.defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["経理/a"]);
         assert_eq!((snap.shells.len(), snap.shells[0].path.as_str(), snap.shell.as_str()), (1, "/bin/bash", "bash"));
+    }
+
+    /// A narrowed user's list keeps the PC's accounts, databases and whether it is a Windows PC (the lists name
+    /// no secret and no nets).
+    #[test]
+    fn a_narrowed_list_keeps_the_pcs_accounts_and_databases() {
+        let ask = |r: &Request| match r {
+            Request::List => Ok(Snapshot {
+                defs: vec![def("経理/a"), def("人事/b")],
+                accounts: vec!["ops".into()],
+                databases: vec![proto::DatabaseName { name: "main".into(), kind: "sqlite".into() }],
+                windows: Some(true),
+                ..Default::default()
+            }
+            .to_toml()),
+            _ => Ok("ok".to_owned()),
+        };
+        let nets = Access { role: Role::View, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
+        let text = narrow(&Request::List, "sato", &nets, Role::View, &ask).unwrap().unwrap();
+        let snap = Snapshot::parse(&text).unwrap();
+        assert_eq!(snap.accounts, ["ops"]);
+        assert_eq!((snap.databases.len(), snap.databases[0].name.as_str(), snap.databases[0].kind.as_str()), (1, "main", "sqlite"));
+        assert_eq!(snap.windows, Some(true));
     }
 
     /// A run's definition copy is definition text: the door lets it through to Edit only, and a narrowed
@@ -2184,6 +2220,28 @@ high_contrast = true
             let (code, json, seen) = through(&g, &at_door(who, true, &ask));
             assert_eq!(code, want, "{who}: {json}");
             assert_eq!(seen.len(), usize::from(want == 200), "{who}");
+        }
+    }
+
+    /// The registry requests are for an admin: an editor and below are refused, a caller narrowed by nets is refused
+    /// even with the token, and only an admin's request reaches the engine.
+    #[test]
+    fn the_door_gives_the_registry_to_an_admin_alone() {
+        let g = gate();
+        let bodies = [
+            serde_json::json!("Registry"),
+            serde_json::json!({"AccountPut": {"name": "ops", "user": "u", "password": "p", "base_sha256": "b"}}),
+            serde_json::json!({"AccountRemove": {"name": "ops", "base_sha256": "b", "force": false}}),
+            serde_json::json!({"DatabasePut": {"name": "main", "db": "sqlite://x", "password": null, "tls": null, "base_sha256": "b"}}),
+            serde_json::json!({"DatabaseRemove": {"name": "main", "base_sha256": "b", "force": false}}),
+        ];
+        for b in bodies {
+            let body = door_body(b);
+            for (who, want) in [("look", 403), ("default", 403), ("ed", 403), ("narrow", 403), ("root", 200)] {
+                let (code, json, seen) = through(&g, &at_door(who, true, &body));
+                assert_eq!(code, want, "{who} {body}: {json}");
+                assert_eq!(seen.len(), usize::from(want == 200), "{who} {body}");
+            }
         }
     }
 
