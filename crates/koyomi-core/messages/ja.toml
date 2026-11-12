@@ -2923,6 +2923,12 @@ text = "通知先の Webhook アドレスを資格情報ストアに保存でき
 cause = "資格情報ストアにアクセスできない、またはストアが書き込みを拒否した可能性があります。"
 action = "資格情報ストアの状態を確認し、再度保存してください。"
 
+[E3293]
+when = "ジョブのシェルが、このエンジンの PC にないとき"
+text = "シェル {0} がこのエンジンにないため、ジョブを開始できません。（{1} が必要です）"
+cause = "ジョブが指定したシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。"
+action = "{1} をインストールするか、定義の shell を変更してください。"
+
 [E3355]
 when = "エラーのある定義のジョブネットを実行しようとしたとき"
 text = "{0} の定義にエラーがあるため、実行できません。"
@@ -3655,6 +3661,18 @@ text = "ジョブネット {0} のイベントログの [[when]] は Windows で
 cause = "イベントログは、Windows にだけあります。"
 action = "Windows の PC で実行してください。"
 
+[W3752]
+when = "ジョブネットのジョブが、このエンジンにないシェルを指定しているとき"
+text = "ジョブネット {0} のジョブ {1} は {2} を使用しますが、このエンジンには {2} がありません。"
+cause = "指定されたシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。"
+action = "シェルをインストールするか、定義の shell を変更してください。"
+
+[W3753]
+when = "koyomi.toml の shell が、このエンジンにないシェルを指定しているとき"
+text = "koyomi.toml の shell に指定された {0} がこのエンジンにないため、{1} を既定のシェルにします。"
+cause = "指定されたシェルが、この PC の PATH（Windows では、Windows PowerShell と Git for Windows の決まった場所も）で見つかりません。"
+action = "シェルをインストールするか、koyomi.toml の shell を変更してください。"
+
 [E3356]
 when = "kind = \"jobnet\" のジョブが、確認されていないジョブネットを呼び出すとき"
 text = "子ジョブネット {0} が確認されていません。"
@@ -4165,6 +4183,8 @@ held_job = "保留中（koyomi release {0} {1}）"
 notified = "通知しました"
 http_by = "  （HTTP: {0}）"
 run_as_log = "{0} のアカウントで実行します"
+shell_pkg_pwsh = "PowerShell 7（pwsh）"
+shell_pkg = "{0} のパッケージ"
 no_files_log = "合致するファイルがないため、一度も実行しません"
 loop_width_log = "{0} 件の実行を {1} 件ずつ並行して実行します"
 pass_of = "{0}/{1} 番目の実行"

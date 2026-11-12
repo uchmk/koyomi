@@ -157,6 +157,31 @@ impl<'a> Form<'a> {
         }
     }
 
+    /// The shell field: a select of the shells the engine has, "none" first (the job runs `run`). A shell the file
+    /// names that the engine lacks stays among the choices, said so, so that opening and closing changes nothing.
+    fn shell(&self, ui: &mut egui::Ui, value: &mut String) -> bool {
+        let (label, _) = self.label(ui, "field.shell", Need::Optional);
+        let now = value.trim().to_owned();
+        let (entries, at, missing) = shell_entries(self.t, &self.pick.shell_names(), self.pick.shell_default(), &now);
+        let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+        let picked = pick::select_index(ui, "field.shell", label, at, &labels);
+        if missing {
+            let key = if koyomi_core::shell::is_powershell(&now) { "field.shell_install_pwsh" } else { "field.shell_install" };
+            self.note(ui, &self.t.trf(key, &[&now]));
+        } else if !now.is_empty() {
+            // The select has no hover per choice: the picked shell's path is the field's note.
+            self.note(ui, self.pick.shell_path(&now));
+        }
+        ui.add_space(10.0);
+        match picked.and_then(|i| picked_shell(&entries, &now, i)) {
+            Some(to) => {
+                *value = to;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Two fields side by side, half the width each.
     fn pair(&self, ui: &mut egui::Ui, left: impl FnOnce(&mut egui::Ui) -> bool, right: impl FnOnce(&mut egui::Ui) -> bool) -> bool {
         let mut changed = false;
@@ -166,6 +191,27 @@ impl<'a> Form<'a> {
         });
         changed
     }
+}
+
+/// The choices of the shell field: なし first (it empties `shell`), then the default marked and first, then the rest as
+/// the engine lists them; the one written that the engine lacks is last, said so. Returns the entries (`shell` value
+/// and words), the index of the one `now` names, and whether `now` is a shell the engine lacks.
+fn shell_entries(t: &Table, names: &[String], default: &str, now: &str) -> (Vec<(String, String)>, usize, bool) {
+    let mut entries: Vec<(String, String)> = vec![(String::new(), t.tr("field.shell_none").to_owned())];
+    let word = |n: &str| if n == default { t.trf("field.shell_default", &[n]) } else { n.to_owned() };
+    entries.extend(names.iter().filter(|n| n.as_str() == default).map(|n| (n.clone(), word(n))));
+    entries.extend(names.iter().filter(|n| n.as_str() != default).map(|n| (n.clone(), word(n))));
+    let missing = !now.is_empty() && !entries.iter().any(|(n, _)| n == now);
+    if missing {
+        entries.push((now.to_owned(), t.trf("field.shell_missing", &[now])));
+    }
+    let at = entries.iter().position(|(n, _)| n == now).unwrap_or(0);
+    (entries, at, missing)
+}
+
+/// The `shell` value the choice `i` gives when it is not the one now (`run` and `script` are not touched).
+fn picked_shell(entries: &[(String, String)], now: &str, i: usize) -> Option<String> {
+    entries.get(i).filter(|(n, _)| n != now).map(|(n, _)| n.clone())
 }
 
 /// `"run（1 行に 1 つ）"` → `("run", "1 行に 1 つ")`; `"retry count"` stays whole. A bracket at the start is not a note.
@@ -196,7 +242,7 @@ impl Editor {
         ui: &mut egui::Ui,
         t: &Table,
         (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
-        (nets, local): (&[pick::NetChoice], bool),
+        (nets, local, (shells, default)): (&[pick::NetChoice], bool, (&[crate::proto::Shell], &str)),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
@@ -227,7 +273,7 @@ impl Editor {
             Pane::Part(id, _) => id.clone(),
             Pane::Net(_) => String::new(),
         };
-        let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse));
+        let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse)).with_shells(shells, default);
         let form = Form::new(t, &ctx);
         let mut asked = Asked::default();
         let wide = ui.available_width();
@@ -537,7 +583,7 @@ fn run_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let (run, script) = (!f.run.trim().is_empty(), !f.script.trim().is_empty());
     let run_need = if shell { Need::Plain } else { Need::Required };
     let mut changed = form.line(ui, "field.run", run_need, shell && run, &mut f.run, |i| i.mono().rows(3));
-    changed |= form.line(ui, "field.shell", Need::Optional, false, &mut f.shell, |i| i.mono().hint("powershell").width(180.0));
+    changed |= form.shell(ui, &mut f.shell);
     let script_need = if shell { Need::Required } else { Need::Optional };
     let aside = f.shell.trim().to_owned();
     changed |= form.code(ui, "field.script", script_need, !shell && script, &mut f.script, (5, &aside));
@@ -787,5 +833,73 @@ mod tests {
         // A bracket at the start is the whole label, not a note.
         assert_eq!(split_label("（なし）"), ("（なし）", ""));
         assert_eq!(split_label("(none)"), ("(none)", ""));
+    }
+}
+
+#[cfg(test)]
+mod shell_tests {
+    use super::*;
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    /// なし first; the default next and marked; a written shell the engine lacks last and marked.
+    #[test]
+    fn the_shell_choices_put_the_default_first_and_keep_a_missing_shell() {
+        let (t, _) = crate::i18n::table("ja");
+        let have = names(&["powershell", "bash", "sh"]);
+        let (e, at, missing) = shell_entries(&t, &have, "bash", "sh");
+        let words: Vec<&str> = e.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!(words, ["なし（run で実行する）", "bash（既定）", "powershell", "sh"]);
+        assert_eq!((at, missing), (3, false));
+        let (e, at, missing) = shell_entries(&t, &have, "bash", "zsh");
+        assert_eq!((at, missing, e[4].0.as_str(), e[4].1.as_str()), (4, true, "zsh", "zsh（このエンジンにはありません）"));
+        // No shell written: なし is the one now, and nothing is missing.
+        assert_eq!(shell_entries(&t, &have, "bash", ""), (shell_entries(&t, &have, "bash", "").0, 0, false));
+        // The engine has not said: the five, none marked missing.
+        let (e, _, missing) = shell_entries(&t, &names(&koyomi_core::shell::SHELLS), "", "pwsh");
+        assert_eq!((e.len(), missing), (6, false));
+    }
+
+    /// Picking なし empties `shell`; picking a shell sets it; the same one changes nothing; `run` and `script` stay.
+    #[test]
+    fn picking_a_shell_changes_only_shell() {
+        let (t, _) = crate::i18n::table("en");
+        let have = names(&["bash", "sh"]);
+        let mut net = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"a\"
+shell = \"sh\"
+script = \"echo 1\"
+",
+        )
+        .unwrap();
+        // As the form can hold it: both written (the form marks it; a file would not parse).
+        net.jobs[0].run = vec!["x.exe".into(), "y".into()];
+        let mut f = Fields::of(&net.jobs[0]);
+        let (e, at, _) = shell_entries(&t, &have, "bash", &f.shell);
+        assert_eq!(picked_shell(&e, &f.shell, at), None);
+        let none = picked_shell(&e, &f.shell, 0).unwrap();
+        assert_eq!(none, "");
+        f.shell = none;
+        assert_eq!(
+            (f.shell.as_str(), f.script.as_str(), f.run.as_str()),
+            (
+                "", "echo 1", "x.exe
+y"
+            )
+        );
+        let (e, at, _) = shell_entries(&t, &have, "bash", &f.shell);
+        assert_eq!(at, 0);
+        f.shell = picked_shell(&e, &f.shell, 1).unwrap();
+        assert_eq!(
+            (f.shell.as_str(), f.script.as_str(), f.run.as_str()),
+            (
+                "bash", "echo 1", "x.exe
+y"
+            )
+        );
     }
 }

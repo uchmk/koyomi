@@ -513,8 +513,9 @@ impl Prefs {
     }
 
     /// Write `edits` (koyomi.toml's top-level keys, `keep_days`,
-    /// `concurrency`, `log_max_mb` and `archive`, as TOML) on a thread, then
-    /// read the file again. One already as the file has it is not written.
+    /// `concurrency`, `log_max_mb`, `archive` and `shell`, as TOML text: a string is passed quoted) on a thread, then
+    /// read the file again. One already as the file has it is not written (`shell` is only sent when picked, so it
+    /// needs no comparison: the `_ => true` arm keeps it).
     pub fn limits_edit(&self, edits: Vec<(&'static str, String)>, no_folder: &str) {
         let c = &self.config;
         let edits: Vec<(&str, String)> = edits

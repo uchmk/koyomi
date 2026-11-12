@@ -321,27 +321,28 @@ impl JobRun {
         }
     }
 
-    /// What the engine starts: `run` as written, or the shell with the
-    /// script as its one argument. The script goes as `-EncodedCommand`
-    /// (base64 of UTF-16), so no quote or `$` in it is read by anything but
-    /// the shell itself; no profile, nothing asked, and plain text in.
+    /// What the engine starts: `run` as written, or the shell with the script
+    /// (`crate::shell::argv`: PowerShell gets it as `-EncodedCommand`, the sh family as the one
+    /// argument of `-c`). `exe` is the program the engine found for the shell; with `None` the
+    /// shell's bare name is used and the OS looks it up.
     /// Windows PowerShell still writes its errors, warnings and progress
     /// to a redirected error output as CLIXML; the runner reads them back
     /// as text (`crate::clixml`).
-    pub fn command(&self) -> Vec<String> {
-        match (self.shell.as_deref(), &self.script) {
-            (Some(_), Some(script)) => {
-                let exe = if cfg!(windows) { "powershell.exe" } else { "pwsh" };
-                let mut v: Vec<String> = [exe, "-NoProfile", "-NonInteractive", "-InputFormat", "Text", "-EncodedCommand"]
-                    .iter()
-                    .map(|s| (*s).to_owned())
-                    .collect();
-                let utf16: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
-                v.push(base64(&utf16));
-                v
+    pub fn command(&self, exe: Option<&std::path::Path>) -> Vec<String> {
+        if let (Some(shell), Some(script)) = (self.shell.as_deref(), &self.script) {
+            let found;
+            let exe = match exe {
+                Some(p) => {
+                    found = p.display().to_string();
+                    found.as_str()
+                }
+                None => crate::shell::default_exe(shell, cfg!(windows)),
+            };
+            if let Some(v) = crate::shell::argv(shell, exe, script) {
+                return v;
             }
-            _ => self.run.clone(),
         }
+        self.run.clone()
     }
 
     /// The name, or the id when there is none.
@@ -365,7 +366,7 @@ impl JobRun {
 }
 
 /// Standard base64 with padding, as `-EncodedCommand` wants it.
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ABC: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -2200,14 +2201,42 @@ mod tests {
     #[test]
     fn a_shell_job_starts_the_shell_with_its_script_as_one_argument() {
         let mut j = JobRun::from_job(&job("a", &[]));
-        assert_eq!(j.command(), j.run);
+        assert_eq!(j.command(None), j.run);
         j.run.clear();
         j.shell = Some("powershell".to_owned());
         j.script = Some("Get-Date\nexit 1".to_owned());
         let exe = if cfg!(windows) { "powershell.exe" } else { "pwsh" };
         assert_eq!(
-            j.command(),
+            j.command(None),
             [exe, "-NoProfile", "-NonInteractive", "-InputFormat", "Text", "-EncodedCommand", "RwBlAHQALQBEAGEAdABlAAoAZQB4AGkAdAAgADEA"]
+        );
+        // The program the engine found is the one started; bash gets its script as one argument.
+        let found = std::path::Path::new("/opt/pwsh");
+        assert_eq!(j.command(Some(found))[0], found.display().to_string());
+        j.shell = Some("bash".to_owned());
+        j.script = Some(
+            "echo a
+echo b"
+                .to_owned(),
+        );
+        assert_eq!(
+            j.command(Some(std::path::Path::new("/bin/bash"))),
+            [
+                "/bin/bash",
+                "--noprofile",
+                "--norc",
+                "-c",
+                "echo a
+echo b",
+                "koyomi"
+            ]
+        );
+        assert_eq!(
+            j.script.as_deref(),
+            Some(
+                "echo a
+echo b"
+            )
         );
         for (text, b64) in [("", ""), ("f", "Zg=="), ("fo", "Zm8="), ("foo", "Zm9v"), ("foob", "Zm9vYg=="), ("foobar", "Zm9vYmFy")] {
             assert_eq!(base64(text.as_bytes()), b64);

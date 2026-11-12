@@ -31,6 +31,7 @@ pub mod retain;
 pub mod role;
 pub mod run;
 pub mod scan;
+pub mod shell;
 pub mod standby;
 pub mod task;
 pub mod template;

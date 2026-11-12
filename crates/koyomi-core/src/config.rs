@@ -70,6 +70,11 @@ pub struct Config {
     /// [`Config::parse`] can say what is wrong in Japanese; [`Config::members`] gives them.
     #[serde(skip_serializing_if = "toml::Table::is_empty")]
     pub groups: toml::Table,
+    /// The shell a new script job starts with (one of `crate::shell::SHELLS`). Not written: Windows →
+    /// `powershell`; elsewhere → `bash` if the engine has it, else the first it has of `sh`, `zsh`, `pwsh`
+    /// (see the engine's `default_shell`). Never changes a job that names its shell.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
 }
 
 /// One PC of a `[groups]` group: its address, and its own host key (ssh) or
@@ -510,6 +515,7 @@ impl Default for Config {
             blackout: Vec::new(),
             vars: toml::Table::new(),
             groups: toml::Table::new(),
+            shell: None,
         }
     }
 }
@@ -544,6 +550,12 @@ impl Config {
         }
         if c.log_max_mb == 0 {
             return Err(msg::line(msg::CFG_LIMIT_TOO_LOW, &["log_max_mb"]));
+        }
+        if let Some(sh) = &c.shell {
+            if !crate::shell::SHELLS.contains(&sh.as_str()) {
+                let list = crate::shell::SHELLS.join(&msg::note(msg::N_LIST_SEP, &[]));
+                return Err(msg::line(msg::CFG_VALUE_UNKNOWN, &["shell", &format!("{sh:?}"), &list]));
+            }
         }
         if let Some(p) = &c.ping {
             p.check()?;
@@ -1183,6 +1195,26 @@ token = \"secret:boss\"
     }
 
     /// a remote needs an https address, a SHA-256 fingerprint and the token as a secret.
+    /// `shell` takes the five shells; `cmd` (or anything else) is refused with the usual error naming the list.
+    #[test]
+    fn the_default_shell_is_one_of_the_five() {
+        for sh in crate::shell::SHELLS {
+            let c = Config::parse(&format!(
+                "shell = \"{sh}\"
+"
+            ))
+            .unwrap();
+            assert_eq!(c.shell.as_deref(), Some(sh));
+        }
+        assert_eq!(Config::parse("").unwrap().shell, None);
+        let e = Config::parse(
+            "shell = \"cmd\"
+",
+        )
+        .unwrap_err();
+        assert!(msg::CFG_VALUE_UNKNOWN.is_in(&e) && e.contains("shell") && e.contains("\"cmd\"") && e.contains("zsh"), "{e}");
+    }
+
     #[test]
     fn remotes_are_pinned_https_with_a_secret_token() {
         let fp = "AB:".repeat(31) + "CD";

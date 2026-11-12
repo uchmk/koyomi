@@ -1161,3 +1161,12 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - 配り方は、試験のあいだは `tar.gz` と `install.sh`。`.deb` は今後するかもしれない（未定）。
 - 第 1 段階では、`koyomi.toml` に書くエンジンの設定は窓に出さない（Debian 側で直す）。窓の PC とエンジンは同じ時刻帯で使う。
 - この作業で Windows の動きも変わる。持ち主が受け入れた 3 つ: 別の PC でコマンドを動かすジョブが動いているときはエンジンの停止を最大 15 秒待つ／エンジンを起動できないあいだに押した要求はすぐ失敗で返す／`--no-tray` で起動したときの知らせはトレイを通す。
+
+## ジョブの shell は 5 つ（powershell・pwsh・bash・sh・zsh）、エンジンが探す（2026-11-13）
+
+- `shell` に書ける値は `powershell`・`pwsh`・`bash`・`sh`・`zsh` の 5 つ。`cmd` は対象にしない（`.bat` は `run = ['C:\x.bat']` で動かす）。
+- 動かし方は、PowerShell 系が `-NoProfile -NonInteractive -InputFormat Text -EncodedCommand`、bash が `--noprofile --norc -c <script> koyomi`、sh が `-c`、zsh が `-f -c`。スクリプトは引数の 1 つで渡す。sh 系は CRLF を LF にして渡す。
+- エンジンは起動のとき（定義の見直しのたびにも）、`PATH` から 5 つを探し、見つけたパスで動かす。Windows は `PATH` に加えて `%SystemRoot%` の PowerShell と、`%ProgramFiles%\Git\bin` の bash・sh を見る。`System32` と `WindowsApps` の `bash.exe`（WSL）は数えない。Windows 以外の `powershell` は `pwsh`。
+- このエンジンにないシェルのジョブは、プロセスを作らずに異常終了にする（E3293）。ジョブネットには注意（W3752）を出し、確定はできる。
+- 新しいスクリプトの既定のシェルは `koyomi.toml` の `shell`。書かなければ、この PC で見つかったものから選ぶ（Windows は `powershell`・`pwsh`・`bash`・`sh`・`zsh` の順、それ以外は `bash`・`sh`・`zsh`・`pwsh` の順。何も見つからなければ Windows は `powershell`、それ以外は `sh`）。書いたシェルがこのエンジンになければ注意（W3753）を出して、書いていないときの既定を使う。既定が効くのは、窓の棚から足す新しいジョブだけ。選んだシェルを既定で置き換えることはしない。
+- エンジンとの約束の版は 50 のまま（`Snapshot` の `shells`・`shell` は無くても読める）。

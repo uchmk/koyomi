@@ -48,6 +48,7 @@ mod retain;
 mod runner;
 mod schedule;
 mod session;
+mod shells;
 mod standby;
 mod tray;
 
@@ -161,11 +162,6 @@ pub fn warnings_about(paths: &Paths, warnings: &[String], defs: &[Def], file: &s
     warnings.iter().filter(|w| w.contains(&own) || !others.iter().any(|o| w.contains(o.as_str()))).cloned().collect()
 }
 
-/// Whether a `pwsh` is on `PATH` (the shell a PowerShell job runs in off Windows).
-fn pwsh_on_path() -> bool {
-    std::env::var_os("PATH").is_some_and(|p| std::env::split_paths(&p).any(|d| d.join("pwsh").is_file()))
-}
-
 /// The path without Windows' `\\?\` prefix.
 /// The warnings on one line, each without its ID: the line that holds them has the ID.
 /// `BLOCKED_BY_WARNINGS`: `op` (an `N_OP_*` note) is refused while the warnings at the start stand.
@@ -249,6 +245,10 @@ struct State {
     bad_config: Option<String>,
     /// `[[blackout]]`: the planned stops; no schedule or event starts a net in them.
     blackouts: Vec<Blackout>,
+    /// The shells this PC has (name, absolute path), looked for at start and on each sweep.
+    shells: Vec<(String, PathBuf)>,
+    /// `shell` in `koyomi.toml`, as written.
+    shell_written: Option<String>,
     runner: Runner,
     /// The clock: when `[[when]]` was last looked at.
     schedule: Schedule,
@@ -365,6 +365,8 @@ impl State {
             access_check: !cfg!(test) || std::env::var_os(ACL_TEST_ENV).is_some(),
             bad_config,
             blackouts,
+            shells: Vec::new(),
+            shell_written: None,
             runner,
             schedule,
             events: events::Events::new(),
@@ -441,11 +443,23 @@ impl State {
                 self.standby.set(c.standby.as_ref(), &c.remote);
                 self.primary.set(c.primary.as_ref(), &c.remote);
                 self.blackouts = c.blackout.clone();
+                self.shell_written = c.shell.clone();
                 self.runner.set_config(c);
                 self.bad_config = None;
             }
             Err(e) => self.bad_config = Some(e),
         }
+    }
+
+    /// Looks for the shells on this PC again (cheap) and hands them to the runner.
+    fn reload_shells(&mut self) {
+        self.shells = shells::find_here();
+        self.runner.set_shells(self.shells.clone());
+    }
+
+    /// The shell a new script job starts with, and the one `koyomi.toml` wrote when this engine does not have it.
+    fn default_shell(&self) -> (String, Option<String>) {
+        shells::default_shell(&self.shells, self.shell_written.as_deref(), cfg!(windows))
     }
 
     /// Takes in the addresses read back, and tells of the runs that ended.
@@ -1241,6 +1255,7 @@ impl State {
         }
         self.reload_staged();
         self.reload_config();
+        self.reload_shells();
         self.calendars = Calendars::load(&self.paths.calendars);
         self.defs = scan_in(&self.paths.jobnets, &self.store, &self.calendars);
         self.runner.set_children(Self::children_of(&self.defs));
@@ -1328,6 +1343,8 @@ impl State {
             staged: self.staged.next.clone(),
             blocked,
             utc_offset_min: ito_common::now::now_local().offset().local_minus_utc() / 60,
+            shells: shells::listed(&self.shells),
+            shell: self.default_shell().0,
         }
     }
 
@@ -1340,22 +1357,28 @@ impl State {
         self.defs.iter().filter(|d| !warnings_about(&self.paths, warnings, &self.defs, &d.file).is_empty()).map(|d| d.id.clone()).collect()
     }
 
-    /// What a definition uses that does not work on this OS (only off Windows), one line each. Only what the
-    /// definition itself shows: a `pwsh` that is not on `PATH`, `run_as`, an Event Log trigger. Not warnings,
-    /// which would stop a net from being confirmed.
+    /// What a definition uses that does not work on this PC, one line each. Only what the definition itself
+    /// shows: a shell this engine does not have (any OS), and, off Windows, a chore written as PowerShell with no
+    /// `pwsh`, `run_as`, an Event Log trigger. Not warnings, which would stop a net from being confirmed.
     fn os_cautions(&self) -> Vec<String> {
-        if cfg!(windows) {
-            return Vec::new();
-        }
         let mut out = Vec::new();
-        let has_pwsh = pwsh_on_path();
+        if let Some(w) = self.default_shell().1 {
+            out.push(msg::line(msg::SHELL_DEFAULT_MISSING, &[&w, &self.default_shell().0]));
+        }
+        let has = |name: &str| self.shells.iter().any(|(n, _)| n == name);
         for d in &self.defs {
             let Some(net) = &d.net else { continue };
-            if !has_pwsh {
-                let uses = net.jobs.iter().any(|j| j.shell.is_some() || matches!(&j.part, Part::Chore(c) if !c.own()));
-                if uses {
-                    out.push(msg::line(msg::OS_NO_PWSH, &[&d.id]));
-                }
+            let mut told: Vec<&str> = Vec::new();
+            for j in &net.jobs {
+                let Some(shell) = j.shell.as_deref().filter(|s| !has(s) && !told.contains(s)) else { continue };
+                told.push(shell);
+                out.push(msg::line(msg::OS_NO_SHELL, &[&d.id, &j.id, shell]));
+            }
+            if cfg!(windows) {
+                continue;
+            }
+            if !has("pwsh") && net.jobs.iter().any(|j| matches!(&j.part, Part::Chore(c) if !c.own())) {
+                out.push(msg::line(msg::OS_NO_PWSH, &[&d.id]));
             }
             if net.jobs.iter().any(|j| j.run_as.is_some()) {
                 out.push(msg::line(msg::OS_RUN_AS, &[&d.id]));
@@ -4129,6 +4152,8 @@ run = [\"x.exe\"]
             }],
             blocked: vec!["共通/x".into()],
             utc_offset_min: 540,
+            shells: vec![proto::Shell { name: "bash".into(), path: "/bin/bash".into() }],
+            shell: "bash".into(),
         };
         let back = Snapshot::parse(&snap.to_toml()).unwrap();
         assert_eq!(back, snap);
@@ -4309,6 +4334,57 @@ run = [\"x.exe\"]
         // A warning about the shared files blocks every net.
         s.warnings.push("共有のフォルダーに書けない".to_owned());
         assert_eq!(s.snapshot().blocked.len(), 2);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// The snapshot says which shells this PC has and the default one; the cautions name a shell the engine lacks
+    /// (one line per net and shell, on every OS), and the shell `koyomi.toml` wrote when it is missing.
+    #[test]
+    fn the_snapshot_lists_the_shells_and_the_cautions_name_the_missing_ones() {
+        let paths = temp_paths("shells");
+        let mut s = State::new(paths.clone());
+        let here = |name: &str| PathBuf::from(if cfg!(windows) { "C:/x" } else { "/x" }).join(name);
+        s.shells = vec![("bash".into(), here("bash")), ("sh".into(), here("sh"))];
+        let net = "format = 1
+[[job]]
+id = \"a\"
+shell = \"zsh\"
+script = \"x\"
+[[job]]
+id = \"b\"
+shell = \"zsh\"
+script = \"y\"
+[[job]]
+id = \"c\"
+shell = \"bash\"
+script = \"z\"
+[[job]]
+id = \"d\"
+shell = \"pwsh\"
+script = \"w\"
+";
+        s.save("経理/a", net, None, false).unwrap();
+        s.shells = vec![("bash".into(), here("bash")), ("sh".into(), here("sh"))];
+        let snap = s.snapshot();
+        assert_eq!(snap.shells.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["bash", "sh"]);
+        let lines: Vec<&String> = snap.cautions.iter().filter(|c| msg::OS_NO_SHELL.is_in(c)).collect();
+        assert_eq!(lines.len(), 2, "{lines:?}");
+        assert!(lines[0].contains("経理/a") && lines[0].contains("zsh") && lines[0].contains(" a "), "{}", lines[0]);
+        assert!(lines[1].contains("pwsh"), "{}", lines[1]);
+        // Not a warning: the net can still be confirmed.
+        assert!(!msg::OS_NO_SHELL.is_warning() || snap.warnings.iter().all(|w| !msg::OS_NO_SHELL.is_in(w)));
+        // The default: not written → the first found (bash, as bash and sh are found); written and missing → a caution and that one.
+        let os = "bash";
+        assert_eq!(snap.shell, os);
+        assert!(!snap.cautions.iter().any(|c| msg::SHELL_DEFAULT_MISSING.is_in(c)));
+        s.shell_written = Some("zsh".into());
+        let snap = s.snapshot();
+        assert_eq!(snap.shell, os);
+        assert!(snap.cautions.iter().any(|c| msg::SHELL_DEFAULT_MISSING.is_in(c) && c.contains("zsh")), "{:?}", snap.cautions);
+        s.shell_written = Some("sh".into());
+        let snap = s.snapshot();
+        assert_eq!(snap.shell, "sh");
+        assert!(!snap.cautions.iter().any(|c| msg::SHELL_DEFAULT_MISSING.is_in(c)));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

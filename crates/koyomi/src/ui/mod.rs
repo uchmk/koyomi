@@ -1061,6 +1061,11 @@ impl Browser {
         self.snap.is_some()
     }
 
+    /// The shells the engine has and its default shell (empty before it answered, or from an engine that does not say).
+    pub fn shells(&self) -> (&[crate::proto::Shell], &str) {
+        self.snap.as_ref().map_or((&[], ""), |s| (s.shells.as_slice(), s.shell.as_str()))
+    }
+
     /// Whether the engine answered and has no definition at all.
     pub fn tree_is_empty(&self) -> bool {
         self.snap.as_ref().is_some_and(|s| s.defs.is_empty())
@@ -2317,7 +2322,9 @@ impl Browser {
         let now = self.engine_now();
         let nets = pick::net_choices(defs);
         let local = !self.link.is_far();
-        let around = canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now, nets: &nets, local };
+        let (shells, shell) = self.snap.as_ref().map_or((&[][..], ""), |s| (s.shells.as_slice(), s.shell.as_str()));
+        let around =
+            canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now, nets: &nets, local, shells, shell };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -8247,6 +8254,43 @@ after_jobnet = "gone/net"
         s.settle(&mut b);
         assert_eq!(b.editor.as_ref().unwrap().text(), before, "the [[when]]s open and drawn are unchanged");
         assert!(!b.editor.as_ref().unwrap().can_save(), "and the editor is not marked changed");
+    }
+
+    /// A script job with a shell the engine has, and one it lacks, opened and drawn (the engine's shells known, and not
+    /// yet known): the definition is unchanged and the editor is not marked changed.
+    #[test]
+    fn opening_a_shell_job_changes_nothing_whether_or_not_the_engine_has_the_shell() {
+        let text = "format = 1
+[[job]]
+id = \"b\"
+shell = \"bash\"
+script = \"echo 1\"
+[[job]]
+id = \"z\"
+after = [\"b\"]
+shell = \"zsh\"
+script = \"echo 2\"
+";
+        for known in [true, false] {
+            for open in ["b", "z"] {
+                let net = koyomi_core::jobnet::parse(text).expect("the test net reads");
+                let mut b = quiet(defs());
+                if known {
+                    let shells = vec![crate::proto::Shell { name: "bash".into(), path: "/bin/bash".into() }];
+                    b.snap = Some(Snapshot { shells, shell: "bash".into(), ..b.snap.take().unwrap() });
+                }
+                let mut e = canvas::Editor::over("試験/a", net);
+                let before = e.text();
+                e.open_part(open);
+                b.editor = Some(e);
+                let mut s = Screen::new();
+                s.settle(&mut b);
+                s.settle(&mut b);
+                let e = b.editor.as_ref().unwrap();
+                assert_eq!(e.text(), before, "{open} known={known}: open and drawn is unchanged");
+                assert!(!e.can_save(), "{open} known={known}: and the editor is not marked changed");
+            }
+        }
     }
 
     #[test]

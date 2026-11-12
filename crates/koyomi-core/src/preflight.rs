@@ -40,6 +40,7 @@ pub fn check(
 ) -> Vec<Finding> {
     let mut out = Vec::new();
     let mut without_dir = false;
+    let mut shells: Option<Vec<(String, PathBuf)>> = None;
     for j in &net.jobs {
         let exe = match (&j.shell, j.run.first()) {
             (Some(shell), _) => Some(shell.as_str()),
@@ -47,7 +48,14 @@ pub fn check(
             _ => None,
         };
         if let Some(exe) = exe.filter(|e| !e.contains('{')) {
-            if find_exe(exe, path_var, exts).is_none() {
+            // A shell is found the way the engine finds it (the same finder), not as a program of that name.
+            let found = match &j.shell {
+                Some(shell) => {
+                    shells.get_or_insert_with(|| crate::shell::find_in_path(std::ffi::OsStr::new(path_var))).iter().any(|(n, _)| n == shell)
+                }
+                None => find_exe(exe, path_var, exts).is_some(),
+            };
+            if !found {
                 out.push(fault(msg::line(msg::PREFLIGHT_EXE_MISSING, &[&crate::run::named(&j.id, j.name.as_deref()), exe])));
             }
         }
@@ -152,6 +160,41 @@ mod tests {
         // `a` is all there, `d` finds `ok` on PATH only by its suffix (it is not there) but its dir has a token.
         assert!(!texts.iter().any(|x| x.contains("ジョブ a ")), "{texts:?}");
         assert!(!texts.iter().any(|x| x.contains("ジョブ d の作業")), "{texts:?}");
+        std::fs::remove_dir_all(&tmp).unwrap();
+    }
+
+    /// A shell job is looked up the way the engine finds shells: found on `PATH` it passes, absent it is E3181 naming
+    /// the shell (and one shell is not another: a `bash` job is not satisfied by `sh`).
+    #[test]
+    fn a_shell_job_is_found_by_the_engines_finder() {
+        let tmp = std::env::temp_dir().join(format!("koyomi-pre-sh-{}", std::process::id()));
+        std::fs::create_dir_all(&tmp).unwrap();
+        let name = if cfg!(windows) { "sh.exe" } else { "sh" };
+        std::fs::write(tmp.join(name), b"").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(tmp.join(name), std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let net = parse(
+            "format = 1
+[[job]]
+id = \"a\"
+shell = \"sh\"
+script = \"x\"
+[[job]]
+id = \"b\"
+after = [\"a\"]
+shell = \"zsh\"
+script = \"x\"
+",
+        )
+        .unwrap();
+        let path = tmp.display().to_string();
+        let got = check(&net, &Calendars::default(), today(), 60, &path, &[], None);
+        let texts: Vec<_> = got.iter().map(|f| f.text.as_str()).collect();
+        assert!(texts.iter().any(|x| msg::PREFLIGHT_EXE_MISSING.is_in(x) && x.contains("zsh")), "{texts:?}");
+        assert!(!texts.iter().any(|x| x.contains("ジョブ a ")), "{texts:?}");
         std::fs::remove_dir_all(&tmp).unwrap();
     }
 

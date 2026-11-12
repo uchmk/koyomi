@@ -149,6 +149,10 @@ pub struct Around<'a> {
     pub nets: &'a [super::pick::NetChoice],
     /// The engine is this PC: a path can be browsed for.
     pub local: bool,
+    /// The shells the engine has and its default one (empty until it has said): the shell field picks among them,
+    /// and a new Job starts as a script job with the default.
+    pub shells: &'a [crate::proto::Shell],
+    pub shell: &'a str,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -729,6 +733,8 @@ pub enum Pane {
 
 pub struct Editor {
     pub id: String,
+    /// The engine's default shell, as the last frame had it: what a new Job starts with (empty: none known).
+    new_shell: String,
     net: Jobnet,
     /// What the file hashed to when it was opened: the base of the save.
     pub base: Option<String>,
@@ -938,6 +944,7 @@ impl Editor {
         let pane = Some(Pane::Net(Box::new(NetFields::of(&net))));
         Editor {
             id: id.into(),
+            new_shell: String::new(),
             net,
             base: None,
             base_text: String::new(),
@@ -1096,9 +1103,13 @@ impl Editor {
                 Some((left, low + layout::STEP_ACROSS))
             }
         });
-        let run = if part == Part::Job { vec!["cmd.exe".into(), "/c".into(), "echo hello".into()] } else { Vec::new() };
+        // With the engine's default shell known a new Job is a script job; before that (or from an older engine) it is
+        // the old `cmd.exe` one.
+        let script = part == Part::Job && !self.new_shell.is_empty();
+        let run = if part == Part::Job && !script { vec!["cmd.exe".into(), "/c".into(), "echo hello".into()] } else { Vec::new() };
+        let (shell, script) = if script { (Some(self.new_shell.clone()), Some("echo hello".to_owned())) } else { (None, None) };
         let after = after.filter(|a| self.has(a)).map(|a| vec![Line::ok(a)]).unwrap_or_default();
-        self.net.jobs.push(Job { id: id.clone(), run, after, pos, part, ..Default::default() });
+        self.net.jobs.push(Job { id: id.clone(), run, after, pos, part, shell, script, ..Default::default() });
         self.choose(id.clone());
         self.touched();
         id
@@ -1621,6 +1632,7 @@ impl Editor {
 
     /// The editor: toolbar, shelf, fields and the canvas.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, vertical: bool, around: &Around) -> Option<Action> {
+        self.new_shell = around.shell.to_owned();
         let (calendars, power, depth) = (around.calendars, around.power, around.depth);
         let mine = around.defs.iter().find(|d| d.id == self.id);
         let mut action = None;
@@ -1870,7 +1882,14 @@ impl Editor {
                 }
             });
         });
-        self.drawer(ui, t, (calendars, around.stops, around.now), (around.nets, around.local), power, &mut action);
+        self.drawer(
+            ui,
+            t,
+            (calendars, around.stops, around.now),
+            (around.nets, around.local, (around.shells, around.shell)),
+            power,
+            &mut action,
+        );
         egui::Panel::bottom("editor-foot").show(ui, |ui| {
             let cal = self.net.calendar.as_deref().or(mine.and_then(|d| d.calendar.as_deref())).and_then(|n| calendars.get(n));
             self.foot(ui, t, cal, around.now);
@@ -2509,6 +2528,29 @@ mod tests {
         assert_eq!(e.positions()[2], (left, low + layout::STEP_ACROSS));
         // The new part is the target now, so the next one follows it.
         assert_eq!(e.target().map(|j| j.id.clone()), Some(id));
+    }
+
+    /// A new Job is a script job with the engine's default shell once the engine has said it; before that it is the
+    /// old `cmd.exe` one. A shell the engine lacks stays in the fields as it was written.
+    #[test]
+    fn a_new_job_takes_the_engines_default_shell_and_a_written_shell_survives_the_fields() {
+        let mut e = two();
+        let id = e.add(Part::Job, None, None);
+        let j = e.net.jobs.iter().find(|j| j.id == id).unwrap();
+        assert_eq!((j.run.first().map(String::as_str), j.shell.as_deref(), j.script.as_deref()), (Some("cmd.exe"), None, None));
+        e.new_shell = "bash".into();
+        let id = e.add(Part::Job, None, None);
+        let j = e.net.jobs.iter().find(|j| j.id == id).unwrap().clone();
+        assert_eq!((j.run.is_empty(), j.shell.as_deref(), j.script.as_deref()), (true, Some("bash"), Some("echo hello")));
+        // A part that is not a Job takes none.
+        let id = e.add(Part::Branch, None, None);
+        assert_eq!(e.net.jobs.iter().find(|j| j.id == id).unwrap().shell, None);
+        // Opening the fields and applying them changes nothing, whichever shell is written.
+        let mut z = j.clone();
+        z.shell = Some("zsh".into());
+        let f = Fields::of(&z);
+        assert_eq!(f.shell, "zsh");
+        assert_eq!(f.apply(&z).unwrap(), z);
     }
 
     #[test]

@@ -39,10 +39,14 @@ fn engine_row(page: usize, text: &str, t: &ito_i18n::Table, more: &MoreWords) ->
         t.tr("settings.archive"),
         t.tr("settings.concurrency"),
         t.tr("settings.log_max"),
+        t.tr("settings.jobs"),
+        t.tr("settings.shell"),
+        t.tr("settings.shell_note"),
         "keep_days",
         "archive",
         "concurrency",
         "log_max_mb",
+        "shell",
     ];
     match page {
         // The Records section, and the button for koyomi.toml.
@@ -79,10 +83,13 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (GENERAL, t.tr("settings.archive")),
         (GENERAL, t.tr("settings.concurrency")),
         (GENERAL, t.tr("settings.log_max")),
+        (GENERAL, t.tr("settings.jobs")),
+        (GENERAL, t.tr("settings.shell")),
         (GENERAL, "keep_days"),
         (GENERAL, "archive"),
         (GENERAL, "concurrency"),
         (GENERAL, "log_max_mb"),
+        (GENERAL, "shell"),
         (GENERAL, "koyomi.toml"),
         (THEME, w.mode),
         (THEME, w.themes),
@@ -194,6 +201,12 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     let (config, config_warn, limit_drafts) = (&prefs.config, &prefs.config_warn, &mut prefs.limit_drafts);
     let mut keep_pick: Option<u32> = None;
     let mut archive_pick: Option<bool> = None;
+    // The Jobs section: the default shell picked among the ones this engine has.
+    let mut shell_pick: Option<String> = None;
+    let (shell_now, shell_words) = shell_choices(app.browser.shells(), config.shell.as_deref(), table);
+    let shell_path =
+        shell_words.get(shell_now).and_then(|(n, _)| app.browser.shells().0.iter().find(|s| s.name == *n)).map(|s| s.path.clone());
+    let shell_opts: Vec<(usize, &str)> = shell_words.iter().enumerate().map(|(i, (_, w))| (i, w.as_str())).collect();
     // The watch switch of the Notifications page: this window's, whichever PC's engine it shows.
     let mut watch_pick: Option<bool> = None;
     let watch_remotes = config.watch_remotes;
@@ -273,6 +286,17 @@ pub fn show(ui: &mut Ui, app: &mut App) {
                     ito_prefs::field(ui, limit_drafts, "log_max_mb", &now, "10", 80.0)
                 }) {
                     limit_typed.push(("log_max_mb", t));
+                }
+            });
+            section(ui, l, &tr("settings.jobs"), |ui| {
+                let (label, mut note) = (tr("settings.shell"), tr("settings.shell_note"));
+                if let Some(p) = &shell_path {
+                    note = format!("{note}\n{p}");
+                }
+                if let Some(i) =
+                    ito_prefs::keyed_row(ui, l, "shell", &label, &note, |ui| ito_prefs::select(ui, "shell", shell_now, &shell_opts))
+                {
+                    shell_pick = shell_words.get(i).map(|(n, _)| n.clone());
                 }
             });
         }
@@ -388,6 +412,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     if let Some(on) = archive_pick {
         limit_edits.push(("archive", on.to_string()));
     }
+    if let Some(name) = shell_pick {
+        limit_edits.push(("shell", format!("\"{name}\"")));
+    }
     if let Some(on) = watch_pick {
         app.prefs.set_watch_remotes(on, &no_folder);
     }
@@ -451,6 +478,29 @@ pub fn show(ui: &mut Ui, app: &mut App) {
 
 /// koyomi's own settings file, opened from the foot of the settings' list.
 const CONFIG_FILE: &str = "koyomi.toml";
+
+/// The choices of the default shell: the shells this engine has (all five while it has not said), and the one
+/// `koyomi.toml` wrote when it is not among them (said so). The index of the one now, and each choice's name and words.
+/// Not written: the engine's default, which the snapshot carries.
+fn shell_choices(engine: (&[crate::proto::Shell], &str), written: Option<&str>, t: &ito_i18n::Table) -> (usize, Vec<(String, String)>) {
+    let (found, default) = engine;
+    let mut names: Vec<String> = if found.is_empty() {
+        koyomi_core::shell::SHELLS.iter().map(|s| (*s).to_owned()).collect()
+    } else {
+        found.iter().map(|s| s.name.clone()).collect()
+    };
+    let now = written.filter(|w| !w.is_empty()).unwrap_or(default);
+    let mut words: Vec<(String, String)> = Vec::new();
+    if !now.is_empty() && !names.iter().any(|n| n == now) {
+        names.push(now.to_owned());
+        words.push((now.to_owned(), t.trf("field.shell_missing", &[now])));
+    }
+    let mut out: Vec<(String, String)> =
+        names.iter().filter(|n| !words.iter().any(|(w, _)| w == *n)).map(|n| (n.clone(), n.clone())).collect();
+    out.extend(words);
+    let at = out.iter().position(|(n, _)| n == now).unwrap_or(0);
+    (at, out)
+}
 
 /// The choices for `keep_days`, as DECISIONS.md has them: no "never".
 pub const KEEP_DAYS: [u32; 5] = [30, 60, 90, 180, 365];
@@ -585,6 +635,23 @@ mod tests {
         assert!(idx.iter().any(|(p, t)| *p == KEYS && t == "keymap.toml"));
         assert!(idx.iter().any(|(p, t)| *p == KEYS && t == "Everywhere"));
         assert!(idx.iter().any(|(p, t)| *p == GENERAL && t == "[window]"));
+    }
+
+    /// The default shell's choices are the shells the engine has; the one written stays among them when the engine
+    /// lacks it; and before the engine has said, every shell is offered.
+    #[test]
+    fn the_default_shell_picks_among_the_shells_the_engine_has() {
+        let (t, _) = crate::i18n::table("en");
+        let sh = |n: &str| crate::proto::Shell { name: n.into(), path: format!("/bin/{n}") };
+        let found = [sh("bash"), sh("sh")];
+        let names = |v: &[(String, String)]| v.iter().map(|(n, _)| n.clone()).collect::<Vec<_>>();
+        let (at, v) = shell_choices((&found, "bash"), None, &t);
+        assert_eq!((at, names(&v)), (0, vec!["bash".to_owned(), "sh".to_owned()]));
+        assert_eq!(shell_choices((&found, "bash"), Some("sh"), &t).0, 1);
+        let (at, v) = shell_choices((&found, "bash"), Some("zsh"), &t);
+        assert_eq!((at, v[2].0.as_str(), v[2].1.as_str()), (2, "zsh", "zsh (not on this engine)"));
+        let (at, v) = shell_choices((&[], ""), None, &t);
+        assert_eq!((at, v.len()), (0, 5));
     }
 
     /// Home keeps every row; another PC's engine loses the engine's (Records, koyomi.toml, the whole

@@ -2170,3 +2170,20 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 140.10 | Cancel a chooser; while one is open look at the other 参照… buttons and the [[when]] remove buttons | A cancel changes nothing; every other 参照… and every [[when]] remove button is greyed with the reason |
 | 140.11 | Open a chooser, close the job (or open another), then pick a path | The answer is dropped; the other job's field is unchanged |
 | 140.12 | Switch the window to a far engine | No 参照… button shows anywhere; the fields stay typed |
+
+## 141. Five shells (`shell`: powershell, pwsh, bash, sh, zsh) (`engine/shells.rs`, `settings.rs`, `ui/canvas/drawer.rs`)
+
+| # | Do | Expect |
+|---|---|---|
+| 141.1 | Open a job on this PC and look at the シェル select | It lists なし（run で実行する）, then the shells this PC has with the default marked （既定） and first; no shell that is not installed is listed; under the select the picked shell's path shows (e.g. `C:\Program Files\Git\bin\bash.exe`) |
+| 141.2 | Open a job whose file says `shell = "zsh"` on a PC without zsh; close it without touching anything | The select shows `zsh（このエンジンにはありません）` with a note to install the package; closing changes nothing in the file |
+| 141.3 | Pick なし on a script job, then pick bash on a `run` job that has text | The first empties `shell` and keeps `script` (the script-needs-shell mark shows); the second sets `shell` and keeps `run` (the run-and-shell mark shows) |
+| 141.4 | Add a Job from the shelf with the window connected, then with no engine answering yet | Connected: `shell` is the default and `script = "echo hello"`, `run` is empty; not connected: the old `cmd.exe /c echo hello` |
+| 141.5 | Open Settings, 全般 | A 「ジョブ」 section holds 「新しいスクリプトの既定のシェル」 with this PC's shells and the picked one's path as its note; opening the page writes nothing |
+| 141.6 | On this PC pick another shell there; then open koyomi.toml | `shell = "…"` is written and nothing else changes; the next shelf Job takes it |
+| 141.7 | Switch the window to a far engine and open Settings, 全般 | The 「ジョブ」 section is not shown (the far line is); the search does not find it |
+| 141.8 | On a PC with Git for Windows (no other bash on `PATH`) run a `shell = "bash"` job with `script = 'echo "a b"; echo $0'` | The log shows `a b` and `koyomi`; the run is 正常 |
+| 141.9 | Put only the WSL launcher as bash (no Git for Windows) and run `koyomi check` on a bash job | `koyomi check` reports E3181 naming bash (the same finder as the engine: the WSL `bash.exe` in System32 or WindowsApps is not counted, Git for Windows in `%ProgramFiles%\Git\bin` is); the engine's net shows the caution W3752 for bash; running the job fails with E3293 and no process starts |
+| 141.10 | Run a job whose shell is missing on this PC | The job is 異常 with E3293 naming the shell and the net; the log file exists; no child process was made; jobs after it read 未実行 |
+| 141.11 | Write `shell = "cmd"` on a job and run `koyomi check` | check refuses it with the line and the five shells that are allowed |
+| 141.12 | Write `shell = "zsh"` in koyomi.toml on a PC without zsh | The default is the first shell this PC has (Windows: powershell, pwsh, bash, sh, zsh; elsewhere: bash, sh, zsh, pwsh) and the caution W3753 is listed |

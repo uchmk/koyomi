@@ -231,7 +231,7 @@ pub struct Job {
     /// Run it again after an abnormal end, from `retry = { count = 2, wait = "5m" }`.
     #[serde(default)]
     pub retry: Option<Retry>,
-    /// `shell = "powershell"`: the engine runs `script` with that shell instead of `run`.
+    /// `shell` (`powershell`, `pwsh`, `bash`, `sh` or `zsh`): the engine runs `script` with that shell instead of `run`.
     #[serde(default)]
     pub shell: Option<String>,
     /// The shell's script, as written (one argument to the shell, never joined with anything).
@@ -2576,7 +2576,7 @@ impl Checker<'_> {
                 },
             };
             let (run, shell, script, dir, retry, judge) = if part.runs_process() && !matches!(part, Part::Chore(_)) {
-                let shell = self.choice(&j.shell, "shell", &["powershell"]).map(str::to_owned);
+                let shell = self.choice(&j.shell, "shell", &crate::shell::SHELLS).map(str::to_owned);
                 let script = self.string(&j.script, "script");
                 // Either `run`, or a shell with its script: never both, never a shell line in `run`.
                 let run = match (&j.shell, &j.script) {
@@ -3391,7 +3391,13 @@ exit 1'''
         let p = |text: &str| problems(&format!("format = 1\n[[job]]\nid = \"a\"\n{text}\n"));
         assert_eq!(p("shell = \"powershell\""), [placed(msg::line(msg::DEF_SHELL_NEEDS_SCRIPT, &[]), 4)]);
         assert_eq!(p("shell = \"powershell\"\nscript = \" \""), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["script"]), 4)]);
-        assert_eq!(p("shell = \"cmd\"\nscript = \"x\""), [placed(msg::line(msg::DEF_CHOICE_BAD, &["shell", "\"powershell\""]), 4)]);
+        assert_eq!(
+            p("shell = \"cmd\"\nscript = \"x\""),
+            [placed(msg::line(msg::DEF_CHOICE_BAD, &["shell", &crate::shell::quoted_list()]), 4)]
+        );
+        for shell in crate::shell::SHELLS {
+            assert_eq!(p(&format!("shell = \"{shell}\"\nscript = \"x\"")), Vec::<String>::new(), "{shell}");
+        }
         assert_eq!(p("run = [\"x\"]\nscript = \"x\""), [placed(msg::line(msg::DEF_SCRIPT_NEEDS_SHELL, &[]), 5)]);
         assert_eq!(p("run = [\"x\"]\nshell = \"powershell\"\nscript = \"x\""), [placed(msg::line(msg::DEF_RUN_SHELL_BOTH, &[]), 4)]);
         assert_eq!(p("shell = \"powershell\"\nscript = 1"), [placed(msg::line(msg::DEF_STRING_BAD, &["script"]), 5)]);

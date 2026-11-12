@@ -2923,6 +2923,12 @@ text = "The notification webhook address cannot be saved to the credential store
 cause = "The credential store may be unreachable, or it refused the write."
 action = "Check the state of the credential store and save again."
 
+[E3293]
+when = "The shell of a job is not on the engine's PC"
+text = "The job cannot start because this engine does not have the shell {0}. ({1} is needed)"
+cause = "The shell the job names is not found on the PATH of this PC (on Windows, nor in the usual places of Windows PowerShell and Git for Windows)."
+action = "Install {1}, or change the shell in the definition."
+
 [E3355]
 when = "A jobnet whose definition has errors is about to run"
 text = "The definition of {0} has errors, so it cannot run."
@@ -3655,6 +3661,18 @@ text = "The Event Log [[when]] of the jobnet {0} works on Windows only."
 cause = "Only Windows has an Event Log."
 action = "Run it on a Windows PC."
 
+[W3752]
+when = "A job of a net names a shell this engine does not have"
+text = "The job {1} of the jobnet {0} uses {2}, but this engine does not have {2}."
+cause = "The shell is not found on the PATH of this PC (on Windows, nor in the usual places of Windows PowerShell and Git for Windows)."
+action = "Install the shell, or change the shell in the definition."
+
+[W3753]
+when = "The shell in koyomi.toml is one this engine does not have"
+text = "This engine does not have {0}, the shell given in koyomi.toml, so {1} is the default shell."
+cause = "The shell is not found on the PATH of this PC (on Windows, nor in the usual places of Windows PowerShell and Git for Windows)."
+action = "Install the shell, or change the shell in koyomi.toml."
+
 [E3356]
 when = "When a job with kind = \"jobnet\" calls a jobnet that is not confirmed"
 text = "The child jobnet {0} is not confirmed."
@@ -4165,6 +4183,8 @@ held_job = "On hold (koyomi release {0} {1})"
 notified = "Notified"
 http_by = "  (HTTP: {0})"
 run_as_log = "Running as {0}"
+shell_pkg_pwsh = "PowerShell 7 (pwsh)"
+shell_pkg = "the {0} package"
 no_files_log = "No file matches, so it is not run at all"
 loop_width_log = "Running {0} passes, {1} at a time"
 pass_of = "Pass {0}/{1}"

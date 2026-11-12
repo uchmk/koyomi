@@ -597,6 +597,9 @@ fn narrow(
                 paused: s.paused,
                 // The planned stops are the whole PC's, not a net's: the times they stop show as such.
                 blackouts: s.blackouts,
+                // The shells are the whole PC's too: a job form lists them whoever may see which net.
+                shells: s.shells,
+                shell: s.shell,
                 ..Snapshot::default()
             }
             .to_toml()
@@ -1317,6 +1320,26 @@ mod tests {
         let all = handle(&req("GET", "/nets", ""), ask);
         assert_eq!((all.json["nets"].as_array().map(Vec::len), all.json["nets"][0].get("role")), (Some(2), None));
         assert_eq!(handle(&req("POST", "/nets/propose", r#"{"net": "人事/new", "text": "x"}"#), ask).status, 200);
+    }
+
+    /// A narrowed user's list keeps the PC's shells and default shell (like the planned stops), whatever nets they see.
+    #[test]
+    fn a_narrowed_list_keeps_the_pcs_shells() {
+        let ask = |r: &Request| match r {
+            Request::List => Ok(Snapshot {
+                defs: vec![def("経理/a"), def("人事/b")],
+                shells: vec![proto::Shell { name: "bash".into(), path: "/bin/bash".into() }],
+                shell: "bash".into(),
+                ..Default::default()
+            }
+            .to_toml()),
+            _ => Ok("ok".to_owned()),
+        };
+        let nets = Access { role: Role::View, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
+        let text = narrow(&Request::List, "sato", &nets, Role::View, &ask).unwrap().unwrap();
+        let snap = Snapshot::parse(&text).unwrap();
+        assert_eq!(snap.defs.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), ["経理/a"]);
+        assert_eq!((snap.shells.len(), snap.shells[0].path.as_str(), snap.shell.as_str()), (1, "/bin/bash", "bash"));
     }
 
     /// A run's definition copy is definition text: the door lets it through to Edit only, and a narrowed

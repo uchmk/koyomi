@@ -587,6 +587,22 @@ pub struct Snapshot {
     /// The engine's offset from UTC in minutes: a window in another zone counts today differently.
     #[serde(default)]
     pub utc_offset_min: i32,
+    /// The shells this engine has (what a job's `shell` may name), in `koyomi_core::shell::SHELLS`' order.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shells: Vec<Shell>,
+    /// The shell a new script job starts with (`shell` in `koyomi.toml`, or the OS's own); empty when the
+    /// engine is too old to say.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub shell: String,
+}
+
+/// One shell the engine found on its PC.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Shell {
+    /// `powershell`, `pwsh`, `bash`, `sh` or `zsh`.
+    pub name: String,
+    /// The absolute path the engine runs for it.
+    pub path: String,
 }
 
 /// How this PC sleeps and whether the engine can wake it (`wake = true` nets).
@@ -1071,5 +1087,25 @@ port = 1
         assert_eq!(Snapshot::parse(&snap.to_toml()).unwrap(), snap);
         let old = Snapshot::parse("defs = []\nwarnings = []\n").unwrap();
         assert_eq!((old.blocked.len(), old.utc_offset_min), (0, 0));
+    }
+
+    /// The shells and the default shell read back; an older engine's text has neither and still reads.
+    #[test]
+    fn the_snapshot_holds_the_shells_and_reads_without_them() {
+        let snap = Snapshot {
+            shells: vec![Shell { name: "bash".into(), path: "/bin/bash".into() }, Shell { name: "sh".into(), path: "/bin/sh".into() }],
+            shell: "bash".into(),
+            ..Snapshot::default()
+        };
+        assert_eq!(Snapshot::parse(&snap.to_toml()).unwrap(), snap);
+        let old = Snapshot::parse(
+            "defs = []
+warnings = []
+",
+        )
+        .unwrap();
+        assert_eq!((old.shells.len(), old.shell.as_str()), (0, ""));
+        // Nothing found, nothing written.
+        assert!(!Snapshot::default().to_toml().contains("shell"));
     }
 }

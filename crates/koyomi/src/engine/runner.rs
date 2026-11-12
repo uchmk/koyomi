@@ -239,6 +239,9 @@ pub struct Runner {
     jobnets: Option<PathBuf>,
     /// The runs closed at start from a day file older than yesterday.
     stale: BTreeSet<String>,
+    /// The shells the engine found (name, absolute path), once it has looked ([`Runner::set_shells`]).
+    /// `None`: not looked yet, a shell is started by its bare name.
+    shells: Option<Vec<(String, PathBuf)>>,
 }
 
 impl Runner {
@@ -268,6 +271,7 @@ impl Runner {
             held: Held::default(),
             jobnets: None,
             stale: BTreeSet::new(),
+            shells: None,
         };
         let today = ito_common::now::now_local().date_naive();
         for day in [today - chrono::Days::new(1), today] {
@@ -434,6 +438,29 @@ impl Runner {
 
     pub fn set_config(&mut self, config: Config) {
         self.config = config;
+    }
+
+    /// The shells this PC has: a job starts the path found for its shell, and one that is not here does not start.
+    pub fn set_shells(&mut self, shells: Vec<(String, PathBuf)>) {
+        self.shells = Some(shells);
+    }
+
+    /// The program `j` starts and what to say when it cannot start (its shell is not on this PC).
+    fn program(&self, jobnet: &str, j: &JobRun) -> (Vec<String>, Option<String>) {
+        let (Some(shell), Some(_)) = (j.shell.as_deref(), &j.script) else { return (j.command(None), None) };
+        let Some(found) = &self.shells else { return (j.command(None), None) };
+        match found.iter().find(|(n, _)| n == shell) {
+            Some((_, path)) => (j.command(Some(path)), None),
+            None => {
+                // A chore koyomi wrote as PowerShell, off Windows: the old words.
+                let line = if !cfg!(windows) && matches!(j.part, Part::Chore(_)) && koyomi_core::shell::is_powershell(shell) {
+                    msg::line(msg::OS_NO_PWSH, &[jobnet])
+                } else {
+                    msg::line(msg::RUN_SHELL_MISSING, &[shell, &koyomi_core::shell::install_hint(shell)])
+                };
+                (j.command(None), Some(line))
+            }
+        }
     }
 
     pub fn runs(&self) -> &[Run] {
@@ -1079,12 +1106,14 @@ impl Runner {
             grace: wait,
         });
         let log = self.log_path(run_id, job_id);
+        let (command, missing) = self.program(&r.jobnet, j);
         let job = JobSpec {
             run: run_id.to_owned(),
             jobnet: r.jobnet.clone(),
             date: r.date.clone(),
             id: job_id.to_owned(),
-            command: j.command(),
+            command,
+            missing,
             dir: j.dir.clone(),
             timeout: j.timeout,
             grace: wait,
@@ -1229,6 +1258,8 @@ struct JobSpec {
     date: String,
     id: String,
     command: Vec<String>,
+    /// Set when the job's shell is not on this PC: the coded line it ends with, and no process starts.
+    missing: Option<String>,
     dir: Option<String>,
     /// Seconds before the timer asks the job to stop.
     timeout: Option<u64>,
@@ -1373,6 +1404,10 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
         Err(e) => return done(Outcome::Failed, msg::line(msg::LOG_CREATE_FAILED, &[&job.log.display().to_string(), &e.to_string()]), 0),
     };
     let mut size = LogSize { written: 0, capped: false };
+    if let Some(line) = &job.missing {
+        let _ = writeln!(file, "! {line}");
+        return done(Outcome::Failed, line.clone(), 0);
+    }
     let get = |name: &str| ito_secret::get("koyomi", name);
     let env = match resolve_env(&job.env, &get).and_then(|env| resolve_logon(env, job.run_as.as_ref(), &get)) {
         Ok(r) => r,
@@ -2296,6 +2331,103 @@ id = \"side\"
         assert_eq!(run.state, State::Error);
         assert!(msg::EXE_START_FAILED.is_in(&run.job("a").unwrap().reason), "{}", run.job("a").unwrap().reason);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A job whose shell this PC lacks: Failed with the coded reason, the log holds the coded line, no process was
+    /// started (no exit code, nothing retried), and the job keeps its `shell` and `script`.
+    #[test]
+    fn a_job_whose_shell_is_missing_fails_without_a_process() {
+        let dir = scratch("noshell");
+        let d = def(
+            "net",
+            "format = 1
+[[job]]
+id = \"a\"
+shell = \"zsh\"
+script = \"echo hi\"
+retry = { count = 2, wait = \"1s\" }
+",
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        r.set_shells(vec![("sh".into(), std::path::PathBuf::from("/bin/sh"))]);
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.state, State::Error);
+        let j = run.job("a").unwrap();
+        assert_eq!((j.state, j.exit, j.retried), (State::Error, None, 0));
+        assert!(msg::RUN_SHELL_MISSING.is_in(&j.reason) && j.reason.contains("zsh"), "{}", j.reason);
+        assert_eq!((j.shell.as_deref(), j.script.as_deref()), (Some("zsh"), Some("echo hi")));
+        let log = std::fs::read_to_string(r.log_path(&id, "a")).unwrap();
+        assert!(log.lines().any(|l| l.strip_prefix("! ").is_some_and(|l| msg::RUN_SHELL_MISSING.is_in(l))), "{log}");
+        assert!(
+            !log.contains(
+                "hi
+"
+            ),
+            "the script did not run: {log}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A chore koyomi wrote as PowerShell runs the PowerShell path found, whatever the default shell is; an own chore
+    /// has no shell at all.
+    #[test]
+    fn a_chore_runs_the_powershell_found_and_an_own_chore_has_no_shell() {
+        let dir = scratch("chore-shell");
+        let mut net = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"c\"
+kind = \"copy\"
+from = 'D:/out'
+into = 'E:/in'
+[[job]]
+id = \"m\"
+kind = \"mail\"
+to = [\"a@example.com\"]
+subject = \"s\"
+body = \"b\"
+after = [\"c\"]
+",
+        )
+        .unwrap();
+        koyomi_core::chore::fill(&mut net, "C:/koyomi.exe").unwrap();
+        let (copy, mail) = (JobRun::from_job(&net.jobs[0]), JobRun::from_job(&net.jobs[1]));
+        assert_eq!(copy.shell.as_deref(), Some("powershell"));
+        assert_eq!((mail.shell.as_deref(), mail.script.as_deref()), (None, None));
+        let ps = std::path::PathBuf::from(if cfg!(windows) { "C:/ps/powershell.exe" } else { "/opt/pwsh" });
+        let mut r = Runner::new(&dir, Config::default());
+        // The engine's default may be bash: a chore does not follow it.
+        r.set_shells(vec![("powershell".into(), ps.clone()), ("bash".into(), "/bin/bash".into())]);
+        let (argv, missing) = r.program("net", &copy);
+        assert_eq!((argv[0].as_str(), missing), (ps.to_str().unwrap(), None));
+        assert!(argv.contains(&"-EncodedCommand".to_owned()), "{argv:?}");
+        // Own: the command is koyomi itself.
+        let (argv, missing) = r.program("net", &mail);
+        assert_eq!((argv[0].as_str(), missing), ("C:/koyomi.exe", None));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A real Git Bash process (Windows with Git for Windows; it returns early, passing, when Git Bash is not found):
+    /// Japanese, double and single quotes, `$`, a trailing backslash and several lines with CRLF reach the shell as
+    /// written, and what it prints is read back.
+    #[cfg(windows)]
+    #[test]
+    fn git_bash_runs_a_script_as_written() {
+        let found = koyomi_core::shell::find_here();
+        let Some((_, bash)) = found.iter().find(|(n, _)| n == "bash") else { return };
+        eprintln!("git bash test ran with {}", bash.display());
+        let net = koyomi_core::jobnet::parse("format = 1\n[[job]]\nid = \"a\"\nshell = \"bash\"\nscript = \"x\"\n").unwrap();
+        let mut j = JobRun::from_job(&net.jobs[0]);
+        j.script = Some(
+            [r#"echo 日本語"#, r#"echo "a \"b\" $((1+2))""#, r#"echo 'it'"'"'s $HOME'"#, r#"printf '%s\n' 'back\'"#, r#"echo "$0""#]
+                .join("\r\n"),
+        );
+        let argv = j.command(Some(bash));
+        let out = std::process::Command::new(&argv[0]).args(&argv[1..]).output().unwrap();
+        let text = String::from_utf8_lossy(&out.stdout).replace("\r\n", "\n");
+        assert_eq!(text, "日本語\na \"b\" 3\nit's $HOME\nback\\\nkoyomi\n", "{}", String::from_utf8_lossy(&out.stderr));
+        assert!(out.status.success());
     }
 
     #[test]

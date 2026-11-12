@@ -292,13 +292,51 @@ pub struct Ctx<'a> {
     pub nets: &'a [NetChoice],
     pub own: String,
     pub local: bool,
+    /// The names of the shells the engine has (all five while it has not said).
+    shells: Vec<(String, String)>,
+    /// The engine's default shell ("" until it has said).
+    default: String,
     scope: String,
     browse: RefCell<Browse>,
 }
 
 impl<'a> Ctx<'a> {
     pub fn new(nets: &'a [NetChoice], own: &str, local: bool, scope: &str, browse: Browse) -> Self {
-        Ctx { nets, own: own.to_owned(), local, scope: scope.to_owned(), browse: RefCell::new(browse) }
+        Ctx {
+            nets,
+            own: own.to_owned(),
+            local,
+            shells: Vec::new(),
+            default: String::new(),
+            scope: scope.to_owned(),
+            browse: RefCell::new(browse),
+        }
+    }
+
+    /// With the shells the engine has (none: it has not said, so every shell koyomi knows is offered).
+    pub fn with_shells(mut self, found: &[crate::proto::Shell], default: &str) -> Self {
+        self.shells = found.iter().map(|s| (s.name.clone(), s.path.clone())).collect();
+        self.default = default.to_owned();
+        self
+    }
+
+    /// The engine's default shell ("" when it has not said).
+    pub fn shell_default(&self) -> &str {
+        &self.default
+    }
+
+    /// Where the engine found `shell` ("" when it has not said or lacks it).
+    pub fn shell_path(&self, shell: &str) -> &str {
+        self.shells.iter().find(|(n, _)| n == shell).map_or("", |(_, p)| p.as_str())
+    }
+
+    /// The shells a job's `shell` may be picked from.
+    pub fn shell_names(&self) -> Vec<String> {
+        if self.shells.is_empty() {
+            koyomi_core::shell::SHELLS.iter().map(|s| (*s).to_owned()).collect()
+        } else {
+            self.shells.iter().map(|(n, _)| n.clone()).collect()
+        }
     }
 
     /// A chooser is open (anything that renumbers the `[[when]]`s waits for it).
