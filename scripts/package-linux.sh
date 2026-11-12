@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# Pack the koyomi engine for Debian: dist/koyomi-<ver>-linux-<arch>.tar.gz with
-# the binary, install.sh, koyomi-secret, koyomi-user, the unit and the README.
+# Pack the koyomi engine for Debian: dist/koyomi-debian-<ver>-<amd64|arm64>.tar.gz
+# with the binary, install.sh, koyomi-secret, koyomi-user, the unit and the
+# README. "debian" and the .deb's arch names keep it apart from the release's
+# plain koyomi-v<ver>-linux-<x64|arm64>.tar.gz (the binary and the licences,
+# from ito's release.yml).
 #
 #   scripts/package-linux.sh [x86_64|aarch64] [--binary <path>] [--deb]
 #
@@ -60,7 +63,11 @@ if [ -z "$binary" ]; then
 fi
 [ -s "$binary" ] || { echo "binary not found or empty: $binary" >&2; exit 1; }
 
-name="koyomi-$ver-linux-$arch"
+case "$arch" in
+  x86_64) deb_arch=amd64 ;;
+  aarch64) deb_arch=arm64 ;;
+esac
+name="koyomi-debian-$ver-$deb_arch"
 rm -rf "dist/$name" "dist/$name.tar.gz" "dist/$name.tar"
 mkdir -p "dist/$name"
 cp "$binary" "dist/$name/koyomi"
@@ -80,10 +87,6 @@ echo "dist/$name.tar.gz"
 sha256sum "dist/$name.tar.gz"
 
 if [ "$want_deb" -eq 1 ]; then
-  case "$arch" in
-    x86_64) deb_arch=amd64 ;;
-    aarch64) deb_arch=arm64 ;;
-  esac
   deb="dist/koyomi_${ver}_${deb_arch}.deb"
   stage="dist/deb-stage-$deb_arch"
   control="dist/deb-control-$deb_arch"

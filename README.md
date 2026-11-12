@@ -27,7 +27,7 @@ The engine can run on Debian 12 or later as a systemd service, and the window on
 connects to it over HTTPS.
 
 1. From [Releases](https://github.com/uchmk/koyomi/releases), put `koyomi_<version>_amd64.deb`
-   (or `koyomi-<version>-linux-x86_64.tar.gz`) on the Debian machine.
+   (or `koyomi-debian-<version>-amd64.tar.gz`) on the Debian machine.
 2. Run `sudo apt install ./koyomi_<version>_amd64.deb` (for the tar.gz, unpack it and run
    `sudo ./install.sh`). At the end it prints the URL to connect to, the certificate's
    fingerprint and how to load the token.
