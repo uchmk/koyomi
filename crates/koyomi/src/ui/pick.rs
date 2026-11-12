@@ -296,6 +296,13 @@ pub struct Ctx<'a> {
     shells: Vec<(String, String)>,
     /// The engine's default shell ("" until it has said).
     default: String,
+    /// The `[[account]]` names and the `[[database]]`s (name and kind) the engine has registered.
+    accounts: Vec<String>,
+    databases: Vec<crate::proto::DatabaseName>,
+    /// Whether the engine runs on Windows (`None`: it has not said).
+    windows: Option<bool>,
+    /// A link asked for this settings page (taken by the drawer after the frame).
+    settings: std::cell::Cell<Option<usize>>,
     scope: String,
     browse: RefCell<Browse>,
 }
@@ -308,9 +315,46 @@ impl<'a> Ctx<'a> {
             local,
             shells: Vec::new(),
             default: String::new(),
+            accounts: Vec::new(),
+            databases: Vec::new(),
+            windows: None,
+            settings: std::cell::Cell::new(None),
             scope: scope.to_owned(),
             browse: RefCell::new(browse),
         }
+    }
+
+    /// With the accounts and databases the engine has registered, and whether it runs on Windows.
+    pub fn with_registry(mut self, accounts: &[String], databases: &[crate::proto::DatabaseName], windows: Option<bool>) -> Self {
+        self.accounts = accounts.to_vec();
+        self.databases = databases.to_vec();
+        self.windows = windows;
+        self
+    }
+
+    /// The registered account names.
+    pub fn accounts(&self) -> &[String] {
+        &self.accounts
+    }
+
+    /// The registered databases.
+    pub fn databases(&self) -> &[crate::proto::DatabaseName] {
+        &self.databases
+    }
+
+    /// Whether the engine runs on Windows (`None`: it has not said).
+    pub fn windows(&self) -> Option<bool> {
+        self.windows
+    }
+
+    /// A link of the form asks for the settings page `page`.
+    pub fn ask_settings(&self, page: usize) {
+        self.settings.set(Some(page));
+    }
+
+    /// The settings page a link asked for, once.
+    pub fn take_settings(&self) -> Option<usize> {
+        self.settings.take()
     }
 
     /// With the shells the engine has (none: it has not said, so every shell koyomi knows is offered).

@@ -1173,6 +1173,11 @@ impl eframe::App for App {
         }
         egui::Panel::bottom("statusbar").exact_size(ito_statusbar::HEIGHT).frame(egui::Frame::NONE).show(ui, |ui| self.status_bar(ui));
         self.pump_link(&ctx);
+        // The job form's links (アカウントを登録…, データベースを登録…) open the settings at their page.
+        if let Some(page) = self.browser.take_settings_wish() {
+            self.open_settings();
+            self.prefs.state.page = page;
+        }
         self.browser.easy = self.prefs.common.easy_or_off().then(|| self.lang.clone());
         self.take_notices();
         if self.browser.take_config_written() {
@@ -1212,6 +1217,10 @@ impl eframe::App for App {
             self.browser.under_card = card;
             self.browser.under_palette = self.palette.is_some();
             self.browser.show(ui, &self.table);
+            if self.browser.has_settings_wish() {
+                // A link of the job form was clicked in this frame: the settings open in the next one, now.
+                ctx.request_repaint();
+            }
             if card {
                 ctx.input_mut(|i| i.events = held);
             }

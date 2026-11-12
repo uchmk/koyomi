@@ -153,6 +153,10 @@ pub struct Around<'a> {
     /// and a new Job starts as a script job with the default.
     pub shells: &'a [crate::proto::Shell],
     pub shell: &'a str,
+    /// The registered `[[account]]` names and `[[database]]`s, and whether the engine runs on Windows.
+    pub accounts: &'a [String],
+    pub databases: &'a [crate::proto::DatabaseName],
+    pub windows: Option<bool>,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -184,6 +188,8 @@ pub enum Action {
     Stage(String),
     /// Open the box of what is staged for this net.
     Staged,
+    /// Open the settings at this page (the links to アカウント and データベース).
+    OpenSettings(usize),
 }
 
 /// What the mouse is doing between a press and a release.
@@ -298,6 +304,10 @@ pub struct Fields {
     pub run_as_name: String,
     /// The name of a registered `[[database]]` a sql uses instead of `db`.
     pub sql_database: String,
+    /// What the form keeps while another choice is picked (in memory only, never in the job): the written-out
+    /// account's user and secret, and the sql's `db`, `password` and `tls`.
+    pub run_as_draft: (String, String),
+    pub sql_draft: (String, String, SqlTls),
     /// Why the fields do not read, when they do not.
     pub msg: Option<String>,
 }
@@ -1907,6 +1917,7 @@ impl Editor {
             t,
             (calendars, around.stops, around.now),
             (around.nets, around.local, (around.shells, around.shell)),
+            (around.accounts, around.databases, around.windows),
             power,
             &mut action,
         );
@@ -2986,6 +2997,59 @@ database = \"main\"
         none.run_as_name.clear();
         assert_eq!(e.apply_fields("a", &none), Ok(()));
         assert_eq!(e.net.jobs[0].run_as, None);
+    }
+
+    /// Opening a job and closing it changes nothing, for every way an account or a database can be written.
+    #[test]
+    fn jobs_with_an_account_or_a_database_of_every_kind_round_trip_through_the_form() {
+        let mut e = Editor::over(
+            "a/b",
+            net("format = 1
+[[job]]
+id = \"plain\"
+run = [\"x\"]
+[[job]]
+id = \"named\"
+run = [\"x\"]
+run_as = \"ops\"
+[[job]]
+id = \"inline\"
+run = [\"x\"]
+run_as = { user = \"CORP\\\\batch\", password = \"secret:batch\" }
+[[job]]
+id = \"unknown\"
+run = [\"x\"]
+run_as = \"never-registered\"
+[[job]]
+id = \"named_db\"
+kind = \"sql\"
+sql = \"select 1\"
+database = \"main\"
+[[job]]
+id = \"url_db\"
+kind = \"sql\"
+sql = \"select 1\"
+db = \"sqlserver://u@h/d\"
+password = \"secret:p\"
+tls = \"trust\"
+"),
+        );
+        let before = e.net.jobs.clone();
+        for job in &before {
+            let fields = Fields::of(job);
+            assert_eq!(e.apply_fields(&job.id, &fields), Ok(()), "{}", job.id);
+        }
+        assert_eq!(e.net.jobs, before);
+        let name_and_user = |i: usize| {
+            let f = Fields::of(&before[i]);
+            (f.run_as_name, f.run_as_user, f.sql_database, f.db)
+        };
+        assert_eq!(name_and_user(2).1, "CORP\\batch");
+        assert_eq!(name_and_user(3).0, "never-registered");
+        assert_eq!(name_and_user(4).2, "main");
+        assert_eq!(name_and_user(5).3, "sqlserver://u@h/d");
+        // The form's drafts are not the job's: a fresh form has none.
+        assert_eq!(Fields::of(&before[2]).run_as_draft, (String::new(), String::new()));
     }
 
     #[test]

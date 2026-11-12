@@ -755,7 +755,7 @@ fn meaning(role: Role) -> String {
 }
 
 /// A user's name as a part of a test ID: lowercase letters, digits, `-` and `_`.
-fn tid(name: &str) -> String {
+pub(super) fn tid(name: &str) -> String {
     let s: String = name
         .chars()
         .map(|c| {
@@ -774,13 +774,21 @@ fn tid(name: &str) -> String {
     }
 }
 
-fn say_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+pub(super) fn say_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
     let r = ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
     ito_a11y::say(&r, ito_a11y::Role::Label, text);
 }
 
 /// A button that may be off; when it is off for a reason, the reason shows on hover.
-fn button(ui: &mut egui::Ui, on: bool, why: Option<&str>, mark: ito_prefs::Mark, words: &str, tone: ito_prefs::Tone, id: &str) -> bool {
+pub(super) fn button(
+    ui: &mut egui::Ui,
+    on: bool,
+    why: Option<&str>,
+    mark: ito_prefs::Mark,
+    words: &str,
+    tone: ito_prefs::Tone,
+    id: &str,
+) -> bool {
     let r = ui.add_enabled_ui(on, |ui| ito_prefs::IconButton::new(mark, words).tone(tone).show(ui)).inner;
     ito_a11y::test_id(&r, id);
     if !on {

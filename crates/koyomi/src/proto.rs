@@ -456,7 +456,6 @@ impl RegistryBody {
     }
 
     /// Read by a window of another PC, which is wired apart from the engine.
-    #[allow(dead_code)] // the window of worker B reads it; the engine's tests do now
     pub fn parse(text: &str) -> Result<RegistryBody, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }

@@ -237,12 +237,14 @@ struct Asked {
 
 impl Editor {
     /// The pane, or its strip when folded. With no part opened it shows the net's fields.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn drawer(
         &mut self,
         ui: &mut egui::Ui,
         t: &Table,
         (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
         (nets, local, (shells, default)): (&[pick::NetChoice], bool, (&[crate::proto::Shell], &str)),
+        (accounts, databases, windows): (&[String], &[crate::proto::DatabaseName], Option<bool>),
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
@@ -273,7 +275,9 @@ impl Editor {
             Pane::Part(id, _) => id.clone(),
             Pane::Net(_) => String::new(),
         };
-        let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse)).with_shells(shells, default);
+        let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse))
+            .with_shells(shells, default)
+            .with_registry(accounts, databases, windows);
         let form = Form::new(t, &ctx);
         let mut asked = Asked::default();
         let wide = ui.available_width();
@@ -316,6 +320,9 @@ impl Editor {
                     });
                 });
             });
+        if let Some(page) = ctx.take_settings() {
+            *action = Some(Action::OpenSettings(page));
+        }
         self.browse = ctx.into_browse();
         // An answer the field it was opened for did not take (another part is open now) is dropped.
         self.browse.drop_answer();
@@ -621,12 +628,205 @@ fn judge_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     changed
 }
 
-/// Another account to run as: both its name and its secret, or neither.
+/// What the account select can pick.
+#[derive(Clone, Debug, PartialEq)]
+enum AccountChoice {
+    /// No `run_as`: the job runs as the engine's account.
+    Engine,
+    /// A registered `[[account]]`.
+    Named(String),
+    /// The account written out in the job (`user` and `password`).
+    Inline,
+    /// A name the engine does not have registered.
+    Unknown(String),
+}
+
+/// Which choice the fields are at now.
+fn account_now(f: &Fields, names: &[String]) -> AccountChoice {
+    let name = f.run_as_name.trim();
+    if !name.is_empty() {
+        return if names.iter().any(|n| n == name) {
+            AccountChoice::Named(name.to_owned())
+        } else {
+            AccountChoice::Unknown(name.to_owned())
+        };
+    }
+    if f.run_as_user.trim().is_empty() && f.run_as_secret.trim().is_empty() {
+        AccountChoice::Engine
+    } else {
+        AccountChoice::Inline
+    }
+}
+
+/// The choices (value and words) and the index of the one the fields are at: なし first, the registered names, the
+/// account written out (only while the job has one, or one was set aside for this form), an unknown name last.
+fn account_entries(t: &Table, names: &[String], f: &Fields) -> (Vec<(AccountChoice, String)>, usize) {
+    let now = account_now(f, names);
+    let mut entries = vec![(AccountChoice::Engine, t.tr("field.run_as_none").to_owned())];
+    entries.extend(names.iter().map(|n| (AccountChoice::Named(n.clone()), n.clone())));
+    let drafted = !f.run_as_draft.0.trim().is_empty() || !f.run_as_draft.1.trim().is_empty();
+    if now == AccountChoice::Inline || drafted {
+        let user = if f.run_as_user.trim().is_empty() { f.run_as_draft.0.trim() } else { f.run_as_user.trim() };
+        entries.push((AccountChoice::Inline, t.trf("field.run_as_inline", &[user])));
+    }
+    if let AccountChoice::Unknown(n) = &now {
+        entries.push((now.clone(), t.trf("field.run_as_unknown", &[n])));
+    }
+    let at = entries.iter().position(|(c, _)| *c == now).unwrap_or(0);
+    (entries, at)
+}
+
+/// Picks `to`: the written-out account moves to the draft (and comes back when it is picked again), so that a name
+/// and a user are never both in the fields. Nothing else of the job is touched.
+fn pick_account(f: &mut Fields, to: &AccountChoice) {
+    let set_aside = |f: &mut Fields| {
+        if !f.run_as_user.trim().is_empty() || !f.run_as_secret.trim().is_empty() {
+            f.run_as_draft = (std::mem::take(&mut f.run_as_user), std::mem::take(&mut f.run_as_secret));
+        }
+    };
+    match to {
+        AccountChoice::Engine => {
+            set_aside(f);
+            f.run_as_name.clear();
+        }
+        AccountChoice::Named(n) => {
+            set_aside(f);
+            f.run_as_name.clone_from(n);
+        }
+        AccountChoice::Inline => {
+            f.run_as_name.clear();
+            if f.run_as_user.trim().is_empty() && f.run_as_secret.trim().is_empty() {
+                (f.run_as_user, f.run_as_secret) = std::mem::take(&mut f.run_as_draft);
+            }
+        }
+        AccountChoice::Unknown(_) => {}
+    }
+}
+
+/// The account to run as: a select of なし, the registered accounts and (when the job has one) the account written
+/// out, whose user and secret show under it.
 fn account_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
-    let set = !f.run_as_user.trim().is_empty() || !f.run_as_secret.trim().is_empty();
-    let need = if set { Need::Required } else { Need::Optional };
-    let mut changed = form.line(ui, "field.run_as_user", need, false, &mut f.run_as_user, |i| i.mono().mark(M::Person));
-    changed |= form.line(ui, "field.run_as_secret", need, false, &mut f.run_as_secret, |i| i.mono().mark(M::Lock));
+    let (label, _) = form.label(ui, "field.run_as", Need::Optional);
+    let (entries, at) = account_entries(form.t, form.pick.accounts(), f);
+    let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+    let mut changed = false;
+    if let Some(i) = pick::select_index(ui, "field.run_as", label, at, &labels) {
+        if i != at {
+            pick_account(f, &entries[i].0);
+            changed = true;
+        }
+    }
+    let now = account_now(f, form.pick.accounts());
+    if let AccountChoice::Unknown(_) = now {
+        form.note(ui, form.t.tr("field.run_as_unknown_note"));
+    }
+    if form.pick.windows() == Some(false) && now != AccountChoice::Engine {
+        form.note(ui, &koyomi_core::msg::line(koyomi_core::msg::OS_RUN_AS, &[&form.pick.own]));
+    }
+    register_link(ui, form, "field.run_as_register", crate::settings::ACCOUNTS);
+    ui.add_space(10.0);
+    if now == AccountChoice::Inline {
+        let set = !f.run_as_user.trim().is_empty() || !f.run_as_secret.trim().is_empty();
+        let need = if set { Need::Required } else { Need::Optional };
+        changed |= form.line(ui, "field.run_as_user", need, false, &mut f.run_as_user, |i| i.mono().mark(M::Person));
+        changed |= form.line(ui, "field.run_as_secret", need, false, &mut f.run_as_secret, |i| i.mono().mark(M::Lock));
+    }
+    changed
+}
+
+/// A link to the settings page `page` (to register what the select lacks).
+fn register_link(ui: &mut egui::Ui, form: &Form, key: &str, page: usize) {
+    let words = form.t.tr(key);
+    let r = ui.link(words);
+    ito_a11y::say(&r, Role::Button, words);
+    ito_a11y::test_id(&r, key);
+    if r.clicked() {
+        form.pick.ask_settings(page);
+    }
+}
+
+/// What the SQL connection select can pick.
+#[derive(Clone, Debug, PartialEq)]
+enum DbChoice {
+    /// The address (and its secret and TLS) written in the job.
+    Url,
+    /// A registered `[[database]]`.
+    Named(String),
+    /// A name the engine does not have registered.
+    Unknown(String),
+}
+
+fn db_now(f: &Fields, dbs: &[crate::proto::DatabaseName]) -> DbChoice {
+    let name = f.sql_database.trim();
+    if name.is_empty() {
+        DbChoice::Url
+    } else if dbs.iter().any(|d| d.name == name) {
+        DbChoice::Named(name.to_owned())
+    } else {
+        DbChoice::Unknown(name.to_owned())
+    }
+}
+
+/// The choices (value and words) and the index of the one the fields are at: each registered database with its
+/// kind, 「URL を直接書く」, then an unknown name last.
+fn db_entries(t: &Table, dbs: &[crate::proto::DatabaseName], f: &Fields) -> (Vec<(DbChoice, String)>, usize) {
+    let now = db_now(f, dbs);
+    let mut entries: Vec<(DbChoice, String)> = dbs
+        .iter()
+        .map(|d| (DbChoice::Named(d.name.clone()), t.trf("field.sql_database_entry", &[&d.name, crate::ui::registry::kind_word(&d.kind)])))
+        .collect();
+    entries.push((DbChoice::Url, t.tr("field.sql_database_url").to_owned()));
+    if let DbChoice::Unknown(n) = &now {
+        entries.push((now.clone(), t.trf("field.sql_database_unknown", &[n])));
+    }
+    let at = entries.iter().position(|(c, _)| *c == now).unwrap_or(0);
+    (entries, at)
+}
+
+/// Picks `to`: the address, password and TLS written in the job move to the draft (and come back when the written-out
+/// address is picked again), so that a name and an address are never both in the fields. The SQL and the other fields stay.
+fn pick_db(f: &mut Fields, to: &DbChoice) {
+    match to {
+        DbChoice::Named(n) => {
+            if !f.db.trim().is_empty() || !f.password.trim().is_empty() || f.tls != SqlTls::Verify {
+                f.sql_draft = (std::mem::take(&mut f.db), std::mem::take(&mut f.password), std::mem::take(&mut f.tls));
+            }
+            f.sql_database.clone_from(n);
+        }
+        DbChoice::Url => {
+            f.sql_database.clear();
+            if f.db.trim().is_empty() && f.password.trim().is_empty() {
+                (f.db, f.password, f.tls) = std::mem::take(&mut f.sql_draft);
+            }
+        }
+        DbChoice::Unknown(_) => {}
+    }
+}
+
+/// The SQL connection: a select of the registered databases and 「URL を直接書く」, what the one picked is, and the
+/// link to register one.
+fn database_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
+    let dbs = form.pick.databases();
+    let (label, _) = form.label(ui, "field.sql_database", Need::Required);
+    let (entries, at) = db_entries(form.t, dbs, f);
+    let labels: Vec<String> = entries.iter().map(|(_, l)| l.clone()).collect();
+    let mut changed = false;
+    if let Some(i) = pick::select_index(ui, "field.sql_database", label, at, &labels) {
+        if i != at {
+            pick_db(f, &entries[i].0);
+            changed = true;
+        }
+    }
+    match db_now(f, dbs) {
+        DbChoice::Named(n) => {
+            let kind = dbs.iter().find(|d| d.name == n).map_or("", |d| crate::ui::registry::kind_word(&d.kind));
+            form.note(ui, &form.t.trf("field.sql_database_kind", &[kind]));
+        }
+        DbChoice::Unknown(_) => form.note(ui, form.t.tr("field.sql_database_unknown_note")),
+        DbChoice::Url => {}
+    }
+    register_link(ui, form, "field.sql_database_register", crate::settings::DATABASES);
+    ui.add_space(10.0);
     changed
 }
 
@@ -771,17 +971,27 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.via", opt, false, &mut f.via, |i| i.mark(M::Mail));
         }
         Chore::Sql { .. } => {
+            changed |= database_rows(ui, form, f);
+            // A registered database holds the address, the secret and the TLS; the fields below are for a written-out one.
+            let named = !f.sql_database.trim().is_empty();
             // Which server it is decides how the SQL is cut into batches and what it signs in with.
-            let db = (!f.db.contains('{')).then(|| koyomi_core::chore::sql_db(f.db.trim()).ok()).flatten();
-            let db_bad = !f.db.trim().is_empty() && !f.db.contains('{') && db.is_none();
-            changed |=
-                form.line(ui, "field.sql_db", req, db_bad, &mut f.db, |i| i.mono().hint(form.t.tr("field.sql_db_hint")).mark(M::Server));
+            let db = (!named && !f.db.contains('{')).then(|| koyomi_core::chore::sql_db(f.db.trim()).ok()).flatten();
+            if !named {
+                let db_bad = !f.db.trim().is_empty() && !f.db.contains('{') && db.is_none();
+                changed |= form
+                    .line(ui, "field.sql_db", req, db_bad, &mut f.db, |i| i.mono().hint(form.t.tr("field.sql_db_hint")).mark(M::Server));
+            }
             let (text, file) = (!f.sql.trim().is_empty(), !f.file.trim().is_empty());
-            let aside = match &db {
-                Some(SqlDb::SqlServer { .. }) => "SQL Server",
-                Some(SqlDb::Postgres { .. }) => "PostgreSQL",
-                Some(SqlDb::Sqlite { .. }) => "SQLite",
-                None => "",
+            let aside = if named {
+                let name = f.sql_database.trim();
+                crate::ui::registry::kind_word(form.pick.databases().iter().find(|d| d.name == name).map_or("", |d| d.kind.as_str()))
+            } else {
+                match &db {
+                    Some(SqlDb::SqlServer { .. }) => "SQL Server",
+                    Some(SqlDb::Postgres { .. }) => "PostgreSQL",
+                    Some(SqlDb::Sqlite { .. }) => "SQLite",
+                    None => "",
+                }
             };
             let need = if file { opt } else { req };
             changed |= form.code(ui, "field.sql_text", need, text && file, &mut f.sql, (5, aside));
@@ -795,11 +1005,11 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             let windows = matches!(&db, Some(SqlDb::SqlServer { user: None, .. }));
             let lite = matches!(&db, Some(SqlDb::Sqlite { .. }));
             let password = !f.password.trim().is_empty();
-            if !(windows || lite) || password {
+            if !named && (!(windows || lite) || password) {
                 let bad = (windows || lite) && password;
                 changed |= form.line(ui, "field.sql_password", req, bad, &mut f.password, |i| i.mono().mark(M::Lock));
             }
-            if !lite || f.tls != SqlTls::Verify {
+            if !named && (!lite || f.tls != SqlTls::Verify) {
                 let options = SqlTls::ALL.map(|s| (s, s.key()));
                 let note = form.t.tr(match f.tls {
                     SqlTls::Verify => "field.sql_tls_verify",
@@ -901,5 +1111,103 @@ y"
 y"
             )
         );
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::*;
+    use crate::proto::DatabaseName;
+
+    fn names(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_owned()).collect()
+    }
+
+    fn dbs() -> Vec<DatabaseName> {
+        vec![DatabaseName { name: "main".into(), kind: "sqlserver".into() }, DatabaseName { name: "log".into(), kind: "sqlite".into() }]
+    }
+
+    fn words(e: &[(AccountChoice, String)]) -> Vec<&str> {
+        e.iter().map(|(_, w)| w.as_str()).collect()
+    }
+
+    /// なし first, each name, the written-out account only while there is one, an unknown name last and marked.
+    #[test]
+    fn the_account_choices_are_none_names_inline_and_unknown() {
+        let (t, _) = crate::i18n::table("ja");
+        let have = names(&["ops", "batch"]);
+        let f = Fields::default();
+        let (e, at) = account_entries(&t, &have, &f);
+        assert_eq!(words(&e), ["なし（エンジンと同じアカウント）", "ops", "batch"]);
+        assert_eq!(at, 0);
+        let f = Fields { run_as_name: "ops".into(), ..Fields::default() };
+        assert_eq!(account_entries(&t, &have, &f).1, 1);
+        let f = Fields { run_as_user: "batch".into(), run_as_secret: "b".into(), ..Fields::default() };
+        let (e, at) = account_entries(&t, &have, &f);
+        assert_eq!((words(&e)[3], at), ("直接書いたアカウント（batch）", 3));
+        let f = Fields { run_as_name: "gone".into(), ..Fields::default() };
+        let (e, at) = account_entries(&t, &have, &f);
+        assert_eq!((words(&e)[3], at, e[3].0.clone()), ("gone（登録されていません）", 3, AccountChoice::Unknown("gone".into())));
+    }
+
+    /// A name and a user are never both set; the written-out account comes back from the draft.
+    #[test]
+    fn picking_a_name_sets_the_account_aside_and_inline_brings_it_back() {
+        let have = names(&["ops"]);
+        let mut f = Fields { run_as_user: "batch".into(), run_as_secret: "b".into(), ..Fields::default() };
+        pick_account(&mut f, &AccountChoice::Named("ops".into()));
+        assert_eq!((f.run_as_name.as_str(), f.run_as_user.as_str(), f.run_as_secret.as_str()), ("ops", "", ""));
+        assert_eq!(account_now(&f, &have), AccountChoice::Named("ops".into()));
+        // The state E3398 needs is not reachable, and the fields read.
+        assert_eq!(f.run_as(), Ok(Some(jobnet::RunAs::Named("ops".into()))));
+        pick_account(&mut f, &AccountChoice::Engine);
+        assert_eq!(f.run_as(), Ok(None));
+        let (t, _) = crate::i18n::table("en");
+        assert!(account_entries(&t, &have, &f).0.iter().any(|(c, _)| *c == AccountChoice::Inline));
+        pick_account(&mut f, &AccountChoice::Inline);
+        assert_eq!((f.run_as_name.as_str(), f.run_as_user.as_str(), f.run_as_secret.as_str()), ("", "batch", "b"));
+        // An unknown name is kept as it is (picking it is no change).
+        let mut f = Fields { run_as_name: "gone".into(), ..Fields::default() };
+        pick_account(&mut f, &AccountChoice::Unknown("gone".into()));
+        assert_eq!(f.run_as_name, "gone");
+    }
+
+    #[test]
+    fn the_database_choices_name_the_kind_and_keep_an_unknown_name() {
+        let (t, _) = crate::i18n::table("ja");
+        let f = Fields { db: "sqlite://x.db".into(), ..Fields::default() };
+        let (e, at) = db_entries(&t, &dbs(), &f);
+        let w: Vec<&str> = e.iter().map(|(_, w)| w.as_str()).collect();
+        assert_eq!((w, at), (vec!["main — SQL Server", "log — SQLite", "URL を直接書く"], 2));
+        let f = Fields { sql_database: "log".into(), ..Fields::default() };
+        assert_eq!(db_entries(&t, &dbs(), &f).1, 1);
+        let f = Fields { sql_database: "gone".into(), ..Fields::default() };
+        let (e, at) = db_entries(&t, &dbs(), &f);
+        assert_eq!((e[3].1.as_str(), at), ("gone（登録されていません）", 3));
+    }
+
+    /// The URL, password and TLS move to the draft, the SQL stays, and the URL comes back when it is picked again.
+    #[test]
+    fn picking_a_database_sets_the_url_aside_and_the_url_choice_brings_it_back() {
+        let mut f = Fields {
+            db: "sqlserver://u@h/d".into(),
+            password: "secret:p".into(),
+            tls: SqlTls::Trust,
+            sql: "select 1".into(),
+            file: "q.sql".into(),
+            ..Fields::default()
+        };
+        pick_db(&mut f, &DbChoice::Named("main".into()));
+        assert_eq!((f.sql_database.as_str(), f.db.as_str(), f.password.as_str(), f.tls), ("main", "", "", SqlTls::Verify));
+        assert_eq!((f.sql.as_str(), f.file.as_str()), ("select 1", "q.sql"));
+        pick_db(&mut f, &DbChoice::Url);
+        assert_eq!(
+            (f.sql_database.as_str(), f.db.as_str(), f.password.as_str(), f.tls),
+            ("", "sqlserver://u@h/d", "secret:p", SqlTls::Trust)
+        );
+        // An unknown name stays.
+        let mut f = Fields { sql_database: "gone".into(), ..Fields::default() };
+        pick_db(&mut f, &DbChoice::Unknown("gone".into()));
+        assert_eq!(f.sql_database, "gone");
     }
 }

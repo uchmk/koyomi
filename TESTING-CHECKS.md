@@ -1,6 +1,6 @@
 # Checklist
 
-1372 checks in TESTING.md, 1366 left for a person.
+1386 checks in TESTING.md, 1380 left for a person.
 
 ## 1. Start
 
@@ -1801,4 +1801,18 @@
 - [ ] **142.6** Run `koyomi check` with a job naming an unregistered account and database → Lines W3754 and W3755 are printed, on every OS 〔未訳〕
 - [ ] **142.7** Remove an account a job uses, without force → The request is refused (E2250); with force the entry goes and the job gets W3754 〔未訳〕
 - [ ] **142.8** Send AccountPut as a non-Admin user, by `/door` and by REST → It is refused 〔未訳〕
-- [ ] **142.9** Open a job with a registered `run_as` in the window → The name is kept as written; typing a user as well shows E3398 〔未訳〕
+- [ ] **142.9** Open a job with a registered `run_as` in the window → The name is kept as written and picked in the account select; no user or secret field is shown beside it, so E3398 cannot be made in the form 〔未訳〕
+- [ ] **142.10** Open 設定 › アカウント and 設定 › データベース on this PC's engine → Both pages list the entries of koyomi.toml: account rows show the name, user, secret name and state, and 使っているジョブネット N; database rows show the name, kind, host or file, TLS and the secret state. No password is shown anywhere 〔未訳〕
+- [ ] **142.11** On another PC's engine, open both pages as a non-admin user → Each says why it is closed (only an admin manages them); nothing is sent 〔未訳〕
+- [ ] **142.12** Add an account (name, user, secret name), then a database; edit each and change one field → The list shows the new content from the engine's reply; the secret name is prefilled from the entry's name; the TLS select is hidden for a sqlite address; an entry with a secret 未設定 shows `koyomi secret set <name>` with a copy button 〔未訳〕
+- [ ] **142.13** Add an entry with a name that exists, a bad name, or a bad user or address → The form says why and sends nothing (the same words as the job form) 〔未訳〕
+- [ ] **142.14** Remove an entry no net uses → A question comes first; 削除する removes it; キャンセル or Esc keeps it 〔未訳〕
+- [ ] **142.15** Remove an account a net uses → The question names a few nets, then ほか N 件, and says those jobs fail at start (E3294 / E3295); only 削除する removes it 〔未訳〕
+- [ ] **142.16** Change koyomi.toml elsewhere while a form is open, then save the form → The page reloads, says koyomi.toml was changed, and keeps what was typed 〔未訳〕
+- [ ] **142.17** Open a job: the 実行のアカウント select → It offers なし, each registered account, and (for a job with a written-out account) 直接書いたアカウント; an unregistered name is last, marked 登録されていません, with a note 〔未訳〕
+- [ ] **142.18** Pick a registered account on a job that has a written-out one, then pick 直接書いたアカウント again → The user and secret come back as they were; saving after the first pick writes `run_as = "<name>"` alone 〔未訳〕
+- [ ] **142.19** Open a job with `run_as` on a Windows-less engine → A note under the select gives W3750's words 〔未訳〕
+- [ ] **142.20** In a SQL job, pick a registered database → The URL, password and TLS fields are hidden and the kind is shown; the SQL text, file, out and rows stay; saving writes `database = "<name>"` and no `db` 〔未訳〕
+- [ ] **142.21** Pick 「URL を直接書く」 again on that job → The URL, password and TLS come back as they were 〔未訳〕
+- [ ] **142.22** Click アカウントを登録… or データベースを登録… in a job's pane → The settings open at that page 〔未訳〕
+- [ ] **142.23** Open a job that names a database or account the engine lacks, and close it → Nothing changes in the net; the name stays in the file 〔未訳〕

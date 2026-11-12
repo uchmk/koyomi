@@ -38,9 +38,12 @@ mod hosts;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
+mod registry;
 mod runfacts;
 mod runmenu;
 mod users;
+
+pub use registry::Page as RegistryPage;
 
 /// How long a window waits to ask another PC again after its list could not be read.
 const FAR_RETRY: Duration = Duration::from_secs(10);
@@ -671,6 +674,10 @@ pub struct Browser {
     who: Option<String>,
     /// The 利用者 page of the settings. Its state is here, so a switch of the link empties it.
     users: users::Users,
+    /// The アカウント and データベース pages of the settings (one listing of koyomi.toml's `[[account]]` and `[[database]]`).
+    registry: registry::Registry,
+    /// The job form asked to open the settings at this page; the app takes it once ([`Browser::take_settings_wish`]).
+    want_settings: Option<usize>,
     watch: Watch,
     snap: Option<Snapshot>,
     runs: Vec<Run>,
@@ -863,6 +870,8 @@ impl Browser {
             role: None,
             who: None,
             users: users::Users::default(),
+            registry: registry::Registry::default(),
+            want_settings: None,
             watch,
             snap: None,
             runs: Vec::new(),
@@ -987,6 +996,7 @@ impl Browser {
             || self.editors.iter().any(|e| e.dirty)
             || self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
             || self.users.unsaved()
+            || self.registry.forms_dirty()
     }
 
     /// Whether a new token is on the screen: a switch of the link would lose it, and its question says so.
@@ -1011,10 +1021,26 @@ impl Browser {
         self.users.wants_esc()
     }
 
+    /// A question or a form of this アカウント / データベース page is up: its Esc is for it, not for the settings.
+    pub fn registry_wants_esc(&self, page: RegistryPage) -> bool {
+        self.registry.wants_esc(page)
+    }
+
+    /// The job form asked to open the settings and the app has not taken it yet.
+    pub fn has_settings_wish(&self) -> bool {
+        self.want_settings.is_some()
+    }
+
+    /// The page of the settings the job form asked to open (アカウントを登録…, データベースを登録…), once.
+    pub fn take_settings_wish(&mut self) -> Option<usize> {
+        self.want_settings.take()
+    }
+
     /// Whether the unsaved changes are only in the koyomi.toml box: the switch's question then names that box.
     pub fn unsaved_is_config(&self) -> bool {
         !(self.editor.as_ref().is_some_and(|e| e.dirty) || self.editors.iter().any(|e| e.dirty))
             && !self.users.forms_dirty()
+            && !self.registry.forms_dirty()
             && self.config_edit.as_ref().is_some_and(far_config::ConfigEdit::dirty)
     }
 
@@ -1183,6 +1209,49 @@ impl Browser {
         }
     }
 
+    /// Asks the engine for the accounts and databases (a read). A request the thread did not take puts the page into its error line.
+    fn registry_ask(&mut self) {
+        self.registry.ask();
+        if !self.out.send(Request::Registry) {
+            let why = self.unsent_why();
+            self.registry.unsent(true, why);
+        }
+    }
+
+    /// Asks again at once when a page is open and may ask; else the page asks when it is drawn.
+    fn registry_reask(&mut self) {
+        let frame = self.io.1.cumulative_frame_nr();
+        let open = users::access(self.link.is_far(), self.role, None) == users::Access::Open;
+        if self.registry.need && open && self.registry.is_open(frame) {
+            self.registry_ask();
+        }
+    }
+
+    /// The アカウント or データベース page of the settings.
+    pub fn registry_page(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, page: RegistryPage) {
+        self.registry.touch(ui.ctx().cumulative_frame_nr(), page);
+        let access = users::access(self.link.is_far(), self.role, self.down.as_deref());
+        let open = access == users::Access::Open;
+        if self.registry.need && open {
+            self.registry_ask();
+        }
+        let far = self.link.far().map(str::to_owned);
+        let view = registry::View { far: far.as_deref(), open };
+        let Some(click) = registry::show(&mut self.registry, ui, t, &view, &access, page) else {
+            return;
+        };
+        match self.registry.act(click, page, &view) {
+            registry::Do::Nothing => {}
+            registry::Do::Ask => self.registry_ask(),
+            registry::Do::Send(request) => {
+                if !self.out.send(request) {
+                    let why = self.unsent_why();
+                    self.registry.unsent(false, why);
+                }
+            }
+        }
+    }
+
     /// Draws the box that shows a new token (if there is one) over the whole window. It stays when the settings
     /// close or another page is picked, until 閉じる or Esc.
     pub fn token_box(&mut self, ctx: &egui::Context, t: &ito_i18n::Table) {
@@ -1292,6 +1361,9 @@ impl Browser {
                     self.role = r;
                     self.who.clone_from(&who);
                     // What the users page holds was read under the earlier role and name.
+                    if self.registry.role_told((r, who.clone())) {
+                        self.registry_reask();
+                    }
                     if self.users.role_told((r, who)) {
                         self.users_reask();
                     }
@@ -1474,6 +1546,20 @@ impl Browser {
                     if done.reload {
                         self.users.need = true;
                         self.users_reask();
+                    }
+                }
+                // The アカウント and データベース pages: their own state's, never the result line's.
+                Msg::Answer(Request::Registry, r) => self.registry.listing_answer(r),
+                Msg::Answer(
+                    req @ (Request::AccountPut { .. }
+                    | Request::AccountRemove { .. }
+                    | Request::DatabasePut { .. }
+                    | Request::DatabaseRemove { .. }),
+                    r,
+                ) => {
+                    if self.registry.answered(&req, r).reload {
+                        self.registry.need = true;
+                        self.registry_reask();
                     }
                 }
                 // The other PC's koyomi.toml: the box's, never the result line's (and its text goes nowhere else).
@@ -2293,6 +2379,7 @@ impl Browser {
                 }
                 _ => {}
             },
+            canvas::Action::OpenSettings(page) => self.want_settings = Some(page),
             canvas::Action::Enter(id) => {
                 let def = self.snap.as_ref().and_then(|s| s.defs.iter().find(|d| d.id == id)).cloned();
                 let opened = def
@@ -2323,8 +2410,24 @@ impl Browser {
         let nets = pick::net_choices(defs);
         let local = !self.link.is_far();
         let (shells, shell) = self.snap.as_ref().map_or((&[][..], ""), |s| (s.shells.as_slice(), s.shell.as_str()));
-        let around =
-            canvas::Around { calendars, power, stops, depth: self.editors.len(), defs, staged, now, nets: &nets, local, shells, shell };
+        let (accounts, databases, windows) =
+            self.snap.as_ref().map_or((&[][..], &[][..], None), |s| (s.accounts.as_slice(), s.databases.as_slice(), s.windows));
+        let around = canvas::Around {
+            calendars,
+            power,
+            stops,
+            depth: self.editors.len(),
+            defs,
+            staged,
+            now,
+            nets: &nets,
+            local,
+            shells,
+            shell,
+            accounts,
+            databases,
+            windows,
+        };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
         if let Some(a) = action {
@@ -6170,6 +6273,8 @@ mod tests {
             role: None,
             who: None,
             users: users::Users::default(),
+            registry: registry::Registry::default(),
+            want_settings: None,
             watch: Arc::default(),
             snap,
             runs: Vec::new(),
