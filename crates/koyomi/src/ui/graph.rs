@@ -141,7 +141,7 @@ pub fn dashes(len: f32, dash: f32, gap: f32, phase: f32) -> Vec<(f32, f32)> {
 }
 
 /// The part of `points` from `a` to `b` along it.
-fn piece(points: &[Pos2], a: f32, b: f32) -> Vec<Pos2> {
+pub(crate) fn piece(points: &[Pos2], a: f32, b: f32) -> Vec<Pos2> {
     let mut out = Vec::new();
     let mut walked = 0.0;
     for w in points.windows(2) {
@@ -162,11 +162,11 @@ fn piece(points: &[Pos2], a: f32, b: f32) -> Vec<Pos2> {
     out
 }
 
-fn length(points: &[Pos2]) -> f32 {
+pub(crate) fn length(points: &[Pos2]) -> f32 {
     points.windows(2).map(|w| (w[1] - w[0]).length()).sum()
 }
 
-fn dashed(painter: &egui::Painter, points: &[Pos2], stroke: Stroke, dash: f32, gap: f32, phase: f32) {
+pub(crate) fn dashed(painter: &egui::Painter, points: &[Pos2], stroke: Stroke, dash: f32, gap: f32, phase: f32) {
     for (a, b) in dashes(length(points), dash, gap, phase) {
         painter.add(Shape::line(piece(points, a, b), stroke));
     }

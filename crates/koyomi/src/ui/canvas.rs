@@ -18,6 +18,7 @@ use koyomi_core::jobnet::{self, Encoding, Job, Jobnet, Judge, Line, Missed, On, 
 use koyomi_core::scan::{def_of_text, link, Def, Standing};
 use koyomi_core::{approved, duration, layout, msg, when, write};
 
+use super::graph;
 use super::whens::WhenEdit;
 
 mod drawer;
@@ -825,6 +826,81 @@ fn dashed(painter: &egui::Painter, from: Pos2, to: Pos2, stroke: Stroke) {
     }
 }
 
+/// Where the polyline `points` first lies `r` from `c`, as a length along it (`None` when it never does).
+fn leaves(points: &[Pos2], c: Pos2, r: f32) -> Option<f32> {
+    let mut walked = 0.0;
+    if points.first().is_some_and(|p| (*p - c).length() >= r) {
+        return Some(0.0);
+    }
+    for w in points.windows(2) {
+        let (d, seg) = (w[1] - w[0], (w[1] - w[0]).length());
+        if (w[1] - c).length() >= r && seg > 0.0 {
+            // |w0 + t d - c|^2 = r^2 for t in 0..=1, the later root.
+            let o = w[0] - c;
+            let (a, b, k) = (d.length_sq(), 2.0 * o.dot(d), o.length_sq() - r * r);
+            let t = ((-b + (b * b - 4.0 * a * k).max(0.0).sqrt()) / (2.0 * a)).clamp(0.0, 1.0);
+            return Some(walked + seg * t);
+        }
+        walked += seg;
+    }
+    None
+}
+
+/// The line from the part at `from` to the one at `to`, as the run picture draws it, cut where it
+/// leaves the first circle and where it enters the second, less the gap for the arrow head.
+/// `r` is the parts' radius as drawn (it grows with the zoom).
+/// `None` when the parts touch or the curve is too short to show.
+fn line_path(from: Pos2, to: Pos2, vertical: bool, r: f32) -> Option<Vec<Pos2>> {
+    if (to - from).length() < r * 2.0 + 2.0 {
+        return None;
+    }
+    let curve = graph::path(from, to, vertical);
+    let total = graph::length(&curve);
+    let start = leaves(&curve, from, r)?;
+    let back: Vec<Pos2> = curve.iter().rev().copied().collect();
+    let end = total - leaves(&back, to, r)? - 2.0;
+    if end - start < 1.0 {
+        return None;
+    }
+    let cut = graph::piece(&curve, start, end);
+    (cut.len() >= 2).then_some(cut)
+}
+
+/// The point at length `d` along `points`, and the direction there.
+fn along(points: &[Pos2], d: f32) -> (Pos2, Vec2) {
+    let mut walked = 0.0;
+    let mut last = (points.first().copied().unwrap_or(Pos2::ZERO), Vec2::X);
+    for w in points.windows(2) {
+        let seg = (w[1] - w[0]).length();
+        if seg <= 0.0 {
+            continue;
+        }
+        let dir = (w[1] - w[0]) / seg;
+        last = (w[1], dir);
+        if walked + seg >= d {
+            return (w[0] + dir * (d - walked), dir);
+        }
+        walked += seg;
+    }
+    last
+}
+
+/// Colour, width, dashed and mark of a line kind.
+fn line_look(on: &On, c: &ito_theme::Colors) -> (egui::Color32, f32, bool, String) {
+    match on {
+        On::Ok => (c.done, 2.0, false, Mark::Done.mark().to_owned()),
+        On::Error => (c.err, 2.0, true, Mark::Error.mark().to_owned()),
+        On::Any => (c.dim, 1.5, false, "*".to_owned()),
+        On::Code(r) => (c.wait, 2.0, false, Judge::list(r)),
+        On::Else => (c.dim, 1.5, true, "else".to_owned()),
+    }
+}
+
+/// The distance from `p` to the polyline.
+fn dist_poly(p: Pos2, points: &[Pos2]) -> f32 {
+    points.windows(2).map(|w| dist(p, w[0], w[1])).fold(f32::INFINITY, f32::min)
+}
+
 impl Editor {
     /// An editor over `def`, when the def reads (a file with problems is fixed in the text first).
     pub fn open(def: &Def) -> Result<Editor, String> {
@@ -1504,12 +1580,17 @@ impl Editor {
         (0..at.len()).rev().find(|&i| (Self::port(at[i], vertical) - p).length() <= 6.0)
     }
 
+    /// A part's radius on the screen: it grows with the zoom, and does not shrink below 0.6 of it.
+    fn part_radius(&self) -> f32 {
+        RADIUS * self.zoom.max(0.6)
+    }
+
     /// `(job index, line index)` of the line under `p`.
     fn hit_line(&self, at: &[Pos2], p: Pos2) -> Option<(usize, usize)> {
         for (i, j) in self.net.jobs.iter().enumerate() {
             for (k, l) in j.after.iter().enumerate() {
                 if let Some((&from, &to)) = self.index(&l.job).and_then(|f| at.get(f).zip(at.get(i))) {
-                    if dist(p, from, to) <= NEAR {
+                    if line_path(from, to, self.vertical, self.part_radius()).is_some_and(|path| dist_poly(p, &path) <= NEAR) {
                         return Some((i, k));
                     }
                 }
@@ -1983,32 +2064,22 @@ impl Editor {
         for (i, j) in self.net.jobs.iter().enumerate() {
             for l in &j.after {
                 let Some(f) = self.index(&l.job) else { continue };
-                let (from, to) = (at[f], at[i]);
-                let v = to - from;
-                if v.length() < RADIUS * 2.0 + 2.0 {
-                    continue;
-                }
-                let dir = v / v.length();
-                let (a, b) = (from + dir * RADIUS, to - dir * (RADIUS + 2.0));
-                let (col, width, dash, mark) = match &l.on {
-                    On::Ok => (c.done, 2.0, false, Mark::Done.mark().to_owned()),
-                    On::Error => (c.err, 2.0, true, Mark::Error.mark().to_owned()),
-                    On::Any => (c.dim, 1.5, false, "*".to_owned()),
-                    On::Code(r) => (c.wait, 2.0, false, Judge::list(r)),
-                    On::Else => (c.dim, 1.5, true, "else".to_owned()),
-                };
+                let Some(path) = line_path(at[f], at[i], vertical, self.part_radius()) else { continue };
+                let (col, width, dash, mark) = line_look(&l.on, &c);
                 let stroke = Stroke::new(width * self.zoom.max(0.6), col);
                 if dash {
-                    dashed(&painter, a, b, stroke);
+                    graph::dashed(&painter, &path, stroke, 8.0, 6.0, 0.0);
                 } else {
-                    painter.line_segment([a, b], stroke);
+                    painter.add(egui::Shape::line(path.clone(), stroke));
                 }
-                // The head.
+                // The head, along the curve's last direction.
+                let len = graph::length(&path);
+                let (b, dir) = along(&path, len);
                 let side = Vec2::new(-dir.y, dir.x);
                 painter.line_segment([b, b - dir * 7.0 + side * 4.0], stroke);
                 painter.line_segment([b, b - dir * 7.0 - side * 4.0], stroke);
-                let mid = a + v * 0.5;
-                painter.text(mid + side * 8.0, egui::Align2::CENTER_CENTER, mark, small.clone(), col);
+                let (mid, dir) = along(&path, len * 0.5);
+                painter.text(mid + Vec2::new(-dir.y, dir.x) * 8.0, egui::Align2::CENTER_CENTER, mark, small.clone(), col);
             }
         }
         // A line being drawn, or chosen with `c`.
@@ -2026,7 +2097,7 @@ impl Editor {
         let bad: BTreeSet<&str> = self.problems.iter().filter_map(|p| p.job.as_deref()).collect();
         for (i, j) in self.net.jobs.iter().enumerate() {
             let p = at[i];
-            let r = RADIUS * self.zoom.max(0.6);
+            let r = self.part_radius();
             let selected = self.selected.contains(&j.id);
             let is_cursor = self.cursor.as_deref() == Some(j.id.as_str());
             let fill = if bad.contains(j.id.as_str()) {
@@ -2089,6 +2160,24 @@ impl Editor {
         self.pan = self.view / 2.0 - Vec2::splat(MARGIN) - m * self.zoom;
     }
 
+    /// The minimap's lines, one for each `after` entry: the curve through `to_mini`, its colour and
+    /// whether it is dashed. A curve under 2 px long is left out.
+    fn minimap_lines(&self, pts: &[Pos2], to_mini: impl Fn(Pos2) -> Pos2, c: &ito_theme::Colors) -> Vec<(Vec<Pos2>, egui::Color32, bool)> {
+        let mut out = Vec::new();
+        for (i, j) in self.net.jobs.iter().enumerate() {
+            for l in &j.after {
+                let Some((&from, &to)) = self.index(&l.job).and_then(|f| pts.get(f).zip(pts.get(i))) else { continue };
+                let path = graph::path(to_mini(from), to_mini(to), self.vertical);
+                if graph::length(&path) < 2.0 {
+                    continue;
+                }
+                let (col, _, dash, _) = line_look(&l.on, c);
+                out.push((path, col, dash));
+            }
+        }
+        out
+    }
+
     /// The whole net, small, in the canvas's corner: a dot for each part and a frame for what is in
     /// view. A click or a drag there brings that place to the middle.
     fn minimap(&mut self, ui: &mut egui::Ui, t: &Table, painter: &egui::Painter, rect: Rect) {
@@ -2111,6 +2200,14 @@ impl Editor {
         }
         painter.rect(frame, 3.0, c.side, Stroke::new(1.0, c.border), StrokeKind::Inside);
         let inside = painter.with_clip_rect(frame);
+        for (path, col, dash) in self.minimap_lines(&pts, to_mini, &c) {
+            let stroke = Stroke::new(1.0, col);
+            if dash {
+                graph::dashed(&inside, &path, stroke, 3.0, 2.0, 0.0);
+            } else {
+                inside.add(egui::Shape::line(path, stroke));
+            }
+        }
         let bad: BTreeSet<&str> = self.problems.iter().filter_map(|p| p.job.as_deref()).collect();
         for (j, p) in self.net.jobs.iter().zip(&pts) {
             let col = if bad.contains(j.id.as_str()) {
@@ -3045,5 +3142,68 @@ X-Day: 1"
         assert_eq!(seated(Vec2::ZERO, Vec2::new(0.0, 0.0)), Vec2::ZERO);
         let far = seated(Vec2::new(5.0, -5.0), Vec2::new(500.0, 500.0));
         assert_eq!(far, Vec2::new(5.0, -5.0));
+    }
+
+    #[test]
+    fn a_line_is_cut_on_the_circles_for_an_s_curve_and_an_aligned_pair() {
+        // At zoom 1 and zoomed in, where the parts are drawn larger.
+        for r in [RADIUS, RADIUS * 2.0] {
+            for (to, vertical) in [(Pos2::new(220.0, 90.0), false), (Pos2::new(240.0, 10.0), false), (Pos2::new(90.0, 220.0), true)] {
+                let from = Pos2::new(10.0, 10.0);
+                let path = line_path(from, to, vertical, r).expect("a line");
+                assert!(((path[0] - from).length() - r).abs() <= 0.5, "{path:?}");
+                let end = *path.last().unwrap();
+                assert!(((end - to).length() - (r + 2.0)).abs() <= 0.5, "{path:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_editor_cuts_its_lines_at_the_radius_it_draws() {
+        let mut e = two();
+        e.zoom = 1.5;
+        assert_eq!(e.part_radius(), RADIUS * 1.5);
+        e.zoom = 0.2;
+        assert_eq!(e.part_radius(), RADIUS * 0.6);
+    }
+
+    #[test]
+    fn parts_that_touch_have_no_line() {
+        let a = Pos2::new(50.0, 50.0);
+        // Every distance is under the skip rule (RADIUS * 2 + 2), on a slant and straight down.
+        for d in [0.0, 1.0, RADIUS * 2.0, RADIUS * 2.0 + 1.9] {
+            for vertical in [false, true] {
+                assert!(line_path(a, a + Vec2::angled(0.29) * d, vertical, RADIUS).is_none(), "{d}");
+                assert!(line_path(a, a + Vec2::new(0.0, d), vertical, RADIUS).is_none(), "{d}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_line_is_hit_on_its_curve_and_not_on_the_old_chord() {
+        let mut e = two();
+        e.vertical = false;
+        let at = [Pos2::new(0.0, 0.0), Pos2::new(200.0, 100.0)];
+        let path = line_path(at[0], at[1], false, e.part_radius()).unwrap();
+        let (mid, _) = along(&path, graph::length(&path) * 0.5);
+        assert_eq!(e.hit_line(&at, mid), Some((1, 0)));
+        // A quarter of the way along the chord is far from the S-curve there.
+        let chord = at[0] + (at[1] - at[0]) * 0.25;
+        assert!(dist_poly(chord, &path) > NEAR);
+        assert_eq!(e.hit_line(&at, chord), None);
+    }
+
+    #[test]
+    fn the_minimap_has_a_curve_for_each_line() {
+        let mut e = two();
+        let c = ito_theme::colors();
+        let pts = [Pos2::new(0.0, 0.0), Pos2::new(100.0, 60.0)];
+        assert_eq!(e.minimap_lines(&pts, |p| p, &c).len(), 1);
+        e.net.jobs[0].after.push(Line { job: "b".into(), on: On::Error });
+        let lines = e.minimap_lines(&pts, |p| p, &c);
+        assert_eq!(lines.len(), 2);
+        assert!(lines[0].2 && !lines[1].2, "only the error line is dashed");
+        // Too short to show.
+        assert!(e.minimap_lines(&pts, |p| Pos2::new(p.x * 0.001, p.y * 0.001), &c).is_empty());
     }
 }

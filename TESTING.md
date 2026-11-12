@@ -2083,3 +2083,26 @@ Rows need this PC with the window on この PC unless a row says otherwise. Row 
 | 134.7 | On the Calendar tab, click `日`｜`週`｜`月` one after the other (and move to each with the keyboard) | The focus ring of each shows all four edges; the top edge is not cut off |
 | 134.8 | In the job editor, open an SQL job and move to the TLS choice `verify`｜`trust`｜`off` with Tab | The focus ring goes all round the choice and does not cross the note under it |
 | 134.9 | In the job editor, choose the last job and press `a`; then copy a job and paste it with Ctrl+V; drop a part from the shelf onto the canvas; choose the new job and press Delete; then Ctrl+Z and Ctrl+Y | The window does not close at any step; each new part and its line show at once, and a removed part goes with its lines |
+
+## 135. The editor's lines are curves, and the minimap shows them (`ui/canvas.rs`, `ui/graph.rs`)
+
+Rows need this PC with the window on この PC.
+
+| # | Do | Expect |
+|---|---|---|
+| 135.1 | Open a net with jobs that are not in one line (one job after two others) in the job editor | Each line between jobs is a soft curve like the run picture's, not a straight line; it starts at the edge of the first job's circle and its arrow head ends just before the next job's circle, pointing along the curve |
+| 135.2 | Same net: an error line (dashed) and an else line | They are dashed along the curve; the mark (✕, else) sits by the middle of the curve |
+| 135.3 | Right-click a curved line on its bend, away from the straight path between the two jobs | The line's menu opens (the line is hit on the curve, not on the old straight path) |
+| 135.4 | Drag two jobs so they touch or overlap | No line is drawn between them and the window does not close |
+| 135.5 | Make the window large enough for the minimap (bottom right of the canvas) | The minimap shows thin lines between its dots, the same colours as the canvas's lines, dashed where the canvas's are |
+| 135.6 | Same net: zoom in as far as it goes, then out as far as it goes | At every zoom the lines start at the edge of the first circle and the arrow heads end just before the next circle; no head is hidden under a part, and no gap opens between a line and its part |
+
+## 136. The job editor's field names say what to write (`lang/*.toml`)
+
+Rows need this PC with the window on この PC.
+
+| # | Do | Expect |
+|---|---|---|
+| 136.1 | In the job editor, choose a command job and look at the fields under its name | The fields are named 実行するコマンド, 作業フォルダー, 時間の上限, やり直す回数 and やり直すまでの間隔, each with its key (`run`, `dir`, `timeout`, `retry`) at the start of the note; the note of 作業フォルダー says that an empty field runs the job in the folder of koyomi.toml's `work_dir`, or without one in the engine's working folder (C:\Windows\System32 for a Windows service, /var/lib/koyomi on Debian), and that a relative path is read from that folder |
+| 136.2 | Choose a job with `shell = "powershell"` | シェル says only powershell for now and that it runs the script; スクリプト says it is what the shell runs; each long note sits under its field and does not cross the frame or the next field |
+| 136.3 | Set `language = "en"` in common.toml, open the window again and look at the same jobs | The names are Command, Working folder, Time limit, Retries, Wait before a retry, Shell and Script, with the same notes in English |
