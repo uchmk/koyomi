@@ -2000,10 +2000,10 @@ cause = "The id is empty, or it contains one of /, \\, \" or a space."
 action = "Give an id that has no /, \\, \" or spaces."
 
 [E3432]
-when = "An http header typed in the editor is not in the form name: value"
-text = "The header \"{0}\" is not in the form name: value."
-cause = "The header line has no : in it."
-action = "Give one header on each line, in the form name: value, as in Accept: application/json."
+when = "A header row in the editor has a value but no name"
+text = "Header row {0} has a value but no name."
+cause = "The name box of that row is empty."
+action = "Give the row a name, as in Accept, or remove the row."
 
 [E3433]
 when = "An http status code typed in the editor cannot be read"
@@ -2016,6 +2016,12 @@ when = "The job being edited is not in the jobnet"
 text = "The job {0} is not in the jobnet, so the change cannot be applied."
 cause = "The jobnet has no job with the id of the job being edited."
 action = "Select the job again."
+
+[E3435]
+when = "The same http header name is typed twice in the editor"
+text = "The header \"{0}\" is given twice (names do not differ by case)."
+cause = "Two rows have the same name, ignoring upper and lower case."
+action = "Keep one row for the name, or give the rows different names."
 
 [E3470]
 when = "A length of time is 0"
@@ -3492,6 +3498,12 @@ when = "region of s3:// has a character that cannot be used"
 text = "The region {0} cannot be used."
 cause = "region holds a character other than lower-case letters, digits and -."
 action = "Give a region such as ap-northeast-1."
+
+[E3579]
+when = "A value in headers of an http has a line break or another control character"
+text = "A header value has a line break or another control character."
+cause = "The value holds a character that would end the header line or break it."
+action = "Give the value on one line, without line breaks."
 
 [E3580]
 when = "The host of endpoint of s3:// is empty or has a character that cannot be used"

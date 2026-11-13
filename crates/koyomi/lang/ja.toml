@@ -849,7 +849,7 @@ command = "接続先の PC で実行するコマンド（そのまま渡す。{d
 method = "メソッド"
 body = "送る中身（空なら送らない。GET・HEAD では空）"
 content_type = "中身の種類（空なら application/json）"
-headers = "ヘッダー（1 行に 名前: 値。値は secret:<名前> で資格情報ストアから）"
+headers = "ヘッダー（値の secret:<名前> は資格情報ストアから）"
 expect = "正常とする状態コード（200, 201 など。空なら 200〜299）"
 mail_to = "送り先（1 行に 1 つ。ops@example.com か 名前 <ops@example.com>）"
 mail_cc = "CC（1 行に 1 つ）"
@@ -1532,3 +1532,7 @@ month_9 = "9 月"
 month_10 = "10 月"
 month_11 = "11 月"
 month_12 = "12 月"
+
+[secret]
+show = "表示"
+hide = "隠す"

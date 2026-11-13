@@ -1242,7 +1242,7 @@ impl Browser {
                     button.on_disabled_hover_text(t.tr("calendar.table_fetching"));
                 } else if button.clicked() {
                     self.cal_result = None;
-                    start_fetch(fetch, ui.ctx());
+                    start_fetch(fetch, ui.ctx(), t.tr("app.lang").to_owned());
                 }
             }
             if let Some(i) = super::go_or_cancel(ui, ito_prefs::Mark::Check, t.tr("calendar.inline_go"), t.tr("make.cancel")) {
@@ -1696,13 +1696,12 @@ fn fetch_options() -> ito_fetch::Options {
 }
 
 /// What the thread hands back for the server's answer.
-fn fetched(answer: Result<ito_fetch::Reply, ito_fetch::Error>) -> Fetched {
+fn fetched(answer: Result<ito_fetch::Reply, ito_fetch::Error>, lang: &str) -> Fetched {
     use koyomi_core::msg;
     let failed = |why: &str| Fetched::Failed(msg::line(msg::TABLE_FETCH_FAILED, &[why]));
     let reply = match answer {
         Err(ito_fetch::Error::Stopped) => return Fetched::Stopped,
-        // uchmk/ito#234: the reason is ito-fetch's English until `Error::words(lang)` exists.
-        Err(e) => return failed(&e.to_string()),
+        Err(e) => return failed(&e.words(lang)),
         Ok(reply) => reply,
     };
     if !reply.success() {
@@ -1732,7 +1731,7 @@ fn receipt(last: i32, known_last: i32) -> Receipt {
 
 /// Starts the download for the field, unless one is running. The thread only blocks; the window reads its
 /// answer in [`Browser::poll_fetch`].
-fn start_fetch(fetch: &mut Option<Fetch>, ctx: &egui::Context) {
+fn start_fetch(fetch: &mut Option<Fetch>, ctx: &egui::Context, lang: String) {
     if fetch.is_some() {
         return;
     }
@@ -1740,7 +1739,7 @@ fn start_fetch(fetch: &mut Option<Fetch>, ctx: &egui::Context) {
     let stop = Arc::new(AtomicBool::new(false));
     let (flag, ctx) = (stop.clone(), ctx.clone());
     std::thread::spawn(move || {
-        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &flag));
+        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &flag), &lang);
         let _ = tx.send(got);
         ctx.request_repaint();
     });
@@ -1912,26 +1911,28 @@ open = [2026-11-28]
     #[test]
     fn an_answer_becomes_a_table_or_a_coded_failure() {
         use koyomi_core::msg;
-        assert_eq!(fetched(Err(ito_fetch::Error::Stopped)), Fetched::Stopped);
-        let Fetched::Failed(line) = fetched(Err(ito_fetch::Error::Timeout)) else { panic!("a timeout fails") };
-        assert!(msg::TABLE_FETCH_FAILED.is_in(&line) && line.contains("timed out"), "{line}");
-        let Fetched::Failed(line) = fetched(Ok(reply(404, b"not found"))) else { panic!("a 404 fails") };
+        assert_eq!(fetched(Err(ito_fetch::Error::Stopped), "en"), Fetched::Stopped);
+        let Fetched::Failed(line) = fetched(Err(ito_fetch::Error::Timeout), "en") else { panic!("a timeout fails") };
+        assert!(msg::TABLE_FETCH_FAILED.is_in(&line) && line.contains(&ito_fetch::Error::Timeout.words("en")), "{line}");
+        let Fetched::Failed(line) = fetched(Err(ito_fetch::Error::Timeout), "ja") else { panic!("a timeout fails") };
+        assert!(msg::TABLE_FETCH_FAILED.is_in(&line) && line.contains("時間内に終わりませんでした"), "{line}");
+        let Fetched::Failed(line) = fetched(Ok(reply(404, b"not found")), "en") else { panic!("a 404 fails") };
         assert!(msg::TABLE_FETCH_STATUS.is_in(&line) && line.contains("404"), "{line}");
         let mut cut = reply(200, "日付,名称\n2028/1/1,元日\n".as_bytes());
         cut.cut = true;
-        let Fetched::Failed(line) = fetched(Ok(cut)) else { panic!("a cut reply fails") };
+        let Fetched::Failed(line) = fetched(Ok(cut), "en") else { panic!("a cut reply fails") };
         assert!(msg::TABLE_FETCH_FAILED.is_in(&line), "{line}");
         // A page instead of the table: its first line is taken as the header, the second is not a date.
         let page = b"<html>\n<body>moved</body>\n</html>\n";
-        let Fetched::Failed(line) = fetched(Ok(reply(200, page))) else { panic!("not a table") };
+        let Fetched::Failed(line) = fetched(Ok(reply(200, page)), "en") else { panic!("not a table") };
         assert!(msg::TABLE_DATE_UNREADABLE.is_in(&line), "{line}");
-        let Fetched::Failed(line) = fetched(Ok(reply(200, b""))) else { panic!("empty") };
+        let Fetched::Failed(line) = fetched(Ok(reply(200, b"")), "en") else { panic!("empty") };
         assert!(msg::TABLE_EMPTY.is_in(&line), "{line}");
         // Shift_JIS: the header 日付 is not UTF-8, the day is 2028/1/1.
         let mut sjis = vec![0x93, 0xFA, 0x95, 0x74, b',', 0x96, 0xBC, b'\r', b'\n'];
         sjis.extend_from_slice(b"2028/1/1,\x8C\xB3\x93\xFA\r\n2028/5/3,\x8C\x87\x96\x40\r\n");
         assert!(std::str::from_utf8(&sjis).is_err());
-        assert_eq!(fetched(Ok(reply(200, &sjis))), Fetched::Table { bytes: sjis.clone(), last: 2028 });
+        assert_eq!(fetched(Ok(reply(200, &sjis)), "en"), Fetched::Table { bytes: sjis.clone(), last: 2028 });
     }
 
     #[test]
@@ -1963,7 +1964,7 @@ open = [2026-11-28]
         let (tx, rx) = std::sync::mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let mut fetch = Some(Fetch { stop: stop.clone(), rx });
-        start_fetch(&mut fetch, &egui::Context::default());
+        start_fetch(&mut fetch, &egui::Context::default(), "en".to_owned());
         assert!(tx.send(Fetched::Stopped).is_ok(), "the first download is still the field's");
         assert!(!stop.load(Ordering::SeqCst));
         drop(fetch);
@@ -1975,7 +1976,7 @@ open = [2026-11-28]
     #[ignore = "network"]
     fn the_real_table_downloads_and_reads() {
         let stop = AtomicBool::new(false);
-        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &stop));
+        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &stop), "en");
         let Fetched::Table { last, .. } = got else { panic!("{got:?}") };
         assert!(last >= 2026, "{last}");
     }

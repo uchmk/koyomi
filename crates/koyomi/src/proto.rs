@@ -27,7 +27,7 @@ pub const PROTO: u32 = 54;
 pub struct Hidden(String);
 
 impl Hidden {
-    /// A value made from a string (the window builds its value in place with [`Hidden::as_mut_string`]).
+    /// A value made from a string.
     pub fn new(value: String) -> Self {
         Self(value)
     }
@@ -35,15 +35,6 @@ impl Hidden {
     /// The value itself. Only for sending it on and storing it; never for a message.
     pub fn expose(&self) -> &str {
         &self.0
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    /// For a masked text field to edit in place.
-    pub fn as_mut_string(&mut self) -> &mut String {
-        &mut self.0
     }
 }
 

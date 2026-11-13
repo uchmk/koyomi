@@ -750,8 +750,9 @@ impl Chore {
                 if content_type.is_some() && body.is_none() {
                     return Err(msg::line(msg::CHORE_CONTENT_TYPE_NO_BODY, &[]));
                 }
-                for k in headers.keys() {
+                for (k, v) in headers {
                     header_name(k)?;
+                    header_value(v)?;
                 }
                 if let Some(c) = expect.iter().find(|c| !(100..=599).contains(*c)) {
                     return Err(msg::line(msg::CHORE_HTTP_EXPECT, &[&c.to_string()]));
@@ -1084,6 +1085,15 @@ pub fn header_name(k: &str) -> Result<(), String> {
     }
     if k.eq_ignore_ascii_case("content-type") {
         return Err(msg::line(msg::CHORE_HEADER_CONTENT_TYPE, &[]));
+    }
+    Ok(())
+}
+
+/// A header value as typed: no control character but a tab (a pasted line break would end the header line).
+/// The value is never echoed: it may be a literal token.
+pub fn header_value(v: &str) -> Result<(), String> {
+    if v.chars().any(|c| c.is_control() && c != '\t') {
+        return Err(msg::line(msg::CHORE_HEADER_VALUE, &[]));
     }
     Ok(())
 }
@@ -2770,6 +2780,12 @@ mod tests {
         assert_eq!(http("POST", Some(&"あ".repeat(BODY_MAX)), &[], &[]).check(), Ok(()));
         assert!(msg::CHORE_HEADER_CONTENT_TYPE.is_in(&http("GET", None, &[("content-type", "a")], &[]).check().unwrap_err()));
         assert!(msg::CHORE_HEADER_NAME.is_in(&http("GET", None, &[("X Day", "a")], &[]).check().unwrap_err()));
+        assert!(msg::CHORE_HEADER_VALUE.is_in(&http("GET", None, &[("X-Day", "a\nb")], &[]).check().unwrap_err()));
+        assert_eq!(header_value("a\nb").map_err(|l| msg::CHORE_HEADER_VALUE.is_in(&l)), Err(true));
+        assert_eq!(header_value("a\rb").map_err(|l| msg::CHORE_HEADER_VALUE.is_in(&l)), Err(true));
+        for ok in ["Bearer x", "a\tb", "secret:api", ""] {
+            assert_eq!(header_value(ok), Ok(()), "{ok:?}");
+        }
         assert!(msg::CHORE_HTTP_EXPECT.is_in(&http("GET", None, &[], &[600]).check().unwrap_err()));
         let mut typed = http("GET", None, &[], &[]);
         if let Chore::Http { content_type, .. } = &mut typed {

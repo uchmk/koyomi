@@ -211,6 +211,24 @@ impl<'a> Form<'a> {
         r.changed()
     }
 
+    /// A labelled list of name | value rows (the http headers); Add and Remove are the editor's own. True when it changed.
+    fn headers(&self, ui: &mut egui::Ui, key: &'a str, need: Need, pairs: &mut ito_prefs::Pairs) -> bool {
+        let (_, note) = self.label(ui, key, need);
+        let name_check = |n: &str| koyomi_core::chore::header_name(n).err();
+        let value_check = |v: &str| koyomi_core::chore::header_value(v).err();
+        let r = ito_prefs::PairsEditor::new(key, ito_prefs::PairWords::of(self.t.tr("app.lang")))
+            .hints("Authorization", "secret:api")
+            .mono_names()
+            .mono_values()
+            .unique(true)
+            .check(&name_check)
+            .check_value(&value_check)
+            .show(ui, pairs);
+        self.note(ui, note);
+        ui.add_space(10.0);
+        r.changed
+    }
+
     /// [`Form::code`] with a 参照… row under it: the files chosen are added a line each.
     fn files(&self, ui: &mut egui::Ui, key: &'a str, need: Need, s: &mut String, (rows, aside): (usize, &str)) -> bool {
         let (label, note) = self.label(ui, key, need);
@@ -1365,7 +1383,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= form.line(ui, "field.url", req, false, &mut f.url, |i| i.mono().mark(M::Globe));
             changed |= method_row(ui, form, f);
             changed |= form.code(ui, "field.body", opt, false, &mut f.body, (3, ""));
-            changed |= form.code(ui, "field.headers", opt, false, &mut f.headers, (2, ""));
+            changed |= form.headers(ui, "field.headers", opt, &mut f.headers);
             changed |= form.combo(ui, "field.content_type", opt, false, &mut f.content_type, |c| c.mono().suggestions(&CONTENT_TYPES));
             changed |= form.line(ui, "field.expect", opt, false, &mut f.expect, |i| i.mono().hint("200"));
         }

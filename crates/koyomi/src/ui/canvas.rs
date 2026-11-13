@@ -274,12 +274,12 @@ pub struct Fields {
     pub endpoint: String,
     /// How a `send` or `fetch` checks each file; none: not at all.
     pub verify: Option<Verify>,
-    /// An `http`'s call; `headers` one `Name: value` a line, `expect` the codes with `,`.
+    /// An `http`'s call; `headers` a row each (name, value), `expect` the codes with `,`.
     pub url: String,
     pub method: String,
     pub body: String,
     pub content_type: String,
-    pub headers: String,
+    pub headers: ito_prefs::Pairs,
     pub expect: String,
     /// An `ssh`'s or a `winrm`'s PC (`ssh://…`, `winrm://…`) and its command, as typed.
     pub on: String,
@@ -542,10 +542,7 @@ impl Fields {
                     f.method = method.clone();
                     f.body = body.clone().unwrap_or_default();
                     f.content_type = content_type.clone().unwrap_or_default();
-                    f.headers = headers.iter().map(|(k, v)| format!("{k}: {v}")).collect::<Vec<_>>().join(
-                        "
-",
-                    );
+                    f.headers = ito_prefs::Pairs::new(headers.iter().map(|(k, v)| (k.clone(), v.clone())));
                     f.expect = expect.iter().map(u16::to_string).collect::<Vec<_>>().join(", ");
                 }
                 Chore::Ssh { on, command, key, host_key, password, max, pass } => {
@@ -868,9 +865,21 @@ impl Fields {
     /// The `http` the fields say.
     fn http(&self) -> Result<Chore, String> {
         let mut headers = BTreeMap::new();
-        for l in self.headers.lines().map(str::trim).filter(|l| !l.is_empty()) {
-            let (k, v) = l.split_once(':').ok_or_else(|| msg::line(msg::WIN_HEADER_BAD, &[l]))?;
-            headers.insert(k.trim().to_owned(), v.trim().to_owned());
+        // `rows()`, not `pairs()`: `pairs()` drops a row with a value and no name without a word.
+        for (place, (_, name, raw)) in self.headers.rows().enumerate() {
+            // The value as typed, before it is trimmed: the window marks a pasted line break as a fault, and the save agrees.
+            koyomi_core::chore::header_value(raw)?;
+            let (name, value) = (name.trim(), raw.trim());
+            if name.is_empty() {
+                if value.is_empty() {
+                    continue; // a blank row
+                }
+                return Err(msg::line(msg::WIN_HEADER_BAD, &[&(place + 1).to_string()]));
+            }
+            if headers.keys().any(|k: &String| k.eq_ignore_ascii_case(name)) {
+                return Err(msg::line(msg::WIN_HEADER_TWICE, &[name]));
+            }
+            headers.insert(name.to_owned(), value.to_owned());
         }
         let expect = self
             .expect
@@ -3252,7 +3261,7 @@ tls = \"trust\"
     }
 
     #[test]
-    fn an_http_from_the_shelf_reads_its_headers_a_line_each() {
+    fn an_http_from_the_shelf_reads_its_headers_a_row_each() {
         let mut e = Editor::over(
             "a/b",
             net("format = 1
@@ -3270,11 +3279,7 @@ run = [\"x\"]
         fields.body = "{\"a\": 1}
 "
         .into();
-        fields.headers = "Authorization: secret:api
-
-X-Day: 1
-"
-        .into();
+        fields.headers = ito_prefs::Pairs::new([("Authorization", "secret:api"), ("", ""), ("X-Day", " 1 ")]);
         fields.expect = "200, 201".into();
         assert_eq!(e.apply_fields(&h, &fields), Ok(()));
         let Part::Chore(Chore::Http { method, body, headers, expect, .. }) = &e.net.jobs[1].part else { panic!() };
@@ -3287,17 +3292,31 @@ X-Day: 1
             )
         );
         assert_eq!(headers.get("Authorization").map(String::as_str), Some("secret:api"));
+        assert_eq!(headers.get("X-Day").map(String::as_str), Some("1"));
         assert_eq!(expect, &vec![200, 201]);
         let again = Fields::of(&e.net.jobs[1]);
         assert_eq!(
-            again.headers,
-            "Authorization: secret:api
-X-Day: 1"
+            again.headers.pairs(),
+            vec![("Authorization".to_owned(), "secret:api".to_owned()), ("X-Day".to_owned(), "1".to_owned())]
         );
         assert_eq!(again.expect, "200, 201");
-        fields.headers = "Authorization".into();
-        assert!(e.apply_fields(&h, &fields).is_err());
-        fields.headers.clear();
+        // A row with a value and no name: its place is named as the rows show it (1 = first),
+        // a blank row counted too.
+        fields.headers = ito_prefs::Pairs::new([("X-A", "1"), ("", ""), ("", "x")]);
+        let line = e.apply_fields(&h, &fields).unwrap_err();
+        assert_eq!(line, koyomi_core::msg::line(koyomi_core::msg::WIN_HEADER_BAD, &["3"]));
+        // The same name twice, whatever the case.
+        fields.headers = ito_prefs::Pairs::new([("X-A", "1"), ("x-a", "2")]);
+        assert!(koyomi_core::msg::WIN_HEADER_TWICE.is_in(&e.apply_fields(&h, &fields).unwrap_err()));
+        // A line break is refused as typed, not trimmed away.
+        for v in ["v\n", "\nv"] {
+            fields.headers = ito_prefs::Pairs::new([("X-A", v)]);
+            assert!(koyomi_core::msg::CHORE_HEADER_VALUE.is_in(&e.apply_fields(&h, &fields).unwrap_err()), "{v:?}");
+        }
+        fields.headers = ito_prefs::Pairs::default();
+        assert_eq!(e.apply_fields(&h, &fields), Ok(()));
+        let Part::Chore(Chore::Http { headers, .. }) = &e.net.jobs[1].part else { panic!() };
+        assert!(headers.is_empty());
         fields.expect = "ok".into();
         assert!(e.apply_fields(&h, &fields).is_err());
         fields.expect.clear();

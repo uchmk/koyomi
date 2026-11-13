@@ -4,8 +4,9 @@
 //!
 //! A job names an entry (`run_as = "batch"`, `database = "sales"`, `on = "web1"`), so the secret's name and the
 //! address are written once. The window never handles a stored secret's value; a password (an S3 bucket's secret
-//! access key too) is typed in the form (a [`Hidden`] value, never shown or put in a message) and sent once for the
-//! engine to store under a name it picks.
+//! access key too) is typed in the form (a hidden value: never put in a message or a log, masked unless the person
+//! presses 表示; a stored password is never read back into the form) and sent once for the engine to store under a
+//! name it picks.
 //!
 //! The state is plain data, so the rules are tested without a window (as on the users page): what the page
 //! may do ([`super::users::access`]), how a listing is taken, what an answer does ([`Registry::answered`])
@@ -339,8 +340,8 @@ pub(super) struct Form {
     pub target: String,
     /// The secret's name the row already has (without `secret:`): sent back when the password is kept.
     pub secret: String,
-    /// The password as typed (the S3 secret access key on the bucket page); its `Debug` is `***`.
-    pub password: Hidden,
+    /// The password as typed (the S3 secret access key on the bucket page); its `Debug` is `Hidden(..)`.
+    pub password: ito_prefs::Hidden,
     /// An SSH host being edited: leave the password out (the secret stays in the store).
     pub drop_password: bool,
     pub tls: SqlTls,
@@ -475,7 +476,7 @@ impl Form {
             name: String::new(),
             target: String::new(),
             secret: String::new(),
-            password: Hidden::default(),
+            password: ito_prefs::Hidden::default(),
             drop_password: false,
             tls: SqlTls::Verify,
             x: Extra::default(),
@@ -594,7 +595,7 @@ impl Form {
             name: name.to_owned(),
             target: target.to_owned(),
             secret: secret.to_owned(),
-            password: Hidden::default(),
+            password: ito_prefs::Hidden::default(),
             drop_password: false,
             tls,
             x: Extra::default(),
@@ -729,7 +730,7 @@ impl Form {
             db,
             tls: (!sqlite).then_some(self.tls),
             entry: (!sqlite && !typed).then(|| self.name.trim().to_owned()),
-            password_value: typed.then(|| self.password.clone()),
+            password_value: typed.then(|| crate::proto::Hidden::new(self.password.expose().to_owned())),
             ticket,
         })
     }
@@ -777,7 +778,7 @@ impl Form {
     pub(super) fn set_drop_password(&mut self, drop: bool) {
         self.drop_password = drop;
         if drop {
-            self.password = Hidden::default();
+            self.password.clear();
         }
     }
 
@@ -901,7 +902,7 @@ impl Form {
         let (password, password_value) = if sqlite {
             (None, None)
         } else if typed {
-            (None, Some(self.password.clone()))
+            (None, Some(crate::proto::Hidden::new(self.password.expose().to_owned())))
         } else if let Some(own) = self.own_secret().filter(|_| self.editing.is_some()) {
             (Some(format!("secret:{own}")), None)
         } else {
@@ -1002,7 +1003,7 @@ impl Form {
     /// secret when it is being edited and kept, else nothing (an SSH host only) or `missing`.
     fn password_choice(&self, missing: Line) -> Result<Pw, Line> {
         if !self.password.is_empty() {
-            return Ok(Pw::Typed(self.password.clone()));
+            return Ok(Pw::Typed(crate::proto::Hidden::new(self.password.expose().to_owned())));
         }
         if self.editing.is_some() && !self.drop_password {
             if let Some(own) = self.own_secret() {
@@ -2115,16 +2116,16 @@ fn db_test_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, can: b
 
 /// The password line of every page: the hidden field, the note under it, and (an SSH host being edited) the box that
 /// leaves the password out.
-// ito#231: `ito_prefs::secret_field` has no accessible name or test ID, so the line is drawn here until koyomi takes
-// a rev that has them.
 fn password_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form) {
     let label = t.tr(if f.page == Page::Buckets { "registry.s3_key_field" } else { "registry.password_field" });
+    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+    let words = ito_prefs::SecretWords { show: t.tr("secret.show"), hide: t.tr("secret.hide") };
     ui.horizontal(|ui| {
         ui.label(label);
-        let resp =
-            ui.add_enabled(!f.drop_password, egui::TextEdit::singleline(f.password.as_mut_string()).password(true).desired_width(240.0));
-        ito_a11y::say(&resp, ito_a11y::Role::Label, label);
-        ito_a11y::test_id(&resp, &format!("{id}.password"));
+        let field_id = format!("{id}.password");
+        ui.add_enabled_ui(!f.drop_password, |ui| {
+            ito_prefs::SecretField::new(&field_id, &words).name(label).width(280.0).show(ui, look, &mut f.password);
+        });
     });
     if f.can_drop_password() {
         let mut drop = f.drop_password;
@@ -2438,6 +2439,12 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             click.get_or_insert(Click::CloseForm);
         }
     });
+}
+
+/// Types `text` after what the form's password box holds (the tests stand in for the person).
+#[cfg(test)]
+fn type_into(h: &mut ito_prefs::Hidden, text: &str) {
+    *h = ito_prefs::Hidden::new(format!("{}{text}", h.expose()));
 }
 
 #[cfg(test)]
@@ -2804,7 +2811,7 @@ mod tests {
         f.target = "CORP\\batch".into();
         // Nothing typed: refused before anything is sent.
         assert_eq!(f.request("base1", &taken).unwrap_err(), Line::PasswordEmpty);
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         match f.request("base1", &taken) {
             Ok(Request::AccountPut { name, user, password, base_sha256, password_value }) => {
                 assert_eq!((name.as_str(), user.as_str(), base_sha256.as_str()), ("batch", "CORP\\batch", "base1"));
@@ -2821,10 +2828,10 @@ mod tests {
         assert_eq!(bad.request("b", &taken).unwrap_err(), Line::NameExists("ops".into()));
         bad.name = "new".into();
         bad.target = "bad user".into();
-        bad.password.as_mut_string().push_str(PW);
+        type_into(&mut bad.password, PW);
         assert!(matches!(bad.request("b", &taken), Err(Line::Raw(_))));
         bad.target = "CORP\\x".into();
-        bad.password = Hidden::default();
+        bad.password.clear();
         assert_eq!(bad.request("b", &taken).unwrap_err(), Line::PasswordEmpty);
         // Editing keeps the name (it is not checked against the taken ones), and an empty field sends the row's own
         // secret back.
@@ -2847,11 +2854,12 @@ mod tests {
     #[test]
     fn the_typed_password_is_not_printed_by_a_form_or_a_request() {
         let mut f = Form::edit_account(&body().accounts[0]);
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert!(!format!("{f:?}").contains(PW));
         let req = f.request("b", &[]).unwrap();
         assert!(!format!("{req:?}").contains(PW));
-        assert!(format!("{f:?}").contains("***"));
+        // ito's `Hidden` writes `Hidden(..)` for a typed value (the wire's one writes `***`).
+        assert!(format!("{f:?}").contains("Hidden(..)"));
     }
 
     /// Typing a password makes the form changed, with nothing else touched.
@@ -2871,7 +2879,7 @@ mod tests {
                 _ => Form::edit_mailbox(&conn_body().mailboxes[0]),
             };
             assert!(!f.dirty(), "{page:?}");
-            f.password.as_mut_string().push('x');
+            type_into(&mut f.password, "x");
             assert!(f.dirty(), "{page:?}");
         }
     }
@@ -2894,10 +2902,10 @@ mod tests {
         // (A key and a password cannot both be given: the entry's own check says so.)
         assert!(f.request("b", &[]).is_ok());
         f.x.key.clear();
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert_eq!(ssh(&f), (None, Some(PW.to_owned())));
         f.set_winrm(true);
-        f.password = Hidden::default();
+        f.password.clear();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         // An SSH host with a password: empty keeps it, typed replaces it, "do not use" leaves it out.
         let row = HostRow {
@@ -2913,7 +2921,7 @@ mod tests {
         assert!(f.can_drop_password() && !f.dirty());
         assert_eq!(f.password_note(), "registry.pw_ok");
         assert_eq!(ssh(&f), (Some("secret:koyomi-host-web2".to_owned()), None));
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert_eq!(ssh(&f), (None, Some(PW.to_owned())));
         // Ticking the box empties the field and sends neither a reference nor a value.
         f.set_drop_password(true);
@@ -2937,7 +2945,7 @@ mod tests {
         f.x.region = "ap-northeast-1".into();
         f.x.key_id = "AKIAEXAMPLE".into();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.s3_key_empty"));
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         let got = f.request("b", &[]);
         assert!(matches!(got, Ok(Request::BucketPut { password: None, password_value: Some(_), .. })), "{got:?}");
         // A row with no `secret` keeps an empty one (it used to be filled with the row's name).
@@ -2955,7 +2963,7 @@ mod tests {
         f.name = "m1".into();
         f.type_address("imaps://u@mail/INBOX");
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert!(matches!(f.request("b", &[]), Ok(Request::MailboxPut { password: None, password_value: Some(_), .. })));
         let f = Form::edit_mailbox(&conn_body().mailboxes[0]);
         match f.request("b", &[]) {
@@ -3062,13 +3070,13 @@ mod tests {
                 assert_eq!(sent(&f), Err(refusal), "{label}: new, empty");
             }
             // new, typed
-            f.password.as_mut_string().push_str(PW);
+            type_into(&mut f.password, PW);
             assert_eq!(sent(&f), Ok((None, typed.clone())), "{label}: new, typed");
             // edit with its own secret, field empty
             let mut e = edit(page, winrm);
             assert_eq!(sent(&e), Ok((own.clone(), None)), "{label}: edit, empty");
             // edit with its own secret, typed
-            e.password.as_mut_string().push_str(PW);
+            type_into(&mut e.password, PW);
             assert_eq!(sent(&e), Ok((None, typed.clone())), "{label}: edit, typed");
         }
         // an SSH edit with "do not use a password"
@@ -3078,7 +3086,7 @@ mod tests {
         // an SSH host with a key and a typed password is refused (a key and a password cannot both be given)
         let mut f = new(Page::Hosts, false);
         f.x.key = "C:/keys/id".into();
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         let refused = f.request("b", &[]);
         assert!(matches!(refused, Err(Line::Raw(_))), "{refused:?}");
         assert!(!format!("{refused:?}").contains(PW));
@@ -3114,7 +3122,7 @@ mod tests {
         f.db.host = "db1".into();
         f.db.database = "sales".into();
         f.db.user = "app".into();
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         f
     }
 
@@ -3155,7 +3163,7 @@ mod tests {
         f.db.port = "70000".into();
         assert_eq!(db_test_why(&f), "registry.db_test_fields", "a port that does not read, with a password typed");
         f.db.port = "5432".into();
-        f.password = Hidden::default();
+        f.password.clear();
         assert_eq!(db_test_why(&f), "registry.db_test_need");
         let mut lite = Form::add(Page::Databases);
         lite.db.kind = DbKind::Sqlite;
@@ -3174,7 +3182,7 @@ mod tests {
         f.db.database = "sales".into();
         f.db.user = "app".into();
         assert!(!f.db_test_enabled(true));
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert!(f.db_test_enabled(true));
         assert!(!f.db_test_enabled(false), "the person must be able to write");
         f.db.port = "70000".into();
@@ -3187,7 +3195,7 @@ mod tests {
         assert!(dbf(&r).db_test_enabled(true), "the host differs in case only");
         dbf_mut(&mut r).db.host = "db2".into();
         assert!(!dbf(&r).db_test_enabled(true));
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         assert!(dbf(&r).db_test_enabled(true), "a typed password is enough");
         for change in [|d: &mut DbFields| d.port = "5433".into(), |d: &mut DbFields| d.user = "other".into()] {
             let mut r = db_edit();
@@ -3213,7 +3221,7 @@ mod tests {
     fn a_click_sends_the_request_the_fields_make_and_waits_for_its_own_ticket() {
         // A typed password goes as a value, with no entry name.
         let mut r = db_edit();
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         match db_test_click(&mut r) {
             Some(Request::DatabaseTest { db, tls, entry, password_value, ticket }) => {
                 assert_eq!((db.as_str(), tls, entry, ticket), ("postgres://app@db1/sales", Some(SqlTls::Verify), None, 1));
@@ -3262,12 +3270,12 @@ mod tests {
         let changes: [fn(&mut Form); 4] = [
             |f| f.db.host = "db9".into(),
             |f| f.db.database = "other".into(),
-            |f| f.password.as_mut_string().push('x'),
-            |f| f.password.as_mut_string().push(' '),
+            |f| type_into(&mut f.password, "x"),
+            |f| type_into(&mut f.password, " "),
         ];
         for change in changes {
             let mut r = db_edit();
-            dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+            type_into(&mut dbf_mut(&mut r).password, PW);
             db_test_click(&mut r).unwrap();
             db_test_answer(&mut r, 1, Ok(String::new()));
             dbf_mut(&mut r).drop_stale_db_test();
@@ -3278,21 +3286,21 @@ mod tests {
         }
         // A late answer, after the fields changed, is not shown.
         let mut r = db_edit();
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         db_test_click(&mut r).unwrap();
         dbf_mut(&mut r).db.host = "db9".into();
         db_test_answer(&mut r, 1, Ok(String::new()));
         assert!(dbf(&r).db_test.is_none());
         // The password cleared: a test with a typed password is gone, and the saved one is another ask.
         let mut r = db_edit();
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         db_test_click(&mut r).unwrap();
-        dbf_mut(&mut r).password.as_mut_string().clear();
+        dbf_mut(&mut r).password.clear();
         dbf_mut(&mut r).drop_stale_db_test();
         assert!(dbf(&r).db_test.is_none());
         // The listing dropped under the page (another role or name): the test goes with it.
         let mut r = db_edit();
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         db_test_click(&mut r).unwrap();
         r.dropped();
         assert!(r.forms[Page::Databases.idx()].as_ref().is_none_or(|f| f.db_test.is_none()));
@@ -3301,7 +3309,7 @@ mod tests {
     #[test]
     fn the_ask_holds_the_password_only_as_a_hash_and_a_test_is_not_a_write() {
         let mut r = db_edit();
-        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
+        type_into(&mut dbf_mut(&mut r).password, PW);
         db_test_click(&mut r).unwrap();
         let shown = format!("{:?}", dbf(&r));
         assert!(!shown.contains(PW), "{shown}");
@@ -3353,7 +3361,7 @@ mod tests {
             assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key(key), "{key}");
         }
         let mut f = pg_form();
-        f.password = Hidden::default();
+        f.password.clear();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         let mut f = pg_form();
         f.db.host.clear();
@@ -3378,7 +3386,7 @@ mod tests {
     #[test]
     fn a_new_entry_without_a_password_is_refused_and_a_sqlite_file_has_no_password_or_tls() {
         let mut f = pg_form();
-        f.password.as_mut_string().clear();
+        f.password.clear();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         let mut f = Form::add(Page::Databases);
         f.name = "lite".into();
@@ -3427,7 +3435,7 @@ mod tests {
     fn a_password_only_change_is_dirty_and_sends_the_old_text() {
         let row = db_row("pg", "postgres", "postgres://app@db1:5432/sales", Some("koyomi-db-pg"));
         let mut f = Form::edit_database(&row).unwrap();
-        f.password.as_mut_string().push_str(PW);
+        type_into(&mut f.password, PW);
         assert!(f.dirty());
         match f.request("b", &[]) {
             Ok(Request::DatabasePut { db, password, password_value, .. }) => {
@@ -3877,7 +3885,7 @@ mod addr_tests {
     #[test]
     fn a_typed_password_alone_keeps_the_address_verbatim() {
         let mut f = host("ssh://ops@web1:2222/");
-        f.password.as_mut_string().push_str("pw-not-to-show");
+        type_into(&mut f.password, "pw-not-to-show");
         match f.request("b", &[]) {
             Ok(Request::HostPut { on, password_value, .. }) => {
                 assert_eq!(on, "ssh://ops@web1:2222/");
@@ -3886,7 +3894,7 @@ mod addr_tests {
             other => panic!("{other:?}"),
         }
         let mut m = mailbox("imaps://u@mail.example.com:993/INBOX");
-        m.password.as_mut_string().push_str("pw-not-to-show");
+        type_into(&mut m.password, "pw-not-to-show");
         match m.request("b", &[]) {
             Ok(Request::MailboxPut { mail, .. }) => assert_eq!(mail, "imaps://u@mail.example.com:993/INBOX"),
             other => panic!("{other:?}"),

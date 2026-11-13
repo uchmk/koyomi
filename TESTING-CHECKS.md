@@ -1,6 +1,6 @@
 # Checklist
 
-1479 checks in TESTING.md, 1462 left for a person.
+1481 checks in TESTING.md, 1464 left for a person.
 
 ## 1. Start
 
@@ -905,7 +905,7 @@
 - [ ] **83.4** [x] A test API you can see (e.g. a local echo server): `method = "POST"`, `body = '{"day": "{date}", "名前": "テスト"}'`, `headers = { Authorization = "secret:api", X-Run = "{date}" }` with the secret `api` set → The server gets the body as UTF-8 JSON with today's date filled in, `Content-Type: application/json; charset=utf-8`, the Authorization value of the secret, and `X-Run` as written (`{date}` is not filled in a header); the job's log shows neither the secret nor the script 〔未訳〕
 - [ ] **83.5** [x] The same with `content_type = "text/plain"` → The server gets `Content-Type: text/plain` 〔未訳〕
 - [ ] **83.6** [x] `koyomi check` with `url = "ftp://x"`, `method = "get"`, `body` with `GET`, `expect = [99]`, `expect = []`, `headers = { Content-Type = "x" }`, `content_type` without `body`, `url` on `copy` → Each is refused with the line and why 〔未訳〕
-- [ ] **83.7** The editor: drag HTTP で呼ぶ from the parts → The pane shows URL・メソッド・送る中身・ヘッダー (one `名前: 値` a line)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a header line without `:` or a code that is not a number is refused 〔未訳〕
+- [ ] **83.7** The editor: drag HTTP で呼ぶ from the parts → The pane shows URL・メソッド・送る中身・ヘッダー (rows of 名前 and 値 with 追加 and 削除)・中身の種類・正常とする状態コード, timeout and retry; saving writes `kind = "http"` with those fields (`method` only when not GET); a row with a value and no name, a name twice (case ignored), a value with a line break, or a code that is not a number is refused 〔未訳〕
 - [ ] **83.8** [x] Approve a net with an http → The confirm box shows `POST https://…`, the body, the header names (not their values) and the codes instead of a command 〔未訳〕
 
 ## 84. 別のアカウントで実行する（`run_as`）
@@ -1530,6 +1530,7 @@
 - [~] **123.33** This PC: the settings screen; the search for `keep_days` → The 記録 section is there, with its rows; the Notifications page has its rows; the koyomi.toml button is on the General page; `keep_days` finds a row 〔未訳〕
 - [ ] **123.34** kei, `admin` token: open ＋ 新しいカレンダー and type a name; leave the box open and, while a switch waits (`送信中 1 件`, as 122.12), press 作成する → The box shows `KOYOMI-E2117 接続先を切り替えている最中のため、要求を送信していません。…` and its name stays; the result line reads the same `KOYOMI-E2117` text; no file changes on kei. If the switch ends before you can press, record this row as not reached 〔未訳〕
 - [~] **123.35** A calendar page with a caution band showing, the window at its default size (1280×800): right-click a weekday; 名前を付ける…; 決定する; then 祝日の表を取り込む… with a bad path → The field with 決定する and the result line stay in view at the bottom of the page with no scrolling; the month scrolls above them; with neither on the page the foot takes no room 〔未訳〕
+- [ ] **123.36** kei: at the token step, type a token; press 表示; press 隠す → The token box masks what is typed; 表示 shows it; 隠す masks it again; the focus goes to the box once on entering the step (and again after 接続する with the box empty or a failed join) and is not pulled back from the 表示 button 〔未訳〕
 
 ## 124. The link list in the status bar (`ui/hosts.rs`)
 
@@ -1877,7 +1878,7 @@
 - [ ] **143.11** Remove a host, a bucket or a mailbox a net uses, without force → The request is refused (E2250) with the table word; with force the entry goes and the net gets W3792, W3793 or W3795 〔未訳〕
 - [ ] **143.12** Send HostPut, BucketPut or MailboxPut (or their removals) as a non-Admin user, by `/door` and by REST → It is refused 〔未訳〕
 - [ ] **143.13** Read the snapshot (`List`) as a narrowed user → It lists the names of hosts, buckets, mailboxes, groups and mails only: no address, key, certificate or secret name 〔未訳〕
-- [ ] **143.14** Open the settings pages 接続先 PC, S3 and メールボックス as an Admin; add one entry on each (the name, the address, the password typed in the form; S3: the secret access key); then edit it and remove it → Each page lists the entries with their state; the added one shows, the edit is saved, and the removed one goes; the password is never shown again and no secret name is asked for 〔未訳〕
+- [ ] **143.14** Open the settings pages 接続先 PC, S3 and メールボックス as an Admin; add one entry on each (the name, the address, the password typed in the form; S3: the secret access key); then edit it and remove it → Each page lists the entries with their state; the added one shows, the edit is saved, and the removed one goes; a stored password is never read back into the form (only what is being typed can be shown with 表示) and no secret name is asked for 〔未訳〕
 - [ ] **143.15** Remove an entry on each of the three pages once when no net names it and once when a net does → Both ask first; the unused one goes with a plain yes; for the one in use the ask names the nets and only its yes removes it (with force) 〔未訳〕
 - [ ] **143.16** Open the three pages as a non-Admin user, and as an Admin while the engine is on another PC → A non-Admin sees that only an admin manages them, and no button; nothing is sent. On another PC's engine the heading names that engine (`<PC> のエンジンの接続先 PC`, `… の S3`, `… のメールボックス`) and the rows are that engine's 〔未訳〕
 - [ ] **143.17** In the 接続先 PC form, switch the SSH / WinRM seg back and forth with an address typed → The scheme in front changes and the rest of the address is kept as typed; only the rows of the chosen kind show, and the other kind's rows are not saved 〔未訳〕
@@ -1905,3 +1906,4 @@
 - [ ] **143.39** Add an SSH host with a key and the password empty; edit an SSH host that has a password and choose to use no password → Both are saved without a password; a key and a typed password together are refused 〔未訳〕
 - [ ] **143.40** Open the S3 form → The field is worded as the secret access key, the key id is its own field, and no secret name is asked for 〔未訳〕
 - [ ] **143.51** Open the three forms in English and in Japanese; empty a port field; search the settings for バケット名 and フォルダー → Each part has its label and hint in both languages (an empty port's hint is the kind's own port: 22, 5986, 993); a screen reader reads each label; the search finds the forms 〔未訳〕
+- [ ] **143.52** In the form of an account, a database, an SSH or WinRM host, a mailbox, or an S3 bucket (the secret access key), type a password; press 表示; press 隠す; then leave the page and come back → The box masks what is typed; 表示 shows it; 隠す masks it again; after leaving the page and coming back the box is masked again, and the stored password is not filled in 〔未訳〕

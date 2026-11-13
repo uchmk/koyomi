@@ -66,7 +66,10 @@ pub(super) struct Add {
     pub(super) name: String,
     pub(super) url: String,
     /// The typed token: handed to the thread and emptied as soon as it has it.
-    pub(super) token: String,
+    pub(super) token: ito_prefs::Hidden,
+    /// The token box is to take the focus once: set where the step becomes [`AddStep::Token`] and when a press
+    /// finds the box empty, cleared when asked.
+    pub(super) focus_token: bool,
     /// The fingerprint the other PC showed.
     pub(super) fp: Option<String>,
     pub(super) error: Option<String>,
@@ -80,7 +83,8 @@ impl Add {
             step: AddStep::Form,
             name: String::new(),
             url: String::new(),
-            token: String::new(),
+            token: ito_prefs::Hidden::default(),
+            focus_token: false,
             fp: None,
             error: None,
         }
@@ -320,6 +324,7 @@ impl Far {
                     Err(e) if waiting => {
                         if let Some(a) = &mut self.add {
                             a.step = AddStep::Token;
+                            a.focus_token = true;
                             a.error = Some(e);
                         }
                     }
@@ -633,6 +638,7 @@ impl Far {
     pub(super) fn add_same(&mut self) {
         if let Some(a) = self.add.as_mut().filter(|a| a.step == AddStep::Compare) {
             a.step = AddStep::Token;
+            a.focus_token = true;
             a.error = None;
         }
     }
@@ -641,12 +647,14 @@ impl Far {
     /// the box goes to its waiting step. `None`: the token is empty, or this is not the step for it.
     pub(super) fn add_hand_off(&mut self, _t: &ito_i18n::Table) -> Option<(String, String, String, String)> {
         let a = self.add.as_mut().filter(|a| a.step == AddStep::Token)?;
-        if a.token.trim().is_empty() {
+        if a.token.expose().trim().is_empty() {
             a.error = Some(msg::line(msg::TOKEN_EMPTY, &[]));
+            // Back to the box, as the press left the focus on the button.
+            a.focus_token = true;
             return None;
         }
         let fingerprint = a.fp.clone()?;
-        let token = std::mem::take(&mut a.token).trim().to_owned();
+        let token = a.token.take().trim().to_owned();
         a.error = None;
         a.step = AddStep::Joining;
         Some((a.name.trim().to_owned(), a.url.trim().to_owned(), fingerprint, token))
@@ -726,10 +734,16 @@ impl Far {
                             ui.add_enabled_ui(!busy, |ui| {
                                 ui.horizontal(|ui| {
                                     ui.label(t.tr("far.add_token"));
-                                    let r = ui.add(egui::TextEdit::singleline(&mut a.token).password(true).desired_width(300.0));
-                                    ito_a11y::say(&r, Role::Label, t.tr("far.add_token"));
-                                    if step == AddStep::Token && a.token.is_empty() && !covered {
-                                        r.request_focus();
+                                    let look = ito_prefs::Look { c, q: "" };
+                                    let words = ito_prefs::SecretWords { show: t.tr("secret.show"), hide: t.tr("secret.hide") };
+                                    let r = ito_prefs::SecretField::new("far.add_token", &words)
+                                        .name(t.tr("far.add_token"))
+                                        .width(300.0)
+                                        .show(ui, look, &mut a.token);
+                                    // Once, not every frame: the eye button beside the box must keep the focus it is given.
+                                    if step == AddStep::Token && a.focus_token && !covered {
+                                        r.response.request_focus();
+                                        a.focus_token = false;
                                     }
                                 });
                             });
@@ -914,16 +928,42 @@ mod tests {
         assert_eq!(f.add.as_ref().unwrap().step, AddStep::Compare);
         // Nothing but the press gets past it.
         assert!(f.add_hand_off(&t).is_none());
-        f.add.as_mut().unwrap().token = "t".into();
+        f.add.as_mut().unwrap().token = ito_prefs::Hidden::new("t");
         assert!(f.add_hand_off(&t).is_none());
         assert_eq!(f.add.as_ref().unwrap().step, AddStep::Compare);
         f.add_same();
         assert_eq!(f.add.as_ref().unwrap().step, AddStep::Token);
+        assert!(f.add.as_ref().unwrap().focus_token, "the token box asks for the focus once");
         // The press does nothing from any other step.
         let mut g = adding();
         at(&mut g, AddStep::Form);
         g.add_same();
         assert_eq!(g.add.as_ref().unwrap().step, AddStep::Form);
+    }
+
+    #[test]
+    fn the_token_box_takes_the_focus_once_and_not_while_covered() {
+        let t = ja();
+        let ctx = egui::Context::default();
+        let mut f = adding();
+        at(&mut f, AddStep::Token);
+        f.add.as_mut().unwrap().focus_token = true;
+        let frame = |f: &mut Far, covered: bool| {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| f.add_box(ui.ctx(), &t, covered));
+            out.textures_delta.clear();
+        };
+        // Another box over it: the ask waits.
+        frame(&mut f, true);
+        assert!(f.add.as_ref().unwrap().focus_token);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
+        // Uncovered: the box takes the focus and the ask is spent.
+        frame(&mut f, false);
+        assert!(!f.add.as_ref().unwrap().focus_token);
+        let held = ctx.memory(|m| m.focused()).expect("the token box has the focus");
+        // Moved away (to the eye button, say), the box does not take it back.
+        ctx.memory_mut(|m| m.surrender_focus(held));
+        frame(&mut f, false);
+        assert_eq!(ctx.memory(|m| m.focused()), None);
     }
 
     #[test]
@@ -1006,7 +1046,7 @@ mod tests {
         assert!(f.add_hand_off(&t).is_none(), "empty token");
         assert!(f.add.as_ref().unwrap().error.is_some());
         assert_eq!(f.add.as_ref().unwrap().step, AddStep::Token);
-        f.add.as_mut().unwrap().token = "  secret  ".into();
+        f.add.as_mut().unwrap().token = ito_prefs::Hidden::new("  secret  ");
         let (name, url, fp, token) = f.add_hand_off(&t).unwrap();
         assert_eq!((name.as_str(), url.as_str(), token.as_str()), ("new", "https://pc:8443", "secret"));
         assert_eq!(fp, "ab".repeat(32));
@@ -1023,11 +1063,12 @@ mod tests {
         let mut f = adding();
         at(&mut f, AddStep::Token);
         f.add.as_mut().unwrap().fp = Some("ab".repeat(32));
-        f.add.as_mut().unwrap().token = "bad".into();
+        f.add.as_mut().unwrap().token = ito_prefs::Hidden::new("bad");
         f.add_hand_off(&t).unwrap();
         f.take(Got::Joined(ticket(&f), "new".into(), Err("new: 401".into())));
         let a = f.add.as_ref().expect("still open");
         assert_eq!((a.step, a.error.as_deref()), (AddStep::Token, Some("new: 401")));
+        assert!(a.focus_token, "back at the token box after a failed join, it asks for the focus again");
         assert!(a.token.is_empty());
         assert!(f.take_joined().is_none());
         assert_eq!(f.names, ["old"], "the name is not added");
@@ -1039,7 +1080,7 @@ mod tests {
         let mut f = adding();
         at(&mut f, AddStep::Token);
         f.add.as_mut().unwrap().fp = Some("ab".repeat(32));
-        f.add.as_mut().unwrap().token = "ok".into();
+        f.add.as_mut().unwrap().token = ito_prefs::Hidden::new("ok");
         f.add_hand_off(&t).unwrap();
         f.take(Got::Joined(ticket(&f), "new".into(), Ok(())));
         assert!(f.add.is_none());
