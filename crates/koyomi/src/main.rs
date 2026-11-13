@@ -138,8 +138,8 @@ struct App {
     switching: Option<Switching>,
     /// The title last sent to the window.
     title_sent: String,
-    /// The Japanese face, read off the UI thread; `None` once it is registered.
-    font: Option<std::sync::mpsc::Receiver<Option<Vec<u8>>>>,
+    /// The system's Japanese and emoji faces, read off the UI thread; `None` once they are installed.
+    font: Option<std::sync::mpsc::Receiver<ito_fonts::Faces>>,
     /// The `--keys` script while it plays, and what its steps ask the frame to do.
     script: Option<Runner>,
     todo: Vec<Do>,
@@ -649,23 +649,18 @@ impl App {
         }
     }
 
-    /// Registers the Japanese face once the reader thread has it, so names do not draw as boxes.
+    /// Installs the system faces once the reader thread has them, so names do not draw as boxes. ito-fonts puts the
+    /// Japanese face before egui's icon faces (full-width forms) and sizes it to two cells in the monospace family.
     fn take_font(&mut self, ctx: &egui::Context) {
         let Some(rx) = &self.font else { return };
-        let bytes = match rx.try_recv() {
-            Ok(b) => b,
+        let faces = match rx.try_recv() {
+            Ok(f) => f,
             Err(std::sync::mpsc::TryRecvError::Empty) => return,
-            Err(_) => None,
+            Err(_) => ito_fonts::Faces::default(),
         };
         self.font = None;
         let mut fonts = egui::FontDefinitions::default();
-        ito_fonts::register(&mut fonts, self.prefs.common.mono_font_or_default());
-        if let Some(bytes) = bytes {
-            fonts.font_data.insert("japanese".to_owned(), std::sync::Arc::new(egui::FontData::from_owned(bytes)));
-            for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-                fonts.families.entry(family).or_default().push("japanese".to_owned());
-            }
-        }
+        ito_fonts::install(&mut fonts, &faces, self.prefs.common.mono_font_or_default());
         ctx.set_fonts(fonts);
     }
 
@@ -1329,12 +1324,12 @@ fn keys_arg(args: &[String]) -> Result<Option<Vec<Step>>, String> {
     }
 }
 
-/// Reads the Japanese face on a thread of its own (it is tens of megabytes) and repaints when it is in.
-fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<Option<Vec<u8>>> {
+/// Reads the system faces on a thread of its own (the Japanese one is tens of megabytes) and repaints when they are in.
+fn font_reader(ctx: &egui::Context) -> std::sync::mpsc::Receiver<ito_fonts::Faces> {
     let (tx, rx) = std::sync::mpsc::channel();
     let ctx = ctx.clone();
     std::thread::spawn(move || {
-        let _ = tx.send(ito_common::fonts::read_first(ito_common::fonts::JAPANESE).map(|(_, b)| b));
+        let _ = tx.send(ito_fonts::find());
         ctx.request_repaint();
     });
     rx
