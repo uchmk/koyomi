@@ -1,6 +1,6 @@
 # Checklist
 
-1481 checks in TESTING.md, 1464 left for a person.
+1491 checks in TESTING.md, 1474 left for a person.
 
 ## 1. Start
 
@@ -1796,7 +1796,7 @@
 - [ ] **140.9** On this PC press 参照… beside a folder field, a file field, a file-to-write field and the mail 添付ファイル → The folder chooser, the open chooser, the save chooser and a multi-file chooser open in the folder the field names when it exists; the answer fills the field (attachments are added one per line) 〔未訳〕
 - [ ] **140.10** Cancel a chooser; while one is open look at the other 参照… buttons and the [[when]] remove buttons → A cancel changes nothing; every other 参照… and every [[when]] remove button is greyed with the reason 〔未訳〕
 - [ ] **140.11** Open a chooser, close the job (or open another), then pick a path → The answer is dropped; the other job's field is unchanged 〔未訳〕
-- [ ] **140.12** Switch the window to a far engine → No 参照… button shows anywhere; the fields stay typed 〔未訳〕
+- [ ] **140.12** Switch the window to a far engine, first with a non-admin role, then as admin → With a non-admin role no 参照… button shows anywhere; as admin the folder, file and attachment fields show 参照… and the file-to-write fields do not; the fields stay typed 〔未訳〕
 - [ ] **140.13** Open a job with a 時刻 part (drawer 時刻) and a job with a [[when]] 毎日 (時刻) list; click the clock button and pick a time; add a second time to the list → The time is a typed `HH:MM` field with a picker; a pick writes `HH:MM`; the list keeps several times separated by commas; saving writes the same time to the file 〔未訳〕
 - [ ] **140.14** In the drawer set 時間の上限 (timeout) and 落ち着くまで, and in a [[when]] 「PC が空いたら」 the 使われない時間; type 0 in one of them → Each is a number with a unit select (秒・分・時間 ...); 30m reads as 30 and 分; 0 is shown in red and the job is not saved (the reason is shown); the idle time offers only minutes and hours 〔未訳〕
 - [ ] **140.15** In the drawer look at count（繰り返す回数）and max（並行して実行する数）of a loop, 何日より古いものを削除するか (delete) and やり直す回数, and press − and + and type 0 or a huge number → Each is a number field with − and +; the unit (回・日) is shown; − and + keep the value inside its range (for example 1..10000 for the count); a typed number out of range is shown in red and the job is not saved 〔未訳〕
@@ -1804,6 +1804,16 @@
 - [ ] **140.17** In an HTTP call job open 中身の種類; in a [[when]] 「イベントログに出たら」 open イベントログ → Each is a text field with suggestions (application/json ...; Application, System, Security, Setup); another value can still be typed 〔未訳〕
 - [ ] **140.18** Open a job file whose time is `09:00:30` (a part's `at`, a [[when]] `at` or `once` with seconds) → That field stays a typed text field and shows the seconds; saving without touching it writes the seconds unchanged; a time without seconds shows the picker 〔未訳〕
 - [ ] **140.19** Add a [[when]] 「1 回だけ」 (once) and look at 日時; pick a time before a date, then a date → It is a date field and a time field; an empty date or time has a red edge; a time picked first stays in the time field; the file holds `YYYY-MM-DD HH:MM`; clearing the time shows the reason and the job is not saved 〔未訳〕
+- [ ] **140.20** As admin on a far engine press 参照… on a folder field, a file field and the attachments field → The picker opens titled with the field, lists the engine's drives and home on the side and starts in the field's folder; picking fills the field (the attachments one path a line) 〔未訳〕
+- [ ] **140.21** In the far picker type `\\server\share` in the path bar → E2278 shows in the picker and the engine makes no network access 〔未訳〕
+- [ ] **140.22** With the far picker open and nothing focused press Delete, Backspace and the palette key, then Esc → While the picker is open Delete and Backspace delete no part and the palette does not open; Esc closes only the picker and the editor stays 〔未訳〕
+- [ ] **140.23** In the far picker open a slow folder (a sleeping disk), then press 再読み込み (F5) → E2280 shows within about 5 s; 再読み込み tries again 〔未訳〕
+- [ ] **140.24** Stop the engine while the far picker waits → The picker shows E2277 or the link's error; the window stays usable 〔未訳〕
+- [ ] **140.25** On a Windows engine, as admin in the far picker, open a folder that holds a symbolic link to a share → The link is listed as a link and is not opened; the engine makes no network access 〔未訳〕
+- [ ] **140.26** On a Windows engine, as admin in the far picker, type a path that goes through a junction → E2279 with the link reason (the path is a link; folders through links are not opened from here) 〔未訳〕
+- [ ] **140.27** On a Windows engine, as admin in the far picker, type `Z:\` where Z: is mapped to a share → E2279 with the network reason; the share is not opened 〔未訳〕
+- [ ] **140.28** On a Windows engine, as admin in the far picker, type `C:\x\NUL` → E2279 with the device reason (NUL is the name of a device of Windows) 〔未訳〕
+- [ ] **140.29** On a Linux engine, as admin from a Windows window, press 参照… on a folder field → The picker's side list holds `/` and the home folder of the engine's PC; with an empty field it starts at `/`, with a path in the field it starts in that folder 〔未訳〕
 
 ## 141. Five shells (`shell`: powershell, pwsh, bash, sh, zsh) (`engine/shells.rs`, `settings.rs`, `ui/canvas/drawer.rs`)
 

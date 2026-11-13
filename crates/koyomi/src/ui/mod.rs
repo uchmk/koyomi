@@ -240,6 +240,8 @@ fn answer(work: Work, reply: &dyn Fn(&Request) -> Result<String, String>, send: 
 fn apart_stopped(request: Request) -> Msg {
     let id = if matches!(request, Request::DatabaseTest { .. }) {
         koyomi_core::msg::DB_TEST_STOPPED
+    } else if matches!(request, Request::DirList { .. }) {
+        koyomi_core::msg::DIR_LIST_STOPPED
     } else {
         koyomi_core::msg::HOST_PEEK_STOPPED
     };
@@ -248,7 +250,7 @@ fn apart_stopped(request: Request) -> Msg {
 
 /// Whether a request goes to a thread of its own (a host peek and a database test take long).
 fn goes_apart(request: &Request) -> bool {
-    matches!(request, Request::HostPeek { .. } | Request::DatabaseTest { .. })
+    matches!(request, Request::HostPeek { .. } | Request::DatabaseTest { .. } | Request::DirList { .. })
 }
 
 /// A peek at a host takes up to about 20 s, and the thread polls the list every second: a `HostPeek` goes to a
@@ -856,6 +858,9 @@ pub struct Browser {
     /// The command palette is open over the page: no box takes egui's focus from its field. Set by the window every
     /// frame.
     pub under_palette: bool,
+    /// The clock and the language of the file picker of a far engine. Set by the window every frame.
+    pub clock: ito_common::Clock,
+    pub lang: String,
     /// The 版を比べる box, while it is open.
     vers: Option<Vers>,
     /// The editor, when a net is open in it: the detail is its canvas.
@@ -991,6 +996,8 @@ impl Browser {
             reveal: false,
             under_card: false,
             under_palette: false,
+            clock: ito_common::Clock::default(),
+            lang: String::new(),
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -1611,6 +1618,12 @@ impl Browser {
                 }
                 // The アカウント and データベース pages: their own state's, never the result line's.
                 Msg::Answer(Request::Registry, r) => self.registry.listing_answer(r),
+                // The file picker of a far engine: its own state's (an editor in the stack never has a picker).
+                Msg::Answer(req @ (Request::DirList { .. } | Request::DirPlaces { .. }), r) => {
+                    if let Some(e) = &mut self.editor {
+                        e.browse_answered(&req, r);
+                    }
+                }
                 Msg::Answer(
                     req @ (Request::AccountPut { .. }
                     | Request::AccountRemove { .. }
@@ -1797,7 +1810,12 @@ impl Browser {
             || self.sending.is_some()
             || self.config_edit.is_some()
             || self.users.holds_token()
-            || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some())
+            || self.editor.as_ref().is_some_and(|e| e.conflict.is_some() || e.closing || e.stage_ask.is_some() || e.picking())
+    }
+
+    /// Whether a file picker of a far engine is open over the editor: the window's keys are the picker's then.
+    pub fn picking(&self) -> bool {
+        self.editor.as_ref().is_some_and(|e| e.picking())
     }
 
     /// Whether the troubleshooting card or the command palette is over the page.
@@ -2473,6 +2491,8 @@ impl Browser {
                     .and_then(canvas::Editor::open);
                 match (opened, &mut self.editor) {
                     (Ok(inner), Some(outer)) => {
+                        // An editor in the stack keeps no far picker (listing answers go to the open editor only).
+                        outer.browse_cancel();
                         let outer = std::mem::replace(outer, inner);
                         self.editors.push(outer);
                     }
@@ -2520,11 +2540,25 @@ impl Browser {
             databases,
             windows,
             conns,
+            // A far role not known yet, or not admin: no button (the engine would refuse the listing anyway).
+            far_browse: !local && self.role == Some(koyomi_core::role::Role::Admin),
+            clock: &self.clock,
+            lang: &self.lang,
         };
         let Some(e) = &mut self.editor else { return };
         let action = e.show(ui, t, self.vertical, &around);
+        // What the far file picker asked for this frame goes to the engine; one that cannot be sent is answered as failed.
+        let browse = e.browse_request();
         if let Some(a) = action {
             self.act(a);
+        }
+        if let Some(req) = browse {
+            if !self.out.send(req.clone()) {
+                let why = self.unsent_why();
+                if let Some(e) = &mut self.editor {
+                    e.browse_unsent(&req, why);
+                }
+            }
         }
     }
 
@@ -2686,6 +2720,13 @@ impl Browser {
             || asking_stage
             || self.staged_box.is_some()
             || self.sending.as_ref().is_some_and(|s| s.there.is_some());
+        // A box of the window takes over from the file picker of a far engine: the pick is lost, and the box's Esc and
+        // Enter are the box's alone. (The picker reads its own keys, so it is not part of `keys_modal`.)
+        if keys_modal && self.picking() {
+            if let Some(e) = &mut self.editor {
+                e.browse_cancel();
+            }
+        }
         // The token box reads its own keys: it blocks the page like a box, but `box_keys` leaves it alone.
         let modal = keys_modal || self.users.holds_token();
         let buttons = if self.vers.is_some() {
@@ -6492,6 +6533,8 @@ mod tests {
             reveal: false,
             under_card: false,
             under_palette: false,
+            clock: ito_common::Clock::default(),
+            lang: String::new(),
             vers: None,
             editor: None,
             editors: Vec::new(),
@@ -8694,6 +8737,95 @@ run = [\"x.exe\"]
         let e = b.editor.as_ref().unwrap();
         assert_eq!(e.result, Some(Ok("暦を書いた: calendars/工場.toml".to_owned())));
         assert!(b.cal_sel.is_none(), "the editor stays, the calendar page is not opened");
+    }
+
+    /// A far admin's browser with an editor holding a far chooser that waits for the engine's places.
+    fn far_picking() -> Browser {
+        let mut b = quiet(defs());
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Admin);
+        let net = koyomi_core::jobnet::parse(NET).unwrap();
+        let mut e = canvas::Editor::new_net("試験/a", net);
+        e.hold_far_chooser();
+        b.editor = Some(e);
+        b
+    }
+
+    fn places_answer(ticket: u64) -> Msg {
+        let reply = crate::proto::PlacesReply {
+            style: ito_filepick::Style::Posix,
+            places: vec![ito_filepick::Place::new("Root", "/", ito_filepick::PlaceKind::Root)],
+        };
+        Msg::Answer(Request::DirPlaces { ticket }, Ok(serde_json::to_string(&reply).unwrap()))
+    }
+
+    #[test]
+    fn a_far_chooser_asks_for_the_places_and_then_the_first_listing_through_the_window() {
+        let ctx = egui::Context::default();
+        let (tx, rx) = asks();
+        let mut b = far_picking();
+        b.out.tx = tx;
+        frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        let Ok(Request::DirPlaces { ticket }) = rx.try_recv() else { panic!("the places are asked for first") };
+        assert!(rx.try_recv().is_err(), "asked once");
+        assert!(b.picking());
+        b.io.0.send(places_answer(ticket)).unwrap();
+        b.drain();
+        let mut listed = None;
+        for _ in 0..6 {
+            frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+            if let Ok(req @ Request::DirList { .. }) = rx.try_recv() {
+                listed = Some(req);
+                break;
+            }
+        }
+        let list = listed.expect("the first listing is asked for once the places are known");
+        assert!(b.picking());
+        assert_eq!(b.editor.as_ref().unwrap().far_status(), "Loading");
+        // The engine's answer goes back through the window to the editor's picker.
+        let listing = serde_json::to_string(&ito_filepick::Listing::new(vec![ito_filepick::Entry::dir("a")])).unwrap();
+        b.io.0.send(Msg::Answer(list, Ok(listing))).unwrap();
+        b.drain();
+        assert_eq!(b.editor.as_ref().unwrap().far_status(), "Ready");
+        assert!(b.picking());
+    }
+
+    #[test]
+    fn a_far_chooser_whose_request_cannot_be_sent_still_opens_its_picker() {
+        let ctx = egui::Context::default();
+        let (tx, rx) = asks();
+        drop(rx);
+        let mut b = far_picking();
+        b.out.tx = tx;
+        b.down = Some("link down".into());
+        frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        assert!(b.picking(), "the fallback picker is up, not an endless wait");
+    }
+
+    #[test]
+    fn a_box_of_the_window_closes_a_far_chooser() {
+        let ctx = egui::Context::default();
+        let (tx, _rx) = asks();
+        let mut b = asking();
+        b.out.tx = tx;
+        let net = koyomi_core::jobnet::parse(NET).unwrap();
+        let mut e = canvas::Editor::new_net("試験/a", net);
+        e.hold_far_chooser();
+        b.editor = Some(e);
+        assert!(b.picking());
+        frame(&ctx, egui::vec2(1280.0, 800.0), Vec::new(), &mut b);
+        assert!(!b.picking(), "the approval box took the keys, the chooser is gone");
+    }
+
+    #[test]
+    fn a_dir_list_goes_to_a_thread_of_its_own_and_a_failed_start_says_why() {
+        let list = Request::DirList { path: "/".into(), ticket: 3 };
+        assert!(goes_apart(&list));
+        assert!(!goes_apart(&Request::DirPlaces { ticket: 3 }));
+        match apart_stopped(list) {
+            Msg::Answer(Request::DirList { ticket: 3, .. }, Err(e)) => assert!(koyomi_core::msg::DIR_LIST_STOPPED.is_in(&e), "{e}"),
+            _ => panic!("not the answer of the listing"),
+        }
     }
 
     #[test]

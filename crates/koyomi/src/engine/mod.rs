@@ -37,6 +37,7 @@ use crate::proto::{self, Request, Runs, Snapshot, Versions};
 mod alive;
 mod backup;
 mod db_test;
+mod dir_list;
 mod events;
 pub(crate) mod files;
 pub mod http;
@@ -277,6 +278,14 @@ struct State {
     db_tests: slots::Slots,
     /// How a database test connects (a fake in tests).
     db_run: db_test::RunFn,
+    /// The folder listings of the window's picker (`DirList`), on threads of their own; never recorded.
+    dir_lists: slots::Slots,
+    /// The reads a slow disk may still hold after their listing was answered.
+    dir_linger: dir_list::Linger,
+    /// How a folder is listed (a fake in tests).
+    dir_lister: dir_list::Lister,
+    /// How long a listing is waited for before it is answered slow (shortened in tests).
+    dir_slow: Duration,
     /// The credential store a password typed in the settings goes to (a fake in tests).
     secrets: Arc<dyn crate::remote::SecretStore + Send + Sync>,
     /// `[ping]`: the outside watcher's address, called while the engine runs.
@@ -399,6 +408,17 @@ impl State {
                 db_test::detail,
             ),
             db_run: db_test::real(),
+            dir_lists: slots::Slots::new(
+                dir_list::SLOTS,
+                "dir-list",
+                "koyomi-dir-list",
+                msg::DIR_LIST_BUSY,
+                msg::DIR_LIST_STOPPED,
+                dir_list::detail,
+            ),
+            dir_linger: dir_list::Linger::new(),
+            dir_lister: dir_list::real(),
+            dir_slow: dir_list::SLOW,
             secrets: Arc::new(crate::remote::Keyring),
             ping: ping::Ping::default(),
             ping_cfg: None,
@@ -619,6 +639,8 @@ impl State {
         let runner = &mut self.runner;
         self.db_tests.stop(|op, target, detail, by| runner.record_op(op, target, detail, by));
         self.peeks.stop(|op, target, detail, by| runner.record_op(op, target, detail, by));
+        // A listing is never written to the record.
+        self.dir_lists.stop(|_, _, _, _| {});
         self.runner.drop_queue();
         self.runner.stop_all(self.runner.stop_wait());
         self.runner.flush();
@@ -682,6 +704,26 @@ impl State {
         let runner = &mut self.runner;
         self.peeks.drain(|op, target, detail, by| runner.record_op(op, target, detail, by));
         self.db_tests.drain(|op, target, detail, by| runner.record_op(op, target, detail, by));
+        // A listing is never written to the record.
+        self.dir_lists.drain(|_, _, _, _| {});
+    }
+
+    /// Starts a folder listing off the loop. The path is checked and the read is reserved here; the disk is read on the
+    /// worker's thread. Refused with E2278 (path) or E2276 (too many reads).
+    fn start_dir_list(&mut self, by: &str, path: &str, reply: std::sync::mpsc::SyncSender<ito_ipc::door::Reply>, expired: Arc<AtomicBool>) {
+        if expired.load(Ordering::Relaxed) {
+            return;
+        }
+        let path = match dir_list::prepare(path) {
+            Ok(p) => p,
+            Err(why) => return slots::Slots::refuse(&reply, &expired, why),
+        };
+        let Some(hold) = self.dir_linger.try_take() else {
+            return slots::Slots::refuse(&reply, &expired, msg::line(msg::DIR_LIST_BUSY, &[]));
+        };
+        let target = dir_list::short(&path);
+        let work = dir_list::work(path, self.dir_lister.clone(), hold, self.dir_slow);
+        self.dir_lists.start(by, target, work, reply, expired);
     }
 
     /// Starts a database test off the loop. The checks that need no network run here; the saved password is read and the
@@ -3303,6 +3345,10 @@ impl State {
             Request::HostPeek { .. } => Err(msg::line(msg::HOST_PEEK_STOPPED, &[])),
             // Like a peek: the loop hands it to `db_tests`; this path never connects.
             Request::DatabaseTest { .. } => Err(msg::line(msg::DB_TEST_STOPPED, &[])),
+            // The loop hands a listing to `dir_lists`; this path never lists a folder.
+            Request::DirList { .. } => Err(msg::line(msg::DIR_LIST_STOPPED, &[])),
+            // Instant: the drive list is a bit mask, no drive is touched.
+            Request::DirPlaces { .. } => dir_list::places(),
             Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
     }
@@ -3322,6 +3368,19 @@ fn as_db_test(request: &Request) -> Option<(&str, db_test::Ask<'_>)> {
     match request {
         Request::Over { by, request } if over_http(request) => ask(request).map(|a| (by.as_str(), a)),
         other => ask(other).map(|a| ("", a)),
+    }
+}
+
+/// The folder listing a request asks for, bare or inside an `Over` that HTTP may send: who asked (empty at this PC) and
+/// the path.
+fn as_dir_list(request: &Request) -> Option<(&str, &str)> {
+    match request {
+        Request::DirList { path, .. } => Some(("", path)),
+        Request::Over { by, request } if over_http(request) => match &**request {
+            Request::DirList { path, .. } => Some((by, path)),
+            _ => None,
+        },
+        _ => None,
     }
 }
 
@@ -3671,6 +3730,8 @@ pub fn run(own_tray: bool) -> i32 {
                     state.peeks.start(by, kind, host, port, reply, expired);
                 } else if let Some((by, ask)) = as_db_test(&request) {
                     state.start_db_test(by, &ask, reply, expired);
+                } else if let Some((by, path)) = as_dir_list(&request) {
+                    state.start_dir_list(by, path, reply, expired);
                 } else {
                     let out = state.answer(&request);
                     if !expired.load(Ordering::Relaxed) {
@@ -4072,6 +4133,209 @@ mod tests {
             assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
         }
         release.store(true, Ordering::Relaxed);
+    }
+
+    fn dir_path() -> &'static str {
+        if cfg!(windows) {
+            r"C:\data"
+        } else {
+            "/srv/data"
+        }
+    }
+
+    fn dir_state(tag: &str, lister: dir_list::Lister, slow: Duration) -> State {
+        let mut s = State::new(temp_paths(tag));
+        s.dir_lister = lister;
+        s.dir_slow = slow;
+        s
+    }
+
+    /// A lister that waits for `gate` (at most 5 s) and then lists nothing. It never reads a disk.
+    fn gated_lister(gate: &Arc<AtomicBool>) -> dir_list::Lister {
+        let gate = gate.clone();
+        Arc::new(move |_| {
+            let end = Instant::now() + Duration::from_secs(5);
+            while !gate.load(Ordering::Relaxed) && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            Ok(ito_filepick::Listing::new(Vec::new()))
+        })
+    }
+
+    type DirReply = mpsc::Receiver<ito_ipc::door::Reply>;
+
+    fn dir_ask(s: &mut State, by: &str, path: &str) -> DirReply {
+        let (tx, rx) = mpsc::sync_channel(1);
+        s.start_dir_list(by, path, tx, Arc::new(AtomicBool::new(false)));
+        rx
+    }
+
+    /// Ticks the loop's way until `rx` has its answer.
+    fn dir_wait(s: &mut State, rx: &DirReply) -> Result<String, String> {
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            s.tick_peeks();
+            if let Ok(a) = rx.try_recv() {
+                return a;
+            }
+            assert!(Instant::now() < end, "the listing did not answer");
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    fn dir_count_is(s: &State, n: usize) {
+        let end = Instant::now() + Duration::from_secs(5);
+        while s.dir_linger.count() != n {
+            assert!(Instant::now() < end, "reads {} but {n} expected", s.dir_linger.count());
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    #[test]
+    fn a_dir_list_answers_the_listing_and_writes_nothing_down() {
+        let lister: dir_list::Lister = Arc::new(|path| {
+            assert_eq!(path, dir_path());
+            Ok(ito_filepick::Listing::new(vec![ito_filepick::Entry::dir("a"), ito_filepick::Entry::file("b").size(3)]))
+        });
+        let mut s = dir_state("dir-list-ok", lister, dir_list::SLOW);
+        let rx = dir_ask(&mut s, "", dir_path());
+        let listing: ito_filepick::Listing = serde_json::from_str(&dir_wait(&mut s, &rx).unwrap()).unwrap();
+        assert_eq!(listing.entries.len(), 2);
+        dir_count_is(&s, 0);
+        s.shut_down();
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap();
+        assert!(!ops.iter().any(|l| l.contains("dir-list")), "{ops:?}");
+    }
+
+    #[test]
+    fn a_dir_list_with_a_bad_path_is_refused_and_starts_nothing() {
+        let touched = Arc::new(AtomicBool::new(false));
+        let t = touched.clone();
+        let lister: dir_list::Lister = Arc::new(move |_| {
+            t.store(true, Ordering::Relaxed);
+            Ok(ito_filepick::Listing::new(Vec::new()))
+        });
+        let mut s = dir_state("dir-list-bad", lister, dir_list::SLOW);
+        let mut bad = vec!["", "relative", "a\0b"];
+        if cfg!(windows) {
+            bad.extend([r"\\server\share", r"\\?\C:\x"]);
+        }
+        for path in bad {
+            let rx = dir_ask(&mut s, "", path);
+            let e = rx.try_recv().expect("a refusal is answered at once").unwrap_err();
+            assert!(msg::DIR_LIST_PATH_BAD.is_in(&e), "{path:?}: {e}");
+        }
+        assert_eq!((s.dir_lists.running(), s.dir_linger.count()), (0, 0));
+        assert!(!touched.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn at_most_two_listings_run_and_the_engines_stop_ends_them() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut s = dir_state("dir-list-cap", gated_lister(&gate), Duration::from_secs(5));
+        let rxs: Vec<DirReply> = (0..3).map(|_| dir_ask(&mut s, "", dir_path())).collect();
+        let e = rxs[2].try_recv().expect("the third is refused at once").unwrap_err();
+        assert!(msg::DIR_LIST_BUSY.is_in(&e), "{e}");
+        assert_eq!(s.dir_linger.count(), 2, "the refused one gave its count back");
+        assert!(rxs[0].try_recv().is_err() && rxs[1].try_recv().is_err());
+        // The engine stops: the waiting callers hold the stopped line at once.
+        s.shut_down();
+        for rx in &rxs[..2] {
+            let a = rx.try_recv().expect("a waiting listing was not answered by the stop");
+            assert!(msg::DIR_LIST_STOPPED.is_in(&a.unwrap_err()));
+        }
+        gate.store(true, Ordering::Relaxed);
+        dir_count_is(&s, 0);
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap();
+        assert!(!ops.iter().any(|l| l.contains("dir-list")), "{ops:?}");
+    }
+
+    #[test]
+    fn a_slow_read_frees_its_slot_but_keeps_its_count_and_its_late_result_is_lost() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut s = dir_state("dir-list-slow", gated_lister(&gate), Duration::from_millis(30));
+        let rx = dir_ask(&mut s, "", dir_path());
+        let e = dir_wait(&mut s, &rx).unwrap_err();
+        assert!(msg::DIR_LIST_SLOW.is_in(&e), "{e}");
+        assert_eq!(s.dir_linger.count(), 1, "the read goes on alone");
+        // The slot is free: another listing starts (and is slow in its turn).
+        let again = dir_ask(&mut s, "", dir_path());
+        assert!(again.try_recv().is_err(), "a new listing starts, it is not refused");
+        assert!(msg::DIR_LIST_SLOW.is_in(&dir_wait(&mut s, &again).unwrap_err()));
+        assert_eq!(s.dir_linger.count(), 2);
+        gate.store(true, Ordering::Relaxed);
+        dir_count_is(&s, 0);
+        s.tick_peeks();
+        assert!(rx.try_recv().is_err() && again.try_recv().is_err(), "a late result is never delivered");
+    }
+
+    #[test]
+    fn lingering_reads_are_capped_and_the_cap_is_atomic() {
+        let gate = Arc::new(AtomicBool::new(false));
+        let mut s = dir_state("dir-list-linger", gated_lister(&gate), Duration::from_millis(20));
+        for _ in 0..dir_list::LINGER_MAX {
+            let rx = dir_ask(&mut s, "", dir_path());
+            assert!(msg::DIR_LIST_SLOW.is_in(&dir_wait(&mut s, &rx).unwrap_err()));
+        }
+        assert_eq!(s.dir_linger.count(), dir_list::LINGER_MAX);
+        let rx = dir_ask(&mut s, "", dir_path());
+        let e = rx.try_recv().expect("refused at once").unwrap_err();
+        assert!(msg::DIR_LIST_BUSY.is_in(&e), "{e}");
+        assert_eq!(s.dir_linger.count(), dir_list::LINGER_MAX);
+        // One below the cap lets exactly one more through.
+        gate.store(true, Ordering::Relaxed);
+        dir_count_is(&s, 0);
+        let held: Vec<_> = (0..dir_list::LINGER_MAX - 1).map(|_| s.dir_linger.try_take().unwrap()).collect();
+        let last = s.dir_linger.try_take();
+        assert!(last.is_some() && s.dir_linger.try_take().is_none());
+        drop((held, last));
+        assert_eq!(s.dir_linger.count(), 0);
+    }
+
+    #[test]
+    fn a_panicking_read_and_a_failed_spawn_answer_stopped_and_give_the_count_back() {
+        let lister: dir_list::Lister = Arc::new(|_| panic!("boom"));
+        let mut s = dir_state("dir-list-panic", lister, dir_list::SLOW);
+        let rx = dir_ask(&mut s, "", dir_path());
+        let e = dir_wait(&mut s, &rx).unwrap_err();
+        assert!(msg::DIR_LIST_STOPPED.is_in(&e), "{e}");
+        dir_count_is(&s, 0);
+        s.dir_lists.fail_spawn = true;
+        let rx = dir_ask(&mut s, "", dir_path());
+        let e = dir_wait(&mut s, &rx).unwrap_err();
+        assert!(msg::DIR_LIST_STOPPED.is_in(&e), "{e}");
+        dir_count_is(&s, 0);
+        assert_eq!(s.dir_lists.running(), 0);
+    }
+
+    #[test]
+    fn an_expired_dir_list_starts_nothing_and_a_far_admin_over_http_runs() {
+        let gate = Arc::new(AtomicBool::new(true));
+        let mut s = dir_state("dir-list-over", gated_lister(&gate), dir_list::SLOW);
+        let (tx, rx) = mpsc::sync_channel(1);
+        s.start_dir_list("", dir_path(), tx, Arc::new(AtomicBool::new(true)));
+        assert!(rx.try_recv().is_err());
+        assert_eq!((s.dir_lists.running(), s.dir_linger.count()), (0, 0));
+        let list = || Request::DirList { path: dir_path().to_owned(), ticket: 4 };
+        let over = |by: &str, request: Request| Request::Over { by: by.to_owned(), request: Box::new(request) };
+        assert!(matches!(as_dir_list(&list()), Some(("", _))));
+        let wrapped = over("ann", list());
+        let (by, path) = as_dir_list(&wrapped).expect("an admin's listing over HTTP");
+        assert_eq!((by, path), ("ann", dir_path()));
+        assert!(as_dir_list(&Request::Status).is_none() && as_dir_list(&over("ann", Request::Status)).is_none());
+        let rx = dir_ask(&mut s, by, path);
+        assert!(dir_wait(&mut s, &rx).is_ok());
+    }
+
+    #[test]
+    fn dir_places_answer_the_style_and_a_listing_never_runs_on_the_loop() {
+        let mut s = State::new(temp_paths("dir-places"));
+        let reply: proto::PlacesReply = serde_json::from_str(&s.answer(&Request::DirPlaces { ticket: 1 }).unwrap()).unwrap();
+        assert_eq!(reply.style, ito_filepick::local_style());
+        let e = s.answer(&Request::DirList { path: dir_path().to_owned(), ticket: 2 }).unwrap_err();
+        assert!(msg::DIR_LIST_STOPPED.is_in(&e), "{e}");
     }
 
     /// over HTTP only what its paths ask for goes through; never an approval or a save.

@@ -229,6 +229,12 @@ fn test_watch() -> bool {
     false
 }
 
+/// Whether the palette key opens a palette: it does not while one is open, nor while a file picker of the far engine is
+/// (the key is consumed either way, so the keymap never reads it).
+fn palette_opens(key: bool, already_open: bool, picking: bool) -> bool {
+    key && !already_open && !picking
+}
+
 fn click_plan(current: Option<&str>, name: &str, switching: Option<&link::Link>) -> ClickPlan {
     match switching {
         Some(to) if to.far() == Some(name) => ClickPlan::Retarget,
@@ -910,7 +916,8 @@ impl App {
     /// Ctrl+Shift+P opens the palette; while it is open it takes the keys.
     fn command_palette(&mut self, ctx: &egui::Context) {
         let open = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::P));
-        if open && self.palette.is_none() {
+        // A file picker of the far engine is open: Ctrl+Shift+P is not the palette's then (a palette already open stays).
+        if palette_opens(open, self.palette.is_some(), self.browser.picking()) {
             self.palette = Some(ito_palette::View::new());
         }
         let Some(mut view) = self.palette.take() else { return };
@@ -1212,11 +1219,16 @@ impl eframe::App for App {
                 // Pointer input is read from egui's pointer state, not from these events, so the page still draws.
                 ctx.input_mut(|i| std::mem::take(&mut i.events))
             } else {
-                self.read_keys(&ctx);
+                // A file picker of the far engine is open: the keymap must not read the picker's keys.
+                if !self.browser.picking() {
+                    self.read_keys(&ctx);
+                }
                 Vec::new()
             };
             self.browser.under_card = card;
             self.browser.under_palette = self.palette.is_some();
+            self.browser.clock = self.prefs.common.clock_or(None);
+            self.browser.lang.clone_from(&self.lang);
             self.browser.show(ui, &self.table);
             if self.browser.has_settings_wish() {
                 // A link of the job form was clicked in this frame: the settings open in the next one, now.
@@ -1468,6 +1480,13 @@ mod tests {
         assert!(watch_hook(Some(OsStr::new("1"))));
         assert!(!watch_hook(Some(OsStr::new("0"))));
         assert!(!watch_hook(Some(OsStr::new("true"))));
+    }
+
+    #[test]
+    fn the_palette_key_does_not_open_a_palette_under_a_far_file_picker() {
+        assert!(palette_opens(true, false, false));
+        assert!(!palette_opens(true, false, true), "the picker's keys are the picker's");
+        assert!(!palette_opens(true, true, false) && !palette_opens(false, false, false));
     }
 
     #[test]

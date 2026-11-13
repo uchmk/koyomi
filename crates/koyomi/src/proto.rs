@@ -18,7 +18,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 54;
+pub const PROTO: u32 = 55;
 
 /// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
 /// `Display`. On the wire it is the plain string.
@@ -503,6 +503,25 @@ pub enum Request {
         password_value: Option<Hidden>,
         ticket: u64,
     },
+    /// Ask the engine's PC how it writes paths and what its picker's side list holds (its drives and home). Nothing is
+    /// read from a disk and nothing is written. `ticket` is the window's own number: the engine ignores it. The
+    /// answer is the JSON of [`PlacesReply`].
+    DirPlaces {
+        ticket: u64,
+    },
+    /// List one folder of the engine's PC (the far picker of 参照…). Nothing is written. `ticket` is the window's own
+    /// number: the engine ignores it. The answer is the JSON of `ito_filepick::Listing`.
+    DirList {
+        path: String,
+        ticket: u64,
+    },
+}
+
+/// What `DirPlaces` answers: the engine's path style and the places of its picker.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlacesReply {
+    pub style: ito_filepick::Style,
+    pub places: Vec<ito_filepick::Place>,
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -760,6 +779,9 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::HostRemove { .. }
         | Request::HostPeek { .. }
         | Request::DatabaseTest { .. }
+        // They list the engine's disk; an admin can already run any job there.
+        | Request::DirPlaces { .. }
+        | Request::DirList { .. }
         | Request::BucketPut { .. }
         | Request::BucketRemove { .. }
         | Request::MailboxPut { .. }
@@ -810,6 +832,9 @@ pub fn is_read(r: &Request) -> bool {
         | Request::Registry
         | Request::Notices { .. }
         | Request::HostPeek { .. }
+        // A listing changes nothing; asking again is harmless.
+        | Request::DirPlaces { .. }
+        | Request::DirList { .. }
         | Request::Tray { .. } => true,
         Request::Stop
         | Request::Approve { .. }
@@ -1293,6 +1318,37 @@ mod tests {
             serde_json::from_str::<Request>(bare),
             Ok(Request::DatabaseTest { tls: None, entry: None, password_value: None, ticket: 1, .. })
         ));
+    }
+
+    #[test]
+    fn the_dir_requests_read_back_and_are_admin_reads_with_the_usual_wait() {
+        let list = Request::DirList { path: r"C:\data".into(), ticket: 4 };
+        let places = Request::DirPlaces { ticket: 5 };
+        let Request::DirList { path, ticket } = round(&list) else { panic!("not a list") };
+        assert_eq!((path.as_str(), ticket), (r"C:\data", 4));
+        assert!(matches!(round(&places), Request::DirPlaces { ticket: 5 }));
+        let json = serde_json::to_string(&list).unwrap();
+        assert!(matches!(serde_json::from_str::<Request>(&json), Ok(Request::DirList { ticket: 4, .. })), "{json}");
+        let json = serde_json::to_string(&places).unwrap();
+        assert!(matches!(serde_json::from_str::<Request>(&json), Ok(Request::DirPlaces { ticket: 5 })), "{json}");
+        let door = door();
+        let over = |request: Request| Request::Over { by: "x".into(), request: Box::new(request) };
+        for r in [&list, &places] {
+            assert_eq!(door_needs(r), Some(Role::Admin));
+            assert!(is_read(r));
+            assert_eq!((door.wait)(r), ito_ipc::door::ANSWER_WAIT);
+        }
+        assert_eq!((door.wait)(&over(list)), ito_ipc::door::ANSWER_WAIT);
+    }
+
+    #[test]
+    fn a_places_reply_reads_back_as_json() {
+        let reply = PlacesReply {
+            style: ito_filepick::Style::Windows,
+            places: vec![ito_filepick::Place::new("C:", r"C:\", ito_filepick::PlaceKind::Drive)],
+        };
+        let json = serde_json::to_string(&reply).unwrap();
+        assert_eq!(serde_json::from_str::<PlacesReply>(&json).unwrap(), reply);
     }
 
     #[test]

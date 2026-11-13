@@ -3157,6 +3157,36 @@ text = "The database of {0} refused the test with the saved password."
 cause = "The test connected, and the database returned an error to a query that changes nothing. The server's own words are shown only for a password typed in the form."
 action = "Type the password in the form and test again to see the reason the server gives."
 
+[E2276]
+when = "Too many folder listings are running"
+text = "A folder listing is already running. Wait a moment and open it again."
+cause = "The engine answers at most 2 listings at the same time. Counting the reads a slow disk still holds after their answer went out, at most 4 exist."
+action = "Wait a moment and open it again."
+
+[E2277]
+when = "The folder listing was stopped"
+text = "The folder listing was stopped."
+cause = "The engine stopped, the listing could not be started, or it ended without an answer."
+action = "Open it again while the engine is running."
+
+[E2278]
+when = "The path of the folder to list is not one that can be used"
+text = "Only an absolute path can be listed. On a Windows engine, only a path that starts with a drive letter."
+cause = "The path is relative, a network path (starting with a double backslash, // or /\\), or a special path such as \\\\?\\."
+action = "Enter a full path such as C:\\data (/srv/data for a Linux engine)."
+
+[E2279]
+when = "A folder on the engine's PC cannot be listed"
+text = "Cannot list {0}: {1}"
+cause = "The folder does not exist, the engine's account cannot read it, or the engine does not open it from here: a network drive, a subst drive, a link, a Windows device name and so on ({1} is the engine PC's reason and says which)."
+action = "Check the path, or choose another folder."
+
+[E2280]
+when = "Listing a folder on the engine's PC takes long"
+text = "Listing {0} is taking long."
+cause = "The disk is slow to answer (a sleeping disk, a network file system mounted on a Linux engine, and so on)."
+action = "Wait a moment and press Refresh (F5), or choose another folder."
+
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."

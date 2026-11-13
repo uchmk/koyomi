@@ -107,7 +107,7 @@ impl<'a> Form<'a> {
         let (label, note) = self.label(ui, key, need);
         let wrong = bad || (need == Need::Required && s.trim().is_empty());
         let mut changed = false;
-        match browse.filter(|_| self.pick.local) {
+        match browse.filter(|w| self.pick.can_browse(*w)) {
             Some(want) => {
                 // The button takes its room first, at the right; the field fills what is left.
                 ui.horizontal(|ui| {
@@ -233,7 +233,7 @@ impl<'a> Form<'a> {
     fn files(&self, ui: &mut egui::Ui, key: &'a str, need: Need, s: &mut String, (rows, aside): (usize, &str)) -> bool {
         let (label, note) = self.label(ui, key, need);
         let mut changed = CodeBox::new(key).name(label).aside(aside).rows(rows).show(ui, s).changed();
-        if self.pick.local {
+        if self.pick.can_browse(Want::Files) {
             ui.add_space(4.0);
             changed |= self.pick.browse_button(ui, self.t, key, label, Want::Files, s);
         }
@@ -337,19 +337,20 @@ struct Asked {
 
 impl Editor {
     /// The pane, or its strip when folded. With no part opened it shows the net's fields.
-    #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments, clippy::type_complexity)]
     pub(super) fn drawer(
         &mut self,
         ui: &mut egui::Ui,
         t: &Table,
         (calendars, stops, now): (&BTreeMap<String, Calendar>, &[koyomi_core::blackout::Blackout], chrono::NaiveDateTime),
-        (nets, local, (shells, default)): (&[pick::NetChoice], bool, (&[crate::proto::Shell], &str)),
+        (nets, (local, far_browse), (shells, default)): (&[pick::NetChoice], (bool, bool), (&[crate::proto::Shell], &str)),
         (accounts, databases, windows, conns): (&[String], &[crate::proto::DatabaseName], Option<bool>, pick::Conns),
+        look: &pick::FarLook,
         power: &crate::proto::Power,
         action: &mut Option<Action>,
     ) {
         let c = ito_theme::colors();
-        self.browse.poll(ui.ctx());
+        self.browse.poll(ui.ctx(), look);
         let gone = match &self.pane {
             Some(Pane::Part(id, _)) => self.index(id).is_none(),
             Some(Pane::Net(_)) => false,
@@ -378,7 +379,8 @@ impl Editor {
         let ctx = Ctx::new(nets, &self.id, local, &scope, std::mem::take(&mut self.browse))
             .with_shells(shells, default)
             .with_registry(accounts, databases, windows)
-            .with_conns(conns);
+            .with_conns(conns)
+            .with_far_browse(far_browse);
         let form = Form::new(t, &ctx);
         let mut asked = Asked::default();
         let wide = ui.available_width();

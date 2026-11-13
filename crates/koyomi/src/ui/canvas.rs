@@ -159,6 +159,11 @@ pub struct Around<'a> {
     pub windows: Option<bool>,
     /// The registered `[[host]]`, `[[bucket]]` and `[[mailbox]]` names, the groups and the notify mails.
     pub conns: super::pick::Conns<'a>,
+    /// The engine is another PC's and the person is its admin: 参照… lists the engine's disk.
+    pub far_browse: bool,
+    /// The clock and the language of the file picker of a far engine.
+    pub clock: &'a ito_common::Clock,
+    pub lang: &'a str,
 }
 
 /// What the palette (and the toolbar) can ask of the editor.
@@ -1202,6 +1207,43 @@ impl Editor {
         self.browse = super::pick::Browse::pending("n\u{1}when.file-0");
     }
 
+    /// A far file picker waits for the engine's places, for a test.
+    #[cfg(test)]
+    pub fn hold_far_chooser(&mut self) {
+        self.browse = super::pick::Browse::waiting_far("n\u{1}when.file-0", super::pick::Want::File);
+    }
+
+    /// The far file picker's status as text, for a test.
+    #[cfg(test)]
+    pub fn far_status(&self) -> String {
+        self.browse.far_status()
+    }
+
+    /// The request the file picker of a far engine wants sent (`DirPlaces` or `DirList`), once.
+    pub fn browse_request(&mut self) -> Option<crate::proto::Request> {
+        self.browse.request()
+    }
+
+    /// The engine's answer to a picker request; true when it was this editor's picker.
+    pub fn browse_answered(&mut self, req: &crate::proto::Request, r: Result<String, String>) -> bool {
+        self.browse.answered(req, r)
+    }
+
+    /// A picker request that could not be sent.
+    pub fn browse_unsent(&mut self, req: &crate::proto::Request, why: String) {
+        self.browse.unsent(req, why);
+    }
+
+    /// A far file picker is open and has no answer yet.
+    pub fn picking(&self) -> bool {
+        self.browse.picking()
+    }
+
+    /// Closes a far file picker without an answer (a box of the window takes over).
+    pub fn browse_cancel(&mut self) {
+        self.browse.cancel();
+    }
+
     /// Saved now: changed, sound, and not being staged for a day instead.
     pub fn can_save(&self) -> bool {
         self.dirty && self.problems.is_empty() && self.stage.is_none()
@@ -2101,8 +2143,9 @@ impl Editor {
             ui,
             t,
             (calendars, around.stops, around.now),
-            (around.nets, around.local, (around.shells, around.shell)),
+            (around.nets, (around.local, around.far_browse), (around.shells, around.shell)),
             (around.accounts, around.databases, around.windows, around.conns),
+            &super::pick::FarLook { clock: around.clock, lang: around.lang },
             power,
             &mut action,
         );
@@ -2309,7 +2352,8 @@ impl Editor {
 
         // The keys, when no field has them.
         let typing = ui.memory(|m| m.focused().is_some_and(|f| f != resp.id));
-        if !typing && self.menu.is_none() {
+        // A far file picker is open over the net: its keys are the picker's alone.
+        if !typing && self.menu.is_none() && !self.browse.picking() {
             self.keys(ui, &at, &mut action);
             // `a`, a paste, Delete, undo and redo add or remove parts.
             at = place(self);

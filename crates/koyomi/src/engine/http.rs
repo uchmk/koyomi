@@ -2311,6 +2311,8 @@ high_contrast = true
             serde_json::json!({"MailboxPut": {"name": "mb", "mail": "imaps://u@h", "password": "secret:s", "base_sha256": "b"}}),
             serde_json::json!({"MailboxRemove": {"name": "mb", "base_sha256": "b", "force": false}}),
             serde_json::json!({"DatabaseTest": {"db": "postgres://u@h/d", "tls": null, "entry": null, "password_value": "pw-not-to-show", "ticket": 1}}),
+            serde_json::json!({"DirPlaces": {"ticket": 1}}),
+            serde_json::json!({"DirList": {"path": "C:\\data", "ticket": 2}}),
         ];
         for b in bodies {
             let body = door_body(b);

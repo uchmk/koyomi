@@ -90,10 +90,12 @@ fn strength(tls: SqlTls) -> u8 {
     }
 }
 
-/// Whether a SQLite path may be opened by a test. On Windows only a path with a drive (`C:\...`, `C:/...`) is taken:
-/// every other prefix (a network path written `\\server\share` or `/\server\share`, `\\?\`, `\\.\`) and a root without
-/// a drive are refused, so a test makes no SMB connection. Elsewhere any absolute path is taken.
-fn path_ok(path: &str) -> bool {
+/// Whether a path may be read by the engine on a window's ask: the SQLite file a test opens, and the folder a listing
+/// reads (`dir_list`). On Windows only a path with a drive (`C:\...`, `C:/...`) is taken: a network path written as one
+/// (`\\server\share`, `/\server\share`), `\\?\`, `\\.\` and a root without a drive are refused, lexically. A mapped
+/// network drive or a link inside the path is not seen here (the check is lexical; a listing's own checks do the rest).
+/// Elsewhere any absolute path is taken.
+pub(super) fn path_ok(path: &str) -> bool {
     let path = Path::new(path);
     if !path.is_absolute() {
         return false;

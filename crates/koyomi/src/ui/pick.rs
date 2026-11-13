@@ -8,13 +8,17 @@
 
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::Duration;
 
 use ito_a11y::Role;
+use ito_filepick::{Done, Listing, Mode, Picker, Style, Ticket, Words};
 use ito_i18n::Table;
 use koyomi_core::scan::Def;
 use koyomi_core::when;
+
+use crate::proto::{PlacesReply, Request};
 
 /// One net of the engine, as a list shows it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -170,33 +174,101 @@ pub fn start_dir(text: &str, want: Want) -> Option<PathBuf> {
 }
 
 /// The text a chooser's answer makes: one path replaces the field; files are added a line each after what is there.
-pub fn browsed_text(now: &str, want: Want, paths: &[PathBuf]) -> Option<String> {
+pub fn browsed_text(now: &str, want: Want, paths: &[String]) -> Option<String> {
     let first = paths.first()?;
     if want != Want::Files {
-        return Some(first.display().to_string());
+        return Some(first.clone());
     }
     let mut out = now.trim_end_matches(['\r', '\n']).to_owned();
     for p in paths {
         if !out.is_empty() {
             out.push('\n');
         }
-        out.push_str(&p.display().to_string());
+        out.push_str(p);
     }
     Some(out)
+}
+
+/// Whether `root` (as `Style::root_of` writes it) is a drive root such as `C:\`.
+fn is_drive_root(root: &str) -> bool {
+    let b = root.as_bytes();
+    b.len() == 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/')
+}
+
+/// Where a far chooser starts and which name it selects (both on the engine's disk), read from the field's text. Lexical
+/// only: this PC's disk is never touched. It starts only from a complete path (not empty, no glob, no `{date}`, a root the
+/// engine's style reads; on Windows a drive, not a share): anything else starts at the picker's first place.
+pub fn far_start(text: &str, want: Want, style: Style) -> (Option<String>, Option<String>) {
+    let line = if want == Want::Files {
+        match text.lines().map(str::trim).rfind(|l| !l.is_empty()) {
+            Some(l) => l,
+            None => return (None, None),
+        }
+    } else {
+        text.trim()
+    };
+    if line.is_empty() || line.contains(['*', '?', '{']) {
+        return (None, None);
+    }
+    let Some(root) = style.root_of(line) else { return (None, None) };
+    if style == Style::Windows && !is_drive_root(&root) {
+        return (None, None);
+    }
+    match want {
+        Want::Folder => (Some(line.to_owned()), None),
+        Want::File | Want::Save => match (style.parent(line), style.last_part(line)) {
+            (Some(dir), Some(name)) => (Some(dir), Some(name)),
+            _ => (Some(root), None),
+        },
+        Want::Files => (Some(style.parent(line).unwrap_or(root)), None),
+    }
+}
+
+/// The next ticket a far chooser's request carries (the engine's answer is matched by it).
+fn next_ticket() -> u64 {
+    static NEXT_TICKET: AtomicU64 = AtomicU64::new(1);
+    NEXT_TICKET.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What the window gives a far chooser each frame.
+pub struct FarLook<'a> {
+    pub clock: &'a ito_common::Clock,
+    pub lang: &'a str,
 }
 
 /// The file chooser that is open (one for the whole window) and the field it was opened for.
 #[derive(Default)]
 pub struct Browse {
     open: Option<Open>,
+    /// The request a far chooser wants sent (taken by [`Browse::request`]).
+    out: Option<Request>,
 }
 
 struct Open {
     /// The part (or the net) and the field.
     owner: String,
-    rx: Receiver<Vec<PathBuf>>,
+    want: Want,
+    how: How,
     /// What the person chose, until the field it was for takes it.
-    answer: Option<Vec<PathBuf>>,
+    answer: Option<Vec<String>>,
+}
+
+enum How {
+    /// The system's own dialog on this PC.
+    Local(Receiver<Vec<PathBuf>>),
+    /// The engine was asked for its places; the picker is built when they come.
+    Places {
+        ticket: u64,
+        title: String,
+        text: String,
+        /// Whether the engine runs on Windows, as the snapshot said (for the style when the places do not come).
+        windows: Option<bool>,
+        /// The words of the waiting box (the picker's own, so the cancel button reads like the picker's).
+        asking: String,
+        words: Words,
+    },
+    /// The picker of ito-filepick, listing the engine's disk through `DirList`.
+    Far { picker: Box<Picker>, words: Words, asked: Option<(u64, Ticket)> },
 }
 
 impl Browse {
@@ -205,7 +277,24 @@ impl Browse {
     pub fn pending(owner: &str) -> Browse {
         let (tx, rx) = std::sync::mpsc::channel();
         std::mem::forget(tx);
-        Browse { open: Some(Open { owner: owner.to_owned(), rx, answer: None }) }
+        Browse { open: Some(Open { owner: owner.to_owned(), want: Want::File, how: How::Local(rx), answer: None }), out: None }
+    }
+
+    /// A far chooser that waits for the engine's places, for a test (its `DirPlaces` is in [`Browse::request`]).
+    #[cfg(test)]
+    pub fn waiting_far(owner: &str, want: Want) -> Browse {
+        let mut b = Browse::default();
+        b.start_far(owner.to_owned(), want, "path".to_owned(), String::new(), Some(true), "ja", "asking".to_owned());
+        b
+    }
+
+    /// The far picker's status as text (`Loading`, `Ready`, `Failed("…")`), for a test.
+    #[cfg(test)]
+    pub fn far_status(&self) -> String {
+        match self.open.as_ref().map(|o| &o.how) {
+            Some(How::Far { picker, .. }) => format!("{:?}", picker.status()),
+            _ => panic!("no far picker"),
+        }
     }
 
     /// Whether a chooser is open.
@@ -213,22 +302,129 @@ impl Browse {
         self.open.is_some()
     }
 
-    /// Looks for the answer of the open chooser; asks for another frame while it is still open.
-    pub fn poll(&mut self, ctx: &egui::Context) {
+    /// Whether a far chooser is open and has no answer yet (the window's keys are the picker's then).
+    pub fn picking(&self) -> bool {
+        self.open.as_ref().is_some_and(|o| o.answer.is_none() && matches!(o.how, How::Places { .. } | How::Far { .. }))
+    }
+
+    /// Closes a far chooser without an answer; what the engine answers for it later is ignored.
+    pub fn cancel(&mut self) {
+        if self.open.as_ref().is_some_and(|o| matches!(o.how, How::Places { .. } | How::Far { .. })) {
+            self.open = None;
+        }
+    }
+
+    /// The request a far chooser wants sent, once.
+    pub fn request(&mut self) -> Option<Request> {
+        self.out.take()
+    }
+
+    /// The engine's answer to `req`; true when it was this chooser's.
+    pub fn answered(&mut self, req: &Request, r: Result<String, String>) -> bool {
+        match req {
+            Request::DirPlaces { ticket } => self.places_answered(*ticket, r),
+            Request::DirList { ticket, .. } => self.list_answered(*ticket, r),
+            _ => false,
+        }
+    }
+
+    /// `req` could not be sent (`why`): the same as an answer that failed.
+    pub fn unsent(&mut self, req: &Request, why: String) {
+        self.answered(req, Err(why));
+    }
+
+    fn places_answered(&mut self, ticket: u64, r: Result<String, String>) -> bool {
+        let Some(open) = &mut self.open else { return false };
+        let want = open.want;
+        let How::Places { ticket: live, title, text, windows, words, .. } = &open.how else { return false };
+        if *live != ticket {
+            return false;
+        }
+        // Without the places the picker still opens, in the style the snapshot hints, and its first listing shows the
+        // engine's reason (a role that is not admin, for one).
+        let reply = r.ok().and_then(|s| serde_json::from_str::<PlacesReply>(&s).ok());
+        let (style, places) = match reply {
+            Some(p) => (p.style, p.places),
+            None => (if *windows == Some(false) { Style::Posix } else { Style::Windows }, Vec::new()),
+        };
+        let (start, name) = far_start(text, want, style);
+        let mode = match want {
+            Want::Folder => Mode::OpenFolder,
+            Want::Files => Mode::OpenFiles,
+            Want::File | Want::Save => Mode::OpenFile,
+        };
+        let mut picker = Picker::new("koyomi.browse", mode, style).title(title).places(places);
+        if let Some(s) = start {
+            picker = picker.start(&s);
+        }
+        if let Some(n) = name {
+            picker = picker.file_name(&n);
+        }
+        open.how = How::Far { picker: Box::new(picker), words: words.clone(), asked: None };
+        true
+    }
+
+    fn list_answered(&mut self, ticket: u64, r: Result<String, String>) -> bool {
+        let Some(open) = &mut self.open else { return false };
+        let How::Far { picker, asked, .. } = &mut open.how else { return false };
+        let Some((n, live)) = *asked else { return false };
+        if n != ticket {
+            return false;
+        }
+        *asked = None;
+        let listing = r.and_then(|s| serde_json::from_str::<Listing>(&s).map_err(|e| e.to_string()));
+        picker.set_listing(live, listing);
+        true
+    }
+
+    /// Looks for the answer of the open chooser and draws a far one; asks for another frame while it is still open.
+    pub fn poll(&mut self, ctx: &egui::Context, look: &FarLook) {
         let Some(open) = &mut self.open else { return };
         if open.answer.is_some() {
             return;
         }
-        match open.rx.try_recv() {
-            Ok(paths) if paths.is_empty() => self.open = None,
-            Ok(paths) => open.answer = Some(paths),
-            Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(100)),
-            Err(TryRecvError::Disconnected) => self.open = None,
+        let mut close = false;
+        match &mut open.how {
+            How::Local(rx) => match rx.try_recv() {
+                Ok(paths) if paths.is_empty() => close = true,
+                Ok(paths) => open.answer = Some(paths.iter().map(|p| p.display().to_string()).collect()),
+                Err(TryRecvError::Empty) => ctx.request_repaint_after(Duration::from_millis(100)),
+                Err(TryRecvError::Disconnected) => close = true,
+            },
+            How::Places { title, asking, words, .. } => {
+                let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+                let shown = egui::Modal::new(egui::Id::new("koyomi.browse.asking")).show(ctx, |ui| {
+                    ui.set_width(320.0);
+                    ui.label(title.as_str());
+                    ui.label(asking.as_str());
+                    let r = ito_prefs::button_with(ui, look, &words.cancel, ito_prefs::Tone::Plain);
+                    ito_a11y::say(&r, Role::Button, &words.cancel);
+                    r.clicked()
+                });
+                close = shown.inner || shown.should_close();
+                ctx.request_repaint_after(Duration::from_millis(100));
+            }
+            How::Far { picker, words, asked } => {
+                let shown = picker.show(ctx, &ito_filepick::Look { words, clock: look.clock, lang: look.lang });
+                if let Some(ito_filepick::Want::List { ticket, path }) = shown.want {
+                    let n = next_ticket();
+                    *asked = Some((n, ticket));
+                    self.out = Some(Request::DirList { path, ticket: n });
+                }
+                match shown.done {
+                    Some(Done::Picked(p)) if !p.is_empty() => open.answer = Some(p),
+                    Some(_) => close = true,
+                    None => ctx.request_repaint_after(Duration::from_millis(100)),
+                }
+            }
+        }
+        if close {
+            self.open = None;
         }
     }
 
     /// The answer, when it is for `owner`.
-    fn take(&mut self, owner: &str) -> Option<Vec<PathBuf>> {
+    fn take(&mut self, owner: &str) -> Option<Vec<String>> {
         let open = self.open.as_mut().filter(|o| o.owner == owner)?;
         let answer = open.answer.take()?;
         self.open = None;
@@ -255,7 +451,16 @@ impl Browse {
                 Want::Files => d.open_files(),
             }
         });
-        self.open = Some(Open { owner, rx, answer: None });
+        self.open = Some(Open { owner, want, how: How::Local(rx), answer: None });
+    }
+
+    /// Opens a far chooser: asks the engine for its places first (the request is in [`Browse::request`]).
+    #[allow(clippy::too_many_arguments)]
+    fn start_far(&mut self, owner: String, want: Want, title: String, text: String, windows: Option<bool>, lang: &str, asking: String) {
+        let ticket = next_ticket();
+        self.out = Some(Request::DirPlaces { ticket });
+        let words = Words::for_lang(lang);
+        self.open = Some(Open { owner, want, how: How::Places { ticket, title, text, windows, asking, words }, answer: None });
     }
 }
 
@@ -291,6 +496,8 @@ pub struct Ctx<'a> {
     settings: std::cell::Cell<Option<usize>>,
     scope: String,
     browse: RefCell<Browse>,
+    /// An engine on another PC whose disk the person may browse (an admin of a far engine).
+    far_browse: bool,
 }
 
 impl<'a> Ctx<'a> {
@@ -308,7 +515,20 @@ impl<'a> Ctx<'a> {
             settings: std::cell::Cell::new(None),
             scope: scope.to_owned(),
             browse: RefCell::new(browse),
+            far_browse: false,
         }
+    }
+
+    /// With 参照… for the disk of an engine on another PC (not for a file to write: the engine's disk is only listed).
+    pub fn with_far_browse(mut self, on: bool) -> Self {
+        self.far_browse = on;
+        self
+    }
+
+    /// Whether a field wanting `want` has a 参照… button: on this PC always, on another PC's engine for an admin and
+    /// never for a file to write.
+    pub fn can_browse(&self, want: Want) -> bool {
+        self.local || (self.far_browse && want != Want::Save)
     }
 
     /// With the accounts and databases the engine has registered, and whether it runs on Windows.
@@ -408,7 +628,7 @@ impl<'a> Ctx<'a> {
     /// 参照… for the field `key` (in the part this frame is about): only for an engine on this PC. The answer of the
     /// chooser lands in `text` when this field is the one it was opened for. True when `text` changed.
     pub fn browse_button(&self, ui: &mut egui::Ui, t: &Table, key: &str, name: &str, want: Want, text: &mut String) -> bool {
-        if !self.local {
+        if !self.can_browse(want) {
             return false;
         }
         let owner = format!("{}\u{1}{key}", self.scope);
@@ -426,9 +646,14 @@ impl<'a> Ctx<'a> {
         ito_a11y::say(&r, Role::Button, &format!("{name}: {}", t.tr("pick.browse")));
         if busy {
             r.on_disabled_hover_text(t.tr("pick.browsing"));
-        } else if r.on_hover_text(t.tr("pick.browse_hover")).clicked() {
-            let dir = start_dir(text, want);
-            self.browse.borrow_mut().start(owner, want, name.to_owned(), dir);
+        } else if self.local {
+            if r.on_hover_text(t.tr("pick.browse_hover")).clicked() {
+                let dir = start_dir(text, want);
+                self.browse.borrow_mut().start(owner, want, name.to_owned(), dir);
+            }
+        } else if r.on_hover_text(t.tr("pick.browse_far_hover")).clicked() {
+            let asking = t.tr("pick.far_asking").to_owned();
+            self.browse.borrow_mut().start_far(owner, want, name.to_owned(), text.clone(), self.windows, t.tr("app.lang"), asking);
         }
         changed
     }
@@ -603,15 +828,223 @@ mod tests {
 
     #[test]
     fn a_chosen_path_fills_the_field() {
-        let p = |s: &str| PathBuf::from(s);
-        assert_eq!(browsed_text("old", Want::File, &[p("C:/a.txt")]), Some(p("C:/a.txt").display().to_string()));
+        let p = |s: &str| s.to_owned();
+        assert_eq!(browsed_text("old", Want::File, &[p("C:/a.txt")]), Some(p("C:/a.txt")));
         assert_eq!(browsed_text("x", Want::Folder, &[]), None);
         let out = browsed_text("C:/a.txt\n", Want::Files, &[p("C:/b.txt"), p("C:/c.txt")]).unwrap();
-        assert_eq!(
-            out.lines().collect::<Vec<_>>(),
-            ["C:/a.txt", &p("C:/b.txt").display().to_string(), &p("C:/c.txt").display().to_string()]
+        assert_eq!(out.lines().collect::<Vec<_>>(), ["C:/a.txt", "C:/b.txt", "C:/c.txt"]);
+        assert_eq!(browsed_text("", Want::Files, &[p("C:/b.txt")]), Some(p("C:/b.txt")));
+    }
+
+    fn start(text: &str, want: Want, style: Style) -> (Option<String>, Option<String>) {
+        far_start(text, want, style)
+    }
+
+    fn some(a: &str, b: Option<&str>) -> (Option<String>, Option<String>) {
+        (Some(a.to_owned()), b.map(str::to_owned))
+    }
+
+    #[test]
+    fn a_far_chooser_starts_from_a_complete_windows_path_only() {
+        let w = Style::Windows;
+        assert_eq!(start(r"C:\data\in", Want::Folder, w), some(r"C:\data\in", None));
+        assert_eq!(start(r"  C:\data\in  ", Want::Folder, w), some(r"C:\data\in", None));
+        assert_eq!(start(r"C:\data\in\a.csv", Want::File, w), some(r"C:\data\in", Some("a.csv")));
+        assert_eq!(start(r"C:\data\in\a.csv", Want::Files, w), some(r"C:\data\in", None));
+        assert_eq!(start("x\n C:\\data\\a.csv \n\n", Want::Files, w), some(r"C:\data", None), "the last line is what the person was at");
+        assert_eq!(start("C:\\data\\a.csv\nnowhere", Want::Files, w), (None, None));
+        // A root has no parent: the file chooser starts at the root, selecting nothing.
+        assert_eq!(start(r"C:\", Want::File, w), some(r"C:\", None));
+        assert_eq!(start(r"C:\", Want::Files, w), some(r"C:\", None));
+        assert_eq!(start(r"C:\", Want::Folder, w), some(r"C:\", None));
+        assert_eq!(start(r"C:\data\", Want::Folder, w), some(r"C:\data\", None));
+        // Not a complete path on a drive: the picker starts at its first place.
+        for text in [
+            r"\x",
+            "C:foo",
+            r"\\?\C:\x",
+            r"\\server\share\x",
+            r"\\server\share",
+            "relative",
+            r"a\b",
+            "",
+            "   ",
+            "C:\\a\\*.csv",
+            "C:\\a?",
+            "C:\\{date}\\x",
+        ] {
+            for want in [Want::Folder, Want::File, Want::Files] {
+                assert_eq!(start(text, want, w), (None, None), "{text:?} {want:?}");
+            }
+        }
+        assert_eq!(start("", Want::Files, w), (None, None));
+    }
+
+    #[test]
+    fn a_far_chooser_reads_a_posix_path_by_the_engines_style() {
+        let p = Style::Posix;
+        assert_eq!(start("/srv/data", Want::Folder, p), some("/srv/data", None));
+        assert_eq!(start("/srv/data/a.csv", Want::File, p), some("/srv/data", Some("a.csv")));
+        assert_eq!(start("/srv/data/a.csv", Want::Files, p), some("/srv/data", None));
+        assert_eq!(start("/", Want::File, p), some("/", None));
+        assert_eq!(start("/", Want::Folder, p), some("/", None));
+        // A name with a tab or a backslash is kept as it is.
+        assert_eq!(start("/srv/a\tb", Want::File, p), some("/srv", Some("a\tb")));
+        assert_eq!(start("/srv/a\\b", Want::File, p), some("/srv", Some("a\\b")));
+        for text in ["relative/dir", "", r"C:\data", "/srv/{date}", "/srv/*.csv", "/srv/a?"] {
+            assert_eq!(start(text, Want::File, p), (None, None), "{text:?}");
+        }
+    }
+
+    fn places_json() -> String {
+        let reply = PlacesReply { style: Style::Posix, places: vec![ito_filepick::Place::new("Root", "/", ito_filepick::PlaceKind::Root)] };
+        serde_json::to_string(&reply).unwrap()
+    }
+
+    fn waiting() -> (Browse, u64) {
+        let mut b = Browse::waiting_far("owner", Want::Folder);
+        let Some(Request::DirPlaces { ticket }) = b.request() else { panic!("a far chooser asks for the places first") };
+        assert!(b.request().is_none(), "a request is taken once");
+        (b, ticket)
+    }
+
+    fn is_far(b: &Browse) -> bool {
+        matches!(b.open.as_ref().map(|o| &o.how), Some(How::Far { .. }))
+    }
+
+    /// One frame of the chooser's `poll`.
+    fn poll_frame(ctx: &egui::Context, b: &mut Browse) {
+        let clock = ito_common::Clock::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| b.poll(ui.ctx(), &FarLook { clock: &clock, lang: "ja" }));
+        out.textures_delta.clear();
+    }
+
+    #[test]
+    fn the_places_build_the_picker_and_a_stale_ticket_is_ignored() {
+        let (mut b, ticket) = waiting();
+        assert!(b.picking() && b.busy() && !is_far(&b));
+        assert!(!b.answered(&Request::DirPlaces { ticket: ticket + 1000 }, Ok(places_json())), "an old ticket is not this chooser's");
+        assert!(!b.answered(&Request::Status, Ok(String::new())));
+        assert!(!is_far(&b));
+        assert!(b.answered(&Request::DirPlaces { ticket }, Ok(places_json())));
+        assert!(is_far(&b) && b.picking());
+        assert!(!b.answered(&Request::DirPlaces { ticket }, Ok(places_json())), "answered once");
+    }
+
+    #[test]
+    fn places_that_fail_or_do_not_read_still_build_the_picker() {
+        type Fail<'a> = &'a dyn Fn(&mut Browse, &Request);
+        let failing: [Fail; 3] = [
+            &|b, req| assert!(b.answered(req, Err("refused".into()))),
+            &|b, req| assert!(b.answered(req, Ok("not json".into()))),
+            &|b, req| b.unsent(req, "link down".into()),
+        ];
+        for fail in failing {
+            let (mut b, ticket) = waiting();
+            fail(&mut b, &Request::DirPlaces { ticket });
+            assert!(is_far(&b) && b.picking());
+        }
+    }
+
+    /// A far chooser whose picker is up and has asked for its first listing: the chooser, the path and the ticket.
+    fn listing_asked(ctx: &egui::Context) -> (Browse, String, u64) {
+        let (mut b, ticket) = waiting();
+        assert!(b.answered(&Request::DirPlaces { ticket }, Ok(places_json())));
+        // The picker asks for its first listing on its first frames.
+        for _ in 0..4 {
+            poll_frame(ctx, &mut b);
+            if let Some(Request::DirList { path, ticket }) = b.request() {
+                return (b, path, ticket);
+            }
+        }
+        panic!("the picker did not ask for a listing");
+    }
+
+    #[test]
+    fn a_listing_answer_is_taken_only_for_the_live_ticket() {
+        let ctx = egui::Context::default();
+        let (mut b, path, n) = listing_asked(&ctx);
+        assert!(!path.is_empty());
+        assert_eq!(b.far_status(), "Loading");
+        let listing = serde_json::to_string(&ito_filepick::Listing::new(vec![ito_filepick::Entry::dir("a")])).unwrap();
+        assert!(!b.answered(&Request::DirList { path: path.clone(), ticket: n + 1000 }, Ok(listing.clone())), "an old ticket");
+        assert_eq!(b.far_status(), "Loading");
+        assert!(b.answered(&Request::DirList { path: path.clone(), ticket: n }, Ok(listing)));
+        assert_eq!(b.far_status(), "Ready");
+        assert!(!b.answered(&Request::DirList { path, ticket: n }, Ok("{}".into())), "answered once");
+        assert!(b.picking());
+    }
+
+    #[test]
+    fn a_listing_that_fails_or_is_not_sent_shows_in_the_picker() {
+        let ctx = egui::Context::default();
+        let (mut b, path, n) = listing_asked(&ctx);
+        assert!(b.answered(&Request::DirList { path, ticket: n }, Err("no such folder".into())));
+        assert_eq!(b.far_status(), r#"Failed("no such folder")"#);
+        assert!(b.picking(), "the picker stays up to show why");
+        let (mut b, path, n) = listing_asked(&ctx);
+        b.unsent(&Request::DirList { path, ticket: n }, "link down".into());
+        assert_eq!(b.far_status(), r#"Failed("link down")"#);
+        let (mut b, path, n) = listing_asked(&ctx);
+        assert!(b.answered(&Request::DirList { path, ticket: n }, Ok("not json".into())));
+        assert!(b.far_status().starts_with("Failed("), "{}", b.far_status());
+        assert!(b.picking());
+    }
+
+    #[test]
+    fn a_cancelled_chooser_ignores_what_the_engine_answers_later() {
+        let (mut b, ticket) = waiting();
+        b.cancel();
+        assert!(!b.picking() && !b.busy());
+        assert!(!b.answered(&Request::DirPlaces { ticket }, Ok(places_json())));
+        assert!(!b.busy(), "nothing opens");
+        // Cancelling a built picker drops it too; a local chooser is not cancelled (the system's dialog is its own).
+        let (mut b, ticket) = waiting();
+        assert!(b.answered(&Request::DirPlaces { ticket }, Ok(places_json())));
+        b.cancel();
+        assert!(!b.picking() && !b.busy());
+        let mut local = Browse::pending("o");
+        assert!(!local.picking());
+        local.cancel();
+        assert!(local.busy());
+    }
+
+    #[test]
+    fn the_waiting_box_closes_on_escape() {
+        let ctx = egui::Context::default();
+        let (mut b, _) = waiting();
+        poll_frame(&ctx, &mut b);
+        assert!(b.picking(), "the box is up");
+        let esc =
+            egui::Event::Key { key: egui::Key::Escape, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        let clock = ito_common::Clock::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1000.0, 700.0))),
+            events: vec![esc],
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| b.poll(ui.ctx(), &FarLook { clock: &clock, lang: "ja" }));
+        out.textures_delta.clear();
+        assert!(!b.picking() && !b.busy(), "Escape closes the chooser");
+    }
+
+    #[test]
+    fn the_browse_button_is_for_this_pc_or_a_far_admin_and_never_for_a_file_to_write() {
+        let ctx = |local: bool, far: bool| Ctx::new(&[], "a", local, "", Browse::default()).with_far_browse(far);
+        for want in [Want::Folder, Want::File, Want::Files, Want::Save] {
+            assert!(ctx(true, false).can_browse(want), "this PC always");
+            assert!(!ctx(false, false).can_browse(want), "another PC's engine, not an admin");
+        }
+        assert!(
+            ctx(false, true).can_browse(Want::Folder)
+                && ctx(false, true).can_browse(Want::File)
+                && ctx(false, true).can_browse(Want::Files)
         );
-        assert_eq!(browsed_text("", Want::Files, &[p("C:/b.txt")]), Some(p("C:/b.txt").display().to_string()));
+        assert!(!ctx(false, true).can_browse(Want::Save));
     }
 
     #[test]
