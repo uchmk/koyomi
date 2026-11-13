@@ -344,6 +344,29 @@ impl JobRun {
         }
     }
 
+    /// The job as this run expanded it: the inverse of [`from_job`](Self::from_job). What a `JobRun` does not
+    /// carry (the note, where the editor put it) stays at its default.
+    pub fn as_job(&self) -> Job {
+        Job {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            run: self.run.clone(),
+            dir: self.dir.clone(),
+            after: self.after.clone(),
+            part: self.part.clone(),
+            timeout: self.timeout,
+            retry: self.retry,
+            shell: self.shell.clone(),
+            script: self.script.clone(),
+            judge: self.judge.clone(),
+            env: self.env.clone(),
+            encoding: self.encoding,
+            to: self.to.clone(),
+            run_as: self.run_as.clone(),
+            ..Default::default()
+        }
+    }
+
     /// What the engine starts: `run` as written, or the shell with the script
     /// (`crate::shell::argv`: PowerShell gets it as `-EncodedCommand`, the sh family as the one
     /// argument of `-c`). `exe` is the program the engine found for the shell; with `None` the

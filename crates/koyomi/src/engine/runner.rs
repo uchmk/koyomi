@@ -1081,8 +1081,10 @@ impl Runner {
                     self.asks.push((run_id.clone(), job_id.clone()));
                 }
                 Part::File { file, settle } => {
-                    let due = Due::File { pattern: file.clone(), settle, timeout, since: Instant::now(), seen: None };
-                    self.wait_on(&run_id, &job_id, &msg::note(msg::N_WAIT_FOR, &[&file]), due, now);
+                    // The full path, once: what is looked for and what the reason says are the same text.
+                    let full = std::path::absolute(std::path::Path::new(&file)).map_or_else(|_| file.clone(), |p| p.display().to_string());
+                    let due = Due::File { pattern: full.clone(), settle, timeout, since: Instant::now(), seen: None };
+                    self.wait_on(&run_id, &job_id, &msg::note(msg::N_WAIT_FOR, &[&full]), due, now);
                 }
                 // 分岐・待ち合わせ・子ジョブネット end in `Run::settle`, never here.
                 Part::Branch | Part::Join { .. } | Part::Jobnet { .. } => {}
@@ -4174,6 +4176,32 @@ id = \"b\"
         assert_eq!(r.log_tail(&id, "c/x").unwrap().trim(), "in-child");
         let (a, x, b) = (run.job("a").unwrap(), run.job("c/x").unwrap(), run.job("b").unwrap());
         assert!(a.ended.unwrap() <= x.started.unwrap() && x.ended.unwrap() <= b.started.unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_wait_inside_a_child_net_is_killed_by_hand_and_names_the_full_path() {
+        let dir = scratch("killchildfile");
+        let inbox = dir.join("in");
+        std::fs::create_dir_all(&inbox).unwrap();
+        let pattern = inbox.join("never.csv").display().to_string().replace('\\', "/");
+        let child = koyomi_core::jobnet::parse(&format!(
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"file\"\nfile = \"{pattern}\"\n[[job]]\nid = \"z\"\nrun = [\"x\"]\nafter = [\"w\"]\n"
+        ))
+        .unwrap();
+        let text = "format = 1\n[[job]]\nid = \"c\"\nkind = \"jobnet\"\nuse = \"g/child\"\n";
+        let d = def("net", text);
+        let mut r = Runner::new(&dir, Config::default());
+        r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "c/w");
+        let full = std::path::absolute(&pattern).unwrap().display().to_string();
+        let reason = r.run(&id).unwrap().job("c/w").unwrap().reason.clone();
+        assert!(reason.contains(&full), "{reason:?} should name {full}");
+        r.kill(&id, Some("c/w")).unwrap();
+        let run = r.run(&id).unwrap().clone();
+        assert_eq!(run.job("c/w").unwrap().state, State::Killed);
+        assert!(run.is_over());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

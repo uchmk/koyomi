@@ -116,6 +116,10 @@ pub enum Act {
     Pick,
     /// Open the net in the editor, at the job.
     Editor,
+    /// Pick the job and scroll to its definition.
+    Definition,
+    /// Kill the job (asked first, so not a `Send`).
+    Kill,
 }
 
 /// One entry of the menu.
@@ -187,8 +191,14 @@ pub fn menu_items(t: &Table, run: &Run, job: &JobRun, env: &Env) -> Vec<Item> {
         }
     }
     out.push(Item::on(t.tr("run.ask_log").to_owned(), Act::Pick));
+    out.push(Item::on(t.tr("run.def_look").to_owned(), Act::Definition));
     if env.net_there {
         out.push(Item::on(t.tr("run.menu_editor").to_owned(), Act::Editor));
+    }
+    if !run.is_over() && job.state == State::Running {
+        let mut item = Item::on(t.trf("run.kill_job", &[name]), Act::Kill);
+        item.enabled = !env.blocked;
+        out.push(item);
     }
     out
 }
@@ -393,6 +403,7 @@ mod tests {
                 "さいころ の次から（さいころ は警告終了）",
                 "ジョブ さいころ を保留",
                 "ログを見る",
+                "定義を見る",
                 "エディターでこのジョブを開く",
             ]
         );
@@ -484,6 +495,26 @@ mod tests {
     }
 
     #[test]
+    fn a_running_job_of_a_running_run_offers_the_kill_last_and_asks_first() {
+        let t = table();
+        let mut r = two_jobs();
+        set(&mut r, "dice", State::Running, false);
+        let items = menu_items(&t, &r, r.job("dice").unwrap(), &env());
+        let last = items.last().unwrap();
+        assert_eq!(last.label, "さいころ を強制終了");
+        assert!(last.enabled && matches!(last.act, Act::Kill));
+        let blocked = menu_items(&t, &r, r.job("dice").unwrap(), &Env { blocked: true, ..env() });
+        assert!(!blocked.last().unwrap().enabled);
+        // Not running, or the run is over: no kill.
+        let waiting = menu_items(&t, &r, r.job("next").unwrap(), &env());
+        assert!(!waiting.iter().any(|i| matches!(i.act, Act::Kill)));
+        let mut over = r.clone();
+        over.ended = Some(at(9, 2));
+        assert!(!menu_items(&t, &over, over.job("dice").unwrap(), &env()).iter().any(|i| matches!(i.act, Act::Kill)));
+        assert!(items.iter().any(|i| i.label == "定義を見る" && matches!(i.act, Act::Definition) && i.enabled));
+    }
+
+    #[test]
     fn the_blocked_list_turns_the_asks_off() {
         let t = table();
         let mut r = two_jobs();
@@ -491,6 +522,6 @@ mod tests {
         r.ended = Some(at(9, 2));
         let items = menu_items(&t, &r, r.job("dice").unwrap(), &Env { blocked: true, ..env() });
         assert!(items.iter().filter(|i| matches!(i.act, Act::Send(_))).all(|i| !i.enabled));
-        assert!(items.iter().filter(|i| matches!(i.act, Act::Pick | Act::Editor)).all(|i| i.enabled));
+        assert!(items.iter().filter(|i| matches!(i.act, Act::Pick | Act::Definition | Act::Editor)).all(|i| i.enabled));
     }
 }

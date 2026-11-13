@@ -84,8 +84,11 @@ pub enum View {
     Loading,
     /// The engine's words, as they came.
     Refused(String),
-    /// A job inside a child net: only the parent's text is kept; this is the parent job's `use`.
-    Child(String),
+    /// A job inside a child net, as this run expanded it: the `use` of the net it is directly in, and its rows.
+    Child {
+        use_: String,
+        rows: Vec<Row>,
+    },
     /// The job is not in the copy (renamed since).
     Missing,
     Shown(Vec<Row>),
@@ -99,6 +102,18 @@ pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&
     if needs_edit {
         return View::NeedsEdit;
     }
+    // A job of a child net is not in the definition copy (only the parent's text is kept); the run has it as it read it in.
+    if let Some((parent, _)) = job_id.rsplit_once('/') {
+        if let Some(j) = run.job(job_id) {
+            let use_of = |id: &str| match run.job(id).map(|p| &p.part) {
+                Some(Part::Jobnet { use_ }) => Some(use_.clone()),
+                _ => None,
+            };
+            // The net it is directly in; else the outermost one.
+            let use_ = use_of(parent).or_else(|| job_id.split_once('/').and_then(|(top, _)| use_of(top)));
+            return View::Child { use_: use_.unwrap_or_default(), rows: rows(t, &j.as_job()) };
+        }
+    }
     let net = match copy {
         None | Some(DefCopy::Asked) => return View::Loading,
         Some(DefCopy::Got(Err(e))) => return View::Refused(e.clone()),
@@ -107,12 +122,7 @@ pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&
     if let Some(j) = net.jobs.iter().find(|j| j.id == job_id) {
         return View::Shown(rows(t, j));
     }
-    // A job of a child net is `<parent job>/<its id>`; the parent's station job keeps the plain id.
-    let parent = job_id.split_once('/').map(|(p, _)| p);
-    match parent.and_then(|p| net.jobs.iter().find(|j| j.id == p)).map(|j| &j.part) {
-        Some(Part::Jobnet { use_ }) => View::Child(use_.clone()),
-        _ => View::Missing,
-    }
+    View::Missing
 }
 
 /// One line of the definition: its words and its value.
@@ -386,6 +396,9 @@ impl Browser {
         let head = t.tr("run.def_head");
         let r = ui.label(egui::RichText::new(head).strong());
         ito_a11y::say(&r, Role::Heading, head);
+        if std::mem::take(&mut self.def_scroll) {
+            r.scroll_to_me(Some(egui::Align::TOP));
+        }
         let dim = |ui: &mut egui::Ui, words: &str| {
             let r = ui.add(egui::Label::new(egui::RichText::new(words).color(c.dim)).wrap());
             ito_a11y::say(&r, Role::Label, words);
@@ -405,29 +418,33 @@ impl Browser {
             View::NeedsEdit => dim(ui, t.tr("run.def_needs_edit")),
             View::Loading => dim(ui, t.tr("users.loading")),
             View::Refused(why) => dim(ui, &why),
-            View::Child(use_) => {
-                dim(ui, t.tr("run.def_child"));
-                dim(ui, &format!("{}: {use_}", t.tr("review.use")));
+            View::Child { use_, rows } => {
+                dim(ui, &t.trf("run.def_child", &[&use_]));
+                self.definition_grid(ui, t, &rows);
             }
             View::Missing => dim(ui, t.tr("run.def_missing")),
-            View::Shown(rows) => {
-                let local = !self.link.is_far();
-                egui::Grid::new("job_def").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                    for row in &rows {
-                        ui.label(egui::RichText::new(&row.label).color(c.dim));
-                        ui.horizontal_wrapped(|ui| {
-                            let text = if row.mono { egui::RichText::new(&row.value).monospace() } else { egui::RichText::new(&row.value) };
-                            let r = ui.add(egui::Label::new(text).wrap());
-                            ito_a11y::say(&r, Role::Label, &format!("{}: {}", row.label, row.value));
-                            if let Some(folder) = &row.folder {
-                                paths::path_buttons(ui, t, Path::new(folder), paths::Place::Engine, local);
-                            }
-                        });
-                        ui.end_row();
+            View::Shown(rows) => self.definition_grid(ui, t, &rows),
+        }
+    }
+
+    /// The rows of a job's definition, one label and value each.
+    fn definition_grid(&self, ui: &mut egui::Ui, t: &Table, rows: &[Row]) {
+        let c = ito_theme::colors();
+        let local = !self.link.is_far();
+        egui::Grid::new("job_def").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+            for row in rows {
+                ui.label(egui::RichText::new(&row.label).color(c.dim));
+                ui.horizontal_wrapped(|ui| {
+                    let text = if row.mono { egui::RichText::new(&row.value).monospace() } else { egui::RichText::new(&row.value) };
+                    let r = ui.add(egui::Label::new(text).wrap());
+                    ito_a11y::say(&r, Role::Label, &format!("{}: {}", row.label, row.value));
+                    if let Some(folder) = &row.folder {
+                        paths::path_buttons(ui, t, Path::new(folder), paths::Place::Engine, local);
                     }
                 });
+                ui.end_row();
             }
-        }
+        });
     }
 }
 
@@ -545,13 +562,32 @@ use = \"試験/子\"
         let t = table();
         let run = ran();
         let copy = net_of(COPY);
-        assert_eq!(view(&t, &run, "kid/x", false, Some(&copy)), View::Child("試験/子".into()));
+        assert_eq!(view(&t, &run, "kid/x", false, Some(&copy)), View::Missing);
         assert_eq!(view(&t, &run, "gone", false, Some(&copy)), View::Missing);
         assert_eq!(view(&t, &run, "a", false, None), View::Loading);
         assert_eq!(view(&t, &run, "a", true, Some(&copy)), View::NeedsEdit);
         let refused = DefCopy::of(Err("E3290 gone".into()));
         assert_eq!(view(&t, &run, "a", false, Some(&refused)), View::Refused("E3290 gone".into()));
         assert_eq!(view(&t, &never(State::Missed, ""), "a", false, Some(&copy)), View::NeverBegan);
+    }
+
+    #[test]
+    fn a_child_job_shows_its_own_rows_and_the_net_it_is_in() {
+        let t = table();
+        let station = |id: &str, use_: &str| Job { part: Part::Jobnet { use_: use_.into() }, ..job(id, &[]) };
+        let wait = Job { part: Part::File { file: "C:\\in\\a.txt".into(), settle: None }, ..job("net1/net1/file1", &[]) };
+        let net = Jobnet { jobs: vec![station("net1", "a/ab-2")], ..Default::default() };
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, at());
+        for j in [station("net1/net1", "a/ab"), wait] {
+            run.jobs.push(koyomi_core::run::JobRun::from_job(&j));
+        }
+        // No definition copy is needed.
+        let View::Child { use_, rows } = view(&t, &run, "net1/net1/file1", false, None) else { panic!("a child job") };
+        assert_eq!(use_, "a/ab", "the net it is directly in, not the outer child");
+        assert!(rows.iter().any(|r| r.value.contains("a.txt")), "{rows:?}");
+        let View::Child { use_, .. } = view(&t, &run, "net1/net1", false, None) else { panic!() };
+        assert_eq!(use_, "a/ab-2");
+        assert_eq!(view(&t, &never(State::Missed, ""), "net1/net1", false, None), View::NeverBegan);
     }
 
     #[test]

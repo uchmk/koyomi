@@ -1,6 +1,6 @@
 # Checklist
 
-1492 checks in TESTING.md, 1475 left for a person.
+1497 checks in TESTING.md, 1480 left for a person.
 
 ## 1. Start
 
@@ -311,6 +311,7 @@
 - [ ] **25.16** [x] A part with no `after` (`kind = "join"`) and a job nothing follows that has `kind = "time"` → `KOYOMI-E3426 ジョブ j に after が指定されていません。` and `KOYOMI-E3427 ジョブ t の後に続くジョブがありません。`; `after = ["a", "b"]` with `b` after `a` after `b`: `KOYOMI-E3428 after が輪になっています。（a → b → a）` 〔未訳〕
 - [ ] **25.17** [x] `koyomi show` / the approval box of a net with every kind of part → Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` 〔未訳〕
 - [x] **25.18** [x] `koyomi run` a net with 3 running jobs and `concurrency = 2`, one of them a `kind = "time"` part → The part waits without taking a slot: the two jobs run and the part is 実行中 at the same time 〔未訳〕
+- [ ] **25.19** `kind = "file"` with `file = 'a.txt'` (no folder); `koyomi check`; then `file = 'C:a.txt'`; then an absolute `file` → The two relative values are refused with `KOYOMI-E3342 file が絶対パスではありません。`; the absolute one reads; a run waiting on it says `<full path> を待っています` 〔未訳〕
 
 ## 26. Starts by events (`[[when]] file = …` + `settle`, `on_start = true`)
 
@@ -1768,6 +1769,7 @@
 - [ ] **138.4** Run a net whose approval job has a `message`, and one whose approval has none; open each run while it waits → Under the buttons a block shows 判断の材料 (the message, or 「判断の材料は書かれていません。…」), and 直前のジョブ lists each job before it with its state, exit code and a ログを見る link that opens that job's log 〔未訳〕
 - [ ] **138.5** Open a run of a net with a calendar, then one of a net without → The header shows 「カレンダー: <name>」 as a link that opens that calendar on the カレンダー tab; the other shows 「カレンダー: なし（毎日）」 〔未訳〕
 - [ ] **138.6** On a failed run, hover 対応済みにする, then press it → The hover says it counts the failure as seen and leaves the result as it is; after pressing, the result line names the net, the run id and the state 「…を対応済みにしました。ステータスバーの異常の数から外れます。」, the header shows 「✓ 対応済み」, and the status bar's count goes down by one 〔未訳〕
+- [ ] **138.7** Run a net with a child-net job whose child holds a file wait; pick that file wait inside the child in the run page → 「この回の定義（始まったときのもの）」 says 「子ジョブネット <the net it is in> の中のジョブです…」 and lists that job's own rows (the file), not just the outer `use` 〔未訳〕
 
 ## 139. The run page: names, line labels, the compare block and the job menu (`ui/runmenu.rs`, `ui/graph.rs`, `ui/mod.rs`)
 
@@ -1782,6 +1784,9 @@
 - [ ] **139.9** With a base set, right-click rows in the 履歴 list → Each offers 「<A> と比べる」 that opens that run against A; on A itself it is greyed with 「比べる元そのものです」; with no base set the menu has only ジョブネットのページを開く (28.22) 〔未訳〕
 - [ ] **139.10** Right-click a job on the picture and a row of the job table of a finished run → The job is picked and a menu offers 「<名前> から再実行」, 「… の次から（… はスキップ）」, 「… の次から（… は警告終了）」, 「ジョブ <名前> を保留」, ログを見る (shows that job's log and scrolls to it), and エディターでこのジョブを開く when the net still exists; each acts on that job, not on the one picked before 〔未訳〕
 - [ ] **139.11** Right-click a pending job of a running run, then a job whose approval is waiting, then a job of a never-began run → 「<名前> をスキップ」 for the pending one; 承認する / 却下する for the approval; of the rerun items only 最初から再実行する for the never-began run; a job inside a child net has no 保留 item 〔未訳〕
+- [ ] **139.12** Right-click a running job of a running run on the picture and in the job table → The last item, after a separator, is 「<名前> を強制終了」; it is not there for a job that is not running or on a finished run; it works for a job inside a child net 〔未訳〕
+- [ ] **139.13** Choose 「<名前> を強制終了」 → A box asks first (the safe button is focused, so Enter kills nothing); 強制終了する ends a waiting job at once and asks a process job to stop; the jobs after it go on by their lines; the box closes by itself if the job ends meanwhile 〔未訳〕
+- [ ] **139.14** Choose 定義を見る on a job; then double-click a node of the picture and a row of the job table → The job is picked and the page scrolls to 「この回の定義（始まったときのもの）」; a single click only picks the job as before 〔未訳〕
 
 ## 140. Pick instead of typing (`ui/pick.rs`, `ui/canvas/drawer.rs`, `ui/whens.rs`, `ui/users.rs`)
 

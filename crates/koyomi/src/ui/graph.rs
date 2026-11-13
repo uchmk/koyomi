@@ -211,8 +211,8 @@ fn plate(painter: &egui::Painter, at: Pos2, text: &str, font: egui::FontId, tint
 /// What draws the right-click menu of the node with the given job id.
 pub type NodeMenu<'a> = &'a mut dyn FnMut(&mut egui::Ui, &str);
 
-/// Draws the run; the job clicked (or right-clicked), when one was. Every line but a plain one carries the
-/// editor's mark and word at its middle. A right click opens `menu` for that job, drawn by the caller.
+/// Draws the run; the job clicked (or right-clicked), when one was, and whether it was a double click.
+/// Every line but a plain one carries the editor's mark and word at its middle. A right click opens `menu` for that job, drawn by the caller.
 /// `net` is the net's jobs, for where the editor put them.
 pub fn draw(
     ui: &mut egui::Ui,
@@ -222,7 +222,7 @@ pub fn draw(
     selected: Option<&str>,
     net: Option<&[Job]>,
     mut menu: Option<NodeMenu<'_>>,
-) -> Option<String> {
+) -> Option<(String, bool)> {
     let c = ito_theme::colors();
     let at = places(run, vertical, net);
     let (resp, painter) = ui.allocate_painter(size(&at, vertical), Sense::focusable_noninteractive());
@@ -313,7 +313,7 @@ pub fn draw(
         let rect = Rect::from_center_size(at[i], Vec2::splat(RADIUS * 2.0 + 12.0));
         let node = ui.interact(rect, resp.id.with(("node", j.id.as_str())), Sense::CLICK);
         if node.clicked() || node.secondary_clicked() {
-            hit.get_or_insert(i);
+            hit.get_or_insert((i, node.double_clicked()));
         }
         if let Some(menu) = menu.as_deref_mut() {
             // A persistent id: the picture's own ids shift when the page above it changes.
@@ -323,7 +323,7 @@ pub fn draw(
     }
     let summary: Vec<String> = run.jobs.iter().map(|j| format!("{} {}", j.state.mark(), j.label())).collect();
     ito_a11y::say(&resp, ito_a11y::Role::Label, &summary.join(", "));
-    hit.map(|i| run.jobs[i].id.clone())
+    hit.map(|(i, twice)| (run.jobs[i].id.clone(), twice))
 }
 
 /// The states the picture shows, once each and in the order they first appear.

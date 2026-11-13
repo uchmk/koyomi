@@ -749,6 +749,8 @@ pub struct Browser {
     prev_wait: Option<String>,
     /// The log's title scrolls into view on the next frame (ログを見る was pressed).
     log_scroll: bool,
+    /// The next draw of the run page scrolls to the picked job's definition.
+    def_scroll: bool,
     /// What the window knows of each run's definition copy (asked once per run).
     run_defs: BTreeMap<String, runfacts::DefCopy>,
     /// The job whose log is shown, when one was picked by hand.
@@ -762,8 +764,8 @@ pub struct Browser {
     asking: Option<Approval>,
     /// The language when the plain wording is on (`easy = true` in common.toml).
     pub easy: Option<String>,
-    /// The run a kill is being asked about.
-    killing: Option<String>,
+    /// The run a kill is being asked about, and the one job of it (none: the whole run).
+    killing: Option<(String, Option<String>)>,
     /// The net a delete is being asked about.
     deleting: Option<String>,
     focus: usize,
@@ -944,6 +946,7 @@ impl Browser {
             opened_run: None,
             prev_wait: None,
             log_scroll: false,
+            def_scroll: false,
             run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
@@ -1948,7 +1951,8 @@ impl Browser {
         out.push_str(&format!("history: {history}\n"));
         let asking = match (&self.asking, &self.killing) {
             (Some(a), _) => format!("approve {}", a.id),
-            (None, Some(r)) => format!("kill {r}"),
+            (None, Some((r, None))) => format!("kill {r}"),
+            (None, Some((r, Some(j)))) => format!("kill {r} {j}"),
             (None, None) => "-".to_owned(),
         };
         out.push_str(&format!("asking: {asking}\nflow: {}\n", if self.vertical { "vertical" } else { "horizontal" }));
@@ -4657,7 +4661,7 @@ impl Browser {
                     ui.add_space(6.0);
                     // Only the buttons that mean something for this run are drawn.
                     if !run.is_over() && danger(ui, ito_prefs::Mark::Stop, t.tr("run.kill")).clicked() && !self.box_open() {
-                        self.killing = Some(run.id.clone());
+                        self.killing = Some((run.id.clone(), None));
                         // The safe button first: Enter on a fresh box does not kill.
                         self.focus = 1;
                     }
@@ -4841,8 +4845,9 @@ impl Browser {
             });
         }
         graph::legend(ui, t, &c, &run);
-        if pick.is_some() {
-            self.job_sel = pick;
+        if let Some((id, twice)) = pick {
+            self.job_sel = Some(id);
+            self.def_scroll |= twice;
         }
         self.run_menu_act(&run, act);
     }
@@ -4868,6 +4873,17 @@ impl Browser {
             runmenu::Act::Pick => {
                 self.job_sel = Some(job);
                 self.log_scroll = true;
+            }
+            runmenu::Act::Definition => {
+                self.job_sel = Some(job);
+                self.def_scroll = true;
+            }
+            runmenu::Act::Kill => {
+                if !self.box_open() {
+                    self.killing = Some((run.id.clone(), Some(job)));
+                    // The safe button first: Enter on a fresh box does not kill.
+                    self.focus = 1;
+                }
             }
             runmenu::Act::Editor => {
                 self.open_editor(&run.jobnet);
@@ -4924,7 +4940,7 @@ impl Browser {
                 let r = table.cells_of(ui, cells, on, Some(j.state));
                 ito_a11y::say(&r, Role::Row, &graph::words(t, j));
                 if r.clicked() || r.secondary_clicked() {
-                    pick = Some(j.id.clone());
+                    pick = Some((j.id.clone(), r.double_clicked()));
                 }
                 let id = ui.make_persistent_id(("run_row_menu", run.id.as_str(), j.id.as_str()));
                 egui::Popup::context_menu(&r).id(id).show(|ui| job_menu(ui, t, run, &j.id, &env, &mut act));
@@ -4948,8 +4964,9 @@ impl Browser {
             }
             ui.spacing_mut().item_spacing.y = gap;
         });
-        if pick.is_some() {
-            self.job_sel = pick;
+        if let Some((id, twice)) = pick {
+            self.job_sel = Some(id);
+            self.def_scroll |= twice;
         }
         self.run_menu_act(run, act);
     }
@@ -5298,7 +5315,7 @@ impl Browser {
             let picked = self.job_sel.clone().filter(|p| net.jobs.iter().any(|j| &j.id == p));
             let mut pick = None;
             egui::ScrollArea::horizontal().id_salt(salt).auto_shrink([false, true]).show(ui, |ui| {
-                pick = graph::draw(ui, t, &preview, self.vertical, picked.as_deref(), Some(&net.jobs), None);
+                pick = graph::draw(ui, t, &preview, self.vertical, picked.as_deref(), Some(&net.jobs), None).map(|(id, _)| id);
             });
             if pick.is_some() {
                 self.job_sel = if pick == picked { None } else { pick };
@@ -5528,13 +5545,26 @@ impl Browser {
 
     /// The box that asks before a run is killed. A run that ended meanwhile closes it.
     fn confirm_kill(&mut self, ctx: &egui::Context, t: &ito_i18n::Table, key: Option<usize>) {
-        let Some(id) = self.killing.clone() else { return };
+        let Some((id, one)) = self.killing.clone() else { return };
         let Some(run) = self.runs.iter().find(|r| r.id == id && !r.is_over()).cloned() else {
             self.killing = None;
             return;
         };
-        let rows = [(t.tr("run.state").to_owned(), show::run_line(t, &run))];
-        let body = [t.trf("run.kill_ask", &[&run.title])];
+        // One job: it must still be running, else the box closes as when the run ends.
+        let job = match &one {
+            Some(j) => match run.job(j).filter(|x| x.state == State::Running) {
+                Some(x) => Some(x.clone()),
+                None => {
+                    self.killing = None;
+                    return;
+                }
+            },
+            None => None,
+        };
+        let (rows, body) = match &job {
+            Some(j) => ([(t.tr("run.state").to_owned(), show::tag(t, j.state).to_string())], [t.trf("run.kill_job_ask", &[j.label()])]),
+            None => ([(t.tr("run.state").to_owned(), show::run_line(t, &run))], [t.trf("run.kill_ask", &[&run.title])]),
+        };
         let buttons = [t.tr("run.kill_yes").to_owned(), t.tr("run.kill_no").to_owned()];
         let q = ito_confirm::Question {
             title: t.tr("run.kill"),
@@ -5550,7 +5580,7 @@ impl Browser {
         };
         match ito_confirm::show(ctx, &q, &Self::style()).or(key) {
             Some(0) => {
-                self.send(Request::Kill { run: id, job: None });
+                self.send(Request::Kill { run: id, job: one });
                 self.killing = None;
             }
             Some(_) => self.killing = None,
@@ -6254,6 +6284,9 @@ fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
 fn job_menu(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: &str, env: &runmenu::Env, act: &mut Option<(String, runmenu::Act)>) {
     let Some(j) = run.job(job) else { return };
     for item in runmenu::menu_items(t, run, j, env) {
+        if matches!(item.act, runmenu::Act::Kill) {
+            ui.separator();
+        }
         let r = ui.add_enabled(item.enabled, egui::Button::new(&item.label));
         ito_a11y::say(&r, Role::Button, &item.label);
         let r = match &item.why {
@@ -6481,6 +6514,7 @@ mod tests {
             opened_run: None,
             prev_wait: None,
             log_scroll: false,
+            def_scroll: false,
             run_defs: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
@@ -7746,7 +7780,7 @@ run = [\"x.exe\"]
         b.runs = vec![run];
         b.run_sel = Some("r1".into());
         b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
-        b.killing = Some("r1".into());
+        b.killing = Some(("r1".into(), None));
         b.focus = 1;
         let ctx = egui::Context::default();
         let size = egui::vec2(1280.0, 800.0);
@@ -7918,11 +7952,11 @@ run = [\"x.exe\"]
 
         b.run_sel = Some("r1".into());
         b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
-        b.killing = Some("r1".into());
+        b.killing = Some(("r1".into(), None));
         s.settle(&mut b);
         s.click("キャンセル", &mut b);
         assert!(b.killing.is_none() && rx_req.try_recv().is_err(), "the safe button kills nothing");
-        b.killing = Some("r1".into());
+        b.killing = Some(("r1".into(), None));
         s.settle(&mut b);
         s.click("強制終了する", &mut b);
         assert!(b.killing.is_none());

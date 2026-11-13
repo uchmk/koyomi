@@ -1634,7 +1634,7 @@ cause = "The first day of the period is after its last day."
 action = "Give start a date that is not after end."
 
 [E3342]
-when = "log or file of a [[when]] is not an absolute path"
+when = "log or file of a [[when]], or file of a kind = \"file\" job, is not an absolute path"
 text = "{0} is not an absolute path."
 cause = "The value is not in the form of an absolute path."
 action = "Give {0} as an absolute path, such as {1}."
@@ -1646,13 +1646,13 @@ cause = "The path has * or ?, or it ends with / or \\."
 action = "Give log the absolute path of one file."
 
 [E3344]
-when = "file of a [[when]] has no file name"
+when = "file of a [[when]], or of a kind = \"file\" job, has no file name"
 text = "file has no file name."
 cause = "The path ends with / or \\."
 action = "Give file down to the file name, as in 'D:\\recv\\*.csv'."
 
 [E3345]
-when = "The folder part of file in a [[when]] has * or ?"
+when = "The folder part of file in a [[when]], or in a kind = \"file\" job, has * or ?"
 text = "The folder part of file has * or ?."
 cause = "* and ? can be used in the file name part only."
 action = "Delete * and ? from the folder part."

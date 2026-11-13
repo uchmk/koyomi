@@ -1225,13 +1225,7 @@ impl Checker<'_> {
             }
             "file" => {
                 let file = match &j.file {
-                    Some(_) => self.string(&j.file, "file").filter(|f| {
-                        let ok = !f.trim().is_empty();
-                        if !ok {
-                            self.add(j.file.as_ref().map_or(start, |f| f.span().start), msg::line(msg::DEF_VALUE_EMPTY, &["file"]));
-                        }
-                        ok
-                    }),
+                    Some(_) => self.file_pattern(&j.file),
                     None => {
                         self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]));
                         None
@@ -2081,7 +2075,7 @@ impl Checker<'_> {
             let kind = match kind {
                 "once" => self.datetime(&w.once).map(|at| Kind::Once { at }),
                 "file" => {
-                    let file = self.event_file(&w.file);
+                    let file = self.file_pattern(&w.file);
                     let settle = self.duration_of(&w.settle, "settle");
                     file.map(|file| Kind::File { file, settle })
                 }
@@ -2386,8 +2380,9 @@ impl Checker<'_> {
         Some(s)
     }
 
-    /// `[[when]] file`: an absolute path, `*` / `?` only in the name part.
-    fn event_file(&mut self, field: &Field) -> Option<String> {
+    /// The file a `[[when]] kind = "file"` or a `kind = "file"` wait job looks for: an absolute path with a file name,
+    /// `*` / `?` only in the name part.
+    fn file_pattern(&mut self, field: &Field) -> Option<String> {
         let f = field.as_ref()?;
         let pos = f.span().start;
         let text = self.string(field, "file")?;
@@ -2930,9 +2925,11 @@ impl Checker<'_> {
     }
 }
 
-/// Whether `text` is an absolute path: a drive (`D:\…`), a share (`\\server\…`) or `/…`.
+/// Whether `text` is an absolute path: a drive (`D:\…`, `D:/…`), a share (`\\server\…`) or `/…`.
 fn absolute(text: &str) -> bool {
-    let drive = text.as_bytes().get(1) == Some(&b':') && text.as_bytes().first().is_some_and(u8::is_ascii_alphabetic);
+    let b = text.as_bytes();
+    // `C:a.txt` is relative to the drive's current folder: only `C:\` and `C:/` count.
+    let drive = b.first().is_some_and(u8::is_ascii_alphabetic) && b.get(1) == Some(&b':') && matches!(b.get(2), Some(b'\\' | b'/'));
     drive || text.starts_with("\\\\") || text.starts_with('/')
 }
 
@@ -4288,8 +4285,16 @@ command = 'x'
             Err(vec![placed(msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]), 5)])
         );
         assert_eq!(net("file", "file = \" \"\n"), Err(vec![placed(msg::line(msg::DEF_VALUE_EMPTY, &["file"]), 8)]));
+        // A file wait is checked as `[[when]] file` is: absolute (a template does not excuse it), a name, no wildcard folder.
+        let not_abs = || Err(vec![placed(msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["file", "file = 'D:\\recv\\*.csv'"]), 8)]);
+        assert_eq!(net("file", "file = 'a.txt'\n"), not_abs());
+        assert_eq!(net("file", "file = '{var:in}\\a.txt'\n"), not_abs());
+        assert_eq!(net("file", "file = 'C:a.txt'\n"), not_abs());
+        assert_eq!(net("file", "file = 'C:/in/a.txt'\n"), Ok(Part::File { file: "C:/in/a.txt".into(), settle: None }));
+        assert_eq!(net("file", "file = 'C:\\in\\*\\a.csv'\n"), Err(vec![placed(msg::line(msg::DEF_FILE_WILDCARD_DIR, &[]), 8)]));
+        assert_eq!(net("file", "file = 'C:\\in\\'\n"), Err(vec![placed(msg::line(msg::DEF_FILE_NAME_MISSING, &[]), 8)]));
         assert_eq!(
-            net("file", "file = \"a\"\nsettle = 10\n"),
+            net("file", "file = \"/a\"\nsettle = 10\n"),
             Err(vec![placed(msg::line(msg::DEF_STRING_BAD_E, &["settle", "\"30m\""]), 9)])
         );
         assert_eq!(net("notify", ""), Ok(Part::Notify));
@@ -4667,6 +4672,8 @@ command = 'x'
         assert_eq!(p("file = 'in\\*.csv'"), [placed(msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["file", "file = 'D:\\recv\\*.csv'"]), 3)]);
         assert_eq!(p("file = 'D:\\受信\\'"), [placed(msg::line(msg::DEF_FILE_NAME_MISSING, &[]), 3)]);
         assert_eq!(p("file = 'D:\\*\\a.csv'"), [placed(msg::line(msg::DEF_FILE_WILDCARD_DIR, &[]), 3)]);
+        assert_eq!(p("file = 'C:a.txt'"), [placed(msg::line(msg::DEF_PATH_NOT_ABSOLUTE, &["file", "file = 'D:\\recv\\*.csv'"]), 3)]);
+        assert!(p("file = 'C:/in/a.txt'").is_empty());
         assert_eq!(p("file = ''"), [placed(msg::line(msg::DEF_VALUE_EMPTY, &["file"]), 3)]);
         assert_eq!(p("file = 'D:\\in\\a.csv'\nsettle = 10"), [placed(msg::line(msg::DEF_STRING_BAD_E, &["settle", "\"30m\""]), 4)]);
         assert_eq!(p("file = 'D:\\in\\a.csv'\nat = [\"02:00\"]"), [placed(msg::line(msg::DEF_WHEN_KEY_UNUSED, &["at", "file"]), 4)]);
