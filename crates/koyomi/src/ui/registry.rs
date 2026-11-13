@@ -202,14 +202,112 @@ impl DbFields {
 
 /// The port as typed: empty is the PostgreSQL default; otherwise digits from 1 to 65535.
 fn port_of(text: &str) -> Option<u16> {
+    port_or(text, chore::POSTGRES_PORT)
+}
+
+/// The port as typed: empty is `default`; otherwise digits from 1 to 65535.
+fn port_or(text: &str, default: u16) -> Option<u16> {
     let t = text.trim();
     if t.is_empty() {
-        return Some(chore::POSTGRES_PORT);
+        return Some(default);
     }
     if !t.bytes().all(|b| b.is_ascii_digit()) {
         return None;
     }
     t.parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+/// What the 接続先 PC, メールボックス and S3 forms hold in parts (the address is built from them, as the database
+/// form's `db` is). Each page uses the fields it shows: a host `user`, `host`, `port`; a mailbox those and `folder`; a
+/// bucket `bucket` and `folder`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct AddrFields {
+    pub user: String,
+    pub host: String,
+    /// As typed: empty is the kind's own port.
+    pub port: String,
+    /// A mailbox's folder (empty is `INBOX`), a bucket's folder (without the ending `/`).
+    pub folder: String,
+    pub bucket: String,
+}
+
+/// The port a host of this kind, or a mailbox, takes when none is written.
+fn default_port(page: Page, winrm: bool) -> u16 {
+    match (page, winrm) {
+        (Page::Mailboxes, _) => 993,
+        (_, true) => chore::WINRM_PORT,
+        _ => chore::SSH_PORT,
+    }
+}
+
+/// The address `text` read as the parts `page`'s form shows, when it reads and the builder takes those parts (else the
+/// form shows the one line).
+fn read_addr(page: Page, text: &str) -> Option<AddrFields> {
+    let t = text.trim();
+    let a = match page {
+        Page::Hosts => {
+            let (kind, _) = split_on(t);
+            let winrm = kind?;
+            let far = (if winrm { chore::winrm(t) } else { chore::ssh(t) })?.ok()?;
+            let port = far.port.unwrap_or(default_port(page, winrm)).to_string();
+            AddrFields { user: far.user.unwrap_or_default(), host: far.host, port, ..AddrFields::default() }
+        }
+        Page::Mailboxes => {
+            let m = koyomi_core::when::mailbox(t).ok()?;
+            AddrFields { user: m.user, host: m.host, port: m.port.to_string(), folder: m.folder, ..AddrFields::default() }
+        }
+        Page::Buckets => {
+            let at = chore::s3(t)?.ok()?;
+            let prefix = registry::bucket_prefix(t).ok()?;
+            AddrFields { bucket: at.bucket, folder: prefix.trim_end_matches('/').to_owned(), ..AddrFields::default() }
+        }
+        Page::Accounts | Page::Databases => return None,
+    };
+    // A text the builder would refuse (a `{param}` in it, say), or would write with other parts (a folder that starts or
+    // ends with a space, which the builder trims), is kept as one line, so it can still be changed as it is: the parts
+    // compare trimmed, and a trimmed change must not read as no change.
+    let same = match page {
+        Page::Hosts => {
+            chore::host_url(t.get(..8).is_some_and(|p| p.eq_ignore_ascii_case("winrm://")), &a.user, &a.host, port_or(&a.port, 1)?).is_ok()
+        }
+        Page::Mailboxes => koyomi_core::when::mailbox_url(&a.user, &a.host, port_or(&a.port, 1)?, &a.folder)
+            .ok()
+            .and_then(|url| koyomi_core::when::mailbox(&url).ok())
+            .is_some_and(|m| m.folder == a.folder),
+        _ => chore::bucket_url(&a.bucket, &a.folder)
+            .ok()
+            .and_then(|url| registry::bucket_prefix(&url).ok())
+            .is_some_and(|p| p.trim_end_matches('/') == a.folder),
+    };
+    same.then_some(a)
+}
+
+/// The key of the words for a field `host_url` refused (`winrm`: a WinRM host that has no user).
+fn host_field_key(f: chore::HostField, winrm: bool, user: &str) -> &'static str {
+    match f {
+        chore::HostField::User if winrm && user.is_empty() => "registry.addr_winrm_user",
+        chore::HostField::User => "registry.addr_bad_user",
+        chore::HostField::Host => "registry.addr_bad_host",
+        chore::HostField::Port => "registry.addr_bad_port",
+    }
+}
+
+/// The key of the words for a field `mailbox_url` refused.
+fn mail_field_key(f: koyomi_core::when::MailField) -> &'static str {
+    match f {
+        koyomi_core::when::MailField::User => "registry.addr_bad_user",
+        koyomi_core::when::MailField::Host => "registry.addr_bad_host",
+        koyomi_core::when::MailField::Port => "registry.addr_bad_port",
+        koyomi_core::when::MailField::Folder => "registry.addr_bad_folder",
+    }
+}
+
+/// The key of the words for a field `bucket_url` refused.
+fn bucket_field_key(f: chore::BucketField) -> &'static str {
+    match f {
+        chore::BucketField::Bucket => "registry.addr_bad_bucket",
+        chore::BucketField::Folder => "registry.addr_bad_folder",
+    }
 }
 
 /// The key of the words for a field `db_url` refused.
@@ -254,6 +352,15 @@ pub(super) struct Form {
     /// The fields of a database form, and what they opened with (the password empty).
     pub db: DbFields,
     db_orig: DbFields,
+    /// The parts of a host, bucket or mailbox address, and what they opened with.
+    pub addr: AddrFields,
+    addr_orig: AddrFields,
+    /// The address is held as one line (`target`): the row's text did not read in parts.
+    pub raw: bool,
+    /// The row's address as stored, sent back as it is while its parts are not changed.
+    orig_text: String,
+    /// A host's stored `on` has neither scheme: it is shown whole and sent whole.
+    scheme_less: bool,
     /// The `db` text of the row being edited, kept when its place is not changed.
     orig_db: String,
     /// The state of the row's password (`ok`, `missing`, `unreadable`).
@@ -356,6 +463,12 @@ pub(super) struct Extra {
 impl Form {
     fn add(page: Page) -> Form {
         let db = DbFields::fresh();
+        // A new address starts in parts, with the usual port (and a mailbox's `INBOX`) filled in.
+        let addr = match page {
+            Page::Hosts => AddrFields { port: default_port(page, false).to_string(), ..AddrFields::default() },
+            Page::Mailboxes => AddrFields { port: default_port(page, false).to_string(), folder: "INBOX".into(), ..AddrFields::default() },
+            _ => AddrFields::default(),
+        };
         Form {
             page,
             editing: None,
@@ -370,6 +483,11 @@ impl Form {
             orig_x: Extra::default(),
             db: db.clone(),
             db_orig: db,
+            addr: addr.clone(),
+            addr_orig: addr,
+            raw: false,
+            orig_text: String::new(),
+            scheme_less: false,
             orig_db: String::new(),
             pw_state: String::new(),
             gen: 0,
@@ -395,6 +513,8 @@ impl Form {
         let mut f = Form::of(Page::Hosts, &row.name, &rest, &secret, SqlTls::Verify, &row.state);
         f.orig_x = x.clone();
         f.x = x;
+        f.scheme_less = winrm.is_none();
+        f.load_addr(&row.on);
         f
     }
 
@@ -415,11 +535,28 @@ impl Form {
         let mut f = Form::of(Page::Buckets, &row.name, &row.url, &secret, SqlTls::Verify, &row.state);
         f.orig_x = x.clone();
         f.x = x;
+        f.load_addr(&row.url);
         f
     }
 
     fn edit_mailbox(row: &MailboxRow) -> Form {
-        Form::of(Page::Mailboxes, &row.name, &row.mail, &row.secret, SqlTls::Verify, &row.state)
+        let mut f = Form::of(Page::Mailboxes, &row.name, &row.mail, &row.secret, SqlTls::Verify, &row.state);
+        f.load_addr(&row.mail);
+        f
+    }
+
+    /// Splits the stored address `text` into the parts the form shows; a text that does not read that way is held as
+    /// one line (`raw`), so nothing is lost and it can be fixed.
+    fn load_addr(&mut self, text: &str) {
+        self.orig_text = text.to_owned();
+        match read_addr(self.page, text) {
+            Some(a) => {
+                self.addr = a.clone();
+                self.addr_orig = a;
+                self.raw = false;
+            }
+            None => self.raw = true,
+        }
     }
 
     fn edit_account(row: &AccountRow) -> Form {
@@ -465,6 +602,11 @@ impl Form {
             orig_x: Extra::default(),
             db: DbFields::default(),
             db_orig: DbFields::default(),
+            addr: AddrFields::default(),
+            addr_orig: AddrFields::default(),
+            raw: false,
+            orig_text: String::new(),
+            scheme_less: false,
             orig_db: String::new(),
             pw_state: state.to_owned(),
             gen: 0,
@@ -480,9 +622,17 @@ impl Form {
         if self.page != Page::Hosts {
             return None;
         }
-        let on = self.host_on();
-        let (kind, read, default) =
-            if self.x.winrm { (PeekKind::Winrm, chore::winrm(&on)?, chore::WINRM_PORT) } else { (PeekKind::Ssh, chore::ssh(&on)?, 22) };
+        let on = if self.raw {
+            self.host_on()
+        } else {
+            let port = port_or(&self.addr.port, default_port(self.page, self.x.winrm))?;
+            chore::host_url(self.x.winrm, self.addr.user.trim(), self.addr.host.trim(), port).ok()?
+        };
+        let (kind, read, default) = if self.x.winrm {
+            (PeekKind::Winrm, chore::winrm(&on)?, chore::WINRM_PORT)
+        } else {
+            (PeekKind::Ssh, chore::ssh(&on)?, chore::SSH_PORT)
+        };
         let far = read.ok()?;
         let port = far.port.unwrap_or(default);
         peek_target_ok(&far.host, port).then_some((kind, far.host, port))
@@ -595,6 +745,7 @@ impl Form {
 
     pub(super) fn dirty(&self) -> bool {
         (&self.name, &self.target, &self.secret, self.tls) != (&self.orig.0, &self.orig.1, &self.orig.2, self.orig.3)
+            || self.addr != self.addr_orig
             || self.x != self.orig_x
             || self.db != self.db_orig
             || !self.password.is_empty()
@@ -605,6 +756,11 @@ impl Form {
     pub(super) fn set_winrm(&mut self, winrm: bool) {
         if self.x.winrm != winrm {
             self.peek = None;
+            // The kind's own port follows the kind; a port the person chose stays.
+            let other = default_port(self.page, !winrm).to_string();
+            if !self.raw && (self.addr.port.trim().is_empty() || self.addr.port.trim() == other) {
+                self.addr.port = default_port(self.page, winrm).to_string();
+            }
         }
         self.x.winrm = winrm;
         if winrm {
@@ -636,9 +792,65 @@ impl Form {
         self.page == Page::Hosts && self.x.winrm
     }
 
-    /// The `on` this host form writes: the seg's scheme in front of the address as typed.
+    /// The `on` a host form held as one line (`raw`) writes: the seg's scheme in front of the address as typed (the
+    /// text as it is when the row had neither scheme).
     pub(super) fn host_on(&self) -> String {
-        format!("{}{}", scheme(self.x.winrm), self.target.trim())
+        if self.scheme_less {
+            self.target.trim().to_owned()
+        } else {
+            format!("{}{}", scheme(self.x.winrm), self.target.trim())
+        }
+    }
+
+    /// The parts of the address as they compare: user, host, port, folder, bucket, with the defaults filled in
+    /// (an empty port, an empty mailbox folder) and a host written the way the builder writes it. `None` when the
+    /// port does not read.
+    fn addr_key(&self, a: &AddrFields, winrm: bool) -> Option<(String, String, u16, String, String)> {
+        let host = a.host.trim();
+        let host = chore::host_text(host).map_or_else(|| host.to_owned(), |(h, _)| h);
+        let port = match self.page {
+            Page::Buckets => 0,
+            _ => port_or(&a.port, default_port(self.page, winrm))?,
+        };
+        let folder = match self.page {
+            Page::Mailboxes if a.folder.trim().is_empty() => "INBOX".to_owned(),
+            Page::Buckets => a.folder.trim().trim_matches('/').to_owned(),
+            _ => a.folder.trim().to_owned(),
+        };
+        Some((a.user.trim().to_owned(), host, port, folder, a.bucket.trim().to_owned()))
+    }
+
+    /// The stored address text, while editing in parts with the kind and every part as they were stored (a hand-written
+    /// `:22`, an upper-case `SSH://` stays).
+    fn stored_address(&self) -> Option<String> {
+        let same = self.editing.is_some()
+            && !self.raw
+            && self.x.winrm == self.orig_x.winrm
+            && self.addr_key(&self.addr, self.x.winrm).is_some_and(|k| Some(k) == self.addr_key(&self.addr_orig, self.orig_x.winrm));
+        same.then(|| self.orig_text.trim().to_owned())
+    }
+
+    /// The address a host, mailbox or bucket form sends: the stored text when its parts are not changed, else the
+    /// text built from the parts (a refusal names the field), or the one line typed (`raw`).
+    fn address(&self) -> Result<String, Line> {
+        if self.raw {
+            return Ok(match self.page {
+                Page::Hosts => self.host_on(),
+                _ => self.target.trim().to_owned(),
+            });
+        }
+        if let Some(text) = self.stored_address() {
+            return Ok(text);
+        }
+        let a = &self.addr;
+        let (user, host) = (a.user.trim(), a.host.trim());
+        let port = || port_or(&a.port, default_port(self.page, self.x.winrm)).ok_or(Line::Key("registry.addr_bad_port"));
+        match self.page {
+            Page::Hosts => chore::host_url(self.x.winrm, user, host, port()?).map_err(|f| Line::Key(host_field_key(f, self.x.winrm, user))),
+            Page::Mailboxes => koyomi_core::when::mailbox_url(user, host, port()?, &a.folder).map_err(|f| Line::Key(mail_field_key(f))),
+            Page::Buckets => chore::bucket_url(a.bucket.trim(), &a.folder).map_err(|f| Line::Key(bucket_field_key(f))),
+            Page::Accounts | Page::Databases => Ok(self.target.trim().to_owned()),
+        }
     }
 
     /// Whether the password may be left out: an SSH host's (it can log in with a key).
@@ -734,7 +946,7 @@ impl Form {
                 // Only the keys of the chosen kind go: the other kind's rows are hidden.
                 let entry = HostEntry {
                     name: name.clone(),
-                    on: self.host_on(),
+                    on: self.address()?,
                     host_key: if winrm { None } else { opt(&self.x.host_key) },
                     key: if winrm { None } else { opt(&self.x.key) },
                     password: pw.check_reference(),
@@ -759,7 +971,7 @@ impl Form {
                 let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
                 let entry = BucketEntry {
                     name: name.clone(),
-                    url: self.target.trim().to_owned(),
+                    url: self.address()?,
                     key_id: opt(&self.x.key_id),
                     password: pw.check_reference(),
                     region: opt(&self.x.region),
@@ -779,11 +991,7 @@ impl Form {
             }
             Page::Mailboxes => {
                 let pw = self.password_choice(Line::PasswordEmpty)?;
-                let entry = MailboxEntry {
-                    name: name.clone(),
-                    mail: self.target.trim().to_owned(),
-                    password: pw.check_reference().unwrap_or_default(),
-                };
+                let entry = MailboxEntry { name: name.clone(), mail: self.address()?, password: pw.check_reference().unwrap_or_default() };
                 entry.check().map_err(Line::Raw)?;
                 Ok(Request::MailboxPut { name, mail: entry.mail, password: pw.reference(), base_sha256: base, password_value: pw.value() })
             }
@@ -1979,6 +2187,109 @@ fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, l
     );
 }
 
+#[cfg(test)]
+impl Form {
+    /// Types the address `text` into the parts of this form. A host's text is split plainly as `[user@]host[:port]`
+    /// (with or without its scheme, and with no check), so a test can type an address that is not good.
+    pub(super) fn type_address(&mut self, text: &str) {
+        if self.page == Page::Hosts {
+            let t = text.split_once("://").map_or(text, |(_, r)| r);
+            let (user, rest) = t.rsplit_once('@').unwrap_or(("", t));
+            let (host, port) = match rest.rsplit_once(':') {
+                Some((h, p)) if !rest.ends_with(']') && p.chars().all(|c| c.is_ascii_digit()) => (h, p),
+                _ => (rest, ""),
+            };
+            let port = if port.is_empty() { default_port(self.page, self.x.winrm).to_string() } else { port.to_owned() };
+            self.addr = AddrFields { user: user.to_owned(), host: host.to_owned(), port, ..AddrFields::default() };
+        } else {
+            self.addr = read_addr(self.page, text).unwrap_or_else(|| panic!("does not read in parts: {text}"));
+        }
+        self.raw = false;
+    }
+}
+
+/// One typed line of an address in parts: its label key, its test ID tail, its hint (as shown) and its width. Returns
+/// whether it changed.
+fn part_line(
+    ui: &mut egui::Ui,
+    t: &ito_i18n::Table,
+    id: &str,
+    (label, tail, hint, width): (&str, &str, &str, f32),
+    value: &mut String,
+) -> bool {
+    ui.horizontal(|ui| {
+        ui.label(t.tr(label));
+        let resp = ui.add(egui::TextEdit::singleline(value).hint_text(hint).desired_width(width));
+        ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
+        ito_a11y::test_id(&resp, &format!("{id}.{tail}"));
+        resp.changed()
+    })
+    .inner
+}
+
+/// The address lines of the account, host, bucket and mailbox forms: the parts (user, host and port; server, port,
+/// user and folder; bucket and folder), or the one line a row that did not read in parts is held as.
+fn address_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form) {
+    let page = f.page;
+    if page != Page::Accounts && !f.raw {
+        let winrm = f.x.winrm;
+        let mut moved = false;
+        // An empty port is the kind's own, so that is the hint.
+        let port = default_port(page, winrm).to_string();
+        match page {
+            Page::Hosts => {
+                let hint = t.tr(if winrm { "registry.addr_user_hint_winrm" } else { "registry.addr_user_hint_ssh" });
+                moved |= part_line(ui, t, id, ("registry.addr_user", "user", hint, 240.0), &mut f.addr.user);
+                moved |= part_line(ui, t, id, ("registry.addr_host", "host", t.tr("registry.addr_host_hint"), 240.0), &mut f.addr.host);
+                moved |= part_line(ui, t, id, ("registry.addr_port", "port", &port, 80.0), &mut f.addr.port);
+            }
+            Page::Mailboxes => {
+                moved |= part_line(ui, t, id, ("registry.addr_server", "host", t.tr("registry.addr_server_hint"), 240.0), &mut f.addr.host);
+                moved |= part_line(ui, t, id, ("registry.addr_port", "port", &port, 80.0), &mut f.addr.port);
+                moved |=
+                    part_line(ui, t, id, ("registry.addr_user", "user", t.tr("registry.addr_mail_user_hint"), 240.0), &mut f.addr.user);
+                let hint = t.tr("registry.addr_mail_folder_hint");
+                moved |= part_line(ui, t, id, ("registry.addr_folder", "folder", hint, 240.0), &mut f.addr.folder);
+            }
+            _ => {
+                moved |=
+                    part_line(ui, t, id, ("registry.addr_bucket", "bucket", t.tr("registry.addr_bucket_hint"), 240.0), &mut f.addr.bucket);
+                let hint = t.tr("registry.addr_s3_folder_hint");
+                moved |= part_line(ui, t, id, ("registry.addr_folder", "folder", hint, 240.0), &mut f.addr.folder);
+            }
+        }
+        if moved {
+            // What a host showed is for the address it was asked of.
+            f.peek = None;
+        }
+        return;
+    }
+    ui.horizontal(|ui| {
+        let (label, hint) = match page {
+            Page::Accounts => ("registry.user_field", "registry.user_hint"),
+            Page::Databases => ("", ""),
+            Page::Hosts if f.x.winrm => ("registry.host_on", "registry.host_on_hint_winrm"),
+            Page::Hosts => ("registry.host_on", "registry.host_on_hint_ssh"),
+            Page::Buckets => ("registry.bucket_url", "registry.bucket_url_hint"),
+            Page::Mailboxes => ("registry.mailbox_mail", "registry.mailbox_mail_hint"),
+        };
+        ui.label(t.tr(label));
+        if page == Page::Hosts && !f.scheme_less {
+            ui.label(egui::RichText::new(scheme(f.x.winrm)).monospace());
+        }
+        let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
+        ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
+        ito_a11y::test_id(&resp, &format!("{id}.target"));
+        if resp.changed() {
+            // What a host showed is for the address it was asked of.
+            f.peek = None;
+        }
+    });
+    if f.raw {
+        ui.add(egui::Label::new(egui::RichText::new(t.tr("registry.addr_raw_note")).color(ito_theme::colors().dim)).wrap());
+    }
+}
+
 /// The add / edit form of `page`.
 fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, can: bool, click: &mut Option<Click>) {
     let busy = r.write;
@@ -2015,27 +2326,7 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             f.drop_stale_db_test();
             db_test_ui(ui, t, &id, f, can && v_open, click);
         } else {
-            ui.horizontal(|ui| {
-                let (label, hint) = match page {
-                    Page::Accounts => ("registry.user_field", "registry.user_hint"),
-                    Page::Databases => ("", ""),
-                    Page::Hosts if f.x.winrm => ("registry.host_on", "registry.host_on_hint_winrm"),
-                    Page::Hosts => ("registry.host_on", "registry.host_on_hint_ssh"),
-                    Page::Buckets => ("registry.bucket_url", "registry.bucket_url_hint"),
-                    Page::Mailboxes => ("registry.mailbox_mail", "registry.mailbox_mail_hint"),
-                };
-                ui.label(t.tr(label));
-                if page == Page::Hosts {
-                    ui.label(egui::RichText::new(scheme(f.x.winrm)).monospace());
-                }
-                let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
-                ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
-                ito_a11y::test_id(&resp, &format!("{id}.target"));
-                if resp.changed() {
-                    // What a host showed is for the address it was asked of.
-                    f.peek = None;
-                }
-            });
+            address_ui(ui, t, &id, f);
         }
         f.drop_stale_peek();
         match page {
@@ -2329,7 +2620,12 @@ mod tests {
             let row = HostRow { name: "h".into(), on: on.into(), kind: if winrm { "winrm" } else { "ssh" }.into(), ..HostRow::default() };
             let f = Form::edit_host(&row);
             assert_eq!(f.is_winrm(), winrm);
-            assert_eq!(f.host_on(), format!("{}{rest}", scheme(winrm)), "{on}");
+            // Read in parts, the row is sent back as it was stored; held whole, the scheme is the seg's.
+            if f.raw {
+                assert_eq!(f.host_on(), format!("{}{rest}", scheme(winrm)), "{on}");
+            } else {
+                assert_eq!(f.address().unwrap(), on, "{on}");
+            }
         }
         assert_eq!(split_on("web1"), (None, "web1".to_owned()));
     }
@@ -2571,7 +2867,7 @@ mod tests {
         // Adding with nothing typed is allowed for SSH, and refused for WinRM.
         let mut f = Form::add(Page::Hosts);
         f.name = "h1".into();
-        f.target = "ops@h1".into();
+        f.type_address("ops@h1");
         f.x.host_key = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into();
         f.x.key = "C:/keys/id".into();
         assert_eq!(ssh(&f), (None, None));
@@ -2618,7 +2914,7 @@ mod tests {
     fn the_bucket_form_asks_for_the_secret_access_key_and_invents_no_reference() {
         let mut f = Form::add(Page::Buckets);
         f.name = "b1".into();
-        f.target = "s3://corp-b1/".into();
+        f.type_address("s3://corp-b1/");
         f.x.region = "ap-northeast-1".into();
         f.x.key_id = "AKIAEXAMPLE".into();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.s3_key_empty"));
@@ -2638,7 +2934,7 @@ mod tests {
     fn the_mailbox_form_sends_the_typed_password_or_keeps_the_own_secret() {
         let mut f = Form::add(Page::Mailboxes);
         f.name = "m1".into();
-        f.target = "imaps://u@mail/INBOX".into();
+        f.type_address("imaps://u@mail/INBOX");
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         f.password.as_mut_string().push_str(PW);
         assert!(matches!(f.request("b", &[]), Ok(Request::MailboxPut { password: None, password_value: Some(_), .. })));
@@ -2665,8 +2961,8 @@ mod tests {
             match page {
                 Page::Accounts => f.target = "CORP\\n1".into(),
                 Page::Hosts => {
-                    f.target = if winrm { ".\\u@pc:5986".into() } else { "ops@h1".into() };
                     f.set_winrm(winrm);
+                    f.type_address(if winrm { ".\\u@pc:5986" } else { "ops@h1" });
                     if winrm {
                         f.x.cert = CERT.into();
                     } else {
@@ -2674,11 +2970,11 @@ mod tests {
                     }
                 }
                 Page::Buckets => {
-                    f.target = "s3://corp-b1/".into();
+                    f.type_address("s3://corp-b1/");
                     f.x.key_id = "AKIAEXAMPLE".into();
                     f.x.region = "ap-northeast-1".into();
                 }
-                _ => f.target = "imaps://u@mail/INBOX".into(),
+                _ => f.type_address("imaps://u@mail/INBOX"),
             }
             f
         };
@@ -3228,7 +3524,7 @@ mod peek_tests {
         let mut r = Registry::default();
         r.touch(1, Page::Hosts);
         r.act(Click::OpenAdd, Page::Hosts, &OPEN);
-        r.forms[Page::Hosts.idx()].as_mut().unwrap().target = target.to_owned();
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().type_address(target);
         r
     }
 
@@ -3312,7 +3608,7 @@ mod peek_tests {
     }
 
     fn set_target(r: &mut Registry, target: &str) {
-        r.forms[Page::Hosts.idx()].as_mut().unwrap().target = target.to_owned();
+        r.forms[Page::Hosts.idx()].as_mut().unwrap().type_address(target);
     }
 
     #[test]
@@ -3456,5 +3752,252 @@ mod peek_tests {
         assert_eq!(chore::shown_address("ssh://ops@web1:2222"), "ssh://ops@web1:2222");
         assert_eq!(chore::shown_address("imaps://me@example.com@imap.example.com/INBOX"), "imaps://me@example.com@imap.example.com/INBOX");
         assert_eq!(chore::shown_address("ssh://u:Hunter2zz@h:22"), "ssh://u:***@h:22");
+    }
+}
+
+/// The host, S3 and mailbox forms take their address in parts.
+#[cfg(test)]
+mod addr_tests {
+    use super::*;
+
+    fn host(on: &str) -> Form {
+        let winrm = on.to_ascii_lowercase().starts_with("winrm://");
+        Form::edit_host(&HostRow {
+            name: "h".into(),
+            on: on.into(),
+            kind: if winrm { "winrm" } else { "ssh" }.into(),
+            host_key: (!winrm).then(|| "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+            ..HostRow::default()
+        })
+    }
+
+    fn bucket(url: &str) -> Form {
+        Form::edit_bucket(&BucketRow { name: "b".into(), url: url.into(), ..BucketRow::default() })
+    }
+
+    fn mailbox(mail: &str) -> Form {
+        Form::edit_mailbox(&MailboxRow { name: "m".into(), mail: mail.into(), secret: "m".into(), ..MailboxRow::default() })
+    }
+
+    /// 143.44: a new 接続先 PC, S3 or mailbox form starts in parts with the usual port filled in.
+    #[test]
+    fn a_new_form_starts_in_parts_with_the_usual_port_and_the_switch_moves_only_a_default_port() {
+        let mut h = Form::add(Page::Hosts);
+        assert!(!h.raw);
+        assert_eq!((h.addr.user.as_str(), h.addr.host.as_str(), h.addr.port.as_str()), ("", "", "22"));
+        h.set_winrm(true);
+        assert_eq!(h.addr.port, "5986");
+        h.set_winrm(false);
+        assert_eq!(h.addr.port, "22");
+        h.addr.port = "2222".into();
+        h.set_winrm(true);
+        assert_eq!(h.addr.port, "2222", "a port the person chose stays");
+        h.addr.port.clear();
+        h.set_winrm(false);
+        assert_eq!(h.addr.port, "22", "an empty port takes the kind's own");
+        let m = Form::add(Page::Mailboxes);
+        assert_eq!((m.addr.port.as_str(), m.addr.folder.as_str(), m.raw), ("993", "INBOX", false));
+        let b = Form::add(Page::Buckets);
+        assert!(!b.raw && b.addr.bucket.is_empty());
+    }
+
+    /// 143.45: an edit that changes no part sends the stored text as it was (`:22`, an upper-case scheme).
+    #[test]
+    fn an_unchanged_edit_sends_the_stored_text_verbatim() {
+        for on in ["ssh://ops@web1:22", "SSH://web1", "ssh://ops@web1:2222/", "winrm://.\\u@pc:5986", "winrm://CORP\\u@pc"] {
+            let f = host(on);
+            assert!(!f.raw && !f.dirty(), "{on}");
+            assert_eq!(f.address().as_deref(), Ok(on));
+        }
+        for url in ["S3://logs/daily/", "s3://logs/daily", "s3://logs/"] {
+            let f = bucket(url);
+            assert!(!f.raw, "{url}");
+            assert_eq!(f.address().as_deref(), Ok(url));
+        }
+        for mail in ["imaps://u@mail.example.com:993/INBOX", "imaps://u@mail.example.com"] {
+            let f = mailbox(mail);
+            assert!(!f.raw, "{mail}");
+            assert_eq!(f.address().as_deref(), Ok(mail));
+        }
+        let f = host("ssh://ops@web1:22");
+        assert_eq!((f.addr.user.as_str(), f.addr.host.as_str(), f.addr.port.as_str()), ("ops", "web1", "22"));
+    }
+
+    /// 143.46: a changed part is built into the text, and changing it back sends the stored text again.
+    #[test]
+    fn a_changed_part_is_built_and_changed_back_it_is_verbatim() {
+        let mut f = host("ssh://ops@web1:2222/");
+        f.addr.port = "22".into();
+        assert!(f.dirty());
+        let built = f.address().unwrap();
+        assert_ne!(built, "ssh://ops@web1:2222/");
+        let far = chore::ssh(&built).unwrap().unwrap();
+        assert_eq!((far.user.as_deref(), far.host.as_str(), far.port), (Some("ops"), "web1", None));
+        f.addr.port = "2222".into();
+        assert_eq!(f.address().as_deref(), Ok("ssh://ops@web1:2222/"));
+        f.addr.host = "web2".into();
+        assert!(f.address().unwrap().contains("web2"));
+        let mut f = host("winrm://.\\u@pc:5986");
+        f.set_winrm(false);
+        assert_eq!(f.address().as_deref(), Ok("ssh://.\\u@pc"), "the kind is part of the address");
+        f.set_winrm(true);
+        assert_eq!(f.address().as_deref(), Ok("winrm://.\\u@pc:5986"));
+        let mut b = bucket("s3://logs/daily/");
+        b.addr.folder = "weekly".into();
+        assert_eq!(b.address().as_deref(), Ok("s3://logs/weekly/"));
+        b.addr.folder = "daily".into();
+        assert_eq!(b.address().as_deref(), Ok("s3://logs/daily/"));
+        let mut m = mailbox("imaps://u@mail.example.com:993/INBOX");
+        m.addr.folder = "Archive".into();
+        assert!(m.address().unwrap().ends_with("/Archive"));
+        m.addr.folder = "INBOX".into();
+        assert_eq!(m.address().as_deref(), Ok("imaps://u@mail.example.com:993/INBOX"));
+    }
+
+    /// 143.47: a typed password alone does not touch the address that is sent.
+    #[test]
+    fn a_typed_password_alone_keeps_the_address_verbatim() {
+        let mut f = host("ssh://ops@web1:2222/");
+        f.password.as_mut_string().push_str("pw-not-to-show");
+        match f.request("b", &[]) {
+            Ok(Request::HostPut { on, password_value, .. }) => {
+                assert_eq!(on, "ssh://ops@web1:2222/");
+                assert!(password_value.is_some());
+            }
+            other => panic!("{other:?}"),
+        }
+        let mut m = mailbox("imaps://u@mail.example.com:993/INBOX");
+        m.password.as_mut_string().push_str("pw-not-to-show");
+        match m.request("b", &[]) {
+            Ok(Request::MailboxPut { mail, .. }) => assert_eq!(mail, "imaps://u@mail.example.com:993/INBOX"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// 143.48: a stored address that does not read in parts is shown whole, can be changed and is sent as typed.
+    #[test]
+    fn an_address_that_does_not_read_in_parts_is_held_whole_and_can_be_fixed() {
+        let mut f = host("ssh://a b@h");
+        assert!(f.raw && !f.dirty());
+        assert_eq!(f.target, "a b@h");
+        assert_eq!(f.address().as_deref(), Ok("ssh://a b@h"));
+        f.target = "ops@h2".into();
+        assert!(f.dirty());
+        assert_eq!(f.address().as_deref(), Ok("ssh://ops@h2"));
+        // The engine reads this one (koyomi.toml may hold it), but the parts cannot: it is held whole.
+        assert!(matches!(chore::ssh("ssh://ops@web1?x"), Some(Ok(_))));
+        let f = host("ssh://ops@web1?x");
+        assert!(f.raw && !f.dirty());
+        assert_eq!((f.target.as_str(), f.address().as_deref()), ("ops@web1?x", Ok("ssh://ops@web1?x")));
+        // A folder with a space at an end would be written trimmed, so a change to it could read as none: held whole.
+        let mut b = bucket("s3://logs/ daily/");
+        assert!(b.raw);
+        b.target = "s3://logs/daily/".into();
+        assert_eq!(b.address().as_deref(), Ok("s3://logs/daily/"));
+        // A mailbox's folder is read trimmed (`when::mailbox`), so there the space means nothing and it reads in parts.
+        let m = mailbox("imaps://u@mail.example.com/ x");
+        assert_eq!((m.raw, m.addr.folder.as_str()), (false, "x"));
+        // A host with neither scheme keeps the text as it is.
+        let f = host("web1");
+        assert!(f.raw);
+        assert_eq!(f.address().as_deref(), Ok("web1"));
+        // A text with a `{param}` in it reads, but the builder would refuse it: it is held whole too.
+        let f = mailbox("imaps://u@mail.example.com/{box}");
+        assert!(f.raw);
+        assert_eq!(f.address().as_deref(), Ok("imaps://u@mail.example.com/{box}"));
+        let mut b = bucket("s3://");
+        assert!(b.raw);
+        b.target = "s3://logs/".into();
+        assert_eq!(b.address().as_deref(), Ok("s3://logs/"));
+        // `entry.check()` still has the last word: a request from a raw form is checked as before.
+        let mut f = host("ssh://a b@h");
+        f.name = "h".into();
+        assert!(f.request("b", &[]).is_err());
+    }
+
+    /// 143.49: a part the builder refuses is named by its own words and nothing is sent.
+    #[test]
+    fn a_refused_part_is_named() {
+        let mut h = Form::add(Page::Hosts);
+        assert_eq!(h.address(), Err(Line::Key("registry.addr_bad_host")));
+        h.addr.host = "web1".into();
+        h.addr.user = "a b".into();
+        assert_eq!(h.address(), Err(Line::Key("registry.addr_bad_user")));
+        h.addr.user = "ops".into();
+        h.addr.port = "x".into();
+        assert_eq!(h.address(), Err(Line::Key("registry.addr_bad_port")));
+        h.addr.port = "0".into();
+        assert_eq!(h.address(), Err(Line::Key("registry.addr_bad_port")));
+        h.addr.port = "22".into();
+        assert_eq!(h.address().as_deref(), Ok("ssh://ops@web1"));
+        h.addr.user.clear();
+        h.set_winrm(true);
+        assert_eq!(h.address(), Err(Line::Key("registry.addr_winrm_user")));
+        let mut b = Form::add(Page::Buckets);
+        assert_eq!(b.address(), Err(Line::Key("registry.addr_bad_bucket")));
+        b.addr.bucket = "logs".into();
+        b.addr.folder = "a//b".into();
+        assert_eq!(b.address(), Err(Line::Key("registry.addr_bad_folder")));
+        let mut m = Form::add(Page::Mailboxes);
+        assert_eq!(m.address(), Err(Line::Key("registry.addr_bad_user")));
+        m.addr.user = "u".into();
+        assert_eq!(m.address(), Err(Line::Key("registry.addr_bad_host")));
+        m.addr.host = "mail.example.com".into();
+        m.addr.folder = "/x".into();
+        assert_eq!(m.address(), Err(Line::Key("registry.addr_bad_folder")));
+        m.addr.folder = "INBOX".into();
+        assert_eq!(m.address().as_deref(), Ok("imaps://u@mail.example.com"));
+    }
+
+    /// 143.50: the check button reads the parts, and stays off for an address the engine would refuse.
+    #[test]
+    fn the_peek_is_built_from_the_parts() {
+        let mut f = Form::add(Page::Hosts);
+        f.addr.host = "web1".into();
+        assert_eq!(f.peek_target(), Some((PeekKind::Ssh, "web1".into(), 22)));
+        f.addr.port = "2222".into();
+        assert_eq!(f.peek_target(), Some((PeekKind::Ssh, "web1".into(), 2222)));
+        f.addr.host = "[::1]".into();
+        assert_eq!(f.peek_target(), None, "an IPv6 literal is not checked");
+        f.addr.host = "ホスト".into();
+        assert_eq!(f.peek_target(), None, "a non-ASCII name is not checked");
+        f.addr.host = "web1".into();
+        f.addr.port = "x".into();
+        assert_eq!(f.peek_target(), None);
+    }
+
+    /// Every label and hint the parts are drawn with has words in both languages (how they look is checked by hand).
+    #[test]
+    fn the_parts_have_labels_and_hints_in_both_languages() {
+        for lang in ["en", "ja"] {
+            let (t, errors) = crate::i18n::table(lang);
+            assert!(errors.is_empty(), "{errors:?}");
+            for key in [
+                "addr_user",
+                "addr_user_hint_ssh",
+                "addr_user_hint_winrm",
+                "addr_host",
+                "addr_host_hint",
+                "addr_port",
+                "addr_server",
+                "addr_server_hint",
+                "addr_mail_user_hint",
+                "addr_folder",
+                "addr_mail_folder_hint",
+                "addr_bucket",
+                "addr_bucket_hint",
+                "addr_s3_folder_hint",
+                "addr_raw_note",
+                "addr_bad_user",
+                "addr_bad_host",
+                "addr_bad_port",
+                "addr_bad_folder",
+                "addr_bad_bucket",
+                "addr_winrm_user",
+            ] {
+                let key = format!("registry.{key}");
+                assert_ne!(t.tr(&key), key, "{lang} {key}");
+            }
+        }
     }
 }

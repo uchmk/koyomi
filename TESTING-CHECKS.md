@@ -1,6 +1,6 @@
 # Checklist
 
-1453 checks in TESTING.md, 1446 left for a person.
+1464 checks in TESTING.md, 1447 left for a person.
 
 ## 1. Start
 
@@ -1847,6 +1847,8 @@
 
 ## 143. Hosts, buckets and mailboxes registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`, `engine/mails.rs`)
 
+自動テスト済みなので下には出していない: 143.41, 143.42, 143.43, 143.44, 143.45, 143.46, 143.47, 143.48, 143.49, 143.50
+
 - [ ] **143.1** Write an ssh job with `on = "web1"` (a registered ssh `[[host]]`) and run it → The command runs on that PC with the entry's address, host key, key file and password; those set in the job's own env are not used 〔未訳〕
 - [ ] **143.2** Write a winrm job with `on = "win1"` (a registered winrm `[[host]]`) and run it → The command runs on that PC with the entry's address, certificate, auth and password 〔未訳〕
 - [ ] **143.3** Write an SFTP send and a fetch with `host = "web1"`, once with a path `/x` and once with `x` → `/x` is taken as an absolute path on that PC and `x` as below the login's home; the job's own address is not used 〔未訳〕
@@ -1887,3 +1889,4 @@
 - [ ] **143.38** Edit an entry and change only the password → 保存 is on; the new password replaces the old one; koyomi.toml still names only the secret 〔未訳〕
 - [ ] **143.39** Add an SSH host with a key and the password empty; edit an SSH host that has a password and choose to use no password → Both are saved without a password; a key and a typed password together are refused 〔未訳〕
 - [ ] **143.40** Open the S3 form → The field is worded as the secret access key, the key id is its own field, and no secret name is asked for 〔未訳〕
+- [ ] **143.51** Open the three forms in English and in Japanese; empty a port field; search the settings for バケット名 and フォルダー → Each part has its label and hint in both languages (an empty port's hint is the kind's own port: 22, 5986, 993); a screen reader reads each label; the search finds the forms 〔未訳〕

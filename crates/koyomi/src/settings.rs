@@ -142,6 +142,9 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (HOSTS, t.tr("registry.add_host")),
         (HOSTS, t.tr("registry.host_kind")),
         (HOSTS, t.tr("registry.host_on")),
+        (HOSTS, t.tr("registry.addr_user")),
+        (HOSTS, t.tr("registry.addr_host")),
+        (HOSTS, t.tr("registry.addr_port")),
         (HOSTS, t.tr("registry.host_key_field")),
         (HOSTS, t.tr("registry.key_file")),
         (HOSTS, t.tr("registry.cert_field")),
@@ -153,6 +156,8 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (BUCKETS, t.tr("settings.buckets")),
         (BUCKETS, t.tr("registry.add_bucket")),
         (BUCKETS, t.tr("registry.bucket_url")),
+        (BUCKETS, t.tr("registry.addr_bucket")),
+        (BUCKETS, t.tr("registry.addr_folder")),
         (BUCKETS, t.tr("registry.key_id_field")),
         (BUCKETS, t.tr("registry.region_field")),
         (BUCKETS, t.tr("registry.endpoint_field")),
@@ -163,6 +168,10 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (MAILBOXES, t.tr("settings.mailboxes")),
         (MAILBOXES, t.tr("registry.add_mailbox")),
         (MAILBOXES, t.tr("registry.mailbox_mail")),
+        (MAILBOXES, t.tr("registry.addr_server")),
+        (MAILBOXES, t.tr("registry.addr_port")),
+        (MAILBOXES, t.tr("registry.addr_user")),
+        (MAILBOXES, t.tr("registry.addr_folder")),
         (MAILBOXES, t.tr("registry.password_field")),
         (MAILBOXES, "mailbox"),
         (KEYS, "keymap.toml"),
@@ -739,6 +748,13 @@ mod tests {
             assert!(has(BUCKETS, t.tr("registry.add_bucket")) && has(BUCKETS, t.tr("registry.region_field")), "{lang}");
             assert!(has(MAILBOXES, "[[mailbox]]") && has(MAILBOXES, t.tr("settings.mailboxes")), "{lang}");
             assert!(has(MAILBOXES, t.tr("registry.add_mailbox")) && has(MAILBOXES, t.tr("registry.mailbox_mail")), "{lang}");
+            // The address is typed in parts, so the search finds the parts' labels.
+            assert!(
+                has(HOSTS, t.tr("registry.addr_user")) && has(HOSTS, t.tr("registry.addr_host")) && has(HOSTS, t.tr("registry.addr_port")),
+                "{lang}"
+            );
+            assert!(has(BUCKETS, t.tr("registry.addr_bucket")) && has(BUCKETS, t.tr("registry.addr_folder")), "{lang}");
+            assert!(has(MAILBOXES, t.tr("registry.addr_server")) && has(MAILBOXES, t.tr("registry.addr_folder")), "{lang}");
         }
     }
 

@@ -600,6 +600,44 @@ pub fn mailbox(s: &str) -> Result<Mailbox, String> {
     Ok(Mailbox { user: user.to_owned(), host: host.to_owned(), port, folder: folder.to_owned() })
 }
 
+/// Which field of a mailbox form does not make an address that reads back as itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MailField {
+    User,
+    Host,
+    Port,
+    Folder,
+}
+
+/// The `mail` address `imaps://user@host[:port][/folder]` from its parts, refused (with the field at fault) unless
+/// [`mailbox`] reads it back as exactly the same parts. The port is left out when it is 993 and the host is not an
+/// IPv6 literal; the folder when it is empty or `INBOX`.
+pub fn mailbox_url(user: &str, host: &str, port: u16, folder: &str) -> Result<String, MailField> {
+    if user.is_empty() || user.chars().any(|c| c.is_whitespace() || c.is_control() || ":/\"{}".contains(c)) {
+        return Err(MailField::User);
+    }
+    let (host, v6) = crate::chore::host_text(host).ok_or(MailField::Host)?;
+    if port == 0 {
+        return Err(MailField::Port);
+    }
+    let folder = folder.trim();
+    if folder.starts_with('/') || folder.contains(['{', '}']) || folder.chars().any(char::is_control) {
+        return Err(MailField::Folder);
+    }
+    let mut url = format!("imaps://{user}@{host}");
+    if port != 993 || v6 {
+        url.push_str(&format!(":{port}"));
+    }
+    if !folder.is_empty() && folder != "INBOX" {
+        url.push_str(&format!("/{folder}"));
+    }
+    let want_folder = if folder.is_empty() { "INBOX" } else { folder };
+    match mailbox(&url) {
+        Ok(m) if m.user == user && m.host == host && m.port == port && m.folder == want_folder => Ok(url),
+        _ => Err(MailField::Host),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -618,6 +656,35 @@ mod tests {
         assert!(mailbox("imap://a@b").unwrap_err().contains("imaps://"));
         for bad in ["imaps://host", "imaps://@host", "imaps://a@", "imaps://a@b:0", "imaps://a@b:x", "https://a@b", "imaps://a b@c"] {
             assert!(mailbox(bad).is_err(), "{bad}");
+        }
+    }
+
+    /// 143.43: a mailbox address is built from its parts and read back as the same parts.
+    #[test]
+    fn a_mailbox_url_is_built_from_parts_and_reads_back() {
+        let url = mailbox_url;
+        assert_eq!(url("batch", "mail.corp.local", 993, "").as_deref(), Ok("imaps://batch@mail.corp.local"));
+        assert_eq!(url("batch", "mail.corp.local", 993, "INBOX").as_deref(), Ok("imaps://batch@mail.corp.local"));
+        assert_eq!(url("batch", "mail.corp.local", 1993, " INBOX ").as_deref(), Ok("imaps://batch@mail.corp.local:1993"));
+        assert_eq!(
+            url("me@example.com", "imap.example.com", 993, "INBOX/請求").as_deref(),
+            Ok("imaps://me@example.com@imap.example.com/INBOX/請求")
+        );
+        assert_eq!(url("u", "h", 993, "a b").as_deref(), Ok("imaps://u@h/a b"));
+        assert_eq!(url("u", "h", 993, "inbox").as_deref(), Ok("imaps://u@h/inbox"));
+        assert_eq!(url("u", "::1", 993, "").as_deref(), Ok("imaps://u@[::1]:993"));
+        assert_eq!(url("u", "[::1]", 143, "x").as_deref(), Ok("imaps://u@[::1]:143/x"));
+        let built = url("u", "h", 1, "a").unwrap();
+        assert!(!built.contains(['{', '}']) && !crate::chore::has_password(&built));
+        for user in ["", "a:b", "a b", "a/b", "a\"b"] {
+            assert_eq!(url(user, "h", 993, ""), Err(MailField::User), "{user:?}");
+        }
+        for host in ["", "a b", "a@b", "a:b", "-x", "[x]"] {
+            assert_eq!(url("u", host, 993, ""), Err(MailField::Host), "{host:?}");
+        }
+        assert_eq!(url("u", "h", 0, ""), Err(MailField::Port));
+        for folder in ["/x", "a\nb", "{x}"] {
+            assert_eq!(url("u", "h", 993, folder), Err(MailField::Folder), "{folder:?}");
         }
     }
     fn t(s: &str) -> NaiveTime {

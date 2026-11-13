@@ -408,6 +408,9 @@ pub const NO_EXIT: i32 = 255;
 /// environment variable.
 pub const COMMAND_MAX: usize = 8000;
 
+/// The port of `ssh://` when none is written.
+pub const SSH_PORT: u16 = 22;
+
 /// The port of `winrm://` when none is written: WinRM over HTTPS.
 pub const WINRM_PORT: u16 = 5986;
 
@@ -1549,6 +1552,90 @@ pub fn db_url(db: &SqlDb) -> Result<String, DbField> {
         }),
         (_, SqlDb::Sqlite { .. }) => Err(DbField::File),
         _ => Err(DbField::Host),
+    }
+}
+
+/// Which field of a 接続先 PC form does not make an address that reads back as itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostField {
+    User,
+    Host,
+    Port,
+}
+
+/// `host` as it is written in an address and whether it is an IPv6 literal: `::1` and `[::1]` are written `[::1]`
+/// (the readers take the last `:` as the port, so the brackets are kept); any other `:`, `[` or `]` is refused.
+/// `None` for a host that is empty, starts with `-`, or holds a character no reader accepts (`/@\{}?#"'`;&|<>`,
+/// white space, control characters). The text is otherwise kept as typed.
+pub fn host_text(host: &str) -> Option<(String, bool)> {
+    const HOST_BAD: &str = "/@\\{}?#\"'`;&|<>";
+    if host.is_empty() || host.starts_with('-') || host.chars().any(|c| c.is_whitespace() || c.is_control() || HOST_BAD.contains(c)) {
+        return None;
+    }
+    let inner = host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).unwrap_or(host);
+    if host.contains([':', '[', ']']) {
+        return inner.parse::<std::net::Ipv6Addr>().ok().map(|_| (format!("[{inner}]"), true));
+    }
+    Some((host.to_owned(), false))
+}
+
+/// The `on` address of an `ssh` or `winrm` (`ssh://[user@]host[:port]`, `winrm://user@host[:port]`) from its parts,
+/// refused (with the field at fault) unless [`ssh`] / [`winrm`] reads it back as exactly the same parts. The port is
+/// left out when it is the kind's own (22, [`WINRM_PORT`]) and the host is not an IPv6 literal. `user` may be empty
+/// for SSH only.
+pub fn host_url(winrm_kind: bool, user: &str, host: &str, port: u16) -> Result<String, HostField> {
+    const USER_BAD: &str = ":/{}\"'`;&|<>";
+    if user.chars().any(|c| c.is_whitespace() || c.is_control() || USER_BAD.contains(c)) || (winrm_kind && user.is_empty()) {
+        return Err(HostField::User);
+    }
+    let (host, v6) = host_text(host).ok_or(HostField::Host)?;
+    if port == 0 {
+        return Err(HostField::Port);
+    }
+    let default = if winrm_kind { WINRM_PORT } else { SSH_PORT };
+    let scheme = if winrm_kind { "winrm://" } else { "ssh://" };
+    let at = if user.is_empty() { String::new() } else { format!("{user}@") };
+    let url = if port == default && !v6 { format!("{scheme}{at}{host}") } else { format!("{scheme}{at}{host}:{port}") };
+    let far = if winrm_kind { winrm(&url) } else { ssh(&url) };
+    match far {
+        Some(Ok(far))
+            if far.user.as_deref().unwrap_or("") == user && far.host == host && far.port.unwrap_or(default) == port && far.path == "." =>
+        {
+            Ok(url)
+        }
+        _ => Err(HostField::Host),
+    }
+}
+
+/// Which field of an S3 form does not make a `url` that reads back as itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BucketField {
+    Bucket,
+    Folder,
+}
+
+/// The `url` of a `[[bucket]]` from its bucket name and folder (`reports/daily` is written `s3://b/reports/daily/`; the
+/// slashes at the ends are trimmed), refused unless [`s3`] and `registry::bucket_prefix` read it back as the same parts.
+pub fn bucket_url(bucket: &str, folder: &str) -> Result<String, BucketField> {
+    if bucket.contains(['{', '}']) {
+        return Err(BucketField::Bucket);
+    }
+    let folder = folder.trim().trim_matches('/');
+    if (!folder.is_empty() && folder.split('/').any(str::is_empty))
+        || folder.contains(['*', '?', '{', '}'])
+        || folder.chars().any(char::is_control)
+    {
+        return Err(BucketField::Folder);
+    }
+    let url = if folder.is_empty() { format!("s3://{bucket}/") } else { format!("s3://{bucket}/{folder}/") };
+    match s3(&url) {
+        Some(Ok(at)) if at.bucket == bucket => {}
+        _ => return Err(BucketField::Bucket),
+    }
+    let want = if folder.is_empty() { String::new() } else { format!("{folder}/") };
+    match crate::registry::bucket_prefix(&url) {
+        Ok(p) if p == want => Ok(url),
+        _ => Err(BucketField::Folder),
     }
 }
 
@@ -2816,6 +2903,49 @@ mod tests {
         }
         let server = SqlDb::SqlServer { user: None, host: "h".into(), port: 1433, database: "d".into() };
         assert_eq!(db_url(&server), Err(DbField::Host));
+    }
+
+    /// 143.41: a 接続先 PC address is built from its parts and read back as the same parts.
+    #[test]
+    fn a_host_url_is_built_from_parts_and_reads_back() {
+        assert_eq!(host_url(false, "u", "web1", 22).as_deref(), Ok("ssh://u@web1"));
+        assert_eq!(host_url(false, "", "web1", 22).as_deref(), Ok("ssh://web1"));
+        assert_eq!(host_url(false, "u", "web1", 2222).as_deref(), Ok("ssh://u@web1:2222"));
+        assert_eq!(host_url(true, "CORP\\ops", "win1", WINRM_PORT).as_deref(), Ok("winrm://CORP\\ops@win1"));
+        assert_eq!(host_url(true, ".\\ops", "win1", 5985).as_deref(), Ok("winrm://.\\ops@win1:5985"));
+        assert_eq!(host_url(true, "a@b", "win1", 5986).as_deref(), Ok("winrm://a@b@win1"));
+        assert_eq!(host_url(false, "u", "::1", 22).as_deref(), Ok("ssh://u@[::1]:22"));
+        assert_eq!(host_url(false, "u", "[::1]", 22).as_deref(), Ok("ssh://u@[::1]:22"));
+        assert_eq!(host_url(false, "u", "[fe80::1]", 2200).as_deref(), Ok("ssh://u@[fe80::1]:2200"));
+        for (winrm_kind, user) in [(false, "u"), (true, "CORP\\u")] {
+            let url = host_url(winrm_kind, user, "h", 1234).unwrap();
+            assert!(!url.contains(['{', '}']) && !has_password(&url), "{url}");
+        }
+        assert_eq!(host_url(true, "", "h", 5986), Err(HostField::User));
+        for user in ["a:b", "a b", "a/b", "a{b", "a\nb"] {
+            assert_eq!(host_url(false, user, "h", 22), Err(HostField::User), "{user:?}");
+        }
+        for host in ["a@b", "a b", "", "-x", "a:b", "a/b", "[x]", "[::1", "h\\x", "a{b"] {
+            assert_eq!(host_url(false, "u", host, 22), Err(HostField::Host), "{host:?}");
+        }
+        assert_eq!(host_url(false, "u", "h", 0), Err(HostField::Port));
+    }
+
+    /// 143.42: an S3 address is built from the bucket and the folder, refusing the field at fault.
+    #[test]
+    fn a_bucket_url_is_built_from_parts_and_reads_back() {
+        assert_eq!(bucket_url("my-bucket", "").as_deref(), Ok("s3://my-bucket/"));
+        assert_eq!(bucket_url("my-bucket", "reports").as_deref(), Ok("s3://my-bucket/reports/"));
+        assert_eq!(bucket_url("my-bucket", " /reports/daily/ ").as_deref(), Ok("s3://my-bucket/reports/daily/"));
+        assert_eq!(bucket_url("my-bucket", "a b/c").as_deref(), Ok("s3://my-bucket/a b/c/"));
+        assert_eq!(bucket_url("ab", ""), Err(BucketField::Bucket));
+        assert_eq!(bucket_url("a{b}c", ""), Err(BucketField::Bucket));
+        assert_eq!(bucket_url("a b c", ""), Err(BucketField::Bucket));
+        for folder in ["a//b", "a*", "a?", "a\nb", "{x}"] {
+            assert_eq!(bucket_url("my-bucket", folder), Err(BucketField::Folder), "{folder:?}");
+        }
+        let url = bucket_url("my-bucket", "a b").unwrap();
+        assert!(!url.contains(['{', '}']) && !has_password(&url));
     }
 
     #[test]
