@@ -12,7 +12,7 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ito_sql::{Error, Target};
+use ito_sql::{ConnectKind, Error, Target};
 use koyomi_core::chore::{check_db, sql_db, SqlDb, SqlTls};
 use koyomi_core::msg::{self, line, note};
 
@@ -29,13 +29,13 @@ pub const TIMEOUT: Duration = Duration::from_secs(15);
 /// The longest text of the server that is shown, in characters.
 const SAID_MAX: usize = 200;
 
-/// What the probe does with a target: runs `script` and ends with `Ok` or with ito-sql's error. Injected so tests never
-/// connect.
-pub type RunFn = Arc<dyn Fn(&Target, &str, &AtomicBool, Duration) -> Result<(), Error> + Send + Sync>;
+/// What the probe does with a target: connects (signs in to a server, or reads a SQLite file's header) and ends with
+/// `Ok` or with ito-sql's error. Injected so tests never connect.
+pub type RunFn = Arc<dyn Fn(&Target, &AtomicBool, Duration) -> Result<(), Error> + Send + Sync>;
 
 /// The probe as it really connects.
 pub fn real() -> RunFn {
-    Arc::new(|target, script, cancel, timeout| ito_sql::run(target, script, None, cancel, timeout).map(|_| ()))
+    Arc::new(ito_sql::check)
 }
 
 /// What the operations record keeps of a result: `ok`, or only the ID of the error (never the server's words).
@@ -191,35 +191,33 @@ fn run_within(probe: Probe, secrets: &dyn SecretStore, probe_fn: &RunFn, cancel:
             Ok(_) => return Err(line(msg::DB_TEST_NO_PASSWORD, &[])),
         },
     };
-    let script = match &db {
-        SqlDb::Sqlite { path } => {
-            // ito-sql makes a file that is not there, so a missing one is refused first. A file removed between this
-            // check and the open would be made: accepted until uchmk/ito#229 (a read-only open that makes nothing) lands;
-            // then this opens that way.
-            if !Path::new(path).is_file() {
-                return Err(line(msg::DB_TEST_FILE_MISSING, &[path]));
-            }
-            // Reads the header, so a file that is not a database fails.
-            "SELECT count(*) FROM sqlite_master"
+    // A missing file is refused first (cheap and clear). `ito_sql::check` opens a SQLite file read-only and never
+    // creates or changes the database file (a WAL-mode one may get its `-wal` / `-shm` side files made or touched), so
+    // a file removed after this check is `Connect { Missing }`, mapped the same way below.
+    if let SqlDb::Sqlite { path } = &db {
+        if !Path::new(path).is_file() {
+            return Err(line(msg::DB_TEST_FILE_MISSING, &[path]));
         }
-        _ => "SELECT 1",
-    };
+    }
     let target = crate::sql::target(db, tls, password.as_ref().map(|p| p.expose().to_owned())).map_err(|e| {
         // The target is checked again; nothing in `e` is the password.
         line(msg::DB_TEST_CONNECT, &[&place, &said(msg::uncoded(&e), None)])
     })?;
     let left = budget.checked_sub(start.elapsed()).filter(|d| !d.is_zero()).ok_or_else(timed_out)?;
     let secret = password.as_ref().map(Hidden::expose);
-    match probe_fn(&target, script, cancel, left) {
+    match probe_fn(&target, cancel, left) {
         Ok(()) => Ok(String::new()),
         Err(Error::Cancelled) => Err(line(msg::DB_TEST_STOPPED, &[])),
         Err(Error::Timeout) => Err(timed_out()),
         Err(Error::Sql(s)) if server_text => Err(line(msg::DB_TEST_REFUSED, &[&place, &said(&s, secret)])),
         Err(Error::Sql(_)) => Err(line(msg::DB_TEST_REFUSED_SAVED, &[&place])),
-        Err(Error::Connect(s) | Error::Unsupported(s) | Error::Io(s)) if server_text => {
+        Err(Error::Connect { kind: ConnectKind::Missing, .. }) if matches!(target, Target::Sqlite { .. }) => {
+            Err(line(msg::DB_TEST_FILE_MISSING, &[&place]))
+        }
+        Err(Error::Connect { text: s, .. } | Error::Unsupported(s) | Error::Io(s)) if server_text => {
             Err(line(msg::DB_TEST_CONNECT, &[&place, &said(&s, secret)]))
         }
-        Err(Error::Connect(_) | Error::Unsupported(_) | Error::Io(_)) => Err(line(msg::DB_TEST_CONNECT_SAVED, &[&place])),
+        Err(Error::Connect { .. } | Error::Unsupported(_) | Error::Io(_)) => Err(line(msg::DB_TEST_CONNECT_SAVED, &[&place])),
     }
 }
 
@@ -227,6 +225,8 @@ fn run_within(probe: Probe, secrets: &dyn SecretStore, probe_fn: &RunFn, cancel:
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
+
+    use ito_sql::SqliteOpen;
 
     use super::*;
 
@@ -266,22 +266,26 @@ mod tests {
         }
     }
 
-    /// The passwords and scripts a fake probe was given.
-    type Log = Arc<Mutex<Vec<(String, String)>>>;
+    /// The passwords a fake probe was given.
+    type Log = Arc<Mutex<Vec<String>>>;
 
     /// A probe fn that records the password it was given, and answers `answer`.
     fn recording(answer: Result<(), Error>) -> (RunFn, Log) {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
-        let f: RunFn = Arc::new(move |target, script, _, _| {
+        let f: RunFn = Arc::new(move |target, _, _| {
             let password = match target {
                 Target::Postgres { password, .. } => password.clone(),
                 _ => String::new(),
             };
-            log.lock().unwrap().push((password, script.to_owned()));
+            log.lock().unwrap().push(password);
             answer.clone()
         });
         (f, seen)
+    }
+
+    fn connect(text: &str) -> Error {
+        Error::Connect { kind: ConnectKind::Other, text: text.into() }
     }
 
     fn typed() -> Hidden {
@@ -436,7 +440,7 @@ mod tests {
         let t = Hidden::new("secret:abc".into());
         let r = run(probe("postgres://u@h/d", Some(&t), None, ""), &store, &f, &AtomicBool::new(false));
         assert_eq!(r, Ok(String::new()));
-        assert_eq!(*seen.lock().unwrap(), vec![("secret:abc".to_owned(), "SELECT 1".to_owned())]);
+        assert_eq!(*seen.lock().unwrap(), vec!["secret:abc".to_owned()]);
         assert!(store.calls.lock().unwrap().is_empty(), "a typed password reads no secret");
     }
 
@@ -447,7 +451,7 @@ mod tests {
         store.items.lock().unwrap().insert("koyomi-db-main".into(), "saved-pw".into());
         let mk = || probe("postgres://app@db.example/sales", None, Some("main"), SAVED);
         assert_eq!(run(mk(), &store, &f, &AtomicBool::new(false)), Ok(String::new()));
-        assert_eq!(seen.lock().unwrap()[0].0, "saved-pw");
+        assert_eq!(seen.lock().unwrap()[0], "saved-pw");
         assert_eq!(*store.calls.lock().unwrap(), vec!["get koyomi-db-main".to_owned()]);
         // Missing, empty.
         for value in [None, Some("")] {
@@ -470,7 +474,7 @@ mod tests {
         store.items.lock().unwrap().insert("koyomi-db-main".into(), "saved-pw".into());
         let said_by_server = "password authentication failed for user app";
         let cases = [
-            (Error::Connect(said_by_server.into()), msg::DB_TEST_CONNECT, msg::DB_TEST_CONNECT_SAVED),
+            (connect(said_by_server), msg::DB_TEST_CONNECT, msg::DB_TEST_CONNECT_SAVED),
             (Error::Sql(said_by_server.into()), msg::DB_TEST_REFUSED, msg::DB_TEST_REFUSED_SAVED),
             (Error::Unsupported(said_by_server.into()), msg::DB_TEST_CONNECT, msg::DB_TEST_CONNECT_SAVED),
             (Error::Io(said_by_server.into()), msg::DB_TEST_CONNECT, msg::DB_TEST_CONNECT_SAVED),
@@ -486,12 +490,12 @@ mod tests {
             assert!(saved_id.is_in(&e) && !e.contains(said_by_server) && !e.contains("saved-pw"), "{e}");
         }
         // The place never holds the user.
-        let (f, _) = recording(Err(Error::Connect("x".into())));
+        let (f, _) = recording(Err(connect("x")));
         let t = typed();
         let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &f, &AtomicBool::new(false)).unwrap_err();
         assert!(!e.contains("app@"), "{e}");
         // A server that repeats the typed password.
-        let (f, _) = recording(Err(Error::Connect(format!("bad login {PW}"))));
+        let (f, _) = recording(Err(connect(&format!("bad login {PW}"))));
         let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &f, &AtomicBool::new(false)).unwrap_err();
         assert!(!e.contains(PW) && e.contains(&note(msg::N_DB_TEST_WITHHELD, &[])), "{e}");
         // A timeout and a cancel.
@@ -507,7 +511,7 @@ mod tests {
     fn the_probe_gets_the_rest_of_the_time() {
         let seen = Arc::new(Mutex::new(Vec::new()));
         let log = seen.clone();
-        let f: RunFn = Arc::new(move |_, _, _, left| {
+        let f: RunFn = Arc::new(move |_, _, left| {
             log.lock().unwrap().push(left);
             Ok(())
         });
@@ -555,6 +559,44 @@ mod tests {
     }
 
     #[test]
+    fn a_sqlite_file_gone_after_the_pre_check_is_the_missing_file_error() {
+        let dir = std::env::temp_dir().join(format!("koyomi-dbtest-gone-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("gone.db");
+        std::fs::write(&file, b"").unwrap();
+        let gone = file.clone();
+        // The file is removed after the pre-check passed, as the probe starts.
+        let f: RunFn = Arc::new(move |_, _, _| {
+            let _ = std::fs::remove_file(&gone);
+            Err(Error::Connect { kind: ConnectKind::Missing, text: "unable to open database file".into() })
+        });
+        let r = run(probe(&format!("sqlite://{}", file.display()), None, None, ""), &Mem::default(), &f, &AtomicBool::new(false));
+        let e = r.unwrap_err();
+        assert!(msg::DB_TEST_FILE_MISSING.is_in(&e), "{e}");
+        // A missing database on a server is not the file error.
+        let (f, _) = recording(Err(Error::Connect { kind: ConnectKind::Missing, text: "database does not exist".into() }));
+        let t = typed();
+        let e =
+            run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &Mem::default(), &f, &AtomicBool::new(false)).unwrap_err();
+        assert!(msg::DB_TEST_CONNECT.is_in(&e), "{e}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_real_check_never_creates_a_sqlite_file() {
+        let dir = std::env::temp_dir().join(format!("koyomi-dbtest-nocreate-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("none.db");
+        let target = Target::Sqlite { path: file.clone(), open: SqliteOpen::Create };
+        let e = real()(&target, &AtomicBool::new(false), Duration::from_secs(5)).unwrap_err();
+        assert!(matches!(e, Error::Connect { kind: ConnectKind::Missing, .. }), "{e:?}");
+        assert!(!file.exists(), "the check must not create the file");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn a_real_sqlite_file_passes_an_empty_file_passes_and_garbage_does_not() {
         let dir = std::env::temp_dir().join(format!("koyomi-dbtest-real-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -564,7 +606,7 @@ mod tests {
         let never = AtomicBool::new(false);
         // A real database, made by ito-sql itself.
         let made = dir.join("ok.db");
-        let target = Target::Sqlite { path: made.clone() };
+        let target = Target::Sqlite { path: made.clone(), open: SqliteOpen::Create };
         ito_sql::run(&target, "CREATE TABLE t (a INTEGER)", None, &never, Duration::from_secs(5)).unwrap();
         assert_eq!(run(probe(&url("ok.db"), None, None, ""), &Mem::default(), &real, &never), Ok(String::new()));
         // An empty file is an empty database.
@@ -573,7 +615,7 @@ mod tests {
         // Garbage that is not a database.
         std::fs::write(dir.join("junk.db"), b"this is not a database file at all, only text, long enough to be a header").unwrap();
         let e = run(probe(&url("junk.db"), None, None, ""), &Mem::default(), &real, &never).unwrap_err();
-        assert!(msg::DB_TEST_REFUSED.is_in(&e), "{e}");
+        assert!(msg::DB_TEST_CONNECT.is_in(&e), "{e}");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -3883,7 +3883,7 @@ mod tests {
     fn fake_probe(answer: Result<(), ito_sql::Error>) -> (db_test::RunFn, Seen) {
         let seen: Seen = Arc::default();
         let log = seen.clone();
-        let f: db_test::RunFn = Arc::new(move |target, _, _, _| {
+        let f: db_test::RunFn = Arc::new(move |target, _, _| {
             let password = match target {
                 ito_sql::Target::Postgres { password, .. } => password.clone(),
                 _ => String::new(),
@@ -4013,7 +4013,7 @@ mod tests {
         let (started_tx, started_rx) = std::sync::mpsc::channel();
         let (go, flag) = (release.clone(), Arc::new(AtomicBool::new(false)));
         let saw_cancel = flag.clone();
-        let blocking: db_test::RunFn = Arc::new(move |_, _, cancel, _| {
+        let blocking: db_test::RunFn = Arc::new(move |_, cancel, _| {
             let _ = started_tx.send(());
             let end = Instant::now() + Duration::from_secs(5);
             while !go.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) && Instant::now() < end {

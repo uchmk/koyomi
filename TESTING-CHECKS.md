@@ -1,6 +1,6 @@
 # Checklist
 
-1452 checks in TESTING.md, 1445 left for a person.
+1453 checks in TESTING.md, 1446 left for a person.
 
 ## 1. Start
 
@@ -1371,6 +1371,7 @@
 - [ ] **116.16** The editor: add 「SQL を実行する」 from 基本 on the shelf; type `sqlserver://db01/売上` in データベース; then `postgres://x@db01/売上`; then `sqlite://C:\a.db` → The SQL box's top right says `SQL Server`, then `PostgreSQL`, then `SQLite`; the password field shows only for PostgreSQL (and for a SQL Server address with a user); TLS is hidden for SQLite; a password left from PostgreSQL stays shown and marked wrong for the SQLite address 〔未訳〕
 - [ ] **116.17** In the editor, write both SQL and a file; then `rows = "many"`; then save a good one and approve it → Both fields are marked wrong; then the 正常とする行の数 field; the approve box lists データベース, SQL (each line break as ⏎), 結果の置き場所, 正常とする行の数 and, when not verify, TLS 〔未訳〕
 - [ ] **116.18** [x] `koyomi sql run` by hand in cmd with `set KOYOMI_SQL_DB=sqlite://D:\koyomi-test\a.db` and `set KOYOMI_SQL_TEXT=select count(*) from t` → It prints `sql: …`, the result lines and ends with 0; without `KOYOMI_SQL_DB` it says `KOYOMI-E3210 環境変数 KOYOMI_SQL_DB が設定されていません。koyomi sql run は、kind = "sql" のジョブから実行してください。` 〔未訳〕
+- [ ] **116.19** A PostgreSQL server without TLS (`ssl = off` in `postgresql.conf`): run the job of 116.13 with no `tls`, then with `tls = "trust"`, then with `tls = "off"`; then click 接続テスト on a データベース entry for that server with each TLS choice → ✕ the first two times, and the reason is `KOYOMI-E3240 <host>:5432/koyomi_test に接続できません。（…）`, whose action names `tls = "off"`; koyomi never falls back to an unencrypted connection (a capture of the port shows no plain-text sign-in); ✓ with `off`. 接続テスト connects only with off; the other two show a failure line 〔未訳〕
 
 ## 117. Send to and fetch from S3 (`s3://`; TODO 114)
 
@@ -1840,7 +1841,7 @@
 - [ ] **142.33** Edit a saved PostgreSQL entry and click 接続テスト with the password empty and the server, port, user ID and TLS unchanged → The button is on and the saved password is used (read on the engine's PC); a failure says only the place, not the server's words 〔未訳〕
 - [ ] **142.34** Edit a saved PostgreSQL entry, change the server, port, user ID or make TLS weaker, with the password empty → 接続テスト is off with a hover asking for the password; after typing one it is on 〔未訳〕
 - [ ] **142.35** Click 接続テスト, then change any field or one character of the password → The result line goes away (a late answer is not shown); the button is on again 〔未訳〕
-- [ ] **142.36** Test a SQLite entry with the path of a database file, of an empty file, of a file that is not there, and of a relative path or (on Windows) a network path written either way (`\\server\share` or `/\server\share`) → The database file and the empty file connect; a missing file says it is not there and no file is made; the relative and network paths are refused with a line that asks for a full path on the engine's own disk 〔未訳〕
+- [ ] **142.36** Test a SQLite entry with the path of a database file, of an empty file, of a text file that is not a database, of a file that is not there, and of a relative path or (on Windows) a network path written either way (`\\server\share` or `/\server\share`) → The database file and the empty file connect, and neither file changes (the same size and modified time); the text file shows a failure line holding `file is not a database`; a missing file says it is not there and no file is made; the relative and network paths are refused with a line that asks for a full path on the engine's own disk 〔未訳〕
 - [ ] **142.37** Start three tests at once, then stop the engine while they run → The third says that tests are already running; the running ones end with `テストが止められました` when the engine stops; a test never takes more than 15 seconds 〔未訳〕
 - [ ] **142.38** Open the form as an editor or as a caller narrowed by nets; test from a window of another PC's engine → An editor and a narrowed caller cannot test (the button is off, and the engine refuses the request); an admin can; the operations record shows `db-test`, the place and only `ok` or the message ID 〔未訳〕
 

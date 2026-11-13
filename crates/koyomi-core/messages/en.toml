@@ -2612,15 +2612,15 @@ cause = "The connection to the database failed."
 action = "Check the host, the port, the user and the password."
 
 [E3239]
-when = "A sql job cannot connect to SQL Server, and tls is verify"
+when = "A sql job cannot connect to SQL Server over TLS, and tls is verify"
 text = "Cannot connect to {0}. ({1})"
 cause = "The connection to the database failed. With tls verify, the certificate of the server is verified."
 action = "If the server uses a certificate it made itself, give tls = \"trust\". Otherwise check the host, the port, the user and the password."
 
 [E3240]
-when = "A sql job cannot connect to PostgreSQL, and tls is verify"
+when = "A sql job cannot connect to PostgreSQL over TLS (tls is verify or trust)"
 text = "Cannot connect to {0}. ({1})"
-cause = "The connection to the database failed. With tls verify, the certificate of the server is verified."
+cause = "The connection to the database failed. With tls verify or trust, koyomi does not fall back to an unencrypted connection when the server has no TLS; with verify, the certificate of the server is also verified."
 action = "If the server uses a certificate it made itself, give tls = \"trust\"; if it has no TLS, give tls = \"off\". Otherwise check the host, the port, the user and the password."
 
 [E3241]
