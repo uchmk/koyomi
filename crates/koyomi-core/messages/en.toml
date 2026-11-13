@@ -913,6 +913,18 @@ text = "The path of the holiday table to import is not given."
 cause = "The path of the file to import is required."
 action = "Enter the path."
 
+[E4155]
+when = "The holiday table is downloaded from the Cabinet Office and no answer comes"
+text = "Could not get the Cabinet Office's holiday table ({0})."
+cause = "The network is not reachable, or the proxy, the certificate or the time limit stopped it. The answer may also be too large (up to 1 MiB), forwarded to an address that is not https, or cut off on the way."
+action = "Press the button again later, or save syukujitsu.csv in a browser and import it by its path."
+
+[E4156]
+when = "The Cabinet Office's server answers the holiday table download with an error status"
+text = "The Cabinet Office's server returned {0}. The holiday table was not imported."
+cause = "The server is busy or the file has moved."
+action = "Press the button again later, or save syukujitsu.csv in a browser and import it by its path."
+
 [E1001]
 when = "A [groups] group is not an array of PCs"
 text = "[groups] group {0} is not an array of PCs."
@@ -4312,6 +4324,7 @@ cal_written = "Wrote the calendar calendars/{0}.toml."
 cal_renamed = "Renamed the calendar {0} to {1}."
 cal_deleted = "Deleted the calendar {0} (the earlier content is kept under versions/_calendars/{0})."
 holiday_imported = "Imported the holiday table (calendars/{0}, from {1} to {2})."
+holiday_not_newer = "The Cabinet Office's holiday table still ends in {0}. Holidays of {1} are usually added around February."
 restored_unconfirmed = "Put {1} back to the version {0} (unconfirmed; it runs once it is confirmed)."
 restored_same = "Put {1} back to the version {0} (the same content as the confirmed definition)."
 renamed = "Renamed {0} to {1}."

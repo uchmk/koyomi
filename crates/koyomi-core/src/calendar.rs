@@ -33,6 +33,9 @@ const WALK: usize = 60;
 /// The file name of the Cabinet Office's table in `calendars/`.
 pub const TABLE_FILE: &str = "syukujitsu.csv";
 
+/// Where the Cabinet Office publishes that table.
+pub const TABLE_URL: &str = "https://www8.cao.go.jp/chosei/shukujitsu/syukujitsu.csv";
+
 /// The Cabinet Office's table of holidays (`syukujitsu.csv`: a header, then
 /// `2027/1/1,元日` a line, in Shift_JIS or UTF-8). For the years it covers,
 /// a day is a holiday only when the table has it; the rules do the rest.

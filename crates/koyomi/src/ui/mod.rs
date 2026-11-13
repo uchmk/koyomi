@@ -2900,6 +2900,7 @@ impl Browser {
             self.reveal = false;
         });
         self.poll_picking(&ctx);
+        self.poll_fetch(&ctx);
         // Boxes can overlap (a kill asked while a delete is open); one key answers only the first
         // open one, so a single Enter cannot decide two of them.
         let open = [
@@ -6745,6 +6746,158 @@ run = [\"x.exe\"]
         assert!(b.cal_inline.is_none(), "another calendar's field goes");
     }
 
+    /// A table field of 会社 with a download the test feeds by hand: the browser, the screen, the requests the
+    /// window sends, the download's sender and its stop flag.
+    fn fetching() -> (Browser, Screen, Asked, mpsc::Sender<calendar::Fetched>, Arc<std::sync::atomic::AtomicBool>) {
+        let (tx_out, asked) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx_out;
+        let cal = koyomi_core::calendar::Calendar::parse("会社", "format = 1\n").unwrap();
+        b.snap.as_mut().unwrap().calendars.insert("会社".into(), cal);
+        b.cal_sel = Some("会社".into());
+        b.cal_month = Some((2026, 11));
+        let (tx, rx) = mpsc::channel();
+        let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let fetch = calendar::Fetch { stop: stop.clone(), rx };
+        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: String::new(), fresh: false, fetch: Some(fetch) });
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        (b, s, asked, tx, stop)
+    }
+
+    fn fetch_running(b: &Browser) -> bool {
+        matches!(&b.cal_inline, Some(calendar::Inline::Table { fetch: Some(_), .. }))
+    }
+
+    fn stopped(stop: &Arc<std::sync::atomic::AtomicBool>) -> bool {
+        stop.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    #[test]
+    fn the_table_field_has_a_button_that_names_the_year_and_is_off_while_it_downloads() {
+        let (mut b, mut s, asked, tx, stop) = fetching();
+        assert!(s.nodes.values().any(|(l, _)| l == "2028 年の祝日を取り込む"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
+        assert!(fetch_running(&b));
+        // Pressing it while it runs starts nothing and stops nothing.
+        s.click("2028 年の祝日を取り込む", &mut b);
+        assert!(fetch_running(&b) && !stopped(&stop));
+        assert!(tx.send(calendar::Fetched::Stopped).is_ok(), "still the first download's channel");
+        assert!(asked.try_recv().is_err());
+        // With a table that reaches 2028 the button asks for 2029.
+        let cal = b.snap.as_mut().unwrap().calendars.get_mut("会社").unwrap();
+        cal.table = Some(koyomi_core::calendar::Table { years: (2020, 2028), days: Default::default() });
+        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: String::new(), fresh: false, fetch: None });
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l == "2029 年の祝日を取り込む"));
+    }
+
+    #[test]
+    fn a_downloaded_table_is_sent_when_newer_and_said_when_not_or_failed() {
+        use calendar::Fetched;
+        // Newer: one request, field closed.
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        tx.send(Fetched::Table { bytes: b"table".to_vec(), last: 2028 }).unwrap();
+        s.settle(&mut b);
+        assert!(matches!(asked.try_recv(), Ok(Request::HolidayTable { bytes }) if bytes == b"table"));
+        assert!(asked.try_recv().is_err(), "one request");
+        assert!(b.cal_inline.is_none() && b.cal_result.is_none());
+        // Not newer: the note, the field stays and is usable again.
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        tx.send(Fetched::Table { bytes: b"table".to_vec(), last: 2027 }).unwrap();
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err());
+        assert_eq!(b.cal_result, Some(Ok(koyomi_core::msg::note(koyomi_core::msg::N_HOLIDAY_NOT_NEWER, &["2027", "2028"]))));
+        assert!(b.cal_inline.is_some() && !fetch_running(&b));
+        // Failed: the line as an error, the field stays.
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        let line = koyomi_core::msg::line(koyomi_core::msg::TABLE_FETCH_STATUS, &["404"]);
+        tx.send(Fetched::Failed(line.clone())).unwrap();
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err());
+        assert_eq!(b.cal_result, Some(Err(line)));
+        assert!(b.cal_inline.is_some() && !fetch_running(&b));
+        // Stopped shows nothing.
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        tx.send(Fetched::Stopped).unwrap();
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err() && b.cal_result.is_none() && b.cal_inline.is_some() && !fetch_running(&b));
+    }
+
+    #[test]
+    fn the_snapshot_may_pass_the_downloaded_year_before_it_arrives() {
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        let cal = b.snap.as_mut().unwrap().calendars.get_mut("会社").unwrap();
+        cal.table = Some(koyomi_core::calendar::Table { years: (2020, 2028), days: Default::default() });
+        tx.send(calendar::Fetched::Table { bytes: b"table".to_vec(), last: 2028 }).unwrap();
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err(), "nothing sent");
+        assert_eq!(b.cal_result, Some(Ok(koyomi_core::msg::note(koyomi_core::msg::N_HOLIDAY_NOT_NEWER, &["2028", "2029"]))));
+    }
+
+    #[test]
+    fn a_download_goes_with_its_field() {
+        use calendar::Fetched;
+        // The field closed: the thread is told to stop and its late answer does nothing.
+        let (mut b, mut s, asked, tx, stop) = fetching();
+        tx.send(Fetched::Table { bytes: b"table".to_vec(), last: 2028 }).unwrap();
+        b.cal_inline = None;
+        assert!(stopped(&stop));
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err() && b.cal_result.is_none() && b.cal_inline.is_none());
+        // The cancel button (キャンセル) does the same.
+        let (mut b, mut s, asked, tx, stop) = fetching();
+        s.click("キャンセル", &mut b);
+        assert!(b.cal_inline.is_none() && stopped(&stop));
+        let _ = tx.send(Fetched::Table { bytes: b"table".to_vec(), last: 2028 });
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err() && b.cal_result.is_none());
+        // The same calendar's field reopened: it has no download, the old outcome reaches nobody.
+        let (mut b, mut s, asked, tx, stop) = fetching();
+        b.cal_inline = None;
+        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: String::new(), fresh: false, fetch: None });
+        let _ = tx.send(Fetched::Table { bytes: b"table".to_vec(), last: 2028 });
+        s.settle(&mut b);
+        assert!(stopped(&stop));
+        assert!(asked.try_recv().is_err() && b.cal_result.is_none() && b.cal_inline.is_some());
+        // Another calendar's field: the old one goes with its download.
+        let (mut b, mut s, _asked, _tx, stop) = fetching();
+        b.cal_inline = Some(calendar::Inline::Name {
+            cal: "工場".into(),
+            day: chrono::NaiveDate::from_ymd_opt(2026, 11, 20).unwrap(),
+            text: String::new(),
+            fresh: false,
+        });
+        s.settle(&mut b);
+        assert!(b.cal_inline.is_none() && stopped(&stop));
+    }
+
+    #[test]
+    fn the_path_import_while_a_download_runs_sends_one_request_and_the_download_does_nothing() {
+        let (mut b, mut s, asked, tx, stop) = fetching();
+        let file = std::env::temp_dir().join(format!("koyomi-fetch-test-{}.csv", std::process::id()));
+        std::fs::write(&file, "日付,名称\n2028/1/1,元日\n").unwrap();
+        if let Some(calendar::Inline::Table { path, .. }) = &mut b.cal_inline {
+            *path = file.display().to_string();
+        }
+        s.click("決定する", &mut b);
+        let _ = std::fs::remove_file(&file);
+        assert!(matches!(asked.try_recv(), Ok(Request::HolidayTable { .. })));
+        assert!(asked.try_recv().is_err());
+        assert!(b.cal_inline.is_none() && stopped(&stop));
+        let _ = tx.send(calendar::Fetched::Table { bytes: b"table".to_vec(), last: 2030 });
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err() && b.cal_result.is_none());
+    }
+
+    #[test]
+    fn a_download_whose_thread_is_gone_frees_the_button_and_shows_nothing() {
+        let (mut b, mut s, asked, tx, _stop) = fetching();
+        drop(tx);
+        s.settle(&mut b);
+        assert!(b.cal_inline.is_some() && !fetch_running(&b));
+        assert!(b.cal_result.is_none() && asked.try_recv().is_err());
+    }
+
     /// The holiday table's file chooser: while it is open the button is off, a chosen file fills the field
     /// (which stays editable), and a cancel leaves the field as it was.
     #[test]
@@ -6756,7 +6909,7 @@ run = [\"x.exe\"]
         b.cal_sel = Some("会社".into());
         b.cal_month = Some((2026, 11));
         let (tx, rx) = std::sync::mpsc::channel();
-        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: "C:/typed.csv".into(), fresh: false });
+        b.cal_inline = Some(calendar::Inline::Table { cal: "会社".into(), path: "C:/typed.csv".into(), fresh: false, fetch: None });
         b.cal_picking = Some(("会社".into(), rx));
         s.settle(&mut b);
         let path = |b: &Browser| match &b.cal_inline {
@@ -6790,7 +6943,7 @@ run = [\"x.exe\"]
         let mut s = Screen::new();
         b.cal_sel = Some("会社".into());
         b.cal_month = Some((2026, 11));
-        let table = |path: &str| calendar::Inline::Table { cal: "会社".into(), path: path.into(), fresh: false };
+        let table = |path: &str| calendar::Inline::Table { cal: "会社".into(), path: path.into(), fresh: false, fetch: None };
         let field = |b: &Browser| match &b.cal_inline {
             Some(calendar::Inline::Table { path, .. }) => Some(path.clone()),
             _ => None,

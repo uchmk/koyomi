@@ -13,6 +13,11 @@
 //! Every change goes through the engine (this PC's or another's alike), as a calendar job of the worker:
 //! the window never reads or writes a calendar file itself.
 
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{Receiver, TryRecvError};
+use std::sync::Arc;
+use std::time::Duration;
+
 use chrono::{Datelike, NaiveDate, Weekday};
 use ito_a11y::Role;
 use koyomi_core::blackout::{self, Blackout};
@@ -77,7 +82,39 @@ pub(super) struct NewCal {
 /// What is typed under the month of `cal`: a day's name, or the path of a holiday table.
 pub(super) enum Inline {
     Name { cal: String, day: NaiveDate, text: String, fresh: bool },
-    Table { cal: String, path: String, fresh: bool },
+    Table { cal: String, path: String, fresh: bool, fetch: Option<Fetch> },
+}
+
+/// What the download thread hands back. The window decides at receipt whether the table is newer.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Fetched {
+    /// The field went before the answer; nothing is shown.
+    Stopped,
+    /// A coded line.
+    Failed(String),
+    /// A table that reads: its bytes as they came and its last year.
+    Table { bytes: Vec<u8>, last: i32 },
+}
+
+/// A download running for a table field. It belongs to the field: when the field goes, this is dropped,
+/// the thread is told to stop and its answer is not read.
+pub(super) struct Fetch {
+    pub(super) stop: Arc<AtomicBool>,
+    pub(super) rx: Receiver<Fetched>,
+}
+
+impl Drop for Fetch {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+    }
+}
+
+/// What the window does with a downloaded table.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum Receipt {
+    Send,
+    /// The note to show; nothing is sent.
+    NotNewer(String),
 }
 
 impl Inline {
@@ -406,7 +443,7 @@ impl Browser {
                         self.result = Some(Ok(t.tr("run.writing").to_owned()));
                         Self::background_file(&self.io, move || super::print_plan(&days, y, m));
                     }
-                    Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true }),
+                    Some(_) => self.cal_inline = Some(Inline::Table { cal: name.clone(), path: String::new(), fresh: true, fetch: None }),
                     None => {}
                 }
                 ui.add_space(8.0);
@@ -484,6 +521,42 @@ impl Browser {
                     }
                 });
             });
+    }
+
+    /// Looks for the answer of the holiday table's download, every frame. The download belongs to the field in
+    /// `cal_inline`; a newer table is sent as the path import sends it, and the field closes.
+    pub(super) fn poll_fetch(&mut self, ctx: &egui::Context) {
+        let Some(Inline::Table { cal, fetch, .. }) = &mut self.cal_inline else { return };
+        let Some(f) = fetch else { return };
+        let got = match f.rx.try_recv() {
+            Ok(got) => got,
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(Duration::from_millis(100));
+                return;
+            }
+            Err(TryRecvError::Disconnected) => {
+                *fetch = None;
+                return;
+            }
+        };
+        *fetch = None;
+        let cal = cal.clone();
+        match got {
+            Fetched::Stopped => {}
+            Fetched::Failed(line) => self.cal_result = Some(Err(line)),
+            Fetched::Table { bytes, last } => {
+                // The snapshot may have moved while the download ran: compare with what the window knows now.
+                let known = self.snap.as_ref().and_then(|s| s.calendars.get(&cal)).map(known_last);
+                match known.map(|k| receipt(last, k)) {
+                    None => self.cal_inline = None,
+                    Some(Receipt::NotNewer(note)) => self.cal_result = Some(Ok(note)),
+                    Some(Receipt::Send) => {
+                        self.send(Request::HolidayTable { bytes });
+                        self.cal_inline = None;
+                    }
+                }
+            }
+        }
     }
 
     /// Whether the page's foot has something to hold: the field typed in for this calendar, or a result line.
@@ -1160,6 +1233,18 @@ impl Browser {
                     self.cal_picking = Some((cal.clone(), rx));
                 }
             }
+            if let Inline::Table { fetch, .. } = &mut *inline {
+                let running = fetch.is_some();
+                let label = t.trf("calendar.table_fetch", &[&(known_last(cal) + 1).to_string()]);
+                let button =
+                    ui.add_enabled(!running, |ui: &mut egui::Ui| ito_prefs::IconButton::new(ito_prefs::Mark::Download, &label).show(ui));
+                if running {
+                    button.on_disabled_hover_text(t.tr("calendar.table_fetching"));
+                } else if button.clicked() {
+                    self.cal_result = None;
+                    start_fetch(fetch, ui.ctx());
+                }
+            }
             if let Some(i) = super::go_or_cancel(ui, ito_prefs::Mark::Check, t.tr("calendar.inline_go"), t.tr("make.cancel")) {
                 pressed = Some(i);
             }
@@ -1592,6 +1677,76 @@ fn import_table(path: &str) -> Result<Request, String> {
     Ok(Request::HolidayTable { bytes })
 }
 
+/// The last year the window can tell holidays for: the later of the built-in rules and the table.
+fn known_last(cal: &Calendar) -> i32 {
+    koyomi_core::calendar::until(cal.table.as_ref()).year()
+}
+
+/// How the table is downloaded: https only, the file is about 22 KB, so 1 MiB is generous; a reply over it fails
+/// (a cut reply could still read as a shorter table). The rest is ito-fetch's default (OS roots, proxy from the
+/// environment, a generic User-Agent).
+fn fetch_options() -> ito_fetch::Options {
+    ito_fetch::Options {
+        deadline: Duration::from_secs(30),
+        max_reply: 1 << 20,
+        over: ito_fetch::Over::Fail,
+        https_only: true,
+        ..ito_fetch::Options::default()
+    }
+}
+
+/// What the thread hands back for the server's answer.
+fn fetched(answer: Result<ito_fetch::Reply, ito_fetch::Error>) -> Fetched {
+    use koyomi_core::msg;
+    let failed = |why: &str| Fetched::Failed(msg::line(msg::TABLE_FETCH_FAILED, &[why]));
+    let reply = match answer {
+        Err(ito_fetch::Error::Stopped) => return Fetched::Stopped,
+        // uchmk/ito#234: the reason is ito-fetch's English until `Error::words(lang)` exists.
+        Err(e) => return failed(&e.to_string()),
+        Ok(reply) => reply,
+    };
+    if !reply.success() {
+        return Fetched::Failed(msg::line(msg::TABLE_FETCH_STATUS, &[&reply.status.to_string()]));
+    }
+    if reply.cut {
+        return failed("the reply was cut");
+    }
+    // The table's own refusal is already a coded line.
+    match Table::parse(&Table::decode(&reply.body)) {
+        Ok(table) => Fetched::Table { last: table.years.1, bytes: reply.body },
+        Err(line) => Fetched::Failed(line),
+    }
+}
+
+/// At receipt: a table is sent only when it reaches past the last year the window knows.
+fn receipt(last: i32, known_last: i32) -> Receipt {
+    if last > known_last {
+        Receipt::Send
+    } else {
+        Receipt::NotNewer(koyomi_core::msg::note(
+            koyomi_core::msg::N_HOLIDAY_NOT_NEWER,
+            &[&last.to_string(), &(known_last + 1).to_string()],
+        ))
+    }
+}
+
+/// Starts the download for the field, unless one is running. The thread only blocks; the window reads its
+/// answer in [`Browser::poll_fetch`].
+fn start_fetch(fetch: &mut Option<Fetch>, ctx: &egui::Context) {
+    if fetch.is_some() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let (flag, ctx) = (stop.clone(), ctx.clone());
+    std::thread::spawn(move || {
+        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &flag));
+        let _ = tx.send(got);
+        ctx.request_repaint();
+    });
+    *fetch = Some(Fetch { stop, rx });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1737,5 +1892,91 @@ open = [2026-11-28]
         assert_eq!(width(&[&a]), 0.0, "one calendar: nothing");
         assert_eq!(width(&[]), 0.0);
         assert!(width(&[&a, &b]) > 0.0, "two calendars: the mark");
+    }
+
+    /// A reply as the server sends it.
+    fn reply(status: u16, body: &[u8]) -> ito_fetch::Reply {
+        ito_fetch::Reply { status, url: String::new(), content_type: None, headers: vec![], body: body.to_vec(), cut: false }
+    }
+
+    #[test]
+    fn the_download_is_https_only_small_and_short() {
+        let o = fetch_options();
+        assert!(o.https_only);
+        assert_eq!(o.max_reply, 1 << 20);
+        assert_eq!(o.deadline, Duration::from_secs(30));
+        assert_eq!(o.over, ito_fetch::Over::Fail);
+        assert!(koyomi_core::calendar::TABLE_URL.starts_with("https://"));
+    }
+
+    #[test]
+    fn an_answer_becomes_a_table_or_a_coded_failure() {
+        use koyomi_core::msg;
+        assert_eq!(fetched(Err(ito_fetch::Error::Stopped)), Fetched::Stopped);
+        let Fetched::Failed(line) = fetched(Err(ito_fetch::Error::Timeout)) else { panic!("a timeout fails") };
+        assert!(msg::TABLE_FETCH_FAILED.is_in(&line) && line.contains("timed out"), "{line}");
+        let Fetched::Failed(line) = fetched(Ok(reply(404, b"not found"))) else { panic!("a 404 fails") };
+        assert!(msg::TABLE_FETCH_STATUS.is_in(&line) && line.contains("404"), "{line}");
+        let mut cut = reply(200, "日付,名称\n2028/1/1,元日\n".as_bytes());
+        cut.cut = true;
+        let Fetched::Failed(line) = fetched(Ok(cut)) else { panic!("a cut reply fails") };
+        assert!(msg::TABLE_FETCH_FAILED.is_in(&line), "{line}");
+        // A page instead of the table: its first line is taken as the header, the second is not a date.
+        let page = b"<html>\n<body>moved</body>\n</html>\n";
+        let Fetched::Failed(line) = fetched(Ok(reply(200, page))) else { panic!("not a table") };
+        assert!(msg::TABLE_DATE_UNREADABLE.is_in(&line), "{line}");
+        let Fetched::Failed(line) = fetched(Ok(reply(200, b""))) else { panic!("empty") };
+        assert!(msg::TABLE_EMPTY.is_in(&line), "{line}");
+        // Shift_JIS: the header 日付 is not UTF-8, the day is 2028/1/1.
+        let mut sjis = vec![0x93, 0xFA, 0x95, 0x74, b',', 0x96, 0xBC, b'\r', b'\n'];
+        sjis.extend_from_slice(b"2028/1/1,\x8C\xB3\x93\xFA\r\n2028/5/3,\x8C\x87\x96\x40\r\n");
+        assert!(std::str::from_utf8(&sjis).is_err());
+        assert_eq!(fetched(Ok(reply(200, &sjis))), Fetched::Table { bytes: sjis.clone(), last: 2028 });
+    }
+
+    #[test]
+    fn a_table_is_sent_only_when_it_reaches_past_what_the_window_knows() {
+        use koyomi_core::calendar::Table;
+        let said = |last: i32, known: i32| match receipt(last, known) {
+            Receipt::NotNewer(note) => note,
+            Receipt::Send => String::new(),
+        };
+        assert_eq!(receipt(2028, 2027), Receipt::Send);
+        assert_eq!(receipt(2029, 2027), Receipt::Send);
+        assert!(!said(2027, 2027).is_empty());
+        assert!(!said(2026, 2027).is_empty());
+        // The downloaded table's last year first, then the year asked for.
+        assert_eq!(said(2027, 2027), koyomi_core::msg::note(koyomi_core::msg::N_HOLIDAY_NOT_NEWER, &["2027", "2028"]));
+        assert_eq!(said(2026, 2027), koyomi_core::msg::note(koyomi_core::msg::N_HOLIDAY_NOT_NEWER, &["2026", "2028"]));
+        // With no table the window knows 2027 (the rules); a table older than the rules changes nothing.
+        let mut cal = Calendar::parse("会社", "format = 1\n").unwrap();
+        assert_eq!(known_last(&cal), 2027);
+        cal.table = Some(Table { years: (2020, 2024), days: Default::default() });
+        assert_eq!(known_last(&cal), 2027);
+        cal.table = Some(Table { years: (2020, 2028), days: Default::default() });
+        assert_eq!(known_last(&cal), 2028);
+        assert!(matches!(receipt(2028, known_last(&cal)), Receipt::NotNewer(_)));
+    }
+
+    #[test]
+    fn a_second_start_does_not_start_a_second_download() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let stop = Arc::new(AtomicBool::new(false));
+        let mut fetch = Some(Fetch { stop: stop.clone(), rx });
+        start_fetch(&mut fetch, &egui::Context::default());
+        assert!(tx.send(Fetched::Stopped).is_ok(), "the first download is still the field's");
+        assert!(!stop.load(Ordering::SeqCst));
+        drop(fetch);
+        assert!(stop.load(Ordering::SeqCst), "the field going stops it");
+    }
+
+    /// Downloads the real table (manual: `cargo test -p koyomi --bin koyomi -- --ignored real_table`).
+    #[test]
+    #[ignore = "network"]
+    fn the_real_table_downloads_and_reads() {
+        let stop = AtomicBool::new(false);
+        let got = fetched(ito_fetch::get(koyomi_core::calendar::TABLE_URL, &fetch_options(), &stop));
+        let Fetched::Table { last, .. } = got else { panic!("{got:?}") };
+        assert!(last >= 2026, "{last}");
     }
 }
