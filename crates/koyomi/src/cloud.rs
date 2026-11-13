@@ -177,7 +177,7 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &Atomi
         return Err(line(msg::CLOUD_KEY_UNSAFE, &[&format!("s3://{}/{}", at.bucket, bad.key)]));
     }
     let into = PathBuf::from(into);
-    std::fs::create_dir_all(&into).map_err(|e| line(msg::CLOUD_INTO_DIR, &[&into.display().to_string(), &e.to_string()]))?;
+    std::fs::create_dir_all(&into).map_err(|e| line(msg::CLOUD_INTO_DIR, &[&into.display().to_string(), &msg::io_words(&e)]))?;
     for e in &found {
         let name = &e.key[dir.len()..];
         let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..*opts };

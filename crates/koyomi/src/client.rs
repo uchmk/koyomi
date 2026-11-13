@@ -75,10 +75,10 @@ pub fn call(request: &Request) -> Reply {
 }
 
 fn spawn() -> Result<(), String> {
-    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let exe = std::env::current_exe().map_err(|e| msg::io_words(&e))?;
     let mut cmd = std::process::Command::new(exe);
     cmd.arg("engine");
-    ito_proc::spawn_detached(cmd).map_err(|e| line(msg::ENGINE_SPAWN_FAILED, &[&e.to_string()]))
+    ito_proc::spawn_detached(cmd).map_err(|e| line(msg::ENGINE_SPAWN_FAILED, &[&msg::io_words(&e)]))
 }
 
 #[cfg(test)]

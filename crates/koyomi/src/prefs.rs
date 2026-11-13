@@ -85,7 +85,7 @@ pub fn write_config(
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, path, &e.to_string())),
+        Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, path, &msg::io_words(&e))),
     };
     let mut new = text.clone();
     for (key, value) in edits {
@@ -99,7 +99,7 @@ pub fn write_config(
     }
     if new != text {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &msg::io_words(&e)))?;
         }
         write_atomic(path, &new).map_err(at)?;
     }
@@ -136,7 +136,7 @@ fn read_keymap(path: &Path) -> Result<Option<String>, String> {
     match std::fs::read_to_string(path) {
         Ok(t) => Ok(Some(t)),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(msg::coded_at(msg::FILE_READ_FAILED, path, &e.to_string())),
+        Err(e) => Err(msg::coded_at(msg::FILE_READ_FAILED, path, &msg::io_words(&e))),
     }
 }
 
@@ -152,7 +152,7 @@ pub fn write_keymap(path: &Path, edits: &[ito_keymap::Edit]) -> Result<(), Strin
     let new = ito_keymap::edit(&text, &crate::keymap::SPEC, edits, crate::keymap::NOOP).map_err(at)?;
     if new != text {
         if let Some(dir) = path.parent() {
-            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
+            std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &msg::io_words(&e)))?;
         }
         write_atomic(path, &new).map_err(at)?;
     }
@@ -580,12 +580,12 @@ impl Prefs {
                 let text = match std::fs::read_to_string(&path) {
                     Ok(t) => t,
                     Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-                    Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, &path, &e.to_string())),
+                    Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, &path, &msg::io_words(&e))),
                 };
                 let new = watch_remotes_text(&text, on).map_err(at)?;
                 if new != text {
                     if let Some(dir) = path.parent() {
-                        std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &e.to_string()))?;
+                        std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &msg::io_words(&e)))?;
                     }
                     write_atomic(&path, &new).map_err(at)?;
                 }
@@ -614,7 +614,9 @@ impl Prefs {
                 Ok(())
             } else {
                 path.parent()
-                    .map_or(Ok(()), |d| std::fs::create_dir_all(d).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, d, &e.to_string())))
+                    .map_or(Ok(()), |d| {
+                        std::fs::create_dir_all(d).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, d, &msg::io_words(&e)))
+                    })
                     .and_then(|()| write_atomic(&path, "").map_err(|e| msg::coded_at(msg::FILE_WRITE_FAILED, &path, &e)))
             };
             if let Err(e) = made.and_then(|()| open_path(&path)) {
@@ -650,7 +652,7 @@ impl Prefs {
             for path in [common_path(&base), keymap_path(&base)] {
                 if path.exists() {
                     if let Err(e) = std::fs::rename(&path, aside(&path, stamp)) {
-                        failed.push(msg::coded_at(msg::FILE_RENAME_FAILED, &path, &e.to_string()));
+                        failed.push(msg::coded_at(msg::FILE_RENAME_FAILED, &path, &msg::io_words(&e)));
                     }
                 }
             }
@@ -806,5 +808,20 @@ place = \"x\"
         let p = aside(Path::new("C:/uchmk/common.toml"), 42);
         assert_eq!(p.file_name().unwrap().to_string_lossy(), "common.toml.bak-42");
         assert_eq!(p.parent(), Some(Path::new("C:/uchmk")));
+    }
+
+    #[test]
+    fn a_folder_that_cannot_be_made_is_said_in_words() {
+        let dir = std::env::temp_dir().join(format!("koyomi-prefs-words-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        // A file where the folder should be.
+        let blocker = dir.join("sub");
+        std::fs::write(&blocker, "x").unwrap();
+        let edit = Edit::Add { layer: "app".into(), on: on("<C-S-h>"), run: "help".into(), desc: "Show the key help".into() };
+        let err = write_keymap(&blocker.join("keymap.toml"), &[edit]).unwrap_err();
+        assert!(!err.contains("os error"), "{err}");
+        assert!(msg::DIR_CREATE_FAILED.is_in(&err) || msg::FILE_READ_FAILED.is_in(&err), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

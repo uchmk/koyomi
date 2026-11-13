@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Pack the koyomi engine for Debian: dist/koyomi-debian-<ver>-<amd64|arm64>.tar.gz
 # with the binary, install.sh, koyomi-secret, koyomi-user, the unit and the
-# README. "debian" and the .deb's arch names keep it apart from the release's
-# plain koyomi-v<ver>-linux-<x64|arm64>.tar.gz (the binary and the licences,
-# from ito's release.yml).
+# README. The release has no plain koyomi-v<ver>-linux-*.tar.gz
+# (release_linux=no in scripts/lanes.conf): these files are koyomi's Linux build.
 #
 #   scripts/package-linux.sh [x86_64|aarch64] [--binary <path>] [--deb]
 #

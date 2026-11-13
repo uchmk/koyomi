@@ -30,7 +30,7 @@ pub fn move_file(dir: &std::path::Path, old: &str, new: &str) -> Result<(), Stri
     match std::fs::rename(&from, &to) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e.to_string()),
+        Err(e) => Err(koyomi_core::msg::io_words(&e)),
     }
 }
 

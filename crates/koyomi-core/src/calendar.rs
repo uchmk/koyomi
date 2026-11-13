@@ -84,7 +84,7 @@ impl Table {
         match std::fs::read(path) {
             Ok(b) => Table::parse(&Table::decode(&b)).map(Some),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()])),
+            Err(e) => Err(line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &msg::io_words(&e)])),
         }
     }
 
@@ -222,7 +222,7 @@ impl Calendar {
     pub fn load(path: &Path) -> Result<Calendar, String> {
         let name = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
         let text =
-            std::fs::read_to_string(path).map_err(|e| line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()]))?;
+            std::fs::read_to_string(path).map_err(|e| line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &msg::io_words(&e)]))?;
         Calendar::parse(&name, &text)
     }
 
@@ -767,5 +767,16 @@ mod tests {
         assert_eq!(cals.bad, [Bad { calendar: None, line: msg::line(msg::TABLE_DATE_UNREADABLE, &["2", "x"]) }]);
         assert_eq!(cals.map["会社"].until(), Some(japan::UNTIL));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_calendar_that_is_not_there_is_said_in_words() {
+        let dir = std::env::temp_dir().join(format!("koyomi-cal-words-{}", std::process::id()));
+        let path = dir.join("none.toml");
+        let err = Calendar::load(&path).unwrap_err();
+        assert!(msg::FILE_READ_FAILED.is_in(&err), "{err}");
+        assert!(!err.contains("os error"), "{err}");
+        let why = msg::io_words_in(&msg::language(), &std::io::Error::from(std::io::ErrorKind::NotFound));
+        assert!(err.contains(&why), "{err} / {why}");
     }
 }

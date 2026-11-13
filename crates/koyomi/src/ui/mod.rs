@@ -2277,7 +2277,7 @@ impl Browser {
         let (tx, ctx) = self.io.clone();
         std::thread::spawn(move || {
             let read = std::fs::read(&path)
-                .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&path, &e.to_string()]))
+                .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&path, &koyomi_core::msg::io_words(&e)]))
                 .and_then(|b| {
                     crate::cli::port_text(&b).ok_or_else(|| koyomi_core::msg::line(koyomi_core::msg::FILE_ENCODING_UNKNOWN, &[&path]))
                 });
@@ -6205,7 +6205,7 @@ fn plain(e: String) -> Said {
 
 /// A folder that could not be made, as a coded line.
 fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
-    plain(koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]))
+    plain(koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &koyomi_core::msg::io_words(&e)]))
 }
 
 /// The right-click menu of one job of `run`: the items for exactly that run and job (`act` takes the one chosen).
@@ -7752,7 +7752,9 @@ run = [\"x.exe\"]
         // A failure is worded the same way.
         b.io.0.send(Msg::Done(Err(no_dir(std::path::Path::new("C:/e"), std::io::Error::other("denied"))))).unwrap();
         s.settle(&mut b);
-        let want = koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &["C:/e", "denied"]);
+        let why = koyomi_core::msg::io_words(&std::io::Error::other("denied"));
+        assert!(!why.contains("denied"), "{why}");
+        let want = koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &["C:/e", &why]);
         assert!(matches!(&b.result, Some(Err(m)) if *m == want), "{:?}", b.result);
     }
 

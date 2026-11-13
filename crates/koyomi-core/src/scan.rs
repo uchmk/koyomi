@@ -72,7 +72,7 @@ pub fn read_def_in(path: &Path, group: &str, name: &str, store: &Store, shared: 
             Ok(t) => def_of_text(t, group, name, store, shared, cals),
             Err(_) => unreadable(&approved::hash(&b), group, name, msg::line(msg::DEF_NOT_UTF8, &[&format!("{group}/{name}.toml")])),
         },
-        Err(e) => unreadable("", group, name, msg::line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()])),
+        Err(e) => unreadable("", group, name, msg::line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &msg::io_words(&e)])),
     }
 }
 

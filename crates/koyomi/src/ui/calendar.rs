@@ -1585,7 +1585,8 @@ fn import_table(path: &str) -> Result<Request, String> {
     if path.is_empty() {
         return Err(koyomi_core::msg::line(koyomi_core::msg::TABLE_PATH_EMPTY, &[]));
     }
-    let bytes = std::fs::read(path).map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[path, &e.to_string()]))?;
+    let bytes = std::fs::read(path)
+        .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[path, &koyomi_core::msg::io_words(&e)]))?;
     // The table's own refusal is already a coded line.
     Table::parse(&Table::decode(&bytes))?;
     Ok(Request::HolidayTable { bytes })

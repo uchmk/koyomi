@@ -17,5 +17,3 @@ and where to read the token; the window on Windows connects with them (the statu
 `scripts/package-linux.sh --deb` and added by hand too. `sudo apt install ./koyomi_<version>_amd64.deb` does what
 `install.sh` does; updates and removal go through `apt`. The .deb and the tar.gz do not go on one machine together.
 
-The plain `koyomi-v…-linux-x64.tar.gz` and `-linux-arm64.tar.gz` among the assets (no `debian` in the name) hold the
-binary and the licence files only, without the install tools; they are built on the newest Ubuntu runners and are not checked on Debian.

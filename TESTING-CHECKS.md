@@ -1743,7 +1743,7 @@
 
 ## 137. Rerunning a run that never began, the approval's message, and coded file errors (`engine`, `jobnet`, `review`)
 
-- [ ] **137.1** Make a net miss its time (stop the engine over its start time, start it again), then `koyomi rerun <run id>` → A new run of the same date starts from the first job; no `os error 3` 〔未訳〕
+- [ ] **137.1** Make a net miss its time (stop the engine over its start time, start it again), then `koyomi rerun <run id>` → A new run of the same date starts from the first job; no error that a folder is not found (`見つかりません` / `not found`; before 0.296.0 of ito it read `os error 3`) 〔未訳〕
 - [ ] **137.2** Same missed run: `koyomi rerun <run id> --from <job>` → Refused with the new KOYOMI code (E3287) and words saying to rerun from the start 〔未訳〕
 - [ ] **137.3** Delete the definition.toml of a finished run's folder, then `koyomi rerun <run id>` → Refused with a KOYOMI code (E3288) that names the path and says to start the net instead 〔未訳〕
 - [ ] **137.4** Write `message = "請求書の金額を確かめる"` on an approval job, start the net → The approval notice starts with the message; `koyomi show <net>` shows it under 判断の材料 〔未訳〕

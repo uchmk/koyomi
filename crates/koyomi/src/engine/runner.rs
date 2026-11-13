@@ -708,14 +708,15 @@ impl Runner {
         run.went_by = Some(self.went_by(&run.jobnet));
         let dir = self.run_dir(&run.id);
         let shown = |p: &std::path::Path| p.display().to_string();
-        std::fs::create_dir_all(&dir).map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&shown(&dir), &e.to_string()]))?;
+        std::fs::create_dir_all(&dir).map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&shown(&dir), &msg::io_words(&e)]))?;
         let def_path = dir.join("definition.toml");
-        std::fs::write(&def_path, text).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&def_path), &e.to_string()]))?;
+        std::fs::write(&def_path, text).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&def_path), &msg::io_words(&e)]))?;
         if !run.params.is_empty() {
             let params_path = dir.join(PARAMS);
             let kept =
                 toml::to_string(&run.params).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&params_path), &e.to_string()]))?;
-            std::fs::write(&params_path, kept).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&params_path), &e.to_string()]))?;
+            std::fs::write(&params_path, kept)
+                .map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&params_path), &msg::io_words(&e)]))?;
         }
         self.record(&run, history::run_start(&run));
         let over: Vec<JobRun> = run.jobs.iter().filter(|j| j.ended.is_some()).cloned().collect();
@@ -1413,7 +1414,9 @@ fn run_job_once(job: &JobSpec, stop: &Arc<AtomicBool>, why: &Arc<AtomicU8>) -> D
     }
     let mut file = match std::fs::File::create(&job.log) {
         Ok(f) => f,
-        Err(e) => return done(Outcome::Failed, msg::line(msg::LOG_CREATE_FAILED, &[&job.log.display().to_string(), &e.to_string()]), 0),
+        Err(e) => {
+            return done(Outcome::Failed, msg::line(msg::LOG_CREATE_FAILED, &[&job.log.display().to_string(), &msg::io_words(&e)]), 0)
+        }
     };
     let mut size = LogSize { written: 0, capped: false };
     if let Some(line) = &job.missing {
@@ -1935,8 +1938,8 @@ fn attempt(
             (Outcome::Exited(code), String::new())
         }
         Err(e) => {
-            let _ = writeln!(file, "! {exe}: {e}");
-            (Outcome::Failed, msg::line(msg::EXE_START_FAILED, &[exe, &e.to_string()]))
+            let _ = writeln!(file, "! {exe}: {}", ito_common::ioerror::detail(&e));
+            (Outcome::Failed, msg::line(msg::EXE_START_FAILED, &[exe, &msg::io_words(&e)]))
         }
     }
 }

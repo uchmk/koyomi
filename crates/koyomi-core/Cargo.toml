@@ -11,10 +11,10 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 sha2 = "0.10"
-ito-common = { git = "https://github.com/uchmk/ito", rev = "1535a8c6ab0eae7e7069211a3fde5b56292f3332", features = ["clock"] }
-ito-i18n = { git = "https://github.com/uchmk/ito", rev = "1535a8c6ab0eae7e7069211a3fde5b56292f3332" }
-ito-match = { git = "https://github.com/uchmk/ito", rev = "1535a8c6ab0eae7e7069211a3fde5b56292f3332" }
-ito-proc = { git = "https://github.com/uchmk/ito", rev = "1535a8c6ab0eae7e7069211a3fde5b56292f3332" }
-ito-zip = { git = "https://github.com/uchmk/ito", rev = "1535a8c6ab0eae7e7069211a3fde5b56292f3332" }
+ito-common = { git = "https://github.com/uchmk/ito", rev = "efdb7c145dfc7fed48dfa45ca7abbbfd8a063891", features = ["clock"] }
+ito-i18n = { git = "https://github.com/uchmk/ito", rev = "efdb7c145dfc7fed48dfa45ca7abbbfd8a063891" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "efdb7c145dfc7fed48dfa45ca7abbbfd8a063891" }
+ito-proc = { git = "https://github.com/uchmk/ito", rev = "efdb7c145dfc7fed48dfa45ca7abbbfd8a063891" }
+ito-zip = { git = "https://github.com/uchmk/ito", rev = "efdb7c145dfc7fed48dfa45ca7abbbfd8a063891" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 roxmltree = "0.20"

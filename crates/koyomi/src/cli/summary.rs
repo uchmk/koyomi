@@ -195,7 +195,7 @@ pub fn cmd(args: &[String]) -> i32 {
     let text = match std::fs::read_to_string(&path) {
         Ok(t) => Some(t),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound && !explicit => None,
-        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[&shown, &e.to_string()])),
+        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[&shown, &msg::io_words(&e)])),
     };
     match build(text.as_deref(), &shown) {
         Ok((v, toml)) => {

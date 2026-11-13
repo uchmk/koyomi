@@ -15,8 +15,6 @@ koyomi のエンジンを Debian で systemd のサービスとして実行し�
 - `koyomi_<版>_amd64.deb` (ARM の機械は `koyomi_<版>_arm64.deb`): `apt` で入れるパッケージです。更新と削除も `apt` で行います。
 - `koyomi-debian-<版>-amd64.tar.gz` (ARM の機械は `koyomi-debian-<版>-arm64.tar.gz`): 展開して `install.sh` で入れます。
 
-同じページの `koyomi-v<版>-linux-x64.tar.gz` (`debian` の付かないもの) は、実行ファイルとライセンスだけです。最新の Ubuntu でビルドしたもので、Debian では確かめていません。インストールの道具も入っていません。
-
 Windows でダウンロードした場合は、PowerShell から Debian に送れます。
 
 ```powershell

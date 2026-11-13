@@ -137,7 +137,8 @@ fn transfer() -> Result<usize, String> {
             return Ok(0);
         }
         let into = PathBuf::from(&into);
-        std::fs::create_dir_all(&into).map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&into.display().to_string(), &e.to_string()]))?;
+        std::fs::create_dir_all(&into)
+            .map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&into.display().to_string(), &msg::io_words(&e)]))?;
         for (name, size) in &found {
             let remote = if dir == "/" { format!("/{name}") } else { format!("{dir}/{name}") };
             let moved =

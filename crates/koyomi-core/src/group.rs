@@ -51,7 +51,7 @@ pub fn load(path: &Path) -> Result<Group, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => parse(&text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Group::default()),
-        Err(e) => Err(msg::line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &e.to_string()])),
+        Err(e) => Err(msg::line(msg::FILE_READ_FAILED, &[&path.display().to_string(), &msg::io_words(&e)])),
     }
 }
 

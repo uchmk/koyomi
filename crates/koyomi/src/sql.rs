@@ -87,7 +87,8 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
         (Some(s), _) => s.clone(),
         (None, Some(f)) => {
             let path = Path::new(f.trim());
-            let bytes = std::fs::read(path).map_err(|e| line(msg::SQL_FILE_UNREADABLE, &[&path.display().to_string(), &e.to_string()]))?;
+            let bytes =
+                std::fs::read(path).map_err(|e| line(msg::SQL_FILE_UNREADABLE, &[&path.display().to_string(), &msg::io_words(&e)]))?;
             decode(&bytes)
         }
         (None, None) => return Err(line(msg::SQL_NO_SCRIPT, &[])),
@@ -96,7 +97,8 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
         Some(o) => {
             let path = PathBuf::from(o.trim());
             if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
-                std::fs::create_dir_all(parent).map_err(|e| line(msg::SQL_OUT_DIR, &[&parent.display().to_string(), &e.to_string()]))?;
+                std::fs::create_dir_all(parent)
+                    .map_err(|e| line(msg::SQL_OUT_DIR, &[&parent.display().to_string(), &msg::io_words(&e)]))?;
             }
             (path, false)
         }

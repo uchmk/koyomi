@@ -75,7 +75,7 @@ impl Store {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Store::default()),
-            Err(e) => return Err(e.to_string()),
+            Err(e) => return Err(msg::io_words(&e)),
         };
         let text = String::from_utf8(bytes).map_err(|_| msg::line(msg::STATE_NOT_UTF8, &[&path.display().to_string()]))?;
         Store::parse(text.strip_prefix('\u{feff}').unwrap_or(&text))

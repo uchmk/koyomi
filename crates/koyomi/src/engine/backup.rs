@@ -135,7 +135,7 @@ fn write(app: &Path, dir: &Path, today: NaiveDate) -> Done {
     let mut errors = Vec::new();
     let name = format!("{}.toml", today.format("%Y-%m-%d"));
     if let Err(e) = std::fs::create_dir_all(dir) {
-        errors.push(msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]));
+        errors.push(msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &msg::io_words(&e)]));
     } else if let Err(e) = ito_common::write_atomic(&dir.join(&name), bundle.to_toml()) {
         errors.push(if msg::is_coded(&e) { e } else { msg::line(msg::FILE_WRITE_FAILED, &[&dir.join(&name).display().to_string(), &e]) });
     } else {
@@ -154,7 +154,7 @@ fn rotate(dir: &Path) -> Vec<String> {
     days.iter()
         .skip(KEEP)
         .filter_map(|p| {
-            std::fs::remove_file(p).err().map(|e| msg::line(msg::FILE_DELETE_FAILED, &[&p.display().to_string(), &e.to_string()]))
+            std::fs::remove_file(p).err().map(|e| msg::line(msg::FILE_DELETE_FAILED, &[&p.display().to_string(), &msg::io_words(&e)]))
         })
         .collect()
 }

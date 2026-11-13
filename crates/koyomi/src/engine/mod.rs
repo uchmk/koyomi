@@ -2066,7 +2066,9 @@ impl State {
         let old = match std::fs::read(path) {
             Ok(old) => old,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-            Err(e) => return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(path), &e.to_string()])),
+            Err(e) => {
+                return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(path), &koyomi_core::msg::io_words(&e)]))
+            }
         };
         std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
@@ -2229,7 +2231,9 @@ impl State {
         let there = match std::fs::read(&path) {
             Ok(old) => Some(old),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(&path), &e.to_string()])),
+            Err(e) => {
+                return Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(&path), &koyomi_core::msg::io_words(&e)]))
+            }
         };
         match (there, base_sha256) {
             (None, None) => {}
@@ -2263,7 +2267,9 @@ impl State {
         if to_path.exists() && !same_file {
             return Err(koyomi_core::msg::line(koyomi_core::msg::CALENDAR_EXISTS, &[&t]));
         }
-        std::fs::rename(&from_path, &to_path).map_err(|e| write_failed(&to_path, &e))?;
+        std::fs::rename(&from_path, &to_path).map_err(|e| {
+            koyomi_core::msg::line(koyomi_core::msg::FILE_WRITE_FAILED, &[&shown(&to_path), &koyomi_core::msg::io_words(&e)])
+        })?;
         self.rescan();
         Ok(msg::note(msg::N_CAL_RENAMED, &[&f, &t]))
     }
@@ -2277,7 +2283,7 @@ impl State {
         }
         self.keep_version_in(&path, &self.calendar_versions(&n))?;
         std::fs::remove_file(&path)
-            .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_DELETE_FAILED, &[&shown(&path), &e.to_string()]))?;
+            .map_err(|e| koyomi_core::msg::line(koyomi_core::msg::FILE_DELETE_FAILED, &[&shown(&path), &koyomi_core::msg::io_words(&e)]))?;
         self.rescan();
         Ok(msg::note(msg::N_CAL_DELETED, &[&n]))
     }
@@ -2310,7 +2316,10 @@ impl State {
         match std::fs::read_to_string(&self.paths.config) {
             Ok(text) => Ok(Some(text)),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(koyomi_core::msg::line(koyomi_core::msg::FILE_READ_FAILED, &[&shown(&self.paths.config), &e.to_string()])),
+            Err(e) => Err(koyomi_core::msg::line(
+                koyomi_core::msg::FILE_READ_FAILED,
+                &[&shown(&self.paths.config), &koyomi_core::msg::io_words(&e)],
+            )),
         }
     }
 
@@ -2803,7 +2812,7 @@ impl State {
         // The file as it was goes with its versions, under the new name.
         self.keep_version(&from_path, from_group, from_name)?;
         self.move_versions(&self.versions_dir(from_group, from_name), &self.versions_dir(to_group, to_name))?;
-        std::fs::remove_file(&from_path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&from_path), &e.to_string()]))?;
+        std::fs::remove_file(&from_path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&from_path), &msg::io_words(&e)]))?;
         if self.held.carry(id, Some(to)) {
             self.save_held()?;
         }
@@ -2864,7 +2873,8 @@ impl State {
                 n += 1;
                 target = to.join(format!("{stem}-{n}.toml"));
             }
-            std::fs::rename(e.path(), &target).map_err(|err| msg::line(msg::FILE_MOVE_FAILED, &[&shown(&e.path()), &err.to_string()]))?;
+            std::fs::rename(e.path(), &target)
+                .map_err(|err| msg::line(msg::FILE_MOVE_FAILED, &[&shown(&e.path()), &msg::io_words(&err)]))?;
         }
         let _ = std::fs::remove_dir(from);
         Ok(())
@@ -2963,7 +2973,7 @@ impl State {
         }
         let (group, name) = split_id(id)?;
         self.keep_version(&path, group, name)?;
-        std::fs::remove_file(&path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&path), &e.to_string()]))?;
+        std::fs::remove_file(&path).map_err(|e| msg::line(msg::FILE_DELETE_FAILED, &[&shown(&path), &msg::io_words(&e)]))?;
         let mut next = self.store.clone();
         if next.forget(id) {
             ito_common::write_atomic(&self.paths.approved, next.to_toml())?;
@@ -3480,8 +3490,8 @@ fn diff_lines(old: &str, new: &str) -> Vec<String> {
 }
 
 /// A folder that cannot be made, as a coded line.
-fn dir_failed(dir: &Path, e: &dyn std::fmt::Display) -> String {
-    koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&shown(dir), &e.to_string()])
+fn dir_failed(dir: &Path, e: &std::io::Error) -> String {
+    koyomi_core::msg::line(koyomi_core::msg::DIR_CREATE_FAILED, &[&shown(dir), &koyomi_core::msg::io_words(e)])
 }
 
 /// A file that cannot be written, as a coded line.

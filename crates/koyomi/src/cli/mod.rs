@@ -444,7 +444,7 @@ fn check(args: &[String]) -> i32 {
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) => {
-            out(&msg::line(msg::FILE_READ_FAILED, &[file.as_str(), &e.to_string()]), true);
+            out(&msg::line(msg::FILE_READ_FAILED, &[file.as_str(), &msg::io_words(&e)]), true);
             return 1;
         }
     };
@@ -1652,7 +1652,7 @@ fn new_cmd(args: &[String]) -> i32 {
     }
     if let Some(dir) = path.parent() {
         if let Err(e) = std::fs::create_dir_all(dir) {
-            return fail(&msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &e.to_string()]));
+            return fail(&msg::line(msg::DIR_CREATE_FAILED, &[&dir.display().to_string(), &msg::io_words(&e)]));
         }
     }
     if let Err(e) = ito_common::write_atomic(&path, koyomi_core::write::template(name)) {
@@ -1766,7 +1766,7 @@ fn stage_file(id: &str, file: &str, from: &str) -> i32 {
             Ok(t) => t,
             Err(_) => return fail(&msg::line(msg::DEF_NOT_UTF8, &[file])),
         },
-        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[file, &e.to_string()])),
+        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[file, &msg::io_words(&e)])),
     };
     let text = text.strip_prefix('\u{feff}').unwrap_or(&text).to_owned();
     let now: Def = match client::call(&Request::Show { id: id.to_owned() }).and_then(|s| toml::from_str(&s).map_err(|e| e.to_string())) {
@@ -1886,7 +1886,7 @@ fn import(args: &[String]) -> i32 {
             Some(t) => t,
             None => return fail(&msg::line(msg::FILE_ENCODING_UNKNOWN, &[&file])),
         },
-        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[&file, &e.to_string()])),
+        Err(e) => return fail(&msg::line(msg::FILE_READ_FAILED, &[&file, &msg::io_words(&e)])),
     };
     let answer = match client::call(&Request::Import { text, dry_run, on_conflict }) {
         Ok(t) => t,

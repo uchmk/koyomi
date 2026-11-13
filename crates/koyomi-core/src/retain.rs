@@ -121,7 +121,7 @@ pub fn old_history(history: &Path, cutoff: NaiveDate) -> Vec<(NaiveDate, PathBuf
 /// the disk: call it off the engine's loop.
 pub fn sweep(state_dir: &Path, cutoff: NaiveDate, busy: &[NaiveDate], archive: Archive) -> Swept {
     let mut out = Swept::default();
-    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_DELETE_FAILED, p, &e.to_string());
+    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_DELETE_FAILED, p, &msg::io_words(&e));
     let logs: Vec<_> = old_logs(&state_dir.join("logs"), cutoff).into_iter().filter(|(d, _)| !busy.contains(d)).collect();
     let history: Vec<_> = old_history(&state_dir.join("history"), cutoff).into_iter().filter(|(d, _)| !busy.contains(d)).collect();
     let failed = if archive.on { put_away(state_dir, &logs, &history, &mut out) } else { BTreeSet::new() };
@@ -203,7 +203,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
     }
     let dir = archive_dir(state_dir);
     if let Err(e) = std::fs::create_dir_all(&dir) {
-        out.errors.push(msg::coded_at(msg::DIR_CREATE_FAILED, &dir, &e.to_string()));
+        out.errors.push(msg::coded_at(msg::DIR_CREATE_FAILED, &dir, &msg::io_words(&e)));
         return months.into_keys().collect();
     }
     for (month, (sources, days)) in months {
@@ -225,7 +225,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
 /// Every file under `dir`, named `<prefix>/<path under dir>`, in name order.
 /// A name that is not UTF-8 is an error: the zip would not hold it as it is.
 fn files(dir: &Path, prefix: &str, out: &mut Vec<Source>) -> Result<(), String> {
-    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_READ_FAILED, p, &e.to_string());
+    let at = |p: &Path, e: std::io::Error| msg::coded_at(msg::FILE_READ_FAILED, p, &msg::io_words(&e));
     let mut entries: Vec<_> = std::fs::read_dir(dir).and_then(Iterator::collect).map_err(|e| at(dir, e))?;
     entries.sort_by_key(std::fs::DirEntry::file_name);
     for e in entries {

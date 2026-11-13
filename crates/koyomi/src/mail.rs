@@ -135,7 +135,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     let found = found(&files)?;
     let mut read = Vec::with_capacity(found.len());
     for (path, _) in &found {
-        let bytes = std::fs::read(path).map_err(|e| line(msg::MAIL_FILE_UNREADABLE, &[&path.display().to_string(), &e.to_string()]))?;
+        let bytes = std::fs::read(path).map_err(|e| line(msg::MAIL_FILE_UNREADABLE, &[&path.display().to_string(), &msg::io_words(&e)]))?;
         read.push((name_of(path), bytes));
     }
     let attachments: Vec<ito_mail::Attachment> =

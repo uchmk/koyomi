@@ -1393,6 +1393,17 @@ pub fn set_language(code: &str) {
     }
 }
 
+/// Short words for a file error, without the OS's text or "(os error N)", in the process's
+/// language: to go where a message takes the reason.
+pub fn io_words(e: &std::io::Error) -> String {
+    ito_common::ioerror::words(e, &language())
+}
+
+/// `io_words` in the language `code` (`en` or else Japanese).
+pub fn io_words_in(code: &str, e: &std::io::Error) -> String {
+    ito_common::ioerror::words(e, if code == "en" { "en" } else { "ja" })
+}
+
 /// The language `say` uses now.
 pub fn language() -> String {
     LANGUAGE.read().map_or("ja", |g| *g).to_owned()
@@ -1635,5 +1646,19 @@ mod tests {
         let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/troubleshooting.md");
         let on_disk = std::fs::read_to_string(&path).unwrap_or_default().replace("\r\n", "\n");
         assert_eq!(on_disk, troubleshooting_markdown("ja"), "run: cargo run -p koyomi-core --example make-messages");
+    }
+
+    #[test]
+    fn io_words_have_no_os_text() {
+        let e = std::io::Error::from(std::io::ErrorKind::NotFound);
+        let raw = std::io::Error::from_raw_os_error(2);
+        for c in ["ja", "en"] {
+            for e in [&e, &raw] {
+                let w = io_words_in(c, e);
+                assert!(!w.is_empty() && !w.contains("os error"), "{c}: {w}");
+            }
+        }
+        assert_ne!(io_words_in("ja", &e), io_words_in("en", &e));
+        assert!(!io_words(&raw).contains("os error"));
     }
 }

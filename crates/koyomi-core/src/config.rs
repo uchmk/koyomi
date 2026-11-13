@@ -703,7 +703,7 @@ impl Config {
         match std::fs::read_to_string(path) {
             Ok(text) => Config::parse(&text),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Config::default()),
-            Err(e) => Err(e.to_string()),
+            Err(e) => Err(crate::msg::io_words(&e)),
         }
     }
 
