@@ -864,6 +864,15 @@ impl Checker<'_> {
         }
     }
 
+    /// [`Self::template`] for a field that holds an address: with a password written in it the template check is
+    /// skipped (its lines would show a token of the password); the address reader refuses it with `ADDR_PASSWORD`.
+    fn address_template(&self, text: &str) -> Result<(), String> {
+        if crate::chore::has_password(text) {
+            return Ok(());
+        }
+        self.template(text)
+    }
+
     /// `[params]`: names and their default values.
     fn params(&mut self, field: &Field) -> BTreeMap<String, String> {
         let mut out = BTreeMap::new();
@@ -1278,7 +1287,7 @@ impl Checker<'_> {
             let s = c.string(field, name).unwrap_or_default();
             if s.trim().is_empty() {
                 c.add(f.span().start, msg::line(msg::DEF_VALUE_EMPTY, &[name]));
-            } else if let Err(e) = c.template(&s) {
+            } else if let Err(e) = c.address_template(&s) {
                 c.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
             }
             s
@@ -1426,7 +1435,7 @@ impl Checker<'_> {
         let s = self.string(&j.on, "on").unwrap_or_default();
         if s.trim().is_empty() {
             self.add(f.span().start, msg::line(msg::DEF_ON_EMPTY, &[form]));
-        } else if let Err(e) = self.template(&s) {
+        } else if let Err(e) = self.address_template(&s) {
             self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["on", msg::uncoded(&e)]));
         }
         s
@@ -1578,7 +1587,7 @@ impl Checker<'_> {
         let s = self.string(field, name)?;
         if s.trim().is_empty() {
             self.add(at, msg::line(msg::DEF_VALUE_EMPTY, &[name]));
-        } else if let Err(e) = self.template(&s) {
+        } else if let Err(e) = if name == "db" { self.address_template(&s) } else { self.template(&s) } {
             self.add(at, msg::line(msg::DEF_TEMPLATE_BAD, &[name, msg::uncoded(&e)]));
         }
         Some(s)
@@ -3179,6 +3188,22 @@ after = ["extract"]
         match parse(text) {
             Ok(_) => Vec::new(),
             Err(p) => p.iter().map(|p| p.in_file("a.toml")).collect(),
+        }
+    }
+
+    /// A template token inside an address's password is not echoed by the template check; the address is refused.
+    #[test]
+    fn a_template_in_an_address_password_is_never_echoed() {
+        for (extra, secret) in [
+            ("kind = \"ssh\"\non = 'ssh://u:{date+Hunter2zz}@h:22'\ncommand = \"x\"\n", "Hunter2zz"),
+            ("kind = \"ssh\"\non = 'ssh://u:{var:Bad Name}@h:22'\ncommand = \"x\"\n", "Bad Name"),
+            ("kind = \"send\"\nfrom = 'D:\\out'\ninto = 'sftp://u:{var:Bad Name}@h/in'\n", "Bad Name"),
+            ("kind = \"sql\"\ndb = 'postgres://u:{date+Hunter2zz}@h/db'\nsql = \"select 1\"\n", "Hunter2zz"),
+        ] {
+            let text = format!("format = 1\n[[job]]\nid = \"q\"\n{extra}");
+            let all = problems(&text).join("\n");
+            assert!(!all.contains(secret), "{extra}: {all}");
+            assert!(msg::ADDR_PASSWORD.is_in(&all), "{extra}: {all}");
         }
     }
 
@@ -4982,5 +5007,44 @@ run = [\"x\"]
         assert!(problem_text(&when("mail = \"imaps://u@m.example.com\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
         assert!(problem_text(&when("password = \"secret:m\"\n")).contains(&msg::DEF_NAMED_OWNS.code()));
         assert!(problem_text(&when("").replace("billing", "a/b")).contains(&msg::DEF_REGISTERED_NAME_BAD.code()));
+    }
+
+    #[test]
+    fn an_address_with_a_password_in_a_definition_is_refused_without_showing_it() {
+        let pw = "Hunter2zz";
+        let mail = problem_text(
+            "format = 1
+[[when]]
+mail = \"imaps://me:Hunter2zz@h\"
+password = \"secret:m\"
+sender = \"x\"
+",
+        );
+        assert!(mail.contains(&msg::ADDR_PASSWORD.code()) && !mail.contains(pw), "{mail}");
+        for on in ["sftp://u:Hunter2zz@h:22", "ssh://u:Hunter2zz@h:22", "ssh://u:Hunter2zz/x@h"] {
+            let t = problem_text(&one(&format!(
+                "kind = \"ssh\"
+on = \"{on}\"
+command = \"uptime\"
+host_key = \"{HK_TEXT}\"
+"
+            )));
+            assert!(!t.is_empty() && !t.contains(pw), "{on}: {t}");
+        }
+        let t = problem_text(&one("kind = \"winrm\"
+on = \"winrm://u:Hunter2zz@h\"
+command = \"dir\"
+"));
+        assert!(!t.is_empty() && !t.contains(pw), "{t}");
+        let t = problem_text(&one("kind = \"sql\"
+db = \"postgres://u:Hunter2zz@h:5432/x\"
+sql = \"select 1\"
+"));
+        assert!(t.contains(&msg::ADDR_PASSWORD.code()) && !t.contains(pw), "{t}");
+        let t = problem_text(&one("kind = \"send\"
+from = \"D:/o/a.csv\"
+into = \"sftp://u:Hunter2zz@h:22/x\"
+"));
+        assert!(!t.is_empty() && !t.contains(pw), "{t}");
     }
 }

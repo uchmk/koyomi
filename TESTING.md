@@ -1069,6 +1069,8 @@ The 編集 button on a jobnet's detail opens the editor over the picture: a canv
 | 82.6 | [x] `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy`, an sftp:// send without `host_key`, `password = "plain"`, both `key` and `password` | Each is refused with the line and why; the missing `host_key` names `koyomi sftp hostkey` |
 | 82.7 | The editor: drag ファイルを送る and ファイルを受け取る from the parts | The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; and ホスト鍵・パスワード; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key`・`host_key`・`password` |
 | 82.8 | [x] Approve a net with a send | The confirm box shows 元・先・SSH の鍵・ホスト鍵・パスワード instead of a command |
+| 82.9 | [x] `koyomi check` a send, an `ssh`, a `winrm`, a `sql` and a `[[when]] mail` whose address has a password written in it (`sftp://u:pw@h:22/x`, `postgres://u:pw@h/db`, `imaps://me:pw@h`), and the same in a `[[host]]`, a `[[database]]`, a `[[mailbox]]` and `[groups]` of koyomi.toml | Each is refused; the address in the line shows `***` where the password was and the password is nowhere in the output; the new line says to write the address without it and give the password as `secret:<name>` |
+| 82.10 | In a window connected to an older engine whose rows hold such an address, open the hosts, databases and mailboxes lists, a job's detail (connect to, send to, database) and a mail start's text | The address is drawn with `***` in place of the password in each; a good address is unchanged |
 
 ## 83. HTTP で呼ぶ部品（`kind = "http"`）
 

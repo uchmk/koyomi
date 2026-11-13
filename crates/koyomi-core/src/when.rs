@@ -574,14 +574,22 @@ pub struct Mailbox {
 /// and the folder `INBOX` when left out. The user may be a mail address
 /// (`me@example.com@imap.example.com`): the last `@` before the folder ends it.
 pub fn mailbox(s: &str) -> Result<Mailbox, String> {
-    let shape = || msg::line(msg::MAIL_SHAPE, &[s.trim()]);
     let s = s.trim();
+    // A password written in the address is refused first; whatever else is wrong, the address is shown hidden.
+    let shown = crate::chore::hide_password(s);
+    if crate::chore::has_password(s) {
+        return Err(msg::line(msg::ADDR_PASSWORD, &[&shown]));
+    }
+    let shape = || msg::line(msg::MAIL_SHAPE, &[&shown]);
     let rest =
         s.strip_prefix("imaps://").ok_or_else(|| if s.starts_with("imap://") { msg::line(msg::MAIL_NOT_TLS, &[]) } else { shape() })?;
     let (auth, folder) = rest.split_once('/').unwrap_or((rest, ""));
     let (user, server) = auth.rsplit_once('@').ok_or_else(shape)?;
     let (host, port) = match server.rsplit_once(':') {
-        Some((h, p)) => (h, p.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| msg::line(msg::MAIL_PORT_BAD, &[p]))?),
+        Some((h, p)) => {
+            let shown_port = if shown == s { p } else { "***" };
+            (h, p.parse::<u16>().ok().filter(|p| *p > 0).ok_or_else(|| msg::line(msg::MAIL_PORT_BAD, &[shown_port]))?)
+        }
         None => (server, 993),
     };
     let bad = |t: &str| t.is_empty() || t.chars().any(|c| c.is_whitespace() || c == '"');

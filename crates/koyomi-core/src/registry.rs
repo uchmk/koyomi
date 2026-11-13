@@ -215,7 +215,10 @@ impl HostEntry {
         let bad = |why: &str| msg::line(msg::CFG_HOST_BAD, &[&self.name, msg::uncoded(why)]);
         let read = match (crate::chore::ssh(&self.on), crate::chore::winrm(&self.on)) {
             (Some(r), _) | (_, Some(r)) => r,
-            _ => Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port] / winrm://user@host[:port]", &self.on])),
+            _ => Err(msg::line(
+                msg::CHORE_ON_BAD,
+                &["ssh://[user@]host[:port] / winrm://user@host[:port]", &crate::chore::hide_password(&self.on)],
+            )),
         };
         read.map_err(|e| bad(&e))?;
         let wrong = |key: &str, kind: HostKind| msg::line(msg::CFG_HOST_FIELD_KIND, &[&self.name, key, kind.key()]);
@@ -288,7 +291,7 @@ impl BucketEntry {
         )?;
         let bad = |why: &str| msg::line(msg::CFG_BUCKET_BAD, &[&self.name, msg::uncoded(why)]);
         match crate::chore::s3(&self.url) {
-            None => return Err(bad(&msg::line(msg::CHORE_S3_BUCKET, &[&self.url]))),
+            None => return Err(bad(&msg::line(msg::CHORE_S3_BUCKET, &[&crate::chore::shown_address(&self.url)]))),
             Some(Err(e)) => return Err(bad(&e)),
             Some(Ok(_)) => {}
         }
@@ -305,7 +308,7 @@ impl BucketEntry {
 pub fn bucket_prefix(url: &str) -> Result<String, String> {
     let at = match crate::chore::s3(url) {
         Some(r) => r?,
-        None => return Err(msg::line(msg::CHORE_S3_BUCKET, &[url])),
+        None => return Err(msg::line(msg::CHORE_S3_BUCKET, &[&crate::chore::shown_address(url)])),
     };
     let folder = at.key.trim_matches('/');
     if folder.is_empty() {
@@ -1006,5 +1009,24 @@ mod tests {
             let e = far_env(&config, name, bucket, &env).unwrap_err();
             assert!(msg::RUN_NAMED_PATH_BAD.is_in(&e), "{env:?}: {e}");
         }
+    }
+
+    #[test]
+    fn an_entry_with_a_password_in_its_address_is_refused_without_showing_it() {
+        let pw = "Hunter2zz";
+        let e = database("s", "postgres://u:Hunter2zz@h:5432/x", None, None).check().unwrap_err();
+        assert!(msg::CFG_DATABASE_BAD.is_in(&e) && !e.contains(pw), "{e}");
+        let e = MailboxEntry { mail: "imaps://me:Hunter2zz@h".into(), ..mailbox("billing") }.check().unwrap_err();
+        assert!(msg::CFG_MAILBOX_BAD.is_in(&e) && !e.contains(pw), "{e}");
+        for on in ["ssh://u:Hunter2zz@h:22", "ssh://u:Hunter2zz/x@h", "ftp://u:Hunter2zz@h"] {
+            let e = HostEntry { on: on.into(), ..host("web1") }.check().unwrap_err();
+            assert!(!e.contains(pw), "{on}: {e}");
+        }
+        let e = BucketEntry { url: "sftp://u:Hunter2zz@h".into(), ..bucket("logs") }.check().unwrap_err();
+        assert!(!e.contains(pw), "{e}");
+        let e = BucketEntry { url: "s3://me:Hunter2zz@bkt".into(), ..bucket("logs") }.check().unwrap_err();
+        assert!(e.contains("***") && !e.contains(pw), "{e}");
+        let e = bucket_prefix("s3://me:Hunter2zz@bkt").unwrap_err();
+        assert!(!e.contains(pw), "{e}");
     }
 }

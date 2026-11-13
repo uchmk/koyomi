@@ -220,7 +220,7 @@ fn run_as(t: &Table, j: &jobnet::Job) -> Option<String> {
 fn on_text(t: &Table, on: &str) -> String {
     match chore::host_name(on) {
         Some(name) => t.trf("review.host_named", &[name]),
-        None => on.to_owned(),
+        None => chore::shown_address(on).into_owned(),
     }
 }
 
@@ -258,7 +258,7 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
         Chore::Empty { path } => vec![line("path", path)],
         Chore::Send { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket }
         | Chore::Fetch { from, into, key, host_key, password, key_id, region, endpoint, verify, host, bucket } => {
-            let mut v = vec![line("from", from), line("into", into)];
+            let mut v = vec![line("from", &chore::shown_address(from)), line("into", &chore::shown_address(into))];
             // A registered PC or bucket owns the login: only its name is shown, never its keys.
             if let Some(h) = host {
                 v.push(line("host", &t.trf("review.host_named", &[h])));
@@ -344,7 +344,7 @@ pub fn chore_pairs(t: &Table, c: &Chore) -> Vec<(String, String)> {
         Chore::Sql { db, database, password, sql, file, out, rows, tls } => {
             let mut v = vec![match database {
                 Some(d) => line("sql_database", d),
-                None => line("sql_db", db),
+                None => line("sql_db", &chore::shown_address(db)),
             }];
             if let Some(s) = sql {
                 v.push(line("sql", &s.trim().replace('\n', " ⏎ ")));
@@ -915,5 +915,43 @@ run = [\"x.exe\"]
         assert!(both.contains("g/ab") && both.contains("g/ab-2"));
         assert_eq!(twin_row("ab".to_owned(), &b), "ab  · ab-2");
         assert!(twins(&[a]).is_empty());
+    }
+
+    /// A stored address with a password (an older engine's) is drawn with `***` in the job detail.
+    #[test]
+    fn the_job_detail_hides_a_password_an_older_engine_sent() {
+        let t = table();
+        let shown = |c: &Chore| chore_pairs(&t, c).into_iter().map(|(_, v)| v).collect::<Vec<_>>().join("\n");
+        let ssh = |on: &str| Chore::Ssh {
+            on: on.into(),
+            command: "x".into(),
+            key: None,
+            host_key: None,
+            password: None,
+            max: None,
+            pass: Pass::All,
+        };
+        let s = shown(&ssh("ssh://u:Hunter2zz@h:22"));
+        assert_eq!(shown(&ssh("ssh://u@h:22")).lines().next().unwrap(), "ssh://u@h:22");
+        assert!(!s.contains("Hunter2zz") && s.contains("ssh://u:***@h:22"), "{s}");
+        let mut send = Chore::blank("send").unwrap();
+        if let Chore::Send { into, .. } = &mut send {
+            *into = "sftp://u:Hunter2zz@h/in".into();
+        }
+        let s = shown(&send);
+        assert!(!s.contains("Hunter2zz") && s.contains("sftp://u:***@h/in"), "{s}");
+        let mut fetch = Chore::blank("fetch").unwrap();
+        if let Chore::Fetch { from, .. } = &mut fetch {
+            *from = "sftp://u:Hunter2zz@h/out".into();
+        }
+        assert!(!shown(&fetch).contains("Hunter2zz"));
+        let mut sql = Chore::blank("sql").unwrap();
+        if let Chore::Sql { db, .. } = &mut sql {
+            *db = "postgres://u:Hunter2zz@h/db".into();
+        }
+        let s = shown(&sql);
+        assert!(!s.contains("Hunter2zz") && s.contains("postgres://u:***@h/db"), "{s}");
+        assert_eq!(on_text(&t, "ssh://u:Hunter2zz@h:22"), "ssh://u:***@h:22");
+        assert_eq!(on_text(&t, "ssh://u@h:22"), "ssh://u@h:22");
     }
 }

@@ -1,6 +1,6 @@
 # Checklist
 
-1444 checks in TESTING.md, 1438 left for a person.
+1446 checks in TESTING.md, 1439 left for a person.
 
 ## 1. Start
 
@@ -881,6 +881,8 @@
 
 ## 82. ファイルを送る・受け取る部品（`kind = "send"` / `"fetch"`）
 
+自動テスト済みなので下には出していない: 82.9
+
 - [ ] **82.1** [x] `kind = "send"`, `from = 'D:\out\*.csv'`, `into = '\\nas\share\in\{date}'`; run it → The csv files are in the share's folder for today (made when missing); the log says `sent: …` for each; ✓ 〔未訳〕
 - [ ] **82.2** [x] `kind = "fetch"`, `from = '\\nas\share\out\*.csv'`, `into = 'D:\in'`; run it; then once more with no csv in the share → ✓ and the files are in `D:\in`; the second run is ⚠ 警告 with `no file to fetch: …` 〔未訳〕
 - [ ] **82.3** An SFTP server you can reach with a key; `koyomi sftp hostkey host` prints `host_key = "SHA256:…"`; `kind = "send"`, `into = "sftp://user@host/in"`, `key = 'C:\keys\id_ed25519'` and that `host_key` → ✓; the files are in `/in` on the server; the log says `sent: <name> (<n> bytes)` for each; `known_hosts` is not used 〔未訳〕
@@ -889,6 +891,7 @@
 - [ ] **82.6** [x] `koyomi check` a send with `from = "sftp://…"`, a fetch with `into = "sftp://…"`, `into = "sftp://-oProxyCommand=x/in"`, `from = "sftp://h/out/"` on fetch, `key` on `copy`, an sftp:// send without `host_key`, `password = "plain"`, both `key` and `password` → Each is refused with the line and why; the missing `host_key` names `koyomi sftp hostkey` 〔未訳〕
 - [ ] **82.7** The editor: drag ファイルを送る and ファイルを受け取る from the parts → The pane shows 送るもの・送り先・SSH の秘密鍵 (受け取るもの・置くフォルダー・SSH の秘密鍵), timeout and retry; and ホスト鍵・パスワード; saving writes `kind = "send"` / `"fetch"` with `from`・`into`・`key`・`host_key`・`password` 〔未訳〕
 - [ ] **82.8** [x] Approve a net with a send → The confirm box shows 元・先・SSH の鍵・ホスト鍵・パスワード instead of a command 〔未訳〕
+- [ ] **82.10** In a window connected to an older engine whose rows hold such an address, open the hosts, databases and mailboxes lists, a job's detail (connect to, send to, database) and a mail start's text → The address is drawn with `***` in place of the password in each; a good address is unchanged 〔未訳〕
 
 ## 83. HTTP で呼ぶ部品（`kind = "http"`）
 

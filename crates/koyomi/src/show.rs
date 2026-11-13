@@ -100,7 +100,7 @@ pub fn event_row(t: &Table, w: &When) -> Option<String> {
                 .collect();
             let to = match mailbox {
                 Some(name) => t.trf("run.mailbox_named", &[name]),
-                None => mail.clone(),
+                None => koyomi_core::chore::shown_address(mail).into_owned(),
             };
             Some(t.trf("run.event_mail", &[&to, &what.join(" / ")]))
         }
@@ -628,5 +628,28 @@ run = [\"x\"]
         assert_eq!(duration(&ja, chrono::Duration::seconds(12)), "12秒");
         assert_eq!(duration(&ja, chrono::Duration::seconds(-3)), "0秒");
         assert_eq!(duration(&en, chrono::Duration::seconds(3900)), "1 h 5 min");
+    }
+
+    /// A mail start stored with a password (an older engine's) is drawn with `***`.
+    #[test]
+    fn the_mail_start_hides_a_password_an_older_engine_sent() {
+        let t = crate::i18n::table("ja").0;
+        let w = when::When {
+            kind: when::Kind::Mail {
+                mail: "imaps://me:Hunter2zz@h".into(),
+                secret: "s".into(),
+                mailbox: None,
+                sender: None,
+                subject: None,
+            },
+            except: Vec::new(),
+            start: None,
+            end: None,
+            on_closed: None,
+            wait_for: None,
+            wait_until: None,
+        };
+        let s = event_row(&t, &w).unwrap();
+        assert!(!s.contains("Hunter2zz") && s.contains("imaps://me:***@h"), "{s}");
     }
 }

@@ -658,7 +658,7 @@ impl Chore {
                 need("from", from)?;
                 need("into", into)?;
                 if !into.trim().to_ascii_lowercase().ends_with(".zip") {
-                    return Err(msg::line(msg::CHORE_ZIP_INTO, &[into]));
+                    return Err(msg::line(msg::CHORE_ZIP_INTO, &[&shown_address(into)]));
                 }
             }
             Chore::Copy { from, into, .. } => {
@@ -755,7 +755,7 @@ impl Chore {
                 }
                 // An `on` that starts with `{param:…}` or `{var:…}` is told once it is filled in.
                 if !group && ssh(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", on]));
+                    return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", &hide_password(on)]));
                 }
                 far_command(command)?;
                 // A group's PCs may each have their own host key in `[groups]`.
@@ -772,7 +772,7 @@ impl Chore {
                     return Ok(());
                 }
                 if !group && winrm(on).transpose()?.is_none() && !on.trim().starts_with('{') {
-                    return Err(msg::line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", on]));
+                    return Err(msg::line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", &hide_password(on)]));
                 }
                 far_command(command)?;
                 // Each PC of a group may have its own certificate in `[groups]`.
@@ -1230,7 +1230,18 @@ pub struct Sftp {
 pub fn sftp(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..7).filter(|p| p.eq_ignore_ascii_case("sftp://")).map(|_| &t[7..])?;
-    Some(read_sftp(rest, "sftp://", t))
+    Some(guarded(t, |shown, masked| read_sftp(rest, "sftp://", shown, masked)))
+}
+
+/// Runs `read` on an address that has no password written in it, giving it the hidden form of the address and whether
+/// hiding changed it; with a password written in it, the address is refused first.
+fn guarded<T>(t: &str, read: impl FnOnce(&str, bool) -> Result<T, String>) -> Result<T, String> {
+    let shown = hide_password(t);
+    if has_password(t) {
+        return Err(msg::line(msg::ADDR_PASSWORD, &[&shown]));
+    }
+    let masked = shown != t;
+    read(&shown, masked)
 }
 
 /// `s` read as an `ssh://[user@]host[:port]` address (no path: `path` is `.`); `None`
@@ -1238,9 +1249,11 @@ pub fn sftp(s: &str) -> Option<Result<Sftp, String>> {
 pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..6).filter(|p| p.eq_ignore_ascii_case("ssh://")).map(|_| &t[6..])?;
-    let read = read_sftp(rest, "ssh://", t).and_then(|far| match rest.split_once('/') {
-        Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["ssh://", "ssh://[user@]host[:port]", t])),
-        _ => Ok(far),
+    let read = guarded(t, |shown, masked| {
+        read_sftp(rest, "ssh://", shown, masked).and_then(|far| match rest.split_once('/') {
+            Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["ssh://", "ssh://[user@]host[:port]", shown])),
+            _ => Ok(far),
+        })
     });
     Some(read)
 }
@@ -1251,10 +1264,12 @@ pub fn ssh(s: &str) -> Option<Result<Sftp, String>> {
 pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
     let t = s.trim();
     let rest = t.get(..8).filter(|p| p.eq_ignore_ascii_case("winrm://")).map(|_| &t[8..])?;
-    let read = read_sftp(rest, "winrm://", t).and_then(|far| match rest.split_once('/') {
-        Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["winrm://", "winrm://user@host[:port]", t])),
-        _ if far.user.is_none() => Err(msg::line(msg::CHORE_WINRM_USER, &[t])),
-        _ => Ok(far),
+    let read = guarded(t, |shown, masked| {
+        read_sftp(rest, "winrm://", shown, masked).and_then(|far| match rest.split_once('/') {
+            Some((_, p)) if !p.is_empty() => Err(msg::line(msg::CHORE_ADDR_PATH, &["winrm://", "winrm://user@host[:port]", shown])),
+            _ if far.user.is_none() => Err(msg::line(msg::CHORE_WINRM_USER, &[shown])),
+            _ => Ok(far),
+        })
     });
     Some(read)
 }
@@ -1294,9 +1309,9 @@ pub fn s3(s: &str) -> Option<Result<S3, String>> {
     let (bucket, key) = rest.split_once('/').unwrap_or((rest, ""));
     let good = |b: &str| (3..=63).contains(&b.len()) && b.chars().all(|c| c.is_ascii_alphanumeric() || ".-_".contains(c));
     let read = if bucket.is_empty() || (!bucket.contains('{') && !good(bucket)) {
-        Err(msg::line(msg::CHORE_S3_BUCKET, &[t]))
+        Err(msg::line(msg::CHORE_S3_BUCKET, &[&shown_address(t)]))
     } else if key.chars().any(char::is_control) {
-        Err(msg::line(msg::CHORE_S3_KEY_CONTROL, &[t]))
+        Err(msg::line(msg::CHORE_S3_KEY_CONTROL, &[&shown_address(t)]))
     } else {
         Ok(S3 { bucket: bucket.to_owned(), key: key.trim_start_matches('/').to_owned() })
     };
@@ -1350,11 +1365,11 @@ fn s3_login(
     }
     if let Some(e) = endpoint.filter(|e| !e.starts_with('{')) {
         let Some(rest) = after_scheme(&e, "https://").or_else(|| after_scheme(&e, "http://")) else {
-            return Err(msg::line(msg::CHORE_HTTP_URL, &["endpoint", &e]));
+            return Err(msg::line(msg::CHORE_HTTP_URL, &["endpoint", &hide_password(&e)]));
         };
         let host = rest.strip_suffix('/').unwrap_or(rest);
         if host.is_empty() || host.contains(['/', '?', '#', '@']) || host.chars().any(|c| c.is_whitespace() || c.is_control()) {
-            return Err(msg::line(msg::CHORE_S3_ENDPOINT_HOST, &[&e]));
+            return Err(msg::line(msg::CHORE_S3_ENDPOINT_HOST, &[&hide_password(&e)]));
         }
     }
     Ok(())
@@ -1405,18 +1420,29 @@ pub fn check_db(db: &str, password: Option<&str>, tls: SqlTls) -> Result<(), Str
     }
 }
 
+/// Whether the text after `sqlite://` is a file path as [`sql_db`] takes it: a drive (`C:\` or `C:/`) or a start of
+/// `\`, `/` or `{`.
+fn sqlite_shape(path: &str) -> bool {
+    let b = path.as_bytes();
+    let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+    drive || path.starts_with(['\\', '/', '{'])
+}
+
 /// `s` read as a `sql`'s `db`. A named instance (`host\name`) is not taken: its
 /// port is written instead, as ito-sql connects by the port.
 pub fn sql_db(s: &str) -> Result<SqlDb, String> {
     let t = s.trim();
     if let Some(path) = after_scheme(t, "sqlite://") {
-        let b = path.as_bytes();
-        let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
-        if path.contains(['\r', '\n']) || !(drive || path.starts_with(['\\', '/', '{'])) {
-            return Err(msg::line(msg::CHORE_SQLITE_PATH, &[t]));
+        if path.contains(['\r', '\n']) || !sqlite_shape(path) {
+            return Err(msg::line(msg::CHORE_SQLITE_PATH, &[&hide_password(t)]));
         }
         return Ok(SqlDb::Sqlite { path: path.to_owned() });
     }
+    if has_password(t) {
+        return Err(msg::line(msg::ADDR_PASSWORD, &[&hide_password(t)]));
+    }
+    let shown = hide_password(t);
+    let masked = shown != t;
     let (rest, scheme, server) = if let Some(r) = after_scheme(t, "sqlserver://") {
         (r, "sqlserver://", true)
     } else if let Some(r) = after_scheme(t, "postgres://") {
@@ -1424,28 +1450,36 @@ pub fn sql_db(s: &str) -> Result<SqlDb, String> {
     } else if let Some(r) = after_scheme(t, "postgresql://") {
         (r, "postgresql://", false)
     } else {
-        return Err(msg::line(msg::CHORE_DB_SCHEME, &[t]));
+        return Err(msg::line(msg::CHORE_DB_SCHEME, &[&shown]));
     };
     let form = if server { "sqlserver://[user@]host[:port]/database" } else { "postgres://user@host[:port]/database" };
     let Some((auth, database)) = rest.split_once('/').filter(|(_, d)| !d.trim().is_empty()) else {
-        return Err(msg::line(msg::CHORE_DB_NAME_MISSING, &[scheme, form, t]));
+        return Err(msg::line(msg::CHORE_DB_NAME_MISSING, &[scheme, form, &shown]));
     };
     if database.contains(['/', '?']) || database.chars().any(char::is_control) {
-        return Err(msg::line(msg::CHORE_DB_NAME_BAD, &[t]));
+        return Err(msg::line(msg::CHORE_DB_NAME_BAD, &[&shown]));
     }
-    let far = read_sftp(auth, scheme, t)?;
+    let far = read_sftp(auth, scheme, &shown, masked)?;
     if far.host.contains('\\') {
-        return Err(if server { msg::line(msg::CHORE_SQL_INSTANCE, &[t]) } else { msg::line(msg::CHORE_DB_BACKSLASH, &["host", t]) });
+        return Err(if server {
+            msg::line(msg::CHORE_SQL_INSTANCE, &[&shown])
+        } else {
+            msg::line(msg::CHORE_DB_BACKSLASH, &["host", &shown])
+        });
     }
     if far.user.as_deref().is_some_and(|u| u.contains('\\')) {
-        return Err(if server { msg::line(msg::CHORE_SQL_USER_WINDOWS, &[t]) } else { msg::line(msg::CHORE_DB_BACKSLASH, &["user", t]) });
+        return Err(if server {
+            msg::line(msg::CHORE_SQL_USER_WINDOWS, &[&shown])
+        } else {
+            msg::line(msg::CHORE_DB_BACKSLASH, &["user", &shown])
+        });
     }
     let database = database.to_owned();
     if server {
         return Ok(SqlDb::SqlServer { user: far.user, host: far.host, port: far.port.unwrap_or(SQL_SERVER_PORT), database });
     }
     let Some(user) = far.user else {
-        return Err(msg::line(msg::CHORE_DB_USER_MISSING, &[scheme, form, t]));
+        return Err(msg::line(msg::CHORE_DB_USER_MISSING, &[scheme, form, &shown]));
     };
     Ok(SqlDb::Postgres { user, host: far.host, port: far.port.unwrap_or(POSTGRES_PORT), database })
 }
@@ -1561,7 +1595,7 @@ pub fn host_name(on: &str) -> Option<&str> {
 /// (`own` is each such key and whether the job has it).
 fn named_on(name: &str, own: &[(&str, bool)]) -> Result<(), String> {
     if !crate::registry::valid_name(name) {
-        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &["on", name]));
+        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &["on", &hide_password(name)]));
     }
     match own.iter().find(|(_, set)| *set) {
         Some((key, _)) => Err(msg::line(msg::DEF_NAMED_OWNS, &[key, "on", "host"])),
@@ -1588,7 +1622,7 @@ fn named_far(
         (None, None) => return Ok(false),
     };
     if !crate::registry::valid_name(name) {
-        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &[key, name]));
+        return Err(msg::line(msg::DEF_REGISTERED_NAME_BAD, &[key, &hide_password(name)]));
     }
     if far.contains("://") {
         return Err(msg::line(msg::DEF_NAMED_FAR_URL, &[if send { "into" } else { "from" }, key]));
@@ -1640,7 +1674,7 @@ pub fn far_path_ok(send: bool, url: &str, shown: &str) -> Result<(), String> {
 pub fn sftp_join(host_on: &str, path: &str) -> Result<String, String> {
     let at = match ssh(host_on) {
         Some(r) => r?,
-        None => return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", host_on])),
+        None => return Err(msg::line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", &hide_password(host_on)])),
     };
     let mut auth = String::new();
     if let Some(u) = &at.user {
@@ -1672,7 +1706,7 @@ pub fn sftp_join(host_on: &str, path: &str) -> Result<String, String> {
 pub fn s3_join(bucket_url: &str, path: &str) -> Result<String, String> {
     let at = match s3(bucket_url) {
         Some(r) => r?,
-        None => return Err(msg::line(msg::CHORE_S3_BUCKET, &[bucket_url])),
+        None => return Err(msg::line(msg::CHORE_S3_BUCKET, &[&shown_address(bucket_url)])),
     };
     let prefix = crate::registry::bucket_prefix(bucket_url)?;
     let p = path.trim();
@@ -1752,13 +1786,98 @@ pub fn cert_ok(c: &str) -> Result<(), String> {
     }
 }
 
-fn read_sftp(rest: &str, scheme: &str, addr: &str) -> Result<Sftp, String> {
+/// Where the password of an address is written, when it is written in the address: `scheme://[user[:password]@]host…`.
+/// This is the **strict** rule, which decides that an address has a password in it (the readers refuse it). On
+/// `addr.trim()`: the scheme ends at the first `://` (none: `None`; `sqlite://` is a file path: `None`); the authority
+/// is the text after it up to the first `/`; `at` is the last `@` of the authority (none: `None`); the colon is the
+/// first `:` before `at` that is not inside a `{param:…}` or `{var:…}` template (none: `None`). The span is what lies
+/// between that colon and `at`, as a range into `addr` as given. `[` and `]` are not special: the user part never
+/// holds an IPv6 host, the host is after `@`. The broad rule is [`hide_password`].
+pub fn password_span(addr: &str) -> Option<std::ops::Range<usize>> {
+    let t = addr.trim();
+    let lead = addr.len() - addr.trim_start().len();
+    let (scheme, rest) = t.split_once("://")?;
+    if scheme.eq_ignore_ascii_case("sqlite") {
+        return None;
+    }
+    let base = lead + scheme.len() + 3;
+    let auth = rest.split_once('/').map_or(rest, |(a, _)| a);
+    let at = auth.rfind('@')?;
+    let colon = first_colon(&auth[..at])?;
+    Some(base + colon + 1..base + at)
+}
+
+/// Whether [`password_span`] finds a password written in `addr` (the strict rule).
+pub fn has_password(addr: &str) -> bool {
+    password_span(addr).is_some()
+}
+
+/// `text` with a password written in an address hidden as `***`, for an error line that shows an address. This is the
+/// **broad** rule. If the strict rule ([`password_span`]) finds a password, that span is replaced. Otherwise, for a text
+/// that may be an address that was not accepted (`sftp://u:ab/cd@h/x`, a password that holds a `/`): in the text after
+/// the first `://` (the whole text when there is none; a `sqlite://` address is left alone), what lies between the first
+/// `:` (outside a template) and the last `@` is replaced. It hides more than it must rather than leak
+/// (`sftp://h:22/in@box` shows as `sftp://h:***@box`), so use it only where an address is refused or reported as
+/// unreadable; [`shown_address`] is for a stored value that is shown as is.
+pub fn hide_password(text: &str) -> std::borrow::Cow<'_, str> {
+    let cut = |r: std::ops::Range<usize>| std::borrow::Cow::Owned(format!("{}***{}", &text[..r.start], &text[r.end..]));
+    if let Some(r) = password_span(text) {
+        return cut(r);
+    }
+    let t = text.trim();
+    let lead = text.len() - text.trim_start().len();
+    let (base, rest) = match t.split_once("://") {
+        // A `sqlite://` address with an accepted file path is left alone; one without it is read like any other text.
+        Some((scheme, rest)) if scheme.eq_ignore_ascii_case("sqlite") && sqlite_shape(rest) => return std::borrow::Cow::Borrowed(text),
+        Some((scheme, rest)) => (lead + scheme.len() + 3, rest),
+        None => (lead, t),
+    };
+    let Some(at) = rest.rfind('@') else { return std::borrow::Cow::Borrowed(text) };
+    match first_colon(&rest[..at]) {
+        Some(colon) => cut(base + colon + 1..base + at),
+        None => std::borrow::Cow::Borrowed(text),
+    }
+}
+
+/// A stored address as it is shown in a list: unchanged, unless it has a password written in it (the strict rule), then
+/// hidden. A row from an older engine may still hold one.
+pub fn shown_address(addr: &str) -> std::borrow::Cow<'_, str> {
+    if has_password(addr) {
+        hide_password(addr)
+    } else {
+        std::borrow::Cow::Borrowed(addr)
+    }
+}
+
+/// The index of the first `:` of `s` that is not inside a `{param:…}` or `{var:…}` template.
+fn first_colon(s: &str) -> Option<usize> {
+    let mut i = 0;
+    while i < s.len() {
+        let rest = &s[i..];
+        if let Some(open) = ["{param:", "{var:"].into_iter().find(|o| rest.starts_with(o)) {
+            if let Some(end) = rest[open.len()..].find('}') {
+                i += open.len() + end + 1;
+                continue;
+            }
+        }
+        let c = rest.chars().next()?;
+        if c == ':' {
+            return Some(i);
+        }
+        i += c.len_utf8();
+    }
+    None
+}
+
+/// `rest` (the text after `scheme`) read as `[user@]host[:port][/path]`; `addr` is the address as an error line shows it (the
+/// hidden form), `masked` that hiding changed it.
+fn read_sftp(rest: &str, scheme: &str, addr: &str, masked: bool) -> Result<Sftp, String> {
     let (auth, path) = rest.split_once('/').unwrap_or((rest, ""));
     // A `:` inside `{param:…}` or `{var:…}` is not a port.
     let (dest, port) = match auth.rsplit_once(':') {
         Some((d, p)) if !p.contains('}') => match p.parse::<u16>() {
             Ok(n) if n > 0 => (d, Some(n)),
-            _ => return Err(msg::line(msg::CHORE_PORT_BAD, &[p, addr])),
+            _ => return Err(msg::line(msg::CHORE_PORT_BAD, &[if masked { "***" } else { p }, addr])),
         },
         _ => (auth, None),
     };
@@ -2944,5 +3063,171 @@ mod tests {
         assert_eq!(net.jobs[1].env.get("KOYOMI_CLOUD_FROM").map(String::as_str), Some("in/a.csv"));
         assert_eq!(net.jobs[2].env.get("KOYOMI_SSH_ON").map(String::as_str), Some("web1"));
         assert!(!net.jobs[0].env.contains_key("KOYOMI_SFTP_PASSWORD") && !net.jobs[1].env.contains_key("KOYOMI_CLOUD_PASSWORD"));
+    }
+
+    const PW: &str = "Hunter2zz";
+
+    #[test]
+    fn password_span_finds_what_is_written_after_the_user_and_colon() {
+        let some = [
+            ("sftp://u:pw@h/x", "pw"),
+            ("sftp://u:pw@h:22/x", "pw"),
+            ("postgres://u:p@ss@h/db", "p@ss"),
+            ("sftp://:pw@h", "pw"),
+            ("sftp://u:@h", ""),
+            ("imaps://me@example.com:pw@imap.example.com/INBOX", "pw"),
+            ("ssh://u[:pw]@h:22", "pw]"),
+            ("imaps://u{:pw}@h", "pw}"),
+            ("SFTP://u:pw@h", "pw"),
+            ("  sftp://u:pw@h  ", "pw"),
+            ("winrm://CORP\\u:pw@h", "pw"),
+            ("sftp://{param:user}:{param:pw}@h", "{param:pw}"),
+        ];
+        for (addr, want) in some {
+            let r = password_span(addr).unwrap_or_else(|| panic!("{addr}"));
+            assert_eq!(&addr[r], want, "{addr}");
+            assert!(has_password(addr), "{addr}");
+        }
+        let none = [
+            "sftp://u@h:22/x",
+            "sftp://h:22/in@box",
+            "sftp://h:22/a@b:c",
+            "sftp://h:{param:port}/a@b",
+            "sftp://{param:host}:22/a@b:c",
+            "imaps://me@h:993/INBOX/a@b",
+            "sftp://h/a:b@c",
+            "sftp://{param:user}@h",
+            "sftp://u@[fe80::1]:22/x",
+            "sftp://[::1]:22/a@b",
+            "sqlite://C:\\data\\a@b.db",
+            "C:\\data\\a:b@c",
+            "imaps://me@host",
+            "winrm://CORP\\ops@app01:5986",
+            "winrm://.\\ops@app01",
+            "s3://bkt/a:b@c",
+        ];
+        for addr in none {
+            assert_eq!(password_span(addr), None, "{addr}");
+            assert!(!has_password(addr), "{addr}");
+        }
+    }
+
+    #[test]
+    fn hide_password_and_shown_address_hide_exactly_the_password() {
+        for (addr, want) in [
+            ("sftp://u:pw@h/x", "sftp://u:***@h/x"),
+            ("postgres://u:p@ss@h/db", "postgres://u:***@h/db"),
+            ("  sftp://u:pw@h  ", "  sftp://u:***@h  "),
+            ("sftp://{param:user}:{param:pw}@h", "sftp://{param:user}:***@h"),
+            ("sftp://u:ab/cd@h/x", "sftp://u:***@h/x"),
+            ("imaps://me:pw@h/a@b", "imaps://me:***@h/a@b"),
+            ("u:pw@h", "u:***@h"),
+            ("sftp://h:22/in@box", "sftp://h:***@box"),
+        ] {
+            assert_eq!(hide_password(addr), want, "{addr}");
+        }
+        for addr in [
+            "sftp://u@h:22/x",
+            "sftp://{param:user}@h",
+            "sftp://u@[fe80::1]:22/x",
+            "imaps://me@host",
+            "winrm://CORP\\ops@app01:5986",
+            "winrm://.\\ops@app01",
+            "sqlite://C:\\data\\a:b@c.db",
+            "sftp://h",
+            "",
+        ] {
+            assert!(matches!(hide_password(addr), std::borrow::Cow::Borrowed(_)), "{addr}");
+            assert_eq!(hide_password(addr), addr);
+        }
+        assert_eq!(shown_address("ssh://u@h:22"), "ssh://u@h:22");
+        assert_eq!(shown_address("ssh://h:22/in@box"), "ssh://h:22/in@box");
+        assert_eq!(shown_address("ssh://u:Hunter2zz@h:22"), "ssh://u:***@h:22");
+    }
+
+    /// 82.9: an address with a password written in it is refused and shown with `***`.
+    #[test]
+    fn an_address_with_a_password_is_refused_and_never_shown() {
+        for a in [
+            "postgres://u:Hunter2zz@h/db",
+            "postgres://u:Hunter2zz@h:5432/db",
+            "postgresql://u:Hunter2zz@h/db",
+            "sqlserver://u:Hunter2zz@h/db",
+            "sqlserver://u:Hunter2zz@h:1433/db",
+            "mysql://u:Hunter2zz@h/db",
+        ] {
+            let e = sql_db(a).unwrap_err();
+            assert!(msg::ADDR_PASSWORD.is_in(&e) && !e.contains(PW), "{a}: {e}");
+        }
+        for e in [
+            sftp("sftp://u:Hunter2zz@h/x").unwrap().unwrap_err(),
+            sftp("sftp://u:Hunter2zz@h:22/x").unwrap().unwrap_err(),
+            ssh("ssh://u:Hunter2zz@h").unwrap().unwrap_err(),
+            ssh("ssh://u:Hunter2zz@h:22").unwrap().unwrap_err(),
+            winrm("winrm://CORP\\u:Hunter2zz@h").unwrap().unwrap_err(),
+            crate::when::mailbox("imaps://me:Hunter2zz@h").unwrap_err(),
+            crate::when::mailbox("imaps://me@example.com:Hunter2zz@imap.example.com/INBOX").unwrap_err(),
+        ] {
+            assert!(msg::ADDR_PASSWORD.is_in(&e) && !e.contains(PW), "{e}");
+        }
+        assert!(sftp("sftp://u:Hunter2zz@h/x").unwrap().unwrap_err().contains("sftp://u:***@h/x"));
+    }
+
+    #[test]
+    fn an_unreadable_address_still_hides_a_password_it_could_not_split() {
+        for e in [
+            sftp("sftp://u:Hunter2zz/x@h/p").unwrap().unwrap_err(),
+            sql_db("postgres://u:Hunter2zz/x@h/db").unwrap_err(),
+            sql_db("sqlserver://u:Hunter2zz/x@h/db").unwrap_err(),
+            sql_db("nosql://u:Hunter2zz/x@h/db").unwrap_err(),
+            crate::when::mailbox("imaps://me:Hunter2zz/x@h").unwrap_err(),
+            sftp_join("ssh://u:Hunter2zz/x@h", "a").unwrap_err(),
+            ssh("ssh://u:Hunter2zz/x@h").unwrap().unwrap_err(),
+        ] {
+            assert!(!e.contains(PW), "{e}");
+        }
+    }
+
+    #[test]
+    fn a_password_in_a_malformed_authority_is_refused_by_the_strict_rule() {
+        for e in [sftp("sftp://h:Hunter2zz@x/p").unwrap().unwrap_err(), sftp("sftp://u:Hunter2zz@h:x/p").unwrap().unwrap_err()] {
+            assert!(msg::ADDR_PASSWORD.is_in(&e) && !e.contains(PW), "{e}");
+        }
+    }
+
+    #[test]
+    fn addresses_without_a_password_are_read_as_before() {
+        assert_eq!(crate::when::mailbox("imaps://me@example.com@imap.example.com/INBOX").unwrap().user, "me@example.com");
+        assert_eq!(winrm("winrm://CORP\\ops@app01:5986").unwrap().unwrap().user.as_deref(), Some("CORP\\ops"));
+        assert_eq!(winrm("winrm://.\\ops@app01").unwrap().unwrap().user.as_deref(), Some(".\\ops"));
+        assert_eq!(sftp(" SFTP://u@h:22/x ").unwrap().unwrap().port, Some(22));
+        assert_eq!(sql_db("sqlite://C:\\data\\a:b@c.db").unwrap(), SqlDb::Sqlite { path: "C:\\data\\a:b@c.db".into() });
+        assert!(sql_db("POSTGRES://u@h:5432/db").is_ok());
+        let t = sftp("sftp://{param:user}@{param:host}:{param:port}/x").unwrap().unwrap();
+        assert_eq!((t.user.as_deref(), t.host.as_str()), (Some("{param:user}"), "{param:host}:{param:port}"));
+        assert_eq!(t.path, "/x");
+        let v6 = sftp("sftp://u@[fe80::1]:22/x").unwrap().unwrap();
+        assert_eq!((v6.host.as_str(), v6.port), ("[fe80::1]", Some(22)));
+        assert!(s3("s3://bkt/a:b@c").unwrap().is_ok());
+        assert_eq!(sql_db("sqlite:///var/a:b@c.db").unwrap(), SqlDb::Sqlite { path: "/var/a:b@c.db".into() });
+        assert_eq!(sql_db("sqlite://C:/data/a@b.db").unwrap(), SqlDb::Sqlite { path: "C:/data/a@b.db".into() });
+        for a in ["sqlite://C:/data/a@b.db", "sqlite:///var/a:b@c.db"] {
+            assert!(matches!(hide_password(a), std::borrow::Cow::Borrowed(_)), "{a}");
+        }
+    }
+
+    /// A `sqlite://` text that is not a file path, an `s3://` bucket and a zip's `into` never show a password.
+    #[test]
+    fn a_refused_sqlite_s3_or_zip_address_never_shows_a_password() {
+        let e = sql_db("sqlite://u:Hunter2zz@h/db").unwrap_err();
+        assert!(msg::CHORE_SQLITE_PATH.is_in(&e) && !e.contains(PW) && e.contains("***"), "{e}");
+        let e = s3("s3://me:Hunter2zz@bkt/x").unwrap().unwrap_err();
+        assert!(msg::CHORE_S3_BUCKET.is_in(&e) && !e.contains(PW) && e.contains("***"), "{e}");
+        let e = s3_join("s3://me:Hunter2zz@bkt", "x").unwrap_err();
+        assert!(!e.contains(PW), "{e}");
+        assert_eq!(hide_password("sqlite://u:Hunter2zz@h/db"), "sqlite://u:***@h/db");
+        let z = Chore::Zip { from: "C:\\a".into(), into: "sftp://u:Hunter2zz@h/x".into() };
+        let e = z.check().unwrap_err();
+        assert!(msg::CHORE_ZIP_INTO.is_in(&e) && !e.contains(PW) && e.contains("***"), "{e}");
     }
 }

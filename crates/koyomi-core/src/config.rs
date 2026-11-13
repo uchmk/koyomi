@@ -135,12 +135,12 @@ fn group_of(name: &str, v: &toml::Value) -> Result<(&'static str, Vec<Member>), 
         };
         let on = on.trim();
         if [Some(on), host_key, cert].into_iter().flatten().any(|x| x.contains('{')) {
-            return Err(msg::line(msg::CFG_GROUP_BRACES, &[name, on]));
+            return Err(msg::line(msg::CFG_GROUP_BRACES, &[name, &crate::chore::hide_password(on)]));
         }
         let this = match (crate::chore::ssh(on), crate::chore::winrm(on)) {
             (Some(r), _) => r.map(|_| "ssh"),
             (_, Some(r)) => r.map(|_| "winrm"),
-            _ => return Err(msg::line(msg::CFG_GROUP_ADDRESS, &[name, on])),
+            _ => return Err(msg::line(msg::CFG_GROUP_ADDRESS, &[name, &crate::chore::hide_password(on)])),
         }
         .map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         match scheme {
@@ -149,13 +149,13 @@ fn group_of(name: &str, v: &toml::Value) -> Result<(&'static str, Vec<Member>), 
         }
         if let Some(h) = host_key {
             if this != "ssh" {
-                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "host_key", "ssh", on]));
+                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "host_key", "ssh", &crate::chore::hide_password(on)]));
             }
             crate::chore::host_key_ok(h).map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         }
         if let Some(c) = cert {
             if this != "winrm" {
-                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "cert", "winrm", on]));
+                return Err(msg::line(msg::CFG_GROUP_KEY_SCHEME, &[name, "cert", "winrm", &crate::chore::hide_password(on)]));
             }
             crate::chore::cert_ok(c).map_err(|e| msg::line(msg::CFG_GROUP_MEMBER, &[name, msg::uncoded(&e)]))?;
         }
@@ -1417,5 +1417,29 @@ token = \"secret:pc2\"
         let bad = Config::parse("[[account]]\nname = \"a/b\"\nuser = \"u\"\npassword = \"secret:s\"\n");
         assert!(bad.is_err_and(|e| msg::CFG_ENTRY_NAME_BAD.is_in(&e)));
         assert!(Config::default().account.is_empty() && Config::default().database.is_empty());
+    }
+
+    #[test]
+    fn a_group_member_with_a_password_in_its_address_never_shows_it() {
+        let bad = |t: &str| {
+            Config::parse(&format!(
+                "[groups]
+{t}
+"
+            ))
+            .unwrap_err()
+        };
+        for (t, id) in [
+            ("web = ['sftp://u:Hunter2zz@h']", &msg::CFG_GROUP_ADDRESS),
+            ("web = ['ssh://u:Hunter2zz@h:22']", &msg::CFG_GROUP_MEMBER),
+            ("web = ['winrm://u:Hunter2zz@h']", &msg::CFG_GROUP_MEMBER),
+            ("web = ['ssh://u:Hunter2zz/x@h']", &msg::CFG_GROUP_MEMBER),
+            ("web = ['ssh://u:Hunter2zz@{var:h}']", &msg::CFG_GROUP_BRACES),
+            ("web = [{ on = 'ssh://u:Hunter2zz@h', host_key = 'x' }]", &msg::CFG_GROUP_MEMBER),
+        ] {
+            let e = bad(t);
+            assert!(!e.contains("Hunter2zz"), "{t}: {e}");
+            assert!(id.is_in(&e), "{t}: {e}");
+        }
     }
 }

@@ -86,7 +86,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     if let Some(name) = group_name {
         let members = members(name, "ssh")?;
         return group(name, &members, max, pass, stop, &say, |m, out| {
-            let far = chore::ssh(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&m.on, "ssh://"]))??;
+            let far = chore::ssh(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&chore::hide_password(&m.on), "ssh://"]))??;
             let host_key = m
                 .host_key
                 .clone()
@@ -95,7 +95,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
             one(&far, host_key, &command, stop, out)
         });
     }
-    let far = chore::ssh(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", &on]))??;
+    let far = chore::ssh(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["ssh://[user@]host[:port]", &chore::hide_password(&on)]))??;
     let host_key = host_key.ok_or_else(|| line(msg::CHORE_HOST_KEY_MISSING, &["ssh://"]))?;
     // A coded reason already names the host and keeps its ID at the head.
     one(&far, host_key, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })

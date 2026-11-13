@@ -33,7 +33,7 @@ fn hostkey(at: &str) -> i32 {
     let addr = if chore::sftp(at).or_else(|| chore::ssh(at)).is_some() { at.to_owned() } else { format!("sftp://{at}") };
     let far = match chore::sftp(&addr)
         .or_else(|| chore::ssh(&addr))
-        .unwrap_or_else(|| Err(line(msg::HOST_UNREADABLE, &[at, &note(msg::N_HOST_SHAPE_SFTP, &[])])))
+        .unwrap_or_else(|| Err(line(msg::HOST_UNREADABLE, &[&chore::hide_password(at), &note(msg::N_HOST_SHAPE_SFTP, &[])])))
     {
         Ok(f) => f,
         Err(e) => {

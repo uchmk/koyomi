@@ -122,7 +122,7 @@ fn place(at: &str) -> Result<(String, u16), String> {
     let rest = t.get(..8).filter(|p| p.eq_ignore_ascii_case("winrm://")).map_or(t, |_| &t[8..]);
     match chore::sftp(&format!("sftp://{rest}")) {
         Some(Ok(far)) if !rest.is_empty() => Ok((far.host, far.port.unwrap_or(WINRM_PORT))),
-        _ => Err(line(msg::HOST_UNREADABLE, &[at, &note(msg::N_HOST_SHAPE_WINRM, &[])])),
+        _ => Err(line(msg::HOST_UNREADABLE, &[&chore::hide_password(at), &note(msg::N_HOST_SHAPE_WINRM, &[])])),
     }
 }
 
@@ -145,7 +145,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
     if let Some(name) = group_name {
         let members = crate::ssh::members(name, "winrm")?;
         return crate::ssh::group(name, &members, max, pass, stop, &say, |m, out| {
-            let far = chore::winrm(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&m.on, "winrm://"]))??;
+            let far = chore::winrm(&m.on).ok_or_else(|| line(msg::GROUP_MEMBER_SCHEME, &[&chore::hide_password(&m.on), "winrm://"]))??;
             let cert = m
                 .cert
                 .as_deref()
@@ -154,7 +154,7 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
             one(&far, cert, &password, auth, &command, stop, out)
         });
     }
-    let far = chore::winrm(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", &on]))??;
+    let far = chore::winrm(&on).ok_or_else(|| line(msg::CHORE_ON_BAD, &["winrm://user@host[:port]", &chore::hide_password(&on)]))??;
     let cert = cert.ok_or_else(|| line(msg::CHORE_WINRM_CERT_MISSING, &[]))?;
     // A coded reason already names the host and keeps its ID at the head.
     one(&far, &cert, &password, auth, &command, stop, &say).map_err(|e| if msg::is_coded(&e) { e } else { format!("{}: {e}", far.host) })
@@ -263,5 +263,13 @@ mod tests {
             assert!(!r.contains("HandlerError") && !r.contains("Os {") && !r.contains('\n'), "{r}");
         }
         assert!(basic(&E::Connect(dump.into())).contains(&note(msg::N_NET_REFUSED, &[])));
+    }
+
+    #[test]
+    fn a_host_with_a_password_in_it_is_unreadable_and_not_shown() {
+        let e = place("u:Hunter2zz@h").unwrap_err();
+        assert!(msg::HOST_UNREADABLE.is_in(&e) && !e.contains("Hunter2zz"), "{e}");
+        let e = place("winrm://u:Hunter2zz@h:5986").unwrap_err();
+        assert!(!e.contains("Hunter2zz"), "{e}");
     }
 }

@@ -4225,6 +4225,12 @@ text = "The path {0} of a bucket cannot start with /."
 cause = "The path is joined after the url of the [[bucket]], so a path that starts with / does not say whether it means the top of the bucket."
 action = "Give the path without the leading /."
 
+[E3487]
+when = "An address has a password written in it"
+text = "The address {0} has a password written in it."
+cause = "A password is written after the user name (user:password@host). An address is shown on the screen, in logs and in exported files, so koyomi does not take a password there."
+action = "Write the address without the password ([user@]host) and give the password as secret:<name> in the password field."
+
 [E3296]
 when = "The host of a send, fetch, ssh or winrm job names a host that is not in [[host]] of koyomi.toml"
 text = "The job cannot start because the host {0} is not in [[host]] of koyomi.toml."

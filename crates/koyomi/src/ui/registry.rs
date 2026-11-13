@@ -1358,7 +1358,7 @@ pub(super) fn where_word(db: &str) -> String {
             format!("{host}:{port}/{database}")
         }
         Ok(SqlDb::Sqlite { path }) => path,
-        Err(_) => db.to_owned(),
+        Err(_) => chore::hide_password(db).into_owned(),
     }
 }
 
@@ -1525,7 +1525,7 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
                         card(ui, |ui| {
                             ui.label(egui::RichText::new(&row.name).strong());
                             let kind = if row.kind == "winrm" { "WinRM" } else { "SSH" };
-                            line(ui, &t.trf("registry.kind_line", &[kind, &row.on]));
+                            line(ui, &t.trf("registry.kind_line", &[kind, &chore::shown_address(&row.on)]));
                             for (key, v) in [
                                 ("registry.host_key_line", &row.host_key),
                                 ("registry.key_line", &row.key),
@@ -1580,7 +1580,7 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
                         drawn |= here;
                         card(ui, |ui| {
                             ui.label(egui::RichText::new(&row.name).strong());
-                            line(ui, &t.trf("registry.mail_line", &[&row.mail]));
+                            line(ui, &t.trf("registry.mail_line", &[&chore::shown_address(&row.mail)]));
                             secret_lines(ui, t, page, (&row.name, &row.secret, &row.state));
                             used_line(ui, t, &row.used_by);
                             row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
@@ -3138,5 +3138,15 @@ mod peek_tests {
         let (.., t) = click(&mut r).unwrap();
         answer(&mut r, t, KEY);
         assert_eq!(format!("{:?}", form(&r).request("b", &[])), format!("{before:?}"));
+    }
+
+    #[test]
+    fn a_password_in_a_row_from_an_older_engine_is_not_drawn() {
+        let w = where_word("mysql://u:Hunter2zz@h/db");
+        assert!(!w.contains("Hunter2zz"), "{w}");
+        assert_eq!(where_word("postgres://u@h:5432/app"), "h:5432/app");
+        assert_eq!(chore::shown_address("ssh://ops@web1:2222"), "ssh://ops@web1:2222");
+        assert_eq!(chore::shown_address("imaps://me@example.com@imap.example.com/INBOX"), "imaps://me@example.com@imap.example.com/INBOX");
+        assert_eq!(chore::shown_address("ssh://u:Hunter2zz@h:22"), "ssh://u:***@h:22");
     }
 }
