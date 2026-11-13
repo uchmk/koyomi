@@ -155,6 +155,7 @@ usage: koyomi [--version | --help | env]
        koyomi mail run               what a mail job runs (kind = mail): its mail, through a [[notify.mails]] place
        koyomi sql run                what a sql job runs (kind = sql): its SQL on SQL Server, PostgreSQL or SQLite
        koyomi cloud run              what a send or fetch with s3:// runs: its files to or from S3 (or MinIO and other S3-compatible stores)
+       koyomi file run               what a delete, empty or copy job runs: the files on this PC, without a shell
        koyomi http fingerprint       this PC's certificate fingerprint for [http] lan = true, to write in another PC's [[remote]]
        koyomi remote [list]          the other PCs' engines in [[remote]] of koyomi.toml, and whether each answers
        koyomi remote peek <url>      the fingerprint https://<PC>:<port> shows, to compare with koyomi http fingerprint there
@@ -203,7 +204,7 @@ pub fn table() -> ito_i18n::Table {
     crate::i18n::table(&crate::i18n::resolve(common.language.as_deref())).0
 }
 
-const COMMANDS: [&str; 54] = [
+const COMMANDS: [&str; 55] = [
     "check",
     "list",
     "show",
@@ -255,6 +256,7 @@ const COMMANDS: [&str; 54] = [
     "mail",
     "sql",
     "cloud",
+    "file",
     "http",
     "remote",
     "mcp",
@@ -339,6 +341,7 @@ pub fn run(args: &[String]) -> Option<i32> {
         "mail" => crate::mail::cmd(rest),
         "sql" => crate::sql::cmd(rest),
         "cloud" => crate::cloud::cmd(rest),
+        "file" => crate::files::cmd(rest),
         "http" => crate::remote::http_cmd(rest),
         "remote" => crate::remote::cmd(rest),
         "mcp" => crate::mcp::run(),
@@ -350,7 +353,7 @@ pub fn run(args: &[String]) -> Option<i32> {
 /// Whether `first rest` is a job's child: `<kind> run`, started by the engine for a job.
 /// Its reason is read together with the engine's own messages.
 fn is_job_child(first: &str, rest: &[String]) -> bool {
-    matches!(first, "ssh" | "winrm" | "sftp" | "mail" | "sql" | "cloud") && matches!(rest, [op] if op == "run")
+    matches!(first, "ssh" | "winrm" | "sftp" | "mail" | "sql" | "cloud" | "file") && matches!(rest, [op] if op == "run")
 }
 
 /// The language of the message catalogue for this command: a job's child speaks the engine's
@@ -2167,7 +2170,7 @@ mod tests {
     #[test]
     fn a_jobs_child_uses_the_engines_language() {
         let run = ["run".to_owned()];
-        for kind in ["ssh", "winrm", "sftp", "mail", "sql", "cloud"] {
+        for kind in ["ssh", "winrm", "sftp", "mail", "sql", "cloud", "file"] {
             assert_eq!(catalogue_language(kind, &run, None), "ja", "{kind}");
             assert_eq!(catalogue_language(kind, &run, Some("en")), "en", "{kind}");
         }

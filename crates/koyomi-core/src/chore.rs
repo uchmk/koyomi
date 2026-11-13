@@ -1,16 +1,19 @@
 //! The everyday file chores a net can have as parts without a script:
-//! delete old files, zip, copy with robocopy, empty a folder, send and fetch
+//! delete old files, zip, copy a folder, empty a folder, send and fetch
 //! files over SFTP, to and from S3 or a shared folder, call a web API, run a
 //! command on another PC over SSH or on a Windows PC over WinRM, send a mail,
 //! run SQL on a database.
-//! Each is written in the file as its own `kind` and runs as a PowerShell script
-//! the engine writes when the run starts, so it has the job's slot, log,
-//! `timeout` and `retry`. Over SFTP the script runs `koyomi sftp run`; an `ssh`
-//! runs `koyomi ssh run` itself, without PowerShell, a `winrm` `koyomi winrm
-//! run`, a `mail` `koyomi mail run`, a `sql` `koyomi sql run`, and a `send` or
-//! `fetch` with S3 `koyomi cloud run`. Each reads what to do from the environment.
+//! Each is written in the file as its own `kind` and runs as a job of the net, so it
+//! has the job's slot, log, `timeout` and `retry`. A `zip` and a `send` or `fetch`
+//! with a shared folder run as a PowerShell script the engine writes when the run
+//! starts; over SFTP the script runs `koyomi sftp run`. An `ssh` runs `koyomi ssh
+//! run` itself, without PowerShell, a `winrm` `koyomi winrm run`, a `mail` `koyomi
+//! mail run`, a `sql` `koyomi sql run`, a `send` or `fetch` with S3 `koyomi cloud
+//! run`, and a `delete`, `empty` or `copy` `koyomi file run`. Each reads what to do
+//! from the environment.
 
 use std::collections::BTreeMap;
+use std::path::{Component, Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,7 +34,7 @@ pub enum Chore {
     },
     /// ZIP にする: `from` (a file, a folder or a wildcard) into the `.zip` file `into`, replaced.
     Zip { from: String, into: String },
-    /// robocopy で写す: the folder `from` and the folders below it into `into`; only
+    /// フォルダーを写す: the folder `from` and the folders below it into `into`; only
     /// the files matching `pattern` when it is there. Nothing is deleted in `into`.
     Copy {
         from: String,
@@ -417,9 +420,9 @@ pub const WINRM_PORT: u16 = 5986;
 /// The most `files` a `mail` names, and the most files they may find.
 pub const FILES_MAX: usize = 20;
 
-/// Put before each text a `mail` or `sql` gives `koyomi mail run` or `koyomi sql
-/// run` in the environment, so a text that starts with `secret:` is not read as a
-/// secret.
+/// Put before each text a `mail`, `sql`, `delete`, `empty` or `copy` gives
+/// `koyomi mail run`, `koyomi sql run` or `koyomi file run` in the environment, so a
+/// text that starts with `secret:` is not read as a secret.
 pub const MAIL_TEXT: char = '|';
 
 /// The port of `sqlserver://` when none is written.
@@ -462,17 +465,26 @@ impl Chore {
         }
     }
 
+    /// Whether it is a `delete`, an `empty` or a `copy`, which koyomi runs itself as
+    /// `koyomi file run` (ito-fileops), without a shell.
+    pub fn file(&self) -> bool {
+        matches!(self, Chore::Delete { .. } | Chore::Empty { .. } | Chore::Copy { .. })
+    }
+
     /// Whether koyomi runs it itself as `koyomi <op> run`, not as a script: an
-    /// `ssh`, a `winrm`, a `mail`, a `sql`, and a `send` or `fetch` with S3.
+    /// `ssh`, a `winrm`, a `mail`, a `sql`, a `delete`, an `empty`, a `copy`, and a
+    /// `send` or `fetch` with S3.
     pub fn own(&self) -> bool {
-        self.far() || self.cloud() || matches!(self, Chore::Mail { .. } | Chore::Sql { .. })
+        self.far() || self.cloud() || self.file() || matches!(self, Chore::Mail { .. } | Chore::Sql { .. })
     }
 
     /// The `<op>` of `koyomi <op> run` when koyomi runs it itself ([`Chore::own`]):
-    /// its `kind`, or `cloud` for S3.
+    /// its `kind`, `cloud` for S3, or `file` for a `delete`, `empty` or `copy`.
     pub fn op(&self) -> &'static str {
         if self.cloud() {
             "cloud"
+        } else if self.file() {
+            "file"
         } else {
             self.key()
         }
@@ -847,23 +859,14 @@ impl Chore {
     }
 
     /// The PowerShell script that does it, and how its exit code is judged.
-    /// The paths are already filled in. An `ssh`, `winrm`, `mail` or `sql` has none:
-    /// [`fill`] runs `koyomi ssh run`, `koyomi winrm run`, `koyomi mail run` or
-    /// `koyomi sql run` straight.
+    /// The paths are already filled in. An `ssh`, `winrm`, `mail`, `sql`, `delete`,
+    /// `empty` or `copy` has none: [`fill`] runs `koyomi ssh run`, `koyomi winrm run`,
+    /// `koyomi mail run`, `koyomi sql run` or `koyomi file run` straight (a `copy` has
+    /// only its judge: 1 is a warning).
     pub fn script(&self) -> (String, Option<Judge>) {
         match self {
-            Chore::Delete { path, pattern, keep_days } => {
-                let s = format!(
-                    "$ErrorActionPreference = 'Stop'\n\
-                     $limit = (Get-Date).AddDays(-{keep_days})\n\
-                     $old = @(Get-ChildItem -LiteralPath {p} -Filter {f} -File | Where-Object {{ $_.LastWriteTime -lt $limit }})\n\
-                     foreach ($x in $old) {{ Remove-Item -LiteralPath $x.FullName -Force; Write-Output \"deleted: $($x.FullName)\" }}\n\
-                     Write-Output \"$($old.Count) file(s) deleted\"\n",
-                    p = quote(path),
-                    f = quote(pattern.as_deref().unwrap_or("*")),
-                );
-                (s, None)
-            }
+            // Not a script (fill()): koyomi runs it itself as `koyomi file run`.
+            Chore::Delete { .. } | Chore::Empty { .. } => (String::new(), None),
             Chore::Zip { from, into } => {
                 let s = format!(
                     "$ErrorActionPreference = 'Stop'\n\
@@ -877,30 +880,9 @@ impl Chore {
                 );
                 (s, None)
             }
-            Chore::Copy { from, into, pattern } => {
-                let only = pattern.as_deref().map(|p| format!(" {}", quote(p))).unwrap_or_default();
-                // robocopy: 0–3 copied or nothing to do, 4–7 something did not match, 8 and up failed.
-                let s = format!(
-                    "& robocopy {f} {i}{only} /E /R:1 /W:1 /NP\n\
-                     $c = $LASTEXITCODE\n\
-                     if ($c -ge 8) {{ exit 2 }}\n\
-                     if ($c -ge 4) {{ exit 1 }}\n\
-                     exit 0\n",
-                    f = quote(&folder(from)),
-                    i = quote(&folder(into)),
-                );
-                (s, Some(Judge { warn: vec![Range { from: 1, to: 1 }], ..Default::default() }))
-            }
-            Chore::Empty { path } => {
-                let s = format!(
-                    "$ErrorActionPreference = 'Stop'\n\
-                     $all = @(Get-ChildItem -LiteralPath {p} -Force)\n\
-                     foreach ($x in $all) {{ Remove-Item -LiteralPath $x.FullName -Recurse -Force }}\n\
-                     Write-Output \"$($all.Count) item(s) removed\"\n",
-                    p = quote(path),
-                );
-                (s, None)
-            }
+            // Not a script (fill()): only its judge. 1 is the warning (something in `into` did not match), as
+            // robocopy's 4-7 was.
+            Chore::Copy { .. } => (String::new(), Some(Judge { warn: vec![Range { from: 1, to: 1 }], ..Default::default() })),
             Chore::Send { from, into, verify, host, .. } | Chore::Fetch { from, into, verify, host, .. } => {
                 let warn = Some(Judge { warn: vec![Range { from: NOTHING, to: NOTHING }], ..Default::default() });
                 let s = match (self, sftp(from).or_else(|| sftp(into))) {
@@ -934,7 +916,9 @@ impl Chore {
     /// its `auth` always (`basic` when none is written); a `mail` as `KOYOMI_MAIL_*`
     /// for `koyomi mail run`, a list one per line, each after [`MAIL_TEXT`]; a `sql`
     /// as `KOYOMI_SQL_*` for `koyomi sql run`, each text after [`MAIL_TEXT`] but the
-    /// password (a `secret:`) and `tls`. With a `[[host]]`, `[[bucket]]` or `[[database]]` of koyomi.toml
+    /// password (a `secret:`) and `tls`; a `delete`, `empty` or `copy` as `KOYOMI_FILE_*` for
+    /// `koyomi file run` (`OP` and `KEEP_DAYS` as they are, the folders and the `match` after
+    /// [`MAIL_TEXT`]). With a `[[host]]`, `[[bucket]]` or `[[database]]` of koyomi.toml
     /// named, the login (and for a `host` or `bucket` the address) is not here: [`crate::registry::far_env`]
     /// adds it when the job starts, so the far side is as written (the path alone).
     pub fn env(&self) -> Vec<(String, String)> {
@@ -1039,6 +1023,28 @@ impl Chore {
                 }
                 v
             }
+            Chore::Delete { .. } | Chore::Empty { .. } | Chore::Copy { .. } => {
+                let text = |s: &str| format!("{MAIL_TEXT}{}", s.trim());
+                let mut v = vec![("KOYOMI_FILE_OP".to_owned(), self.key().to_owned())];
+                let pattern = |p: &Option<String>| {
+                    p.as_deref().map(str::trim).filter(|x| !x.is_empty()).map(|x| ("KOYOMI_FILE_MATCH".to_owned(), text(x)))
+                };
+                match self {
+                    Chore::Delete { path, pattern: p, keep_days } => {
+                        v.push(("KOYOMI_FILE_PATH".to_owned(), text(path)));
+                        v.extend(pattern(p));
+                        v.push(("KOYOMI_FILE_KEEP_DAYS".to_owned(), keep_days.to_string()));
+                    }
+                    Chore::Empty { path } => v.push(("KOYOMI_FILE_PATH".to_owned(), text(path))),
+                    Chore::Copy { from, into, pattern: p } => {
+                        v.extend(pattern(p));
+                        v.push(("KOYOMI_FILE_FROM".to_owned(), text(from)));
+                        v.push(("KOYOMI_FILE_INTO".to_owned(), text(into)));
+                    }
+                    _ => {}
+                }
+                v
+            }
             _ => Vec::new(),
         }
     }
@@ -1136,14 +1142,16 @@ fn http(
 }
 
 /// Gives each chore of `net` (its paths filled in) the script that does it, so it
-/// runs as a PowerShell job; a root or an empty path after the filling stops the run.
+/// runs as a PowerShell job (a `zip`, a `send` or `fetch` with a shared folder); a
+/// root or an empty path after the filling stops the run.
 /// An `ssh` runs `exe` (koyomi itself) as `exe ssh run`, not through PowerShell:
 /// the engine's ask to stop reaches it straight, and PowerShell's debugger does
 /// not take the ask and write into the log. It keeps its own `judge`, and the
 /// names of its own `env` go to the far side as `KOYOMI_SSH_ENV`. A `winrm` the
 /// same, as `exe winrm run` and `KOYOMI_WINRM_ENV`; a `mail` as `exe mail run`, a
 /// `sql` as `exe sql run`, a `send` or `fetch` with S3 as `exe cloud run` (nothing
-/// to send or fetch is a warning, as over SFTP).
+/// to send or fetch is a warning, as over SFTP), a `delete`, `empty` or `copy` as
+/// `exe file run` (a `copy` keeps its judge: 1 is a warning).
 pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
     for j in &mut net.jobs {
         if let Part::Chore(c) = &j.part {
@@ -1152,7 +1160,7 @@ pub fn fill(net: &mut Jobnet, exe: &str) -> Result<(), String> {
                 let op = c.op();
                 (j.shell, j.script) = (None, None);
                 j.run = [exe, op, "run"].map(str::to_owned).to_vec();
-                if c.cloud() {
+                if c.cloud() || c.file() {
                     j.judge = c.script().1;
                 }
                 if c.far() {
@@ -1191,22 +1199,42 @@ fn quote_raw(s: &str) -> String {
     out
 }
 
-/// A folder for robocopy: no `\` at the end (it would escape the closing quote),
-/// but a drive's root keeps one as `D:\.`.
-fn folder(p: &str) -> String {
-    let t = p.trim().trim_end_matches(['\\', '/']);
-    if t.len() == 2 && t.ends_with(':') {
-        format!("{t}\\.")
-    } else {
-        t.to_owned()
+/// A folder as `koyomi file run` opens it: trimmed and rebuilt from its parts, so a
+/// separator or a `.` at the end is gone (`/x/link/` makes the system follow a link to its
+/// target, and the link check must see the link itself); `..` stays. A bare drive or share
+/// (`D:`, `\?\D:`, `\srv\share`) gets its root separator back (`D:` alone is the drive's
+/// current folder); `/`, `D:\` and an empty path stay as they are.
+pub fn folder_path(p: &str) -> PathBuf {
+    let path = Path::new(p.trim());
+    let mut out: PathBuf = path.components().collect();
+    if matches!(path.components().next_back(), Some(Component::Prefix(_))) {
+        out.push(std::path::MAIN_SEPARATOR_STR);
     }
+    out
 }
 
-/// `delete` and `empty` never work on a drive or share root.
+/// `delete` and `empty` never work on a drive or share root, however it is spelled. Only the
+/// text is read (no file system is asked, and on any platform): `.` is dropped and `..`
+/// takes the part before it, so `D:\x\..` is the root.
 fn not_root(path: &str) -> Result<(), String> {
-    let t = path.trim().trim_end_matches(['\\', '/']);
-    let share_root = t.strip_prefix("\\\\").is_some_and(|rest| rest.split(['\\', '/']).filter(|s| !s.is_empty()).count() <= 2);
-    if t.is_empty() || (t.len() == 2 && t.ends_with(':')) || share_root {
+    let t = path.trim();
+    let mut parts = t.split(['\\', '/']).filter(|s| !s.is_empty() && *s != ".").peekable();
+    let share = t.starts_with("\\\\") || t.starts_with("//");
+    let drive = !share && parts.peek().is_some_and(|f| f.len() == 2 && f.ends_with(':'));
+    let anchored = share || drive || t.starts_with(['\\', '/']);
+    // The drive, or the server and share, are what the rest hangs on: `..` does not take them.
+    let anchor = if share { 2 } else { usize::from(drive) };
+    let (mut seen, mut below) = (0, 0usize);
+    for part in parts {
+        if seen < anchor {
+            seen += 1;
+        } else if part == ".." {
+            below = below.saturating_sub(1);
+        } else {
+            below += 1;
+        }
+    }
+    if t.is_empty() || (anchored && below == 0) {
         return Err(msg::line(msg::CHORE_NOT_ROOT, &[path]));
     }
     Ok(())
@@ -2112,15 +2140,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_scripts_quote_their_paths_and_copy_judges_robocopy() {
+    fn the_scripts_quote_their_paths_and_a_copy_is_judged_as_a_file_job() {
+        // No script for the file chores (koyomi file run); a copy keeps only its judge.
         let d = Chore::Delete { path: "D:\\logs\\it's".into(), pattern: Some("*.log".into()), keep_days: 30 };
-        let (s, j) = d.script();
-        assert!(s.contains("-LiteralPath 'D:\\logs\\it''s' -Filter '*.log'"), "{s}");
-        assert!(s.contains("AddDays(-30)"), "{s}");
-        assert!(j.is_none());
+        assert_eq!(d.script(), (String::new(), None));
+        assert_eq!(Chore::Empty { path: "D:\\tmp".into() }.script(), (String::new(), None));
         let c = Chore::Copy { from: "D:\\out\\".into(), into: "E:\\".into(), pattern: None };
         let (s, j) = c.script();
-        assert!(s.starts_with("& robocopy 'D:\\out' 'E:\\.' /E"), "{s}");
+        assert!(s.is_empty());
         assert_eq!(j.unwrap().warn, vec![Range { from: 1, to: 1 }]);
         let z = Chore::Zip { from: "D:\\out\\*.csv".into(), into: "D:\\arc\\a.zip".into() };
         assert!(z.script().0.contains("Compress-Archive -Path 'D:\\out\\*.csv'"));
@@ -2593,9 +2620,10 @@ mod tests {
         assert_eq!(r.judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
         assert_eq!(r.env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
         assert_eq!(r.env.get("KOYOMI_SSH_COMMAND").map(String::as_str), Some("backup.sh"));
-        // A copy is still judged as robocopy is.
-        assert!(net.jobs[1].judge.is_some());
-        assert_eq!(net.jobs[1].shell.as_deref(), Some("powershell"));
+        // A copy is the file child with no shell, and still has its warning.
+        assert_eq!(net.jobs[1].judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
+        assert_eq!((net.jobs[1].shell.as_deref(), net.jobs[1].script.as_deref()), (None, None));
+        assert_eq!(net.jobs[1].run, ["C:\\koyomi\\koyomi.exe", "file", "run"]);
         // Filled again, the far side is still asked for the job's own env only.
         fill(&mut net, "koyomi").unwrap();
         assert_eq!(net.jobs[0].env.get("KOYOMI_SSH_ENV").map(String::as_str), Some("DAY,WHO"));
@@ -2824,6 +2852,91 @@ mod tests {
         assert_eq!(m.run, ["C:\\koyomi\\koyomi.exe", "mail", "run"]);
         assert_eq!(m.env.get("KOYOMI_MAIL_FILES").map(String::as_str), Some("|D:\\out\\a.csv"));
         assert!(!m.env.contains_key("KOYOMI_MAIL_ENV"));
+    }
+
+    fn env_of<'a>(j: &'a crate::jobnet::Job, k: &str) -> Option<&'a str> {
+        j.env.get(k).map(String::as_str)
+    }
+
+    #[test]
+    fn fill_runs_delete_empty_and_copy_as_koyomi_file_run() {
+        let mut net = crate::jobnet::parse(
+            "format = 1\n[[job]]\nid = \"d\"\nkind = \"delete\"\npath = ' secret:logs '\nmatch = '*.log'\nkeep_days = 7\n\
+             [[job]]\nid = \"e\"\nkind = \"empty\"\npath = 'D:\\tmp'\n\
+             [[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = 'D:\\out'\ninto = 'E:\\in'\n\
+             [[job]]\nid = \"m\"\nkind = \"copy\"\nfrom = 'D:\\out'\ninto = 'E:\\in'\nmatch = '*.csv'\n\
+             [[job]]\nid = \"z\"\nkind = \"zip\"\nfrom = 'D:\\out'\ninto = 'D:\\a.zip'\n\
+             [[job]]\nid = \"s\"\nkind = \"send\"\nfrom = 'D:\\out'\ninto = '\\\\srv\\share'\n",
+        )
+        .unwrap();
+        fill(&mut net, "C:\\koyomi\\koyomi.exe").unwrap();
+        for j in &net.jobs[..4] {
+            assert_eq!((j.shell.as_deref(), j.script.as_deref()), (None, None), "{}", j.id);
+            assert_eq!(j.run, ["C:\\koyomi\\koyomi.exe", "file", "run"], "{}", j.id);
+        }
+        let d = &net.jobs[0];
+        assert_eq!(env_of(d, "KOYOMI_FILE_OP"), Some("delete"));
+        // A folder that starts with `secret:` is not read as a secret.
+        assert_eq!(env_of(d, "KOYOMI_FILE_PATH"), Some("|secret:logs"));
+        assert_eq!(env_of(d, "KOYOMI_FILE_MATCH"), Some("|*.log"));
+        assert_eq!(env_of(d, "KOYOMI_FILE_KEEP_DAYS"), Some("7"));
+        assert!(d.judge.is_none() && net.jobs[1].judge.is_none());
+        let e = &net.jobs[1];
+        assert_eq!((env_of(e, "KOYOMI_FILE_OP"), env_of(e, "KOYOMI_FILE_PATH")), (Some("empty"), Some("|D:\\tmp")));
+        assert!(!e.env.contains_key("KOYOMI_FILE_MATCH") && !e.env.contains_key("KOYOMI_FILE_KEEP_DAYS"));
+        let c = &net.jobs[2];
+        assert_eq!(env_of(c, "KOYOMI_FILE_OP"), Some("copy"));
+        assert_eq!((env_of(c, "KOYOMI_FILE_FROM"), env_of(c, "KOYOMI_FILE_INTO")), (Some("|D:\\out"), Some("|E:\\in")));
+        assert!(!c.env.contains_key("KOYOMI_FILE_MATCH"));
+        assert_eq!(c.judge.as_ref().unwrap().warn, vec![Range { from: 1, to: 1 }]);
+        assert_eq!(env_of(&net.jobs[3], "KOYOMI_FILE_MATCH"), Some("|*.csv"));
+        // A zip and a send to a shared folder are still PowerShell.
+        for j in &net.jobs[4..] {
+            assert_eq!(j.shell.as_deref(), Some("powershell"), "{}", j.id);
+        }
+    }
+
+    #[test]
+    fn the_file_chores_are_koyomis_own() {
+        for kind in ["delete", "empty", "copy"] {
+            let c = Chore::blank(kind).unwrap();
+            assert!(c.file() && c.own() && !c.cloud() && !c.far(), "{kind}");
+            assert_eq!(c.op(), "file");
+        }
+        for kind in ["zip", "send", "fetch", "http"] {
+            let c = Chore::blank(kind).unwrap();
+            assert!(!c.file() && c.op() != "file", "{kind}");
+        }
+    }
+
+    #[test]
+    fn folder_path_drops_a_separator_at_the_end_and_gives_a_bare_drive_its_root() {
+        assert_eq!(folder_path("/"), PathBuf::from("/"));
+        assert_eq!(folder_path("/a/b/"), PathBuf::from("/a/b"));
+        assert_eq!(folder_path("/a/b/."), PathBuf::from("/a/b"));
+        assert_eq!(folder_path("a/../b/"), PathBuf::from("a/../b"));
+        assert_eq!(folder_path(""), PathBuf::new());
+        if cfg!(windows) {
+            assert_eq!(folder_path("D:"), PathBuf::from("D:\\"));
+            assert_eq!(folder_path("D:\\"), PathBuf::from("D:\\"));
+            assert_eq!(folder_path(r" D:\out\ "), PathBuf::from(r"D:\out"));
+            assert_eq!(folder_path(r"D:\out\"), PathBuf::from(r"D:\out"));
+            assert_eq!(folder_path(r"D:\out\."), PathBuf::from(r"D:\out"));
+            assert_eq!(folder_path(r"\\?\D:"), PathBuf::from(r"\\?\D:\"));
+            assert_eq!(folder_path(r"\\srv\share\"), PathBuf::from(r"\\srv\share\"));
+        }
+    }
+
+    #[test]
+    fn a_root_is_refused_however_dotdot_reaches_it() {
+        let refused = ["/", "/a/..", "/a/../", r"C:\", "C:", r"D:\x\..", r"D:\x\..\..", r"\\srv\share", r"\\srv\share\a\..", ""];
+        for p in refused {
+            assert!(not_root(p).is_err(), "{p:?}");
+        }
+        let allowed = [r"D:\x\..\y", "/a/../b", "/a", r"D:\logs", r"\\srv\share\tmp", "logs", "a/../b"];
+        for p in allowed {
+            assert!(not_root(p).is_ok(), "{p:?}");
+        }
     }
 
     fn query(db: &str, password: Option<&str>, sql: Option<&str>, file: Option<&str>) -> Chore {

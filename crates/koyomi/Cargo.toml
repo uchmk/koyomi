@@ -57,6 +57,8 @@ ito-mail = { git = "https://github.com/uchmk/ito", rev = "72286fc9daddd801808122
 ito-sftp = { git = "https://github.com/uchmk/ito", rev = "72286fc9daddd801808122329001eebbb813723e" }
 # `send` and `fetch` to and from S3 (`koyomi cloud run`).
 ito-cloud = { git = "https://github.com/uchmk/ito", rev = "72286fc9daddd801808122329001eebbb813723e" }
+# The delete, empty and copy chores (`koyomi file run`): no shell.
+ito-fileops = { git = "https://github.com/uchmk/ito", rev = "72286fc9daddd801808122329001eebbb813723e" }
 # `kind = "winrm"` (`koyomi winrm run`), and `koyomi winrm cert`.
 ito-winrm = { git = "https://github.com/uchmk/ito", rev = "72286fc9daddd801808122329001eebbb813723e" }
 # `kind = "sql"` (`koyomi sql run`): a script on SQL Server, PostgreSQL or SQLite.

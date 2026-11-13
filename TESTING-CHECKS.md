@@ -1,6 +1,6 @@
 # Checklist
 
-1475 checks in TESTING.md, 1458 left for a person.
+1479 checks in TESTING.md, 1462 left for a person.
 
 ## 1. Start
 
@@ -853,14 +853,18 @@
 
 ## 80. よくある作業の部品（`kind = "delete"` / `"zip"` / `"copy"` / `"empty"`）
 
-- [ ] **80.1** [x] A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it → Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` 〔未訳〕
+- [ ] **80.1** [ ] A folder with an old `a.log` (made 40 days ago), a new `b.log` and an old `c.txt`; a net with `kind = "delete"`, `path` = that folder, `match = "*.log"`, `keep_days = 30`; run it → Only `a.log` goes; the log says `deleted: …a.log` and `1 file(s) deleted` 〔未訳〕
 - [ ] **80.2** [x] `kind = "zip"`, `from = 'D:\out\*.csv'`, `into = 'D:\arc\{date}.zip'` → `D:\arc\<today>.zip` holds the csv files; run again: replaced, ✓ 〔未訳〕
-- [ ] **80.3** [x] `kind = "copy"` from a folder with subfolders into a new folder, then run again → All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays 〔未訳〕
-- [ ] **80.4** `kind = "copy"` with `into` on a share that does not exist → ✕ (robocopy 8 or more); `retry` tries again 〔未訳〕
-- [ ] **80.5** `kind = "empty"`, `path` = a folder with files and subfolders → The folder stays, empty; the log says how many items went 〔未訳〕
+- [ ] **80.3** [ ] `kind = "copy"` from a folder with subfolders into a new folder, then run again → All copied ✓; the second run copies nothing and is still ✓; a file only in `into` stays 〔未訳〕
+- [ ] **80.4** [ ] `kind = "copy"` with `into` on a share that does not exist → ✕ with `KOYOMI-E3264 …` (the share cannot be made); `retry` tries again 〔未訳〕
+- [ ] **80.5** `kind = "empty"`, `path` = a folder with files and subfolders → The folder stays, empty; the log says `<n> item(s) removed` 〔未訳〕
 - [ ] **80.6** [x] `path = 'C:\'` on `empty`, `keep_days = 0` on `delete`, `into = 'a.7z'` on `zip`, `run` on a chore → Each is refused when read, with the line and why 〔未訳〕
 - [ ] **80.7** The editor: drag 古いファイルを削除する from the parts; fill フォルダー and 名前 → The pane shows フォルダー・名前・何日より古いものを削除するか, timeout and retry; saving writes `kind = "delete"`; `D:\` there shows `KOYOMI-E3566 path D:\ は、ドライブや共有の一番上のため、使用できません。` and is not applied 〔未訳〕
 - [ ] **80.8** [x] Approve a net with a chore → The confirm box shows each chore's paths and days instead of a command 〔未訳〕
+- [ ] **80.9** `copy` where a file in `into` is open in Excel (locked) and older than the source → ✕ `KOYOMI-E3274 1 file(s) or folder(s) could not be copied. The first: …`; the other files are copied; the log has `! retry 1:` and `! failed:` 〔未訳〕
+- [ ] **80.10** `empty` on a folder holding a junction to another folder (`mklink /J`) → The junction is removed; the folder it pointed to keeps its files 〔未訳〕
+- [ ] **80.11** `copy` from a folder holding a junction → `skipped: … (a link, not followed)` in the log; nothing under it is copied 〔未訳〕
+- [ ] **80.12** Stop a long `copy` (many files) from the window → It stops between two files; the job ends stopped with the `file_stopped` note's words after the stop's own words, and `retry` does not start it again 〔未訳〕
 
 ## 81. ログの行・イベントログで起動する（`[[when]] log` / `eventlog`）
 

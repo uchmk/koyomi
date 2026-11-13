@@ -2773,6 +2773,12 @@ text = "{0} is not given."
 cause = "key_id and password are needed to connect to S3."
 action = "Give {0} as secret:<name>. The value is kept in the credentials of the OS with koyomi secret set <name>."
 
+[E3264]
+when = "A delete, empty or copy job cannot go on (the folder is missing, a file is in use, access is refused, or the folders overlap)"
+text = "The {0} job could not go on: {1}"
+cause = "The folder named in the job is missing or is a link, a file is open in another program, this account may not change it, or for a copy the destination is inside the source (or the other way round)."
+action = "Fix the folder or close the program, then run the job again (retry tries again by itself)."
+
 [E3265]
 when = "The webhooks of [notify] of koyomi.toml are not written as tables"
 text = "Each item of webhooks in [notify] of koyomi.toml is not given as a table."
@@ -2826,6 +2832,12 @@ when = "History or the record of operations is asked for over more than a year"
 text = "The range is longer than a year, so it cannot be used."
 cause = "At most a year (366 days) can be taken at once."
 action = "Split the range into parts of a year or less."
+
+[E3274]
+when = "A copy job copied what it could, but some files or folders failed after their retry"
+text = "{0} file(s) or folder(s) could not be copied. The first: {1}"
+cause = "A file was open in another program, the destination is full or read-only, or this account may not write there."
+action = "Look at the ! failed: lines of the job's log, fix them, and run it again: what was copied already is skipped."
 
 [E3275]
 when = "The business day of the record of a run cannot be read"
@@ -4515,6 +4527,7 @@ db_test_withheld = "(text withheld)"
 sql_result_rows = "The rows of the result"
 sql_changed_rows = "The rows changed"
 cloud_stopped = "Stopped. (What was being moved is not left behind.)"
+file_stopped = "Stopped between files, not in the middle of one."
 cloud_timeout = "Timed out"
 cloud_unverified = "The far side has no checksum, so it was not compared"
 notify_late = "({0})"

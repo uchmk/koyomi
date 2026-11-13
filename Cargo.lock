@@ -2704,6 +2704,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-fileops"
+version = "0.298.1"
+source = "git+https://github.com/uchmk/ito?rev=72286fc9daddd801808122329001eebbb813723e#72286fc9daddd801808122329001eebbb813723e"
+dependencies = [
+ "ito-common",
+ "ito-match",
+ "sha2 0.11.1",
+ "windows",
+]
+
+[[package]]
 name = "ito-fonts"
 version = "0.298.1"
 source = "git+https://github.com/uchmk/ito?rev=72286fc9daddd801808122329001eebbb813723e#72286fc9daddd801808122329001eebbb813723e"
@@ -3221,6 +3232,7 @@ dependencies = [
  "ito-eventlog",
  "ito-export",
  "ito-fetch",
+ "ito-fileops",
  "ito-fonts",
  "ito-glossary",
  "ito-gpu",
@@ -5204,7 +5216,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

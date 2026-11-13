@@ -2705,9 +2705,9 @@ database = \"ghost\"
             "format = 1
 [[job]]
 id = \"c\"
-kind = \"copy\"
+kind = \"zip\"
 from = 'D:/out'
-into = 'E:/in'
+into = 'E:/in.zip'
 [[job]]
 id = \"m\"
 kind = \"mail\"
@@ -2719,14 +2719,14 @@ after = [\"c\"]
         )
         .unwrap();
         koyomi_core::chore::fill(&mut net, "C:/koyomi.exe").unwrap();
-        let (copy, mail) = (JobRun::from_job(&net.jobs[0]), JobRun::from_job(&net.jobs[1]));
-        assert_eq!(copy.shell.as_deref(), Some("powershell"));
+        let (zip, mail) = (JobRun::from_job(&net.jobs[0]), JobRun::from_job(&net.jobs[1]));
+        assert_eq!(zip.shell.as_deref(), Some("powershell"));
         assert_eq!((mail.shell.as_deref(), mail.script.as_deref()), (None, None));
         let ps = std::path::PathBuf::from(if cfg!(windows) { "C:/ps/powershell.exe" } else { "/opt/pwsh" });
         let mut r = Runner::new(&dir, Config::default());
         // The engine's default may be bash: a chore does not follow it.
         r.set_shells(vec![("powershell".into(), ps.clone()), ("bash".into(), "/bin/bash".into())]);
-        let (argv, missing) = r.program("net", &copy);
+        let (argv, missing) = r.program("net", &zip);
         assert_eq!((argv[0].as_str(), missing), (ps.to_str().unwrap(), None));
         assert!(argv.contains(&"-EncodedCommand".to_owned()), "{argv:?}");
         // Own: the command is koyomi itself.
@@ -3128,46 +3128,43 @@ judge = {{ ok_file = '{ok_file}.none' }}
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// A `delete`, an `empty` and a `copy` run `koyomi file run`, with no shell (the shell is not even needed). Not run
+    /// here: the child is `current_exe()`, which in a test is the test binary. The work is tested in files.rs.
     #[test]
-    fn the_chores_delete_old_files_empty_a_folder_and_copy() {
-        if !cfg!(windows) {
-            return;
-        }
+    fn the_file_chores_run_koyomi_file_run_with_no_shell() {
         let dir = scratch("chores");
-        let (work, trash, into) = (dir.join("work"), dir.join("trash"), dir.join("into"));
-        std::fs::create_dir_all(trash.join("sub")).unwrap();
-        std::fs::create_dir_all(&work).unwrap();
-        for f in ["old.log", "new.log", "old.txt"] {
-            std::fs::write(work.join(f), "x").unwrap();
-        }
-        let old = std::time::SystemTime::now() - Duration::from_secs(20 * 86_400);
-        for f in ["old.log", "old.txt"] {
-            std::fs::File::options().write(true).open(work.join(f)).unwrap().set_modified(old).unwrap();
-        }
-        std::fs::write(trash.join("sub").join("a"), "x").unwrap();
-        std::fs::write(trash.join("b"), "x").unwrap();
-        let text = format!(
-            "format = 1\n[[job]]\nid = \"d\"\nkind = \"delete\"\npath = '{}'\nmatch = \"*.log\"\nkeep_days = 10\n\
-             [[job]]\nid = \"e\"\nkind = \"empty\"\npath = '{}'\nafter = [\"d\"]\n\
-             [[job]]\nid = \"c\"\nkind = \"copy\"\nfrom = '{}'\ninto = '{}'\nafter = [\"e\"]\n",
-            work.display(),
-            trash.display(),
-            work.display(),
-            into.display()
-        );
-        let d = def("net", &text);
+        let mut net = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"d\"
+kind = \"delete\"
+path = 'D:/work'
+match = \"*.log\"
+keep_days = 10
+             [[job]]
+id = \"e\"
+kind = \"empty\"
+path = 'D:/trash'
+after = [\"d\"]
+             [[job]]
+id = \"c\"
+kind = \"copy\"
+from = 'D:/work'
+into = 'E:/into'
+after = [\"e\"]
+",
+        )
+        .unwrap();
+        koyomi_core::chore::fill(&mut net, "C:/koyomi.exe").unwrap();
         let mut r = Runner::new(&dir, Config::default());
-        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
-        let run = wait_over(&mut r, &id);
-        for j in ["d", "e", "c"] {
-            let job = run.job(j).unwrap();
-            assert_eq!(job.state, State::Ok, "{j}: {job:?}\n{}", r.log_tail(&id, j).unwrap_or_default());
+        // No shell found at all: a file chore does not need one.
+        r.set_shells(Vec::new());
+        for j in &net.jobs {
+            let job = JobRun::from_job(j);
+            assert_eq!((job.shell.as_deref(), job.script.as_deref()), (None, None), "{}", j.id);
+            let (argv, missing) = r.program("net", &job);
+            assert_eq!((argv, missing), (["C:/koyomi.exe", "file", "run"].map(str::to_owned).to_vec(), None), "{}", j.id);
         }
-        assert!(!work.join("old.log").exists());
-        assert!(work.join("new.log").exists() && work.join("old.txt").exists());
-        assert!(trash.is_dir() && std::fs::read_dir(&trash).unwrap().next().is_none());
-        assert!(into.join("new.log").exists() && into.join("old.txt").exists());
-        assert!(r.log_tail(&id, "d").unwrap().contains("1 file(s) deleted"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
