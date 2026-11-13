@@ -209,6 +209,9 @@ fn each_text(net: &mut Jobnet, f: &mut dyn FnMut(&str, &str, &mut String) -> Res
                 f(id, name, p)?;
             }
         }
+        if let Part::File { file, .. } = &mut j.part {
+            f(id, "file", file)?;
+        }
     }
     Ok(())
 }
@@ -377,5 +380,18 @@ mod tests {
         assert!(check_vars("{var:a_1} {date}").is_ok());
         assert!(msg::VAR_NAME_EMPTY.is_in(&check_vars("{var:}").unwrap_err()));
         assert!(msg::VAR_NAME_BAD.is_in(&check_vars("{var:共有}").unwrap_err()));
+    }
+
+    #[test]
+    fn a_file_waits_path_is_expanded_and_its_vars_are_listed() {
+        use crate::jobnet::{Job, Part};
+        let job = Job { id: "w".into(), part: Part::File { file: r"{var:in}\{date:%Y%m%d}.csv".into(), settle: None }, ..Job::default() };
+        let net = Jobnet { jobs: vec![job], ..Jobnet::default() };
+        assert_eq!(vars_of(&net).into_iter().collect::<Vec<_>>(), ["in"]);
+        let vars = BTreeMap::from([("in".to_owned(), r"C:\in".to_owned())]);
+        let out = expand_net(&net, d("2026-10-30"), None, &BTreeMap::new(), &vars).unwrap();
+        assert_eq!(out.jobs[0].part, Part::File { file: r"C:\in\20261030.csv".into(), settle: None });
+        let e = expand_net(&net, d("2026-10-30"), None, &BTreeMap::new(), &BTreeMap::new()).unwrap_err();
+        assert!(msg::TEMPLATE_EXPAND.is_in(&e) && e.contains("file"), "{e}");
     }
 }

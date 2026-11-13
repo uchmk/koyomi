@@ -1,6 +1,6 @@
 # Checklist
 
-1497 checks in TESTING.md, 1480 left for a person.
+1502 checks in TESTING.md, 1485 left for a person.
 
 ## 1. Start
 
@@ -246,6 +246,7 @@
 - [ ] **22.7** In the window, open a run that is over and open 「再実行 ▾」; press 「停止したところから」; then pick a job in the flow and open the menu again → One 「再実行 ▾」 button; 「停止したところから」 starts a new run that opens (selected in 今日); with a job picked the menu also has 「<job> から再実行」, 「<job> の次から（<job> はスキップ）」 and 「（<job> は警告終了）」, and without one 「選んだジョブから再実行」 is grey; the button is grey while the top warning is shown 〔未訳〕
 - [ ] **22.8** [x] `koyomi rerun` with yesterday's run id (from `koyomi history`), and with an id that never was → The rerun starts for yesterday's business day (`--date` is the old run's date); the unknown id is refused with `KOYOMI-E3277 実行 <id> が存在しません。` 〔未訳〕
 - [ ] **22.9** [x] `koyomi rerun <run> --next <first job>`, then `--next <first job> --warn`, then `--next <last job>` and `--warn` alone → The first job does not run (no log) and is ⊘ スキップ (then ⚠ 警告) with the reason `次のジョブから再実行したため、スキップにしました` (`…警告終了にしました`); the run line reads `再実行（<run> を <first job> の次から）` and the jobs after it run; `--next <last job>` with nothing else to run is refused with `KOYOMI-E3206 実行 … には、ジョブ <job> の後に実行するジョブがありません。`; `--warn` alone is refused with `--warn goes with --next` 〔未訳〕
+- [ ] **22.10** In the window, fail a run and rerun it (再実行 ▾) twice; look at 今日, 履歴 and the status bar; then open the first run's page and the last one's → 今日 and 履歴 show one row for the chain, titled by its newest run with `（再実行 2 回）` after the title; the 履歴 chips, the summary and the CSV follow the rows shown; the failed count and the tray count skip a failure a later rerun took over; the first run's page links 「この回は <id> で再実行しました」 and the last one's links 「再実行の元の回 <id> を開く」; the gantt, `koyomi history` and the net page still list every run 〔未訳〕
 
 ## 23. Hold, skip, pause (`hold`, `release`, `skip`, `pause`, `resume`)
 
@@ -265,6 +266,7 @@
 - [ ] **23.14** [x] Hold a job `sub` that calls a child jobnet (`use`), then run the parent → The child's jobs do not start; `sub` stays 待ち (the 【子ジョブネット】sub row reads 待ち); inside the held `sub`, only `sub/x` shows ⏸ 保留 and `sub/y` reads ○ 待ち `sub/x の終了を待っています`; releasing `sub` runs the child and the parent goes on 〔未訳〕
 - [ ] **23.15** [x] Look at `held.toml` after 23.11; `koyomi engine stop` and `start`; an old `held.toml` with only `held = ["<group/name>"]` → It has `[[jobs]]` with `net = "<group/name>"` and `job = "b"`; the hold is still on after the restart; the old file still reads (the net is held, no jobs) 〔未訳〕
 - [ ] **23.16** Open an over run that ended ✔ with no job picked → The button row shows the small dim line 「ジョブを選ぶと、そのジョブから再実行します。」 after 比べる 〔未訳〕
+- [ ] **23.17** Run a net with a `kind = "time"` part (a time later today) and a `kind = "file"` part (a file that never comes); in the window right-click the waiting part on the run page → 「<名前> を待たずに進める」 is offered only for a running time or file part of a running run (greyed when asks are blocked); choosing it ends the part ⊘ スキップ and the jobs after it go on by their lines; an approval part is refused with `KOYOMI-E3207`, and `koyomi skip <run> <job>` does the same from the CLI 〔未訳〕
 
 ## 24. Calendar (`calendars/<name>.toml`, `calendar`, `business_day`, `on_closed`, `koyomi calendar`)
 
@@ -312,6 +314,7 @@
 - [ ] **25.17** [x] `koyomi show` / the approval box of a net with every kind of part → Each part is headed by its kind (`分岐 p`, `待ち合わせ j` …) with `線:` per line, `待ち方: 全部が終わってから`, `時刻: 06:00（1 日後）`, `待つファイル:`, `落ち着くまで:`, `使う定義: 共通/バックアップ`; a job's lines read `線: a (error)` 〔未訳〕
 - [x] **25.18** [x] `koyomi run` a net with 3 running jobs and `concurrency = 2`, one of them a `kind = "time"` part → The part waits without taking a slot: the two jobs run and the part is 実行中 at the same time 〔未訳〕
 - [ ] **25.19** `kind = "file"` with `file = 'a.txt'` (no folder); `koyomi check`; then `file = 'C:a.txt'`; then an absolute `file` → The two relative values are refused with `KOYOMI-E3342 file が絶対パスではありません。`; the absolute one reads; a run waiting on it says `<full path> を待っています` 〔未訳〕
+- [ ] **25.20** `kind = "file"` with `file = 'C:\in\{date}.txt'` in it; `koyomi check`; run it; then `file = '{date}.txt'` and a `{missing}` variable → The path is expanded like a command's (a run waiting on it says `<full path with today's date> を待っています`); a bad template is refused by `check`; a path that starts with `{…}` is still refused as not absolute; `[[when]] file` is unchanged 〔未訳〕
 
 ## 26. Starts by events (`[[when]] file = …` + `settle`, `on_start = true`)
 
@@ -1787,6 +1790,8 @@
 - [ ] **139.12** Right-click a running job of a running run on the picture and in the job table → The last item, after a separator, is 「<名前> を強制終了」; it is not there for a job that is not running or on a finished run; it works for a job inside a child net 〔未訳〕
 - [ ] **139.13** Choose 「<名前> を強制終了」 → A box asks first (the safe button is focused, so Enter kills nothing); 強制終了する ends a waiting job at once and asks a process job to stop; the jobs after it go on by their lines; the box closes by itself if the job ends meanwhile 〔未訳〕
 - [ ] **139.14** Choose 定義を見る on a job; then double-click a node of the picture and a row of the job table → The job is picked and the page scrolls to 「この回の定義（始まったときのもの）」; a single click only picks the job as before 〔未訳〕
+- [ ] **139.15** Right-click a running time or file wait of a running run on the picture and in the job table → 「<名前> を待たずに進める」 is there, before 「ログを見る」; it is not there for an approval, a process job, a job not running or a finished run 〔未訳〕
+- [ ] **139.16** Right-click a job with a reason and a command (picture and table); choose 「理由をコピー」 then 「コマンドをコピー」, and paste → The reason, then the command (the script, or the `run` words with the spaced ones in `"…"`) is pasted; the bar says 「コピーしました」; a far caller below Edit gets no 「コマンドをコピー」 〔未訳〕
 
 ## 140. Pick instead of typing (`ui/pick.rs`, `ui/canvas/drawer.rs`, `ui/whens.rs`, `ui/users.rs`)
 

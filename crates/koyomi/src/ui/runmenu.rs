@@ -120,6 +120,8 @@ pub enum Act {
     Definition,
     /// Kill the job (asked first, so not a `Send`).
     Kill,
+    /// Put the text on the clipboard.
+    Copy(String),
 }
 
 /// One entry of the menu.
@@ -149,6 +151,29 @@ pub struct Env {
     pub held: Vec<String>,
     /// The net is in the engine's list, so the editor can open it.
     pub net_there: bool,
+    /// The command text of each job (by id) whose command is known (see [`command_text`]); empty when the caller
+    /// may not see definitions (a far caller below Edit), so nothing is offered to copy.
+    pub commands: std::collections::BTreeMap<String, String>,
+}
+
+/// The command a process job runs, as one text to copy: the script when it has a `shell` and a `script`, else the
+/// `run` words joined by a space (a word that is empty or has a space or tab is wrapped in `"…"`, nothing else is escaped).
+/// `None` for another kind of part, and for a job with neither.
+pub fn command_text(j: &koyomi_core::jobnet::Job) -> Option<String> {
+    if !matches!(j.part, Part::Job | Part::Loop { .. }) {
+        return None;
+    }
+    if j.shell.is_some() {
+        if let Some(script) = j.script.as_ref().filter(|s| !s.is_empty()) {
+            return Some(script.clone());
+        }
+    }
+    if j.run.is_empty() {
+        return None;
+    }
+    let words: Vec<String> =
+        j.run.iter().map(|w| if w.is_empty() || w.contains([' ', '\t']) { format!("\"{w}\"") } else { w.clone() }).collect();
+    Some(words.join(" "))
 }
 
 /// The right-click menu of one job of one run: only what means something for them, worded with the job's name.
@@ -190,8 +215,19 @@ pub fn menu_items(t: &Table, run: &Run, job: &JobRun, env: &Env) -> Vec<Item> {
             out.push(Item::on(label, ask(Request::Answer { run: run.id.clone(), job: job.id.clone(), yes })));
         }
     }
+    if !run.is_over() && job.state == State::Running && matches!(job.part, Part::Time { .. } | Part::File { .. }) {
+        let mut item = Item::on(t.trf("run.skip_wait", &[name]), ask(Request::Skip { run: run.id.clone(), job: job.id.clone() }));
+        item.enabled = !env.blocked;
+        out.push(item);
+    }
     out.push(Item::on(t.tr("run.ask_log").to_owned(), Act::Pick));
     out.push(Item::on(t.tr("run.def_look").to_owned(), Act::Definition));
+    if !job.reason.trim().is_empty() {
+        out.push(Item::on(t.tr("run.copy_reason").to_owned(), Act::Copy(job.reason.clone())));
+    }
+    if let Some(command) = env.commands.get(&job.id) {
+        out.push(Item::on(t.tr("run.copy_command").to_owned(), Act::Copy(command.clone())));
+    }
     if env.net_there {
         out.push(Item::on(t.tr("run.menu_editor").to_owned(), Act::Editor));
     }
@@ -523,5 +559,91 @@ mod tests {
         let items = menu_items(&t, &r, r.job("dice").unwrap(), &Env { blocked: true, ..env() });
         assert!(items.iter().filter(|i| matches!(i.act, Act::Send(_))).all(|i| !i.enabled));
         assert!(items.iter().filter(|i| matches!(i.act, Act::Pick | Act::Definition | Act::Editor)).all(|i| i.enabled));
+    }
+
+    fn waiting_run(part: Part) -> Run {
+        let mut r = two_jobs();
+        set(&mut r, "dice", State::Running, false);
+        let i = r.jobs.iter().position(|j| j.id == "dice").unwrap();
+        r.jobs[i].part = part;
+        r
+    }
+
+    #[test]
+    fn a_time_or_file_wait_that_is_running_offers_to_go_on_without_it() {
+        let t = table();
+        for part in [
+            Part::Time { at: chrono::NaiveTime::from_hms_opt(0, 0, 0).unwrap(), days: 1 },
+            Part::File { file: "C:/in/x.csv".into(), settle: None },
+        ] {
+            let r = waiting_run(part);
+            let items = menu_items(&t, &r, r.job("dice").unwrap(), &env());
+            let item = items.iter().find(|i| i.label == "さいころ を待たずに進める").expect("the skip item");
+            assert!(item.enabled && matches!(&item.act, Act::Send(Request::Skip { run, job }) if run == "r" && job == "dice"));
+            let blocked = menu_items(&t, &r, r.job("dice").unwrap(), &Env { blocked: true, ..env() });
+            assert!(!blocked.iter().find(|i| i.label == "さいころ を待たずに進める").unwrap().enabled);
+            // A run that is over, or a job that is not running yet, has no such item.
+            let mut over = r.clone();
+            over.ended = Some(at(9, 2));
+            assert!(!menu_items(&t, &over, over.job("dice").unwrap(), &env()).iter().any(|i| i.label.contains("待たずに")));
+            assert!(!menu_items(&t, &r, r.job("next").unwrap(), &env()).iter().any(|i| i.label.contains("待たずに")));
+        }
+        // An approval and a process job are not skipped this way.
+        for part in [Part::Job, Part::Approval { message: None }] {
+            let r = waiting_run(part);
+            assert!(!menu_items(&t, &r, r.job("dice").unwrap(), &env()).iter().any(|i| i.label.contains("待たずに")));
+        }
+    }
+
+    #[test]
+    fn the_reason_and_the_command_are_offered_to_copy_only_when_there_is_one() {
+        let t = table();
+        let mut r = two_jobs();
+        set(&mut r, "dice", State::Error, true);
+        r.ended = Some(at(9, 2));
+        let none = menu_items(&t, &r, r.job("dice").unwrap(), &env());
+        assert!(!none.iter().any(|i| matches!(i.act, Act::Copy(_))));
+        let i = r.jobs.iter().position(|j| j.id == "dice").unwrap();
+        r.jobs[i].reason = "exit 1".into();
+        let mut e = env();
+        e.commands.insert("dice".into(), "tool --x".into());
+        let items = menu_items(&t, &r, r.job("dice").unwrap(), &e);
+        let copies: Vec<(&str, &str)> = items
+            .iter()
+            .filter_map(|i| match &i.act {
+                Act::Copy(text) => Some((i.label.as_str(), text.as_str())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(copies, [("理由をコピー", "exit 1"), ("コマンドをコピー", "tool --x")]);
+        // The command of another job is not offered here.
+        let other = menu_items(&t, &r, r.job("next").unwrap(), &e);
+        assert!(!other.iter().any(|i| i.label == "コマンドをコピー"));
+    }
+
+    #[test]
+    fn the_command_text_is_the_script_or_the_words_with_the_spaced_ones_quoted() {
+        let mut j = Job { run: vec!["tool".into(), "a b".into(), String::new(), "-x".into()], ..Default::default() };
+        assert_eq!(command_text(&j).as_deref(), Some("tool \"a b\" \"\" -x"));
+        j.shell = Some("sh".into());
+        assert_eq!(command_text(&j).as_deref(), Some("tool \"a b\" \"\" -x"), "a shell without a script keeps the words");
+        j.script = Some("echo hi\nexit 1".into());
+        assert_eq!(command_text(&j).as_deref(), Some("echo hi\nexit 1"));
+        assert_eq!(command_text(&Job::default()), None);
+        let wait = Job {
+            part: Part::Time { at: chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap(), days: 0 },
+            run: vec!["x".into()],
+            ..Default::default()
+        };
+        assert_eq!(command_text(&wait), None);
+    }
+
+    #[test]
+    fn the_previous_run_of_a_rerun_is_the_run_it_redoes() {
+        let mut a = run_of("a", "g/n", at(9, 0), Some(at(9, 5)));
+        a.state = State::Error;
+        let mut b = run_of("b", "g/n", at(10, 0), None);
+        b.rerun_of = Some("a".into());
+        assert_eq!(previous_run([&a, &b], &b).map(|r| r.id.as_str()), Some("a"));
     }
 }

@@ -817,12 +817,23 @@ impl Runner {
         self.queue = kept;
         gone
     }
-    /// A person skips `job` of `run` before it starts: it ends ⊘, and the jobs after it go on.
+    /// A person skips `job` of `run` before it starts (or, for a time or file wait that is going, while it waits):
+    /// it ends ⊘, and the jobs after it go on.
     pub fn skip(&mut self, run: &str, job: &str) -> Result<String, String> {
         let now = ito_common::now::now_local().naive_local();
         let r = self.runs.iter_mut().find(|r| r.id == run).ok_or_else(|| msg::line(msg::RUN_NOT_FOUND, &[run]))?;
         if r.is_over() {
             return Err(msg::line(msg::RUN_OVER, &[run]));
+        }
+        // A time or file wait that is going has no process: it ends here as ⊘ and the jobs after it go on.
+        // (An approval is answered with 承認 / 却下, and a running process is not skipped: `Run::skip` refuses it.)
+        if r.job(job).is_some_and(|j| j.state == State::Running && matches!(j.part, Part::Time { .. } | Part::File { .. })) {
+            self.waits.retain(|w| !(w.run == run && w.job == job));
+            if let Some(r) = self.end_part(run, job, State::Skipped, &koyomi_core::run::skipped_word(), None, now) {
+                self.ended(r);
+            }
+            self.start_ready();
+            return Ok(msg::note(msg::N_SKIP_DONE, &[run, job]));
         }
         r.skip(job, now)?;
         let r = r.clone();
@@ -4202,6 +4213,101 @@ id = \"b\"
         let run = r.run(&id).unwrap().clone();
         assert_eq!(run.job("c/w").unwrap().state, State::Killed);
         assert!(run.is_over());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_time_wait_is_skipped_by_hand_and_the_jobs_after_it_go_on() {
+        let dir = scratch("skipwait");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"w\"\nname = \"待ち\"\nkind = \"time\"\nat = \"00:00\"\ndays = 1\n[[job]]\nid = \"b\"\n{}\nafter = [\"w\"]\n",
+            echo("two")
+        );
+        let d = def("net", &text);
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&d, ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "w");
+        r.skip(&id, "w").unwrap();
+        let run = wait_over(&mut r, &id);
+        let w = run.job("w").unwrap();
+        assert_eq!(w.state, State::Skipped);
+        assert_eq!(w.reason, koyomi_core::run::skipped_word());
+        assert_eq!(run.job("b").unwrap().state, State::Ok);
+        assert!(!run.state.is_error());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_wait_skipped_by_hand_ends_as_skipped_and_the_run_goes_on() {
+        let dir = scratch("skipfile");
+        let pattern = dir.join("in").join("never.csv").display().to_string().replace('\\', "/");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"file\"\nfile = \"{pattern}\"\n[[job]]\nid = \"b\"\n{}\nafter = [\"w\"]\n",
+            echo("two")
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&def("net", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "w");
+        r.skip(&id, "w").unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.job("w").unwrap().state, State::Skipped);
+        assert_eq!(run.job("b").unwrap().state, State::Ok);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_approval_that_waits_is_not_skipped_by_hand() {
+        let dir = scratch("skipapproval");
+        let text = format!("format = 1\n[[job]]\nid = \"ok\"\nkind = \"approval\"\n[[job]]\nid = \"b\"\nafter = [\"ok\"]\n{}\n", echo("x"));
+        let mut r = Runner::new(&dir, Config::default());
+        let id = r.start(&def("net", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "ok");
+        assert!(koyomi_core::msg::RUN_SKIP_RUNNING.is_in(&r.skip(&id, "ok").unwrap_err()));
+        assert_eq!(r.run(&id).unwrap().job("ok").unwrap().state, State::Running);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_wait_inside_a_child_net_skipped_by_hand_lets_the_parent_go_on() {
+        let dir = scratch("skipchild");
+        let pattern = dir.join("in").join("never.csv").display().to_string().replace('\\', "/");
+        let child = koyomi_core::jobnet::parse(&format!(
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"file\"\nfile = \"{pattern}\"\n[[job]]\nid = \"z\"\n{}\nafter = [\"w\"]\n",
+            echo("in-child")
+        ))
+        .unwrap();
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"c\"\nkind = \"jobnet\"\nuse = \"g/child\"\n[[job]]\nid = \"b\"\n{}\nafter = [\"c\"]\n",
+            echo("after")
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));
+        let id = r.start(&def("net", &text), ito_common::now::now_local().date_naive(), How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "c/w");
+        r.skip(&id, "c/w").unwrap();
+        let run = wait_over(&mut r, &id);
+        assert_eq!(run.job("c/w").unwrap().state, State::Skipped);
+        assert_eq!(run.job("b").unwrap().state, State::Ok);
+        assert!(!run.state.is_error());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_file_waits_path_is_expanded_from_its_template() {
+        let dir = scratch("datedfile");
+        let inbox = dir.join("in").display().to_string().replace('\\', "/");
+        let text = format!(
+            "format = 1\n[[job]]\nid = \"w\"\nkind = \"file\"\nfile = \"{inbox}/{{date}}.txt\"\n[[job]]\nid = \"b\"\n{}\nafter = [\"w\"]\n",
+            echo("x")
+        );
+        let mut r = Runner::new(&dir, Config::default());
+        let day = ito_common::now::now_local().date_naive();
+        let id = r.start(&def("net", &text), day, How::Manual, None).unwrap();
+        wait_running(&mut r, &id, "w");
+        let reason = r.run(&id).unwrap().job("w").unwrap().reason.clone();
+        assert!(!reason.contains("{date}"), "{reason:?} should have the template expanded");
+        assert!(reason.contains(&day.format("%Y-%m-%d").to_string()), "{reason:?} should name the day");
+        r.kill(&id, Some("w")).unwrap();
         let _ = std::fs::remove_dir_all(&dir);
     }
 

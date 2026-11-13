@@ -7,7 +7,7 @@
 //! net 異常 and the jobs after it 未実行; a run keeps the definition it started
 //! with to the end.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use chrono::NaiveDateTime;
 use serde::{Deserialize, Serialize};
@@ -495,6 +495,10 @@ pub struct Run {
     /// The calendar the run went by; `None` for a run from before this was recorded.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub went_by: Option<WentBy>,
+    /// The run this one runs again (再実行, a takeover); `None` for a first run, and for a rerun recorded before this was kept
+    /// (then [`Run::redoes`] reads the id from the reason).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rerun_of: Option<String>,
 }
 
 fn default_priority() -> u8 {
@@ -575,7 +579,115 @@ fn downstream(jobs: &[Job], from: &str) -> Result<BTreeSet<String>, String> {
     }
 }
 
+/// The run id (`YYYYMMDD-HHMMSS-NN`, the counter two digits or more) `s` starts with, if it does and the id ends there.
+fn leading_run_id(s: &str) -> Option<&str> {
+    let b = s.as_bytes();
+    let digits = |from: usize| b.get(from..).map_or(0, |t| t.iter().take_while(|c| c.is_ascii_digit()).count());
+    if digits(0) != 8 || b.get(8) != Some(&b'-') || digits(9) != 6 || b.get(15) != Some(&b'-') {
+        return None;
+    }
+    let last = digits(16);
+    (last >= 2).then(|| &s[..16 + last])
+}
+
+/// The runs joined by [`Run::redoes`] (where both ends are in `runs`) as families, each as the indexes of its runs.
+fn families(runs: &[&Run]) -> Vec<Vec<usize>> {
+    fn find(root: &mut [usize], mut i: usize) -> usize {
+        while root[i] != i {
+            root[i] = root[root[i]];
+            i = root[i];
+        }
+        i
+    }
+    let mut root: Vec<usize> = (0..runs.len()).collect();
+    let mut index: HashMap<&str, usize> = HashMap::new();
+    for (i, r) in runs.iter().enumerate() {
+        index.entry(r.id.as_str()).or_insert(i);
+    }
+    for (i, r) in runs.iter().enumerate() {
+        let Some(prev) = r.redoes() else { continue };
+        if let Some(&j) = index.get(prev) {
+            let (a, b) = (find(&mut root, i), find(&mut root, j));
+            root[a] = b;
+        }
+    }
+    let mut by: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for i in 0..runs.len() {
+        let r = find(&mut root, i);
+        by.entry(r).or_default().push(i);
+    }
+    by.into_values().collect()
+}
+
+/// The newest of a family: the latest `started`, the greater id on a tie.
+fn newest(runs: &[&Run], family: &[usize]) -> usize {
+    *family.iter().max_by(|&&a, &&b| (runs[a].started, &runs[a].id).cmp(&(runs[b].started, &runs[b].id))).expect("a family has a run")
+}
+
+/// The chains of reruns among `runs` (joined by [`Run::redoes`], both ends in `runs`).
+pub struct Chains {
+    /// Every run of a chain of two or more that is not its newest: a list shows one row per chain without these.
+    pub superseded: BTreeSet<String>,
+    /// For every run of a chain of two or more, how many other runs the chain has (its size minus one).
+    pub before: BTreeMap<String, usize>,
+}
+
+/// The chains among `runs`, in one pass.
+pub fn chains<'a>(runs: impl IntoIterator<Item = &'a Run>) -> Chains {
+    let runs: Vec<&Run> = runs.into_iter().collect();
+    let mut out = Chains { superseded: BTreeSet::new(), before: BTreeMap::new() };
+    for f in families(&runs).iter().filter(|f| f.len() > 1) {
+        let keep = newest(&runs, f);
+        out.superseded.extend(f.iter().filter(|&&i| i != keep).map(|&i| runs[i].id.clone()));
+        for &i in f {
+            out.before.insert(runs[i].id.clone(), f.len() - 1);
+        }
+    }
+    out
+}
+
+/// The ids of the runs another run has run again, the newest of each chain left out (see [`Chains::superseded`]).
+pub fn superseded<'a>(runs: impl IntoIterator<Item = &'a Run>) -> BTreeSet<String> {
+    chains(runs).superseded
+}
+
+/// The part of each legacy rerun reason before the run id, for every language and shape.
+fn legacy_prefixes() -> &'static [String] {
+    static PREFIXES: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+    PREFIXES.get_or_init(|| {
+        const MARK: &str = "\u{1}";
+        let mut out = Vec::new();
+        for lang in ["ja", "en"] {
+            for n in [msg::N_RUN_RERUN, msg::N_RUN_RERUN_FROM, msg::N_RUN_RERUN_AFTER] {
+                let shape = msg::note_in(lang, n, &[MARK]);
+                if let Some(at) = shape.find(MARK) {
+                    out.push(shape[..at].to_owned());
+                }
+            }
+        }
+        out
+    })
+}
+
 impl Run {
+    /// The id of the run this one runs again: [`Run::rerun_of`], or for a rerun recorded before that was kept, the id its
+    /// reason names (`再実行（<id>）`). A takeover or a left-over run names no run here.
+    pub fn redoes(&self) -> Option<&str> {
+        if let Some(of) = self.rerun_of.as_deref() {
+            return (of != self.id).then_some(of);
+        }
+        if self.how != How::Rerun {
+            return None;
+        }
+        for prefix in legacy_prefixes() {
+            let Some(rest) = self.reason.strip_prefix(prefix.as_str()) else { continue };
+            if let Some(id) = leading_run_id(rest) {
+                return (id != self.id).then_some(id);
+            }
+        }
+        None
+    }
+
     /// A run that has not started a job yet: every job is 未実行 or 実行待ち.
     pub fn new(id: &str, jobnet: &str, title: &str, date: &str, how: How, net: &Jobnet, now: NaiveDateTime) -> Run {
         let jobs = net.jobs.iter().map(JobRun::from_job).collect();
@@ -603,6 +715,7 @@ impl Run {
             params: BTreeMap::new(),
             delays: Vec::new(),
             went_by: None,
+            rerun_of: None,
         };
         run.settle(now);
         run
@@ -643,6 +756,7 @@ impl Run {
             params: BTreeMap::new(),
             delays: Vec::new(),
             went_by: None,
+            rerun_of: None,
         }
     }
 
@@ -735,6 +849,7 @@ impl Run {
             jobs.push(jr);
         }
         let mut run = Run::with_jobs(id, &previous.jobnet, &previous.title, &previous.date, How::Rerun, jobs, now);
+        run.rerun_of = Some(previous.id.clone());
         run.reason = match from {
             Some(f) => msg::note(msg::N_RUN_RERUN_FROM, &[&previous.id, f]),
             None => msg::note(msg::N_RUN_RERUN, &[&previous.id]),
@@ -797,6 +912,8 @@ impl Run {
         run.reason = msg::note(msg::N_RUN_LEFT_OVER, &[from, &theirs.id, why]);
         run.lock = None;
         run.delays.clear();
+        // A record of `theirs`, not a run of anything again: it keeps no link from `theirs` (which may be a rerun).
+        run.rerun_of = None;
         run
     }
 
@@ -2417,5 +2534,144 @@ command = \"uptime\"
         let back: Run = toml::from_str(&old).unwrap();
         assert_eq!(back.job("s").unwrap().host, None);
         assert_eq!(back.job("f").unwrap().bucket, None);
+    }
+}
+
+#[cfg(test)]
+mod redo_tests {
+    use super::*;
+
+    fn at(s: &str) -> NaiveDateTime {
+        NaiveDateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S").unwrap()
+    }
+
+    fn net() -> Jobnet {
+        let job = |id: &str, after: &[&str]| Job {
+            id: id.into(),
+            run: vec!["x".into()],
+            after: after.iter().map(|s| Line::ok(s)).collect(),
+            ..Default::default()
+        };
+        Jobnet { jobs: vec![job("a", &[]), job("b", &["a"])], ..Default::default() }
+    }
+
+    /// A run over with `a` failed, started at `when`.
+    fn failed(id: &str, when: &str) -> Run {
+        let mut r = Run::new(id, "g/n", "n", "2026-10-30", How::Manual, &net(), at(when));
+        r.start("a", at(when));
+        r.finish("a", Outcome::Exited(1), at(when));
+        r
+    }
+
+    /// A bare rerun of `of` that started at `when`, as the field and the reason would say.
+    fn again(id: &str, of: &str, when: &str) -> Run {
+        let mut r = Run::new(id, "g/n", "n", "2026-10-30", How::Rerun, &net(), at(when));
+        r.rerun_of = Some(of.into());
+        r
+    }
+
+    /// A rerun recorded before `rerun_of` was kept: the reason alone.
+    fn legacy(id: &str, reason: &str) -> Run {
+        let mut r = Run::new(id, "g/n", "n", "2026-10-30", How::Rerun, &net(), at("2026-10-30 10:00:00"));
+        r.reason = reason.to_owned();
+        r
+    }
+
+    const A: &str = "20261030-090000-01";
+    const B: &str = "20261030-100000-01";
+    const C: &str = "20261030-110000-01";
+
+    #[test]
+    fn a_rerun_a_rerun_after_and_a_takeover_say_which_run_they_redo() {
+        let prev = failed(A, "2026-10-30 09:00:00");
+        let now = at("2026-10-30 10:00:00");
+        assert_eq!(Run::rerun(B, &prev, &net(), None, now).unwrap().rerun_of.as_deref(), Some(A));
+        let after = Run::rerun_after(B, &prev, &net(), "a", State::Skipped, now).unwrap();
+        assert_eq!(after.rerun_of.as_deref(), Some(A));
+        let taken = Run::taken_over(B, &prev, &net(), "primary", now).unwrap();
+        assert_eq!(taken.rerun_of.as_deref(), Some(A));
+        assert_eq!(prev.rerun_of, None);
+    }
+
+    #[test]
+    fn redoes_reads_the_field_and_falls_back_to_the_reason() {
+        assert_eq!(again(B, A, "2026-10-30 10:00:00").redoes(), Some(A));
+        let own = again(B, B, "2026-10-30 10:00:00");
+        assert_eq!(own.redoes(), None, "a run is not a rerun of itself");
+        for reason in [
+            format!("再実行（{A}）"),
+            format!("再実行（{A} を j から）"),
+            format!("再実行（{A} を j の次から）"),
+            format!("Rerun ({A})"),
+            format!("Rerun ({A} from j)"),
+            format!("Rerun ({A} from after j)"),
+        ] {
+            assert_eq!(legacy(B, &reason).redoes(), Some(A), "{reason}");
+        }
+        let long = "20261030-090000-100";
+        assert_eq!(legacy(B, &format!("再実行（{long}）")).redoes(), Some(long));
+    }
+
+    #[test]
+    fn redoes_reads_nothing_from_other_reasons() {
+        let mut manual = legacy(B, &format!("再実行（{A}）"));
+        manual.how = How::Manual;
+        assert_eq!(manual.redoes(), None, "only a rerun");
+        // A takeover names the primary first, even a name that looks like an id.
+        let theirs = failed(A, "2026-10-30 09:00:00");
+        let taken = Run::taken_over(B, &theirs, &net(), "primary", at("2026-10-30 10:00:00")).unwrap();
+        let mut old = taken.clone();
+        old.rerun_of = None;
+        assert_eq!(old.redoes(), None);
+        old.reason = msg::note(msg::N_RUN_TAKEN_OVER, &[C, A]);
+        assert_eq!(old.redoes(), None);
+        // A left-over of a run that was itself a rerun keeps no link either.
+        let theirs_again = again(C, A, "2026-10-30 11:00:00");
+        let left_again = Run::left_over(B, &theirs_again, "primary", "why", at("2026-10-30 12:00:00"));
+        assert_eq!((left_again.rerun_of.as_deref(), left_again.redoes()), (None, None));
+        let left = Run::left_over(B, &theirs, "primary", "why", at("2026-10-30 10:00:00"));
+        let mut left = Run { rerun_of: None, how: How::Rerun, ..left };
+        assert_eq!(left.redoes(), None);
+        left.reason = msg::note(msg::N_RUN_LEFT_OVER, &["p", A, "x"]);
+        assert_eq!(left.redoes(), None);
+        assert_eq!(legacy(B, &format!("再実行（{B}）")).redoes(), None, "its own id");
+        assert_eq!(legacy(B, "再実行（200261030-090000-01）").redoes(), None, "nine digits");
+        assert_eq!(legacy(B, "再実行（20261030-090000-1）").redoes(), None, "one digit counter");
+        assert_eq!(legacy(B, "再実行（").redoes(), None);
+        assert_eq!(legacy(B, "再実行（日本語の名前）").redoes(), None);
+    }
+
+    fn ids(set: BTreeSet<String>) -> Vec<String> {
+        set.into_iter().collect()
+    }
+
+    #[test]
+    fn a_chain_keeps_its_newest_run_only() {
+        let (a, b, c) = (failed(A, "2026-10-30 09:00:00"), again(B, A, "2026-10-30 10:00:00"), again(C, B, "2026-10-30 11:00:00"));
+        assert_eq!(ids(superseded([&a, &b, &c])), [A, B]);
+        let ch = chains([&a, &b, &c]);
+        assert_eq!(ch.before[C], 2);
+        assert_eq!(ch.before[A], 2, "the family size, whichever run is asked");
+        // A run rerun twice: one family.
+        let c2 = again(C, A, "2026-10-30 11:00:00");
+        assert_eq!(ids(superseded([&a, &b, &c2])), [A, B]);
+        assert_eq!(chains([&a, &b, &c2]).before[C], 2);
+    }
+
+    #[test]
+    fn a_rerun_of_a_run_that_is_not_in_the_list_hides_nothing() {
+        let b = again(B, A, "2026-10-30 10:00:00");
+        assert!(superseded([&b]).is_empty());
+        assert!(chains([&b]).before.is_empty(), "a run alone is absent");
+        let lone = failed(C, "2026-10-30 11:00:00");
+        assert!(superseded([&b, &lone]).is_empty());
+    }
+
+    #[test]
+    fn a_cycle_still_keeps_one_run() {
+        let mut a = failed(A, "2026-10-30 09:00:00");
+        a.rerun_of = Some(B.into());
+        let b = again(B, A, "2026-10-30 10:00:00");
+        assert_eq!(ids(superseded([&a, &b])), [A]);
     }
 }

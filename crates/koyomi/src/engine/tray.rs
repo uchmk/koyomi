@@ -154,7 +154,7 @@ pub fn menu(t: &ito_i18n::Table, look: &Look, apart: bool) -> Vec<Item> {
 }
 
 /// The look of today's runs: every run that ended 異常 and is not marked 対応済み (`acked`, the run ids
-/// in `acked.toml`) counts as one 異常, the same count as the window's 未対応; what is still going
+/// in `acked.toml`) and was not run again counts as one 異常, the same count as the window's 未対応; what is still going
 /// counts as running.
 pub fn look(t: &ito_i18n::Table, runs: &[Run], acked: &BTreeSet<String>, paused: bool, busy: usize, next: Option<NaiveDateTime>) -> Look {
     let mut last: BTreeMap<&str, &Run> = BTreeMap::new();
@@ -165,8 +165,11 @@ pub fn look(t: &ito_i18n::Table, runs: &[Run], acked: &BTreeSet<String>, paused:
             *e = r;
         }
     }
-    let errors = runs.iter().filter(|r| r.is_over() && r.state.is_error() && !acked.contains(&r.id)).count();
-    let mut failed: Vec<&Run> = runs.iter().filter(|r| r.is_over() && r.state.is_error() && !acked.contains(&r.id)).collect();
+    // A failure that a rerun took over is not one left to handle.
+    let gone = koyomi_core::run::superseded(runs);
+    let unhandled = |r: &&Run| r.is_over() && r.state.is_error() && !acked.contains(&r.id) && !gone.contains(&r.id);
+    let errors = runs.iter().filter(unhandled).count();
+    let mut failed: Vec<&Run> = runs.iter().filter(unhandled).collect();
     failed.sort_by_key(|a| std::cmp::Reverse(a.started));
     let fails: Vec<(String, String)> =
         failed.iter().take(LISTED).map(|r| (r.id.clone(), format!("✕ {} {}", r.title, r.started.format("%H:%M")))).collect();
@@ -373,6 +376,21 @@ mod tests {
 
     fn ja() -> ito_i18n::Table {
         crate::i18n::table("ja").0
+    }
+
+    /// A failure a rerun took over is no longer one to handle: neither the count nor the menu's entries show it.
+    #[test]
+    fn a_failure_that_a_rerun_took_over_is_not_counted() {
+        let t = ja();
+        let first = run("a/x", at(8, 0), RunState::Error);
+        let mut again = run("a/x", at(8, 10), RunState::Error);
+        again.rerun_of = Some(first.id.clone());
+        let l = look(&t, &[first.clone(), again.clone()], &BTreeSet::new(), false, 0, None);
+        assert_eq!((l.errors, l.fails.len()), (1, 1));
+        assert_eq!(l.fails[0].0, again.id);
+        again.state = RunState::Ok;
+        let l = look(&t, &[first, again], &BTreeSet::new(), false, 0, None);
+        assert_eq!((l.state, l.errors, l.fails.len()), (State::Done, 0, 0));
     }
 
     /// the tray counts every failed run of today not marked 対応済み, as the window does; marking clears it.

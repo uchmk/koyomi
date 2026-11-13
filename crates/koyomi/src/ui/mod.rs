@@ -644,10 +644,15 @@ impl History {
         Request::History { from: self.from.clone(), to: self.to.clone() }
     }
 
-    /// The rows that match the net and the state, newest first.
+    /// The rows that match the net and the state, newest first; a run that was run again is left out
+    /// (its rerun is the row).
     fn filtered(&self) -> Vec<&Run> {
-        let mut rows: Vec<&Run> =
-            self.rows.iter().filter(|r| (self.net.is_empty() || r.jobnet == self.net) && self.state.is_none_or(|s| r.state == s)).collect();
+        let gone = koyomi_core::run::superseded(&self.rows);
+        let mut rows: Vec<&Run> = self
+            .rows
+            .iter()
+            .filter(|r| (self.net.is_empty() || r.jobnet == self.net) && self.state.is_none_or(|s| r.state == s) && !gone.contains(&r.id))
+            .collect();
         rows.sort_by_key(|r| std::cmp::Reverse(r.started));
         rows
     }
@@ -3449,9 +3454,12 @@ impl Browser {
                 keys: (Some(*at), None, None, usual.map(|a| a.num_milliseconds()), next.map(stamp)),
             });
         }
-        let mut runs: Vec<&Run> = self.runs.iter().collect();
+        // One row per chain of reruns: the newest run, with how many it redid.
+        let chains = koyomi_core::run::chains(&self.runs);
+        let mut runs: Vec<&Run> = self.runs.iter().filter(|r| !chains.superseded.contains(&r.id)).collect();
         runs.sort_by_key(|r| std::cmp::Reverse(r.started));
         for run in runs {
+            let title = rerun_title(t, run, chains.before.get(&run.id).copied().unwrap_or(0));
             let ended = run.ended.map(show::hms).unwrap_or_default();
             let usual = average(&run.jobnet).map(|a| t.trf("today.average", &[&show::duration(t, a)]));
             let took = match (run.duration(), &usual) {
@@ -3459,14 +3467,14 @@ impl Browser {
                 (None, Some(u)) => format!("{}… {u}", show::duration(t, now - run.started)),
                 (None, None) => format!("{}…", show::duration(t, now - run.started)),
             };
-            let said = [show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended.clone(), took.clone()];
+            let said = [show::tag(t, run.state).to_owned(), title.clone(), show::hms(run.started), ended.clone(), took.clone()];
             let said: Vec<&str> = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect();
             let next = next_at(&run.jobnet, now);
             let cells = [run.planned.map(show::hms).unwrap_or_default(), show::hms(run.started), ended, took, next_words(next)];
             let took = run.duration().unwrap_or(now - run.started).num_milliseconds();
             rows.push(TodayRow {
                 state: run.state,
-                title: run.title.clone(),
+                title,
                 said: said.join(" "),
                 cells,
                 run: Some(run.id.clone()),
@@ -3717,7 +3725,12 @@ impl Browser {
             return;
         }
         self.forget_back();
-        let newest = self.runs.iter().filter(|r| r.state.is_error() && !self.acked.contains(&r.id)).max_by_key(|r| r.started);
+        let gone = koyomi_core::run::superseded(&self.runs);
+        let newest = self
+            .runs
+            .iter()
+            .filter(|r| r.state.is_error() && !self.acked.contains(&r.id) && !gone.contains(&r.id))
+            .max_by_key(|r| r.started);
         match newest.map(|r| r.id.clone()) {
             Some(id) => self.open_run(&id),
             None => self.open_gantt(),
@@ -4392,7 +4405,9 @@ impl Browser {
             let look = ito_prefs::Look { c, q: "" };
             let mut state = h.state;
             {
-                let of_net: Vec<&Run> = h.rows.iter().filter(|r| h.net.is_empty() || r.jobnet == h.net).collect();
+                let gone = koyomi_core::run::superseded(&h.rows);
+                let of_net: Vec<&Run> =
+                    h.rows.iter().filter(|r| (h.net.is_empty() || r.jobnet == h.net) && !gone.contains(&r.id)).collect();
                 ui.horizontal_wrapped(|ui| {
                     ui.spacing_mut().item_spacing = egui::vec2(6.0, 4.0);
                     let text = t.trf("run.history_count", &[&of_net.len().to_string()]);
@@ -4453,6 +4468,8 @@ impl Browser {
                     rows.reverse();
                 }
             }
+            let chains = koyomi_core::run::chains(&h.rows);
+            let titles: Vec<String> = rows.iter().map(|r| rerun_title(t, r, chains.before.get(&r.id).copied().unwrap_or(0))).collect();
             let rows: Vec<Run> = rows.into_iter().cloned().collect();
             ui.add_space(6.0);
             let mut pick = None;
@@ -4480,18 +4497,18 @@ impl Browser {
                 egui::ScrollArea::both().id_salt("history_rows").auto_shrink(false).show(ui, |ui| {
                     let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
                     sorted = table.head(ui, &heads, sort, t.tr("today.sort"));
-                    for run in &rows {
+                    for (run, title) in rows.iter().zip(&titles) {
                         let ended = run.ended.map(show::hms).unwrap_or_default();
                         let took = run.duration().map(|d| show::duration(t, d)).unwrap_or_default();
                         let on = self.run_sel.as_deref() == Some(run.id.as_str());
                         let date = run.started.date().to_string();
                         let word = show::tag(t, run.state);
                         let cells = [date.clone(), show::hms(run.started), ended.clone(), took.clone()];
-                        let r = table.row(ui, run.state, &word, &run.title, &cells, on, true).on_hover_text(t.tr("today.open_hint"));
+                        let r = table.row(ui, run.state, &word, title, &cells, on, true).on_hover_text(t.tr("today.open_hint"));
                         if on && reveal {
                             reveal_row(ui, &r);
                         }
-                        let said = [date, show::tag(t, run.state).to_owned(), run.title.clone(), show::hms(run.started), ended, took];
+                        let said = [date, show::tag(t, run.state).to_owned(), title.clone(), show::hms(run.started), ended, took];
                         let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
                         ito_a11y::say(&r, Role::Row, &said);
                         if r.double_clicked() {
@@ -4860,7 +4877,28 @@ impl Browser {
             again: self.net_now(run).can_rerun(),
             held: snap.map(|s| s.held_jobs.iter().filter(|h| h.net == run.jobnet).map(|h| h.job.clone()).collect()).unwrap_or_default(),
             net_there: snap.is_some_and(|s| s.defs.iter().any(|d| d.id == run.jobnet && d.net.is_some())),
+            commands: self.job_commands(run),
         }
+    }
+
+    /// The command text of each job of `run` that has one: from the run itself, else from the definition copy of the
+    /// run when it is loaded (a run rebuilt from history carries no command). Nothing for a caller below Edit.
+    fn job_commands(&self, run: &Run) -> BTreeMap<String, String> {
+        if self.below_edit() {
+            return BTreeMap::new();
+        }
+        let copy = match self.run_defs.get(&run.id) {
+            Some(runfacts::DefCopy::Got(Ok(net))) => Some(net),
+            _ => None,
+        };
+        run.jobs
+            .iter()
+            .filter_map(|j| {
+                let text = runmenu::command_text(&j.as_job())
+                    .or_else(|| copy.and_then(|n| n.jobs.iter().find(|d| d.id == j.id)).and_then(runmenu::command_text))?;
+                Some((j.id.clone(), text))
+            })
+            .collect()
     }
 
     /// Does what a menu item chosen on `run` asked for. The ids are the ones the menu was opened on.
@@ -4884,6 +4922,12 @@ impl Browser {
                     // The safe button first: Enter on a fresh box does not kill.
                     self.focus = 1;
                 }
+            }
+            runmenu::Act::Copy(text) => {
+                self.done = Some(match ito_clipboard::clipboard!().set_text(&text) {
+                    Ok(()) => Ok(("run.copied", Vec::new())),
+                    Err(e) => Err(("run.copy_failed", vec![e.to_string()])),
+                });
             }
             runmenu::Act::Editor => {
                 self.open_editor(&run.jobnet);
@@ -5689,6 +5733,14 @@ impl TodayKind {
             kinds.push(Self::Unhandled);
         }
         kinds
+    }
+}
+
+/// The net's title for the one row of a chain of reruns: with how many runs it redid (`before`), when it redid any.
+fn rerun_title(t: &ito_i18n::Table, run: &Run, before: usize) -> String {
+    match before {
+        0 => run.title.clone(),
+        n => format!("{}  {}", run.title, t.trf("today.reruns", &[&n.to_string()])),
     }
 }
 
@@ -7359,6 +7411,32 @@ run = [\"x.exe\"]
         let watched = b.watch.lock().unwrap().clone();
         assert_eq!(watched, Some(("20261030-090000-01".into(), "b".into())), "the running job's log is the one fetched");
         assert!(b.killing.is_none());
+    }
+
+    /// The command to copy comes from the run's own job, else from its definition copy; a caller below Edit on
+    /// another PC gets none.
+    #[test]
+    fn the_command_to_copy_comes_from_the_run_or_its_definition_copy() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::How;
+        let now = ito_common::now::now_local().naive_local();
+        let job = |id: &str, run: &[&str]| Job { id: id.into(), run: run.iter().map(|s| (*s).to_owned()).collect(), ..Default::default() };
+        let net = Jobnet { jobs: vec![job("a", &["tool", "x y"]), job("b", &["later"])], ..Default::default() };
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        // A run rebuilt from history carries no command for `b`.
+        run.jobs.iter_mut().find(|j| j.id == "b").unwrap().run.clear();
+        let mut b = quiet(defs());
+        let got = b.job_commands(&run);
+        assert_eq!(got.get("a").map(String::as_str), Some("tool \"x y\""));
+        assert!(!got.contains_key("b"));
+        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(net))));
+        let got = b.job_commands(&run);
+        assert_eq!(got.get("b").map(String::as_str), Some("later"));
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Run);
+        assert!(b.job_commands(&run).is_empty(), "below Edit on another PC: nothing to copy");
+        b.role = Some(koyomi_core::role::Role::Edit);
+        assert!(!b.job_commands(&run).is_empty());
     }
 
     /// An over run has one 再実行 ▾ menu: from where it stopped, from the picked job, or from the
@@ -9538,5 +9616,38 @@ note = \"n\"
         b.past_asked = None;
         b.ask_past();
         assert!(asked.try_recv().is_err(), "the 30 days are the engine's: not asked before its date is known");
+    }
+
+    /// The today rows are built inside an egui method, so this tests the pieces it uses: `chains` and `rerun_title`.
+    #[test]
+    fn a_failed_run_and_its_rerun_are_one_today_row_with_the_count_in_the_title() {
+        let t = crate::i18n::table("ja").0;
+        let at = |h| chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap().and_hms_opt(h, 0, 0).unwrap();
+        let first = Run::new(
+            "20261030-090000-01",
+            "試験/bom",
+            "bom",
+            "2026-10-30",
+            koyomi_core::run::How::Manual,
+            &koyomi_core::jobnet::Jobnet::default(),
+            at(9),
+        );
+        let mut again = Run::new(
+            "20261030-100000-02",
+            "試験/bom",
+            "bom",
+            "2026-10-30",
+            koyomi_core::run::How::Rerun,
+            &koyomi_core::jobnet::Jobnet::default(),
+            at(10),
+        );
+        again.rerun_of = Some(first.id.clone());
+        let runs = vec![first.clone(), again.clone()];
+        let chains = koyomi_core::run::chains(&runs);
+        let shown: Vec<&Run> = runs.iter().filter(|r| !chains.superseded.contains(&r.id)).collect();
+        assert_eq!(shown.len(), 1, "one row for the chain");
+        assert_eq!(shown[0].id, again.id, "the newest run's");
+        let title = rerun_title(&t, shown[0], chains.before.get(&shown[0].id).copied().unwrap_or(0));
+        assert!(title.ends_with("（再実行 1 回）"), "{title}");
     }
 }

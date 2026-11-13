@@ -30,6 +30,9 @@ pub enum Event {
         /// The calendar the run went by; absent in a day written before this was recorded.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         went_by: Option<WentBy>,
+        /// The run this one runs again; absent for a first run and in a day written before this was recorded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        rerun_of: Option<String>,
         jobs: Vec<JobBrief>,
     },
     JobStart {
@@ -159,6 +162,7 @@ pub fn run_start(run: &Run) -> Event {
         how: run.how,
         planned: run.planned,
         went_by: run.went_by.clone(),
+        rerun_of: run.rerun_of.clone(),
         jobs: run
             .jobs
             .iter()
@@ -199,7 +203,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
     let mut runs: Vec<Run> = Vec::new();
     for ev in events {
         match ev {
-            Event::RunStart { at, run, jobnet, title, date, how, planned, went_by, jobs } => {
+            Event::RunStart { at, run, jobnet, title, date, how, planned, went_by, rerun_of, jobs } => {
                 let jobs = jobs
                     .iter()
                     .map(|b| JobRun {
@@ -234,6 +238,7 @@ pub fn replay(events: &[Event]) -> Vec<Run> {
                 let mut r = Run::with_jobs(run, jobnet, title, date, *how, jobs, *at);
                 r.planned = *planned;
                 r.went_by = went_by.clone();
+                r.rerun_of = rerun_of.clone();
                 runs.retain(|x| x.id != r.id);
                 runs.push(r);
             }
@@ -380,6 +385,28 @@ mod tests {
         let bare = old.replace("jobs = []\n", "[[event.jobs]]\nid = \"ok\"\npart = { kind = \"approval\" }\n");
         let runs = Day::parse(&bare).unwrap().runs();
         assert_eq!(runs[0].jobs[0].part, Part::Approval { message: None });
+    }
+
+    #[test]
+    fn the_run_a_rerun_redoes_comes_back_and_an_old_event_reads_as_none() {
+        let mut r = Run::new("r2", "g/n", "n", "2026-10-30", How::Rerun, &net(), at("2026-10-30 09:00:00"));
+        r.rerun_of = Some("r1".into());
+        let text = Day { events: vec![run_start(&r)] }.to_toml();
+        assert!(text.contains("rerun_of = \"r1\""), "{text}");
+        assert_eq!(Day::parse(&text).unwrap().runs()[0].rerun_of.as_deref(), Some("r1"));
+        let first = Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net(), at("2026-10-30 09:00:00"));
+        assert!(!Day { events: vec![run_start(&first)] }.to_toml().contains("rerun_of"));
+        let old = "[[event]]
+kind = \"run_start\"
+at = \"2026-10-30T09:00:00\"
+run = \"r\"
+jobnet = \"g/n\"
+title = \"n\"
+date = \"2026-10-30\"
+how = \"rerun\"
+jobs = []
+";
+        assert_eq!(Day::parse(old).unwrap().runs()[0].rerun_of, None);
     }
 
     #[test]

@@ -1225,7 +1225,13 @@ impl Checker<'_> {
             }
             "file" => {
                 let file = match &j.file {
-                    Some(_) => self.file_pattern(&j.file),
+                    Some(f) => self.file_pattern(&j.file).filter(|text| match self.template(text) {
+                        Ok(()) => true,
+                        Err(e) => {
+                            self.add(f.span().start, msg::line(msg::DEF_TEMPLATE_BAD, &["file", msg::uncoded(&e)]));
+                            false
+                        }
+                    }),
                     None => {
                         self.add(start, msg::line(msg::DEF_JOB_KEY_REQUIRED, &["file", "file", "file = 'C:\\in\\*.csv'"]));
                         None
@@ -3310,6 +3316,25 @@ after = ["extract"]
             let p = problems(&format!("format = 1\n{bad}{job}"));
             assert!(p.len() == 1 && want.is_in(&p[0]), "{bad}: {p:?}");
         }
+    }
+
+    #[test]
+    fn a_file_waits_path_takes_templates_and_a_bad_one_is_refused() {
+        let job = |file: &str| {
+            format!(
+                "format = 1\n[[job]]\nid = \"w\"\nkind = \"file\"\nfile = '{file}'\n[[job]]\nid = \"b\"\nrun = [\"x\"]\nafter = [\"w\"]\n"
+            )
+        };
+        let p = problems(&job(r"C:\in\{date:%Y%m%d}.csv"));
+        assert!(p.is_empty(), "{p:?}");
+        assert!(problems(&job(r"C:\in\{var:in}.csv")).is_empty());
+        for bad in [r"C:\in\{date-1x}.csv", r"C:\in\{param:x}.csv", r"C:\in\{date:%Q}.csv", r"C:\in\{var:}.csv"] {
+            let p = problems(&job(bad));
+            assert!(p.len() == 1 && msg::DEF_TEMPLATE_BAD.is_in(&p[0]) && p[0].contains("file"), "{bad}: {p:?}");
+        }
+        // Still absolute as written: a path that starts with a template is refused.
+        let p = problems(&job(r"{var:in}\a.txt"));
+        assert!(p.len() == 1 && msg::DEF_PATH_NOT_ABSOLUTE.is_in(&p[0]), "{p:?}");
     }
 
     #[test]

@@ -130,9 +130,11 @@ impl Line for Remote {
     }
 }
 
-/// The ids of the runs that ended abnormally (today's failures, when `runs` are today's).
+/// The ids of the runs that ended abnormally (today's failures, when `runs` are today's), without the ones a rerun
+/// took over (a failure that was run again is not one nobody has handled).
 pub fn failed_ids(runs: &[Run]) -> impl Iterator<Item = &str> {
-    runs.iter().filter(|r| r.state.is_error()).map(|r| r.id.as_str())
+    let gone = koyomi_core::run::superseded(runs);
+    runs.iter().filter(move |r| r.state.is_error() && !gone.contains(&r.id)).map(|r| r.id.as_str())
 }
 
 /// What one round found: what to tell the UI and how long to wait before the next.
@@ -728,6 +730,25 @@ mod tests {
         assert_eq!(fact_of(&w.round(t0 + WATCH_EVERY * 2, false)).unacked, Some(1));
         // On this PC the browser counts: nothing here.
         assert_eq!(fact_of(&w.round(t0 + WATCH_EVERY * 3, true)).unacked, None);
+    }
+
+    /// A run of `g/n` with `state`, started at `min` minutes past 2:00, and the run it redoes.
+    fn chain_run(id: &str, min: u32, state: koyomi_core::run::State, of: Option<&str>) -> Run {
+        let at = chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap().and_hms_opt(2, min, 0).unwrap();
+        let mut r = Run::new(id, "g/n", "n", "2026-10-30", koyomi_core::run::How::Rerun, &Default::default(), at);
+        r.state = state;
+        r.rerun_of = of.map(str::to_owned);
+        r
+    }
+
+    #[test]
+    fn a_failure_that_a_rerun_took_over_is_not_a_failed_id() {
+        use koyomi_core::run::State;
+        let a = chain_run("a", 0, State::Error, None);
+        let ok = vec![a.clone(), chain_run("b", 5, State::Ok, Some("a"))];
+        assert_eq!(failed_ids(&ok).count(), 0);
+        let bad = vec![a, chain_run("b", 5, State::Error, Some("a"))];
+        assert_eq!(failed_ids(&bad).collect::<Vec<_>>(), ["b"]);
     }
 
     #[test]

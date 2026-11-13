@@ -288,7 +288,7 @@ impl Browser {
     }
 
     /// The caller is known to be below Edit on another PC: the engine would refuse the copy.
-    fn below_edit(&self) -> bool {
+    pub(super) fn below_edit(&self) -> bool {
         self.link.is_far() && self.role.is_some_and(|r| !r.allows(koyomi_core::role::Role::Edit))
     }
 
@@ -319,10 +319,23 @@ impl Browser {
         let c = ito_theme::colors();
         let calendar = calendar_words(t, run.went_by.as_ref());
         let chip = acked_chip(t, &self.acked, run);
-        if calendar.is_none() && chip.is_none() {
+        // The run this one runs again, and the newest run that ran this one again, when the window knows them.
+        let before = run.redoes().filter(|p| self.find_run(p).is_some()).map(str::to_owned);
+        let after =
+            self.known_runs().filter(|r| r.redoes() == Some(run.id.as_str())).max_by_key(|r| (r.started, &r.id)).map(|r| r.id.clone());
+        if calendar.is_none() && chip.is_none() && before.is_none() && after.is_none() {
             return;
         }
         ui.horizontal_wrapped(|ui| {
+            for (id, key) in [(&before, "run.open_redone"), (&after, "run.redone_by")] {
+                let Some(id) = id else { continue };
+                let words = t.trf(key, &[id]);
+                let r = ui.link(&words);
+                ito_a11y::say(&r, Role::Button, &words);
+                if r.clicked() {
+                    self.open_run(id);
+                }
+            }
             if let Some(words) = &calendar {
                 match &run.went_by {
                     Some(WentBy::Calendar(name)) => {
