@@ -2989,6 +2989,18 @@ text = "The definition copy of this run is gone. ({0})"
 cause = "The run's folder was removed after the kept days, or the copy was deleted."
 action = "Check the net's definition as it stands now."
 
+[E3359]
+when = "The commands copy of a run that never began is asked for"
+text = "This run never began, so it has no commands copy."
+cause = "A run that did not begin keeps no copy of the commands."
+action = "Check the net's definition as it stands now."
+
+[E3360]
+when = "The commands copy of a run that began is no longer there"
+text = "The commands copy of this run is gone. ({0})"
+cause = "The run began before this version, or its folder was removed after the kept days, or the copy was deleted."
+action = "Check the net's definition as it stands now."
+
 [E3291]
 when = "A file cannot be renamed"
 text = "{0} cannot be renamed. ({1})"

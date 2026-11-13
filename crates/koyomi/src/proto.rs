@@ -18,7 +18,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 55;
+pub const PROTO: u32 = 56;
 
 /// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
 /// `Display`. On the wire it is the plain string.
@@ -99,6 +99,15 @@ pub enum Request {
     /// reference). The reply is that text. Refused for a run that never began and for one whose
     /// copy is gone.
     RunDefinition {
+        run: String,
+    },
+    /// The text of `commands.toml`: the commands of `run`'s jobs as the engine expanded them when it
+    /// began (child-net jobs included). The reply is that text. Refused for a run that never began and
+    /// for one without the file. It needs Edit, as the definition copy does; unlike that copy it holds
+    /// the values the run filled in (`{var:..}` from koyomi.toml, `{param}` given by hand; never a
+    /// secret). The Edit gate covers the copy kept on disk only: a live run's `JobRun`s carry the same
+    /// text in `Runs` (View) while the run is kept.
+    RunCommands {
         run: String,
     },
     /// Stop one job of a run, or the whole run.
@@ -743,6 +752,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::Shift { .. } => Some(Role::Run),
         Request::List
         | Request::RunDefinition { .. }
+        | Request::RunCommands { .. }
         | Request::Show { .. }
         | Request::Versions { .. }
         | Request::VersionText { .. }
@@ -821,6 +831,7 @@ pub fn is_read(r: &Request) -> bool {
         | Request::Handover { release: false }
         | Request::List
         | Request::RunDefinition { .. }
+        | Request::RunCommands { .. }
         | Request::Show { .. }
         | Request::Versions { .. }
         | Request::VersionText { .. }
@@ -1463,6 +1474,7 @@ c"
             (Request::Shift { id: id(), from: "2026-11-01 09:00".into(), to: None }, Some(Run)),
             (Request::List, Some(Edit)),
             (Request::RunDefinition { run: "r".into() }, Some(Edit)),
+            (Request::RunCommands { run: "r".into() }, Some(Edit)),
             (Request::Show { id: id() }, Some(Edit)),
             (Request::Versions { id: id() }, Some(Edit)),
             (Request::VersionText { id: id(), version: "current".into() }, Some(Edit)),
@@ -1522,6 +1534,7 @@ c"
             Request::Handover { release: false },
             Request::List,
             Request::RunDefinition { run: "r".into() },
+            Request::RunCommands { run: "r".into() },
             Request::Show { id: id() },
             Request::Versions { id: id() },
             Request::VersionText { id: id(), version: "v".into() },

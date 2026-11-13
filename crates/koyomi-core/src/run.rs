@@ -254,6 +254,67 @@ pub struct JobRun {
     pub moved: Vec<Moved>,
 }
 
+/// The commands of a run's jobs as the engine expanded them when the run began (`commands.toml` beside its logs):
+/// every job and loop with a command, those inside child nets too. A run rebuilt from history keeps none, so the
+/// window reads this back to copy a command.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct Commands {
+    #[serde(default)]
+    pub jobs: Vec<JobCommand>,
+}
+
+/// One job's command inside [`Commands`].
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct JobCommand {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub run: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shell: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub script: Option<String>,
+}
+
+impl Commands {
+    /// The jobs and loops of `run` that have a command (`run`, or a non-empty `script`), in the run's job order.
+    pub fn of(run: &Run) -> Commands {
+        let jobs = run
+            .jobs
+            .iter()
+            .filter(|j| matches!(j.part, Part::Job | Part::Loop { .. }))
+            .filter(|j| !j.run.is_empty() || j.script.as_deref().is_some_and(|s| !s.is_empty()))
+            .map(|j| JobCommand { id: j.id.clone(), run: j.run.clone(), shell: j.shell.clone(), script: j.script.clone() })
+            .collect();
+        Commands { jobs }
+    }
+
+    /// The text of `commands.toml`.
+    pub fn to_text(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    /// Reads `commands.toml` back; why not, in the parser's words.
+    pub fn parse(text: &str) -> Result<Commands, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// The command of the job `id` (a child net's job by its full id, `c/w`).
+    pub fn get(&self, id: &str) -> Option<&JobCommand> {
+        self.jobs.iter().find(|j| j.id == id)
+    }
+}
+
+impl JobCommand {
+    /// Puts the command into `job` when `job` has none; a job that has one is left as it is.
+    pub fn fill(&self, job: &mut Job) {
+        if job.run.is_empty() && !job.script.as_deref().is_some_and(|s| !s.is_empty()) {
+            job.run = self.run.clone();
+            job.shell = self.shell.clone();
+            job.script = self.script.clone();
+        }
+    }
+}
+
 /// A file a `send` or `fetch` moved, as its run keeps it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Moved {
@@ -1578,6 +1639,51 @@ mod tests {
     fn net_of(jobs: Vec<Job>) -> Run {
         let net = Jobnet { jobs, ..Default::default() };
         Run::new("r1", "g/n", "n", "2026-10-30", How::Manual, &net, at("2026-10-30 09:00:00"))
+    }
+
+    #[test]
+    fn commands_keep_the_jobs_and_loops_that_have_one_and_round_trip() {
+        let mut sh = part("c/s", Part::Job, &[]);
+        sh.shell = Some("sh".into());
+        sh.script = Some("echo hi".into());
+        let mut lp = job("l", &[]);
+        lp.part = Part::Loop { file: None, count: Some(2), max: None };
+        let r = net_of(vec![
+            job("a", &[]),
+            job("c/w", &[]),
+            sh,
+            lp,
+            part("wait", Part::Approval { message: None }, &[]),
+            part("c", Part::Jobnet { use_: "g/c".into() }, &[]),
+            part("empty", Part::Job, &[]),
+        ]);
+        let c = Commands::of(&r);
+        let ids: Vec<&str> = c.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["a", "c/w", "c/s", "l"]);
+        let s = c.get("c/s").unwrap();
+        assert_eq!((s.shell.as_deref(), s.script.as_deref(), s.run.is_empty()), (Some("sh"), Some("echo hi"), true));
+        assert_eq!(Commands::parse(&c.to_text()).unwrap(), c);
+        assert_eq!(Commands::parse(&Commands::default().to_text()).unwrap(), Commands::default());
+        assert!(Commands::parse("jobs = 3").is_err());
+    }
+
+    #[test]
+    fn a_job_command_fills_an_empty_job_and_leaves_one_that_has_a_command() {
+        let c = JobCommand { id: "a".into(), run: vec!["x".into(), "1".into()], shell: None, script: None };
+        let mut empty = part("a", Part::Job, &[]);
+        c.fill(&mut empty);
+        assert_eq!(empty.run, ["x", "1"]);
+        let mut has = job("a", &[]);
+        c.fill(&mut has);
+        assert_eq!(has.run, ["x"]);
+        let sc = JobCommand { id: "a".into(), run: vec![], shell: Some("sh".into()), script: Some("ls".into()) };
+        let mut e2 = part("a", Part::Job, &[]);
+        sc.fill(&mut e2);
+        assert_eq!((e2.shell.as_deref(), e2.script.as_deref()), (Some("sh"), Some("ls")));
+        let mut s2 = part("a", Part::Job, &[]);
+        s2.script = Some("pwd".into());
+        sc.fill(&mut s2);
+        assert_eq!(s2.script.as_deref(), Some("pwd"));
     }
 
     #[test]

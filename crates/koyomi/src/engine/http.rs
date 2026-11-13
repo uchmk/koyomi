@@ -637,8 +637,8 @@ fn narrow(
             let within = access.nets.as_ref().map(|n| n.patterns().join(&msg::note(msg::N_HTTP_NETS_JOIN, &[]))).unwrap_or_default();
             return Err(line(msg::OUTSIDE_NETS, &[who, id, &within]));
         }
-        // A definition copy is definition text: Edit on the run's net, whatever route asked.
-        Request::RunDefinition { run } => match run_net(run, ask) {
+        // A definition or commands copy is definition text: Edit on the run's net, whatever route asked.
+        Request::RunDefinition { run } | Request::RunCommands { run } => match run_net(run, ask) {
             Some(net) if sees(&net) => {
                 let has = access.role_on(&net);
                 if !has.allows(Role::Edit) {
@@ -1446,6 +1446,29 @@ mod tests {
         assert_eq!(snap.mails, ["ops-mail"]);
         assert_eq!((snap.databases.len(), snap.databases[0].name.as_str(), snap.databases[0].kind.as_str()), (1, "main", "sqlite"));
         assert_eq!(snap.windows, Some(true));
+    }
+
+    /// A run's commands copy goes the way the definition copy does: Edit on the run's net, an unseen net's run is not there.
+    #[test]
+    fn a_run_commands_copy_needs_edit_on_the_runs_net() {
+        let ask = |r: &Request| match r {
+            Request::Runs => Ok(runs_of(&[("20261031-090000-01", "経理/a"), ("20261031-090000-02", "人事/b")])),
+            Request::History { .. } => Ok(runs_of(&[])),
+            _ => Ok("copy".to_owned()),
+        };
+        let one = Request::RunCommands { run: "20261031-090000-01".into() };
+        let other = Request::RunCommands { run: "20261031-090000-02".into() };
+        let nets = |role| Access { role, nets: Some(Nets::parse(&["経理/*".to_owned()]).unwrap()), roles: Vec::new() };
+        assert_eq!(narrow(&one, "sato", &nets(Role::Edit), Role::Edit, &ask), Ok(Ok("copy".to_owned())));
+        let outside = narrow(&other, "sato", &nets(Role::Edit), Role::Edit, &ask).unwrap().unwrap_err();
+        assert!(msg::RUN_NOT_FOUND.is_in(&outside), "{outside}");
+        for low in [Role::View, Role::Run] {
+            let e = narrow(&one, "sato", &nets(low), Role::Edit, &ask).unwrap_err();
+            assert!(msg::ROLE_TOO_LOW_ON_NET.is_in(&e), "{e}");
+        }
+        // Over the door: Edit and no less.
+        let need = proto::door_needs(&one).unwrap();
+        assert!(need == Role::Edit && !Role::View.allows(need) && !Role::Run.allows(need));
     }
 
     /// A run's definition copy is definition text: the door lets it through to Edit only, and a narrowed

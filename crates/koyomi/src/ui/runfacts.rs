@@ -35,6 +35,22 @@ impl DefCopy {
     }
 }
 
+/// What the window knows of a run's `commands.toml`.
+#[derive(Clone, Debug)]
+pub enum CmdCopy {
+    /// Asked for; the reply is not here yet.
+    Asked,
+    /// The reply: the commands, or why there are none (the engine's refusal, or a parse failure).
+    Got(Result<koyomi_core::run::Commands, String>),
+}
+
+impl CmdCopy {
+    /// The engine's reply to `RunCommands`, parsed with `Commands::parse`.
+    pub fn of(reply: Result<String, String>) -> CmdCopy {
+        CmdCopy::Got(reply.and_then(|text| koyomi_core::run::Commands::parse(&text)))
+    }
+}
+
 /// The run's net as it is today.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NetNow {
@@ -95,7 +111,7 @@ pub enum View {
 }
 
 /// Picks what to show for `job_id` of `run`.
-pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&DefCopy>) -> View {
+pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&DefCopy>, cmds: Option<&CmdCopy>) -> View {
     if run.never_began() {
         return View::NeverBegan;
     }
@@ -111,7 +127,13 @@ pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&
             };
             // The net it is directly in; else the outermost one.
             let use_ = use_of(parent).or_else(|| job_id.split_once('/').and_then(|(top, _)| use_of(top)));
-            return View::Child { use_: use_.unwrap_or_default(), rows: rows(t, &j.as_job()) };
+            let mut job = j.as_job();
+            if let Some(CmdCopy::Got(Ok(c))) = cmds {
+                if let Some(jc) = c.get(job_id) {
+                    jc.fill(&mut job);
+                }
+            }
+            return View::Child { use_: use_.unwrap_or_default(), rows: rows(t, &job) };
         }
     }
     let net = match copy {
@@ -304,6 +326,26 @@ impl Browser {
         }
     }
 
+    /// Asks for the run's commands copy, once per run; nothing when every job of the run already has its command.
+    pub(super) fn ask_commands(&mut self, run: &Run) {
+        if run.never_began() || self.below_edit() || self.run_cmds.contains_key(&run.id) {
+            return;
+        }
+        let lacks = run
+            .jobs
+            .iter()
+            .filter(|j| matches!(j.part, Part::Job | Part::Loop { .. }))
+            .any(|j| super::runmenu::command_text(&j.as_job()).is_none());
+        if !lacks {
+            return;
+        }
+        self.run_cmds.insert(run.id.clone(), CmdCopy::Asked);
+        if !self.send(Request::RunCommands { run: run.id.clone() }) {
+            let why = self.unsent_why();
+            self.run_cmds.insert(run.id.clone(), CmdCopy::Got(Err(why)));
+        }
+    }
+
     /// The explanation of a run that never began.
     pub(super) fn never_began_block(&self, ui: &mut egui::Ui, t: &Table, run: &Run) {
         let c = ito_theme::colors();
@@ -404,7 +446,7 @@ impl Browser {
     pub(super) fn definition_section(&mut self, ui: &mut egui::Ui, t: &Table, run: &Run, job_id: &str) {
         let c = ito_theme::colors();
         self.ask_definition(run);
-        let shown = view(t, run, job_id, self.below_edit(), self.run_defs.get(&run.id));
+        let shown = view(t, run, job_id, self.below_edit(), self.run_defs.get(&run.id), self.run_cmds.get(&run.id));
         ui.add_space(8.0);
         let head = t.tr("run.def_head");
         let r = ui.label(egui::RichText::new(head).strong());
@@ -558,15 +600,15 @@ use = \"試験/子\"
         let t = table();
         let run = ran();
         let copy = net_of(COPY);
-        let View::Shown(rows) = view(&t, &run, "a", false, Some(&copy)) else { panic!("a is in the copy") };
+        let View::Shown(rows) = view(&t, &run, "a", false, Some(&copy), None) else { panic!("a is in the copy") };
         let get = |l: &str| rows.iter().find(|r| r.label == l).unwrap_or_else(|| panic!("{l}: {rows:?}"));
         assert_eq!(get("実行").value, "x.exe");
         assert_eq!(get("作業フォルダー").folder.as_deref(), Some("C:\\work"));
         assert!(rows.iter().any(|r| r.label.starts_with("環境変数 DB_PASS") && r.value == "secret:db"), "{rows:?}");
         assert!(rows.iter().any(|r| r.value == "毎日"), "the note: {rows:?}");
-        let View::Shown(shell) = view(&t, &run, "s", false, Some(&copy)) else { panic!() };
+        let View::Shown(shell) = view(&t, &run, "s", false, Some(&copy), None) else { panic!() };
         assert!(shell.iter().any(|r| r.value == "powershell") && shell.iter().any(|r| r.value == "Get-Date"), "{shell:?}");
-        let View::Shown(ok) = view(&t, &run, "ok", false, Some(&copy)) else { panic!() };
+        let View::Shown(ok) = view(&t, &run, "ok", false, Some(&copy), None) else { panic!() };
         assert!(ok.iter().any(|r| r.label == "判断の材料" && r.value == "本番に反映してよいか"), "{ok:?}");
     }
 
@@ -575,13 +617,13 @@ use = \"試験/子\"
         let t = table();
         let run = ran();
         let copy = net_of(COPY);
-        assert_eq!(view(&t, &run, "kid/x", false, Some(&copy)), View::Missing);
-        assert_eq!(view(&t, &run, "gone", false, Some(&copy)), View::Missing);
-        assert_eq!(view(&t, &run, "a", false, None), View::Loading);
-        assert_eq!(view(&t, &run, "a", true, Some(&copy)), View::NeedsEdit);
+        assert_eq!(view(&t, &run, "kid/x", false, Some(&copy), None), View::Missing);
+        assert_eq!(view(&t, &run, "gone", false, Some(&copy), None), View::Missing);
+        assert_eq!(view(&t, &run, "a", false, None, None), View::Loading);
+        assert_eq!(view(&t, &run, "a", true, Some(&copy), None), View::NeedsEdit);
         let refused = DefCopy::of(Err("E3290 gone".into()));
-        assert_eq!(view(&t, &run, "a", false, Some(&refused)), View::Refused("E3290 gone".into()));
-        assert_eq!(view(&t, &never(State::Missed, ""), "a", false, Some(&copy)), View::NeverBegan);
+        assert_eq!(view(&t, &run, "a", false, Some(&refused), None), View::Refused("E3290 gone".into()));
+        assert_eq!(view(&t, &never(State::Missed, ""), "a", false, Some(&copy), None), View::NeverBegan);
     }
 
     #[test]
@@ -595,12 +637,34 @@ use = \"試験/子\"
             run.jobs.push(koyomi_core::run::JobRun::from_job(&j));
         }
         // No definition copy is needed.
-        let View::Child { use_, rows } = view(&t, &run, "net1/net1/file1", false, None) else { panic!("a child job") };
+        let View::Child { use_, rows } = view(&t, &run, "net1/net1/file1", false, None, None) else { panic!("a child job") };
         assert_eq!(use_, "a/ab", "the net it is directly in, not the outer child");
         assert!(rows.iter().any(|r| r.value.contains("a.txt")), "{rows:?}");
-        let View::Child { use_, .. } = view(&t, &run, "net1/net1", false, None) else { panic!() };
+        let View::Child { use_, .. } = view(&t, &run, "net1/net1", false, None, None) else { panic!() };
         assert_eq!(use_, "a/ab-2");
-        assert_eq!(view(&t, &never(State::Missed, ""), "net1/net1", false, None), View::NeverBegan);
+        assert_eq!(view(&t, &never(State::Missed, ""), "net1/net1", false, None, None), View::NeverBegan);
+    }
+
+    #[test]
+    fn a_child_job_without_a_command_gets_it_from_the_commands_copy() {
+        use koyomi_core::run::{Commands, JobCommand};
+        let t = table();
+        let station = Job { part: Part::Jobnet { use_: "a/ab".into() }, ..job("c", &[]) };
+        let net = Jobnet { jobs: vec![station], ..Default::default() };
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, at());
+        let bare = Job { id: "c/x".into(), part: Part::Job, ..Default::default() };
+        run.jobs.push(koyomi_core::run::JobRun::from_job(&bare));
+        let exe = |v: View| match v {
+            View::Child { rows, .. } => rows.into_iter().find(|r| r.label == "実行").map(|r| r.value),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(exe(view(&t, &run, "c/x", false, None, None)), Some(String::new()), "no command without the copy");
+        let copy = CmdCopy::Got(Ok(Commands {
+            jobs: vec![JobCommand { id: "c/x".into(), run: vec!["tool.exe".into(), "20261030".into()], shell: None, script: None }],
+        }));
+        assert_eq!(exe(view(&t, &run, "c/x", false, None, Some(&copy))), Some("tool.exe".into()));
+        let bad = CmdCopy::of(Ok("jobs = 3".into()));
+        assert!(matches!(bad, CmdCopy::Got(Err(_))));
     }
 
     #[test]

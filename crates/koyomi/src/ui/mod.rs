@@ -758,6 +758,8 @@ pub struct Browser {
     def_scroll: bool,
     /// What the window knows of each run's definition copy (asked once per run).
     run_defs: BTreeMap<String, runfacts::DefCopy>,
+    /// What the window knows of each run's commands copy (`commands.toml`; asked once per run).
+    run_cmds: BTreeMap<String, runfacts::CmdCopy>,
     /// The job whose log is shown, when one was picked by hand.
     job_sel: Option<String>,
     /// What the log search box holds (a regular expression, smart case).
@@ -953,6 +955,7 @@ impl Browser {
             log_scroll: false,
             def_scroll: false,
             run_defs: BTreeMap::new(),
+            run_cmds: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
             log: None,
@@ -1449,6 +1452,7 @@ impl Browser {
                     if self.down.take().is_some() {
                         // The link is back: a definition copy that could not be read meanwhile is asked again.
                         self.run_defs.retain(|_, d| !matches!(d, runfacts::DefCopy::Got(Err(_))));
+                        self.run_cmds.retain(|_, d| !matches!(d, runfacts::CmdCopy::Got(Err(_))));
                     }
                     for n in &s.notes {
                         if self.seen_notes.insert(n.clone()) {
@@ -1667,6 +1671,10 @@ impl Browser {
                 Msg::Answer(Request::RunDefinition { run }, r) => {
                     // The copy is read by the run page; it says nothing in the result line.
                     self.run_defs.insert(run, runfacts::DefCopy::of(r));
+                }
+                Msg::Answer(Request::RunCommands { run }, r) => {
+                    // The copy is read by the run page and the job menu; it says nothing in the result line.
+                    self.run_cmds.insert(run, runfacts::CmdCopy::of(r));
                 }
                 Msg::Answer(req, r) => {
                     // A start that went through opens the run, and the page is the answer: no line says its id.
@@ -4603,6 +4611,7 @@ impl Browser {
             ui.label(t.tr("run.none"));
             return;
         };
+        self.ask_commands(&run);
         let watched = Self::watched_job(&run, self.job_sel.as_deref());
         *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
         let watched = watched.as_deref();
@@ -4881,8 +4890,9 @@ impl Browser {
         }
     }
 
-    /// The command text of each job of `run` that has one: from the run itself, else from the definition copy of the
-    /// run when it is loaded (a run rebuilt from history carries no command). Nothing for a caller below Edit.
+    /// The command text of each job of `run` that has one: from the run itself, else from the commands copy (as the
+    /// engine expanded it), else from the definition copy of the run when it is loaded (a run rebuilt from history
+    /// carries no command). Nothing for a caller below Edit.
     fn job_commands(&self, run: &Run) -> BTreeMap<String, String> {
         if self.below_edit() {
             return BTreeMap::new();
@@ -4891,10 +4901,20 @@ impl Browser {
             Some(runfacts::DefCopy::Got(Ok(net))) => Some(net),
             _ => None,
         };
+        let cmds = match self.run_cmds.get(&run.id) {
+            Some(runfacts::CmdCopy::Got(Ok(c))) => Some(c),
+            _ => None,
+        };
         run.jobs
             .iter()
             .filter_map(|j| {
-                let text = runmenu::command_text(&j.as_job())
+                let own = j.as_job();
+                let text = runmenu::command_text(&own)
+                    .or_else(|| {
+                        let mut filled = own.clone();
+                        cmds?.get(&j.id)?.fill(&mut filled);
+                        runmenu::command_text(&filled)
+                    })
                     .or_else(|| copy.and_then(|n| n.jobs.iter().find(|d| d.id == j.id)).and_then(runmenu::command_text))?;
                 Some((j.id.clone(), text))
             })
@@ -6568,6 +6588,7 @@ mod tests {
             log_scroll: false,
             def_scroll: false,
             run_defs: BTreeMap::new(),
+            run_cmds: BTreeMap::new(),
             job_sel: None,
             log_find: String::new(),
             log: None,
@@ -7437,6 +7458,79 @@ run = [\"x.exe\"]
         assert!(b.job_commands(&run).is_empty(), "below Edit on another PC: nothing to copy");
         b.role = Some(koyomi_core::role::Role::Edit);
         assert!(!b.job_commands(&run).is_empty());
+    }
+
+    /// A history-like run (empty `JobRun`s) copies the commands copy's text, expanded, for a child job and a parent
+    /// job; a copy that could not be read leaves the definition copy's raw text.
+    #[test]
+    fn the_command_to_copy_prefers_the_commands_copy() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{Commands, How, JobCommand};
+        let now = ito_common::now::now_local().naive_local();
+        let job = |id: &str, run: &[&str]| Job { id: id.into(), run: run.iter().map(|s| (*s).to_owned()).collect(), ..Default::default() };
+        let net = Jobnet { jobs: vec![job("p", &["tool", "{date}"])], ..Default::default() };
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+        run.jobs.push(koyomi_core::run::JobRun::from_job(&job("c/w", &[])));
+        run.jobs.iter_mut().for_each(|j| j.run.clear());
+        let mut b = quiet(defs());
+        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(net))));
+        assert_eq!(b.job_commands(&run).get("p").map(String::as_str), Some("tool {date}"), "the raw definition text");
+        let cmd = |id: &str, run: &[&str]| JobCommand {
+            id: id.into(),
+            run: run.iter().map(|s| (*s).to_owned()).collect(),
+            shell: None,
+            script: None,
+        };
+        let c = Commands { jobs: vec![cmd("p", &["tool", "20261030"]), cmd("c/w", &["child", "20261030"])] };
+        b.run_cmds.insert(run.id.clone(), runfacts::CmdCopy::Got(Ok(c)));
+        let got = b.job_commands(&run);
+        assert_eq!(got.get("p").map(String::as_str), Some("tool 20261030"));
+        assert_eq!(got.get("c/w").map(String::as_str), Some("child 20261030"));
+        b.run_cmds.insert(run.id.clone(), runfacts::CmdCopy::Got(Err("E3360".into())));
+        let got = b.job_commands(&run);
+        assert_eq!(got.get("p").map(String::as_str), Some("tool {date}"));
+        assert!(!got.contains_key("c/w"));
+    }
+
+    /// The commands copy is asked once for a run without commands, not for a run whose jobs all have one, a run that
+    /// never began, or a caller below Edit on another PC; the answer is stored without a result line.
+    #[test]
+    fn the_commands_copy_is_asked_once_and_stored_by_the_answer() {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        use koyomi_core::run::{Commands, How};
+        let now = ito_common::now::now_local().naive_local();
+        let job = |id: &str, run: &[&str]| Job { id: id.into(), run: run.iter().map(|s| (*s).to_owned()).collect(), ..Default::default() };
+        let net = Jobnet { jobs: vec![job("a", &["x"])], ..Default::default() };
+        let history_like = |id: &str| {
+            let mut r = Run::new(id, "試験/bom", "bom", "2026-10-30", How::Manual, &net, now);
+            r.jobs.iter_mut().for_each(|j| j.run.clear());
+            r
+        };
+        let (tx, rx_req) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        let first = history_like("20261030-090000-01");
+        b.ask_commands(&first);
+        assert!(matches!(rx_req.try_recv(), Ok(Request::RunCommands { run }) if run == "20261030-090000-01"));
+        b.ask_commands(&first);
+        assert!(rx_req.try_recv().is_err(), "once per run");
+        b.result = Some(Ok("before".into()));
+        let text = Commands::default().to_text();
+        b.io.0.send(Msg::Answer(Request::RunCommands { run: first.id.clone() }, Ok(text))).unwrap();
+        b.drain();
+        assert_eq!(b.result, Some(Ok("before".into())), "no result line");
+        assert!(matches!(b.run_cmds.get(&first.id), Some(runfacts::CmdCopy::Got(Ok(c))) if c.jobs.is_empty()));
+        b.ask_commands(&first);
+        assert!(rx_req.try_recv().is_err(), "an empty copy is not asked again");
+        // A live run has every command; a run that never began has none to ask for.
+        b.ask_commands(&Run::new("20261030-090000-02", "試験/bom", "bom", "2026-10-30", How::Manual, &net, now));
+        b.ask_commands(&never_run("20261030-090000-03", State::Skipped));
+        assert!(rx_req.try_recv().is_err());
+        // Below Edit on another PC: the engine would refuse it.
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Run);
+        b.ask_commands(&history_like("20261030-090000-04"));
+        assert!(rx_req.try_recv().is_err());
     }
 
     /// An over run has one 再実行 ▾ menu: from where it stopped, from the picked job, or from the

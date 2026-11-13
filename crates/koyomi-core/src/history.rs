@@ -97,7 +97,8 @@ impl Event {
     }
 }
 
-/// A job as the run started: enough to draw it back (the command is in the run's `definition.toml`).
+/// A job as the run started: enough to draw it back (the expanded commands are in the run's `commands.toml`,
+/// for a run from this version on, and the definition in its `definition.toml`).
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct JobBrief {
     pub id: String,

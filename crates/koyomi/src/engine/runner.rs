@@ -71,6 +71,8 @@ struct Done {
 
 /// The `[params]` values a run by hand was given, beside its `definition.toml`.
 const PARAMS: &str = "params.toml";
+/// The commands the run's jobs run, as expanded when it began, beside its `definition.toml`.
+const COMMANDS: &str = "commands.toml";
 /// Nobody asked the job to stop yet.
 const WHY_NONE: u8 = 0;
 /// A person (or the run's kill) asked: 強制終了.
@@ -644,9 +646,10 @@ impl Runner {
         let now = ito_common::now::now_local().naive_local();
         let id = self.new_id(now);
         let run = Run::left_over(&id, theirs, from, why, now);
+        let dir = self.run_dir(&id);
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join(COMMANDS), koyomi_core::run::Commands::of(&run).to_text());
         if let Some(d) = def {
-            let dir = self.run_dir(&id);
-            let _ = std::fs::create_dir_all(&dir);
             let _ = std::fs::write(dir.join("definition.toml"), &d.text);
             if let Some(kept) = Some(&run.params).filter(|p| !p.is_empty()).and_then(|p| toml::to_string(p).ok()) {
                 let _ = std::fs::write(dir.join(PARAMS), kept);
@@ -670,6 +673,17 @@ impl Runner {
         }
         let path = self.run_dir(run).join("definition.toml");
         std::fs::read_to_string(&path).map_err(|_| msg::line(msg::RUN_DEFINITION_GONE, &[&path.display().to_string()]))
+    }
+
+    /// The text of the commands copy `run` was started with (`commands.toml` beside its logs). A run
+    /// that never began has none; a run from before this file, or one that lost it, has none either.
+    pub fn run_commands(&self, run: &str) -> Result<String, String> {
+        let prev = self.previous(run)?;
+        if prev.never_began() {
+            return Err(msg::line(msg::RUN_COMMANDS_NEVER_BEGAN, &[]));
+        }
+        let path = self.run_dir(run).join(COMMANDS);
+        std::fs::read_to_string(&path).map_err(|_| msg::line(msg::RUN_COMMANDS_GONE, &[&path.display().to_string()]))
     }
 
     /// The run `id`: one kept here, or one read back from the history of the day in its id.
@@ -711,6 +725,9 @@ impl Runner {
         std::fs::create_dir_all(&dir).map_err(|e| msg::line(msg::DIR_CREATE_FAILED, &[&shown(&dir), &msg::io_words(&e)]))?;
         let def_path = dir.join("definition.toml");
         std::fs::write(&def_path, text).map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&def_path), &msg::io_words(&e)]))?;
+        let cmds_path = dir.join(COMMANDS);
+        std::fs::write(&cmds_path, koyomi_core::run::Commands::of(&run).to_text())
+            .map_err(|e| msg::line(msg::FILE_WRITE_FAILED, &[&shown(&cmds_path), &msg::io_words(&e)]))?;
         if !run.params.is_empty() {
             let params_path = dir.join(PARAMS);
             let kept =
@@ -4187,6 +4204,50 @@ id = \"b\"
         assert_eq!(r.log_tail(&id, "c/x").unwrap().trim(), "in-child");
         let (a, x, b) = (run.job("a").unwrap(), run.job("c/x").unwrap(), run.job("b").unwrap());
         assert!(a.ended.unwrap() <= x.started.unwrap() && x.ended.unwrap() <= b.started.unwrap());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_run_writes_the_expanded_commands_of_its_jobs_child_nets_included() {
+        use koyomi_core::run::Commands;
+        let dir = scratch("commands-copy");
+        let child = koyomi_core::jobnet::parse(
+            "format = 1
+[[job]]
+id = \"x\"
+run = [\"koyomi-no-such-program\", \"{date:%Y%m%d}\"]
+[[job]]
+id = \"w\"
+kind = \"approval\"
+after = [\"x\"]
+[[job]]
+id = \"z\"
+run = [\"koyomi-no-such-program\"]
+after = [\"w\"]
+",
+        )
+        .unwrap();
+        let text = "format = 1
+[[job]]
+id = \"c\"
+kind = \"jobnet\"
+use = \"g/child\"
+[[job]]
+id = \"b\"
+run = [\"koyomi-no-such-program\", \"{date:%m-%d}\"]
+after = [\"c\"]
+";
+        let d = def("net", text);
+        let mut r = Runner::new(&dir, Config::default());
+        r.set_children(BTreeMap::from([("g/child".to_owned(), Ok(child))]));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap();
+        let id = r.start(&d, day, How::Manual, None).unwrap();
+        let got = Commands::parse(&r.run_commands(&id).unwrap()).unwrap();
+        let ids: Vec<&str> = got.jobs.iter().map(|j| j.id.as_str()).collect();
+        assert_eq!(ids, ["c/x", "c/z", "b"], "the jobs, not the approval or the net node");
+        assert_eq!(got.get("c/x").unwrap().run, ["koyomi-no-such-program", "20261030"]);
+        assert_eq!(got.get("b").unwrap().run, ["koyomi-no-such-program", "10-30"]);
+        assert!(r.run_dir(&id).join("commands.toml").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

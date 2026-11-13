@@ -3083,6 +3083,7 @@ impl State {
             Request::Run { id, date, from, dry, params } => self.start(id, date.as_deref(), from.as_deref(), *dry, params),
             Request::Rerun { run, from, next } => self.rerun(run, from.as_deref(), *next),
             Request::RunDefinition { run } => self.runner.run_definition(run),
+            Request::RunCommands { run } => self.runner.run_commands(run),
             Request::Kill { run, job } => self.runner.kill(run, job.as_deref()),
             Request::Runs => Ok(Runs { runs: self.runner.today() }.to_toml()),
             Request::History { from, to } => {
@@ -4565,6 +4566,37 @@ run = [\"x\"]
         std::fs::remove_file(&copy).unwrap();
         let e = ask(&mut s, &id).unwrap_err();
         assert!(msg::RUN_DEFINITION_GONE.is_in(&e) && e.contains("definition.toml"), "{e}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    /// `Request::RunCommands` answers the text of `commands.toml`, and says why when there is none.
+    #[test]
+    fn run_commands_are_the_copy_and_say_why_when_there_is_none() {
+        let paths = temp_paths("run-commands");
+        let mut s = State::new(paths.clone());
+        let net = "format = 1
+
+[[job]]
+id = \"a\"
+run = [\"koyomi-no-such-program\", \"{date:%Y%m%d}\"]
+";
+        s.save("経理/集計", net, None, false).unwrap();
+        let def = s.defs.iter().find(|d| d.id == "経理/集計").cloned().unwrap();
+        let planned = NaiveDate::from_ymd_opt(2026, 10, 29).unwrap().and_hms_opt(9, 0, 0).unwrap();
+        let missed = s.runner.not_run(&def, planned, RunState::Missed, "past its time").unwrap();
+        let ask = |s: &mut State, run: &str| s.answer(&Request::RunCommands { run: run.to_owned() });
+        let e = ask(&mut s, &missed).unwrap_err();
+        assert!(msg::RUN_COMMANDS_NEVER_BEGAN.is_in(&e), "{e}");
+        let e = ask(&mut s, "20200101-000000-00").unwrap_err();
+        assert!(msg::RUN_NOT_FOUND.is_in(&e), "{e}");
+        let id = s.runner.start_manual(&def, planned.date(), None, &BTreeMap::new()).unwrap();
+        let file = s.runner.log_path(&id, "a").parent().unwrap().join("commands.toml");
+        let text = ask(&mut s, &id).unwrap();
+        assert_eq!(text, std::fs::read_to_string(&file).unwrap());
+        assert!(text.contains("20261029") && !text.contains("{date"), "{text}");
+        std::fs::remove_file(&file).unwrap();
+        let e = ask(&mut s, &id).unwrap_err();
+        assert!(msg::RUN_COMMANDS_GONE.is_in(&e) && e.contains("commands.toml"), "{e}");
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 

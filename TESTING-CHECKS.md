@@ -1,6 +1,6 @@
 # Checklist
 
-1502 checks in TESTING.md, 1485 left for a person.
+1503 checks in TESTING.md, 1486 left for a person.
 
 ## 1. Start
 
@@ -1792,6 +1792,7 @@
 - [ ] **139.14** Choose 定義を見る on a job; then double-click a node of the picture and a row of the job table → The job is picked and the page scrolls to 「この回の定義（始まったときのもの）」; a single click only picks the job as before 〔未訳〕
 - [ ] **139.15** Right-click a running time or file wait of a running run on the picture and in the job table → 「<名前> を待たずに進める」 is there, before 「ログを見る」; it is not there for an approval, a process job, a job not running or a finished run 〔未訳〕
 - [ ] **139.16** Right-click a job with a reason and a command (picture and table); choose 「理由をコピー」 then 「コマンドをコピー」, and paste → The reason, then the command (the script, or the `run` words with the spaced ones in `"…"`) is pasted; the bar says 「コピーしました」; a far caller below Edit gets no 「コマンドをコピー」 〔未訳〕
+- [ ] **139.17** Open 履歴, open a run of a net with a child net (one started after this version, with `{date}` in a child job's `run`); right-click a job inside the child net and choose 「コマンドをコピー」, and paste; pick the job and read 「この回の定義」 → The command is pasted with the date filled in; the definition shows that command; a run from before this version has no 「コマンドをコピー」 for a child job (the parent's command copies as written); a far caller below Edit gets none 〔未訳〕
 
 ## 140. Pick instead of typing (`ui/pick.rs`, `ui/canvas/drawer.rs`, `ui/whens.rs`, `ui/users.rs`)
 
