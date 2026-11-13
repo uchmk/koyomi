@@ -443,6 +443,8 @@ pub(super) enum Click {
 }
 
 /// What the browser does after a click.
+// `Request` grew with the typed password fields; these are short-lived UI actions, one at a time, so boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(super) enum Do {
     Nothing,

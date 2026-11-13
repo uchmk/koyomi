@@ -36,7 +36,6 @@ use crate::proto::{self, Request, Runs, Snapshot, Versions};
 
 mod alive;
 mod backup;
-mod db_password;
 mod db_test;
 mod events;
 pub(crate) mod files;
@@ -55,6 +54,7 @@ mod shells;
 mod slots;
 mod standby;
 mod tray;
+mod typed_password;
 
 use backup::Backup;
 use retain::Retain;
@@ -2616,21 +2616,35 @@ impl State {
         self.registry(get)
     }
 
-    /// [`Request::DatabasePut`] with a typed password (see `db_password`): the same base check and reload as
-    /// `registry_write`, with the store and koyomi.toml changed together. The reply is the new registry.
-    fn database_put_typed(&mut self, base: &str, typed: &db_password::Typed) -> Result<String, String> {
+    /// A put with a typed password (see `typed_password`): the same base check and reload as `registry_write`, with the
+    /// store and koyomi.toml changed together. `build` makes the whole new koyomi.toml from the file as read and the
+    /// secret's name. Returns the new registry and the secret chosen.
+    fn registry_put_typed(
+        &mut self,
+        base: &str,
+        typed: &typed_password::Typed,
+        build: &dyn Fn(&str, &str) -> Result<String, String>,
+    ) -> Result<(String, String), String> {
         let _edit = crate::remote::edits();
         let old = self.users_text()?.unwrap_or_default();
         if koyomi_core::users::sha256(&old) != base {
             return Err(msg::line(msg::CONFIG_CHANGED, &[]));
         }
         let secrets = self.secrets.clone();
-        db_password::put(&old, typed, &*secrets, &|s| crate::remote::used_elsewhere(&self.paths, s), &mut |text| self.users_write(text))?;
+        let chosen = typed_password::put(
+            &old,
+            typed,
+            &|secret| build(&old, secret),
+            &*secrets,
+            &|s| crate::remote::used_elsewhere(&self.paths, s),
+            &mut |text| self.users_write(text),
+        )?;
         self.reload_config();
         if let Some(e) = &self.bad_config {
             return Err(e.clone());
         }
-        self.registry(&|n| secrets.get(n).map_err(std::io::Error::other))
+        let reply = self.registry(&|n| secrets.get(n).map_err(std::io::Error::other))?;
+        Ok((reply, chosen))
     }
 
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
@@ -3074,13 +3088,29 @@ impl State {
             Request::ConfigText => self.config_text(),
             Request::ConfigPut { text, base_sha256 } => self.config_put(text, base_sha256, by),
             Request::Registry => self.registry(&read_secret),
-            Request::AccountPut { name, user, password, base_sha256 } => {
-                let entry = koyomi_core::registry::AccountEntry {
+            Request::AccountPut { name, user, password, base_sha256, password_value } => {
+                let entry = |secret: Option<&str>| koyomi_core::registry::AccountEntry {
                     name: name.trim().to_owned(),
                     user: user.trim().to_owned(),
-                    password: password.trim().to_owned(),
+                    password: secret.map_or_else(|| password.as_deref().unwrap_or_default().trim().to_owned(), |s| format!("secret:{s}")),
                 };
-                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_account(t, &entry), None, &read_secret)
+                match password_value {
+                    Some(value) => {
+                        let typed = typed_password::Typed {
+                            kind: typed_password::Kind::Account,
+                            name: name.trim(),
+                            password: password.as_deref(),
+                            sqlite: false,
+                            value,
+                        };
+                        let build = |old: &str, s: &str| koyomi_core::registry::put_account(old, &entry(Some(s)));
+                        self.registry_put_typed(base_sha256, &typed, &build).map(|(reply, _)| reply)
+                    }
+                    None => {
+                        let entry = entry(None);
+                        self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_account(t, &entry), None, &read_secret)
+                    }
+                }
             }
             Request::AccountRemove { name, base_sha256, force } => self.registry_write(
                 base_sha256,
@@ -3090,9 +3120,25 @@ impl State {
                 &read_secret,
             ),
             Request::DatabasePut { name, db, password, tls, base_sha256, password_value: Some(value) } => {
-                // Any `password` with a typed value is refused (`db_password::check_value`), even an empty one.
-                let typed = db_password::Typed { name: name.trim(), db: db.trim(), tls: *tls, password: password.as_deref(), value };
-                self.database_put_typed(base_sha256, &typed)
+                // Any `password` with a typed value is refused (`typed_password::check_value`), even an empty one.
+                let sqlite = db.trim().get(..9).is_some_and(|p| p.eq_ignore_ascii_case("sqlite://"));
+                let typed = typed_password::Typed {
+                    kind: typed_password::Kind::Database,
+                    name: name.trim(),
+                    password: password.as_deref(),
+                    sqlite,
+                    value,
+                };
+                let build = |old: &str, s: &str| {
+                    let entry = koyomi_core::registry::DatabaseEntry {
+                        name: name.trim().to_owned(),
+                        db: db.trim().to_owned(),
+                        password: Some(format!("secret:{s}")),
+                        tls: *tls,
+                    };
+                    koyomi_core::registry::put_database(old, &entry)
+                };
+                self.registry_put_typed(base_sha256, &typed, &build).map(|(reply, _)| reply)
             }
             Request::DatabasePut { name, db, password, tls, base_sha256, password_value: None } => {
                 let entry = koyomi_core::registry::DatabaseEntry {
@@ -3110,7 +3156,7 @@ impl State {
                 Some((Table::Database, name.trim())),
                 &read_secret,
             ),
-            Request::HostPut { name, on, host_key, key, password, cert, auth, base_sha256 } => {
+            Request::HostPut { name, on, host_key, key, password, cert, auth, base_sha256, password_value } => {
                 let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned);
                 let auth = match opt(auth) {
                     None => None,
@@ -3122,16 +3168,32 @@ impl State {
                         }
                     },
                 };
-                let entry = koyomi_core::registry::HostEntry {
+                let entry = |secret: Option<&str>| koyomi_core::registry::HostEntry {
                     name: name.trim().to_owned(),
                     on: on.trim().to_owned(),
                     host_key: opt(host_key),
                     key: opt(key),
-                    password: opt(password),
+                    password: secret.map_or_else(|| opt(password), |s| Some(format!("secret:{s}"))),
                     cert: opt(cert),
                     auth,
                 };
-                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_host(t, &entry), None, &read_secret)
+                match password_value {
+                    Some(value) => {
+                        let typed = typed_password::Typed {
+                            kind: typed_password::Kind::Host,
+                            name: name.trim(),
+                            password: password.as_deref(),
+                            sqlite: false,
+                            value,
+                        };
+                        let build = |old: &str, s: &str| koyomi_core::registry::put_host(old, &entry(Some(s)));
+                        self.registry_put_typed(base_sha256, &typed, &build).map(|(reply, _)| reply)
+                    }
+                    None => {
+                        let entry = entry(None);
+                        self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_host(t, &entry), None, &read_secret)
+                    }
+                }
             }
             Request::HostRemove { name, base_sha256, force } => self.registry_write(
                 base_sha256,
@@ -3140,17 +3202,33 @@ impl State {
                 Some((Table::Host, name.trim())),
                 &read_secret,
             ),
-            Request::BucketPut { name, url, key_id, password, region, endpoint, base_sha256 } => {
+            Request::BucketPut { name, url, key_id, password, region, endpoint, base_sha256, password_value } => {
                 let opt = |v: &Option<String>| v.as_deref().map(str::trim).filter(|p| !p.is_empty()).map(str::to_owned);
-                let entry = koyomi_core::registry::BucketEntry {
+                let entry = |secret: Option<&str>| koyomi_core::registry::BucketEntry {
                     name: name.trim().to_owned(),
                     url: url.trim().to_owned(),
                     key_id: opt(key_id),
-                    password: Some(password.trim().to_owned()).filter(|p| !p.is_empty()),
+                    password: secret.map_or_else(|| opt(password), |s| Some(format!("secret:{s}"))),
                     region: opt(region),
                     endpoint: opt(endpoint),
                 };
-                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_bucket(t, &entry), None, &read_secret)
+                match password_value {
+                    Some(value) => {
+                        let typed = typed_password::Typed {
+                            kind: typed_password::Kind::Bucket,
+                            name: name.trim(),
+                            password: password.as_deref(),
+                            sqlite: false,
+                            value,
+                        };
+                        let build = |old: &str, s: &str| koyomi_core::registry::put_bucket(old, &entry(Some(s)));
+                        self.registry_put_typed(base_sha256, &typed, &build).map(|(reply, _)| reply)
+                    }
+                    None => {
+                        let entry = entry(None);
+                        self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_bucket(t, &entry), None, &read_secret)
+                    }
+                }
             }
             Request::BucketRemove { name, base_sha256, force } => self.registry_write(
                 base_sha256,
@@ -3159,13 +3237,46 @@ impl State {
                 Some((Table::Bucket, name.trim())),
                 &read_secret,
             ),
-            Request::MailboxPut { name, mail, password, base_sha256 } => {
-                let entry = koyomi_core::registry::MailboxEntry {
+            Request::MailboxPut { name, mail, password, base_sha256, password_value } => {
+                let entry = |secret: Option<&str>| koyomi_core::registry::MailboxEntry {
                     name: name.trim().to_owned(),
                     mail: mail.trim().to_owned(),
-                    password: password.trim().to_owned(),
+                    password: secret.map_or_else(|| password.as_deref().unwrap_or_default().trim().to_owned(), |s| format!("secret:{s}")),
                 };
-                self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_mailbox(t, &entry), None, &read_secret)
+                match password_value {
+                    Some(value) => {
+                        let typed = typed_password::Typed {
+                            kind: typed_password::Kind::Mailbox,
+                            name: name.trim(),
+                            password: password.as_deref(),
+                            sqlite: false,
+                            value,
+                        };
+                        let build = |old: &str, s: &str| koyomi_core::registry::put_mailbox(old, &entry(Some(s)));
+                        // The secret this mailbox read before the put.
+                        let before = self
+                            .runner
+                            .config()
+                            .mailbox
+                            .iter()
+                            .find(|m| m.name.trim() == name.trim())
+                            .and_then(|m| m.secret())
+                            .map(str::to_owned);
+                        let (reply, chosen) = self.registry_put_typed(base_sha256, &typed, &build)?;
+                        // A watch is kept while its address and secret name stay the same. A new secret name already made
+                        // the reload open a fresh watch with the typed password; only when the mailbox's own secret was
+                        // reused does the old watch (with the old password) stay, so open that one again.
+                        if before.is_some_and(|b| b.trim().eq_ignore_ascii_case(chosen.trim())) {
+                            self.mails.reopen(&chosen);
+                            self.mails.set_rules(&self.defs, &self.runner.config().mailbox);
+                        }
+                        Ok(reply)
+                    }
+                    None => {
+                        let entry = entry(None);
+                        self.registry_write(base_sha256, false, &|t| koyomi_core::registry::put_mailbox(t, &entry), None, &read_secret)
+                    }
+                }
             }
             Request::MailboxRemove { name, base_sha256, force } => self.registry_write(
                 base_sha256,
@@ -5244,6 +5355,7 @@ bucket = \"logs\"
                 cert: None,
                 auth: None,
                 base_sha256: base.clone(),
+                password_value: None,
             },
         );
         assert_eq!((r.hosts.len(), r.hosts[0].name.as_str(), r.hosts[0].used_by.clone()), (1, "web1", vec!["g/a".to_owned()]));
@@ -5253,10 +5365,11 @@ bucket = \"logs\"
                 name: "logs".into(),
                 url: "s3://logs/in/".into(),
                 key_id: Some("AKIAEXAMPLE".into()),
-                password: "secret:s3".into(),
+                password: Some("secret:s3".into()),
                 region: Some("ap-northeast-1".into()),
                 endpoint: None,
                 base_sha256: r.sha256,
+                password_value: None,
             },
         );
         let r = ok(
@@ -5264,8 +5377,9 @@ bucket = \"logs\"
             Request::MailboxPut {
                 name: "ops".into(),
                 mail: "imaps://u@imap.example".into(),
-                password: "secret:m".into(),
+                password: Some("secret:m".into()),
                 base_sha256: r.sha256,
+                password_value: None,
             },
         );
         assert_eq!((r.buckets.len(), r.mailboxes.len()), (1, 1));
@@ -5282,6 +5396,7 @@ bucket = \"logs\"
             cert: Some("AB".into()),
             auth: Some("kerberos".into()),
             base_sha256: r.sha256.clone(),
+            password_value: None,
         };
         assert!(msg::DEF_CHOICE_BAD.is_in(&s.answer(&bad).unwrap_err()));
         let stale = Request::HostRemove { name: "web1".into(), base_sha256: base, force: true };
@@ -5343,8 +5458,9 @@ run = [\"x\"]
         let put = |mail: &str, base: &str| Request::MailboxPut {
             name: "ops".into(),
             mail: mail.into(),
-            password: "secret:m".into(),
+            password: Some("secret:m".into()),
             base_sha256: base.into(),
+            password_value: None,
         };
         let sha_of = |r: String| proto::RegistryBody::parse(&r).unwrap().sha256;
         let b = sha_of(s.answer(&put("imaps://a@one.example", &base)).unwrap());
@@ -5538,6 +5654,80 @@ port = 8700
         assert_eq!(store.items.lock().unwrap().get("koyomi-db-main").map(String::as_str), Some("pw-not-to-show"));
         assert!(!reply.contains("pw-not-to-show"));
         assert!(reply.contains("koyomi-db-main"));
+    }
+
+    /// The other four tables take a typed password through the door as the database does: the store gets the value
+    /// under the table's prefix, koyomi.toml names only the secret, and a stale base or a refused field changes nothing.
+    #[test]
+    fn a_typed_password_of_an_account_host_bucket_or_mailbox_goes_to_the_store_through_the_door() {
+        let paths = temp_paths("door-typed-passwords");
+        let mut s = State::new(paths.clone());
+        let store = Arc::new(MemStore::default());
+        s.secrets = store.clone();
+        let head = "concurrency = 2\n";
+        std::fs::write(&paths.config, head).unwrap();
+        let value = || Some(proto::Hidden::new(DB_PW.into()));
+        let hk = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        let account = |user: &str, password: Option<&str>, base: &str| Request::AccountPut {
+            name: "batch".into(),
+            user: user.into(),
+            password: password.map(str::to_owned),
+            base_sha256: base.into(),
+            password_value: value(),
+        };
+        let writes = |store: &MemStore| store.calls.lock().unwrap().iter().filter(|c| !c.starts_with("get ")).count();
+        let base = koyomi_core::users::sha256(head);
+        // A stale base, a field the table refuses, and a password that is also named: nothing is stored or written.
+        for req in [account("CORP\\b", None, "stale"), account("bad user", None, &base), account("CORP\\b", Some("secret:x"), &base)] {
+            assert!(s.dispatch(&req, "t").is_err(), "{req:?}");
+            assert_eq!(writes(&store), 0);
+            assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), head);
+        }
+        s.dispatch(&account("CORP\\b", None, &base), "t").unwrap();
+        let reqs = |base: &str| {
+            [
+                Request::HostPut {
+                    name: "web1".into(),
+                    on: "ssh://ops@web1".into(),
+                    host_key: Some(hk.into()),
+                    key: None,
+                    password: None,
+                    cert: None,
+                    auth: None,
+                    base_sha256: base.into(),
+                    password_value: value(),
+                },
+                Request::BucketPut {
+                    name: "logs".into(),
+                    url: "s3://corp-logs/app/".into(),
+                    key_id: Some("AKIAEXAMPLE".into()),
+                    password: None,
+                    region: Some("ap-northeast-1".into()),
+                    endpoint: None,
+                    base_sha256: base.into(),
+                    password_value: value(),
+                },
+                Request::MailboxPut {
+                    name: "billing".into(),
+                    mail: "imaps://billing@mail.example.com/INBOX".into(),
+                    password: None,
+                    base_sha256: base.into(),
+                    password_value: value(),
+                },
+            ]
+        };
+        for i in 0..3 {
+            let text = std::fs::read_to_string(&paths.config).unwrap();
+            let reply = s.dispatch(&reqs(&koyomi_core::users::sha256(&text))[i], "t").unwrap();
+            assert!(!reply.contains(DB_PW));
+        }
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(!text.contains(DB_PW), "koyomi.toml holds the typed password");
+        let items = store.items.lock().unwrap();
+        for secret in ["koyomi-account-batch", "koyomi-host-web1", "koyomi-s3-logs", "koyomi-mail-billing"] {
+            assert!(text.contains(&format!("password = \"secret:{secret}\"")), "koyomi.toml does not name {secret}");
+            assert_eq!(items.get(secret).map(String::as_str), Some(DB_PW), "{secret}");
+        }
     }
 
     /// Accounts and databases are written through the door, one entry at a time: the rest of the file stays,

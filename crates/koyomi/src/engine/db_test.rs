@@ -16,7 +16,7 @@ use ito_sql::{Error, Target};
 use koyomi_core::chore::{check_db, sql_db, SqlDb, SqlTls};
 use koyomi_core::msg::{self, line, note};
 
-use super::db_password::value_ok;
+use super::typed_password::value_ok;
 use crate::proto::Hidden;
 use crate::remote::SecretStore;
 
@@ -315,7 +315,7 @@ mod tests {
         let p = pg("postgres://u@h/d", None, None, Some(&secret_like), "").ok().unwrap();
         assert!(matches!(&p.pass, Pass::Typed(v) if v.expose() == "secret:abc"));
         assert_eq!(p.place(), "h:5432/d");
-        for bad in [String::new(), "x".repeat(super::super::db_password::VALUE_MAX + 1), "a\0b".to_owned()] {
+        for bad in [String::new(), "x".repeat(super::super::typed_password::VALUE_MAX + 1), "a\0b".to_owned()] {
             let e = pg("postgres://u@h/d", None, None, Some(&Hidden::new(bad.clone())), "").err().unwrap();
             assert!(msg::DB_TEST_VALUE_BAD.is_in(&e) && (bad.is_empty() || !e.contains(&bad)), "{e}");
         }

@@ -106,6 +106,8 @@ pub fn job_name(snap: Option<&Snapshot>, net: &str, job: &str) -> String {
 }
 
 /// What a menu item does once it is chosen.
+// `Request` grew with the typed password fields; these are short-lived UI actions, one at a time, so boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Clone, Debug)]
 pub enum Act {
     /// Ask the engine.

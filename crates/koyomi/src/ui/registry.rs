@@ -3,8 +3,9 @@
 //! through the door's `Registry` and the `…Put` and `…Remove` requests of each.
 //!
 //! A job names an entry (`run_as = "batch"`, `database = "sales"`, `on = "web1"`), so the secret's name and the
-//! address are written once. The window only ever handles secret NAMES, except for a database's password: it is
-//! typed in the form (a [`Hidden`] value, never shown or put in a message) and sent once for the engine to store.
+//! address are written once. The window never handles a stored secret's value; a password (an S3 bucket's secret
+//! access key too) is typed in the form (a [`Hidden`] value, never shown or put in a message) and sent once for the
+//! engine to store under a name it picks.
 //!
 //! The state is plain data, so the rules are tested without a window (as on the users page): what the page
 //! may do ([`super::users::access`]), how a listing is taken, what an answer does ([`Registry::answered`])
@@ -152,8 +153,8 @@ pub(super) enum Line {
     Unsent(String),
     /// The name is already registered (adding).
     NameExists(String),
-    /// The secret's name is empty or has a space in it.
-    SecretEmpty,
+    /// The password field is empty where one is needed.
+    PasswordEmpty,
     /// A refusal worded by a key of the window's own words (a database field that does not read).
     Key(&'static str),
 }
@@ -166,7 +167,7 @@ impl Line {
             Line::BaseChanged => t.tr("registry.base_changed").to_owned(),
             Line::ReplyBad => t.tr("registry.reply_bad").to_owned(),
             Line::NameExists(n) => t.trf("registry.name_exists", &[n]),
-            Line::SecretEmpty => t.tr("registry.secret_empty").to_owned(),
+            Line::PasswordEmpty => t.tr("registry.password_empty").to_owned(),
         }
     }
 }
@@ -179,7 +180,7 @@ pub(super) enum DbKind {
     Sqlite,
 }
 
-/// What the database form holds, field by field. The password is typed here and sent once; its `Debug` is `***`.
+/// What the database form holds, field by field (its password is [`Form::password`], like every page's).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(super) struct DbFields {
     pub kind: DbKind,
@@ -190,7 +191,6 @@ pub(super) struct DbFields {
     pub user: String,
     /// SQLite: the file, by its whole path.
     pub file: String,
-    pub password: Hidden,
 }
 
 impl DbFields {
@@ -229,8 +229,8 @@ fn start_dir(path: &str) -> Option<std::path::PathBuf> {
     (!dir.as_os_str().is_empty() && dir.is_dir()).then(|| dir.to_path_buf())
 }
 
-/// The add / edit form of one page. `secret` is the NAME of a secret; the only value typed is a database's password
-/// (`db.password`, hidden).
+/// The add / edit form of one page. `secret` is the row's own secret NAME (never shown or edited); the value typed is
+/// `password` (hidden), sent once for the engine to store.
 #[derive(Clone, Debug)]
 pub(super) struct Form {
     pub page: Page,
@@ -239,10 +239,12 @@ pub(super) struct Form {
     pub name: String,
     /// The `user` of an account, the `db` of a database.
     pub target: String,
-    /// The secret's name (without `secret:`).
+    /// The secret's name the row already has (without `secret:`): sent back when the password is kept.
     pub secret: String,
-    /// The person typed the secret's name: it no longer follows the entry's name.
-    secret_typed: bool,
+    /// The password as typed (the S3 secret access key on the bucket page); its `Debug` is `***`.
+    pub password: Hidden,
+    /// An SSH host being edited: leave the password out (the secret stays in the store).
+    pub drop_password: bool,
     pub tls: SqlTls,
     /// The rest of the host, bucket and mailbox forms.
     pub x: Extra,
@@ -360,7 +362,8 @@ impl Form {
             name: String::new(),
             target: String::new(),
             secret: String::new(),
-            secret_typed: false,
+            password: Hidden::default(),
+            drop_password: false,
             tls: SqlTls::Verify,
             x: Extra::default(),
             orig: (String::new(), String::new(), String::new(), SqlTls::Verify),
@@ -389,7 +392,7 @@ impl Form {
         };
         // An SSH host may have no password: its form does not make one up.
         let secret = row.secret.clone().unwrap_or_default();
-        let mut f = Form::of(Page::Hosts, &row.name, &rest, &secret, SqlTls::Verify);
+        let mut f = Form::of(Page::Hosts, &row.name, &rest, &secret, SqlTls::Verify, &row.state);
         f.orig_x = x.clone();
         f.x = x;
         f
@@ -407,19 +410,20 @@ impl Form {
             endpoint: row.endpoint.clone().unwrap_or_default(),
             ..Extra::default()
         };
-        let secret = row.secret.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| row.name.clone());
-        let mut f = Form::of(Page::Buckets, &row.name, &row.url, &secret, SqlTls::Verify);
+        // A row without a reference keeps an empty `secret`: the form does not make one up.
+        let secret = row.secret.clone().unwrap_or_default();
+        let mut f = Form::of(Page::Buckets, &row.name, &row.url, &secret, SqlTls::Verify, &row.state);
         f.orig_x = x.clone();
         f.x = x;
         f
     }
 
     fn edit_mailbox(row: &MailboxRow) -> Form {
-        Form::of(Page::Mailboxes, &row.name, &row.mail, &row.secret, SqlTls::Verify)
+        Form::of(Page::Mailboxes, &row.name, &row.mail, &row.secret, SqlTls::Verify, &row.state)
     }
 
     fn edit_account(row: &AccountRow) -> Form {
-        Form::of(Page::Accounts, &row.name, &row.user, &row.secret, SqlTls::Verify)
+        Form::of(Page::Accounts, &row.name, &row.user, &row.secret, SqlTls::Verify, &row.state)
     }
 
     /// The form of a PostgreSQL or SQLite row; `None` for a SQL Server row (and one that does not read), which
@@ -437,22 +441,24 @@ impl Form {
         // The secret's name is sent back as it is; it is never shown.
         let secret = row.secret.clone().unwrap_or_default();
         let tls = row.tls.as_deref().and_then(SqlTls::of).unwrap_or_default();
-        let mut f = Form::of(Page::Databases, &row.name, "", &secret, tls);
+        let mut f = Form::of(Page::Databases, &row.name, "", &secret, tls, &row.state);
         f.db_orig = db.clone();
         f.db = db;
         f.orig_db = row.db.clone();
-        f.pw_state = row.state.clone();
         Some(f)
     }
 
-    fn of(page: Page, name: &str, target: &str, secret: &str, tls: SqlTls) -> Form {
+    /// The form of a row being edited; `state` is the row's password state (`ok`, `missing`, `unreadable`,
+    /// `not-needed`).
+    fn of(page: Page, name: &str, target: &str, secret: &str, tls: SqlTls, state: &str) -> Form {
         Form {
             page,
             editing: Some(name.to_owned()),
             name: name.to_owned(),
             target: target.to_owned(),
             secret: secret.to_owned(),
-            secret_typed: true,
+            password: Hidden::default(),
+            drop_password: false,
             tls,
             x: Extra::default(),
             orig: (name.to_owned(), target.to_owned(), secret.to_owned(), tls),
@@ -460,7 +466,7 @@ impl Form {
             db: DbFields::default(),
             db_orig: DbFields::default(),
             orig_db: String::new(),
-            pw_state: String::new(),
+            pw_state: state.to_owned(),
             gen: 0,
             stale: false,
             error: None,
@@ -533,7 +539,7 @@ impl Form {
     pub(super) fn db_test_ask(&self) -> Option<DbAsk> {
         self.db_test_url()?;
         let d = &self.db;
-        let typed = !self.is_sqlite() && !d.password.is_empty();
+        let typed = !self.is_sqlite() && !self.password.is_empty();
         if !self.is_sqlite() && !typed && !self.db_test_saved_ok() {
             return None;
         }
@@ -545,7 +551,7 @@ impl Form {
             user: d.user.trim().to_owned(),
             file: d.file.trim().to_owned(),
             tls: self.tls,
-            pw: typed.then(|| koyomi_core::users::sha256(d.password.expose())),
+            pw: typed.then(|| koyomi_core::users::sha256(self.password.expose())),
             saved: !self.is_sqlite() && !typed,
         })
     }
@@ -573,7 +579,7 @@ impl Form {
             db,
             tls: (!sqlite).then_some(self.tls),
             entry: (!sqlite && !typed).then(|| self.name.trim().to_owned()),
-            password_value: typed.then(|| self.db.password.clone()),
+            password_value: typed.then(|| self.password.clone()),
             ticket,
         })
     }
@@ -591,43 +597,38 @@ impl Form {
         (&self.name, &self.target, &self.secret, self.tls) != (&self.orig.0, &self.orig.1, &self.orig.2, self.orig.3)
             || self.x != self.orig_x
             || self.db != self.db_orig
+            || !self.password.is_empty()
+            || self.drop_password
     }
 
-    /// Whether the secret's name follows the entry's name: a WinRM host needs one, an SSH host does not. A
-    /// database has no secret name to type: the engine names its secret.
-    fn follows_name(&self) -> bool {
-        !self.secret_typed && self.page != Page::Databases && (self.page != Page::Hosts || self.x.winrm)
-    }
-
-    /// The name was typed: the secret's name follows it until the person types the secret's name.
-    fn name_typed(&mut self) {
-        if self.follows_name() {
-            self.secret = self.name.trim().to_owned();
-        }
-    }
-
-    /// The secret's name was typed: an empty one follows the entry's name again (not an SSH host's, which has
-    /// none then).
-    fn secret_edited(&mut self) {
-        self.secret_typed = !self.secret.trim().is_empty();
-        if self.follows_name() {
-            self.secret = self.name.trim().to_owned();
-        }
-    }
-
-    /// The kind seg of a host was picked: a WinRM host's secret follows the name, an SSH host's that does not
-    /// start empty.
+    /// The kind seg of a host was picked. WinRM needs a password, so "do not use a password" is cleared.
     pub(super) fn set_winrm(&mut self, winrm: bool) {
         if self.x.winrm != winrm {
             self.peek = None;
         }
         self.x.winrm = winrm;
-        if winrm && self.secret.trim().is_empty() {
-            self.secret_typed = false;
-            self.name_typed();
-        } else if !winrm && !self.secret_typed {
-            self.secret.clear();
+        if winrm {
+            self.drop_password = false;
         }
+    }
+
+    /// Whether the "do not use a password" box is offered: an SSH host being edited whose row has a password.
+    pub(super) fn can_drop_password(&self) -> bool {
+        self.page == Page::Hosts && !self.x.winrm && self.editing.is_some() && self.own_secret().is_some()
+    }
+
+    /// The "do not use a password" box was ticked or cleared: ticking empties the field.
+    pub(super) fn set_drop_password(&mut self, drop: bool) {
+        self.drop_password = drop;
+        if drop {
+            self.password = Hidden::default();
+        }
+    }
+
+    /// The row's own secret, when it can be sent back: not empty and no space in it.
+    fn own_secret(&self) -> Option<&str> {
+        let own = self.secret.trim();
+        (!own.is_empty() && !own.chars().any(char::is_whitespace)).then_some(own)
     }
 
     /// Whether the form is for a WinRM host.
@@ -640,14 +641,26 @@ impl Form {
         format!("{}{}", scheme(self.x.winrm), self.target.trim())
     }
 
-    /// Whether the form has a secret-name field (a database's password is typed, not named).
-    pub(super) fn needs_secret(&self) -> bool {
-        self.page != Page::Databases
+    /// Whether the password may be left out: an SSH host's (it can log in with a key).
+    pub(super) fn password_optional(&self) -> bool {
+        self.page == Page::Hosts && !self.x.winrm
     }
 
-    /// Whether the secret's name may be left out: an SSH host's (it can log in with a key).
-    fn secret_optional(&self) -> bool {
-        self.page == Page::Hosts && !self.x.winrm
+    /// What the password field says for the form as it stands: the key of the note under it.
+    pub(super) fn password_note(&self) -> &'static str {
+        let optional = self.password_optional();
+        if self.editing.is_none() {
+            return if optional { "registry.pw_new_optional" } else { "registry.pw_new" };
+        }
+        // An SSH host with no password of its own signs in with its key.
+        if optional && (self.own_secret().is_none() || self.pw_state == "not-needed") {
+            return "registry.pw_none_optional";
+        }
+        match self.pw_state.as_str() {
+            "ok" => "registry.pw_ok",
+            "unreadable" => "registry.pw_unreadable",
+            _ => "registry.pw_missing",
+        }
     }
 
     /// Whether the database is a SQLite file: it takes no password and no TLS.
@@ -672,16 +685,15 @@ impl Form {
         if db.contains(['{', '}']) {
             return Err(Line::Raw(msg::line(msg::CFG_DATABASE_BRACES, &[&name])));
         }
-        let typed = !sqlite && !d.password.is_empty();
-        let kept = self.secret.trim();
+        let typed = !sqlite && !self.password.is_empty();
         let (password, password_value) = if sqlite {
             (None, None)
         } else if typed {
-            (None, Some(d.password.clone()))
-        } else if self.editing.is_some() && !kept.is_empty() && !kept.chars().any(char::is_whitespace) {
-            (Some(format!("secret:{kept}")), None)
+            (None, Some(self.password.clone()))
+        } else if let Some(own) = self.own_secret().filter(|_| self.editing.is_some()) {
+            (Some(format!("secret:{own}")), None)
         } else {
-            return Err(Line::Key("registry.db_password_empty"));
+            return Err(Line::PasswordEmpty);
         };
         // `verify` is what no `tls` means; SQLite takes none.
         let tls = (!sqlite && self.tls != SqlTls::Verify).then_some(self.tls);
@@ -704,8 +716,6 @@ impl Form {
                 return Err(Line::NameExists(name));
             }
         }
-        let secret = self.secret.trim().to_owned();
-        let secret_ok = !secret.is_empty() && !secret.chars().any(char::is_whitespace);
         let base = base.to_owned();
         match self.page {
             Page::Accounts => {
@@ -713,29 +723,21 @@ impl Form {
                 if !jobnet::valid_account(&user) {
                     return Err(Line::Raw(msg::line(msg::CFG_ACCOUNT_USER, &[&name])));
                 }
-                if !secret_ok {
-                    return Err(Line::SecretEmpty);
-                }
-                Ok(Request::AccountPut { name, user, password: format!("secret:{secret}"), base_sha256: base })
+                let pw = self.password_choice(Line::PasswordEmpty)?;
+                Ok(Request::AccountPut { name, user, password: pw.reference(), base_sha256: base, password_value: pw.value() })
             }
             Page::Databases => self.database_request(name, base),
             Page::Hosts => {
                 let winrm = self.is_winrm();
                 let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
-                let password = if self.secret_optional() && secret.is_empty() {
-                    None
-                } else if secret_ok {
-                    Some(format!("secret:{secret}"))
-                } else {
-                    return Err(Line::SecretEmpty);
-                };
+                let pw = self.password_choice(Line::PasswordEmpty)?;
                 // Only the keys of the chosen kind go: the other kind's rows are hidden.
                 let entry = HostEntry {
                     name: name.clone(),
                     on: self.host_on(),
                     host_key: if winrm { None } else { opt(&self.x.host_key) },
                     key: if winrm { None } else { opt(&self.x.key) },
-                    password: password.clone(),
+                    password: pw.check_reference(),
                     cert: if winrm { opt(&self.x.cert) } else { None },
                     auth: (winrm && self.x.auth != WinrmAuth::Basic).then_some(self.x.auth),
                 };
@@ -745,22 +747,21 @@ impl Form {
                     on: entry.on,
                     host_key: entry.host_key,
                     key: entry.key,
-                    password,
+                    password: pw.reference(),
                     cert: entry.cert,
                     auth: entry.auth.map(|a| a.key().to_owned()),
                     base_sha256: base,
+                    password_value: pw.value(),
                 })
             }
             Page::Buckets => {
-                if !secret_ok {
-                    return Err(Line::SecretEmpty);
-                }
+                let pw = self.password_choice(Line::Key("registry.s3_key_empty"))?;
                 let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
                 let entry = BucketEntry {
                     name: name.clone(),
                     url: self.target.trim().to_owned(),
                     key_id: opt(&self.x.key_id),
-                    password: Some(format!("secret:{secret}")),
+                    password: pw.check_reference(),
                     region: opt(&self.x.region),
                     endpoint: opt(&self.x.endpoint),
                 };
@@ -769,20 +770,79 @@ impl Form {
                     name,
                     url: entry.url,
                     key_id: entry.key_id,
-                    password: format!("secret:{secret}"),
+                    password: pw.reference(),
                     region: entry.region,
                     endpoint: entry.endpoint,
                     base_sha256: base,
+                    password_value: pw.value(),
                 })
             }
             Page::Mailboxes => {
-                if !secret_ok {
-                    return Err(Line::SecretEmpty);
-                }
-                let entry = MailboxEntry { name: name.clone(), mail: self.target.trim().to_owned(), password: format!("secret:{secret}") };
+                let pw = self.password_choice(Line::PasswordEmpty)?;
+                let entry = MailboxEntry {
+                    name: name.clone(),
+                    mail: self.target.trim().to_owned(),
+                    password: pw.check_reference().unwrap_or_default(),
+                };
                 entry.check().map_err(Line::Raw)?;
-                Ok(Request::MailboxPut { name, mail: entry.mail, password: entry.password, base_sha256: base })
+                Ok(Request::MailboxPut { name, mail: entry.mail, password: pw.reference(), base_sha256: base, password_value: pw.value() })
             }
+        }
+    }
+
+    /// What the form sends for the password: the typed value (the field as typed, not trimmed), else the row's own
+    /// secret when it is being edited and kept, else nothing (an SSH host only) or `missing`.
+    fn password_choice(&self, missing: Line) -> Result<Pw, Line> {
+        if !self.password.is_empty() {
+            return Ok(Pw::Typed(self.password.clone()));
+        }
+        if self.editing.is_some() && !self.drop_password {
+            if let Some(own) = self.own_secret() {
+                return Ok(Pw::Kept(format!("secret:{own}")));
+            }
+        }
+        if self.password_optional() {
+            Ok(Pw::Nothing)
+        } else {
+            Err(missing)
+        }
+    }
+}
+
+/// What a request carries for the password.
+enum Pw {
+    /// A value typed in the form: sent once for the engine to store (it picks the secret's name).
+    Typed(Hidden),
+    /// The row's own `secret:<name>`, kept.
+    Kept(String),
+    /// No password (an SSH host that logs in with a key).
+    Nothing,
+}
+
+impl Pw {
+    /// The `password` field of the request: a reference only when the row's own is kept.
+    fn reference(&self) -> Option<String> {
+        match self {
+            Pw::Kept(r) => Some(r.clone()),
+            Pw::Typed(_) | Pw::Nothing => None,
+        }
+    }
+
+    /// The `password_value` field of the request.
+    fn value(&self) -> Option<Hidden> {
+        match self {
+            Pw::Typed(v) => Some(v.clone()),
+            Pw::Kept(_) | Pw::Nothing => None,
+        }
+    }
+
+    /// The reference the entry's own check reads: a typed value stands in as a placeholder (the engine names the
+    /// real secret), and the value itself never goes into an entry.
+    fn check_reference(&self) -> Option<String> {
+        match self {
+            Pw::Typed(_) => Some("secret:koyomi-x".to_owned()),
+            Pw::Kept(r) => Some(r.clone()),
+            Pw::Nothing => None,
         }
     }
 }
@@ -831,6 +891,8 @@ pub(super) enum Click {
 }
 
 /// What the browser does after a click.
+// `Request` grew with the typed password fields; these are short-lived UI actions, one at a time, so boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 pub(super) enum Do {
     Nothing,
@@ -1824,6 +1886,31 @@ fn db_test_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, can: b
     }
 }
 
+/// The password line of every page: the hidden field, the note under it, and (an SSH host being edited) the box that
+/// leaves the password out.
+// ito#231: `ito_prefs::secret_field` has no accessible name or test ID, so the line is drawn here until koyomi takes
+// a rev that has them.
+fn password_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form) {
+    let label = t.tr(if f.page == Page::Buckets { "registry.s3_key_field" } else { "registry.password_field" });
+    ui.horizontal(|ui| {
+        ui.label(label);
+        let resp =
+            ui.add_enabled(!f.drop_password, egui::TextEdit::singleline(f.password.as_mut_string()).password(true).desired_width(240.0));
+        ito_a11y::say(&resp, ito_a11y::Role::Label, label);
+        ito_a11y::test_id(&resp, &format!("{id}.password"));
+    });
+    if f.can_drop_password() {
+        let mut drop = f.drop_password;
+        let resp = ui.checkbox(&mut drop, t.tr("registry.drop_password"));
+        ito_a11y::test_id(&resp, &format!("{id}.drop_password"));
+        if resp.changed() {
+            f.set_drop_password(drop);
+        }
+    }
+    let note = egui::RichText::new(t.tr(f.password_note())).color(ito_theme::colors().dim);
+    ui.add(egui::Label::new(note).wrap());
+}
+
 /// The fields of the database form: the kind, then the server, port, database name, user ID and password of
 /// PostgreSQL (TLS under 詳しい設定), or the file of SQLite. `browsed` is set when 参照… is clicked.
 fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, local: bool, browsed: &mut Option<Chosen>) {
@@ -1873,20 +1960,7 @@ fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, l
     text(ui, "registry.db_port_field", "registry.db_port_hint", "port", 80.0, &mut f.db.port);
     text(ui, "registry.db_name_field", "", "database", 240.0, &mut f.db.database);
     text(ui, "registry.db_user_field", "", "user", 240.0, &mut f.db.user);
-    ui.horizontal(|ui| {
-        ui.label(t.tr("registry.db_password_field"));
-        let resp = ui.add(egui::TextEdit::singleline(f.db.password.as_mut_string()).password(true).desired_width(240.0));
-        ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.db_password_field"));
-        ito_a11y::test_id(&resp, &format!("{id}.password"));
-    });
-    let note = match (f.editing.is_some(), f.pw_state.as_str()) {
-        (false, _) => "registry.db_pw_new",
-        (true, "ok") => "registry.db_pw_ok",
-        (true, "unreadable") => "registry.db_pw_unreadable",
-        (true, _) => "registry.db_pw_missing",
-    };
-    let note = egui::RichText::new(t.tr(note)).color(ito_theme::colors().dim);
-    ui.add(egui::Label::new(note).wrap());
+    password_ui(ui, t, id, f);
     // The TLS choice is open from the start when it is not the usual one.
     egui::CollapsingHeader::new(t.tr("registry.db_more")).id_salt(format!("{id}.more")).default_open(f.tls != SqlTls::Verify).show(
         ui,
@@ -1923,9 +1997,6 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             let resp = ui.add_enabled(adding, egui::TextEdit::singleline(&mut f.name).desired_width(200.0));
             ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.name_field"));
             ito_a11y::test_id(&resp, &format!("{id}.name"));
-            if resp.changed() {
-                f.name_typed();
-            }
         });
         if page == Page::Hosts {
             ui.horizontal(|ui| {
@@ -2011,20 +2082,8 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             }
             _ => {}
         }
-        if f.needs_secret() {
-            ui.horizontal(|ui| {
-                ui.label(t.tr("registry.secret_field"));
-                let resp = ui.add(egui::TextEdit::singleline(&mut f.secret).desired_width(200.0));
-                ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.secret_field"));
-                ito_a11y::test_id(&resp, &format!("{id}.secret"));
-                if resp.changed() {
-                    f.secret_edited();
-                }
-            });
-            let note =
-                egui::RichText::new(t.tr(if f.secret_optional() { "registry.secret_note_optional" } else { "registry.secret_note" }))
-                    .color(ito_theme::colors().dim);
-            ui.add(egui::Label::new(note).wrap());
+        if page != Page::Databases {
+            password_ui(ui, t, &id, f);
         }
         if page == Page::Buckets {
             typed_line(ui, t, &id, ("registry.region_field", "region", "registry.region_hint"), &mut f.x.region);
@@ -2292,12 +2351,13 @@ mod tests {
         assert!(f.request("b", &[]).is_err());
         let mut f = Form::edit_host(&conn_body().hosts[1]);
         f.secret.clear();
-        assert_eq!(f.request("b", &[]).err(), Some(Line::SecretEmpty));
+        assert_eq!(f.request("b", &[]).err(), Some(Line::PasswordEmpty));
         // A bucket and a mailbox.
         let f = Form::edit_bucket(&conn_body().buckets[0]);
         match f.request("b", &[]) {
-            Ok(Request::BucketPut { name, url, password, .. }) => {
-                assert_eq!((name.as_str(), url.as_str(), password.as_str()), ("logs", "s3://logs/daily/", "secret:logs"));
+            Ok(Request::BucketPut { name, url, password, password_value, .. }) => {
+                assert_eq!((name.as_str(), url.as_str(), password.as_deref()), ("logs", "s3://logs/daily/", Some("secret:logs")));
+                assert!(password_value.is_none());
             }
             other => panic!("{other:?}"),
         }
@@ -2341,23 +2401,26 @@ mod tests {
                 cert: None,
                 auth: None,
                 base_sha256: "base1".into(),
+                password_value: None,
             },
             Request::HostRemove { name: "web1".into(), base_sha256: "base1".into(), force: false },
             Request::BucketPut {
                 name: "logs".into(),
                 url: "s3://logs/".into(),
                 key_id: None,
-                password: "secret:logs".into(),
+                password: Some("secret:logs".into()),
                 region: None,
                 endpoint: None,
                 base_sha256: "base1".into(),
+                password_value: None,
             },
             Request::BucketRemove { name: "logs".into(), base_sha256: "base1".into(), force: false },
             Request::MailboxPut {
                 name: "billing".into(),
                 mail: "imaps://bill@mail".into(),
-                password: "secret:bill".into(),
+                password: Some("secret:bill".into()),
                 base_sha256: "base1".into(),
+                password_value: None,
             },
             Request::MailboxRemove { name: "billing".into(), base_sha256: "base1".into(), force: false },
         ];
@@ -2419,28 +2482,22 @@ mod tests {
     }
 
     #[test]
-    fn an_account_form_is_checked_before_it_is_sent_and_the_secret_follows_the_name() {
+    fn an_account_form_is_checked_before_it_is_sent_and_sends_the_typed_password_once() {
         let taken = vec!["ops".to_owned()];
         let mut f = Form::add(Page::Accounts);
         f.name = "batch".into();
-        f.name_typed();
-        assert_eq!(f.secret, "batch");
         f.target = "CORP\\batch".into();
+        // Nothing typed: refused before anything is sent.
+        assert_eq!(f.request("base1", &taken).unwrap_err(), Line::PasswordEmpty);
+        f.password.as_mut_string().push_str(PW);
         match f.request("base1", &taken) {
-            Ok(Request::AccountPut { name, user, password, base_sha256 }) => {
-                assert_eq!(
-                    (name.as_str(), user.as_str(), password.as_str(), base_sha256.as_str()),
-                    ("batch", "CORP\\batch", "secret:batch", "base1")
-                );
+            Ok(Request::AccountPut { name, user, password, base_sha256, password_value }) => {
+                assert_eq!((name.as_str(), user.as_str(), base_sha256.as_str()), ("batch", "CORP\\batch", "base1"));
+                assert!(password.is_none(), "a typed password names no secret: the engine picks it");
+                assert_eq!(password_value.as_ref().map(Hidden::expose), Some(PW));
             }
             other => panic!("{other:?}"),
         }
-        // A secret name typed by the person stops following the name.
-        f.secret = "other".into();
-        f.secret_edited();
-        f.name = "batch2".into();
-        f.name_typed();
-        assert_eq!(f.secret, "other");
         let mut bad = Form::add(Page::Accounts);
         bad.name = "a/b".into();
         bad.target = "CORP\\x".into();
@@ -2449,19 +2506,268 @@ mod tests {
         assert_eq!(bad.request("b", &taken).unwrap_err(), Line::NameExists("ops".into()));
         bad.name = "new".into();
         bad.target = "bad user".into();
-        bad.secret = "new".into();
+        bad.password.as_mut_string().push_str(PW);
         assert!(matches!(bad.request("b", &taken), Err(Line::Raw(_))));
         bad.target = "CORP\\x".into();
-        bad.secret = "has space".into();
-        assert_eq!(bad.request("b", &taken).unwrap_err(), Line::SecretEmpty);
-        // Editing keeps the name (it is not checked against the taken ones).
+        bad.password = Hidden::default();
+        assert_eq!(bad.request("b", &taken).unwrap_err(), Line::PasswordEmpty);
+        // Editing keeps the name (it is not checked against the taken ones), and an empty field sends the row's own
+        // secret back.
         let mut e = Form::edit_account(&body().accounts[0]);
-        assert!(matches!(e.request("b", &taken), Ok(Request::AccountPut { .. })));
+        assert!(!e.dirty());
+        match e.request("b", &taken) {
+            Ok(Request::AccountPut { password, password_value, .. }) => {
+                assert_eq!(password.as_deref(), Some("secret:ops"));
+                assert!(password_value.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
         e.target = "CORP\\ops2".into();
         assert!(e.dirty());
     }
 
     const PW: &str = "pw-not-to-show";
+
+    /// A form's value is hidden wherever the form is printed, and a request prints no value either.
+    #[test]
+    fn the_typed_password_is_not_printed_by_a_form_or_a_request() {
+        let mut f = Form::edit_account(&body().accounts[0]);
+        f.password.as_mut_string().push_str(PW);
+        assert!(!format!("{f:?}").contains(PW));
+        let req = f.request("b", &[]).unwrap();
+        assert!(!format!("{req:?}").contains(PW));
+        assert!(format!("{f:?}").contains("***"));
+    }
+
+    /// Typing a password makes the form changed, with nothing else touched.
+    #[test]
+    fn a_typed_password_alone_makes_the_form_dirty() {
+        for page in [Page::Accounts, Page::Hosts, Page::Buckets, Page::Mailboxes] {
+            let mut f = match page {
+                Page::Accounts => Form::edit_account(&AccountRow {
+                    name: "ops".into(),
+                    user: "CORP\\ops".into(),
+                    secret: "ops".into(),
+                    state: "ok".into(),
+                    used_by: vec![],
+                }),
+                Page::Hosts => Form::edit_host(&conn_body().hosts[1]),
+                Page::Buckets => Form::edit_bucket(&conn_body().buckets[0]),
+                _ => Form::edit_mailbox(&conn_body().mailboxes[0]),
+            };
+            assert!(!f.dirty(), "{page:?}");
+            f.password.as_mut_string().push('x');
+            assert!(f.dirty(), "{page:?}");
+        }
+    }
+
+    /// The host form: an SSH host may have no password; an edit keeps, replaces or drops it.
+    #[test]
+    fn the_ssh_host_form_adds_with_or_without_a_password_keeps_it_or_drops_it() {
+        let ssh = |f: &Form| match f.request("b", &[]) {
+            Ok(Request::HostPut { password, password_value, .. }) => (password, password_value.map(|v| v.expose().to_owned())),
+            other => panic!("{other:?}"),
+        };
+        // Adding with nothing typed is allowed for SSH, and refused for WinRM.
+        let mut f = Form::add(Page::Hosts);
+        f.name = "h1".into();
+        f.target = "ops@h1".into();
+        f.x.host_key = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into();
+        f.x.key = "C:/keys/id".into();
+        assert_eq!(ssh(&f), (None, None));
+        assert_eq!(f.password_note(), "registry.pw_new_optional");
+        // (A key and a password cannot both be given: the entry's own check says so.)
+        assert!(f.request("b", &[]).is_ok());
+        f.x.key.clear();
+        f.password.as_mut_string().push_str(PW);
+        assert_eq!(ssh(&f), (None, Some(PW.to_owned())));
+        f.set_winrm(true);
+        f.password = Hidden::default();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
+        // An SSH host with a password: empty keeps it, typed replaces it, "do not use" leaves it out.
+        let row = HostRow {
+            name: "web2".into(),
+            on: "ssh://ops@web2/".into(),
+            kind: "ssh".into(),
+            secret: Some("koyomi-host-web2".into()),
+            host_key: Some("SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU".into()),
+            state: "ok".into(),
+            ..HostRow::default()
+        };
+        let mut f = Form::edit_host(&row);
+        assert!(f.can_drop_password() && !f.dirty());
+        assert_eq!(f.password_note(), "registry.pw_ok");
+        assert_eq!(ssh(&f), (Some("secret:koyomi-host-web2".to_owned()), None));
+        f.password.as_mut_string().push_str(PW);
+        assert_eq!(ssh(&f), (None, Some(PW.to_owned())));
+        // Ticking the box empties the field and sends neither a reference nor a value.
+        f.set_drop_password(true);
+        assert!(f.password.is_empty() && f.dirty());
+        assert_eq!(ssh(&f), (None, None));
+        // Switching to WinRM hides the box and clears the choice: WinRM needs a password.
+        f.set_winrm(true);
+        assert!(!f.drop_password && !f.can_drop_password());
+        // An SSH host without a password offers no box, and says it signs in with its key.
+        let bare = Form::edit_host(&conn_body().hosts[0]);
+        assert!(!bare.can_drop_password());
+        assert_eq!(bare.password_note(), "registry.pw_none_optional");
+    }
+
+    /// The S3 page asks for the secret access key by that name, and never invents a reference for a row without one.
+    #[test]
+    fn the_bucket_form_asks_for_the_secret_access_key_and_invents_no_reference() {
+        let mut f = Form::add(Page::Buckets);
+        f.name = "b1".into();
+        f.target = "s3://corp-b1/".into();
+        f.x.region = "ap-northeast-1".into();
+        f.x.key_id = "AKIAEXAMPLE".into();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.s3_key_empty"));
+        f.password.as_mut_string().push_str(PW);
+        let got = f.request("b", &[]);
+        assert!(matches!(got, Ok(Request::BucketPut { password: None, password_value: Some(_), .. })), "{got:?}");
+        // A row with no `secret` keeps an empty one (it used to be filled with the row's name).
+        let row = BucketRow { name: "old".into(), url: "s3://old/".into(), state: "missing".into(), ..BucketRow::default() };
+        let f = Form::edit_bucket(&row);
+        assert!(f.secret.is_empty());
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.s3_key_empty"));
+        assert_eq!(f.password_note(), "registry.pw_missing");
+    }
+
+    /// The mailbox page: add with a typed password, keep on edit.
+    #[test]
+    fn the_mailbox_form_sends_the_typed_password_or_keeps_the_own_secret() {
+        let mut f = Form::add(Page::Mailboxes);
+        f.name = "m1".into();
+        f.target = "imaps://u@mail/INBOX".into();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
+        f.password.as_mut_string().push_str(PW);
+        assert!(matches!(f.request("b", &[]), Ok(Request::MailboxPut { password: None, password_value: Some(_), .. })));
+        let f = Form::edit_mailbox(&conn_body().mailboxes[0]);
+        match f.request("b", &[]) {
+            Ok(Request::MailboxPut { password, password_value, .. }) => {
+                assert_eq!(password.as_deref(), Some("secret:billing"));
+                assert!(password_value.is_none());
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Every page's form, new and edited, with the field empty or typed: what the request holds for the password,
+    /// and that no request prints the typed value.
+    #[test]
+    fn the_password_matrix_of_every_form() {
+        const KEY: &str = "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU";
+        const CERT: &str = "AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89:AB:CD:EF:01:23:45:67:89";
+        // (label, a new form, an edited form whose own secret is `own`, the refusal for a new form with no password)
+        let new = |page: Page, winrm: bool| {
+            let mut f = Form::add(page);
+            f.name = "n1".into();
+            match page {
+                Page::Accounts => f.target = "CORP\\n1".into(),
+                Page::Hosts => {
+                    f.target = if winrm { ".\\u@pc:5986".into() } else { "ops@h1".into() };
+                    f.set_winrm(winrm);
+                    if winrm {
+                        f.x.cert = CERT.into();
+                    } else {
+                        f.x.host_key = KEY.into();
+                    }
+                }
+                Page::Buckets => {
+                    f.target = "s3://corp-b1/".into();
+                    f.x.key_id = "AKIAEXAMPLE".into();
+                    f.x.region = "ap-northeast-1".into();
+                }
+                _ => f.target = "imaps://u@mail/INBOX".into(),
+            }
+            f
+        };
+        let edit = |page: Page, winrm: bool| match page {
+            Page::Accounts => Form::edit_account(&AccountRow {
+                name: "ops".into(),
+                user: "CORP\\ops".into(),
+                secret: "own".into(),
+                state: "ok".into(),
+                used_by: vec![],
+            }),
+            Page::Hosts => Form::edit_host(&HostRow {
+                name: "h".into(),
+                on: if winrm { "winrm://.\\u@pc:5986" } else { "ssh://ops@h/" }.into(),
+                kind: if winrm { "winrm" } else { "ssh" }.into(),
+                secret: Some("own".into()),
+                host_key: (!winrm).then(|| KEY.to_owned()),
+                cert: winrm.then(|| CERT.to_owned()),
+                state: "ok".into(),
+                ..HostRow::default()
+            }),
+            Page::Buckets => Form::edit_bucket(&BucketRow {
+                name: "logs".into(),
+                url: "s3://logs/".into(),
+                key_id: Some("AKIAEXAMPLE".into()),
+                region: Some("ap-northeast-1".into()),
+                secret: Some("own".into()),
+                state: "ok".into(),
+                ..BucketRow::default()
+            }),
+            _ => Form::edit_mailbox(&MailboxRow {
+                name: "billing".into(),
+                mail: "imaps://u@mail.example.com/INBOX".into(),
+                secret: "own".into(),
+                state: "ok".into(),
+                used_by: vec![],
+            }),
+        };
+        let cases = [
+            ("accounts", Page::Accounts, false, Line::PasswordEmpty),
+            ("ssh host", Page::Hosts, false, Line::PasswordEmpty),
+            ("winrm host", Page::Hosts, true, Line::PasswordEmpty),
+            ("buckets", Page::Buckets, false, Line::Key("registry.s3_key_empty")),
+            ("mailboxes", Page::Mailboxes, false, Line::PasswordEmpty),
+        ];
+        // What a request holds: (`password`, `password_value`). Also checks the request prints no value.
+        let sent = |f: &Form| -> Result<(Option<String>, Option<String>), Line> {
+            let req = f.request("b", &[])?;
+            assert!(!format!("{req:?}").contains(PW), "a request printed the typed value");
+            Ok(match req {
+                Request::AccountPut { password, password_value, .. }
+                | Request::HostPut { password, password_value, .. }
+                | Request::BucketPut { password, password_value, .. }
+                | Request::MailboxPut { password, password_value, .. } => (password, password_value.map(|v| v.expose().to_owned())),
+                _ => panic!("not a registry put"),
+            })
+        };
+        let typed = Some(PW.to_owned());
+        let own = Some("secret:own".to_owned());
+        for (label, page, winrm, refusal) in cases {
+            // new, field empty: refused (an SSH host sends neither)
+            let mut f = new(page, winrm);
+            if page == Page::Hosts && !winrm {
+                assert_eq!(sent(&f), Ok((None, None)), "{label}: new, empty");
+            } else {
+                assert_eq!(sent(&f), Err(refusal), "{label}: new, empty");
+            }
+            // new, typed
+            f.password.as_mut_string().push_str(PW);
+            assert_eq!(sent(&f), Ok((None, typed.clone())), "{label}: new, typed");
+            // edit with its own secret, field empty
+            let mut e = edit(page, winrm);
+            assert_eq!(sent(&e), Ok((own.clone(), None)), "{label}: edit, empty");
+            // edit with its own secret, typed
+            e.password.as_mut_string().push_str(PW);
+            assert_eq!(sent(&e), Ok((None, typed.clone())), "{label}: edit, typed");
+        }
+        // an SSH edit with "do not use a password"
+        let mut e = edit(Page::Hosts, false);
+        e.set_drop_password(true);
+        assert_eq!(sent(&e), Ok((None, None)));
+        // an SSH host with a key and a typed password is refused (a key and a password cannot both be given)
+        let mut f = new(Page::Hosts, false);
+        f.x.key = "C:/keys/id".into();
+        f.password.as_mut_string().push_str(PW);
+        let refused = f.request("b", &[]);
+        assert!(matches!(refused, Err(Line::Raw(_))), "{refused:?}");
+        assert!(!format!("{refused:?}").contains(PW));
+    }
 
     fn db_row(name: &str, kind: &str, db: &str, secret: Option<&str>) -> DatabaseRow {
         DatabaseRow {
@@ -2493,7 +2799,7 @@ mod tests {
         f.db.host = "db1".into();
         f.db.database = "sales".into();
         f.db.user = "app".into();
-        f.db.password.as_mut_string().push_str(PW);
+        f.password.as_mut_string().push_str(PW);
         f
     }
 
@@ -2534,7 +2840,7 @@ mod tests {
         f.db.port = "70000".into();
         assert_eq!(db_test_why(&f), "registry.db_test_fields", "a port that does not read, with a password typed");
         f.db.port = "5432".into();
-        f.db.password = Hidden::default();
+        f.password = Hidden::default();
         assert_eq!(db_test_why(&f), "registry.db_test_need");
         let mut lite = Form::add(Page::Databases);
         lite.db.kind = DbKind::Sqlite;
@@ -2553,7 +2859,7 @@ mod tests {
         f.db.database = "sales".into();
         f.db.user = "app".into();
         assert!(!f.db_test_enabled(true));
-        f.db.password.as_mut_string().push_str(PW);
+        f.password.as_mut_string().push_str(PW);
         assert!(f.db_test_enabled(true));
         assert!(!f.db_test_enabled(false), "the person must be able to write");
         f.db.port = "70000".into();
@@ -2566,7 +2872,7 @@ mod tests {
         assert!(dbf(&r).db_test_enabled(true), "the host differs in case only");
         dbf_mut(&mut r).db.host = "db2".into();
         assert!(!dbf(&r).db_test_enabled(true));
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         assert!(dbf(&r).db_test_enabled(true), "a typed password is enough");
         for change in [|d: &mut DbFields| d.port = "5433".into(), |d: &mut DbFields| d.user = "other".into()] {
             let mut r = db_edit();
@@ -2592,7 +2898,7 @@ mod tests {
     fn a_click_sends_the_request_the_fields_make_and_waits_for_its_own_ticket() {
         // A typed password goes as a value, with no entry name.
         let mut r = db_edit();
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         match db_test_click(&mut r) {
             Some(Request::DatabaseTest { db, tls, entry, password_value, ticket }) => {
                 assert_eq!((db.as_str(), tls, entry, ticket), ("postgres://app@db1/sales", Some(SqlTls::Verify), None, 1));
@@ -2638,40 +2944,40 @@ mod tests {
 
     #[test]
     fn a_change_of_any_field_or_of_the_password_drops_the_result_and_a_late_answer_finds_nothing() {
-        let changes: [fn(&mut DbFields); 4] = [
-            |d| d.host = "db9".into(),
-            |d| d.database = "other".into(),
-            |d| d.password.as_mut_string().push('x'),
-            |d| d.password.as_mut_string().push(' '),
+        let changes: [fn(&mut Form); 4] = [
+            |f| f.db.host = "db9".into(),
+            |f| f.db.database = "other".into(),
+            |f| f.password.as_mut_string().push('x'),
+            |f| f.password.as_mut_string().push(' '),
         ];
         for change in changes {
             let mut r = db_edit();
-            dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+            dbf_mut(&mut r).password.as_mut_string().push_str(PW);
             db_test_click(&mut r).unwrap();
             db_test_answer(&mut r, 1, Ok(String::new()));
             dbf_mut(&mut r).drop_stale_db_test();
             assert!(dbf(&r).db_test.is_some(), "nothing changed yet");
-            change(&mut dbf_mut(&mut r).db);
+            change(dbf_mut(&mut r));
             dbf_mut(&mut r).drop_stale_db_test();
             assert!(dbf(&r).db_test.is_none());
         }
         // A late answer, after the fields changed, is not shown.
         let mut r = db_edit();
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         db_test_click(&mut r).unwrap();
         dbf_mut(&mut r).db.host = "db9".into();
         db_test_answer(&mut r, 1, Ok(String::new()));
         assert!(dbf(&r).db_test.is_none());
         // The password cleared: a test with a typed password is gone, and the saved one is another ask.
         let mut r = db_edit();
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         db_test_click(&mut r).unwrap();
-        dbf_mut(&mut r).db.password.as_mut_string().clear();
+        dbf_mut(&mut r).password.as_mut_string().clear();
         dbf_mut(&mut r).drop_stale_db_test();
         assert!(dbf(&r).db_test.is_none());
         // The listing dropped under the page (another role or name): the test goes with it.
         let mut r = db_edit();
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         db_test_click(&mut r).unwrap();
         r.dropped();
         assert!(r.forms[Page::Databases.idx()].as_ref().is_none_or(|f| f.db_test.is_none()));
@@ -2680,7 +2986,7 @@ mod tests {
     #[test]
     fn the_ask_holds_the_password_only_as_a_hash_and_a_test_is_not_a_write() {
         let mut r = db_edit();
-        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        dbf_mut(&mut r).password.as_mut_string().push_str(PW);
         db_test_click(&mut r).unwrap();
         let shown = format!("{:?}", dbf(&r));
         assert!(!shown.contains(PW), "{shown}");
@@ -2718,20 +3024,22 @@ mod tests {
 
     #[test]
     fn a_field_that_does_not_make_a_url_is_refused_by_its_own_words_and_nothing_is_sent() {
-        type Change = fn(&mut DbFields);
-        let cases: [(&str, Change); 6] = [
-            ("registry.db_bad_host", |d| d.host = "a b".into()),
-            ("registry.db_bad_port", |d| d.port = "70000".into()),
-            ("registry.db_bad_port", |d| d.port = "54x2".into()),
-            ("registry.db_bad_database", |d| d.database = " ".into()),
-            ("registry.db_bad_user", |d| d.user = "a:b".into()),
-            ("registry.db_password_empty", |d| d.password.as_mut_string().clear()),
+        type Change = fn(&mut Form);
+        let cases: [(&str, Change); 5] = [
+            ("registry.db_bad_host", |f| f.db.host = "a b".into()),
+            ("registry.db_bad_port", |f| f.db.port = "70000".into()),
+            ("registry.db_bad_port", |f| f.db.port = "54x2".into()),
+            ("registry.db_bad_database", |f| f.db.database = " ".into()),
+            ("registry.db_bad_user", |f| f.db.user = "a:b".into()),
         ];
         for (key, change) in cases {
             let mut f = pg_form();
-            change(&mut f.db);
+            change(&mut f);
             assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key(key), "{key}");
         }
+        let mut f = pg_form();
+        f.password = Hidden::default();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         let mut f = pg_form();
         f.db.host.clear();
         assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.db_bad_host"));
@@ -2755,8 +3063,8 @@ mod tests {
     #[test]
     fn a_new_entry_without_a_password_is_refused_and_a_sqlite_file_has_no_password_or_tls() {
         let mut f = pg_form();
-        f.db.password.as_mut_string().clear();
-        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.db_password_empty"));
+        f.password.as_mut_string().clear();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         let mut f = Form::add(Page::Databases);
         f.name = "lite".into();
         f.db.kind = DbKind::Sqlite;
@@ -2792,7 +3100,7 @@ mod tests {
         // A row that has no password to keep needs one.
         let mut bare = row.clone();
         bare.secret = None;
-        assert_eq!(Form::edit_database(&bare).unwrap().request("b", &[]).unwrap_err(), Line::Key("registry.db_password_empty"));
+        assert_eq!(Form::edit_database(&bare).unwrap().request("b", &[]).unwrap_err(), Line::PasswordEmpty);
         // A changed place is built again.
         let mut g = Form::edit_database(&row).unwrap();
         g.db.database = "ops".into();
@@ -2804,7 +3112,7 @@ mod tests {
     fn a_password_only_change_is_dirty_and_sends_the_old_text() {
         let row = db_row("pg", "postgres", "postgres://app@db1:5432/sales", Some("koyomi-db-pg"));
         let mut f = Form::edit_database(&row).unwrap();
-        f.db.password.as_mut_string().push_str(PW);
+        f.password.as_mut_string().push_str(PW);
         assert!(f.dirty());
         match f.request("b", &[]) {
             Ok(Request::DatabasePut { db, password, password_value, .. }) => {

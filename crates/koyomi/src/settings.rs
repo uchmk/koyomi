@@ -120,7 +120,7 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (ACCOUNTS, t.tr("settings.accounts")),
         (ACCOUNTS, t.tr("registry.add_account")),
         (ACCOUNTS, t.tr("registry.user_field")),
-        (ACCOUNTS, t.tr("registry.secret_field")),
+        (ACCOUNTS, t.tr("registry.password_field")),
         (ACCOUNTS, "run_as"),
         (DATABASES, "[[database]]"),
         (DATABASES, "koyomi.toml"),
@@ -129,7 +129,7 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (DATABASES, t.tr("registry.db_host_field")),
         (DATABASES, t.tr("registry.db_name_field")),
         (DATABASES, t.tr("registry.db_user_field")),
-        (DATABASES, t.tr("registry.db_password_field")),
+        (DATABASES, t.tr("registry.password_field")),
         (DATABASES, t.tr("registry.db_file_field")),
         (DATABASES, "PostgreSQL"),
         (DATABASES, "SQLite"),
@@ -146,7 +146,7 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (HOSTS, t.tr("registry.key_file")),
         (HOSTS, t.tr("registry.cert_field")),
         (HOSTS, t.tr("registry.auth_field")),
-        (HOSTS, t.tr("registry.secret_field")),
+        (HOSTS, t.tr("registry.password_field")),
         (HOSTS, "host_key"),
         (BUCKETS, "[[bucket]]"),
         (BUCKETS, "koyomi.toml"),
@@ -156,14 +156,14 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (BUCKETS, t.tr("registry.key_id_field")),
         (BUCKETS, t.tr("registry.region_field")),
         (BUCKETS, t.tr("registry.endpoint_field")),
-        (BUCKETS, t.tr("registry.secret_field")),
+        (BUCKETS, t.tr("registry.s3_key_field")),
         (BUCKETS, "S3"),
         (MAILBOXES, "[[mailbox]]"),
         (MAILBOXES, "koyomi.toml"),
         (MAILBOXES, t.tr("settings.mailboxes")),
         (MAILBOXES, t.tr("registry.add_mailbox")),
         (MAILBOXES, t.tr("registry.mailbox_mail")),
-        (MAILBOXES, t.tr("registry.secret_field")),
+        (MAILBOXES, t.tr("registry.password_field")),
         (MAILBOXES, "mailbox"),
         (KEYS, "keymap.toml"),
         (KEYS, "prepend_keymap"),
@@ -719,7 +719,7 @@ mod tests {
             let idx = index(Words::of(lang), MoreWords::of(lang), lang, &t, false);
             let has = |p: usize, s: &str| idx.iter().any(|(q, x)| *q == p && x == s);
             assert!(has(ACCOUNTS, "[[account]]") && has(ACCOUNTS, t.tr("settings.accounts")), "{lang}");
-            assert!(has(ACCOUNTS, t.tr("registry.add_account")) && has(ACCOUNTS, t.tr("registry.secret_field")), "{lang}");
+            assert!(has(ACCOUNTS, t.tr("registry.add_account")) && has(ACCOUNTS, t.tr("registry.password_field")), "{lang}");
             assert!(has(DATABASES, "[[database]]") && has(DATABASES, t.tr("settings.databases")), "{lang}");
             assert!(has(DATABASES, t.tr("registry.add_database")) && has(DATABASES, t.tr("registry.tls_field")), "{lang}");
         }

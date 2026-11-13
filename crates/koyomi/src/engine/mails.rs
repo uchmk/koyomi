@@ -132,6 +132,15 @@ impl Mails {
         }
     }
 
+    /// Drops the watches that read with the secret `secret` (ASCII case-insensitive), so the next `set_rules` opens them
+    /// again with what the secret holds now. A watch is kept while its address and secret name stay the same and an
+    /// open session is not dropped by a poll error, so a password changed in the same secret would not be picked up
+    /// otherwise. A reopened watch starts at the newest mail, as after any change of the mailbox's address: mail that
+    /// came between the last read and the reopening is not started on.
+    pub fn reopen(&mut self, secret: &str) {
+        self.watches.retain(|w| !w.secret.trim().eq_ignore_ascii_case(secret.trim()));
+    }
+
     /// The nets whose mailboxes have had matching mail since the last call.
     pub fn due(&mut self) -> Vec<Hit> {
         let mut out = Vec::new();
@@ -434,5 +443,40 @@ run = [\"x\"]
         mails.set_rules(&defs, std::slice::from_ref(&b));
         assert_eq!(mails.watches.len(), 2);
         assert_eq!(waited(&seen, 4), 4);
+    }
+
+    /// A password changed in the same secret is read by watches opened again: `reopen` drops the watches of that
+    /// secret only (any case), and `set_rules` opens them once more.
+    #[test]
+    fn reopen_drops_the_watches_of_a_secret_and_they_open_again() {
+        let opens = Arc::new(Mutex::new(Vec::new()));
+        let o = Arc::clone(&opens);
+        let open: Open = Arc::new(move |_: &str, _: &Mailbox, secret: &str| {
+            o.lock().unwrap().push(secret.to_owned());
+            Ok(Box::new(Fake(Arc::new(Mutex::new(Vec::new())))) as Box<dyn Inbox>)
+        });
+        let mut mails = Mails::with(open, Duration::from_millis(10));
+        let defs = [def("g/n", NAMED), def("g/m", NET)];
+        let a = entry("imaps://a@one.example", "secret:Koyomi-Mail-Ops");
+        let waited = |n: usize| {
+            let start = Instant::now();
+            while opens.lock().unwrap().len() < n && start.elapsed() < Duration::from_secs(1) {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            opens.lock().unwrap().len()
+        };
+        mails.set_rules(&defs, std::slice::from_ref(&a));
+        assert_eq!(waited(2), 2);
+        // Nothing changed: nothing is opened again.
+        mails.set_rules(&defs, std::slice::from_ref(&a));
+        assert_eq!((mails.watches.len(), waited(3)), (2, 2));
+        // Another secret: the watches are kept.
+        mails.reopen("other");
+        assert_eq!(mails.watches.len(), 2);
+        // The named mailbox's secret, in another case: only that watch is dropped and opened again.
+        mails.reopen("koyomi-mail-ops");
+        assert_eq!(mails.watches.len(), 1);
+        mails.set_rules(&defs, std::slice::from_ref(&a));
+        assert_eq!((mails.watches.len(), waited(3)), (2, 3));
     }
 }

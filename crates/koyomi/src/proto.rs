@@ -18,7 +18,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 53;
+pub const PROTO: u32 = 54;
 
 /// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
 /// `Display`. On the wire it is the plain string.
@@ -378,8 +378,13 @@ pub enum Request {
     AccountPut {
         name: String,
         user: String,
-        password: String,
+        #[serde(default)]
+        password: Option<String>,
         base_sha256: String,
+        /// A password typed in the form. With it, `password` must be `None`: the engine picks the secret and
+        /// writes `password = "secret:<that>"` (see `engine::typed_password`).
+        #[serde(default)]
+        password_value: Option<Hidden>,
     },
     /// Remove the `[[account]]` `name`. Refused while a net names it, unless `force`.
     AccountRemove {
@@ -426,6 +431,10 @@ pub enum Request {
         #[serde(default)]
         auth: Option<String>,
         base_sha256: String,
+        /// A password typed in the form. With it, `password` must be `None`: the engine picks the secret and
+        /// writes `password = "secret:<that>"` (see `engine::typed_password`).
+        #[serde(default)]
+        password_value: Option<Hidden>,
     },
     /// Remove the `[[host]]` `name`. Refused while a net names it, unless `force`.
     HostRemove {
@@ -450,12 +459,17 @@ pub enum Request {
         url: String,
         #[serde(default)]
         key_id: Option<String>,
-        password: String,
+        #[serde(default)]
+        password: Option<String>,
         #[serde(default)]
         region: Option<String>,
         #[serde(default)]
         endpoint: Option<String>,
         base_sha256: String,
+        /// A password typed in the form. With it, `password` must be `None`: the engine picks the secret and
+        /// writes `password = "secret:<that>"` (see `engine::typed_password`).
+        #[serde(default)]
+        password_value: Option<Hidden>,
     },
     /// Remove the `[[bucket]]` `name`. Refused while a net names it, unless `force`.
     BucketRemove {
@@ -468,8 +482,13 @@ pub enum Request {
     MailboxPut {
         name: String,
         mail: String,
-        password: String,
+        #[serde(default)]
+        password: Option<String>,
         base_sha256: String,
+        /// A password typed in the form. With it, `password` must be `None`: the engine picks the secret and
+        /// writes `password = "secret:<that>"` (see `engine::typed_password`).
+        #[serde(default)]
+        password_value: Option<Hidden>,
     },
     /// Remove the `[[mailbox]]` `name`. Refused while a net names it, unless `force`.
     MailboxRemove {
@@ -1489,7 +1508,13 @@ c"
             Request::UserRemove { name: "u".into(), base: "b".into() },
             Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
             Request::UserReset { name: "u".into(), base: "b".into() },
-            Request::AccountPut { name: "a".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
+            Request::AccountPut {
+                name: "a".into(),
+                user: "u".into(),
+                password: Some("p".into()),
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::AccountRemove { name: "a".into(), base_sha256: "b".into(), force: false },
             Request::DatabasePut {
                 name: "d".into(),
@@ -1509,19 +1534,27 @@ c"
                 cert: None,
                 auth: Some("ntlm".into()),
                 base_sha256: "b".into(),
+                password_value: None,
             },
             Request::HostRemove { name: "h".into(), base_sha256: "b".into(), force: false },
             Request::BucketPut {
                 name: "bk".into(),
                 url: "s3://x".into(),
                 key_id: None,
-                password: "secret:s".into(),
+                password: Some("secret:s".into()),
                 region: None,
                 endpoint: None,
                 base_sha256: "b".into(),
+                password_value: None,
             },
             Request::BucketRemove { name: "bk".into(), base_sha256: "b".into(), force: false },
-            Request::MailboxPut { name: "mb".into(), mail: "imaps://u@h".into(), password: "secret:s".into(), base_sha256: "b".into() },
+            Request::MailboxPut {
+                name: "mb".into(),
+                mail: "imaps://u@h".into(),
+                password: Some("secret:s".into()),
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::MailboxRemove { name: "mb".into(), base_sha256: "b".into(), force: true },
             db_test(None),
         ];
@@ -1564,6 +1597,78 @@ c"
         // A put written without the value (a client before PROTO 52) reads as one with none.
         let old = r#"{"DatabasePut":{"name":"d","db":"sqlite://x","base_sha256":"b"}}"#;
         assert!(matches!(serde_json::from_str::<Request>(old), Ok(Request::DatabasePut { password_value: None, .. })));
+    }
+
+    /// the same for the account, host, bucket and mailbox puts.
+    #[test]
+    fn a_typed_password_of_the_other_puts_is_hidden_and_travels() {
+        let pw = || Some(Hidden::new("pw-not-to-show".into()));
+        let puts = [
+            Request::AccountPut { name: "a".into(), user: "u".into(), password: None, base_sha256: "b".into(), password_value: pw() },
+            Request::HostPut {
+                name: "h".into(),
+                on: "h.example".into(),
+                host_key: None,
+                key: None,
+                password: None,
+                cert: None,
+                auth: None,
+                base_sha256: "b".into(),
+                password_value: pw(),
+            },
+            Request::BucketPut {
+                name: "k".into(),
+                url: "s3://x".into(),
+                key_id: None,
+                password: None,
+                region: None,
+                endpoint: None,
+                base_sha256: "b".into(),
+                password_value: pw(),
+            },
+            Request::MailboxPut {
+                name: "m".into(),
+                mail: "imaps://u@h".into(),
+                password: None,
+                base_sha256: "b".into(),
+                password_value: pw(),
+            },
+        ];
+        let value = |r: &Request| match r {
+            Request::AccountPut { password_value, .. }
+            | Request::HostPut { password_value, .. }
+            | Request::BucketPut { password_value, .. }
+            | Request::MailboxPut { password_value, .. } => password_value.as_ref().map(|h| h.expose().to_owned()),
+            _ => panic!("not a put"),
+        };
+        for put in &puts {
+            let shown = format!("{put:?}");
+            assert!(!shown.contains("pw-not-to-show") && shown.contains("***"), "{shown}");
+            assert_eq!(value(&round(put)).as_deref(), Some("pw-not-to-show"));
+            let json = serde_json::to_string(put).unwrap();
+            assert_eq!(value(&serde_json::from_str::<Request>(&json).unwrap()).as_deref(), Some("pw-not-to-show"));
+        }
+        // A put from a PROTO 53 client holds neither `password` nor `password_value`: both read as none.
+        let olds = [
+            r#"{"AccountPut":{"name":"a","user":"u","base_sha256":"b"}}"#,
+            r#"{"HostPut":{"name":"h","on":"h.example","base_sha256":"b"}}"#,
+            r#"{"BucketPut":{"name":"k","url":"s3://x","base_sha256":"b"}}"#,
+            r#"{"MailboxPut":{"name":"m","mail":"imaps://u@h","base_sha256":"b"}}"#,
+        ];
+        for old in olds {
+            let r: Request = serde_json::from_str(old).unwrap();
+            assert!(value(&r).is_none(), "{old}");
+            assert!(
+                matches!(
+                    r,
+                    Request::AccountPut { password: None, .. }
+                        | Request::HostPut { password: None, .. }
+                        | Request::BucketPut { password: None, .. }
+                        | Request::MailboxPut { password: None, .. }
+                ),
+                "{old}"
+            );
+        }
     }
 
     /// the new requests and the staged one's `expect` travel through the door and through JSON.
@@ -1614,7 +1719,13 @@ port = 1
         };
         assert_eq!(ConfigBody::parse(&cfg.to_toml()).unwrap(), cfg);
         assert!(matches!(round(&Request::Registry), Request::Registry));
-        let put = Request::AccountPut { name: "a".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() };
+        let put = Request::AccountPut {
+            name: "a".into(),
+            user: "u".into(),
+            password: Some("p".into()),
+            base_sha256: "b".into(),
+            password_value: None,
+        };
         let Request::AccountPut { name, user, .. } = round(&put) else { panic!("not an account put") };
         assert_eq!((name.as_str(), user.as_str()), ("a", "u"));
         assert!(Request::Registry.is_read());

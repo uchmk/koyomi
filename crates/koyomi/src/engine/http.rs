@@ -1338,7 +1338,13 @@ mod tests {
             Request::Delete { id: "経理/a".into() },
             Request::Ops { from: "a".into(), to: "b".into() },
             Request::Registry,
-            Request::AccountPut { name: "ops".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
+            Request::AccountPut {
+                name: "ops".into(),
+                user: "u".into(),
+                password: Some("p".into()),
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::AccountRemove { name: "ops".into(), base_sha256: "b".into(), force: false },
             Request::DatabasePut {
                 name: "m".into(),
@@ -1358,19 +1364,27 @@ mod tests {
                 cert: None,
                 auth: None,
                 base_sha256: "b".into(),
+                password_value: None,
             },
             Request::HostRemove { name: "web1".into(), base_sha256: "b".into(), force: false },
             Request::BucketPut {
                 name: "bk".into(),
                 url: "s3://x".into(),
                 key_id: None,
-                password: "secret:s".into(),
+                password: Some("secret:s".into()),
                 region: None,
                 endpoint: None,
                 base_sha256: "b".into(),
+                password_value: None,
             },
             Request::BucketRemove { name: "bk".into(), base_sha256: "b".into(), force: false },
-            Request::MailboxPut { name: "mb".into(), mail: "imaps://u@h".into(), password: "secret:s".into(), base_sha256: "b".into() },
+            Request::MailboxPut {
+                name: "mb".into(),
+                mail: "imaps://u@h".into(),
+                password: Some("secret:s".into()),
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::MailboxRemove { name: "mb".into(), base_sha256: "b".into(), force: false },
         ] {
             assert!(narrow(&r, "sato", &nets, Role::Edit, &ask).is_err(), "{r:?}");
@@ -2346,6 +2360,43 @@ high_contrast = true
         let (code, json, _) = through(&g, &at_door("root", true, &plain));
         assert_eq!(code, 400);
         assert!(json.to_string().contains("E3778"), "{json}");
+    }
+
+    #[test]
+    fn a_registry_put_with_a_typed_password_that_does_not_read_never_quotes_it() {
+        let g = gate();
+        // Every field any of the four needs, so only the one under test fails to read.
+        let valid = |extra: serde_json::Value| {
+            let mut o = serde_json::json!({"name": "n", "user": "u", "on": "h.example", "url": "s3://x", "mail": "imaps://u@h", "base_sha256": "b"});
+            o.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+            o
+        };
+        let cases = [
+            // a neighbouring field does not read
+            valid(serde_json::json!({"name": 7, "password_value": "pw-not-to-show"})),
+            // the password itself does not read as a string
+            valid(serde_json::json!({"password_value": ["pw-not-to-show"]})),
+            valid(serde_json::json!({"password_value": {"x": "pw-not-to-show"}})),
+        ];
+        for put in ["AccountPut", "HostPut", "BucketPut", "MailboxPut"] {
+            for fields in &cases {
+                let body = door_body(serde_json::json!({ put: fields }));
+                let (code, json, seen) = through(&g, &at_door("root", true, &body));
+                assert_eq!(code, 400, "{put}");
+                let text = json.to_string();
+                assert!(text.contains("E3796"), "{put}: the reply is not the hidden one");
+                assert!(!text.contains("pw-not-to-show"), "{put}: the reply quotes the password");
+                assert!(seen.is_empty(), "{put}: the handler saw a request");
+            }
+        }
+        // Wrapped in `Over` the request is read the same way (before the door's own refusal), so it is hidden too.
+        let body =
+            door_body(serde_json::json!({"Over": {"by": "x", "request": {"AccountPut": {"name": 7, "password_value": "pw-not-to-show"}}}}));
+        let (code, json, seen) = through(&g, &at_door("root", true, &body));
+        assert_eq!(code, 400);
+        let text = json.to_string();
+        assert!(text.contains("E3796") && !text.contains("pw-not-to-show"), "an Over request was not hidden");
+        assert!(seen.is_empty());
     }
 
     #[test]
