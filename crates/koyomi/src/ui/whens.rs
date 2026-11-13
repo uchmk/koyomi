@@ -46,6 +46,9 @@ pub const KINDS: [&str; 16] = [
     "after_jobnet",
 ];
 
+/// The usual Windows event logs the `eventlog` field offers (no notes).
+const EVENT_LOGS: [(&str, &str); 4] = [("Application", ""), ("System", ""), ("Security", ""), ("Setup", "")];
+
 /// The rules of `every = "month"`.
 pub const RULES: [&str; 4] = ["day", "last", "nth", "business_day"];
 
@@ -106,6 +109,9 @@ pub struct WhenEdit {
     /// `wait_for` and `wait_until`.
     pub wait_for: String,
     pub wait_until: String,
+    /// A time loaded into `at`, `from`, `to`, `once` or `wait_until` had seconds (`09:00:30`): the time picker reads `HH:MM`
+    /// only, so those fields keep their typed text field.
+    pub times_typed: bool,
     /// Why the fields do not read, when they do not.
     pub error: Option<String>,
 }
@@ -151,6 +157,7 @@ impl Default for WhenEdit {
             on_closed: None,
             wait_for: String::new(),
             wait_until: String::new(),
+            times_typed: false,
             error: None,
         }
     }
@@ -160,7 +167,7 @@ fn join<T: ToString>(items: &[T]) -> String {
     items.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(", ")
 }
 
-fn time_text(t: &NaiveTime) -> String {
+pub(crate) fn time_text(t: &NaiveTime) -> String {
     if t.format("%S").to_string() == "00" {
         t.format("%H:%M").to_string()
     } else {
@@ -216,7 +223,11 @@ impl WhenEdit {
         match &w.kind {
             Kind::Once { at } => {
                 e.kind = "once".into();
-                e.once = at.format("%Y-%m-%d %H:%M").to_string();
+                e.once = if chrono::Timelike::second(at) == 0 {
+                    at.format("%Y-%m-%d %H:%M").to_string()
+                } else {
+                    at.format("%Y-%m-%d %H:%M:%S").to_string()
+                };
             }
             Kind::Day { at } => {
                 e.kind = "day".into();
@@ -314,6 +325,16 @@ impl WhenEdit {
         e.on_closed = w.on_closed;
         e.wait_for = w.wait_for.clone().unwrap_or_default();
         e.wait_until = w.wait_until.map(|t| time_text(&t)).unwrap_or_default();
+        // Seconds in a loaded time: those fields stay typed, as the picker would drop them.
+        let secs = |t: &NaiveTime| chrono::Timelike::second(t) != 0;
+        e.times_typed = match &w.kind {
+            Kind::Once { at } => chrono::Timelike::second(at) != 0,
+            Kind::Day { at } | Kind::Week { at, .. } | Kind::Month { at, .. } | Kind::Year { at, .. } | Kind::Dates { at, .. } => {
+                at.iter().any(secs)
+            }
+            Kind::Minutes { from, to, .. } | Kind::Hours { from, to, .. } => secs(from) || secs(to),
+            _ => false,
+        } || w.wait_until.as_ref().is_some_and(secs);
         e
     }
 
@@ -485,6 +506,9 @@ impl WhenEdit {
     /// The fields; `true` when one changed. `pick` holds the nets and the file chooser.
     pub fn show(&mut self, ui: &mut egui::Ui, t: &Table, i: usize, pick: &Ctx) -> bool {
         let mut changed = false;
+        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+        let words = ito_prefs::FieldWords::for_lang(t.tr("app.lang"));
+        let times_typed = self.times_typed;
         let field = |ui: &mut egui::Ui, label: &str, s: &mut String, width: f32| -> bool {
             let mut hit = false;
             ui.horizontal(|ui| {
@@ -648,7 +672,6 @@ impl WhenEdit {
         };
         // A date field: typed, or picked on a month grid; `many` is a comma-separated list where a click
         // toggles a day. Each `[[when]]` has its own grid.
-        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
         let date = |ui: &mut egui::Ui, label: &str, s: &mut String, key: &str, many: bool| -> bool {
             let mut hit = false;
             ui.horizontal(|ui| {
@@ -660,6 +683,38 @@ impl WhenEdit {
             });
             hit
         };
+        // The picked fields. Each `[[when]]` has its own ids (`when.{i}.{part}`), so two never share a list. A field marks what
+        // it cannot read or what is outside its range itself; a value only the reader refuses (a business day of 0, an empty
+        // date or list) gets no red edge (uchmk/ito#232): the reason is shown in red below, as for the typed fields.
+        let time = |ui: &mut egui::Ui, label: &str, s: &mut String, part: &str, multi: bool, empty: bool, width: f32| -> bool {
+            let id = format!("when.{i}.{part}");
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let f = ito_prefs::TimeField::new(&id, words.clone()).name(label).width(width);
+                let f = if multi { f.multi() } else { f };
+                (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+            })
+            .inner
+        };
+        let number = |ui: &mut egui::Ui, label: &str, s: &mut String, part: &str, (min, max): (i64, i64), empty: bool| -> bool {
+            let id = format!("when.{i}.{part}");
+            ui.horizontal(|ui| {
+                ui.label(label);
+                let f = ito_prefs::NumberField::new(&id, words.clone()).name(label).range(Some(min), Some(max)).width(110.0);
+                (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+            })
+            .inner
+        };
+        let duration =
+            |ui: &mut egui::Ui, label: &str, s: &mut String, part: &str, units: &[ito_prefs::Unit], min: u64, empty: bool| -> bool {
+                let id = format!("when.{i}.{part}");
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    let f = ito_prefs::DurationField::new(&id, words.clone()).name(label).units(units).range(Some(min), None).width(140.0);
+                    (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+                })
+                .inner
+            };
         ui.horizontal(|ui| {
             ui.label(t.tr("when.kind"));
             egui::ComboBox::from_id_salt(("when-kind", i)).selected_text(t.tr(&format!("when.kind_{}", self.kind))).show_ui(ui, |ui| {
@@ -672,17 +727,45 @@ impl WhenEdit {
             });
         });
         match self.kind.as_str() {
-            "once" => changed |= field(ui, t.tr("when.once"), &mut self.once, 160.0),
-            "day" => changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0),
+            "once" if times_typed => changed |= field(ui, t.tr("when.once"), &mut self.once, 160.0),
+            "once" => {
+                let (d, tm) = once_parts(&self.once);
+                let (mut d, mut tm) = (d.to_owned(), tm.to_owned());
+                let label = t.tr("when.once");
+                let mut hit = false;
+                ui.horizontal(|ui| {
+                    ui.label(label);
+                    let f = ito_prefs::DateField::new(("when", "once", i), ito_prefs::DateWords::for_lang(t.tr("app.lang")))
+                        .name(label)
+                        .width(130.0);
+                    hit |= f.show(ui, look, &mut d).changed;
+                });
+                hit |= time(ui, t.tr("review.at"), &mut tm, "once_time", false, false, 120.0);
+                if hit {
+                    self.once = format!("{} {}", d.trim(), tm.trim()).trim_end().to_owned();
+                    changed = true;
+                }
+            }
+            "day" if times_typed => changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0),
+            "day" => changed |= time(ui, t.tr("when.at"), &mut self.at, "at", true, false, 200.0),
             "minutes" | "hours" => {
-                changed |= field(ui, t.tr("when.n"), &mut self.n, 50.0);
-                changed |= field(ui, t.tr("when.from"), &mut self.from, 70.0);
-                changed |= field(ui, t.tr("when.to"), &mut self.to, 70.0);
+                changed |= number(ui, t.tr("when.n"), &mut self.n, "n", (1, 1440), false);
+                if times_typed {
+                    changed |= field(ui, t.tr("when.from"), &mut self.from, 70.0);
+                    changed |= field(ui, t.tr("when.to"), &mut self.to, 70.0);
+                } else {
+                    changed |= time(ui, t.tr("when.from"), &mut self.from, "from", false, false, 120.0);
+                    changed |= time(ui, t.tr("when.to"), &mut self.to, "to", false, false, 120.0);
+                }
                 changed |= days(ui, &mut self.days, true);
             }
             "week" => {
                 changed |= days(ui, &mut self.days, false);
-                changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
+                changed |= if times_typed {
+                    field(ui, t.tr("when.at"), &mut self.at, 160.0)
+                } else {
+                    time(ui, t.tr("when.at"), &mut self.at, "at", true, false, 200.0)
+                };
             }
             "month" => {
                 ui.horizontal(|ui| {
@@ -702,35 +785,55 @@ impl WhenEdit {
                 match self.rule.as_str() {
                     "day" => {
                         changed |= month_day(ui, t.tr("when.day"), &mut self.day);
-                        changed |= field(ui, t.tr("when.shift"), &mut self.shift, 50.0);
+                        // Empty reads as 0 (`to_when`).
+                        changed |= number(ui, t.tr("when.shift"), &mut self.shift, "shift", (-31, 31), true);
                     }
                     "nth" => {
                         changed |= nth(ui, t.tr("when.nth"), &mut self.nth);
                         changed |= weekday(ui, t.tr("when.weekday"), &mut self.weekday);
                     }
-                    "business_day" => changed |= field(ui, t.tr("when.business_day"), &mut self.n, 50.0),
+                    // 0 is refused when saving (`to_when`); the field cannot leave one value out of its range (uchmk/ito#232).
+                    "business_day" => changed |= number(ui, t.tr("when.business_day"), &mut self.n, "business_day", (-31, 31), false),
                     _ => {}
                 }
-                changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
+                changed |= if times_typed {
+                    field(ui, t.tr("when.at"), &mut self.at, 160.0)
+                } else {
+                    time(ui, t.tr("when.at"), &mut self.at, "at", true, false, 200.0)
+                };
             }
             "year" => {
                 changed |= year_date(ui, t.tr("when.date"), &mut self.date);
-                changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
+                changed |= if times_typed {
+                    field(ui, t.tr("when.at"), &mut self.at, 160.0)
+                } else {
+                    time(ui, t.tr("when.at"), &mut self.at, "at", true, false, 200.0)
+                };
             }
             "dates" => {
                 changed |= date(ui, t.tr("when.dates"), &mut self.dates, "dates", true);
-                changed |= field(ui, t.tr("when.at"), &mut self.at, 160.0);
+                changed |= if times_typed {
+                    field(ui, t.tr("when.at"), &mut self.at, 160.0)
+                } else {
+                    time(ui, t.tr("when.at"), &mut self.at, "at", true, false, 200.0)
+                };
             }
             "file" => {
                 changed |= path(ui, t.tr("when.file"), &mut self.file, 200.0, "when.file", Want::File);
-                changed |= field(ui, t.tr("when.settle"), &mut self.settle, 70.0);
+                // Empty is no settle time (`to_when`).
+                changed |= duration(ui, t.tr("when.settle"), &mut self.settle, "settle", &[], 1, true);
             }
             "log" => {
                 changed |= path(ui, t.tr("when.log"), &mut self.log, 200.0, "when.log", Want::File);
                 changed |= field(ui, t.tr("when.contains"), &mut self.contains, 160.0);
             }
             "eventlog" => {
-                changed |= field(ui, t.tr("when.eventlog"), &mut self.eventlog, 120.0);
+                ui.horizontal(|ui| {
+                    let (label, id) = (t.tr("when.eventlog"), format!("when.{i}.eventlog"));
+                    ui.label(label);
+                    let f = ito_prefs::ComboField::new(&id, words.clone()).name(label).width(120.0).suggestions(&EVENT_LOGS);
+                    changed |= f.show(ui, look, &mut self.eventlog).changed;
+                });
                 changed |= field(ui, t.tr("when.ids"), &mut self.ids, 120.0);
                 changed |= field(ui, t.tr("when.source"), &mut self.source, 160.0);
             }
@@ -781,7 +884,11 @@ impl WhenEdit {
                     }
                 });
             }
-            "idle" => changed |= field(ui, t.tr("when.idle"), &mut self.idle, 70.0),
+            // The reader refuses less than a minute (`to_when`), so only minutes and hours are offered.
+            "idle" => {
+                changed |=
+                    duration(ui, t.tr("when.idle"), &mut self.idle, "idle", &[ito_prefs::Unit::Minutes, ito_prefs::Unit::Hours], 60, false)
+            }
             "session" => {
                 ui.horizontal(|ui| {
                     ui.label(t.tr("when.session"));
@@ -801,7 +908,11 @@ impl WhenEdit {
             changed |= date(ui, t.tr("when.start"), &mut self.start, "start", false);
             changed |= date(ui, t.tr("when.end"), &mut self.end, "end", false);
             changed |= net(ui, t.tr("when.wait_for"), &mut self.wait_for, "wait_for", true);
-            changed |= field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0);
+            changed |= if times_typed {
+                field(ui, t.tr("when.wait_until"), &mut self.wait_until, 70.0)
+            } else {
+                time(ui, t.tr("when.wait_until"), &mut self.wait_until, "wait_until", false, true, 120.0)
+            };
             ui.horizontal(|ui| {
                 ui.label(t.tr("when.on_closed"));
                 // Five ways: a list that drops down, as a segmented row would not fit the pane.
@@ -823,6 +934,12 @@ impl WhenEdit {
         }
         changed
     }
+}
+
+/// A `once` text, `YYYY-MM-DD HH:MM`, as its date and its time of day, split at the first space.
+/// It is split before trimming: a time picked with no date yet is kept as ` HH:MM`.
+fn once_parts(text: &str) -> (&str, &str) {
+    text.split_once(' ').map_or((text.trim(), ""), |(d, tm)| (d.trim(), tm.trim()))
 }
 
 #[cfg(test)]
@@ -960,5 +1077,76 @@ run = [\"x\"]
         assert_eq!((mailbox.as_deref(), mail.as_str(), secret.as_str()), (Some("billing"), "", ""));
         e.mailbox.clear();
         assert_eq!(e.to_when().as_ref(), Ok(&net.when[0]));
+    }
+
+    fn plain(kind: Kind) -> When {
+        When { kind, except: vec![], start: None, end: None, on_closed: None, wait_for: None, wait_until: None }
+    }
+
+    fn hms(h: u32, m: u32, s: u32) -> NaiveTime {
+        NaiveTime::from_hms_opt(h, m, s).unwrap()
+    }
+
+    #[test]
+    fn a_day_with_two_times_round_trips() {
+        let w = plain(Kind::Day { at: vec![hms(9, 0, 0), hms(13, 30, 0)] });
+        let e = WhenEdit::from_when(&w);
+        assert_eq!((e.at.as_str(), e.times_typed), ("09:00, 13:30", false));
+        assert_eq!(e.to_when().as_ref(), Ok(&w));
+    }
+
+    #[test]
+    fn a_once_with_seconds_keeps_them_and_a_plain_one_does_not_gain_any() {
+        let day = NaiveDate::from_ymd_opt(2026, 4, 1).unwrap();
+        let w = plain(Kind::Once { at: day.and_time(hms(2, 0, 30)) });
+        let e = WhenEdit::from_when(&w);
+        assert_eq!((e.once.as_str(), e.times_typed), ("2026-04-01 02:00:30", true));
+        assert_eq!(e.to_when().as_ref(), Ok(&w));
+        let w = plain(Kind::Once { at: day.and_time(hms(2, 0, 0)) });
+        let e = WhenEdit::from_when(&w);
+        assert_eq!((e.once.as_str(), e.times_typed), ("2026-04-01 02:00", false));
+        assert_eq!(e.to_when().as_ref(), Ok(&w));
+    }
+
+    #[test]
+    fn seconds_in_any_loaded_time_keep_the_typed_fields() {
+        let mut w = plain(Kind::Minutes { n: 5, from: hms(9, 0, 0), to: hms(18, 0, 15), days: vec![] });
+        assert!(WhenEdit::from_when(&w).times_typed);
+        w.kind = Kind::Day { at: vec![hms(9, 0, 0)] };
+        w.wait_until = Some(hms(23, 0, 5));
+        w.wait_for = Some("g/n".into());
+        let e = WhenEdit::from_when(&w);
+        assert!(e.times_typed);
+        assert_eq!(e.to_when().as_ref(), Ok(&w));
+    }
+
+    #[test]
+    fn a_once_text_splits_into_its_date_and_its_time() {
+        assert_eq!(once_parts("2026-04-01 09:00"), ("2026-04-01", "09:00"));
+        assert_eq!(once_parts("2026-04-01"), ("2026-04-01", ""));
+        assert_eq!(once_parts(" 09:00"), ("", "09:00"));
+        assert_eq!(once_parts(""), ("", ""));
+    }
+
+    #[test]
+    fn the_schedule_editor_shows_picked_fields_under_ids_of_their_own() {
+        let (t, _) = crate::i18n::table("ja");
+        let nets = [];
+        let pctx = Ctx::new(&nets, "a", true, "", pick::Browse::default());
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut edits = [WhenEdit::new("day"), WhenEdit::new("hours"), WhenEdit::new("once")];
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            for (i, e) in edits.iter_mut().enumerate() {
+                e.show(ui, &t, i, &pctx);
+            }
+        });
+        out.drop_without_applying_deltas();
+        let got: Vec<String> = ito_a11y::take_test_ids(&ctx, egui::ViewportId::ROOT).into_iter().map(|e| e.name).collect();
+        for id in
+            ["pick.when.0.at", "pick.when.1.n", "pick.when.1.from", "pick.when.1.to", "pick.when.1.wait_until", "pick.when.2.once_time"]
+        {
+            assert!(got.iter().any(|g| g == id), "{id} in {got:?}");
+        }
     }
 }

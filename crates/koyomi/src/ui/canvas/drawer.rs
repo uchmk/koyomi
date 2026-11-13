@@ -8,7 +8,8 @@ use egui::{Frame, Margin, RichText, Stroke};
 use ito_a11y::Role;
 use ito_i18n::Table;
 use ito_prefs::{
-    fieldset, form_label, mark_button, seg_named, tag, CodeBox, FormWords, IconButton, InputField, Look, Mark as M, Need, Tag, Tone,
+    fieldset, form_label, mark_button, seg_named, tag, CodeBox, ComboField, DurationField, FieldWords, FormWords, IconButton, InputField,
+    Look, Mark as M, Need, NumberField, Tag, TimeField, Tone,
 };
 use koyomi_core::calendar::Calendar;
 use koyomi_core::chore::{Chore, Pass, SqlDb, SqlTls, Verify, WinrmAuth, GROUP_MAX};
@@ -18,6 +19,10 @@ use super::{Action, Cmd, Editor, Far, Fields, NetFields, Pane};
 use crate::show;
 use crate::ui::pick::{self, Ctx, Want};
 use crate::ui::whens::WhenEdit;
+
+/// The usual `Content-Type` values of an http job (no notes).
+const CONTENT_TYPES: [(&str, &str); 5] =
+    [("application/json", ""), ("text/plain", ""), ("application/x-www-form-urlencoded", ""), ("text/csv", ""), ("application/xml", "")];
 
 /// A note longer than this goes under the field, wrapped, instead of after the label.
 const SHORT_NOTE: usize = 16;
@@ -117,6 +122,83 @@ impl<'a> Form<'a> {
         self.note(ui, note);
         ui.add_space(10.0);
         changed
+    }
+
+    /// The label, the field `show` draws, the long note under it and the gap: the shape of every picked field below.
+    fn picked(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        show: impl FnOnce(&mut egui::Ui, &'a str, FieldWords<'a>) -> bool,
+    ) -> bool {
+        let (label, note) = self.label(ui, key, need);
+        let changed = show(ui, label, FieldWords::for_lang(self.t.tr("app.lang")));
+        self.note(ui, note);
+        ui.add_space(10.0);
+        changed
+    }
+
+    /// A time of day (`09:00`) with an hour and a minute picker. The field marks what it cannot read itself; koyomi's own
+    /// checks beyond that cannot mark it (uchmk/ito#232).
+    fn time(&self, ui: &mut egui::Ui, key: &'a str, need: Need, s: &mut String) -> bool {
+        let (look, empty) = (self.look, need != Need::Required);
+        self.picked(ui, key, need, |ui, label, words| {
+            let f = TimeField::new(key, words).name(label).width(120.0);
+            (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+        })
+    }
+
+    /// A length of time: a number and a unit. The field marks a value outside its range itself; koyomi's own checks beyond
+    /// that cannot mark it (uchmk/ito#232).
+    fn duration(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        s: &mut String,
+        how: impl FnOnce(DurationField<'a>) -> DurationField<'a>,
+    ) -> bool {
+        let (look, empty) = (self.look, need != Need::Required);
+        self.picked(ui, key, need, |ui, label, words| {
+            let f = how(DurationField::new(key, words).name(label).width(140.0));
+            (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+        })
+    }
+
+    /// A whole number with `−` and `+` and a range. The field marks a value outside its range itself; koyomi's own checks
+    /// beyond that (a hole in the range, a check across fields) cannot mark it (uchmk/ito#232).
+    fn number(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        s: &mut String,
+        how: impl FnOnce(NumberField<'a>) -> NumberField<'a>,
+    ) -> bool {
+        let (look, empty) = (self.look, need != Need::Required);
+        self.picked(ui, key, need, |ui, label, words| {
+            let f = how(NumberField::new(key, words).name(label).width(140.0));
+            (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+        })
+    }
+
+    /// Typed text with a list of usual values. `bad`: it does not read as it is (an empty required field is bad too).
+    fn combo(
+        &self,
+        ui: &mut egui::Ui,
+        key: &'a str,
+        need: Need,
+        bad: bool,
+        s: &mut String,
+        how: impl FnOnce(ComboField<'a>) -> ComboField<'a>,
+    ) -> bool {
+        let (look, empty) = (self.look, need != Need::Required);
+        let wrong = bad || (need == Need::Required && s.trim().is_empty());
+        self.picked(ui, key, need, |ui, label, words| {
+            let f = how(ComboField::new(key, words).name(label).error(wrong));
+            (if empty { f.empty_ok() } else { f }).show(ui, look, s).changed
+        })
     }
 
     /// A labelled box of code `rows` high, numbered by line; `aside` is said at its top right (the shell).
@@ -408,15 +490,23 @@ impl Editor {
             }
             Part::Time { .. } => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
-                    let mut changed = form.line(ui, "review.at", Need::Required, false, &mut f.at, |i| i.mono().hint("09:00").width(120.0));
-                    changed |= form.line(ui, "field.days", Need::Optional, false, &mut f.days, |i| i.width(120.0).hint("0"));
+                    // A time loaded with seconds (`09:00:30`) is not one the picker reads: it keeps the typed field.
+                    let mut changed = if f.at_typed {
+                        form.line(ui, "review.at", Need::Required, false, &mut f.at, |i| i.mono().hint("09:00").width(120.0))
+                    } else {
+                        form.time(ui, "review.at", Need::Required, &mut f.at)
+                    };
+                    let days = form.t.tr("canvas.unit_days");
+                    changed |= form.number(ui, "field.days", Need::Optional, &mut f.days, |n| {
+                        n.range(Some(0), Some(366)).unit(days).width(120.0).hint("0")
+                    });
                     changed
                 });
             }
             Part::File { .. } => {
                 changed |= fieldset(ui, look, t.tr("canvas.sec_detail"), "", |ui| {
                     let mut changed = form.path(ui, "review.file_wait", Need::Required, false, &mut f.file, |i| i.mono(), Want::File);
-                    changed |= form.line(ui, "review.settle", Need::Optional, false, &mut f.settle, |i| i.hint("30s").width(120.0));
+                    changed |= form.duration(ui, "review.settle", Need::Optional, &mut f.settle, |d| d.range(Some(1), None).hint("30s"));
                     changed
                 });
             }
@@ -569,16 +659,16 @@ fn loop_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let count_need = if count || !file { Need::Required } else { Need::Plain };
     let both = file && count;
     let mut changed = form.path(ui, "field.loop_file", file_need, both, &mut f.file, |i| i.mono().hint("D:\\in\\*.csv"), Want::File);
-    changed |= form.line(ui, "field.count", count_need, both, &mut f.count, |i| i.width(140.0).unit(form.t.tr("canvas.unit_times")));
-    changed |= form.line(ui, "field.loop_max", Need::Optional, false, &mut f.max, |i| i.width(140.0));
+    // `both` shows its red edge on the file field only: the number field has none to show (uchmk/ito#232).
+    let times = form.t.tr("canvas.unit_times");
+    changed |= form.number(ui, "field.count", count_need, &mut f.count, |n| n.range(Some(1), Some(10_000)).unit(times));
+    changed |= form.number(ui, "field.loop_max", Need::Optional, &mut f.max, |n| n.range(Some(1), Some(i64::from(jobnet::LOOP_MAX))));
     changed
 }
 
 /// An `ssh`'s or a `winrm`'s group of PCs (`on = "group:…"`): how many at once, and when it passes.
 fn group_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
-    let n = f.max.trim();
-    let bad = !n.is_empty() && !n.parse::<usize>().is_ok_and(|n| (1..=GROUP_MAX).contains(&n));
-    let mut changed = form.line(ui, "field.group_max", Need::Optional, bad, &mut f.max, |i| i.width(140.0));
+    let mut changed = form.number(ui, "field.group_max", Need::Optional, &mut f.max, |n| n.range(Some(1), Some(GROUP_MAX as i64)));
     let options = Pass::ALL.map(|p| (p, form.t.tr(if p == Pass::All { "field.pass_all" } else { "field.pass_any" })));
     changed |= form.choice(ui, "field.pass", &mut f.pass, &options, form.t.tr("field.group_note"));
     changed
@@ -606,13 +696,12 @@ fn run_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
 
 /// How long it may take and how often it is tried again.
 fn retry_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
-    let mut changed = form.line(ui, "field.timeout", Need::Optional, false, &mut f.timeout, |i| i.hint("30m").width(140.0));
-    let bad = !f.retry_count.trim().is_empty() && f.retry_count.trim().parse::<u32>().is_err();
+    let mut changed = form.duration(ui, "field.timeout", Need::Optional, &mut f.timeout, |d| d.range(Some(1), None).hint("30m"));
     let unit = form.t.tr("canvas.unit_times");
     changed |= form.pair(
         ui,
-        |ui| form.line(ui, "field.retry_count", Need::Optional, bad, &mut f.retry_count, |i| i.hint("0").unit(unit)),
-        |ui| form.line(ui, "field.retry_wait", Need::Optional, false, &mut f.retry_wait, |i| i.hint("1m")),
+        |ui| form.number(ui, "field.retry_count", Need::Optional, &mut f.retry_count, |n| n.range(Some(1), Some(100)).unit(unit).hint("0")),
+        |ui| form.duration(ui, "field.retry_wait", Need::Optional, &mut f.retry_wait, |d| d.range(Some(1), None).hint("1m")),
     );
     changed
 }
@@ -622,7 +711,7 @@ fn judge_rows(ui: &mut egui::Ui, form: &Form, f: &mut Fields) -> bool {
     let mut changed = form.pair(
         ui,
         |ui| form.line(ui, "field.warn", Need::Plain, false, &mut f.warn, |i| i.mono().hint("1")),
-        |ui| form.line(ui, "field.error", Need::Plain, false, &mut f.error, |i| i.mono().hint("2-255")),
+        |ui| form.line(ui, "field.error", Need::Plain, false, &mut f.error, |i| i.mono().hint("2..255")),
     );
     changed |= form.line(ui, "field.error_output", Need::Plain, false, &mut f.error_output, |i| i.mono());
     changed |= form.path(ui, "field.ok_file", Need::Plain, false, &mut f.ok_file, |i| i.mono(), Want::File);
@@ -1095,9 +1184,10 @@ fn far_rows(ui: &mut egui::Ui, form: &Form, send: bool, f: &mut Fields) -> bool 
     if now == FarChoice::Url {
         let (opt, req) = (Need::Optional, Need::Required);
         if koyomi_core::chore::s3(f.far(send)).is_some() {
+            let regions = pick::region_rows(form.t);
             changed |= form.line(ui, "field.key_id", req, false, &mut f.key_id, |i| i.mono());
             changed |= form.line(ui, "field.s3_password", req, false, &mut f.s3_password, |i| i.mono().mark(M::Lock));
-            changed |= form.line(ui, "field.region", opt, false, &mut f.region, |i| i.mono().hint("ap-northeast-1"));
+            changed |= form.combo(ui, "field.region", opt, false, &mut f.region, |c| c.mono().suggestions(&regions));
             changed |= form.line(ui, "field.endpoint", opt, false, &mut f.endpoint, |i| i.mono().hint("http://nas:9000").mark(M::Server));
         } else {
             changed |= form.path(ui, "field.key", opt, false, &mut f.key, |i| i.mono(), Want::File);
@@ -1209,8 +1299,8 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
         Chore::Delete { .. } => {
             changed |= form.path(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder), Want::Folder);
             changed |= form.line(ui, "field.match", opt, false, &mut f.pattern, |i| i.mono().hint("*.log"));
-            let bad = !f.keep_days.trim().is_empty() && f.keep_days.trim().parse::<u32>().is_err();
-            changed |= form.line(ui, "field.keep_days", req, bad, &mut f.keep_days, |i| i.width(140.0));
+            let days = form.t.tr("canvas.unit_days");
+            changed |= form.number(ui, "field.keep_days", req, &mut f.keep_days, |n| n.range(Some(1), Some(36_500)).unit(days));
         }
         Chore::Empty { .. } => changed |= form.path(ui, "field.path", req, false, &mut f.path, |i| i.mono().mark(M::Folder), Want::Folder),
         Chore::Zip { .. } => {
@@ -1276,7 +1366,7 @@ fn chore_rows(ui: &mut egui::Ui, form: &Form, chore: &Chore, f: &mut Fields) -> 
             changed |= method_row(ui, form, f);
             changed |= form.code(ui, "field.body", opt, false, &mut f.body, (3, ""));
             changed |= form.code(ui, "field.headers", opt, false, &mut f.headers, (2, ""));
-            changed |= form.line(ui, "field.content_type", opt, false, &mut f.content_type, |i| i.mono());
+            changed |= form.combo(ui, "field.content_type", opt, false, &mut f.content_type, |c| c.mono().suggestions(&CONTENT_TYPES));
             changed |= form.line(ui, "field.expect", opt, false, &mut f.expect, |i| i.mono().hint("200"));
         }
         Chore::Mail { .. } => {
@@ -1791,5 +1881,83 @@ mod conn_tests {
         assert_eq!((e[3].1.as_str(), at), ("gone（登録されていません）", 3));
         let (e, at) = via_entries(&t, &[], &Fields::default());
         assert_eq!((e.len(), e[0].1.as_str(), at), (1, "最初の送り先", 0));
+    }
+}
+
+#[cfg(test)]
+mod picked_tests {
+    use super::*;
+
+    /// The test IDs a draw of some rows records.
+    fn ids(draw: impl FnOnce(&mut egui::Ui, &Form)) -> Vec<String> {
+        let (t, _) = crate::i18n::table("ja");
+        let pctx = Ctx::new(&[], "a", true, "", pick::Browse::default());
+        let form = Form::new(&t, &pctx);
+        let ctx = egui::Context::default();
+        ctx.enable_accesskit();
+        let mut draw = Some(draw);
+        let out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            if let Some(draw) = draw.take() {
+                draw(ui, &form);
+            }
+        });
+        out.drop_without_applying_deltas();
+        ito_a11y::take_test_ids(&ctx, egui::ViewportId::ROOT).into_iter().map(|e| e.name).collect()
+    }
+
+    fn chore_of(body: &str) -> (Chore, Fields) {
+        let text = format!("format = 1\n[[job]]\nid = \"a\"\n{body}");
+        let job = koyomi_core::jobnet::parse(&text).unwrap().jobs[0].clone();
+        let Part::Chore(c) = &job.part else { panic!("not a chore") };
+        (c.clone(), Fields::of(&job))
+    }
+
+    #[test]
+    fn counts_and_lengths_are_picked_fields() {
+        let got = ids(|ui, form| {
+            let mut f = Fields::default();
+            loop_rows(ui, form, &mut f);
+            retry_rows(ui, form, &mut f);
+        });
+        for id in ["pick.field.count", "pick.field.loop_max", "pick.field.timeout", "pick.field.retry_count", "pick.field.retry_wait"] {
+            assert!(got.iter().any(|g| g == id), "{id} in {got:?}");
+        }
+    }
+
+    #[test]
+    fn a_time_part_has_a_time_field_and_a_days_number() {
+        let got = ids(|ui, form| {
+            let mut f = Fields::default();
+            form.time(ui, "review.at", Need::Required, &mut f.at);
+            form.number(ui, "field.days", Need::Optional, &mut f.days, |n| n.range(Some(0), Some(366)));
+            form.duration(ui, "review.settle", Need::Optional, &mut f.settle, |d| d.range(Some(1), None));
+        });
+        for id in ["pick.review.at", "pick.field.days", "pick.review.settle"] {
+            assert!(got.iter().any(|g| g == id), "{id} in {got:?}");
+        }
+    }
+
+    #[test]
+    fn an_s3_destination_has_a_region_combo_and_a_delete_has_a_days_number() {
+        let body = "kind = \"send\"\nfrom = \"D:/out\"\ninto = \"s3://logs/d/\"\nkey_id = \"AKIAEXAMPLE\"\npassword = \"secret:s3\"\n";
+        let (_, mut f) = chore_of(&format!("{body}region = \"ap-northeast-1\"\n"));
+        let got = ids(|ui, form| {
+            far_rows(ui, form, true, &mut f);
+        });
+        assert!(got.iter().any(|g| g == "pick.field.region"), "{got:?}");
+        let (c, mut f) = chore_of("kind = \"delete\"\npath = \"D:/x\"\nkeep_days = 10\n");
+        let got = ids(|ui, form| {
+            chore_rows(ui, form, &c, &mut f);
+        });
+        assert!(got.iter().any(|g| g == "pick.field.keep_days"), "{got:?}");
+    }
+
+    #[test]
+    fn an_http_call_has_a_content_type_combo() {
+        let (c, mut f) = chore_of("kind = \"http\"\nurl = \"http://localhost/x\"\n");
+        let got = ids(|ui, form| {
+            chore_rows(ui, form, &c, &mut f);
+        });
+        assert!(got.iter().any(|g| g == "pick.field.content_type"), "{got:?}");
     }
 }

@@ -289,7 +289,7 @@ fn when(w: &When, out: &mut String) {
         push(out, "wait_for", &q(u));
     }
     if let Some(t) = w.wait_until {
-        push(out, "wait_until", &q(&t.format("%H:%M").to_string()));
+        push(out, "wait_until", &q(&time(t)));
     }
 }
 
@@ -852,6 +852,27 @@ message = \"金額を確かめる\"
         let back = jobnet::parse(&text(&with)).unwrap();
         assert_eq!(back, with);
         assert_eq!(back.jobs[0].part, Part::Approval { message: Some("金額を確かめる".into()) });
+    }
+
+    #[test]
+    fn a_wait_until_with_seconds_keeps_them() {
+        for at in ["11:30", "23:00:05"] {
+            let src = format!(
+                "format = 1
+[[when]]
+every = \"day\"
+at = [\"09:00\"]
+wait_for = \"a/b\"
+wait_until = \"{at}\"
+
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"
+            );
+            let net = jobnet::parse(&src).unwrap();
+            assert!(text(&net).contains(&format!("wait_until = \"{at}\"")), "{}", text(&net));
+        }
     }
 
     #[test]

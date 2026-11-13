@@ -1996,6 +1996,25 @@ fn typed_line(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, (label, tail, hi
     });
 }
 
+/// The region of a bucket: typed, or picked from the usual S3 regions.
+fn region_line(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, text: &mut String) {
+    ui.horizontal(|ui| {
+        let label = t.tr("registry.region_field");
+        ui.label(label);
+        let rows = crate::ui::pick::region_rows(t);
+        let field_id = format!("{id}.region");
+        let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+        ito_prefs::ComboField::new(&field_id, ito_prefs::FieldWords::for_lang(t.tr("app.lang")))
+            .name(label)
+            .mono()
+            .empty_ok()
+            .hint(t.tr("registry.region_hint"))
+            .width(320.0)
+            .suggestions(&rows)
+            .show(ui, look, text);
+    });
+}
+
 /// The "connect and check" button of a host form, and what the host showed.
 fn peek_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, open: bool, click: &mut Option<Click>) {
     let c = ito_theme::colors();
@@ -2377,7 +2396,7 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             password_ui(ui, t, &id, f);
         }
         if page == Page::Buckets {
-            typed_line(ui, t, &id, ("registry.region_field", "region", "registry.region_hint"), &mut f.x.region);
+            region_line(ui, t, &id, &mut f.x.region);
             typed_line(ui, t, &id, ("registry.endpoint_field", "endpoint", "registry.endpoint_hint"), &mut f.x.endpoint);
         }
     });

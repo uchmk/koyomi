@@ -2182,6 +2182,13 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 140.10 | Cancel a chooser; while one is open look at the other 参照… buttons and the [[when]] remove buttons | A cancel changes nothing; every other 参照… and every [[when]] remove button is greyed with the reason |
 | 140.11 | Open a chooser, close the job (or open another), then pick a path | The answer is dropped; the other job's field is unchanged |
 | 140.12 | Switch the window to a far engine | No 参照… button shows anywhere; the fields stay typed |
+| 140.13 | Open a job with a 時刻 part (drawer 時刻) and a job with a [[when]] 毎日 (時刻) list; click the clock button and pick a time; add a second time to the list | The time is a typed `HH:MM` field with a picker; a pick writes `HH:MM`; the list keeps several times separated by commas; saving writes the same time to the file |
+| 140.14 | In the drawer set 時間の上限 (timeout) and 落ち着くまで, and in a [[when]] 「PC が空いたら」 the 使われない時間; type 0 in one of them | Each is a number with a unit select (秒・分・時間 ...); 30m reads as 30 and 分; 0 is shown in red and the job is not saved (the reason is shown); the idle time offers only minutes and hours |
+| 140.15 | In the drawer look at count（繰り返す回数）and max（並行して実行する数）of a loop, 何日より古いものを削除するか (delete) and やり直す回数, and press − and + and type 0 or a huge number | Each is a number field with − and +; the unit (回・日) is shown; − and + keep the value inside its range (for example 1..10000 for the count); a typed number out of range is shown in red and the job is not saved |
+| 140.16 | Open a send to an S3 destination and look at リージョン; also open 設定 > S3 and look at a bucket's リージョン | Both are a text field with a list of suggestions (ap-northeast-1 東京 ...); a region not in the list can still be typed |
+| 140.17 | In an HTTP call job open 中身の種類; in a [[when]] 「イベントログに出たら」 open イベントログ | Each is a text field with suggestions (application/json ...; Application, System, Security, Setup); another value can still be typed |
+| 140.18 | Open a job file whose time is `09:00:30` (a part's `at`, a [[when]] `at` or `once` with seconds) | That field stays a typed text field and shows the seconds; saving without touching it writes the seconds unchanged; a time without seconds shows the picker |
+| 140.19 | Add a [[when]] 「1 回だけ」 (once) and look at 日時; pick a time before a date, then a date | It is a date field and a time field; an empty date or time has a red edge; a time picked first stays in the time field; the file holds `YYYY-MM-DD HH:MM`; clearing the time shows the reason and the job is not saved |
 
 ## 141. Five shells (`shell`: powershell, pwsh, bash, sh, zsh) (`engine/shells.rs`, `settings.rs`, `ui/canvas/drawer.rs`)
 

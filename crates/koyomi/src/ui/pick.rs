@@ -478,6 +478,20 @@ pub fn day_toggles(ui: &mut egui::Ui, t: &Table, label: &str, text: &mut String,
     }
 }
 
+/// The S3 regions the drawer's and the settings page's region field offer, each with the key of its note.
+pub const S3_REGIONS: [(&str, &str); 5] = [
+    ("ap-northeast-1", "pick.region_ap_northeast_1"),
+    ("ap-northeast-3", "pick.region_ap_northeast_3"),
+    ("us-east-1", "pick.region_us_east_1"),
+    ("us-west-2", "pick.region_us_west_2"),
+    ("eu-west-1", "pick.region_eu_west_1"),
+];
+
+/// [`S3_REGIONS`] as `(value, note)` rows for a `ComboField`, the notes in the language in force.
+pub fn region_rows(t: &Table) -> Vec<(&'static str, &str)> {
+    S3_REGIONS.iter().map(|(v, k)| (*v, t.tr(k))).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -598,5 +612,17 @@ mod tests {
             ["C:/a.txt", &p("C:/b.txt").display().to_string(), &p("C:/c.txt").display().to_string()]
         );
         assert_eq!(browsed_text("", Want::Files, &[p("C:/b.txt")]), Some(p("C:/b.txt").display().to_string()));
+    }
+
+    #[test]
+    fn the_region_list_has_a_note_in_both_languages() {
+        for lang in [include_str!("../../lang/en.toml"), include_str!("../../lang/ja.toml")] {
+            let table: toml::Table = lang.parse().unwrap();
+            for (value, key) in S3_REGIONS {
+                let (section, name) = key.split_once('.').unwrap();
+                let note = table[section][name].as_str().unwrap_or_default();
+                assert!(!note.is_empty(), "{value}: {key}");
+            }
+        }
     }
 }

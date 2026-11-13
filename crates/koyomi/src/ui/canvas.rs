@@ -244,6 +244,8 @@ pub struct Fields {
     pub encoding: Encoding,
     pub wait: Wait,
     pub at: String,
+    /// `at` was loaded with seconds: the picker reads `HH:MM` only, so the drawer keeps the typed field.
+    pub at_typed: bool,
     pub days: String,
     pub file: String,
     pub settle: String,
@@ -477,7 +479,8 @@ impl Fields {
         match &job.part {
             Part::Join { wait } => f.wait = *wait,
             Part::Time { at, days } => {
-                f.at = at.format("%H:%M").to_string();
+                f.at = crate::ui::whens::time_text(at);
+                f.at_typed = chrono::Timelike::second(at) != 0;
                 f.days = days.to_string();
             }
             Part::File { file, settle } => {
@@ -3048,6 +3051,29 @@ run = [\"x\"]
         fields.message = "  ".into();
         assert!(e.apply_fields(&ask, &fields).is_ok());
         assert_eq!(e.net.jobs[1].part, Part::Approval { message: None }, "blank: not written");
+    }
+
+    #[test]
+    fn a_time_part_loaded_with_seconds_keeps_them() {
+        let mut e = Editor::over(
+            "a/b",
+            net("format = 1
+[[job]]
+id = \"a\"
+run = [\"x\"]
+"),
+        );
+        let at = chrono::NaiveTime::from_hms_opt(9, 0, 30).unwrap();
+        let tm = e.add(Part::Time { at, days: 0 }, Some("a"), None);
+        let fields = Fields::of(&e.net.jobs[1]);
+        assert_eq!((fields.at.as_str(), fields.at_typed), ("09:00:30", true));
+        assert!(e.apply_fields(&tm, &fields).is_ok());
+        assert_eq!(e.net.jobs[1].part, Part::Time { at, days: 0 }, "saving it back changes nothing");
+        let plain = chrono::NaiveTime::from_hms_opt(9, 0, 0).unwrap();
+        let tm = e.add(Part::Time { at: plain, days: 0 }, Some("a"), None);
+        let fields = Fields::of(&e.net.jobs[2]);
+        assert_eq!((fields.at.as_str(), fields.at_typed), ("09:00", false));
+        assert!(e.apply_fields(&tm, &fields).is_ok());
     }
 
     #[test]
