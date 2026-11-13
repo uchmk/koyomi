@@ -6,10 +6,10 @@
 
 use std::time::{Duration, Instant};
 
-use ito_http::client::{self, Client, Reply};
 use koyomi_core::config::Remote;
 use koyomi_core::msg::{self, line};
 use koyomi_core::role::Role;
+use koyomi_http::client::{self, Client, Reply};
 
 use crate::proto::{self, Request};
 use crate::{client as local, remote};

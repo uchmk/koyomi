@@ -1,7 +1,7 @@
 //! `koyomi cloud run`: what a `send` into S3 or a `fetch` from it (`s3://bucket/key`)
 //! runs, on Amazon S3 or an S3-compatible server (MinIO …) in `endpoint`. It reads
 //! the job from the `KOYOMI_CLOUD_*` the engine sets and moves the files with
-//! ito-cloud. The access key ID and the secret access key come already read from
+//! koyomi-cloud. The access key ID and the secret access key come already read from
 //! the credential store, as any `secret:` of a job's environment does; by hand,
 //! `secret:<name>` is read here.
 //!
@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ito_cloud::{Error, Options, Target};
+use koyomi_cloud::{Error, Options, Target};
 use koyomi_core::chore::{self, Chore, Verify, NOTHING, S3};
 use koyomi_core::msg::{self, line, note};
 use koyomi_core::run::Moved;
@@ -153,7 +153,7 @@ fn send_files(target: &Target, at: &S3, from: &str, opts: &Options, stop: &Atomi
     for (local, size, _) in &files {
         let name = local.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
         let key = format!("{folder}{name}");
-        let moved = ito_cloud::put(target, local, &key, opts, stop, &mut progress(&name)).map_err(|e| failed(&e, at, &key, *size))?;
+        let moved = koyomi_cloud::put(target, local, &key, opts, stop, &mut progress(&name)).map_err(|e| failed(&e, at, &key, *size))?;
         said("sent", at, &key, moved, opts.checksum);
     }
     Ok(0)
@@ -162,7 +162,7 @@ fn send_files(target: &Target, at: &S3, from: &str, opts: &Options, stop: &Atomi
 /// Gets the keys `at` names (in its folder, not below) into the folder `into`.
 fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &AtomicBool) -> Result<i32, String> {
     let dir = &at.key[..at.key.rfind('/').map_or(0, |i| i + 1)];
-    let found: Vec<_> = ito_cloud::list(target, &at.key, opts, stop)
+    let found: Vec<_> = koyomi_cloud::list(target, &at.key, opts, stop)
         .map_err(|e| why(&e, &at.bucket, &at.key))?
         .into_iter()
         // `*` matches `/` too: the keys below the folder are not this fetch's.
@@ -181,8 +181,8 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &Atomi
     for e in &found {
         let name = &e.key[dir.len()..];
         let o = Options { request_timeout: Duration::from_secs(600 + e.size / SLOWEST), ..*opts };
-        let moved =
-            ito_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name)).map_err(|x| failed(&x, at, &e.key, e.size))?;
+        let moved = koyomi_cloud::get(target, &e.key, &into.join(name), &o, stop, &mut progress(name))
+            .map_err(|x| failed(&x, at, &e.key, e.size))?;
         said("fetched", at, &e.key, moved, opts.checksum);
     }
     Ok(0)
@@ -191,7 +191,7 @@ fn fetch_keys(target: &Target, at: &S3, into: &str, opts: &Options, stop: &Atomi
 /// Logs a file moved (`sent` or `fetched`) and records it for the history. With
 /// `verify` its hash is kept, as matched when the store checked it; a download the
 /// store could not check (no checksum, or one of a multipart upload) says so.
-fn said(verb: &str, at: &S3, key: &str, m: ito_cloud::Moved, verify: bool) {
+fn said(verb: &str, at: &S3, key: &str, m: koyomi_cloud::Moved, verify: bool) {
     let name = format!("s3://{}/{key}", at.bucket);
     let hash = if verify { format!(" (sha256 {})", m.sha256) } else { String::new() };
     crate::say(&format!("{verb}: {name} ({} bytes){hash}", m.bytes), false);
@@ -252,7 +252,7 @@ fn why(e: &Error, bucket: &str, key: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ito_cloud::fake::{self, FakeS3};
+    use koyomi_cloud::fake::{self, FakeS3};
 
     struct Dir(PathBuf);
 

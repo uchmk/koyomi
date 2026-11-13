@@ -1,7 +1,7 @@
 //! `koyomi sql run`: what a `sql` job runs. It reads the database, the SQL (or
 //! the file that has it), the CSV file for a result and the rows that are 正常
 //! from the `KOYOMI_SQL_*` the engine sets (each text after [`MAIL_TEXT`]), and
-//! runs the SQL with ito-sql on SQL Server, PostgreSQL or SQLite. The password
+//! runs the SQL with koyomi-sql on SQL Server, PostgreSQL or SQLite. The password
 //! comes already read from the credential store, as any `secret:` of a job's
 //! environment does; by hand, `secret:<name>` is read here.
 //!
@@ -18,9 +18,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::time::Duration;
 
-use ito_sql::{ConnectKind, SqlAuth, SqliteOpen, Target, Tls};
 use koyomi_core::chore::{sql_db, sql_rows, Chore, SqlDb, SqlTls};
 use koyomi_core::msg::{self, line, note};
+use koyomi_sql::{ConnectKind, SqlAuth, SqliteOpen, Target, Tls};
 
 /// The most a run may take here: the job's own `timeout` ends it sooner.
 const RUN_MAX: Duration = Duration::from_secs(30 * 24 * 3600);
@@ -106,7 +106,7 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
     };
     let place = place(&target);
     crate::say(&format!("sql: {place}"), false);
-    let result = ito_sql::run(&target, &script, Some(&csv), stop, RUN_MAX);
+    let result = koyomi_sql::run(&target, &script, Some(&csv), stop, RUN_MAX);
     let shown = match &result {
         Ok(o) if o.result_rows.is_some() => preview(&csv),
         _ => Vec::new(),
@@ -135,8 +135,8 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
     Ok(0)
 }
 
-/// The ito-sql target of `db` with the password already read (`None` for SQL Server with Windows authentication and
-/// for SQLite). A SQLite file that is not there is refused: ito-sql would make it.
+/// The koyomi-sql target of `db` with the password already read (`None` for SQL Server with Windows authentication and
+/// for SQLite). A SQLite file that is not there is refused: koyomi-sql would make it.
 pub(crate) fn target(db: SqlDb, tls: SqlTls, password: Option<String>) -> Result<Target, String> {
     let missing = |scheme: &str| line(msg::CHORE_PASSWORD_MISSING, &[scheme]);
     Ok(match db {
@@ -164,7 +164,7 @@ pub(crate) fn target(db: SqlDb, tls: SqlTls, password: Option<String>) -> Result
         },
         SqlDb::Sqlite { path } => {
             let path = PathBuf::from(path);
-            // A file that is not there is refused here, with its own message; `Existing` also makes ito-sql refuse it
+            // A file that is not there is refused here, with its own message; `Existing` also makes koyomi-sql refuse it
             // (and never create it), so a path written wrong never quietly gets an empty database.
             if !path.is_file() {
                 return Err(line(msg::SQL_DB_FILE_MISSING, &[&path.display().to_string()]));
@@ -186,9 +186,9 @@ pub(crate) fn place(target: &Target) -> String {
 
 /// Why the run did not end well, in the words of the log: an error with its ID
 /// that names `place`, or (a stop, a timeout) a note led by it.
-fn why(e: &ito_sql::Error, target: &Target, tls: SqlTls, place: &str) -> String {
+fn why(e: &koyomi_sql::Error, target: &Target, tls: SqlTls, place: &str) -> String {
     match e {
-        ito_sql::Error::Connect { kind, text } => {
+        koyomi_sql::Error::Connect { kind, text } => {
             let id = match (target, kind) {
                 (Target::SqlServer { .. }, ConnectKind::Tls) if tls == SqlTls::Verify => msg::SQL_CONNECT_TRUST,
                 (Target::Postgres { .. }, ConnectKind::Tls) if tls != SqlTls::Off => msg::SQL_CONNECT_TLS,
@@ -199,11 +199,11 @@ fn why(e: &ito_sql::Error, target: &Target, tls: SqlTls, place: &str) -> String 
             };
             line(id, &[place, text])
         }
-        ito_sql::Error::Sql(s) => line(msg::SQL_REFUSED, &[place, s]),
-        ito_sql::Error::Cancelled => format!("{place}: {}", note(msg::N_STOPPED_SQL, &[])),
-        ito_sql::Error::Timeout => format!("{place}: {}", note(msg::N_SQL_TIMEOUT, &[])),
-        ito_sql::Error::Unsupported(s) => line(msg::SQL_UNSUPPORTED, &[place, s]),
-        ito_sql::Error::Io(s) => line(msg::SQL_OUT_WRITE, &[place, s]),
+        koyomi_sql::Error::Sql(s) => line(msg::SQL_REFUSED, &[place, s]),
+        koyomi_sql::Error::Cancelled => format!("{place}: {}", note(msg::N_STOPPED_SQL, &[])),
+        koyomi_sql::Error::Timeout => format!("{place}: {}", note(msg::N_SQL_TIMEOUT, &[])),
+        koyomi_sql::Error::Unsupported(s) => line(msg::SQL_UNSUPPORTED, &[place, s]),
+        koyomi_sql::Error::Io(s) => line(msg::SQL_OUT_WRITE, &[place, s]),
     }
 }
 
@@ -342,7 +342,7 @@ mod tests {
     #[test]
     fn a_failure_to_connect_says_what_tls_to_try() {
         let server = Target::SqlServer { host: "db01".into(), port: 1433, database: "x".into(), auth: SqlAuth::Windows, trust_cert: false };
-        let e = ito_sql::Error::Connect { kind: ConnectKind::Tls, text: "certificate".into() };
+        let e = koyomi_sql::Error::Connect { kind: ConnectKind::Tls, text: "certificate".into() };
         let said = why(&e, &server, SqlTls::Verify, "db01");
         assert!(msg::SQL_CONNECT_TRUST.is_in(&said) && said.contains("tls = \"trust\""), "{said}");
         let said = why(&e, &server, SqlTls::Trust, "db01");
@@ -364,16 +364,16 @@ mod tests {
         let said = why(&e, &pg, SqlTls::Off, "pg");
         assert!(msg::SQL_CONNECT.is_in(&said), "{said}");
         // A sign-in refusal is not a TLS problem, whatever the TLS setting.
-        let refused = ito_sql::Error::Connect { kind: ConnectKind::SignIn, text: "bad password".into() };
+        let refused = koyomi_sql::Error::Connect { kind: ConnectKind::SignIn, text: "bad password".into() };
         let said = why(&refused, &pg, SqlTls::Verify, "pg");
         assert!(msg::SQL_CONNECT.is_in(&said) && !msg::SQL_CONNECT_TLS.is_in(&said), "{said}");
         let said = why(&refused, &server, SqlTls::Verify, "db01");
         assert!(msg::SQL_CONNECT.is_in(&said) && !msg::SQL_CONNECT_TRUST.is_in(&said), "{said}");
         // A SQLite file that went away after the pre-check.
         let lite = Target::Sqlite { path: "C:\\data\\gone.db".into(), open: SqliteOpen::Existing };
-        let gone = ito_sql::Error::Connect { kind: ConnectKind::Missing, text: "unable to open".into() };
+        let gone = koyomi_sql::Error::Connect { kind: ConnectKind::Missing, text: "unable to open".into() };
         let said = why(&gone, &lite, SqlTls::Off, "C:\\data\\gone.db");
         assert!(msg::SQL_DB_FILE_MISSING.is_in(&said) && said.contains("gone.db"), "{said}");
-        assert_eq!(why(&ito_sql::Error::Timeout, &pg, SqlTls::Off, "pg"), format!("pg: {}", note(msg::N_SQL_TIMEOUT, &[])));
+        assert_eq!(why(&koyomi_sql::Error::Timeout, &pg, SqlTls::Off, "pg"), format!("pg: {}", note(msg::N_SQL_TIMEOUT, &[])));
     }
 }

@@ -7,7 +7,7 @@
 //! cert`. `on = "group:app"` runs it on each PC of a group of koyomi.toml as an
 //! `ssh` does (`crate::ssh::group`), each PC with its own `cert` or else the job's.
 //!
-//! The engine stops it as it does an `ssh` (see `ssh.rs`). ito-winrm looks at the
+//! The engine stops it as it does an `ssh` (see `ssh.rs`). koyomi-winrm looks at the
 //! flag at every step: before the command is sent nothing starts there; after, the
 //! far command is asked to end and its shell deleted before this ends.
 
@@ -63,8 +63,8 @@ pub(crate) fn peek_cert(host: &str, port: u16) -> Result<String, String> {
     // (Windows takes about a second to refuse, longer than the short tries below).
     let place = format!("{host}:{port}");
     probe(&place, host, port)?;
-    ito_winrm::peek_fingerprint(host, port, Duration::from_secs(15), &AtomicBool::new(false))
-        .map(|f| ito_winrm::fingerprint::format(&f))
+    koyomi_winrm::peek_fingerprint(host, port, Duration::from_secs(15), &AtomicBool::new(false))
+        .map(|f| koyomi_winrm::fingerprint::format(&f))
         .map_err(|e| reason(&e, &place, WinrmAuth::Basic))
 }
 
@@ -172,18 +172,18 @@ fn one(
     out: &dyn Fn(&str, bool),
 ) -> Result<i32, String> {
     let user = far.user.clone().ok_or_else(|| line(msg::CHORE_WINRM_USER, &[&far.host]))?;
-    let pin = ito_winrm::fingerprint::parse(cert).ok_or_else(|| line(msg::CHORE_CERT_BAD, &[cert]))?;
-    let mut target = ito_winrm::Target::https(&far.host, &user, password, Some(pin)).with_auth(match auth {
-        WinrmAuth::Basic => ito_winrm::Auth::Basic,
-        WinrmAuth::Ntlm => ito_winrm::Auth::Ntlm,
+    let pin = koyomi_winrm::fingerprint::parse(cert).ok_or_else(|| line(msg::CHORE_CERT_BAD, &[cert]))?;
+    let mut target = koyomi_winrm::Target::https(&far.host, &user, password, Some(pin)).with_auth(match auth {
+        WinrmAuth::Basic => koyomi_winrm::Auth::Basic,
+        WinrmAuth::Ntlm => koyomi_winrm::Auth::Ntlm,
     });
     target.port = far.port.unwrap_or(WINRM_PORT);
-    let opts = ito_winrm::ExecOptions { env: crate::ssh::forwarded("KOYOMI_WINRM_ENV"), timeout: None };
+    let opts = koyomi_winrm::ExecOptions { env: crate::ssh::forwarded("KOYOMI_WINRM_ENV"), timeout: None };
     let (mut o, mut e) = (Vec::new(), Vec::new());
-    let result = ito_winrm::exec(&target, command, &opts, stop, &mut |stream, bytes| {
+    let result = koyomi_winrm::exec(&target, command, &opts, stop, &mut |stream, bytes| {
         let (buf, stderr) = match stream {
-            ito_winrm::Stream::Stdout => (&mut o, false),
-            ito_winrm::Stream::Stderr => (&mut e, true),
+            koyomi_winrm::Stream::Stdout => (&mut o, false),
+            koyomi_winrm::Stream::Stderr => (&mut e, true),
         };
         for line in cut(buf, bytes) {
             out(&line, stderr);
@@ -200,8 +200,8 @@ fn one(
 }
 
 /// Why it failed, as the job's ✕ reason: a coded line naming `host` (`host:port` for `cert`).
-fn reason(e: &ito_winrm::Error, host: &str, auth: WinrmAuth) -> String {
-    use ito_winrm::Error as E;
+fn reason(e: &koyomi_winrm::Error, host: &str, auth: WinrmAuth) -> String {
+    use koyomi_winrm::Error as E;
     match e {
         E::Stopped => note(msg::N_STOPPED_WINRM, &[]),
         E::AuthRefused if auth == WinrmAuth::Ntlm => line(msg::WINRM_NTLM_REFUSED, &[host]),
@@ -241,7 +241,7 @@ mod tests {
 
     #[test]
     fn each_failure_says_what_to_look_at() {
-        use ito_winrm::Error as E;
+        use koyomi_winrm::Error as E;
         let basic = |e: &E| reason(e, "app01", WinrmAuth::Basic);
         let b = basic(&E::AuthRefused);
         assert!(msg::WINRM_BASIC_REFUSED.is_in(&b) && b.contains("app01") && b.contains("auth = \"ntlm\""), "{b}");

@@ -1196,3 +1196,11 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - 委任の注意: 登録すると、ジョブネットを編集できる人は誰でもその名前を使える。つまり、その PC でコマンドを動かす・ファイルを置く／取る、そのメールボックスを読む、ことができる。アカウント・データベースと同じ考え方で、バケットのフォルダーは権限の境界ではない（登録のフォルダーの外へ出さないのは、うっかりを防ぐためだけ）。登録を許す相手は、それを使わせてよい相手に限る。
 
 - ファイル仕事（delete・empty・copy）のフォルダーは、`folder_path` が末尾の区切りと `.` を落として開く（`/x/link/` だとシステムが link の先へ進み、リンクの検査がリンク自身を見られないため）。`D:` だけ・共有だけには根の区切りを戻す。`not_root` は文字だけで `..` をたたみ、根に着くものを断る（`D:\x\..` は断り、`D:\x\..\y` は通す）。
+
+## koyomi のためだけの部品を ito から koyomi に移す（2026-11-13）
+
+- `ito-sql`・`ito-winrm`・`ito-sftp`・`ito-zip`・`ito-cloud`・`ito-http`・`ito-service`・`ito-table`・`ito-mail`・`ito-testserver` の 10 個は、ito 0.305.0（d2e252b）の中身のまま `crates/koyomi-*` に移した（名前だけ `koyomi-*` に替えた。部品を分けた形も、機能（`test-util` など）も同じ）。
+- 理由: 使うのは koyomi だけで（fumi は保守していないので数えない）、直すたびに ito での往復と 50 個ほどの部品の `rev` 上げがかかっていた。ジョブの送り先（SSH・WinRM・SQL・S3・メール・HTTP）は koyomi の製品そのものなので、koyomi の中で直せるようにする。
+- 今後: この 10 個は koyomi で直す。ito に頼まない（`crate-request` も立てない）。ito に残る部品（`ito-match`・`ito-secret`・`ito-power` など）は、これまでどおり同じ `rev` で引く。
+- ito から消すのは、koyomi が push してから ito の側で行う（koyomi は `rev` を固定しているので、消しても koyomi は壊れない）。ito は `ito-fetch` の試験のために `ito-testserver` の http の部分だけを残す。
+- これより前の記録に出てくる `ito-sftp` などは、当時の名前のまま残す。

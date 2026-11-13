@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use chrono::{Datelike, Days, Months, NaiveDate};
-use ito_zip::{OnExisting, Source};
+use koyomi_zip::{OnExisting, Source};
 
 use crate::history::Day;
 use crate::msg;
@@ -211,7 +211,7 @@ fn put_away(state_dir: &Path, logs: &[(NaiveDate, PathBuf)], history: &[(NaiveDa
             continue;
         }
         let zip = dir.join(month.format("%Y-%m.zip").to_string());
-        match ito_zip::add(&zip, &sources, OnExisting::Replace) {
+        match koyomi_zip::add(&zip, &sources, OnExisting::Replace) {
             Ok(_) => out.archived += days.len(),
             Err(e) => {
                 out.errors.push(msg::coded_at(msg::FILE_WRITE_FAILED, &zip, &e.to_string()));
@@ -276,7 +276,7 @@ pub fn log_entry(run: &str, job: &str) -> Option<(NaiveDate, String)> {
 /// The days a month's zip holds: those with a history file, and those with logs.
 pub fn days_in(zip: &Path) -> Result<(Vec<NaiveDate>, Vec<NaiveDate>), String> {
     let (mut history, mut logs) = (BTreeSet::new(), BTreeSet::new());
-    for e in ito_zip::list(zip).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, zip, &e.to_string()))? {
+    for e in koyomi_zip::list(zip).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, zip, &e.to_string()))? {
         let parts: Vec<&str> = e.name.split('/').collect();
         match parts.as_slice() {
             ["history", y, m, f] => history.extend(history_day(y, m, f)),
@@ -291,9 +291,9 @@ pub fn days_in(zip: &Path) -> Result<(Vec<NaiveDate>, Vec<NaiveDate>), String> {
 /// does not hold it.
 pub fn archived_day(state_dir: &Path, day: NaiveDate) -> Result<Option<Day>, String> {
     let zip = archive_dir(state_dir).join(day.format("%Y-%m.zip").to_string());
-    match ito_zip::read(&zip, &history_entry(day)) {
+    match koyomi_zip::read(&zip, &history_entry(day)) {
         Ok(bytes) => Day::parse(&String::from_utf8_lossy(&bytes)).map(Some).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, &zip, &e)),
-        Err(ito_zip::Error::NotFound(_)) => Ok(None),
+        Err(koyomi_zip::Error::NotFound(_)) => Ok(None),
         Err(e) => Err(msg::coded_at(msg::FILE_READ_FAILED, &zip, &e.to_string())),
     }
 }
@@ -302,7 +302,7 @@ pub fn archived_day(state_dir: &Path, day: NaiveDate) -> Result<Option<Day>, Str
 pub fn archived_log(state_dir: &Path, run: &str, job: &str) -> Result<Vec<u8>, String> {
     let (day, name) = log_entry(run, job).ok_or_else(|| msg::line(msg::RETAIN_RUN_ID_BAD, &[run]))?;
     let zip = archive_dir(state_dir).join(day.format("%Y-%m.zip").to_string());
-    ito_zip::read(&zip, &name).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, &zip, &e.to_string()))
+    koyomi_zip::read(&zip, &name).map_err(|e| msg::coded_at(msg::FILE_READ_FAILED, &zip, &e.to_string()))
 }
 
 /// Adds to `runs` the runs of the days from `from` to `to` that it has none of
@@ -449,9 +449,9 @@ mod tests {
         // 07-31 has only an empty folder: removed, nothing to put away.
         assert_eq!(out, Swept { logs: 3, history: 2, archived: 2, ..Swept::default() });
         let july = state.join("archive/2026-07.zip");
-        let names: Vec<String> = ito_zip::list(&july).unwrap().into_iter().map(|e| e.name).collect();
+        let names: Vec<String> = koyomi_zip::list(&july).unwrap().into_iter().map(|e| e.name).collect();
         assert_eq!(names, ["logs/2026-07-30/r1/a.log", "history/2026/07/30.toml"]);
-        assert_eq!(ito_zip::read(&july, "history/2026/07/30.toml").unwrap(), b"event = []\n");
+        assert_eq!(koyomi_zip::read(&july, "history/2026/07/30.toml").unwrap(), b"event = []\n");
         let august = state.join("archive/2026-08.zip");
         assert_eq!(days_in(&august).unwrap(), (vec![day("2026-08-01")], vec![day("2026-08-01")]));
         assert_eq!(zips(&state).iter().map(|(m, _)| *m).collect::<Vec<_>>(), [day("2026-07-01"), day("2026-08-01")]);
@@ -467,7 +467,7 @@ mod tests {
         // A later sweep adds to the month's zip.
         assert_eq!(sweep(&state, day("2026-08-02"), &[], ON).archived, 1);
         assert_eq!(archived_log(&state, "20260729-090000-00", "copy").unwrap(), b"done\n");
-        assert_eq!(ito_zip::list(&july).unwrap().len(), 3);
+        assert_eq!(koyomi_zip::list(&july).unwrap().len(), 3);
     }
 
     /// A history file for day `d` with one started run for each id, an hour apart from 9:00.

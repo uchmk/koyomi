@@ -17,10 +17,10 @@
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use ito_http::client::{self, Client};
 use koyomi_core::config;
 use koyomi_core::msg::{self, line};
 use koyomi_core::standby::{Ask, Heard, Hold};
+use koyomi_http::client::{self, Client};
 
 /// What one ask heard, and what a person should see.
 type Asked = (Heard, Option<String>);

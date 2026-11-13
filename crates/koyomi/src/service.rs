@@ -10,8 +10,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use ito_ipc::door::ask;
-use ito_service::{Error, Install, Start, State};
 use koyomi_core::msg::{self, line};
+use koyomi_service::{Error, Install, Start, State};
 
 use crate::proto::{self, Request};
 
@@ -55,12 +55,12 @@ fn account() -> String {
 
 /// Whether the service is installed, and where it is.
 pub fn state() -> Option<State> {
-    ito_service::state(&name()).ok().flatten().map(|s| s.state)
+    koyomi_service::state(&name()).ok().flatten().map(|s| s.state)
 }
 
 /// Like [`state`], but a failed query is an error (its text) and not "no service".
 pub fn query() -> Result<Option<State>, String> {
-    ito_service::state(&name()).map(|o| o.map(|s| s.state)).map_err(|e| e.to_string())
+    koyomi_service::state(&name()).map(|o| o.map(|s| s.state)).map_err(|e| e.to_string())
 }
 
 /// `koyomi service [install|uninstall|start|stop|status|run]`.
@@ -96,11 +96,11 @@ fn usage() -> i32 {
 }
 
 fn status() -> Result<String, String> {
-    let s = ito_service::state(&name()).map_err(|e| why(&e))?;
+    let s = koyomi_service::state(&name()).map_err(|e| why(&e))?;
     Ok(status_line(&name(), s))
 }
 
-fn status_line(name: &str, s: Option<ito_service::Status>) -> String {
+fn status_line(name: &str, s: Option<koyomi_service::Status>) -> String {
     match s {
         None => msg::note(msg::N_SERVICE_NONE, &[]),
         Some(s) => {
@@ -122,12 +122,12 @@ fn install() -> Result<String, String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
     crate::cli::refuse_temp(&exe)?;
     let account = account();
-    let password = ito_service::read_password(&msg::note(msg::N_SERVICE_PASSWORD_ASK, &[&account])).map_err(|e| why(&e))?;
+    let password = koyomi_service::read_password(&msg::note(msg::N_SERVICE_PASSWORD_ASK, &[&account])).map_err(|e| why(&e))?;
     if password.is_empty() {
         return Err(line(msg::SERVICE_PASSWORD_EMPTY, &[]));
     }
     let user = std::env::var("USERNAME").unwrap_or_default();
-    ito_service::install(&Install {
+    koyomi_service::install(&Install {
         name: name(),
         display: format!("koyomi ({user})"),
         description: msg::note(msg::N_SERVICE_DESCRIPTION, &[]),
@@ -157,8 +157,8 @@ fn uninstall() -> Result<String, String> {
     if state().is_none() {
         return Err(line(msg::SERVICE_NOT_INSTALLED, &[&name()]));
     }
-    ito_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
-    ito_service::uninstall(&name()).map_err(|e| why(&e))?;
+    koyomi_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
+    koyomi_service::uninstall(&name()).map_err(|e| why(&e))?;
     let then = match restart_entry() {
         Ok(true) => msg::note(msg::N_SERVICE_THEN_ENGINE, &[]),
         Ok(false) => msg::note(msg::N_SERVICE_THEN_SCREEN, &[]),
@@ -175,7 +175,7 @@ fn start() -> Result<String, String> {
     if state() != Some(State::Running) && crate::client::running() {
         return Err(line(msg::SERVICE_SIGNIN_ENGINE_RUNNING, &[]));
     }
-    ito_service::start(&name()).map_err(|e| why(&e))?;
+    koyomi_service::start(&name()).map_err(|e| why(&e))?;
     let until = Instant::now() + START_WAIT;
     while Instant::now() < until {
         if crate::client::running() {
@@ -193,7 +193,7 @@ fn stop() -> Result<String, String> {
     if state().is_none() {
         return Err(line(msg::SERVICE_NOT_INSTALLED, &[&name()]));
     }
-    ito_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
+    koyomi_service::stop(&name(), STOP_WAIT).map_err(|e| why(&e))?;
     Ok(msg::note(msg::N_SERVICE_STOPPED_DONE, &[&name()]))
 }
 
@@ -213,7 +213,7 @@ fn restart_entry() -> Result<bool, String> {
 
 /// What the Service Control Manager runs: the engine, until the service is asked to stop.
 fn run() -> i32 {
-    let res = ito_service::run(&name(), |stop| {
+    let res = koyomi_service::run(&name(), |stop| {
         if let Some(p) = log_path() {
             crate::log_to(&p, LOG_KEEP);
         }
@@ -272,7 +272,7 @@ mod tests {
     #[test]
     fn the_name_follows_the_person() {
         assert_eq!(service_name("yuu"), "koyomi-yuu");
-        assert!(ito_service::valid_name(&service_name("yuu")));
+        assert!(koyomi_service::valid_name(&service_name("yuu")));
     }
 
     #[test]
@@ -287,7 +287,7 @@ mod tests {
     fn the_status_line_says_where_it_is() {
         assert_eq!(status_line("koyomi-a", None), msg::note(msg::N_SERVICE_NONE, &[]));
         assert!(status_line("koyomi-a", None).contains("koyomi service install"));
-        let s = |state, pid| Some(ito_service::Status { state, pid });
+        let s = |state, pid| Some(koyomi_service::Status { state, pid });
         assert_eq!(
             status_line("koyomi-a", s(State::Running, 42)),
             msg::note(msg::N_SERVICE_LINE, &["koyomi-a", &msg::note(msg::N_SERVICE_RUNNING, &["42"])])

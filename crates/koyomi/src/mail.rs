@@ -1,6 +1,6 @@
 //! `koyomi mail run`: what a `mail` job runs. It reads what to send from the
 //! `KOYOMI_MAIL_*` the engine sets (each after [`MAIL_TEXT`], a list one per
-//! line), finds the files to attach, builds the message with ito-mail and sends
+//! line), finds the files to attach, builds the message with koyomi-mail and sends
 //! it through a `[[notify.mails]]` place of `koyomi.toml`, its server and its
 //! login (the password from the credential store, as a notice's). It ends with 0
 //! once the server took it; without, with [`NO_EXIT`](crate::ssh) and why in the
@@ -138,10 +138,10 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
         let bytes = std::fs::read(path).map_err(|e| line(msg::MAIL_FILE_UNREADABLE, &[&path.display().to_string(), &msg::io_words(&e)]))?;
         read.push((name_of(path), bytes));
     }
-    let attachments: Vec<ito_mail::Attachment> =
-        read.iter().map(|(name, bytes)| ito_mail::Attachment { name, mime: None, bytes, cid: None }).collect();
-    let message = ito_mail::compose(
-        &ito_mail::Outgoing {
+    let attachments: Vec<koyomi_mail::Attachment> =
+        read.iter().map(|(name, bytes)| koyomi_mail::Attachment { name, mime: None, bytes, cid: None }).collect();
+    let message = koyomi_mail::compose(
+        &koyomi_mail::Outgoing {
             from: &place.from,
             to: &to.join(", "),
             cc: &cc.join(", "),

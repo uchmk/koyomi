@@ -12,6 +12,8 @@ Small job scheduler and monitor (a light JP1) uchmk のアプリで、共通の�
 - `scripts/ito-first.py` が機械で見る。ito が受け持つ依存（`toml_edit`・`dirs`・`notify` …）を直接足すと落ちる。
   持つべき ito のクレート（keyscript・help・notify・bugreport …）が抜けていても落ちる。
   理由があって外すときだけ `scripts/ito-first.allow` に `<crate> <理由>` を書く（理由のない行は効かない）。
+- 例外: `ito-sql`・`ito-winrm`・`ito-sftp`・`ito-zip`・`ito-cloud`・`ito-http`・`ito-service`・`ito-table`・`ito-mail`・`ito-testserver` の 10 個は、
+  2026-11-13 に ito 0.305.0 から koyomi に移した koyomi 自身のクレート（`crates/koyomi-*`）。直すときはここで直し、ito には頼まない（DECISIONS.md）。
 - 全部の ito のクレートは 1 つの `rev` にそろえる。上げたら `scripts/lanes.sh sync`。
   `.github/workflows/` の build・arm64・checklists・release・release-sums は ito の雛形から `sync` が書く（`lanes.conf` の `workflows=`）。直すなら ito で。
 

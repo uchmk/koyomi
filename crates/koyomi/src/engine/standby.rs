@@ -38,11 +38,11 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use ito_common::kept;
-use ito_http::client::{self, Client};
 use koyomi_core::config;
 use koyomi_core::msg::{self, line};
 use koyomi_core::run::Run;
 use koyomi_core::standby::{Refusal, Seen, State, Step, Watch};
+use koyomi_http::client::{self, Client};
 use serde::{Deserialize, Serialize};
 
 /// How often a standby copies the definitions from the engine it watches.

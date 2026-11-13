@@ -14,7 +14,7 @@
 //! The engine runs this straight, not through PowerShell, and stops an `ssh`
 //! job by asking first (`ito_proc::run_lines_soft`): the ask, a CTRL_BREAK or
 //! the event named in `ITO_PROC_STOP_EVENT` (which needs no console), sets
-//! [`ito_proc::stop_requested`]. ito-sftp looks at it from the start: before
+//! [`ito_proc::stop_requested`]. koyomi-sftp looks at it from the start: before
 //! the far command is sent, the connection is given up and nothing starts
 //! there; after, the far command is sent TERM and the channel closed before
 //! this ends, so it does not run on alone.
@@ -28,14 +28,6 @@ use koyomi_core::msg::{self, line, note};
 /// The longest piece of output kept waiting for its line's end: past it, it is
 /// passed on as a line of its own.
 const LINE_MAX: usize = 64 * 1024;
-
-/// Why there is no exit code after a stop: the engine shows it after the stop's
-/// own words, so it says what was done on the far side. ito-sftp does not say
-/// whether the command had been sent yet (a stop while connecting sends none),
-/// so this holds either way.
-fn stopped() -> String {
-    note(msg::N_STOPPED_SSH, &[])
-}
 
 /// How many failed PCs of a group the job's reason names; the rest are counted.
 const SHOWN: usize = 3;
@@ -105,12 +97,12 @@ fn exec(stop: &AtomicBool) -> Result<i32, String> {
 /// none (without the host, which the caller adds).
 fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn Fn(&str, bool)) -> Result<i32, String> {
     let target = crate::sftp::target(far, host_key, "ssh")?;
-    let opts = ito_sftp::ExecOptions { env: forwarded("KOYOMI_SSH_ENV"), timeout: None };
+    let opts = koyomi_sftp::ExecOptions { env: forwarded("KOYOMI_SSH_ENV"), timeout: None };
     let (mut o, mut e) = (Vec::new(), Vec::new());
-    let result = ito_sftp::exec(&target, command, &opts, stop, &mut |stream, bytes| {
+    let result = koyomi_sftp::exec(&target, command, &opts, stop, &mut |stream, bytes| {
         let (buf, stderr) = match stream {
-            ito_sftp::Stream::Stdout => (&mut o, false),
-            ito_sftp::Stream::Stderr => (&mut e, true),
+            koyomi_sftp::Stream::Stdout => (&mut o, false),
+            koyomi_sftp::Stream::Stderr => (&mut e, true),
         };
         for line in cut(buf, bytes) {
             out(&line, stderr);
@@ -121,15 +113,7 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
             out(&text(&buf), stderr);
         }
     }
-    let exit = result.map_err(|e| match e {
-        ito_sftp::Error::Stopped => stopped(),
-        ito_sftp::Error::Connect(m) => line(msg::SSH_CONNECT, &[&far.host, &connect_text(&m)]),
-        ito_sftp::Error::AuthRefused => line(msg::SSH_AUTH_REFUSED, &[&far.host]),
-        ito_sftp::Error::HostKeyMismatch { expected, actual } => line(msg::SSH_HOST_KEY_MISMATCH, &[&far.host, &expected, &actual]),
-        ito_sftp::Error::Lost(m) => line(msg::LINK_LOST, &[&far.host, &m]),
-        ito_sftp::Error::Timeout => line(msg::LINK_TIMED_OUT, &[&far.host]),
-        e => e.to_string(),
-    })?;
+    let exit = result.map_err(|e| crate::sftp::why(&far.host, &e))?;
     if !exit.env_refused.is_empty() {
         let names = exit.env_refused.join(", ");
         out(&line(msg::SSH_ENV_REFUSED, &[&far.host, &names]), true);
@@ -137,13 +121,13 @@ fn one(far: &Sftp, host_key: String, command: &str, stop: &AtomicBool, out: &dyn
     outcome(exit.status, exit.signal)
 }
 
-/// A connect failure in a few plain words, for the hole of E2150. ito-sftp passes the library's
+/// A connect failure in a few plain words, for the hole of E2150. koyomi-sftp passes the library's
 /// Debug text for a refused connection (`Io(Os { code: 10061, kind: ConnectionRefused, .. })`); that is not shown.
-fn connect_text(m: &str) -> String {
+pub(crate) fn connect_text(m: &str) -> String {
     let has = |k: &str| m.contains(k);
     if has("ConnectionRefused") || has("10061") || has("os error 111") {
         note(msg::N_NET_REFUSED, &[])
-    } else if has("TimedOut") || has("10060") {
+    } else if has("TimedOut") || has("10060") || has("timed out") {
         note(msg::N_NET_NO_ANSWER, &[])
     } else if has("Unreachable") || has("10051") || has("10065") {
         note(msg::N_NET_NO_ROUTE, &[])

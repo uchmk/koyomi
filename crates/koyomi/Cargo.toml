@@ -45,26 +45,26 @@ ito-keyscript = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd329
 ito-help = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 ito-secret = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # `koyomi service`: the engine as a Windows service under the person's own account (TODO 86).
-ito-service = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-service = { path = "../koyomi-service" }
 # The calendar's holiday table download (the Cabinet Office's syukujitsu.csv over https, from the window).
 ito-fetch = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # `[http]`: the loopback listener that starts nets and reads runs (POST /runs, GET /runs/<id>).
-ito-http = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e", features = ["tls"] }
+koyomi-http = { path = "../koyomi-http", features = ["tls"] }
 # `[[when]] mail`: read-only IMAP look at new mail (TODO 84); a `kind = "mail"`
 # job's message, attachments and all (`koyomi mail run`, TODO 107).
-ito-mail = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-mail = { path = "../koyomi-mail" }
 # `send` and `fetch` over SFTP (`koyomi sftp run`), and `koyomi sftp hostkey`.
-ito-sftp = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-sftp = { path = "../koyomi-sftp" }
 # `send` and `fetch` to and from S3 (`koyomi cloud run`).
-ito-cloud = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-cloud = { path = "../koyomi-cloud" }
 # The delete, empty and copy chores (`koyomi file run`): no shell.
 ito-fileops = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # The picker for 参照… when the window is on another PC's engine; the engine lists its own disk (`list_local`).
 ito-filepick = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e", features = ["egui", "serde", "local"] }
 # `kind = "winrm"` (`koyomi winrm run`), and `koyomi winrm cert`.
-ito-winrm = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-winrm = { path = "../koyomi-winrm" }
 # `kind = "sql"` (`koyomi sql run`): a script on SQL Server, PostgreSQL or SQLite.
-ito-sql = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-sql = { path = "../koyomi-sql" }
 # System notification, sound, webhook.
 ito-notify = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # The system log line a monitoring tool watches (Event Viewer / syslog).
@@ -78,7 +78,7 @@ ito-titlebar = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298
 # Pages out as a PDF or to the printer.
 ito-export = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # Tables as CSV or Excel (--csv, the window's export).
-ito-table = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-table = { path = "../koyomi-table" }
 # The bottom status bar: the app's items, the clock at the right end.
 ito-statusbar = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # The list the bell opens.
@@ -125,4 +125,4 @@ egui = "0.36"
 # TESTING.md -> the lanes' check tables (examples/make-testcheck.rs).
 ito-testcheck = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 # A fake S3 on 127.0.0.1 for the tests of `koyomi cloud run` (cloud.rs).
-ito-cloud = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e", features = ["test-util"] }
+koyomi-cloud = { path = "../koyomi-cloud", features = ["test-util"] }

@@ -2433,8 +2433,8 @@ impl State {
 
     /// A new token and its hash. The token is for the reply and nowhere else.
     fn new_token() -> Result<(String, String), String> {
-        let token = ito_http::new_token().map_err(|e| msg::line(msg::USER_TOKEN_FAILED, &[&e.to_string()]))?;
-        let hash = ito_http::token_hash(&token);
+        let token = koyomi_http::new_token().map_err(|e| msg::line(msg::USER_TOKEN_FAILED, &[&e.to_string()]))?;
+        let hash = koyomi_http::token_hash(&token);
         Ok((token, hash))
     }
 
@@ -3446,7 +3446,7 @@ fn read_secret(name: &str) -> std::io::Result<Option<String>> {
     ito_secret::get("koyomi", name)
 }
 
-/// Whether the credential store holds a non-empty token under `name` (ito-http refuses to start with an empty one).
+/// Whether the credential store holds a non-empty token under `name` (koyomi-http refuses to start with an empty one).
 fn secret_usable(name: &str) -> bool {
     matches!(ito_secret::get("koyomi", name), Ok(Some(v)) if !v.is_empty())
 }
@@ -3951,12 +3951,12 @@ mod tests {
     /// What the fake probe saw: the password and the thread it ran on.
     type Seen = Arc<std::sync::Mutex<Vec<(String, String)>>>;
 
-    fn fake_probe(answer: Result<(), ito_sql::Error>) -> (db_test::RunFn, Seen) {
+    fn fake_probe(answer: Result<(), koyomi_sql::Error>) -> (db_test::RunFn, Seen) {
         let seen: Seen = Arc::default();
         let log = seen.clone();
         let f: db_test::RunFn = Arc::new(move |target, _, _| {
             let password = match target {
-                ito_sql::Target::Postgres { password, .. } => password.clone(),
+                koyomi_sql::Target::Postgres { password, .. } => password.clone(),
                 _ => String::new(),
             };
             log.lock().unwrap().push((password, std::thread::current().name().unwrap_or("").to_owned()));
@@ -4092,7 +4092,7 @@ mod tests {
             }
             if cancel.load(Ordering::Relaxed) {
                 saw_cancel.store(true, Ordering::Relaxed);
-                return Err(ito_sql::Error::Cancelled);
+                return Err(koyomi_sql::Error::Cancelled);
             }
             Ok(())
         });
@@ -5859,7 +5859,7 @@ port = 8700
 
     /// koyomi.toml of a test: two users by hash, no credential store needed.
     fn config_file(port: u16, boss_role: &str) -> String {
-        let hash = ito_http::token_hash("one");
+        let hash = koyomi_http::token_hash("one");
         format!(
             "[http]\nport = {port}\nlan = true\n\n[[http.user]]\nname = \"boss\"\nrole = \"{boss_role}\"\ntoken = \"sha256:{hash}\"\n\n[[http.user]]\nname = \"ann\"\nrole = \"run\"\ntoken = \"sha256:{hash}\"\n"
         )
@@ -6154,8 +6154,8 @@ port = 8700
         let file = config_file(8700, "admin");
         std::fs::write(&paths.config, &file).unwrap();
         let mut s = State::new(paths.clone());
-        let hash = ito_http::token_hash("one");
-        let other = ito_http::token_hash("two");
+        let hash = koyomi_http::token_hash("one");
+        let other = koyomi_http::token_hash("two");
         let boss = format!("name = \"boss\"\nrole = \"admin\"\ntoken = \"sha256:{hash}\"");
         let cuts = [
             file.replace("port = 8700", "port = 8701"),
@@ -6283,7 +6283,7 @@ token = \"secret:zed\"
         assert_eq!(reply["name"].as_str(), Some("boss"));
         assert_eq!(token1.len(), 64);
         let text = std::fs::read_to_string(&paths.config).unwrap();
-        assert!(text.contains(&format!("sha256:{}", ito_http::token_hash(&token1))), "{text}");
+        assert!(text.contains(&format!("sha256:{}", koyomi_http::token_hash(&token1))), "{text}");
         assert!(!text.contains(&token1));
         let now = listing(&mut s);
         assert_eq!(now.user.len(), 1);
@@ -6301,7 +6301,7 @@ token = \"secret:zed\"
         let base = listing(&mut s).base;
         assert!(s.answer(&Request::UserReset { name: "nobody".into(), base }).is_err());
         let text = std::fs::read_to_string(&paths.config).unwrap();
-        assert!(text.contains(&ito_http::token_hash(&token3)) && !text.contains(&ito_http::token_hash(&token2)), "{text}");
+        assert!(text.contains(&koyomi_http::token_hash(&token3)) && !text.contains(&koyomi_http::token_hash(&token2)), "{text}");
         // The old text was kept; the token is in no record.
         let kept = paths.state.join("versions").join("_settings");
         assert!(std::fs::read_dir(&kept).unwrap().count() >= 1);

@@ -667,7 +667,7 @@ fn check_config(name: &str, text: &str) -> i32 {
 }
 
 /// `--csv <to>`: writes `table` and says where (nothing said for `-`, the table is the output).
-fn wrote(to: &str, table: &ito_table::Table) -> i32 {
+fn wrote(to: &str, table: &koyomi_table::Table) -> i32 {
     if let Err(e) = crate::sheet::write(to, table) {
         return fail(&format!("koyomi: {e}"));
     }

@@ -15,10 +15,10 @@ use std::path::PathBuf;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use ito_http::client::{self, Client, Reply};
 use koyomi_core::config::Remote;
 use koyomi_core::msg::{self, line};
 use koyomi_core::scan::{Def, Standing};
+use koyomi_http::client::{self, Client, Reply};
 
 use crate::engine::Paths;
 use crate::proto::Request;
@@ -854,7 +854,7 @@ fn sent_line(name: &str, net: &str, same: bool) -> String {
 mod tests {
     #[test]
     fn a_peek_error_is_coded_and_names_the_address() {
-        let t = super::reason("https://h:8443", &ito_http::client::Error::Connect("os error 10061".into()));
+        let t = super::reason("https://h:8443", &koyomi_http::client::Error::Connect("os error 10061".into()));
         assert!(msg::CONNECT_FAILED.is_in(&t) && t.contains("https://h:8443") && t.contains("os error 10061"), "{t}");
     }
 

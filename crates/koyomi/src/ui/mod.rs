@@ -6219,7 +6219,7 @@ fn export_all(link: &Link) -> Result<(PathBuf, usize), Said> {
 }
 
 /// `table` as `exports/<what>-<YYYYMMDD-HHMMSS>.csv` in the state folder: its path.
-fn export_csv(what: &str, table: &ito_table::Table) -> Result<PathBuf, Said> {
+fn export_csv(what: &str, table: &koyomi_table::Table) -> Result<PathBuf, Said> {
     let dir = engine::Paths::find().map_err(plain)?.state.join("exports");
     std::fs::create_dir_all(&dir).map_err(|e| no_dir(&dir, e))?;
     let path = dir.join(format!("{what}-{}.csv", ito_common::now::now_local().format("%Y%m%d-%H%M%S")));

@@ -1472,7 +1472,7 @@ fn sqlite_shape(path: &str) -> bool {
 }
 
 /// `s` read as a `sql`'s `db`. A named instance (`host\name`) is not taken: its
-/// port is written instead, as ito-sql connects by the port.
+/// port is written instead, as koyomi-sql connects by the port.
 pub fn sql_db(s: &str) -> Result<SqlDb, String> {
     let t = s.trim();
     if let Some(path) = after_scheme(t, "sqlite://") {

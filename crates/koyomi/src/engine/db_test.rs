@@ -12,9 +12,9 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ito_sql::{ConnectKind, Error, Target};
 use koyomi_core::chore::{check_db, sql_db, SqlDb, SqlTls};
 use koyomi_core::msg::{self, line, note};
+use koyomi_sql::{ConnectKind, Error, Target};
 
 use super::typed_password::value_ok;
 use crate::proto::Hidden;
@@ -30,12 +30,12 @@ pub const TIMEOUT: Duration = Duration::from_secs(15);
 const SAID_MAX: usize = 200;
 
 /// What the probe does with a target: connects (signs in to a server, or reads a SQLite file's header) and ends with
-/// `Ok` or with ito-sql's error. Injected so tests never connect.
+/// `Ok` or with koyomi-sql's error. Injected so tests never connect.
 pub type RunFn = Arc<dyn Fn(&Target, &AtomicBool, Duration) -> Result<(), Error> + Send + Sync>;
 
 /// The probe as it really connects.
 pub fn real() -> RunFn {
-    Arc::new(ito_sql::check)
+    Arc::new(koyomi_sql::check)
 }
 
 /// What the operations record keeps of a result: `ok`, or only the ID of the error (never the server's words).
@@ -193,7 +193,7 @@ fn run_within(probe: Probe, secrets: &dyn SecretStore, probe_fn: &RunFn, cancel:
             Ok(_) => return Err(line(msg::DB_TEST_NO_PASSWORD, &[])),
         },
     };
-    // A missing file is refused first (cheap and clear). `ito_sql::check` opens a SQLite file read-only and never
+    // A missing file is refused first (cheap and clear). `koyomi_sql::check` opens a SQLite file read-only and never
     // creates or changes the database file (a WAL-mode one may get its `-wal` / `-shm` side files made or touched), so
     // a file removed after this check is `Connect { Missing }`, mapped the same way below.
     if let SqlDb::Sqlite { path } = &db {
@@ -228,7 +228,7 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Mutex;
 
-    use ito_sql::SqliteOpen;
+    use koyomi_sql::SqliteOpen;
 
     use super::*;
 
@@ -606,10 +606,10 @@ mod tests {
         let url = |name: &str| format!("sqlite://{}", dir.join(name).display());
         let real = real();
         let never = AtomicBool::new(false);
-        // A real database, made by ito-sql itself.
+        // A real database, made by koyomi-sql itself.
         let made = dir.join("ok.db");
         let target = Target::Sqlite { path: made.clone(), open: SqliteOpen::Create };
-        ito_sql::run(&target, "CREATE TABLE t (a INTEGER)", None, &never, Duration::from_secs(5)).unwrap();
+        koyomi_sql::run(&target, "CREATE TABLE t (a INTEGER)", None, &never, Duration::from_secs(5)).unwrap();
         assert_eq!(run(probe(&url("ok.db"), None, None, ""), &Mem::default(), &real, &never), Ok(String::new()));
         // An empty file is an empty database.
         std::fs::write(dir.join("empty.db"), b"").unwrap();

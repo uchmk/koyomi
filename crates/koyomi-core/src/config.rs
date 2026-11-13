@@ -475,7 +475,7 @@ impl Http {
                 return Err(msg::line(msg::CFG_USER_ADMIN_NARROWED, &[name]));
             }
             if let Some(h) = u.hash() {
-                // What the listener refuses at its start (ito-http) is refused here, so a file that reads
+                // What the listener refuses at its start (koyomi-http) is refused here, so a file that reads
                 // never stops it.
                 if !is_token_hash(h) {
                     return Err(msg::line(msg::CFG_TOKEN_HASH_BAD, &[name]));
@@ -1079,7 +1079,7 @@ port = 70000
             let e = Config::parse(&user(bad)).unwrap_err();
             assert!(msg::CFG_USER_TOKEN_FORM.is_in(&e) && e.contains("sha256:<ハッシュ>"), "{bad}: {e}");
         }
-        // A sha256: that ito-http would refuse is refused here: wrong length, upper case, not hex, the empty token's.
+        // A sha256: that koyomi-http would refuse is refused here: wrong length, upper case, not hex, the empty token's.
         let empty = crate::approved::hash(b"");
         for bad in [
             "sha256:".to_owned(),

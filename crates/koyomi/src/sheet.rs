@@ -1,6 +1,6 @@
 //! `--csv <file>`: what `list`, `history`, `report` and `plan` print, as a table for a spreadsheet.
 //!
-//! The rows are built here; ito-table writes them: CSV (UTF-8 with a BOM, CRLF, RFC 4180, a cell
+//! The rows are built here; koyomi-table writes them: CSV (UTF-8 with a BOM, CRLF, RFC 4180, a cell
 //! that looks like a formula kept as text), or Excel when the file name ends in `.xlsx` (numbers
 //! as numbers, times as real dates). `-` is the CSV on standard output, without the BOM. The
 //! heads and words are the language table's.
@@ -9,14 +9,14 @@ use std::path::Path;
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 use ito_i18n::Table;
-use ito_table::{Cell, Stamp};
 use koyomi_core::run::{How, Run};
 use koyomi_core::scan::Def;
+use koyomi_table::{Cell, Stamp};
 
 /// A sheet with a row of `heads` (keys of `[csv]`), named after `name`.
-fn sheet(t: &Table, name: &str, heads: &[&str]) -> ito_table::Table {
+fn sheet(t: &Table, name: &str, heads: &[&str]) -> koyomi_table::Table {
     let head: Vec<String> = heads.iter().map(|h| t.tr(&format!("csv.{h}")).to_owned()).collect();
-    ito_table::Table::new(&head.iter().map(String::as_str).collect::<Vec<_>>()).sheet(name)
+    koyomi_table::Table::new(&head.iter().map(String::as_str).collect::<Vec<_>>()).sheet(name)
 }
 
 fn day(d: NaiveDate) -> Cell {
@@ -35,7 +35,7 @@ fn number<N: Into<Cell>>(n: Option<N>) -> Cell {
 }
 
 /// One row per job of every definition that reads (a definition that does not: one row, no job).
-pub fn jobs(t: &Table, defs: &[Def]) -> ito_table::Table {
+pub fn jobs(t: &Table, defs: &[Def]) -> koyomi_table::Table {
     let mut s = sheet(t, "jobs", &["group", "jobnet", "title", "standing", "calendar", "job", "job_name", "kind", "run", "after"]);
     for d in defs {
         let net = |job: [String; 5]| {
@@ -82,7 +82,7 @@ fn how(h: How) -> &'static str {
 }
 
 /// One row per run, oldest first as given; the jobs that ended 異常 by id.
-pub fn runs(t: &Table, rs: &[Run]) -> ito_table::Table {
+pub fn runs(t: &Table, rs: &[Run]) -> koyomi_table::Table {
     let mut s = sheet(
         t,
         "runs",
@@ -111,7 +111,7 @@ pub fn runs(t: &Table, rs: &[Run]) -> ito_table::Table {
 
 /// One row per file a `send` or `fetch` moved, the runs oldest first as given; `verified` is
 /// empty when the far side's hash was not compared.
-pub fn files(t: &Table, rs: &[Run]) -> ito_table::Table {
+pub fn files(t: &Table, rs: &[Run]) -> koyomi_table::Table {
     let mut s = sheet(t, "files", &["run_id", "jobnet", "job", "ended", "file", "bytes", "sha256", "verified"]);
     for r in rs {
         for j in &r.jobs {
@@ -139,7 +139,7 @@ pub fn files(t: &Table, rs: &[Run]) -> ito_table::Table {
 
 /// One row per net: its runs, how many passed and failed, the share that passed, the usual time
 /// of the good ones and the jobs that failed most.
-pub fn report(t: &Table, rows: &[koyomi_core::report::Row]) -> ito_table::Table {
+pub fn report(t: &Table, rows: &[koyomi_core::report::Row]) -> koyomi_table::Table {
     let mut s = sheet(t, "report", &["jobnet", "title", "runs", "passed", "failed_runs", "other", "rate", "average", "worst"]);
     for r in rows {
         s.row([
@@ -158,7 +158,7 @@ pub fn report(t: &Table, rows: &[koyomi_core::report::Row]) -> ito_table::Table 
 }
 
 /// One row per start; a day with none as one row with only its date and weekday.
-pub fn plan(t: &Table, days: &[crate::plan::Day]) -> ito_table::Table {
+pub fn plan(t: &Table, days: &[crate::plan::Day]) -> koyomi_table::Table {
     let mut s = sheet(t, "plan", &["day", "weekday", "time", "jobnet"]);
     for (d, list) in days {
         let wd = t.tr(&format!("csv.wd{}", d.weekday().num_days_from_monday())).to_owned();
@@ -174,7 +174,7 @@ pub fn plan(t: &Table, days: &[crate::plan::Day]) -> ito_table::Table {
 
 /// `table` to the file `to` (Excel when it ends in `.xlsx`, else CSV), or as CSV to standard
 /// output when it is `-`. It blocks: the window calls it off the UI thread.
-pub fn write(to: &str, table: &ito_table::Table) -> Result<(), String> {
+pub fn write(to: &str, table: &koyomi_table::Table) -> Result<(), String> {
     if to == "-" {
         use std::io::Write;
         let text = table.csv_string();
@@ -190,7 +190,7 @@ pub fn write(to: &str, table: &ito_table::Table) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn csv(s: &ito_table::Table) -> String {
+    fn csv(s: &koyomi_table::Table) -> String {
         s.csv_string().trim_start_matches('\u{feff}').to_owned()
     }
 

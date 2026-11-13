@@ -1,5 +1,5 @@
 //! `[http]` of koyomi.toml: while the engine runs it listens on this PC's loopback
-//! (ito-http), so another program can start a net and follow its run without the CLI.
+//! (koyomi-http), so another program can start a net and follow its run without the CLI.
 //! With `lan = true` it listens on the network instead, over TLS only, with a self-signed
 //! certificate kept in `app_dir`'s `tls` folder; another PC pins its fingerprint
 //! (`koyomi http fingerprint`, TODO 80).
@@ -23,12 +23,12 @@
 //!   answer's `confirmed` is true only for the text already confirmed here (it runs as it is).
 //!   Another PC's 別の PC に送る and `koyomi remote send` send a net this way (TODO 111).
 //! - The Web UI (TODO 81): `GET /` and its script and style sheet, kept in the exe, need no
-//!   token; the page signs in with a token at ito-http's `POST /session` and goes on with the
+//!   token; the page signs in with a token at koyomi-http's `POST /session` and goes on with the
 //!   cookie (a change also sends `X-Ito-Csrf: 1`). `GET /me` says who and with what role.
 //!
 //! Every request carries a bearer token kept as `secret:<name>` in the OS credential
 //! store (read when the listener starts, and again when only `[http]`'s `token` or the
-//! `[[http.user]]` change); ito-http turns a missing or wrong one away
+//! `[[http.user]]` change); koyomi-http turns a missing or wrong one away
 //! with 401 and never logs it. `[http]`'s own token has the `run` role; each
 //! `[[http.user]]` has its own token and role (TODO 83), and a path the role does not reach
 //! gets 403. The requests go through the engine's own door as `Request::Over`, so they are
@@ -57,11 +57,11 @@ use std::collections::BTreeMap;
 use std::sync::{mpsc, Arc, RwLock};
 use std::time::{Duration, Instant};
 
-use ito_http::{Response, Server};
 use koyomi_core::config;
 use koyomi_core::msg::{self, line};
 use koyomi_core::role::{self, Access, Nets, Role};
 use koyomi_core::run::{Run, State};
+use koyomi_http::{Response, Server};
 use serde::Deserialize;
 
 use crate::proto::{self, Request, Runs, Snapshot};
@@ -80,8 +80,8 @@ type SharedGate = Arc<RwLock<Arc<Gate>>>;
 enum Answer {
     /// A start: the listener and its gate.
     Started(Result<(Server, SharedGate), String>),
-    /// A swap: who may come in, as ito-http wants it, and the gate that goes with it.
-    Access(Result<(ito_http::Access, Gate), String>),
+    /// A swap: who may come in, as koyomi-http wants it, and the gate that goes with it.
+    Access(Result<(koyomi_http::Access, Gate), String>),
 }
 
 pub struct Http {
@@ -185,7 +185,7 @@ impl Http {
             crate::say(&format!("koyomi: {why}"), false);
             self.note = Some(why);
         }
-        // ito-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
+        // koyomi-http keeps trying the tailnet port behind the open main one (Tailscale not up yet).
         if let Some(p) = self.server.as_ref().filter(|_| !self.tailnet_open).and_then(Server::tailnet_port) {
             self.tailnet_open = true;
             crate::say(&format!("koyomi: {}", msg::note(msg::N_HTTP_TAILNET_OPENED, &[&p.to_string()])), false);
@@ -202,7 +202,7 @@ impl Http {
                     // The store can be slow: it is read here, never on the engine loop. This thread only reads
                     // and sends; `tick` alone touches the server and the gate.
                     let _ = std::thread::Builder::new().name("http".into()).spawn(move || {
-                        let r = admission(&new, read).map(|(c, gate)| (ito_http::Access::of(&c), gate));
+                        let r = admission(&new, read).map(|(c, gate)| (koyomi_http::Access::of(&c), gate));
                         let _ = tx.send((gen, Answer::Access(r)));
                     });
                 }
@@ -263,14 +263,14 @@ fn listening(cfg: Option<&config::Http>, s: &Server) -> String {
         (None, None) => String::new(),
     };
     if let Some(fp) = s.fingerprint() {
-        return msg::note(msg::N_HTTP_LISTEN_LAN, &[&port, &ito_http::tls::format(&fp), &tailnet]).trim_end().to_owned();
+        return msg::note(msg::N_HTTP_LISTEN_LAN, &[&port, &koyomi_http::tls::format(&fp), &tailnet]).trim_end().to_owned();
     }
     let n = if cfg.is_some_and(|c| c.ipv6) { msg::N_HTTP_LISTEN_LOCAL_V6 } else { msg::N_HTTP_LISTEN_LOCAL };
     msg::note(n, &[&port, &tailnet]).trim_end().to_owned()
 }
 
 /// Why the tailnet port is not open yet (Tailscale not running, no tailnet address, the port
-/// taken). ito-http has opened the other listeners and keeps trying this one behind.
+/// taken). koyomi-http has opened the other listeners and keeps trying this one behind.
 fn tailnet_note(cfg: Option<&config::Http>, s: &Server) -> Option<String> {
     let port = cfg?.tailnet?;
     if s.tailnet_port().is_some() {
@@ -290,14 +290,14 @@ pub fn cert_dir() -> Option<std::path::PathBuf> {
 /// What another PC writes in its `[[remote]]`.
 pub fn fingerprint() -> Result<String, String> {
     let dir = cert_dir().ok_or_else(|| line(msg::SETTINGS_DIR_UNKNOWN, &[]))?;
-    ito_http::tls::fingerprint(&dir)
-        .map(|fp| ito_http::tls::format(&fp))
+    koyomi_http::tls::fingerprint(&dir)
+        .map(|fp| koyomi_http::tls::format(&fp))
         .map_err(|e| line(msg::HTTP_CERT_FAILED, &[&dir.display().to_string(), &e.to_string()]))
 }
 
 /// Reads a token kept as `secret:<name>`.
 fn token(name: &str) -> Result<String, String> {
-    ito_http::token_from_secret("koyomi", name).map_err(|e| line(msg::HTTP_TOKEN_SECRET_UNREADABLE, &[name, &e.to_string()]))
+    koyomi_http::token_from_secret("koyomi", name).map_err(|e| line(msg::HTTP_TOKEN_SECRET_UNREADABLE, &[name, &e.to_string()]))
 }
 
 /// Who may do what at most: `default` for `[http]`'s token, then each `[[http.user]]` with the
@@ -321,8 +321,8 @@ fn access(cfg: &config::Http) -> BTreeMap<String, Access> {
 
 /// The tailnet listener (TODO 105): each `[[http.user]]`'s Tailscale login or tag is let in
 /// as that person, so their role, `nets` and `roles` hold as with a token.
-fn tailnet(cfg: &config::Http, port: u16) -> ito_http::Tailnet {
-    cfg.user.iter().fold(ito_http::Tailnet::new(port), |t, u| match u.tailscale() {
+fn tailnet(cfg: &config::Http, port: u16) -> koyomi_http::Tailnet {
+    cfg.user.iter().fold(koyomi_http::Tailnet::new(port), |t, u| match u.tailscale() {
         Some(tag) if tag.starts_with("tag:") => t.tag(tag, u.name.trim()),
         Some(login) => t.login(login, u.name.trim()),
         None => t,
@@ -334,12 +334,12 @@ fn tailnet(cfg: &config::Http, port: u16) -> ito_http::Tailnet {
 fn credentials(
     cfg: &config::Http,
     read: impl Fn(&str) -> Result<String, String>,
-) -> Result<(ito_http::Config, BTreeMap<String, String>), String> {
-    // The gate gets only hashes. The listener's Config holds the `secret:` values, which ito-http checks.
+) -> Result<(koyomi_http::Config, BTreeMap<String, String>), String> {
+    // The gate gets only hashes. The listener's Config holds the `secret:` values, which koyomi-http checks.
     let mut tokens = BTreeMap::new();
-    let mut c = ito_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { read(cfg.secret())? });
+    let mut c = koyomi_http::Config::new(cfg.port, if cfg.secret().is_empty() { String::new() } else { read(cfg.secret())? });
     if !cfg.secret().is_empty() {
-        tokens.insert("default".to_owned(), ito_http::token_hash(&c.token));
+        tokens.insert("default".to_owned(), koyomi_http::token_hash(&c.token));
     }
     for u in &cfg.user {
         if let Some(hash) = u.hash() {
@@ -347,7 +347,7 @@ fn credentials(
             c = c.token_hash_named(u.name.trim(), hash);
         } else if !u.secret().is_empty() {
             let t = read(u.secret())?;
-            tokens.insert(u.name.trim().to_owned(), ito_http::token_hash(&t));
+            tokens.insert(u.name.trim().to_owned(), koyomi_http::token_hash(&t));
             c = c.token_named(u.name.trim(), t);
         }
     }
@@ -365,7 +365,7 @@ fn same_listener(a: &config::Http, b: &config::Http) -> bool {
 
 /// What decides who may come in: the listener's tokens and tailnet logins (read with `read`) and the gate
 /// that judges each request by name. `start` and the swap both use it; it never touches the certificate.
-fn admission(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> Result<(ito_http::Config, Gate), String> {
+fn admission(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> Result<(koyomi_http::Config, Gate), String> {
     let (mut c, tokens) = credentials(cfg, read)?;
     c.tailnet = cfg.tailnet.map(|port| tailnet(cfg, port));
     Ok((c, Gate { roles: roles(cfg), access: access(cfg), tokens }))
@@ -382,7 +382,7 @@ fn start(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> R
     c.max_body = MAX_BODY;
     let at = if cfg.lan {
         let dir = cert_dir().ok_or_else(|| line(msg::SETTINGS_DIR_UNKNOWN, &[]))?;
-        c.bind = ito_http::Bind::Lan { addr: None, tls: ito_http::TlsCfg::new(dir) };
+        c.bind = koyomi_http::Bind::Lan { addr: None, tls: koyomi_http::TlsCfg::new(dir) };
         msg::note(msg::N_HTTP_AT_LAN, &[&cfg.port.to_string()])
     } else {
         msg::note(msg::N_HTTP_AT_LOCAL, &[&cfg.port.to_string()])
@@ -393,7 +393,7 @@ fn start(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> R
     };
     let shared: SharedGate = Arc::new(RwLock::new(Arc::new(gate)));
     let for_handler = Arc::clone(&shared);
-    let serve = move |req: ito_http::Request| {
+    let serve = move |req: koyomi_http::Request| {
         // A snapshot: the lock is let go before `serve`. `ask` waits for the engine loop, and the engine loop
         // runs `tick`, which takes the write lock in [`swap`]; holding the read lock while serving would deadlock.
         let gate = {
@@ -410,18 +410,18 @@ fn start(cfg: &config::Http, read: impl Fn(&str) -> Result<String, String>) -> R
 }
 
 /// Puts `access` into the running `server` and `new` into its `gate`, as one step: the gate's write lock is
-/// held across `set_access`, and the gate is replaced only when ito-http took the access, so on `Err` both
+/// held across `set_access`, and the gate is replaced only when koyomi-http took the access, so on `Err` both
 /// stay as they were. A request that reads the gate meanwhile waits the few microseconds this takes; there is
-/// no deadlock, because `set_access` takes only ito-http's own locks, which it never holds while calling the
+/// no deadlock, because `set_access` takes only koyomi-http's own locks, which it never holds while calling the
 /// handler.
 ///
-/// What a swap does not cancel: a request ito-http let in before the swap finishes (its contract). One whose
+/// What a swap does not cancel: a request koyomi-http let in before the swap finishes (its contract). One whose
 /// handler took the gate before the swap finishes with the old gate, as a request already in did across a
 /// restart. One whose handler takes the gate after it reads the new one: a removed name gets 403 ([`allowed`]),
 /// a lowered role or a narrowed `nets` or `roles` applies, and a remade token's old bearer is refused at `/door`,
 /// where the gate's token hash is checked (on another path that same name may still finish that one request).
-/// Every request ito-http lets in after the swap is judged by the new access and the new gate only.
-fn swap(server: &Server, gate: &SharedGate, access: ito_http::Access, new: Gate) -> std::io::Result<()> {
+/// Every request koyomi-http lets in after the swap is judged by the new access and the new gate only.
+fn swap(server: &Server, gate: &SharedGate, access: koyomi_http::Access, new: Gate) -> std::io::Result<()> {
     let mut slot = gate.write().map_err(|_| std::io::Error::other("gate lock poisoned"))?;
     server.set_access(access)?;
     *slot = Arc::new(new);
@@ -436,7 +436,7 @@ struct Gate {
     roles: BTreeMap<String, Role>,
     access: BTreeMap<String, Access>,
     /// Each caller's token hash by name (`default` for `[http]`'s), to tell a bearer token from a cookie or
-    /// the tailnet: `ito_http::Request` does not say how the caller was let in. A hash for every caller,
+    /// the tailnet: `koyomi_http::Request` does not say how the caller was let in. A hash for every caller,
     /// whether the token is kept in the credential store or only as a hash in koyomi.toml: no plain token
     /// is held here.
     tokens: BTreeMap<String, String>,
@@ -446,7 +446,7 @@ impl Gate {
     /// The answer to one request: the Web UI's files, then the role's gate, `/me`, `POST /door`, and the REST
     /// paths (cut to the nets of a caller narrowed by `nets` or `roles`). `ask` sends a request to the engine
     /// as the caller.
-    fn serve(&self, req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+    fn serve(&self, req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
         let by = req.who.clone().unwrap_or_default();
         page(req)
             .or_else(|| allowed(req, &self.roles))
@@ -471,7 +471,7 @@ const THEME_CSS: &str = "/theme.css";
 
 /// One of the Web UI's files for a `GET`. Nothing but these files and the API: no other
 /// origin, no inline script, no frames.
-fn page(req: &ito_http::Request) -> Option<Response> {
+fn page(req: &koyomi_http::Request) -> Option<Response> {
     if !matches!(req.method.as_str(), "GET" | "HEAD") {
         return None;
     }
@@ -486,7 +486,7 @@ fn page(req: &ito_http::Request) -> Option<Response> {
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
             )
-            // ito-http itself writes `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
+            // koyomi-http itself writes `X-Content-Type-Options: nosniff` and `Cache-Control: no-store`.
             .with_header("Referrer-Policy", "no-referrer"),
     )
 }
@@ -521,7 +521,7 @@ fn theme_css(base: Option<&std::path::Path>) -> String {
 /// `GET /me`: who signed in, their role, the nets they are narrowed to (`null`: every net) and
 /// their role per net (`roles`, `null`: `role` on every net), so the page shows only the buttons
 /// it may use.
-fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap<String, Access>) -> Option<Response> {
+fn me(req: &koyomi_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap<String, Access>) -> Option<Response> {
     if req.path.trim_end_matches('/') != "/me" {
         return None;
     }
@@ -540,7 +540,7 @@ fn me(req: &ito_http::Request, roles: &BTreeMap<String, Role>, access: &BTreeMap
 /// One request of a caller narrowed by `nets` (TODO 94) or `roles` (TODO 101): every question
 /// to the engine goes through [`narrow`], and one it refuses makes the answer 403. `GET /nets`
 /// also says their role on each net.
-fn within(req: &ito_http::Request, access: &Access, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn within(req: &koyomi_http::Request, access: &Access, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let needs = role::needs(&req.method, &req.path);
     let refused = RefCell::new(None);
     let who = req.who.as_deref().unwrap_or_default();
@@ -680,7 +680,7 @@ fn run_net(id: &str, ask: &impl Fn(&Request) -> Result<String, String>) -> Optio
 /// Only a bearer token comes in: not a browser's session cookie, not the tailnet, not a caller narrowed by
 /// `nets` or `roles` (which [`within`] cuts per net and this does not). What each request needs is
 /// [`proto::door_needs`]; what it does not place (`Save{force}`, `Stage` without `expect`, `Stop`, ...) is refused.
-fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<String, String>) -> Option<Response> {
+fn door(req: &koyomi_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<String, String>) -> Option<Response> {
     if req.path.trim_end_matches('/') != "/door" {
         return None;
     }
@@ -745,13 +745,13 @@ fn has_key(v: &serde_json::Value, key: &str) -> bool {
 }
 
 /// Whether the request came in with a bearer token that is its caller's own, so not with a session cookie or
-/// on the tailnet. ito-http lets a good bearer token win over a cookie, so a header whose hash matches the
-/// hash of the token of `who` means the token let it in (the pinned `ito_http::Request` has no `via`).
-fn bearer_of(req: &ito_http::Request, hashes: &BTreeMap<String, String>) -> bool {
+/// on the tailnet. koyomi-http lets a good bearer token win over a cookie, so a header whose hash matches the
+/// hash of the token of `who` means the token let it in (the pinned `koyomi_http::Request` has no `via`).
+fn bearer_of(req: &koyomi_http::Request, hashes: &BTreeMap<String, String>) -> bool {
     let Some(want) = req.who.as_deref().and_then(|w| hashes.get(w)) else { return false };
     let sent = req.headers.iter().find(|(k, _)| k == "authorization").and_then(|(_, v)| v.split_once(' '));
     sent.is_some_and(|(scheme, t)| {
-        scheme.eq_ignore_ascii_case("bearer") && same(ito_http::token_hash(t.trim()).as_bytes(), want.as_bytes())
+        scheme.eq_ignore_ascii_case("bearer") && same(koyomi_http::token_hash(t.trim()).as_bytes(), want.as_bytes())
     })
 }
 
@@ -761,7 +761,7 @@ fn same(a: &[u8], b: &[u8]) -> bool {
 }
 
 /// A refusal when the caller's role does not reach what the request needs; `None` lets it through.
-fn allowed(req: &ito_http::Request, roles: &BTreeMap<String, Role>) -> Option<Response> {
+fn allowed(req: &koyomi_http::Request, roles: &BTreeMap<String, Role>) -> Option<Response> {
     let Some(who) = req.who.as_deref() else {
         return Some(Response::error(401, &line(msg::TOKEN_REQUIRED, &[])));
     };
@@ -814,9 +814,9 @@ fn bad_body(e: &dyn std::fmt::Display) -> Response {
     Response::error(400, &line(msg::HTTP_BODY_NOT_JSON, &[&e.to_string()]))
 }
 
-fn log(l: &ito_http::LogLine) {
+fn log(l: &koyomi_http::LogLine) {
     let by = match (l.via, &l.who) {
-        (ito_http::Via::Tailscale, Some(who)) => msg::note(msg::N_HTTP_VIA_TAILSCALE, &[who]),
+        (koyomi_http::Via::Tailscale, Some(who)) => msg::note(msg::N_HTTP_VIA_TAILSCALE, &[who]),
         _ => String::new(),
     };
     crate::say(&format!("http: {} {} {} {}ms{by}", l.method, l.path, l.status, l.millis), false);
@@ -890,7 +890,7 @@ fn run_part<'a>(path: &'a str, what: &str) -> Option<&'a str> {
 }
 
 /// One request (the token already checked), asking the engine through `ask`.
-fn handle(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn handle(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let path = req.path.trim_end_matches('/');
     let one = path.strip_prefix("/runs/").filter(|id| !id.is_empty() && !id.contains('/'));
     let log = run_part(path, "log");
@@ -1017,7 +1017,7 @@ fn nets_at(snap: &Snapshot, now: chrono::NaiveDateTime, role_of: impl Fn(&str) -
 
 /// `GET /runs`: today's and the running ones, or with `from` and `to` (`YYYY-MM-DD`) the days'.
 /// With `running=1`, only the ones not over: what an HA standby reads to take them over.
-fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn list_runs(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let r = match (req.query("from"), req.query("to")) {
         (None, None) => Request::Runs,
         (Some(from), to) => Request::History { from: from.to_owned(), to: to.unwrap_or(from).to_owned() },
@@ -1036,7 +1036,7 @@ fn list_runs(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
 }
 
 /// `GET /runs/<id>/log?job=<job>`: the tail of the job's log, as `koyomi log` shows it.
-fn job_log(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn job_log(req: &koyomi_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(job) = req.query("job").filter(|j| !j.is_empty()) else {
         return missing("job", "/runs/<id>/log?job=<job>");
     };
@@ -1055,7 +1055,7 @@ fn run_json(run: &Run) -> serde_json::Value {
     v
 }
 
-fn start_run(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn start_run(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let s = match req.json::<Start>() {
         Ok(Some(s)) if !s.net.trim().is_empty() => s,
         Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
@@ -1077,7 +1077,7 @@ fn stop_run(run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Resp
 }
 
 /// `POST /runs/<id>/rerun`: starts the run again, as `koyomi rerun` does. 202 with the new run's id.
-fn rerun(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn rerun(req: &koyomi_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let a = match req.json::<Again>() {
         Ok(a) => a.unwrap_or_default(),
         Err(e) => return bad_body(&e),
@@ -1096,7 +1096,7 @@ fn rerun(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<St
 }
 
 /// `POST /runs/<id>/skip`: skips a job before it starts (⊘), as `koyomi skip` does.
-fn skip(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn skip(req: &koyomi_http::Request, run: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let job = match req.json::<Pass>() {
         Ok(Some(p)) if !p.job.trim().is_empty() => p.job.trim().to_owned(),
         Ok(_) => return missing("job", r#"{"job": "<job>"}"#),
@@ -1110,7 +1110,7 @@ fn skip(req: &ito_http::Request, run: &str, ask: impl Fn(&Request) -> Result<Str
 
 /// `POST /nets/hold` and `/nets/release`: puts the net (or one job of it) on hold or takes it
 /// off, as `koyomi hold` and `koyomi release` do.
-fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn hold(req: &koyomi_http::Request, on: bool, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let h = match req.json::<Hold>() {
         Ok(Some(h)) if !h.net.trim().is_empty() => h,
         Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
@@ -1126,7 +1126,7 @@ fn hold(req: &ito_http::Request, on: bool, ask: impl Fn(&Request) -> Result<Stri
 
 /// `POST /nets/skip-next`: skips the net's next scheduled run (or, with `cancel`, takes the skip
 /// back), as `koyomi skip-next` does.
-fn skip_next(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn skip_next(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let s = match req.json::<SkipNext>() {
         Ok(Some(s)) if !s.net.trim().is_empty() => s,
         Ok(_) => return missing("net", r#"{"net": "<group>/<name>"}"#),
@@ -1141,7 +1141,7 @@ fn skip_next(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, S
 
 /// `GET /nets/text?net=<group>/<name>`: the definition's file as it is, with the hash to send
 /// back as `base` and whether it is confirmed.
-fn def_text(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn def_text(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let Some(id) = req.query("net").map(str::trim).filter(|n| !n.is_empty()) else {
         return missing("net", "/nets/text?net=<group>/<name>");
     };
@@ -1172,7 +1172,7 @@ fn run_def(id: &str, ask: impl Fn(&Request) -> Result<String, String>) -> Respon
 
 /// `POST /nets/propose`: writes the definition but leaves it unconfirmed (TODO 83). 409 when the
 /// file changed since `base`, 422 when it cannot be written as it is.
-fn propose(req: &ito_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
+fn propose(req: &koyomi_http::Request, ask: impl Fn(&Request) -> Result<String, String>) -> Response {
     let p = match req.json::<Proposal>() {
         Ok(Some(p)) if !p.net.trim().is_empty() && !p.text.trim().is_empty() => p,
         Ok(_) => return missing("net, text", r#"{"net": "<group>/<name>", "text": "...", "base"?: "<sha256>"}"#),
@@ -1220,8 +1220,8 @@ mod tests {
     use std::cell::RefCell;
     use std::io::{Read, Write};
 
-    fn req(method: &str, path: &str, body: &str) -> ito_http::Request {
-        ito_http::Request {
+    fn req(method: &str, path: &str, body: &str) -> koyomi_http::Request {
+        koyomi_http::Request {
             who: Some("default".into()),
             method: method.into(),
             path: path.into(),
@@ -1522,7 +1522,7 @@ id = \"x\"
     /// On the tailnet a login or a tag is the person who wrote it, so their role and `nets` hold.
     #[test]
     fn a_tailscale_login_or_tag_is_let_in_as_its_person() {
-        use ito_http::tailnet::Identity;
+        use koyomi_http::tailnet::Identity;
         let cfg = config::Config::parse(
             "[http]\nport = 8790\ntailnet = 8791\n[[http.user]]\nname = \"sato\"\nrole = \"view\"\ntailscale = \"sato@example.com\"\nnets = [\"経理/*\"]\n[[http.user]]\nname = \"ha\"\nrole = \"run\"\ntailscale = \"tag:koyomi-ha\"\ntoken = \"secret:ha\"\n[[http.user]]\nname = \"ito\"\nrole = \"edit\"\ntoken = \"secret:i\"\n",
         )
@@ -1551,11 +1551,11 @@ id = \"x\"
     #[test]
     fn a_tailnet_port_that_cannot_open_yet_is_a_note() {
         struct Down;
-        impl ito_http::tailnet::Whois for Down {
-            fn whois(&self, _: std::net::SocketAddr) -> std::io::Result<Option<ito_http::tailnet::Identity>> {
+        impl koyomi_http::tailnet::Whois for Down {
+            fn whois(&self, _: std::net::SocketAddr) -> std::io::Result<Option<koyomi_http::tailnet::Identity>> {
                 Ok(None)
             }
-            fn status(&self) -> std::io::Result<ito_http::tailnet::Status> {
+            fn status(&self) -> std::io::Result<koyomi_http::tailnet::Status> {
                 Err(std::io::Error::new(std::io::ErrorKind::NotFound, "tailscaled is not running"))
             }
         }
@@ -1566,9 +1566,9 @@ id = \"x\"
         let http = cfg.http.as_ref().unwrap();
         let mut t = tailnet(http, 0);
         t.whois = std::sync::Arc::new(Down);
-        let mut c = ito_http::Config::new(0, "tok");
+        let mut c = koyomi_http::Config::new(0, "tok");
         c.tailnet = Some(t);
-        let s = Server::start(c, |_| ito_http::Response::ok(serde_json::Value::Null), |_| {}).unwrap();
+        let s = Server::start(c, |_| koyomi_http::Response::ok(serde_json::Value::Null), |_| {}).unwrap();
         assert_eq!(s.tailnet_port(), None);
         let note = tailnet_note(Some(http), &s).unwrap();
         assert!(msg::HTTP_TAILNET_PENDING.is_in(&note), "{note}");
@@ -1823,7 +1823,7 @@ id = \"x\"
         assert_eq!(handle(&req("GET", "/runs/20261399-000000-01", ""), ask).status, 404);
     }
 
-    fn with_query(mut r: ito_http::Request, q: &[(&str, &str)]) -> ito_http::Request {
+    fn with_query(mut r: koyomi_http::Request, q: &[(&str, &str)]) -> koyomi_http::Request {
         r.query = q.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect();
         r
     }
@@ -2003,7 +2003,7 @@ id = \"x\"
     #[test]
     fn a_request_without_the_token_is_turned_away() {
         let ask = |_: &Request| Ok::<_, String>("20261031-090000-01".to_owned());
-        let server = Server::start(ito_http::Config::new(0, "tok"), move |r| handle(&r, ask), |_| {}).expect("listen");
+        let server = Server::start(koyomi_http::Config::new(0, "tok"), move |r| handle(&r, ask), |_| {}).expect("listen");
         let send = |auth: &str| {
             let body = r#"{"net":"g/a"}"#;
             let request = format!(
@@ -2055,23 +2055,23 @@ id = \"x\"
     #[test]
     fn another_pc_reads_over_tls_with_the_pinned_certificate() {
         let dir = std::env::temp_dir().join(format!("koyomi-http-tls-{}", std::process::id()));
-        let mut cfg = ito_http::Config::new(0, "tok");
-        cfg.bind = ito_http::Bind::Lan { addr: Some([127, 0, 0, 1].into()), tls: ito_http::TlsCfg::new(&dir) };
+        let mut cfg = koyomi_http::Config::new(0, "tok");
+        cfg.bind = koyomi_http::Bind::Lan { addr: Some([127, 0, 0, 1].into()), tls: koyomi_http::TlsCfg::new(&dir) };
         let ask = |r: &Request| match r {
             Request::Status => Ok("動いている".to_owned()),
             _ => Err("no".to_owned()),
         };
         let server = Server::start(cfg, move |r| handle(&r, ask), |_| {}).expect("listen");
-        let fp = ito_http::tls::format(&server.fingerprint().expect("a LAN bind has a certificate"));
+        let fp = koyomi_http::tls::format(&server.fingerprint().expect("a LAN bind has a certificate"));
         let url = format!("https://127.0.0.1:{}", server.port());
-        assert_eq!(ito_http::client::peek_fingerprint(&url, Duration::from_secs(5)).as_deref(), Ok(fp.as_str()));
-        let c = ito_http::client::Client::new(&url, &fp, "tok").expect("client");
+        assert_eq!(koyomi_http::client::peek_fingerprint(&url, Duration::from_secs(5)).as_deref(), Ok(fp.as_str()));
+        let c = koyomi_http::client::Client::new(&url, &fp, "tok").expect("client");
         let h = c.get("/health").expect("health");
         assert_eq!((h.status, h.json["status"].as_str()), (200, Some("動いている")));
-        let other = ito_http::tls::format(&[7; 32]);
-        let wrong = ito_http::client::Client::new(&url, &other, "tok").expect("client").get("/health");
-        assert!(matches!(wrong, Err(ito_http::client::Error::Fingerprint(ref got)) if *got == fp), "{wrong:?}");
-        assert_eq!(ito_http::client::Client::new(&url, &fp, "nope").expect("client").get("/health").map(|r| r.status), Ok(401));
+        let other = koyomi_http::tls::format(&[7; 32]);
+        let wrong = koyomi_http::client::Client::new(&url, &other, "tok").expect("client").get("/health");
+        assert!(matches!(wrong, Err(koyomi_http::client::Error::Fingerprint(ref got)) if *got == fp), "{wrong:?}");
+        assert_eq!(koyomi_http::client::Client::new(&url, &fp, "nope").expect("client").get("/health").map(|r| r.status), Ok(401));
         server.stop();
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2165,7 +2165,7 @@ high_contrast = true
         assert_eq!(p.status, 200);
         assert!(p.headers.iter().any(|(k, v)| k == "Content-Security-Policy" && v.contains("script-src 'self'") && !v.contains("unsafe")));
         assert!(page(&req("GET", "/app.js", "")).is_some() && page(&req("GET", "/app.css", "")).is_some());
-        // ito-http writes nosniff and no-store itself; the page must not add them a second time.
+        // koyomi-http writes nosniff and no-store itself; the page must not add them a second time.
         for h in ["X-Content-Type-Options", "Cache-Control", "Content-Security-Policy"] {
             let own = p.headers.iter().filter(|(k, _)| k.eq_ignore_ascii_case(h)).count();
             assert_eq!(own, usize::from(h == "Content-Security-Policy"), "{h}");
@@ -2207,13 +2207,13 @@ high_contrast = true
         let http = cfg.http.as_ref().unwrap();
         let tokens = ["default", "root", "ed", "look", "narrow"]
             .iter()
-            .map(|n| ((*n).to_owned(), ito_http::token_hash(&format!("tok-{n}"))))
+            .map(|n| ((*n).to_owned(), koyomi_http::token_hash(&format!("tok-{n}"))))
             .collect();
         Gate { roles: roles(http), access: access(http), tokens }
     }
 
     /// `POST /door` as `who`, with its bearer token (or none) and the JSON `body`.
-    fn at_door(who: &str, bearer: bool, body: &str) -> ito_http::Request {
+    fn at_door(who: &str, bearer: bool, body: &str) -> koyomi_http::Request {
         let mut r = req("POST", "/door", body);
         r.who = Some(who.to_owned());
         if bearer {
@@ -2227,7 +2227,7 @@ high_contrast = true
     }
 
     /// The status of `r` through the gate, and the requests that reached the engine.
-    fn through(g: &Gate, r: &ito_http::Request) -> (u16, serde_json::Value, Vec<Request>) {
+    fn through(g: &Gate, r: &koyomi_http::Request) -> (u16, serde_json::Value, Vec<Request>) {
         let seen = RefCell::new(Vec::new());
         let ask = |q: &Request| {
             seen.borrow_mut().push(q.clone());
@@ -2450,7 +2450,7 @@ high_contrast = true
     /// an `ask` that answers "done" to anything, so a repeated request does no harm.
     fn door_server() -> Server {
         let g = gate();
-        let mut c = ito_http::Config::new(0, "tok-default");
+        let mut c = koyomi_http::Config::new(0, "tok-default");
         for n in ["root", "ed", "look", "narrow"] {
             c = c.token_named(n, format!("tok-{n}"));
         }
@@ -2503,7 +2503,7 @@ high_contrast = true
     /// gate holds hashes only, and `default` still passes `/door`.
     #[test]
     fn a_hashed_user_is_let_in_with_their_token_and_the_gate_holds_only_hashes() {
-        let hash = ito_http::token_hash("tok-hashed");
+        let hash = koyomi_http::token_hash("tok-hashed");
         let cfg = config::Config::parse(&format!(
             "[http]\nport = 8790\ntoken = \"secret:t\"\n\
              [[http.user]]\nname = \"root\"\nrole = \"admin\"\ntoken = \"secret:r\"\n\
@@ -2521,7 +2521,7 @@ high_contrast = true
         let (mut c, tokens) = credentials(http, fake).unwrap();
         assert_eq!(tokens.get("hashed"), Some(&hash));
         assert!(tokens.values().all(|h| h.len() == 64 && !h.starts_with("tok-")), "{tokens:?}");
-        assert_eq!(tokens.get("default"), Some(&ito_http::token_hash("tok-default")));
+        assert_eq!(tokens.get("default"), Some(&koyomi_http::token_hash("tok-default")));
         let g = Gate { roles: roles(http), access: access(http), tokens };
         c.max_body = MAX_BODY;
         c.port = 0;
@@ -2609,7 +2609,7 @@ high_contrast = true
         c.max_body = MAX_BODY;
         let shared: SharedGate = Arc::new(RwLock::new(Arc::new(gate)));
         let for_handler = Arc::clone(&shared);
-        let serve = move |r: ito_http::Request| {
+        let serve = move |r: koyomi_http::Request| {
             let gate = Arc::clone(&for_handler.read().unwrap());
             gate.serve(&r, |_: &Request| Ok::<_, String>("done".to_owned()))
         };
@@ -2618,7 +2618,7 @@ high_contrast = true
 
     fn swap_to(server: &Server, gate: &SharedGate, http: &config::Http) -> std::io::Result<()> {
         let (c, new) = admission(http, fake_read).unwrap();
-        swap(server, gate, ito_http::Access::of(&c), new)
+        swap(server, gate, koyomi_http::Access::of(&c), new)
     }
 
     fn status_of(reply: &str) -> u16 {
@@ -2733,7 +2733,7 @@ high_contrast = true
         let cookie = sign_in(port, "tok-a1");
         // No token at all on a server without a tailnet listener.
         let empty = Gate { roles: BTreeMap::new(), access: BTreeMap::new(), tokens: BTreeMap::new() };
-        assert!(swap(&server, &gate, ito_http::Access::default(), empty).is_err());
+        assert!(swap(&server, &gate, koyomi_http::Access::default(), empty).is_err());
         // The old access lets a in, and the old gate (not the empty one) knows them.
         assert_eq!(door_status(port, "tok-a1", "Status"), 200);
         assert_eq!(status_of(&by_cookie(port, &cookie, "GET", "/me", "")), 200);

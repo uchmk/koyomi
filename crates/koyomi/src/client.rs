@@ -55,8 +55,8 @@ enum Step {
 
 /// The decision from the service query. On Linux a failed query starts nothing: the unit may be
 /// installed, and an engine started outside it would fight it for the door.
-fn decide(windows: bool, queried: Result<Option<ito_service::State>, String>) -> Step {
-    use ito_service::State;
+fn decide(windows: bool, queried: Result<Option<koyomi_service::State>, String>) -> Step {
+    use koyomi_service::State;
     match queried {
         Ok(None) => Step::Spawn,
         Ok(Some(State::Stopped | State::Stopping)) => {
@@ -83,7 +83,7 @@ fn spawn() -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use ito_service::State;
+    use koyomi_service::State;
 
     use super::*;
 

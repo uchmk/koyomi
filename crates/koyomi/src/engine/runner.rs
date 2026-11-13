@@ -1302,7 +1302,7 @@ struct JobSpec {
 }
 
 /// How long an `ssh` or `winrm` job asked to stop has before it is killed. `koyomi ssh
-/// run` sends TERM to the far command and closes the channel, which ito-sftp gives 2 s;
+/// run` sends TERM to the far command and closes the channel, which koyomi-sftp gives 2 s;
 /// `koyomi winrm run` connects anew to ask the far command to end and to delete its
 /// shell, which takes a moment on a sound link. 10 s leaves room for a slow link while
 /// a kill or a `timeout` still ends it soon.
@@ -2839,7 +2839,7 @@ id = \"a\"
             max: None,
             pass: Default::default(),
         });
-        // More than the 2 s ito-sftp gives the far command's TERM and close.
+        // More than the 2 s koyomi-sftp gives the far command's TERM and close.
         assert!(grace(&ssh) > Duration::from_secs(2));
         let winrm = Part::Chore(Chore::Winrm {
             on: "winrm://ops@app01".into(),

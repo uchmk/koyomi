@@ -439,6 +439,36 @@ text = "{0} did not answer in time."
 cause = "The target may be unreachable or slow to answer."
 action = "Check the host name and port, the network, and the listener and firewall of the target."
 
+[E2155]
+when = "The private key of an SSH or SFTP target cannot be read"
+text = "Cannot read the private key for {0}. ({1})"
+cause = "The key file may be missing or damaged, or it may be protected by a passphrase."
+action = "Check the key setting of the job (without one, the key in ~/.ssh). A key protected by a passphrase cannot be used."
+
+[E2156]
+when = "A file or folder on an SFTP target is not there"
+text = "{1} was not found on {0}."
+cause = "The path that is given is not on the target."
+action = "Check the path in from or into."
+
+[E2157]
+when = "An SFTP target does not allow access to a path"
+text = "{0} did not allow access to {1}."
+cause = "The user of the job has no permission for the path on the target."
+action = "Check the permissions of the path on the target, and the user the job connects as."
+
+[E2158]
+when = "A file or folder to be written is already on an SFTP target"
+text = "{1} already exists on {0}."
+cause = "A file or folder with that name is already on the target."
+action = "Move or delete the existing one, or change the name."
+
+[E2159]
+when = "A file on this PC cannot be used for an SFTP transfer"
+text = "Cannot use the local file for {0}. ({1})"
+cause = "The file on this PC could not be read or written."
+action = "Check that the file exists, and the permissions and the free space of the folder."
+
 [E2160]
 when = "A WinRM target cannot be reached"
 text = "Cannot connect to {0} over WinRM. ({1})"
@@ -522,6 +552,24 @@ when = "When the jobnet on a remote is changed after it was read"
 text = "The jobnet {1} on remote {0} was changed after it was read."
 cause = "The same jobnet was changed on the remote after it was read."
 action = "Read the definition on the remote again, and send it again."
+
+[E2179]
+when = "A file that was sent or fetched does not match its check"
+text = "The content differs on {0}: {1} (here {2}, there {3})."
+cause = "The hash taken on the target, or of the content read back, does not equal the hash taken here."
+action = "Run it again. If it keeps happening, check the network and the disk of the target."
+
+[E2180]
+when = "The target cannot give the hash of a file for verify"
+text = "{0} cannot give the hash of the file. ({1})"
+cause = "verify = \"sha256\" needs the target to run a command (sha256sum or PowerShell), and this user cannot."
+action = "Use verify = \"readback\", or let the user run commands."
+
+[E2181]
+when = "An SFTP or SSH target ended a request in a way koyomi has no sentence for"
+text = "{0} could not finish the request. ({1})"
+cause = "The target or the connection answered with something koyomi has no sentence for."
+action = "Read the reason in brackets, check the target, then run it again."
 
 [E2201]
 when = "Your role does not allow an action"

@@ -224,14 +224,14 @@ fn imap(jobnet: &str, mailbox: &Mailbox, secret: &str) -> Result<Box<dyn Inbox>,
         Err(e) => return Err(line(msg::MAIL_SECRET_UNREADABLE, &[jobnet, &label(mailbox), secret, &e.to_string()])),
     };
     let account =
-        ito_mail::Account { host: mailbox.host.clone(), port: mailbox.port, user: mailbox.user.clone(), folder: mailbox.folder.clone() };
-    let inbox = ito_mail::Inbox::open(&account, &password, ito_mail::From::End).map_err(|e| why(jobnet, mailbox, secret, &e))?;
+        koyomi_mail::Account { host: mailbox.host.clone(), port: mailbox.port, user: mailbox.user.clone(), folder: mailbox.folder.clone() };
+    let inbox = koyomi_mail::Inbox::open(&account, &password, koyomi_mail::From::End).map_err(|e| why(jobnet, mailbox, secret, &e))?;
     Ok(Box::new(Imap { inbox, jobnet: jobnet.to_owned(), mailbox: mailbox.clone(), secret: secret.to_owned() }))
 }
 
-/// A mailbox read over IMAP by ito-mail; it connects again by itself after a drop.
+/// A mailbox read over IMAP by koyomi-mail; it connects again by itself after a drop.
 struct Imap {
-    inbox: ito_mail::Inbox,
+    inbox: koyomi_mail::Inbox,
     jobnet: String,
     mailbox: Mailbox,
     secret: String,
@@ -261,14 +261,14 @@ fn label(m: &Mailbox) -> String {
 }
 
 /// Why a mailbox cannot be read, for the cautions (never with the password).
-fn why(jobnet: &str, m: &Mailbox, secret: &str, e: &ito_mail::Error) -> String {
+fn why(jobnet: &str, m: &Mailbox, secret: &str, e: &koyomi_mail::Error) -> String {
     let label = label(m);
     match e {
-        ito_mail::Error::Connect(s) => line(msg::MAIL_CONNECT, &[jobnet, &label, s]),
-        ito_mail::Error::Tls(s) => line(msg::MAIL_TLS, &[jobnet, &label, s]),
-        ito_mail::Error::Login => line(msg::MAIL_LOGIN, &[jobnet, &label, secret]),
-        ito_mail::Error::NoFolder => line(msg::MAIL_NO_FOLDER, &[jobnet, &label]),
-        ito_mail::Error::Other(s) => s.clone(),
+        koyomi_mail::Error::Connect(s) => line(msg::MAIL_CONNECT, &[jobnet, &label, s]),
+        koyomi_mail::Error::Tls(s) => line(msg::MAIL_TLS, &[jobnet, &label, s]),
+        koyomi_mail::Error::Login => line(msg::MAIL_LOGIN, &[jobnet, &label, secret]),
+        koyomi_mail::Error::NoFolder => line(msg::MAIL_NO_FOLDER, &[jobnet, &label]),
+        koyomi_mail::Error::Other(s) => s.clone(),
     }
 }
 

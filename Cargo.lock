@@ -2613,17 +2613,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ito-cloud"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "hmac",
- "ito-match",
- "sha2 0.11.1",
- "ureq",
-]
-
-[[package]]
 name = "ito-common"
 version = "0.305.0"
 source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
@@ -2777,20 +2766,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ito-http"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "getrandom 0.4.3",
- "ito-secret",
- "rcgen",
- "rustls",
- "serde",
- "serde_json",
- "sha2 0.11.1",
-]
-
-[[package]]
 name = "ito-i18n"
 version = "0.305.0"
 source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
@@ -2845,18 +2820,6 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.11.1",
-]
-
-[[package]]
-name = "ito-mail"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "chrono",
- "encoding_rs",
- "getrandom 0.4.3",
- "rustls",
- "webpki-roots",
 ]
 
 [[package]]
@@ -2967,45 +2930,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ito-service"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "ito-power",
- "windows",
-]
-
-[[package]]
-name = "ito-sftp"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "ito-match",
- "russh",
- "russh-sftp",
- "sha2 0.11.1",
- "tokio",
-]
-
-[[package]]
-name = "ito-sql"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "chrono",
- "futures-util",
- "ito-table",
- "rusqlite",
- "rustls",
- "tiberius",
- "tokio",
- "tokio-postgres",
- "tokio-postgres-rustls",
- "tokio-util",
- "webpki-roots",
-]
-
-[[package]]
 name = "ito-statusbar"
 version = "0.305.0"
 source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
@@ -3014,14 +2938,6 @@ dependencies = [
  "egui",
  "ito-common",
  "ito-theme",
-]
-
-[[package]]
-name = "ito-table"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "rust_xlsxwriter",
 ]
 
 [[package]]
@@ -3084,29 +3000,6 @@ version = "0.305.0"
 source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
 dependencies = [
  "png 0.18.1",
-]
-
-[[package]]
-name = "ito-winrm"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "base64 0.23.1",
- "getrandom 0.4.3",
- "hmac",
- "md-5",
- "md4",
- "rustls",
- "sha2 0.11.1",
- "webpki-roots",
-]
-
-[[package]]
-name = "ito-zip"
-version = "0.305.0"
-source = "git+https://github.com/uchmk/ito?rev=d2e252b84ffafd3298060a239c42a53cb028988e#d2e252b84ffafd3298060a239c42a53cb028988e"
-dependencies = [
- "zip",
 ]
 
 [[package]]
@@ -3241,7 +3134,6 @@ dependencies = [
  "ito-a11y",
  "ito-bugreport",
  "ito-clipboard",
- "ito-cloud",
  "ito-common",
  "ito-confirm",
  "ito-console",
@@ -3257,13 +3149,11 @@ dependencies = [
  "ito-gpu",
  "ito-guide",
  "ito-help",
- "ito-http",
  "ito-i18n",
  "ito-ipc",
  "ito-keymap",
  "ito-keys",
  "ito-keyscript",
- "ito-mail",
  "ito-match",
  "ito-mcp",
  "ito-notices",
@@ -3274,11 +3164,7 @@ dependencies = [
  "ito-prefs",
  "ito-proc",
  "ito-secret",
- "ito-service",
- "ito-sftp",
- "ito-sql",
  "ito-statusbar",
- "ito-table",
  "ito-tail",
  "ito-testcheck",
  "ito-theme",
@@ -3286,12 +3172,30 @@ dependencies = [
  "ito-tray",
  "ito-watch",
  "ito-winres",
- "ito-winrm",
+ "koyomi-cloud",
  "koyomi-core",
+ "koyomi-http",
+ "koyomi-mail",
+ "koyomi-service",
+ "koyomi-sftp",
+ "koyomi-sql",
+ "koyomi-table",
+ "koyomi-winrm",
  "serde",
  "serde_json",
  "toml",
  "winit",
+]
+
+[[package]]
+name = "koyomi-cloud"
+version = "0.37.0"
+dependencies = [
+ "hmac",
+ "ito-match",
+ "sha2 0.11.1",
+ "tempfile",
+ "ureq",
 ]
 
 [[package]]
@@ -3303,11 +3207,120 @@ dependencies = [
  "ito-i18n",
  "ito-match",
  "ito-proc",
- "ito-zip",
+ "koyomi-zip",
  "roxmltree 0.20.0",
  "serde",
  "sha2 0.10.9",
  "toml",
+]
+
+[[package]]
+name = "koyomi-http"
+version = "0.37.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "ito-secret",
+ "rcgen",
+ "rustls",
+ "serde",
+ "serde_json",
+ "sha2 0.11.1",
+]
+
+[[package]]
+name = "koyomi-mail"
+version = "0.37.0"
+dependencies = [
+ "chrono",
+ "encoding_rs",
+ "getrandom 0.4.3",
+ "rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "koyomi-service"
+version = "0.37.0"
+dependencies = [
+ "ito-power",
+ "windows",
+]
+
+[[package]]
+name = "koyomi-sftp"
+version = "0.37.0"
+dependencies = [
+ "ito-match",
+ "rand 0.10.3",
+ "russh",
+ "russh-sftp",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "koyomi-sql"
+version = "0.37.0"
+dependencies = [
+ "chrono",
+ "futures-util",
+ "koyomi-table",
+ "rusqlite",
+ "rustls",
+ "tiberius",
+ "tokio",
+ "tokio-postgres",
+ "tokio-postgres-rustls",
+ "tokio-util",
+ "webpki-roots",
+]
+
+[[package]]
+name = "koyomi-table"
+version = "0.37.0"
+dependencies = [
+ "rust_xlsxwriter",
+]
+
+[[package]]
+name = "koyomi-testserver"
+version = "0.37.0"
+dependencies = [
+ "getrandom 0.4.3",
+ "koyomi-mail",
+ "koyomi-sftp",
+ "koyomi-winrm",
+ "rand 0.10.3",
+ "rcgen",
+ "russh",
+ "russh-sftp",
+ "rustls",
+ "sha2 0.11.1",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "koyomi-winrm"
+version = "0.37.0"
+dependencies = [
+ "base64 0.23.1",
+ "getrandom 0.4.3",
+ "hmac",
+ "md-5",
+ "md4",
+ "rcgen",
+ "rustls",
+ "sha2 0.11.1",
+ "webpki-roots",
+]
+
+[[package]]
+name = "koyomi-zip"
+version = "0.37.0"
+dependencies = [
+ "zip",
 ]
 
 [[package]]

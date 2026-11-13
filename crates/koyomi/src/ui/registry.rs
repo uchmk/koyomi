@@ -431,7 +431,7 @@ pub(super) fn verdict(winrm: bool, field: &str, shown: &str) -> Verdict {
         return Verdict::Empty;
     }
     let same = if winrm {
-        matches!((ito_winrm::fingerprint::parse(field), ito_winrm::fingerprint::parse(shown)), (Some(a), Some(b)) if a == b)
+        matches!((koyomi_winrm::fingerprint::parse(field), koyomi_winrm::fingerprint::parse(shown)), (Some(a), Some(b)) if a == b)
     } else {
         field == shown.trim()
     };

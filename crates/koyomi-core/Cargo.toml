@@ -15,6 +15,6 @@ ito-common = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd329806
 ito-i18n = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 ito-match = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
 ito-proc = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
-ito-zip = { git = "https://github.com/uchmk/ito", rev = "d2e252b84ffafd3298060a239c42a53cb028988e" }
+koyomi-zip = { path = "../koyomi-zip" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 roxmltree = "0.20"
