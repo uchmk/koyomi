@@ -107,7 +107,7 @@ impl<'a> Form<'a> {
         let (label, note) = self.label(ui, key, need);
         let wrong = bad || (need == Need::Required && s.trim().is_empty());
         let mut changed = false;
-        match browse.filter(|w| self.pick.can_browse(*w)) {
+        match browse.filter(|_| self.pick.can_browse()) {
             Some(want) => {
                 // The button takes its room first, at the right; the field fills what is left.
                 ui.horizontal(|ui| {
@@ -233,7 +233,7 @@ impl<'a> Form<'a> {
     fn files(&self, ui: &mut egui::Ui, key: &'a str, need: Need, s: &mut String, (rows, aside): (usize, &str)) -> bool {
         let (label, note) = self.label(ui, key, need);
         let mut changed = CodeBox::new(key).name(label).aside(aside).rows(rows).show(ui, s).changed();
-        if self.pick.can_browse(Want::Files) {
+        if self.pick.can_browse() {
             ui.add_space(4.0);
             changed |= self.pick.browse_button(ui, self.t, key, label, Want::Files, s);
         }

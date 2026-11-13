@@ -351,7 +351,9 @@ impl Browse {
         let mode = match want {
             Want::Folder => Mode::OpenFolder,
             Want::Files => Mode::OpenFiles,
-            Want::File | Want::Save => Mode::OpenFile,
+            Want::File => Mode::OpenFile,
+            // Only a path is picked: the engine writes the file when the job runs (and checks it again then).
+            Want::Save => Mode::SaveFile,
         };
         let mut picker = Picker::new("koyomi.browse", mode, style).title(title).places(places);
         if let Some(s) = start {
@@ -519,16 +521,15 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// With 参照… for the disk of an engine on another PC (not for a file to write: the engine's disk is only listed).
+    /// With 参照… for the disk of an engine on another PC (the engine's disk is only listed; a file to write is only named).
     pub fn with_far_browse(mut self, on: bool) -> Self {
         self.far_browse = on;
         self
     }
 
-    /// Whether a field wanting `want` has a 参照… button: on this PC always, on another PC's engine for an admin and
-    /// never for a file to write.
-    pub fn can_browse(&self, want: Want) -> bool {
-        self.local || (self.far_browse && want != Want::Save)
+    /// Whether a path field has a 参照… button: on this PC always, on another PC's engine for an admin.
+    pub fn can_browse(&self) -> bool {
+        self.local || self.far_browse
     }
 
     /// With the accounts and databases the engine has registered, and whether it runs on Windows.
@@ -625,10 +626,11 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// 参照… for the field `key` (in the part this frame is about): only for an engine on this PC. The answer of the
-    /// chooser lands in `text` when this field is the one it was opened for. True when `text` changed.
+    /// 参照… for the field `key` (in the part this frame is about): this PC's chooser, or for an admin the far engine's
+    /// picker. The answer of the chooser lands in `text` when this field is the one it was opened for. True when `text`
+    /// changed.
     pub fn browse_button(&self, ui: &mut egui::Ui, t: &Table, key: &str, name: &str, want: Want, text: &mut String) -> bool {
-        if !self.can_browse(want) {
+        if !self.can_browse() {
             return false;
         }
         let owner = format!("{}\u{1}{key}", self.scope);
@@ -1033,18 +1035,26 @@ mod tests {
     }
 
     #[test]
-    fn the_browse_button_is_for_this_pc_or_a_far_admin_and_never_for_a_file_to_write() {
+    fn the_browse_button_is_for_this_pc_or_a_far_admin() {
         let ctx = |local: bool, far: bool| Ctx::new(&[], "a", local, "", Browse::default()).with_far_browse(far);
-        for want in [Want::Folder, Want::File, Want::Files, Want::Save] {
-            assert!(ctx(true, false).can_browse(want), "this PC always");
-            assert!(!ctx(false, false).can_browse(want), "another PC's engine, not an admin");
+        assert!(ctx(true, false).can_browse(), "this PC always");
+        assert!(!ctx(false, false).can_browse(), "another PC's engine, not an admin");
+        assert!(ctx(false, true).can_browse(), "another PC's engine, an admin");
+    }
+
+    #[test]
+    fn a_far_picker_opens_in_the_mode_the_field_wants() {
+        for (want, mode) in
+            [(Want::Folder, Mode::OpenFolder), (Want::File, Mode::OpenFile), (Want::Files, Mode::OpenFiles), (Want::Save, Mode::SaveFile)]
+        {
+            let mut b = Browse::waiting_far("owner", want);
+            let Some(Request::DirPlaces { ticket }) = b.request() else { panic!("a far chooser asks for the places first") };
+            assert!(b.answered(&Request::DirPlaces { ticket }, Ok(places_json())));
+            match b.open.as_ref().map(|o| &o.how) {
+                Some(How::Far { picker, .. }) => assert_eq!(picker.mode(), mode, "{want:?}"),
+                _ => panic!("no far picker for {want:?}"),
+            }
         }
-        assert!(
-            ctx(false, true).can_browse(Want::Folder)
-                && ctx(false, true).can_browse(Want::File)
-                && ctx(false, true).can_browse(Want::Files)
-        );
-        assert!(!ctx(false, true).can_browse(Want::Save));
     }
 
     #[test]
