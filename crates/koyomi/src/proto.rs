@@ -18,7 +18,41 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 51;
+pub const PROTO: u32 = 52;
+
+/// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
+/// `Display`. On the wire it is the plain string.
+#[derive(Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct Hidden(String);
+
+impl Hidden {
+    /// A value for a test (the window builds its value in place with [`Hidden::as_mut_string`]).
+    #[cfg(test)]
+    pub fn new(value: String) -> Self {
+        Self(value)
+    }
+
+    /// The value itself. Only for sending it on and storing it; never for a message.
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
+    /// For a masked text field to edit in place.
+    pub fn as_mut_string(&mut self) -> &mut String {
+        &mut self.0
+    }
+}
+
+impl std::fmt::Debug for Hidden {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("***")
+    }
+}
 
 /// How long the door waits for the engine to answer a [`Request::HostPeek`] (the peek itself takes up to
 /// about 20 s).
@@ -364,6 +398,11 @@ pub enum Request {
         #[serde(default)]
         tls: Option<koyomi_core::chore::SqlTls>,
         base_sha256: String,
+        /// A password typed in the form. With it, `password` must be `None`: the engine picks the secret
+        /// (`koyomi-db-<name>`, or the entry's own when nothing else uses it), stores the value there
+        /// and writes `password = "secret:<that>"`.
+        #[serde(default)]
+        password_value: Option<Hidden>,
     },
     /// Remove the `[[database]]` `name`. Refused while a net names it, unless `force`.
     DatabaseRemove {
@@ -1400,7 +1439,14 @@ c"
             Request::UserReset { name: "u".into(), base: "b".into() },
             Request::AccountPut { name: "a".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
             Request::AccountRemove { name: "a".into(), base_sha256: "b".into(), force: false },
-            Request::DatabasePut { name: "d".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
+            Request::DatabasePut {
+                name: "d".into(),
+                db: "sqlite://x".into(),
+                password: None,
+                tls: None,
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::DatabaseRemove { name: "d".into(), base_sha256: "b".into(), force: false },
             Request::HostPut {
                 name: "h".into(),
@@ -1442,6 +1488,29 @@ c"
             // Each one reads back through JSON as what it was.
             assert_eq!(format!("{:?}", round(r)), format!("{r:?}"));
         }
+    }
+
+    /// a typed password never shows in a request's `Debug`, and still travels through the door and JSON.
+    #[test]
+    fn a_typed_password_is_hidden_from_debug_and_travels_through_the_door_and_json() {
+        let put = Request::DatabasePut {
+            name: "d".into(),
+            db: "postgres://u@h/d".into(),
+            password: None,
+            tls: None,
+            base_sha256: "b".into(),
+            password_value: Some(Hidden::new("pw-not-to-show".into())),
+        };
+        assert!(!format!("{put:?}").contains("pw-not-to-show"));
+        assert!(format!("{put:?}").contains("***"));
+        let Request::DatabasePut { password_value, .. } = round(&put) else { panic!("not a put") };
+        assert_eq!(password_value.as_ref().map(Hidden::expose), Some("pw-not-to-show"));
+        let json = serde_json::to_string(&put).unwrap();
+        let Ok(Request::DatabasePut { password_value, .. }) = serde_json::from_str::<Request>(&json) else { panic!("json") };
+        assert_eq!(password_value.as_ref().map(Hidden::expose), Some("pw-not-to-show"));
+        // A put written without the value (a client before PROTO 52) reads as one with none.
+        let old = r#"{"DatabasePut":{"name":"d","db":"sqlite://x","base_sha256":"b"}}"#;
+        assert!(matches!(serde_json::from_str::<Request>(old), Ok(Request::DatabasePut { password_value: None, .. })));
     }
 
     /// the new requests and the staged one's `expect` travel through the door and through JSON.

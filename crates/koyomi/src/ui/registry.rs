@@ -3,7 +3,8 @@
 //! through the door's `Registry` and the `…Put` and `…Remove` requests of each.
 //!
 //! A job names an entry (`run_as = "batch"`, `database = "sales"`, `on = "web1"`), so the secret's name and the
-//! address are written once. The window only ever handles secret NAMES: no password is read, shown or sent here.
+//! address are written once. The window only ever handles secret NAMES, except for a database's password: it is
+//! typed in the form (a [`Hidden`] value, never shown or put in a message) and sent once for the engine to store.
 //!
 //! The state is plain data, so the rules are tested without a window (as on the users page): what the page
 //! may do ([`super::users::access`]), how a listing is taken, what an answer does ([`Registry::answered`])
@@ -14,7 +15,7 @@ use koyomi_core::registry::{BucketEntry, HostEntry, MailboxEntry};
 use koyomi_core::{jobnet, msg, registry};
 
 use super::users::{self, Access, Under};
-use crate::proto::{peek_target_ok, AccountRow, BucketRow, DatabaseRow, HostRow, MailboxRow, PeekKind, RegistryBody, Request};
+use crate::proto::{peek_target_ok, AccountRow, BucketRow, DatabaseRow, Hidden, HostRow, MailboxRow, PeekKind, RegistryBody, Request};
 
 /// The pages share one listing (koyomi.toml is read once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,12 +154,15 @@ pub(super) enum Line {
     NameExists(String),
     /// The secret's name is empty or has a space in it.
     SecretEmpty,
+    /// A refusal worded by a key of the window's own words (a database field that does not read).
+    Key(&'static str),
 }
 
 impl Line {
     pub(super) fn text(&self, t: &ito_i18n::Table) -> String {
         match self {
             Line::Raw(s) | Line::Unsent(s) => s.clone(),
+            Line::Key(k) => t.tr(k).to_owned(),
             Line::BaseChanged => t.tr("registry.base_changed").to_owned(),
             Line::ReplyBad => t.tr("registry.reply_bad").to_owned(),
             Line::NameExists(n) => t.trf("registry.name_exists", &[n]),
@@ -167,7 +171,66 @@ impl Line {
     }
 }
 
-/// The add / edit form of one page. Nothing here is a password: `secret` is the NAME of a secret.
+/// The kind of database the form writes (SQL Server is not offered: its rows are fixed in koyomi.toml).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) enum DbKind {
+    #[default]
+    Postgres,
+    Sqlite,
+}
+
+/// What the database form holds, field by field. The password is typed here and sent once; its `Debug` is `***`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(super) struct DbFields {
+    pub kind: DbKind,
+    pub host: String,
+    /// As typed: empty is the PostgreSQL default.
+    pub port: String,
+    pub database: String,
+    pub user: String,
+    /// SQLite: the file, by its whole path.
+    pub file: String,
+    pub password: Hidden,
+}
+
+impl DbFields {
+    /// A new PostgreSQL entry: the usual port is filled in.
+    fn fresh() -> DbFields {
+        DbFields { port: chore::POSTGRES_PORT.to_string(), ..DbFields::default() }
+    }
+}
+
+/// The port as typed: empty is the PostgreSQL default; otherwise digits from 1 to 65535.
+fn port_of(text: &str) -> Option<u16> {
+    let t = text.trim();
+    if t.is_empty() {
+        return Some(chore::POSTGRES_PORT);
+    }
+    if !t.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    t.parse::<u16>().ok().filter(|p| *p > 0)
+}
+
+/// The key of the words for a field `db_url` refused.
+fn db_field_key(f: chore::DbField) -> &'static str {
+    match f {
+        chore::DbField::Host => "registry.db_bad_host",
+        chore::DbField::Port => "registry.db_bad_port",
+        chore::DbField::Database => "registry.db_bad_database",
+        chore::DbField::User => "registry.db_bad_user",
+        chore::DbField::File => "registry.db_bad_file",
+    }
+}
+
+/// The folder the SQLite chooser starts in: the folder of the path already in the field, when it exists.
+fn start_dir(path: &str) -> Option<std::path::PathBuf> {
+    let dir = std::path::Path::new(path.trim()).parent()?;
+    (!dir.as_os_str().is_empty() && dir.is_dir()).then(|| dir.to_path_buf())
+}
+
+/// The add / edit form of one page. `secret` is the NAME of a secret; the only value typed is a database's password
+/// (`db.password`, hidden).
 #[derive(Clone, Debug)]
 pub(super) struct Form {
     pub page: Page,
@@ -186,6 +249,15 @@ pub(super) struct Form {
     /// What the form opened with: the form is dirty when it differs.
     orig: (String, String, String, SqlTls),
     orig_x: Extra,
+    /// The fields of a database form, and what they opened with (the password empty).
+    pub db: DbFields,
+    db_orig: DbFields,
+    /// The `db` text of the row being edited, kept when its place is not changed.
+    orig_db: String,
+    /// The state of the row's password (`ok`, `missing`, `unreadable`).
+    pw_state: String,
+    /// The number given to this form when it was opened: a chooser's answer is for one form only.
+    pub gen: u64,
     /// The role or the name at the engine changed under the page: 保存 waits until the person has looked at the new listing.
     pub stale: bool,
     pub error: Option<Line>,
@@ -253,6 +325,7 @@ pub(super) struct Extra {
 
 impl Form {
     fn add(page: Page) -> Form {
+        let db = DbFields::fresh();
         Form {
             page,
             editing: None,
@@ -264,6 +337,11 @@ impl Form {
             x: Extra::default(),
             orig: (String::new(), String::new(), String::new(), SqlTls::Verify),
             orig_x: Extra::default(),
+            db: db.clone(),
+            db_orig: db,
+            orig_db: String::new(),
+            pw_state: String::new(),
+            gen: 0,
             stale: false,
             error: None,
             peek: None,
@@ -315,10 +393,27 @@ impl Form {
         Form::of(Page::Accounts, &row.name, &row.user, &row.secret, SqlTls::Verify)
     }
 
-    fn edit_database(row: &DatabaseRow) -> Form {
-        let secret = row.secret.clone().filter(|s| !s.is_empty()).unwrap_or_else(|| row.name.clone());
+    /// The form of a PostgreSQL or SQLite row; `None` for a SQL Server row (and one that does not read), which
+    /// this screen does not change.
+    fn edit_database(row: &DatabaseRow) -> Option<Form> {
+        let db = match chore::sql_db(&row.db).ok()? {
+            SqlDb::Postgres { user, host, port, database } => {
+                DbFields { kind: DbKind::Postgres, host, port: port.to_string(), database, user, ..DbFields::default() }
+            }
+            SqlDb::Sqlite { path } => {
+                DbFields { kind: DbKind::Sqlite, file: path, port: chore::POSTGRES_PORT.to_string(), ..DbFields::default() }
+            }
+            SqlDb::SqlServer { .. } => return None,
+        };
+        // The secret's name is sent back as it is; it is never shown.
+        let secret = row.secret.clone().unwrap_or_default();
         let tls = row.tls.as_deref().and_then(SqlTls::of).unwrap_or_default();
-        Form::of(Page::Databases, &row.name, &row.db, &secret, tls)
+        let mut f = Form::of(Page::Databases, &row.name, "", &secret, tls);
+        f.db_orig = db.clone();
+        f.db = db;
+        f.orig_db = row.db.clone();
+        f.pw_state = row.state.clone();
+        Some(f)
     }
 
     fn of(page: Page, name: &str, target: &str, secret: &str, tls: SqlTls) -> Form {
@@ -333,6 +428,11 @@ impl Form {
             x: Extra::default(),
             orig: (name.to_owned(), target.to_owned(), secret.to_owned(), tls),
             orig_x: Extra::default(),
+            db: DbFields::default(),
+            db_orig: DbFields::default(),
+            orig_db: String::new(),
+            pw_state: String::new(),
+            gen: 0,
             stale: false,
             error: None,
             peek: None,
@@ -376,11 +476,13 @@ impl Form {
     pub(super) fn dirty(&self) -> bool {
         (&self.name, &self.target, &self.secret, self.tls) != (&self.orig.0, &self.orig.1, &self.orig.2, self.orig.3)
             || self.x != self.orig_x
+            || self.db != self.db_orig
     }
 
-    /// Whether the secret's name follows the entry's name: a WinRM host needs one, an SSH host does not.
+    /// Whether the secret's name follows the entry's name: a WinRM host needs one, an SSH host does not. A
+    /// database has no secret name to type: the engine names its secret.
     fn follows_name(&self) -> bool {
-        !self.secret_typed && (self.page != Page::Hosts || self.x.winrm)
+        !self.secret_typed && self.page != Page::Databases && (self.page != Page::Hosts || self.x.winrm)
     }
 
     /// The name was typed: the secret's name follows it until the person types the secret's name.
@@ -424,18 +526,9 @@ impl Form {
         format!("{}{}", scheme(self.x.winrm), self.target.trim())
     }
 
-    /// The server a database's `db` is, when it reads.
-    fn db(&self) -> Option<SqlDb> {
-        chore::sql_db(self.target.trim()).ok()
-    }
-
-    /// Whether the database takes a password (a login: SQL Server with a user, or PostgreSQL).
+    /// Whether the form has a secret-name field (a database's password is typed, not named).
     pub(super) fn needs_secret(&self) -> bool {
-        match self.page {
-            Page::Accounts => true,
-            Page::Databases => matches!(self.db(), Some(SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. })),
-            Page::Hosts | Page::Buckets | Page::Mailboxes => true,
-        }
+        self.page != Page::Databases
     }
 
     /// Whether the secret's name may be left out: an SSH host's (it can log in with a key).
@@ -443,9 +536,46 @@ impl Form {
         self.page == Page::Hosts && !self.x.winrm
     }
 
-    /// Whether the database is a SQLite file: it takes no TLS.
+    /// Whether the database is a SQLite file: it takes no password and no TLS.
     pub(super) fn is_sqlite(&self) -> bool {
-        matches!(self.db(), Some(SqlDb::Sqlite { .. }))
+        self.db.kind == DbKind::Sqlite
+    }
+
+    /// The request of a database form. The place is built from the fields (or is the row's own text when it is
+    /// not changed); the password is the typed one, else the one the row already has.
+    fn database_request(&self, name: String, base: String) -> Result<Request, Line> {
+        let d = &self.db;
+        let sqlite = self.is_sqlite();
+        let sqldb = if sqlite {
+            SqlDb::Sqlite { path: d.file.trim().to_owned() }
+        } else {
+            let port = port_of(&d.port).ok_or(Line::Key("registry.db_bad_port"))?;
+            SqlDb::Postgres { user: d.user.trim().to_owned(), host: d.host.trim().to_owned(), port, database: d.database.trim().to_owned() }
+        };
+        // An unchanged place keeps the row's text (an explicit `:5432` stays).
+        let unchanged = self.editing.is_some() && chore::sql_db(&self.orig_db).ok().as_ref() == Some(&sqldb);
+        let db = if unchanged { self.orig_db.clone() } else { chore::db_url(&sqldb).map_err(|f| Line::Key(db_field_key(f)))? };
+        if db.contains(['{', '}']) {
+            return Err(Line::Raw(msg::line(msg::CFG_DATABASE_BRACES, &[&name])));
+        }
+        let typed = !sqlite && !d.password.is_empty();
+        let kept = self.secret.trim();
+        let (password, password_value) = if sqlite {
+            (None, None)
+        } else if typed {
+            (None, Some(d.password.clone()))
+        } else if self.editing.is_some() && !kept.is_empty() && !kept.chars().any(char::is_whitespace) {
+            (Some(format!("secret:{kept}")), None)
+        } else {
+            return Err(Line::Key("registry.db_password_empty"));
+        };
+        // `verify` is what no `tls` means; SQLite takes none.
+        let tls = (!sqlite && self.tls != SqlTls::Verify).then_some(self.tls);
+        // Only the shape is checked here: the engine names the secret it stores a typed password in.
+        let shape = if typed { Some("secret:koyomi-db-x") } else { password.as_deref() };
+        chore::check_db(&db, shape, tls.unwrap_or_default())
+            .map_err(|e| Line::Raw(msg::line(msg::CFG_DATABASE_BAD, &[&name, msg::uncoded(&e)])))?;
+        Ok(Request::DatabasePut { name, db, password, tls, base_sha256: base, password_value })
     }
 
     /// The request this form sends, or why it is refused (before anything is sent). `taken`: the names
@@ -474,21 +604,7 @@ impl Form {
                 }
                 Ok(Request::AccountPut { name, user, password: format!("secret:{secret}"), base_sha256: base })
             }
-            Page::Databases => {
-                let db = self.target.trim().to_owned();
-                if db.contains(['{', '}']) {
-                    return Err(Line::Raw(msg::line(msg::CFG_DATABASE_BRACES, &[&name])));
-                }
-                let password = self.needs_secret().then(|| format!("secret:{secret}"));
-                if password.is_some() && !secret_ok {
-                    return Err(Line::SecretEmpty);
-                }
-                // `verify` is what no `tls` means; SQLite takes none.
-                let tls = (!self.is_sqlite() && self.tls != SqlTls::Verify).then_some(self.tls);
-                chore::check_db(&db, password.as_deref(), tls.unwrap_or_default())
-                    .map_err(|e| Line::Raw(msg::line(msg::CFG_DATABASE_BAD, &[&name, msg::uncoded(&e)])))?;
-                Ok(Request::DatabasePut { name, db, password, tls, base_sha256: base })
-            }
+            Page::Databases => self.database_request(name, base),
             Page::Hosts => {
                 let winrm = self.is_winrm();
                 let opt = |s: &str| Some(s.trim().to_owned()).filter(|s| !s.is_empty());
@@ -613,6 +729,26 @@ pub(super) struct Done {
     pub reload: bool,
 }
 
+/// Which field a chosen file goes to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Chosen {
+    /// A host's private key file.
+    HostKey,
+    /// A SQLite database file.
+    SqliteFile,
+}
+
+/// A file chooser that is open, with what it was opened for: its answer goes into that form only.
+pub(super) struct Browse {
+    rx: std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>,
+    page: Page,
+    /// The number of the form that was up at the click.
+    gen: u64,
+    /// The PC shown at the click.
+    link: Option<String>,
+    what: Chosen,
+}
+
 #[derive(Default)]
 pub(super) struct Registry {
     /// The last frame a page was drawn in.
@@ -633,8 +769,12 @@ pub(super) struct Registry {
     error: Option<String>,
     /// The form of each page ([`Page::idx`]).
     pub(super) forms: [Option<Form>; Page::COUNT],
-    /// The chooser of a host's key file, while it is open (only for an engine on this PC).
-    key_browse: Option<std::sync::mpsc::Receiver<Vec<std::path::PathBuf>>>,
+    /// The file chooser, while it is open (only for an engine on this PC).
+    browse: Option<Browse>,
+    /// The last number given to an opened form.
+    form_gen: u64,
+    /// The `[[remote]]` name of the PC shown, `None` for this PC (set each frame the page is drawn).
+    link: Option<String>,
     /// The engine is on this PC (set each frame the page is drawn).
     local: bool,
     /// The access is open (set each frame the page is drawn).
@@ -782,20 +922,26 @@ impl Registry {
             }
             Click::OpenAdd => {
                 if self.forms[i].is_none() && v.open && !self.write {
-                    self.forms[i] = Some(Form::add(page));
+                    let mut form = Form::add(page);
+                    self.form_gen += 1;
+                    form.gen = self.form_gen;
+                    self.forms[i] = Some(form);
                 }
             }
             Click::OpenEdit(name) => {
                 if self.can_write(v) && !self.forms[i].as_ref().is_some_and(Form::dirty) {
                     let form = self.listing.as_ref().and_then(|l| match page {
                         Page::Accounts => l.accounts.iter().find(|a| a.name == name).map(Form::edit_account),
-                        Page::Databases => l.databases.iter().find(|d| d.name == name).map(Form::edit_database),
+                        // A SQL Server row (or one that does not read) is not opened: koyomi.toml is where it is changed.
+                        Page::Databases => l.databases.iter().find(|d| d.name == name).and_then(Form::edit_database),
                         Page::Hosts => l.hosts.iter().find(|d| d.name == name).map(Form::edit_host),
                         Page::Buckets => l.buckets.iter().find(|d| d.name == name).map(Form::edit_bucket),
                         Page::Mailboxes => l.mailboxes.iter().find(|d| d.name == name).map(Form::edit_mailbox),
                     });
-                    if form.is_some() {
-                        self.forms[i] = form;
+                    if let Some(mut form) = form {
+                        self.form_gen += 1;
+                        form.gen = self.form_gen;
+                        self.forms[i] = Some(form);
                         self.refusal = None;
                     }
                 }
@@ -940,6 +1086,39 @@ impl Registry {
         }
     }
 
+    /// A chosen file goes into the field it was asked for, only when the form of that page is still the one that was
+    /// up at the click and the PC shown is the same; otherwise it is dropped. Returns whether it was put.
+    pub(super) fn put_browsed(&mut self, page: Page, gen: u64, link: Option<&str>, what: Chosen, paths: &[std::path::PathBuf]) -> bool {
+        if self.link.as_deref() != link {
+            return false;
+        }
+        let (Some(f), Some(p)) = (self.forms[page.idx()].as_mut().filter(|f| f.gen == gen), paths.first()) else {
+            return false;
+        };
+        let path = p.display().to_string();
+        match (what, page) {
+            (Chosen::HostKey, Page::Hosts) => f.x.key = path,
+            (Chosen::SqliteFile, Page::Databases) => f.db.file = path,
+            _ => return false,
+        }
+        true
+    }
+
+    /// Takes the answer of the open file chooser, when it came.
+    fn poll_browse(&mut self, ctx: &egui::Context) {
+        let Some(b) = self.browse.take() else { return };
+        match b.rx.try_recv() {
+            Ok(paths) => {
+                self.put_browsed(b.page, b.gen, b.link.as_deref(), b.what, &paths);
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                self.browse = Some(b);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {}
+        }
+    }
+
     /// A request the thread did not take: the page does not wait for an answer that will not come. What was
     /// typed stays.
     pub(super) fn unsent(&mut self, read: bool, why: String) {
@@ -1058,7 +1237,9 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
     let c = ito_theme::colors();
     let mut click: Option<Click> = None;
     r.local = v.far.is_none();
+    r.link = v.far.map(str::to_owned);
     r.open = v.open;
+    r.poll_browse(ui.ctx());
     let tag = page.tag();
     let (esc, enter, tab) = if r.wants_esc(page) {
         ui.ctx().input_mut(|i| {
@@ -1168,12 +1349,24 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
                                 let tls = row.tls.as_deref().and_then(SqlTls::of).unwrap_or_default();
                                 line(ui, &t.trf("registry.tls_line", &[tls.key()]));
                             }
-                            match &row.secret {
-                                Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
-                                None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
+                            // A SQL Server row is written by hand: it keeps its secret lines and is not edited here.
+                            let fixed_by_hand = !matches!(row.kind.as_str(), "postgres" | "sqlite");
+                            if fixed_by_hand {
+                                match &row.secret {
+                                    Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
+                                    None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
+                                }
+                            } else if row.kind != "sqlite" {
+                                line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)]));
                             }
                             used_line(ui, t, &row.used_by);
-                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
+                            if fixed_by_hand {
+                                let why = t.tr("registry.db_sqlserver_note");
+                                users::say_line(ui, why, c.dim);
+                                row_end_with(r, ui, t, (page, &row.name), (can, here), Some(why), &mut click);
+                            } else {
+                                row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
+                            }
                         });
                     }
                 }
@@ -1328,12 +1521,18 @@ fn secret_lines_as(
 }
 
 /// The buttons under a card, or the form when it is this card's.
-fn row_end(
+fn row_end(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, who: (Page, &str), state: (bool, bool), click: &mut Option<Click>) {
+    row_end_with(r, ui, t, who, state, None, click);
+}
+
+/// [`row_end`]; with `no_edit` (the reason) 編集 is off and shows it as its hover.
+fn row_end_with(
     r: &mut Registry,
     ui: &mut egui::Ui,
     t: &ito_i18n::Table,
     (page, name): (Page, &str),
     (can, editing): (bool, bool),
+    no_edit: Option<&str>,
     click: &mut Option<Click>,
 ) {
     if editing {
@@ -1342,12 +1541,12 @@ fn row_end(
     }
     let id = users::tid(name);
     let tag = page.tag();
-    let on = can && !r.forms[page.idx()].as_ref().is_some_and(Form::dirty);
+    let on = can && no_edit.is_none() && !r.forms[page.idx()].as_ref().is_some_and(Form::dirty);
     ui.horizontal_wrapped(|ui| {
         if users::button(
             ui,
             on,
-            None,
+            no_edit,
             ito_prefs::Mark::Pencil,
             t.tr("registry.edit"),
             ito_prefs::Tone::Plain,
@@ -1436,6 +1635,87 @@ fn peek_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, open: boo
     }
 }
 
+/// The fields of the database form: the kind, then the server, port, database name, user ID and password of
+/// PostgreSQL (TLS under 詳しい設定), or the file of SQLite. `browsed` is set when 参照… is clicked.
+fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, local: bool, browsed: &mut Option<Chosen>) {
+    let look = ito_prefs::Look { c: ito_theme::colors(), q: "" };
+    ui.horizontal(|ui| {
+        ui.label(t.tr("registry.db_kind_field"));
+        let options = [(DbKind::Postgres, "PostgreSQL"), (DbKind::Sqlite, "SQLite")];
+        let (to, resp) = ito_prefs::seg_named(ui, look, &format!("{id}.kind"), t.tr("registry.db_kind_field"), f.db.kind, &options);
+        ito_a11y::test_id(&resp, &format!("{id}.kind"));
+        if let Some(kind) = to {
+            f.db.kind = kind;
+            if kind == DbKind::Postgres && f.db.port.trim().is_empty() {
+                f.db.port = chore::POSTGRES_PORT.to_string();
+            }
+        }
+    });
+    let text = |ui: &mut egui::Ui, label: &str, hint: &str, tail: &str, width: f32, value: &mut String| {
+        ui.horizontal(|ui| {
+            ui.label(t.tr(label));
+            let mut edit = egui::TextEdit::singleline(value).desired_width(width);
+            if !hint.is_empty() {
+                edit = edit.hint_text(t.tr(hint));
+            }
+            let resp = ui.add(edit);
+            ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
+            ito_a11y::test_id(&resp, &format!("{id}.{tail}"));
+        });
+    };
+    if f.is_sqlite() {
+        ui.horizontal(|ui| {
+            ui.label(t.tr("registry.db_file_field"));
+            let resp = ui.add(egui::TextEdit::singleline(&mut f.db.file).hint_text(t.tr("registry.db_file_hint")).desired_width(320.0));
+            ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.db_file_field"));
+            ito_a11y::test_id(&resp, &format!("{id}.file"));
+            // The file is on the engine's PC: it can be picked only when that is this PC.
+            if local {
+                let b = ito_prefs::button_with(ui, look, t.tr("pick.browse"), ito_prefs::Tone::Plain);
+                ito_a11y::test_id(&b, &format!("{id}.file.browse"));
+                if b.clicked() {
+                    *browsed = Some(Chosen::SqliteFile);
+                }
+            }
+        });
+        return;
+    }
+    text(ui, "registry.db_host_field", "", "host", 240.0, &mut f.db.host);
+    text(ui, "registry.db_port_field", "registry.db_port_hint", "port", 80.0, &mut f.db.port);
+    text(ui, "registry.db_name_field", "", "database", 240.0, &mut f.db.database);
+    text(ui, "registry.db_user_field", "", "user", 240.0, &mut f.db.user);
+    ui.horizontal(|ui| {
+        ui.label(t.tr("registry.db_password_field"));
+        let resp = ui.add(egui::TextEdit::singleline(f.db.password.as_mut_string()).password(true).desired_width(240.0));
+        ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr("registry.db_password_field"));
+        ito_a11y::test_id(&resp, &format!("{id}.password"));
+    });
+    let note = match (f.editing.is_some(), f.pw_state.as_str()) {
+        (false, _) => "registry.db_pw_new",
+        (true, "ok") => "registry.db_pw_ok",
+        (true, "unreadable") => "registry.db_pw_unreadable",
+        (true, _) => "registry.db_pw_missing",
+    };
+    let note = egui::RichText::new(t.tr(note)).color(ito_theme::colors().dim);
+    ui.add(egui::Label::new(note).wrap());
+    // The TLS choice is open from the start when it is not the usual one.
+    egui::CollapsingHeader::new(t.tr("registry.db_more")).id_salt(format!("{id}.more")).default_open(f.tls != SqlTls::Verify).show(
+        ui,
+        |ui| {
+            ui.horizontal(|ui| {
+                ui.label(t.tr("registry.tls_field"));
+                for s in SqlTls::ALL {
+                    let resp = ui.radio(f.tls == s, s.key());
+                    ito_a11y::test_id(&resp, &format!("{id}.tls_{}", s.key()));
+                    if resp.clicked() {
+                        f.tls = s;
+                    }
+                }
+            });
+        },
+    );
+}
+
 /// The add / edit form of `page`.
 fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, can: bool, click: &mut Option<Click>) {
     let busy = r.write;
@@ -1445,20 +1725,8 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
     let Some(f) = r.forms[page.idx()].as_mut() else { return };
     let tag = page.tag();
     let id = format!("registry.{tag}.form");
-    // The key file the person picked lands in the host form that is up.
-    if let Some(rx) = &r.key_browse {
-        match rx.try_recv() {
-            Ok(paths) => {
-                r.key_browse = None;
-                if let (Some(p), Page::Hosts) = (paths.first(), page) {
-                    f.x.key = p.display().to_string();
-                }
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => r.key_browse = None,
-        }
-    }
-    let mut browsed = false;
+    // A file the person picked lands in the form that was up at the click ([`Registry::poll_browse`]).
+    let mut browsed: Option<Chosen> = None;
     ui.add_enabled_ui(!busy, |ui| {
         ui.horizontal(|ui| {
             ui.label(t.tr("registry.name_field"));
@@ -1482,27 +1750,31 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
                 }
             });
         }
-        ui.horizontal(|ui| {
-            let (label, hint) = match page {
-                Page::Accounts => ("registry.user_field", "registry.user_hint"),
-                Page::Databases => ("registry.db_field", "field.sql_db_hint"),
-                Page::Hosts if f.x.winrm => ("registry.host_on", "registry.host_on_hint_winrm"),
-                Page::Hosts => ("registry.host_on", "registry.host_on_hint_ssh"),
-                Page::Buckets => ("registry.bucket_url", "registry.bucket_url_hint"),
-                Page::Mailboxes => ("registry.mailbox_mail", "registry.mailbox_mail_hint"),
-            };
-            ui.label(t.tr(label));
-            if page == Page::Hosts {
-                ui.label(egui::RichText::new(scheme(f.x.winrm)).monospace());
-            }
-            let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
-            ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
-            ito_a11y::test_id(&resp, &format!("{id}.target"));
-            if resp.changed() {
-                // What a host showed is for the address it was asked of.
-                f.peek = None;
-            }
-        });
+        if page == Page::Databases {
+            database_ui(ui, t, &id, f, local, &mut browsed);
+        } else {
+            ui.horizontal(|ui| {
+                let (label, hint) = match page {
+                    Page::Accounts => ("registry.user_field", "registry.user_hint"),
+                    Page::Databases => ("", ""),
+                    Page::Hosts if f.x.winrm => ("registry.host_on", "registry.host_on_hint_winrm"),
+                    Page::Hosts => ("registry.host_on", "registry.host_on_hint_ssh"),
+                    Page::Buckets => ("registry.bucket_url", "registry.bucket_url_hint"),
+                    Page::Mailboxes => ("registry.mailbox_mail", "registry.mailbox_mail_hint"),
+                };
+                ui.label(t.tr(label));
+                if page == Page::Hosts {
+                    ui.label(egui::RichText::new(scheme(f.x.winrm)).monospace());
+                }
+                let resp = ui.add(egui::TextEdit::singleline(&mut f.target).hint_text(t.tr(hint)).desired_width(320.0));
+                ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
+                ito_a11y::test_id(&resp, &format!("{id}.target"));
+                if resp.changed() {
+                    // What a host showed is for the address it was asked of.
+                    f.peek = None;
+                }
+            });
+        }
         f.drop_stale_peek();
         match page {
             Page::Hosts if !f.x.winrm => {
@@ -1522,7 +1794,9 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
                             ito_prefs::Tone::Plain,
                         );
                         ito_a11y::test_id(&b, &format!("{id}.key.browse"));
-                        browsed = b.clicked();
+                        if b.clicked() {
+                            browsed = Some(Chosen::HostKey);
+                        }
                     }
                 });
             }
@@ -1565,22 +1839,24 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
             typed_line(ui, t, &id, ("registry.region_field", "region", "registry.region_hint"), &mut f.x.region);
             typed_line(ui, t, &id, ("registry.endpoint_field", "endpoint", "registry.endpoint_hint"), &mut f.x.endpoint);
         }
-        if page == Page::Databases && !f.is_sqlite() {
-            ui.horizontal(|ui| {
-                ui.label(t.tr("registry.tls_field"));
-                for s in SqlTls::ALL {
-                    let resp = ui.radio(f.tls == s, s.key());
-                    ito_a11y::test_id(&resp, &format!("{id}.tls_{}", s.key()));
-                    if resp.clicked() {
-                        f.tls = s;
-                    }
-                }
-            });
-        }
     });
-    if browsed && r.key_browse.is_none() {
-        let title = t.tr("registry.key_file").to_owned();
-        r.key_browse = Some(ito_dialog::spawn(move || ito_dialog::Dialog::new().title(&title).open_file().into_iter().collect()));
+    if let (Some(what), None) = (browsed, &r.browse) {
+        let (page, gen, link) = (page, f.gen, r.link.clone());
+        let dialog = match what {
+            Chosen::HostKey => ito_dialog::Dialog::new().title(t.tr("registry.key_file")),
+            Chosen::SqliteFile => {
+                let mut d = ito_dialog::Dialog::new()
+                    .title(t.tr("registry.db_sqlite_title"))
+                    .filter(ito_dialog::Filter::new(t.tr("registry.db_sqlite_filter"), &["db", "sqlite", "sqlite3", "db3"]))
+                    .filter(ito_dialog::Filter::new(t.tr("registry.db_all_filter"), &["*"]));
+                if let Some(dir) = start_dir(&f.db.file) {
+                    d = d.directory(dir);
+                }
+                d
+            }
+        };
+        let rx = ito_dialog::spawn(move || dialog.open_file().into_iter().collect());
+        r.browse = Some(Browse { rx, page, gen, link, what });
     }
     if let Some(why) = &f.error {
         users::say_line(ui, &why.text(t), ito_theme::colors().err);
@@ -1994,35 +2270,236 @@ mod tests {
         assert!(e.dirty());
     }
 
-    #[test]
-    fn a_database_form_sends_a_secret_and_tls_only_where_they_apply() {
-        let mut f = Form::add(Page::Databases);
-        f.name = "lite".into();
-        f.name_typed();
-        f.target = "sqlite://C:\\data\\a.db".into();
-        match f.request("b", &[]) {
-            Ok(Request::DatabasePut { password, tls, .. }) => assert_eq!((password, tls), (None, None)),
-            other => panic!("{other:?}"),
+    const PW: &str = "pw-not-to-show";
+
+    fn db_row(name: &str, kind: &str, db: &str, secret: Option<&str>) -> DatabaseRow {
+        DatabaseRow {
+            name: name.into(),
+            kind: kind.into(),
+            db: db.into(),
+            secret: secret.map(str::to_owned),
+            tls: None,
+            state: "ok".into(),
+            used_by: vec![],
         }
-        f.target = "sqlserver://u@h/d".into();
-        f.tls = SqlTls::Trust;
+    }
+
+    fn db_loaded() -> Registry {
+        let mut r = Registry::default();
+        r.touch(1, Page::Databases);
+        r.ask();
+        let mut b = body();
+        b.databases.push(db_row("pg", "postgres", "postgres://app@db1:5432/sales", Some("koyomi-db-pg")));
+        b.databases.push(db_row("lite", "sqlite", "sqlite://C:\\data\\a.db", None));
+        r.listing_answer(Ok(b.to_toml()));
+        r
+    }
+
+    /// An add form with a PostgreSQL entry filled in, the password typed.
+    fn pg_form() -> Form {
+        let mut f = Form::add(Page::Databases);
+        f.name = "sales".into();
+        f.db.host = "db1".into();
+        f.db.database = "sales".into();
+        f.db.user = "app".into();
+        f.db.password.as_mut_string().push_str(PW);
+        f
+    }
+
+    #[test]
+    fn a_new_postgres_entry_sends_the_fields_as_a_url_and_the_typed_password_apart() {
+        let f = pg_form();
+        assert_eq!(f.db.port, "5432");
         match f.request("b", &[]) {
-            Ok(Request::DatabasePut { password, tls, .. }) => {
-                assert_eq!((password.as_deref(), tls), (Some("secret:lite"), Some(SqlTls::Trust)));
+            Ok(Request::DatabasePut { name, db, password, tls, password_value, .. }) => {
+                assert_eq!((name.as_str(), db.as_str(), password, tls), ("sales", "postgres://app@db1/sales", None, None));
+                assert_eq!(password_value.as_ref().map(Hidden::expose), Some(PW));
             }
             other => panic!("{other:?}"),
         }
-        // SQL Server without a user signs in as the account: no password.
-        f.target = "sqlserver://h/d".into();
-        f.tls = SqlTls::Verify;
-        match f.request("b", &[]) {
-            Ok(Request::DatabasePut { password, tls, .. }) => assert_eq!((password, tls), (None, None)),
+        // Another port is written; the usual one is left out; an empty port is the usual one.
+        let mut g = pg_form();
+        g.db.port = "5433".into();
+        g.tls = SqlTls::Trust;
+        match g.request("b", &[]) {
+            Ok(Request::DatabasePut { db, tls, .. }) => {
+                assert_eq!((db.as_str(), tls), ("postgres://app@db1:5433/sales", Some(SqlTls::Trust)))
+            }
             other => panic!("{other:?}"),
         }
-        f.target = "sqlserver://h/{x}".into();
+        g.db.port = " ".into();
+        assert!(matches!(g.request("b", &[]), Ok(Request::DatabasePut { ref db, .. }) if db == "postgres://app@db1/sales"));
+    }
+
+    #[test]
+    fn a_field_that_does_not_make_a_url_is_refused_by_its_own_words_and_nothing_is_sent() {
+        type Change = fn(&mut DbFields);
+        let cases: [(&str, Change); 6] = [
+            ("registry.db_bad_host", |d| d.host = "a b".into()),
+            ("registry.db_bad_port", |d| d.port = "70000".into()),
+            ("registry.db_bad_port", |d| d.port = "54x2".into()),
+            ("registry.db_bad_database", |d| d.database = " ".into()),
+            ("registry.db_bad_user", |d| d.user = "a:b".into()),
+            ("registry.db_password_empty", |d| d.password.as_mut_string().clear()),
+        ];
+        for (key, change) in cases {
+            let mut f = pg_form();
+            change(&mut f.db);
+            assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key(key), "{key}");
+        }
+        let mut f = pg_form();
+        f.db.host.clear();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.db_bad_host"));
+        let mut f = Form::add(Page::Databases);
+        f.name = "lite".into();
+        f.db.kind = DbKind::Sqlite;
+        f.db.file = "data.db".into();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.db_bad_file"));
+        // The worded line reads in both languages.
+        for lang in ["ja", "en"] {
+            let (t, _) = crate::i18n::table(lang);
+            for key in
+                ["registry.db_bad_host", "registry.db_bad_port", "registry.db_bad_database", "registry.db_bad_user", "registry.db_bad_file"]
+            {
+                let text = Line::Key(key).text(&t);
+                assert!(!text.is_empty() && !text.contains("registry."), "{lang} {key}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_new_entry_without_a_password_is_refused_and_a_sqlite_file_has_no_password_or_tls() {
+        let mut f = pg_form();
+        f.db.password.as_mut_string().clear();
+        assert_eq!(f.request("b", &[]).unwrap_err(), Line::Key("registry.db_password_empty"));
+        let mut f = Form::add(Page::Databases);
+        f.name = "lite".into();
+        f.db.kind = DbKind::Sqlite;
+        f.db.file = " C:\\data\\a b.db ".into();
+        f.tls = SqlTls::Trust;
+        match f.request("b", &[]) {
+            Ok(Request::DatabasePut { db, password, tls, password_value, .. }) => {
+                assert_eq!((db.as_str(), password, tls, password_value), ("sqlite://C:\\data\\a b.db", None, None, None));
+            }
+            other => panic!("{other:?}"),
+        }
+        // The name is checked as before.
+        f.name = "a/b".into();
         assert!(matches!(f.request("b", &[]), Err(Line::Raw(_))));
-        f.target = "nonsense".into();
-        assert!(matches!(f.request("b", &[]), Err(Line::Raw(_))));
+        f.name = "main".into();
+        assert_eq!(f.request("b", &["main".to_owned()]).unwrap_err(), Line::NameExists("main".into()));
+    }
+
+    #[test]
+    fn editing_without_typing_keeps_the_row_text_and_its_secret() {
+        let row = db_row("pg", "postgres", "postgres://app@db1:5432/sales", Some("koyomi-db-pg"));
+        let f = Form::edit_database(&row).unwrap();
+        assert_eq!((f.db.host.as_str(), f.db.port.as_str(), f.db.database.as_str(), f.db.user.as_str()), ("db1", "5432", "sales", "app"));
+        assert!(!f.dirty());
+        match f.request("b", &[]) {
+            Ok(Request::DatabasePut { db, password, password_value, .. }) => {
+                // The explicit port stays as it was written.
+                assert_eq!(db, "postgres://app@db1:5432/sales");
+                assert_eq!((password.as_deref(), password_value), (Some("secret:koyomi-db-pg"), None));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A row that has no password to keep needs one.
+        let mut bare = row.clone();
+        bare.secret = None;
+        assert_eq!(Form::edit_database(&bare).unwrap().request("b", &[]).unwrap_err(), Line::Key("registry.db_password_empty"));
+        // A changed place is built again.
+        let mut g = Form::edit_database(&row).unwrap();
+        g.db.database = "ops".into();
+        assert!(g.dirty());
+        assert!(matches!(g.request("b", &[]), Ok(Request::DatabasePut { ref db, .. }) if db == "postgres://app@db1/ops"));
+    }
+
+    #[test]
+    fn a_password_only_change_is_dirty_and_sends_the_old_text() {
+        let row = db_row("pg", "postgres", "postgres://app@db1:5432/sales", Some("koyomi-db-pg"));
+        let mut f = Form::edit_database(&row).unwrap();
+        f.db.password.as_mut_string().push_str(PW);
+        assert!(f.dirty());
+        match f.request("b", &[]) {
+            Ok(Request::DatabasePut { db, password, password_value, .. }) => {
+                assert_eq!((db.as_str(), password), ("postgres://app@db1:5432/sales", None));
+                assert_eq!(password_value.as_ref().map(Hidden::expose), Some(PW));
+            }
+            other => panic!("{other:?}"),
+        }
+        // The TLS pick alone is a change too.
+        let mut g = Form::edit_database(&row).unwrap();
+        g.tls = SqlTls::Trust;
+        assert!(g.dirty());
+    }
+
+    #[test]
+    fn a_sql_server_row_is_not_opened_but_can_still_be_removed() {
+        let mut r = db_loaded();
+        assert!(matches!(r.act(Click::OpenEdit("main".into()), Page::Databases, &OPEN), Do::Nothing));
+        assert!(r.forms[Page::Databases.idx()].is_none());
+        r.act(Click::OpenEdit("pg".into()), Page::Databases, &OPEN);
+        assert!(r.forms[Page::Databases.idx()].as_ref().is_some_and(|f| f.gen > 0 && f.editing.as_deref() == Some("pg")));
+        r.act(Click::CloseForm, Page::Databases, &OPEN);
+        r.act(Click::OpenEdit("lite".into()), Page::Databases, &OPEN);
+        assert!(r.forms[Page::Databases.idx()].as_ref().is_some_and(|f| f.is_sqlite() && f.db.file == "C:\\data\\a.db"));
+        r.act(Click::CloseForm, Page::Databases, &OPEN);
+        r.act(Click::AskRemove("main".into()), Page::Databases, &OPEN);
+        assert!(r.confirm.is_some());
+        assert!(matches!(r.act(Click::Yes, Page::Databases, &OPEN), Do::Send(Request::DatabaseRemove { .. })));
+    }
+
+    #[test]
+    fn the_typed_password_is_in_no_debug_text() {
+        let f = pg_form();
+        assert!(!format!("{f:?}").contains(PW));
+        let req = f.request("b", &[]).unwrap();
+        assert!(!format!("{req:?}").contains(PW));
+        assert!(format!("{req:?}").contains("***"));
+        // A refused save keeps the typed value in the form and says nothing of it.
+        let mut g = pg_form();
+        g.db.host = "a b".into();
+        let why = g.request("b", &[]).unwrap_err();
+        assert!(!format!("{why:?}").contains(PW));
+    }
+
+    #[test]
+    fn a_chosen_file_goes_only_to_the_form_and_the_pc_it_was_asked_for() {
+        let path = vec![std::path::PathBuf::from("C:\\x\\y.db")];
+        let mut r = db_loaded();
+        r.act(Click::OpenEdit("lite".into()), Page::Databases, &OPEN);
+        let gen = r.forms[Page::Databases.idx()].as_ref().unwrap().gen;
+        let file = |r: &Registry| r.forms[Page::Databases.idx()].as_ref().map(|f| f.db.file.clone());
+        // Another field kind, another PC, another form number, nothing chosen: dropped.
+        assert!(!r.put_browsed(Page::Databases, gen, None, Chosen::HostKey, &path));
+        assert!(!r.put_browsed(Page::Databases, gen, Some("far"), Chosen::SqliteFile, &path));
+        assert!(!r.put_browsed(Page::Databases, gen + 1, None, Chosen::SqliteFile, &path));
+        assert!(!r.put_browsed(Page::Databases, gen, None, Chosen::SqliteFile, &[]));
+        assert_eq!(file(&r).as_deref(), Some("C:\\data\\a.db"));
+        assert!(r.put_browsed(Page::Databases, gen, None, Chosen::SqliteFile, &path));
+        assert_eq!(file(&r).as_deref(), Some("C:\\x\\y.db"));
+        // The form was closed and opened again: the old answer finds a new form.
+        r.act(Click::CloseForm, Page::Databases, &OPEN);
+        assert!(!r.put_browsed(Page::Databases, gen, None, Chosen::SqliteFile, &path));
+        r.act(Click::OpenEdit("lite".into()), Page::Databases, &OPEN);
+        assert!(!r.put_browsed(Page::Databases, gen, None, Chosen::SqliteFile, &path));
+        assert_eq!(file(&r).as_deref(), Some("C:\\data\\a.db"));
+        // Seen from another PC, the answer asked on this PC is not for this form.
+        r.link = Some("far".into());
+        let gen = r.forms[Page::Databases.idx()].as_ref().unwrap().gen;
+        assert!(!r.put_browsed(Page::Databases, gen, None, Chosen::SqliteFile, &path));
+        assert!(r.put_browsed(Page::Databases, gen, Some("far"), Chosen::SqliteFile, &path));
+    }
+
+    #[test]
+    fn the_sqlite_chooser_starts_in_the_folder_of_the_field_when_it_exists() {
+        let dir = std::env::temp_dir();
+        assert_eq!(start_dir(&dir.join("a.db").display().to_string()), Some(dir.clone()));
+        assert_eq!(start_dir(&format!("  {}  ", dir.join("a.db").display())), Some(dir.clone()));
+        assert_eq!(start_dir(&dir.join("no-such-folder-koyomi").join("a.db").display().to_string()), None);
+        assert_eq!(start_dir(""), None);
+        assert_eq!(start_dir("a.db"), None);
     }
 
     #[test]

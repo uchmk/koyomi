@@ -36,6 +36,7 @@ use crate::proto::{self, Request, Runs, Snapshot, Versions};
 
 mod alive;
 mod backup;
+mod db_password;
 mod events;
 pub(crate) mod files;
 pub mod http;
@@ -270,6 +271,8 @@ struct State {
     alive: alive::Alive,
     /// The peeks at a host's key or certificate that run on threads of their own (`HostPeek`).
     peeks: peek::Peeks,
+    /// The credential store a password typed in the settings goes to (a fake in tests).
+    secrets: Arc<dyn crate::remote::SecretStore + Send + Sync>,
     /// `[ping]`: the outside watcher's address, called while the engine runs.
     ping: ping::Ping,
     ping_cfg: Option<koyomi_core::config::Ping>,
@@ -381,6 +384,7 @@ impl State {
             backup,
             alive,
             peeks: peek::Peeks::new(peek::real()),
+            secrets: Arc::new(crate::remote::Keyring),
             ping: ping::Ping::default(),
             ping_cfg: None,
             ping_plain_ok: false,
@@ -2570,6 +2574,23 @@ impl State {
         self.registry(get)
     }
 
+    /// [`Request::DatabasePut`] with a typed password (see `db_password`): the same base check and reload as
+    /// `registry_write`, with the store and koyomi.toml changed together. The reply is the new registry.
+    fn database_put_typed(&mut self, base: &str, typed: &db_password::Typed) -> Result<String, String> {
+        let _edit = crate::remote::edits();
+        let old = self.users_text()?.unwrap_or_default();
+        if koyomi_core::users::sha256(&old) != base {
+            return Err(msg::line(msg::CONFIG_CHANGED, &[]));
+        }
+        let secrets = self.secrets.clone();
+        db_password::put(&old, typed, &*secrets, &|s| crate::remote::used_elsewhere(&self.paths, s), &mut |text| self.users_write(text))?;
+        self.reload_config();
+        if let Some(e) = &self.bad_config {
+            return Err(e.clone());
+        }
+        self.registry(&|n| secrets.get(n).map_err(std::io::Error::other))
+    }
+
     fn versions_dir(&self, group: &str, name: &str) -> PathBuf {
         self.paths.state.join("versions").join(group).join(name)
     }
@@ -3026,7 +3047,12 @@ impl State {
                 Some((Table::Account, name.trim())),
                 &read_secret,
             ),
-            Request::DatabasePut { name, db, password, tls, base_sha256 } => {
+            Request::DatabasePut { name, db, password, tls, base_sha256, password_value: Some(value) } => {
+                // Any `password` with a typed value is refused (`db_password::check_value`), even an empty one.
+                let typed = db_password::Typed { name: name.trim(), db: db.trim(), tls: *tls, password: password.as_deref(), value };
+                self.database_put_typed(base_sha256, &typed)
+            }
+            Request::DatabasePut { name, db, password, tls, base_sha256, password_value: None } => {
                 let entry = koyomi_core::registry::DatabaseEntry {
                     name: name.trim().to_owned(),
                     db: db.trim().to_owned(),
@@ -5176,6 +5202,58 @@ port = 8700
         } else {
             Request::Over { by: by.to_owned(), request: Box::new(put) }
         }
+    }
+
+    /// A credential store in memory that records what was asked of it.
+    #[derive(Default)]
+    struct MemStore {
+        items: std::sync::Mutex<BTreeMap<String, String>>,
+        calls: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::remote::SecretStore for MemStore {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.calls.lock().unwrap().push(format!("get {name}"));
+            Ok(self.items.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("set {name}"));
+            self.items.lock().unwrap().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("delete {name}"));
+            self.items.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn a_typed_database_password_goes_to_the_store_and_koyomi_toml_names_only_the_secret() {
+        let paths = temp_paths("door-db-password");
+        let mut s = State::new(paths.clone());
+        let store = Arc::new(MemStore::default());
+        s.secrets = store.clone();
+        std::fs::write(&paths.config, "concurrency = 2\n").unwrap();
+        let base = koyomi_core::users::sha256("concurrency = 2\n");
+        let put = |base: &str| Request::DatabasePut {
+            name: "main".into(),
+            db: "postgres://u@h/d".into(),
+            password: None,
+            tls: None,
+            base_sha256: base.into(),
+            password_value: Some(proto::Hidden::new("pw-not-to-show".into())),
+        };
+        // A stale base is refused before any store call.
+        let e = s.dispatch(&put("stale"), "t").unwrap_err();
+        assert!(msg::CONFIG_CHANGED.is_in(&e), "{e}");
+        assert!(store.calls.lock().unwrap().is_empty());
+        let reply = s.dispatch(&put(&base), "t").unwrap();
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(text.contains("password = \"secret:koyomi-db-main\"") && !text.contains("pw-not-to-show"), "{text}");
+        assert_eq!(store.items.lock().unwrap().get("koyomi-db-main").map(String::as_str), Some("pw-not-to-show"));
+        assert!(!reply.contains("pw-not-to-show"));
+        assert!(reply.contains("koyomi-db-main"));
     }
 
     /// Accounts and databases are written through the door, one entry at a time: the rest of the file stays,

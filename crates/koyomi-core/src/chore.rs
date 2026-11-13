@@ -1260,7 +1260,7 @@ pub fn winrm(s: &str) -> Option<Result<Sftp, String>> {
 }
 
 /// Where a `sql`'s `db` points.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SqlDb {
     /// `sqlserver://[user@]host[:port]/database`: without a user, the Windows
     /// account the job runs as logs in.
@@ -1448,6 +1448,74 @@ pub fn sql_db(s: &str) -> Result<SqlDb, String> {
         return Err(msg::line(msg::CHORE_DB_USER_MISSING, &[scheme, form, t]));
     };
     Ok(SqlDb::Postgres { user, host: far.host, port: far.port.unwrap_or(POSTGRES_PORT), database })
+}
+
+/// Which field of a database form does not make a `db` that reads back as itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DbField {
+    Host,
+    Port,
+    Database,
+    User,
+    File,
+}
+
+/// The `db` URL of `db` (PostgreSQL or SQLite; SQL Server is not built here: `Err(DbField::Host)`), refused
+/// unless `sql_db` reads it back as exactly the same parts.
+pub fn db_url(db: &SqlDb) -> Result<String, DbField> {
+    const HOST_BAD: &str = "/@\\{}?#\"'`;&|<>";
+    const USER_BAD: &str = ":/\\{}\"'`;&|<>";
+    let url = match db {
+        SqlDb::SqlServer { .. } => return Err(DbField::Host),
+        SqlDb::Postgres { user, host, port, database } => {
+            let bracketed =
+                host.strip_prefix('[').and_then(|h| h.strip_suffix(']')).is_some_and(|h| h.parse::<std::net::Ipv6Addr>().is_ok());
+            let colon_ok = bracketed || !host.contains([':', '[', ']']);
+            if host.is_empty()
+                || host.starts_with('-')
+                || host.chars().any(|c| c.is_whitespace() || c.is_control() || HOST_BAD.contains(c))
+                || !colon_ok
+            {
+                return Err(DbField::Host);
+            }
+            if *port == 0 {
+                return Err(DbField::Port);
+            }
+            if database.trim().is_empty() || database.contains(['/', '?', '{', '}']) || database.chars().any(char::is_control) {
+                return Err(DbField::Database);
+            }
+            if user.is_empty() || user.chars().any(|c| c.is_whitespace() || c.is_control() || USER_BAD.contains(c)) {
+                return Err(DbField::User);
+            }
+            if *port == POSTGRES_PORT && !host.contains(':') {
+                format!("postgres://{user}@{host}/{database}")
+            } else {
+                format!("postgres://{user}@{host}:{port}/{database}")
+            }
+        }
+        SqlDb::Sqlite { path } => {
+            let b = path.as_bytes();
+            let drive = b.len() >= 3 && b[0].is_ascii_alphabetic() && b[1] == b':' && (b[2] == b'\\' || b[2] == b'/');
+            if path.is_empty() || path.contains(['{', '}', '\r', '\n']) || !(drive || path.starts_with(['\\', '/'])) {
+                return Err(DbField::File);
+            }
+            format!("sqlite://{path}")
+        }
+    };
+    match (sql_db(&url), db) {
+        (Ok(back), _) if back == *db => Ok(url),
+        (Ok(SqlDb::Postgres { host: h, port: p, database: d, .. }), SqlDb::Postgres { host, port, database, .. }) => Err(if h != *host {
+            DbField::Host
+        } else if p != *port {
+            DbField::Port
+        } else if d != *database {
+            DbField::Database
+        } else {
+            DbField::User
+        }),
+        (_, SqlDb::Sqlite { .. }) => Err(DbField::File),
+        _ => Err(DbField::Host),
+    }
 }
 
 /// A `sql`'s `rows` read as the counts that are 正常, each `(least, most)`:
@@ -2596,6 +2664,39 @@ mod tests {
         assert!(msg::CHORE_PORT_BAD.is_in(&err("sqlserver://db01:0/x")));
         assert!(msg::CHORE_DB_USER_MISSING.is_in(&err("postgres://pg/app")));
         assert!(msg::CHORE_SQLITE_PATH.is_in(&err("sqlite://app.db")));
+    }
+
+    #[test]
+    fn a_db_url_is_built_from_fields_and_reads_back() {
+        let pg = |user: &str, host: &str, port: u16, database: &str| SqlDb::Postgres {
+            user: user.into(),
+            host: host.into(),
+            port,
+            database: database.into(),
+        };
+        let lite = |p: &str| SqlDb::Sqlite { path: p.into() };
+        assert_eq!(db_url(&pg("u", "db.example", 5432, "d")).as_deref(), Ok("postgres://u@db.example/d"));
+        assert_eq!(db_url(&pg("u", "10.0.0.5", 5433, "d")).as_deref(), Ok("postgres://u@10.0.0.5:5433/d"));
+        assert_eq!(db_url(&pg("u", "[::1]", 5432, "d")).as_deref(), Ok("postgres://u@[::1]:5432/d"));
+        assert_eq!(db_url(&pg("a@b", "h", 5432, "d")).as_deref(), Ok("postgres://a@b@h/d"));
+        assert_eq!(db_url(&pg("u", "h", 5432, "my db")).as_deref(), Ok("postgres://u@h/my db"));
+        assert_eq!(db_url(&pg("a:b", "h", 5432, "d")), Err(DbField::User));
+        assert_eq!(db_url(&pg("", "h", 5432, "d")), Err(DbField::User));
+        for host in ["a b", "a/b", "-x", "a:b", "", "a@b", "[x]", "[::1", "[:::]", "[1:2]", "[]", "[1.2.3.4]"] {
+            assert_eq!(db_url(&pg("u", host, 5432, "d")), Err(DbField::Host), "{host}");
+        }
+        for database in ["a/b", "a?b", "{x}", "", "  ", "a\nb"] {
+            assert_eq!(db_url(&pg("u", "h", 5432, database)), Err(DbField::Database), "{database:?}");
+        }
+        assert_eq!(db_url(&pg("u", "h", 0, "d")), Err(DbField::Port));
+        for path in ["C:\\data\\app.db", "C:/data/app.db", "\\\\server\\share\\a.db", "/var/lib/a.db"] {
+            assert_eq!(db_url(&lite(path)), Ok(format!("sqlite://{path}")), "{path}");
+        }
+        for path in ["data\\app.db", "{x}.db", "", "C:\\a\nb.db", "C:\\a.db "] {
+            assert_eq!(db_url(&lite(path)), Err(DbField::File), "{path:?}");
+        }
+        let server = SqlDb::SqlServer { user: None, host: "h".into(), port: 1433, database: "d".into() };
+        assert_eq!(db_url(&server), Err(DbField::Host));
     }
 
     #[test]

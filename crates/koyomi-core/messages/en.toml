@@ -3001,6 +3001,48 @@ text = "The peek at the host stopped half way."
 cause = "The work ended abnormally, or its thread could not be started."
 action = "Press the button again. If it keeps happening, check the engine's log."
 
+[E2255]
+when = "The credential store cannot be read when a typed password of a [[database]] is about to be saved"
+text = "Cannot read the secret {1} of [[database]] {0} from the credential store. ({2})"
+cause = "The credential store may be unavailable, or it may have refused to read. Nothing was changed."
+action = "Check the credential store of the engine's PC, then save again."
+
+[E2256]
+when = "No secret name is free for the typed password of a [[database]]"
+text = "No secret name is free for [[database]] {0}."
+cause = "The names koyomi-db-<name> up to -100 are all used by other settings or already in the credential store. Nothing was changed."
+action = "Remove the secrets you do not need with koyomi secret delete, or rename the database, then save again."
+
+[E2257]
+when = "The password typed for a [[database]] cannot be used"
+text = "The password typed for [[database]] {0} cannot be used."
+cause = "The password is empty, longer than 1024 characters or contains a NUL character, or the database is a SQLite file, or a secret name was also given."
+action = "Type a password of 1 to 1024 characters for a PostgreSQL database."
+
+[E2258]
+when = "The typed password of a [[database]] cannot be stored in the credential store"
+text = "Cannot store the password of [[database]] {0} in the credential store. ({1})"
+cause = "The credential store may be unavailable, or it may have refused to write. koyomi.toml was not changed."
+action = "Check the credential store of the engine's PC, then save again."
+
+[E2259]
+when = "A [[database]] cannot be written to koyomi.toml after its password was stored"
+text = "Cannot write [[database]] {0} to koyomi.toml. ({1})"
+cause = "There may be no permission to write koyomi.toml, or the disk may have a problem. The credential store has been put back as it was."
+action = "Check the location and the write permission of koyomi.toml, then save again."
+
+[E2260]
+when = "A [[database]] cannot be written to koyomi.toml and its new secret cannot be removed"
+text = "Cannot write [[database]] {0} to koyomi.toml. ({1}) The secret {2} in the credential store could not be removed either. ({3})"
+cause = "Writing koyomi.toml failed, and removing the new secret from the credential store afterwards failed too."
+action = "Check the write permission of koyomi.toml and remove the secret you do not need with koyomi secret delete."
+
+[E2261]
+when = "A [[database]] cannot be written to koyomi.toml and its secret cannot be put back"
+text = "Cannot write [[database]] {0} to koyomi.toml. ({1}) The secret {2} could not be put back. ({3}) The new password is in {2} now."
+cause = "Writing koyomi.toml failed, and putting the old value of the secret back failed too, so the secret holds the new password."
+action = "Put the old password back with koyomi secret set, or type the password again in the settings."
+
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."
@@ -3959,6 +4001,12 @@ action = "Specify {0}, for example {1}."
 when = "The request of POST /door cannot be read as a request"
 text = "Cannot read request as a request to the engine. ({0})"
 cause = "The content of request does not match the form of a request the engine accepts."
+action = "Specify the JSON of a request the engine accepts in request."
+
+[E3796]
+when = "The request of POST /door holds a password_value and cannot be read as a request"
+text = "Cannot read request as a request to the engine. (Its content is not shown because it holds a password.)"
+cause = "The content of request does not match the form of a request the engine accepts. The reason is not shown so that the password is not repeated."
 action = "Specify the JSON of a request the engine accepts in request."
 
 [E3779]

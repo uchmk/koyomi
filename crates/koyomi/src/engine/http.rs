@@ -717,6 +717,8 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
     };
     let request: Request = match serde_json::from_value(request.clone()) {
         Ok(r) => r,
+        // serde_json can quote a string it did not expect, so a request holding a typed password says nothing of why.
+        Err(_) if has_key(request, "password_value") => return Some(Response::error(400, &line(msg::HTTP_REQUEST_UNREADABLE_HIDDEN, &[]))),
         Err(e) => return Some(Response::error(400, &line(msg::HTTP_REQUEST_UNREADABLE, &[&e.to_string()]))),
     };
     let Some(needs) = proto::door_needs(&request) else {
@@ -731,6 +733,15 @@ fn door(req: &ito_http::Request, gate: &Gate, ask: &impl Fn(&Request) -> Result<
         Ok(text) => serde_json::json!({ "ok": true, "text": text }),
         Err(error) => serde_json::json!({ "ok": false, "error": error }),
     }))
+}
+
+/// Whether an object with the key `key` is anywhere in `v`.
+fn has_key(v: &serde_json::Value, key: &str) -> bool {
+    match v {
+        serde_json::Value::Object(m) => m.contains_key(key) || m.values().any(|x| has_key(x, key)),
+        serde_json::Value::Array(a) => a.iter().any(|x| has_key(x, key)),
+        _ => false,
+    }
 }
 
 /// Whether the request came in with a bearer token that is its caller's own, so not with a session cookie or
@@ -1329,7 +1340,14 @@ mod tests {
             Request::Registry,
             Request::AccountPut { name: "ops".into(), user: "u".into(), password: "p".into(), base_sha256: "b".into() },
             Request::AccountRemove { name: "ops".into(), base_sha256: "b".into(), force: false },
-            Request::DatabasePut { name: "m".into(), db: "sqlite://x".into(), password: None, tls: None, base_sha256: "b".into() },
+            Request::DatabasePut {
+                name: "m".into(),
+                db: "sqlite://x".into(),
+                password: None,
+                tls: None,
+                base_sha256: "b".into(),
+                password_value: None,
+            },
             Request::DatabaseRemove { name: "m".into(), base_sha256: "b".into(), force: false },
             Request::HostPut {
                 name: "web1".into(),
@@ -2303,6 +2321,23 @@ high_contrast = true
         {
             assert_eq!(through(&g, &at_door("root", true, body)).0, 400, "{body}");
         }
+    }
+
+    #[test]
+    fn a_request_with_a_typed_password_that_does_not_read_never_quotes_it() {
+        let g = gate();
+        let body = door_body(
+            serde_json::json!({"DatabasePut": {"name": 7, "db": "postgres://u@h/d", "password_value": "pw-not-to-show", "base_sha256": "b"}}),
+        );
+        let (code, json, seen) = through(&g, &at_door("root", true, &body));
+        assert_eq!(code, 400);
+        assert!(json.to_string().contains("E3796") && !json.to_string().contains("pw-not-to-show"), "{json}");
+        assert!(seen.is_empty());
+        // A request that does not hold one keeps today's reply.
+        let plain = door_body(serde_json::json!({"DatabasePut": {"name": 7}}));
+        let (code, json, _) = through(&g, &at_door("root", true, &plain));
+        assert_eq!(code, 400);
+        assert!(json.to_string().contains("E3778"), "{json}");
     }
 
     #[test]

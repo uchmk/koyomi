@@ -1,6 +1,6 @@
 # Checklist
 
-1429 checks in TESTING.md, 1423 left for a person.
+1436 checks in TESTING.md, 1430 left for a person.
 
 ## 1. Start
 
@@ -1811,10 +1811,10 @@
 - [ ] **142.7** Remove an account a job uses, without force → The request is refused (E2250); with force the entry goes and the job gets W3754 〔未訳〕
 - [ ] **142.8** Send AccountPut as a non-Admin user, by `/door` and by REST → It is refused 〔未訳〕
 - [ ] **142.9** Open a job with a registered `run_as` in the window → The name is kept as written and picked in the account select; no user or secret field is shown beside it, so E3398 cannot be made in the form 〔未訳〕
-- [ ] **142.10** Open 設定 › アカウント and 設定 › データベース on this PC's engine → Both pages list the entries of koyomi.toml: account rows show the name, user, secret name and state, and 使っているジョブネット N; database rows show the name, kind, host or file, TLS and the secret state. No password is shown anywhere 〔未訳〕
+- [ ] **142.10** Open 設定 › アカウント and 設定 › データベース on this PC's engine → Both pages list the entries of koyomi.toml: account rows show the name, user, secret name and state, and 使っているジョブネット N; PostgreSQL and SQLite database rows show the name, kind, host or file, TLS (not for SQLite) and, for PostgreSQL, `パスワード:` with its state (no secret name, no command). No password is shown anywhere 〔未訳〕
 - [ ] **142.11** On another PC's engine, open both pages as a non-admin user → Each says why it is closed (only an admin manages them); nothing is sent 〔未訳〕
-- [ ] **142.12** Add an account (name, user, secret name), then a database; edit each and change one field → The list shows the new content from the engine's reply; the secret name is prefilled from the entry's name; the TLS select is hidden for a sqlite address; an entry with a secret 未設定 shows `koyomi secret set <name>` with a copy button 〔未訳〕
-- [ ] **142.13** Add an entry with a name that exists, a bad name, or a bad user or address → The form says why and sends nothing (the same words as the job form) 〔未訳〕
+- [ ] **142.12** Add an account (name, user, secret name); edit it and change one field. (The database form is 142.24 to 142.30) → The list shows the new content from the engine's reply; the secret name is prefilled from the entry's name; an account with a secret 未設定 shows `koyomi secret set <name>` with a copy button 〔未訳〕
+- [ ] **142.13** Add an account with a name that exists, a bad name, or a bad user; add a database with a bad server, port, database name or user ID → The form says why and sends nothing (an account: the same words as the job form; a database: a line naming that field) 〔未訳〕
 - [ ] **142.14** Remove an entry no net uses → A question comes first; 削除する removes it; キャンセル or Esc keeps it 〔未訳〕
 - [ ] **142.15** Remove an account a net uses → The question names a few nets, then ほか N 件, and says those jobs fail at start (E3294 / E3295); only 削除する removes it 〔未訳〕
 - [ ] **142.16** Change koyomi.toml elsewhere while a form is open, then save the form → The page reloads, says koyomi.toml was changed, and keeps what was typed 〔未訳〕
@@ -1825,6 +1825,13 @@
 - [ ] **142.21** Pick 「URL を直接書く」 again on that job → The URL, password and TLS come back as they were 〔未訳〕
 - [ ] **142.22** Click アカウントを登録… or データベースを登録… in a job's pane → The settings open at that page 〔未訳〕
 - [ ] **142.23** Open a job that names a database or account the engine lacks, and close it → Nothing changes in the net; the name stays in the file 〔未訳〕
+- [ ] **142.24** Click データベースを登録…; switch the kind between PostgreSQL and SQLite → PostgreSQL shows サーバー, ポート (5432), データベース名, ユーザー ID, パスワード (masked) and a folded 詳しい設定 with the TLS choice; SQLite shows only the file (and 参照… when the engine is this PC) 〔未訳〕
+- [ ] **142.25** Save a PostgreSQL entry with a typed password → The row shows `パスワード:` as saved; koyomi.toml has `password = "secret:koyomi-db-<name>"` and no password value; the password is in no log, record or message 〔未訳〕
+- [ ] **142.26** Save a new PostgreSQL entry with the password empty → The form says the password is needed and sends nothing 〔未訳〕
+- [ ] **142.27** Edit a PostgreSQL entry and leave the password empty, then save a change to another field → The stored password stays; the row text is kept as it was 〔未訳〕
+- [ ] **142.28** Edit a PostgreSQL entry and change only the password → 保存 is on; the new password replaces the old one; koyomi.toml still names only the secret 〔未訳〕
+- [ ] **142.29** Look at a SQL Server row → 編集 is off with a hover saying to fix it in koyomi.toml; 削除 works; jobs still use the database 〔未訳〕
+- [ ] **142.30** On this PC, click 参照… for a SQLite file (with a path already typed) → The chooser is titled `SQLite のファイルを選ぶ`, offers `SQLite データベース` and `すべてのファイル`, and starts in the folder of the typed path; the chosen path lands in the field. On a remote engine there is no 参照… 〔未訳〕
 
 ## 143. Hosts, buckets and mailboxes registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`, `engine/mails.rs`)
 
