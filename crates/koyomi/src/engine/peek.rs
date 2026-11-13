@@ -2,19 +2,16 @@
 //! certificate's fingerprint), for the settings' host form. A peek takes up to about 20 s, so it runs on a
 //! thread of its own and the loop only starts it (`start`) and collects what finished (`drain`).
 //!
-//! At most [`SLOTS`] run at once; a slot is reserved before its thread is spawned. The replies wait here, not
-//! in the threads: when the engine stops, the loop returns and drops them, the door then tells the caller the
-//! request was not done, and a thread that ends later sends into a closed channel and its error is ignored.
-//! Nothing is reported as done after Stop.
+//! At most [`SLOTS`] run at once (the contract of the threads and the replies is in `slots`).
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Receiver, Sender, SyncSender};
+use std::sync::mpsc::SyncSender;
 use std::sync::Arc;
 
 use ito_ipc::door::Reply;
 use koyomi_core::msg;
 
+use super::slots::Slots;
 use crate::proto::{self, PeekKind};
 
 /// How many peeks may run at once.
@@ -31,65 +28,34 @@ pub fn real() -> PeekFn {
     })
 }
 
-/// A peek that was started and has not been drained yet.
-struct Pending {
-    reply: SyncSender<Reply>,
-    expired: Arc<AtomicBool>,
-    target: String,
-    by: String,
-}
-
-/// Sends `(id, result)` exactly once when it is dropped: the real result, or an internal error when the peek
-/// ended without one (it panicked).
-struct Guard {
-    id: u64,
-    tx: Sender<(u64, Result<String, String>)>,
-    result: Option<Result<String, String>>,
-}
-
-impl Drop for Guard {
-    fn drop(&mut self) {
-        let result = self.result.take().unwrap_or_else(|| Err(msg::line(msg::HOST_PEEK_STOPPED, &[])));
-        // The manager may be gone (the engine stopped): nobody is waiting.
-        let _ = self.tx.send((self.id, result));
+/// What the operations record keeps of a peek: the first line, cut to 120 characters.
+fn first_line(result: &Result<String, String>) -> String {
+    match result {
+        Ok(v) | Err(v) => v.lines().next().unwrap_or_default().chars().take(120).collect::<String>(),
     }
 }
 
+/// The peeks: a [`Slots`] of [`SLOTS`] whose work ignores the cancel flag (a peek ends by its own timeout).
 pub struct Peeks {
     peek: PeekFn,
-    tx: Sender<(u64, Result<String, String>)>,
-    rx: Receiver<(u64, Result<String, String>)>,
-    pending: HashMap<u64, Pending>,
-    next: u64,
-    /// The threads started, kept so a test can join them.
-    #[cfg(test)]
-    handles: Vec<std::thread::JoinHandle<()>>,
+    slots: Slots,
 }
 
 impl Peeks {
     pub fn new(peek: PeekFn) -> Self {
-        let (tx, rx) = mpsc::channel();
-        Self {
-            peek,
-            tx,
-            rx,
-            pending: HashMap::new(),
-            next: 0,
-            #[cfg(test)]
-            handles: Vec::new(),
-        }
+        Self { peek, slots: Slots::new(SLOTS, "host-peek", "koyomi-host-peek", msg::HOST_PEEK_BUSY, msg::HOST_PEEK_STOPPED, first_line) }
     }
 
     /// The threads started so far, handed over (a test joins them after the manager is gone).
     #[cfg(test)]
     pub fn take_handles(&mut self) -> Vec<std::thread::JoinHandle<()>> {
-        std::mem::take(&mut self.handles)
+        self.slots.take_handles()
     }
 
     /// How many peeks run now.
     #[cfg(test)]
     pub fn running(&self) -> usize {
-        self.pending.len()
+        self.slots.running()
     }
 
     /// Starts a peek of `host:port` for `by`, and answers `reply` when it is done (`drain`), unless `expired`
@@ -99,62 +65,32 @@ impl Peeks {
         if expired.load(Ordering::Relaxed) {
             return;
         }
-        let refuse = |why: String| {
-            if !expired.load(Ordering::Relaxed) {
-                let _ = reply.send(Err(why));
-            }
-        };
         // Before anything else, and without quoting what was sent.
         if !proto::peek_target_ok(host, port) {
-            return refuse(msg::line(msg::HOST_PEEK_BAD, &[]));
+            return Slots::refuse(&reply, &expired, msg::line(msg::HOST_PEEK_BAD, &[]));
         }
-        if self.pending.len() >= SLOTS {
-            return refuse(msg::line(msg::HOST_PEEK_BUSY, &[]));
-        }
-        let id = self.next;
-        self.next += 1;
-        // Reserved before the thread exists: the cap cannot be passed by asking fast.
-        self.pending
-            .insert(id, Pending { reply: reply.clone(), expired: expired.clone(), target: format!("{host}:{port}"), by: by.to_owned() });
-        let (peek, tx, host) = (self.peek.clone(), self.tx.clone(), host.to_owned());
-        let spawned = std::thread::Builder::new().name("koyomi-host-peek".into()).spawn(move || {
-            let mut guard = Guard { id, tx, result: None };
-            guard.result = Some(peek(kind, &host, port));
-        });
-        match spawned {
-            Ok(_handle) => {
-                #[cfg(test)]
-                self.handles.push(_handle);
-            }
-            Err(_) => {
-                // The closure was dropped without running, so no guard was made and nothing was sent; were a stray
-                // result ever to come, `drain` ignores an id it no longer holds.
-                self.pending.remove(&id);
-                refuse(msg::line(msg::HOST_PEEK_STOPPED, &[]));
-            }
-        }
+        let (peek, host) = (self.peek.clone(), host.to_owned());
+        let target = format!("{host}:{port}");
+        self.slots.start(by, target, Box::new(move |_cancel| peek(kind, &host, port)), reply, expired);
     }
 
     /// Collects the peeks that finished: frees their slots, hands `record(op, target, detail, by)` each one
     /// (for both outcomes) and answers the caller that still waits.
-    pub fn drain(&mut self, mut record: impl FnMut(&str, &str, &str, &str)) {
-        while let Ok((id, result)) = self.rx.try_recv() {
-            let Some(p) = self.pending.remove(&id) else { continue };
-            let first = match &result {
-                Ok(v) | Err(v) => v.lines().next().unwrap_or_default().chars().take(120).collect::<String>(),
-            };
-            record("host-peek", &p.target, &first, &p.by);
-            if !p.expired.load(Ordering::Relaxed) {
-                let _ = p.reply.send(result);
-            }
-        }
+    pub fn drain(&mut self, record: impl FnMut(&str, &str, &str, &str)) {
+        self.slots.drain(record);
+    }
+
+    /// The engine stops: answers what finished with its result and every peek still running with the stopped line,
+    /// writing each down (see `Slots::stop`).
+    pub fn stop(&mut self, record: impl FnMut(&str, &str, &str, &str)) {
+        self.slots.stop(record);
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::mpsc::{sync_channel, RecvTimeoutError};
+    use std::sync::mpsc::{self, sync_channel, Receiver, RecvTimeoutError, Sender};
     use std::sync::Mutex;
     use std::time::{Duration, Instant};
 

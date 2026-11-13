@@ -18,7 +18,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 52;
+pub const PROTO: u32 = 53;
 
 /// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
 /// `Display`. On the wire it is the plain string.
@@ -27,8 +27,7 @@ pub const PROTO: u32 = 52;
 pub struct Hidden(String);
 
 impl Hidden {
-    /// A value for a test (the window builds its value in place with [`Hidden::as_mut_string`]).
-    #[cfg(test)]
+    /// A value made from a string (the window builds its value in place with [`Hidden::as_mut_string`]).
     pub fn new(value: String) -> Self {
         Self(value)
     }
@@ -479,6 +478,21 @@ pub enum Request {
         #[serde(default)]
         force: bool,
     },
+    /// Connect from the engine's PC to the database `db` (built by the form with `chore::db_url`: `postgres://…` or
+    /// `sqlite://…`; SQL Server is refused) and run a probe that changes nothing. The password is `password_value` when
+    /// typed, else the saved one of the `[[database]]` `entry` (the form being edited), used only for the same server,
+    /// port and user and a TLS not weaker than the saved one. Nothing is written. `ticket` is the window's own number:
+    /// the engine ignores it.
+    DatabaseTest {
+        db: String,
+        #[serde(default)]
+        tls: Option<koyomi_core::chore::SqlTls>,
+        #[serde(default)]
+        entry: Option<String>,
+        #[serde(default)]
+        password_value: Option<Hidden>,
+        ticket: u64,
+    },
 }
 
 /// What a window read before it staged a definition: the live definition's SHA-256 (the version the
@@ -735,6 +749,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::HostPut { .. }
         | Request::HostRemove { .. }
         | Request::HostPeek { .. }
+        | Request::DatabaseTest { .. }
         | Request::BucketPut { .. }
         | Request::BucketRemove { .. }
         | Request::MailboxPut { .. }
@@ -821,6 +836,8 @@ pub fn is_read(r: &Request) -> bool {
         | Request::AccountRemove { .. }
         | Request::DatabasePut { .. }
         | Request::DatabaseRemove { .. }
+        // A retry would sign in again, and a server with a lockout policy counts failed sign-ins.
+        | Request::DatabaseTest { .. }
         | Request::HostPut { .. }
         | Request::HostRemove { .. }
         | Request::BucketPut { .. }
@@ -840,12 +857,12 @@ pub fn door() -> Door<Request> {
     door
 }
 
-/// How long the door waits for the engine's reply to `r`: the peek of a host takes longer than a read from
-/// memory, bare or inside `Over`; every other request keeps the door's usual time.
+/// How long the door waits for the engine's reply to `r`: the peek of a host and the test of a database take longer
+/// than a read from memory, bare or inside `Over`; every other request keeps the door's usual time.
 fn answer_wait(r: &Request) -> Duration {
     match r {
-        Request::HostPeek { .. } => PEEK_ANSWER_WAIT,
-        Request::Over { request, .. } if matches!(**request, Request::HostPeek { .. }) => PEEK_ANSWER_WAIT,
+        Request::HostPeek { .. } | Request::DatabaseTest { .. } => PEEK_ANSWER_WAIT,
+        Request::Over { request, .. } if matches!(**request, Request::HostPeek { .. } | Request::DatabaseTest { .. }) => PEEK_ANSWER_WAIT,
         _ => ito_ipc::door::ANSWER_WAIT,
     }
 }
@@ -1229,9 +1246,43 @@ mod tests {
         let door = door();
         assert_eq!((door.wait)(&peek(PeekKind::Ssh, "h", 22)), PEEK_ANSWER_WAIT);
         assert_eq!((door.wait)(&over(peek(PeekKind::Winrm, "h", 5986))), PEEK_ANSWER_WAIT);
+        assert_eq!((door.wait)(&db_test(None)), PEEK_ANSWER_WAIT);
+        assert_eq!((door.wait)(&over(db_test(None))), PEEK_ANSWER_WAIT);
         assert_eq!((door.wait)(&Request::Status), ito_ipc::door::ANSWER_WAIT);
         assert_eq!((door.wait)(&over(Request::Status)), ito_ipc::door::ANSWER_WAIT);
         assert!(PEEK_CALL_WAIT > PEEK_ANSWER_WAIT);
+    }
+
+    fn db_test(password: Option<&str>) -> Request {
+        Request::DatabaseTest {
+            db: "postgres://u@h/d".into(),
+            tls: Some(koyomi_core::chore::SqlTls::Trust),
+            entry: Some("main".into()),
+            password_value: password.map(|p| Hidden::new(p.into())),
+            ticket: 9,
+        }
+    }
+
+    /// a database test reads back through the door and JSON, a client without the optional keys still reads, and its
+    /// `Debug` never shows the password.
+    #[test]
+    fn a_database_test_reads_back_and_hides_its_password() {
+        let ask = db_test(Some("pw-not-to-show"));
+        assert!(!format!("{ask:?}").contains("pw-not-to-show") && format!("{ask:?}").contains("***"));
+        let Request::DatabaseTest { db, tls, entry, password_value, ticket } = round(&ask) else { panic!("not a test") };
+        assert_eq!(
+            (db.as_str(), tls, entry.as_deref(), ticket),
+            ("postgres://u@h/d", Some(koyomi_core::chore::SqlTls::Trust), Some("main"), 9)
+        );
+        assert_eq!(password_value.as_ref().map(Hidden::expose), Some("pw-not-to-show"));
+        let json = serde_json::to_string(&ask).unwrap();
+        let Ok(Request::DatabaseTest { password_value, .. }) = serde_json::from_str::<Request>(&json) else { panic!("json") };
+        assert_eq!(password_value.as_ref().map(Hidden::expose), Some("pw-not-to-show"));
+        let bare = r#"{"DatabaseTest":{"db":"sqlite:///x.db","ticket":1}}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(bare),
+            Ok(Request::DatabaseTest { tls: None, entry: None, password_value: None, ticket: 1, .. })
+        ));
     }
 
     #[test]
@@ -1385,6 +1436,7 @@ c"
             (Request::Standby { give_back: true }, None),
             (peek(PeekKind::Ssh, "h.example", 22), Some(Admin)),
             (peek(PeekKind::Winrm, "h.example", 5986), Some(Admin)),
+            (db_test(None), Some(Admin)),
             (Request::Over { by: "x".into(), request: Box::new(Request::Status) }, None),
         ];
         for (r, want) in &table {
@@ -1471,6 +1523,7 @@ c"
             Request::BucketRemove { name: "bk".into(), base_sha256: "b".into(), force: false },
             Request::MailboxPut { name: "mb".into(), mail: "imaps://u@h".into(), password: "secret:s".into(), base_sha256: "b".into() },
             Request::MailboxRemove { name: "mb".into(), base_sha256: "b".into(), force: true },
+            db_test(None),
         ];
         for r in &writes {
             assert!(!r.is_read(), "{r:?}");

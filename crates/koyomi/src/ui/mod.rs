@@ -236,11 +236,26 @@ fn answer(work: Work, reply: &dyn Fn(&Request) -> Result<String, String>, send: 
     alive
 }
 
+/// The answer for an apart request whose thread could not start: its own "stopped" line, so the form leaves "checking".
+fn apart_stopped(request: Request) -> Msg {
+    let id = if matches!(request, Request::DatabaseTest { .. }) {
+        koyomi_core::msg::DB_TEST_STOPPED
+    } else {
+        koyomi_core::msg::HOST_PEEK_STOPPED
+    };
+    Msg::Answer(request, Err(koyomi_core::msg::line(id, &[])))
+}
+
+/// Whether a request goes to a thread of its own (a host peek and a database test take long).
+fn goes_apart(request: &Request) -> bool {
+    matches!(request, Request::HostPeek { .. } | Request::DatabaseTest { .. })
+}
+
 /// A peek at a host takes up to about 20 s, and the thread polls the list every second: a `HostPeek` goes to a
 /// thread of its own, which starts its own connection, waits for the long answer and sends it as the thread would.
 /// Returns `None` for it, and any other work back.
 fn peek_apart(work: Work, link: &Link, tx_msg: &Sender<Msg>, ctx: &egui::Context) -> Option<Work> {
-    if !matches!(work.job, Job::Ask(Request::HostPeek { .. })) {
+    if !matches!(&work.job, Job::Ask(request) if goes_apart(request)) {
         return Some(work);
     }
     let Work { job: Job::Ask(request), pending } = work else { return None };
@@ -261,7 +276,7 @@ fn peek_apart(work: Work, link: &Link, tx_msg: &Sender<Msg>, ctx: &egui::Context
     });
     if spawned.is_err() {
         // The closure (and with it `pending`) is gone with the failed spawn; the form must still leave "checking".
-        let _ = tx.send(Msg::Answer(kept, Err(koyomi_core::msg::line(koyomi_core::msg::HOST_PEEK_STOPPED, &[]))));
+        let _ = tx.send(apart_stopped(kept));
         ctx.request_repaint();
     }
     None
@@ -1283,9 +1298,12 @@ impl Browser {
             registry::Do::Ask => self.registry_ask(),
             registry::Do::Send(request) => {
                 let peek = matches!(request, Request::HostPeek { .. });
+                let db_test = matches!(request, Request::DatabaseTest { .. });
                 if !self.out.send(request) {
                     let why = self.unsent_why();
-                    if peek {
+                    if db_test {
+                        self.registry.db_test_unsent(why);
+                    } else if peek {
                         self.registry.peek_unsent(why);
                     } else {
                         self.registry.unsent(false, why);
@@ -1604,7 +1622,8 @@ impl Browser {
                     | Request::BucketRemove { .. }
                     | Request::MailboxPut { .. }
                     | Request::MailboxRemove { .. }
-                    | Request::HostPeek { .. }),
+                    | Request::HostPeek { .. }
+                    | Request::DatabaseTest { .. }),
                     r,
                 ) => {
                     if self.registry.answered(&req, r).reload {
@@ -6263,6 +6282,21 @@ mod tests {
     use super::*;
     use koyomi_core::approved::Store;
     use koyomi_core::scan::read_def;
+
+    /// A thread that cannot start still answers, with the line of its own kind, so the form leaves "checking".
+    #[test]
+    fn an_apart_request_whose_thread_cannot_start_is_answered_with_its_own_stopped_line() {
+        let test = Request::DatabaseTest { db: "postgres://u@h/d".into(), tls: None, entry: None, password_value: None, ticket: 4 };
+        match apart_stopped(test) {
+            Msg::Answer(Request::DatabaseTest { ticket: 4, .. }, Err(e)) => assert!(koyomi_core::msg::DB_TEST_STOPPED.is_in(&e), "{e}"),
+            _ => panic!("not the answer of the test"),
+        }
+        let peek = Request::HostPeek { kind: crate::proto::PeekKind::Ssh, host: "h".into(), port: 22, ticket: 5 };
+        match apart_stopped(peek) {
+            Msg::Answer(Request::HostPeek { ticket: 5, .. }, Err(e)) => assert!(koyomi_core::msg::HOST_PEEK_STOPPED.is_in(&e), "{e}"),
+            _ => panic!("not the answer of the peek"),
+        }
+    }
 
     const NET: &str = "format = 1\n[[job]]\nid = \"a\"\nrun = [\"x.exe\"]\n";
 

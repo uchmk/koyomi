@@ -263,6 +263,34 @@ pub(super) struct Form {
     pub error: Option<Line>,
     /// The host form's "connect and check": asked, and the answer when it came.
     pub peek: Option<Peek>,
+    /// The database form's 接続テスト: asked, and the answer when it came.
+    pub db_test: Option<DbTest>,
+}
+
+/// What a database test was asked with, as the form read at the click. The password is kept as its sha256 only, so
+/// a change of it (or of anything else) is seen without the form holding a second copy.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DbAsk {
+    kind: DbKind,
+    host: String,
+    port: String,
+    database: String,
+    user: String,
+    file: String,
+    tls: SqlTls,
+    /// The sha256 of the typed password, as typed (not trimmed).
+    pw: Option<String>,
+    /// The password the entry already has was meant.
+    saved: bool,
+}
+
+/// One 接続テスト. Only an answer with this `ticket` is taken.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct DbTest {
+    pub ticket: u64,
+    pub asked: DbAsk,
+    /// `None` while the engine has not answered.
+    pub result: Option<Result<String, String>>,
 }
 
 /// One "connect and check" of a host form. Only an answer with this `ticket` is taken.
@@ -345,6 +373,7 @@ impl Form {
             stale: false,
             error: None,
             peek: None,
+            db_test: None,
         }
     }
 
@@ -436,6 +465,7 @@ impl Form {
             stale: false,
             error: None,
             peek: None,
+            db_test: None,
         }
     }
 
@@ -462,6 +492,90 @@ impl Form {
     /// Whether the "connect and check" button takes a click: the page is open, the address reads, and no ask is waiting.
     pub(super) fn peek_enabled(&self, open: bool) -> bool {
         open && self.peek_target().is_some() && !self.peek.as_ref().is_some_and(|p| p.result.is_none())
+    }
+
+    /// The database the fields describe, when the port reads and `db_url` takes it.
+    fn db_test_url(&self) -> Option<(SqlDb, String)> {
+        if self.page != Page::Databases {
+            return None;
+        }
+        let d = &self.db;
+        let sqldb = if self.is_sqlite() {
+            SqlDb::Sqlite { path: d.file.trim().to_owned() }
+        } else {
+            let port = port_of(&d.port)?;
+            SqlDb::Postgres { user: d.user.trim().to_owned(), host: d.host.trim().to_owned(), port, database: d.database.trim().to_owned() }
+        };
+        let url = chore::db_url(&sqldb).ok()?;
+        Some((sqldb, url))
+    }
+
+    /// Whether the saved password may be meant: the row has one, and the server, port, user and TLS are what the form
+    /// opened with (a TLS that is not weaker).
+    fn db_test_saved_ok(&self) -> bool {
+        let (d, o) = (&self.db, &self.db_orig);
+        let rank = |t: SqlTls| match t {
+            SqlTls::Verify => 2,
+            SqlTls::Trust => 1,
+            SqlTls::Off => 0,
+        };
+        self.editing.is_some()
+            && self.pw_state == "ok"
+            && o.kind == DbKind::Postgres
+            && d.host.trim().eq_ignore_ascii_case(o.host.trim())
+            && port_of(&d.port).is_some()
+            && port_of(&d.port) == port_of(&o.port)
+            && d.user.trim() == o.user.trim()
+            && rank(self.tls) >= rank(self.orig.3)
+    }
+
+    /// What a test would be asked with now; `None` when the fields do not read or there is no password to test with.
+    pub(super) fn db_test_ask(&self) -> Option<DbAsk> {
+        self.db_test_url()?;
+        let d = &self.db;
+        let typed = !self.is_sqlite() && !d.password.is_empty();
+        if !self.is_sqlite() && !typed && !self.db_test_saved_ok() {
+            return None;
+        }
+        Some(DbAsk {
+            kind: d.kind,
+            host: d.host.trim().to_owned(),
+            port: d.port.trim().to_owned(),
+            database: d.database.trim().to_owned(),
+            user: d.user.trim().to_owned(),
+            file: d.file.trim().to_owned(),
+            tls: self.tls,
+            pw: typed.then(|| koyomi_core::users::sha256(d.password.expose())),
+            saved: !self.is_sqlite() && !typed,
+        })
+    }
+
+    /// Drops a test whose fields (the password included) are no longer the ones it was asked with.
+    pub(super) fn drop_stale_db_test(&mut self) {
+        if self.db_test.as_ref().is_some_and(|t| self.db_test_ask().as_ref() != Some(&t.asked)) {
+            self.db_test = None;
+        }
+    }
+
+    /// Whether 接続テスト takes a click: the page is open and may write, the fields read, a password can be used, and
+    /// no test is waiting.
+    pub(super) fn db_test_enabled(&self, can: bool) -> bool {
+        can && self.db_test_ask().is_some() && !self.db_test.as_ref().is_some_and(|t| t.result.is_none())
+    }
+
+    /// The request of a test now, with `ticket`.
+    fn db_test_request(&self, ticket: u64) -> Option<Request> {
+        let (_, db) = self.db_test_url()?;
+        let ask = self.db_test_ask()?;
+        let typed = ask.pw.is_some();
+        let sqlite = self.is_sqlite();
+        Some(Request::DatabaseTest {
+            db,
+            tls: (!sqlite).then_some(self.tls),
+            entry: (!sqlite && !typed).then(|| self.name.trim().to_owned()),
+            password_value: typed.then(|| self.db.password.clone()),
+            ticket,
+        })
     }
 
     /// The value in the field the peek fills (the host key, or the certificate's fingerprint).
@@ -710,6 +824,8 @@ pub(super) enum Click {
     MoveFocus,
     /// 「接続して確かめる」 of the host form.
     Peek,
+    /// 「接続テスト」 of the database form.
+    DbTest,
     /// 「使う」: the value the host showed goes into the field.
     UsePeek,
 }
@@ -866,6 +982,7 @@ impl Registry {
         for f in &mut self.forms {
             if let Some(form) = f {
                 form.peek = None;
+                form.db_test = None;
             }
             match f {
                 Some(form) if form.dirty() => form.stale = true,
@@ -1013,6 +1130,18 @@ impl Registry {
                     }
                 }
             }
+            Click::DbTest => {
+                if v.open && page == Page::Databases && self.can_write(v) {
+                    let ticket = self.peek_ticket + 1;
+                    if let Some(f) = self.forms[i].as_mut().filter(|f| !f.stale && f.db_test_enabled(true)) {
+                        if let (Some(req), Some(asked)) = (f.db_test_request(ticket), f.db_test_ask()) {
+                            self.peek_ticket = ticket;
+                            f.db_test = Some(DbTest { ticket, asked, result: None });
+                            return Do::Send(req);
+                        }
+                    }
+                }
+            }
             Click::UsePeek => {
                 if let Some(f) = self.forms[i].as_mut() {
                     f.drop_stale_peek();
@@ -1045,6 +1174,16 @@ impl Registry {
                 f.drop_stale_peek();
                 if let Some(p) = f.peek.as_mut().filter(|p| p.ticket == *ticket && p.result.is_none()) {
                     p.result = Some(r);
+                }
+            }
+            return Done { reload: false };
+        }
+        if let Request::DatabaseTest { ticket, .. } = req {
+            // Only the answer to the test the open form is waiting for; any other is late and dropped.
+            if let Some(f) = self.forms[Page::Databases.idx()].as_mut() {
+                f.drop_stale_db_test();
+                if let Some(t) = f.db_test.as_mut().filter(|t| t.ticket == *ticket && t.result.is_none()) {
+                    t.result = Some(r);
                 }
             }
             return Done { reload: false };
@@ -1136,6 +1275,15 @@ impl Registry {
         if let Some(p) = self.forms[Page::Hosts.idx()].as_mut().and_then(|f| f.peek.as_mut()) {
             if p.result.is_none() {
                 p.result = Some(Err(why));
+            }
+        }
+    }
+
+    /// A 接続テスト the thread did not take: the form shows why instead of waiting.
+    pub(super) fn db_test_unsent(&mut self, why: String) {
+        if let Some(t) = self.forms[Page::Databases.idx()].as_mut().and_then(|f| f.db_test.as_mut()) {
+            if t.result.is_none() {
+                t.result = Some(Err(why));
             }
         }
     }
@@ -1635,6 +1783,47 @@ fn peek_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, open: boo
     }
 }
 
+/// The lang key of the button's hover: why a test cannot be asked yet, or what it does.
+fn db_test_why(f: &Form) -> &'static str {
+    if f.db_test_url().is_none() {
+        "registry.db_test_fields"
+    } else if f.db_test_ask().is_none() {
+        "registry.db_test_need"
+    } else {
+        "registry.db_test_hover"
+    }
+}
+
+/// The 接続テスト button of a database form, and what the test said.
+fn db_test_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, can: bool, click: &mut Option<Click>) {
+    let c = ito_theme::colors();
+    let waiting = f.db_test.as_ref().is_some_and(|d| d.result.is_none());
+    let on = f.db_test_enabled(can) && !f.stale;
+    let why = t.tr(db_test_why(f));
+    ui.horizontal_wrapped(|ui| {
+        if users::button(
+            ui,
+            on,
+            Some(why),
+            ito_prefs::Mark::Search,
+            t.tr("registry.db_test_button"),
+            ito_prefs::Tone::Plain,
+            &format!("{id}.db_test"),
+        ) {
+            click.get_or_insert(Click::DbTest);
+        }
+        if waiting {
+            ui.spinner();
+            users::say_line(ui, t.tr("registry.db_test_waiting"), c.dim);
+        }
+    });
+    match f.db_test.as_ref().and_then(|d| d.result.as_ref()) {
+        Some(Ok(_)) => users::say_line(ui, t.tr("registry.db_test_ok"), c.fg),
+        Some(Err(e)) => users::say_line(ui, e, c.err),
+        None => {}
+    }
+}
+
 /// The fields of the database form: the kind, then the server, port, database name, user ID and password of
 /// PostgreSQL (TLS under 詳しい設定), or the file of SQLite. `browsed` is set when 参照… is clicked.
 fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, local: bool, browsed: &mut Option<Chosen>) {
@@ -1752,6 +1941,8 @@ fn form_ui(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page,
         }
         if page == Page::Databases {
             database_ui(ui, t, &id, f, local, &mut browsed);
+            f.drop_stale_db_test();
+            db_test_ui(ui, t, &id, f, can && v_open, click);
         } else {
             ui.horizontal(|ui| {
                 let (label, hint) = match page {
@@ -2304,6 +2495,200 @@ mod tests {
         f.db.user = "app".into();
         f.db.password.as_mut_string().push_str(PW);
         f
+    }
+
+    const SHUT: View = View { far: None, open: false };
+    const OPEN_VIEW: View = View { far: None, open: true };
+
+    fn dbf(r: &Registry) -> &Form {
+        r.forms[Page::Databases.idx()].as_ref().unwrap()
+    }
+
+    fn dbf_mut(r: &mut Registry) -> &mut Form {
+        r.forms[Page::Databases.idx()].as_mut().unwrap()
+    }
+
+    fn db_test_click(r: &mut Registry) -> Option<Request> {
+        match r.act(Click::DbTest, Page::Databases, &OPEN_VIEW) {
+            Do::Send(req) => Some(req),
+            Do::Nothing => None,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    fn db_edit() -> Registry {
+        let mut r = db_loaded();
+        r.act(Click::OpenEdit("pg".into()), Page::Databases, &OPEN_VIEW);
+        r
+    }
+
+    fn db_test_answer(r: &mut Registry, ticket: u64, result: Result<String, String>) {
+        let req = Request::DatabaseTest { db: "x".into(), tls: None, entry: None, password_value: None, ticket };
+        r.answered(&req, result);
+    }
+
+    #[test]
+    fn the_buttons_hover_says_whether_the_fields_the_password_or_nothing_is_missing() {
+        let mut f = pg_form();
+        assert_eq!(db_test_why(&f), "registry.db_test_hover");
+        f.db.port = "70000".into();
+        assert_eq!(db_test_why(&f), "registry.db_test_fields", "a port that does not read, with a password typed");
+        f.db.port = "5432".into();
+        f.db.password = Hidden::default();
+        assert_eq!(db_test_why(&f), "registry.db_test_need");
+        let mut lite = Form::add(Page::Databases);
+        lite.db.kind = DbKind::Sqlite;
+        assert_eq!(db_test_why(&lite), "registry.db_test_fields", "an empty SQLite file");
+        lite.db.file = r"C:\data\a.db".into();
+        assert_eq!(db_test_why(&lite), "registry.db_test_hover");
+    }
+
+    #[test]
+    fn the_test_button_needs_a_typed_password_or_the_saved_one_for_the_same_server_user_and_tls() {
+        // A new entry: only a typed password.
+        let mut r = db_loaded();
+        r.act(Click::OpenAdd, Page::Databases, &OPEN_VIEW);
+        let f = dbf_mut(&mut r);
+        f.db.host = "db1".into();
+        f.db.database = "sales".into();
+        f.db.user = "app".into();
+        assert!(!f.db_test_enabled(true));
+        f.db.password.as_mut_string().push_str(PW);
+        assert!(f.db_test_enabled(true));
+        assert!(!f.db_test_enabled(false), "the person must be able to write");
+        f.db.port = "70000".into();
+        assert!(!f.db_test_enabled(true), "a field that does not read");
+        f.db.port = "5432".into();
+        // Editing, nothing typed: the saved password, while host, port, user and TLS are as opened.
+        let mut r = db_edit();
+        assert!(dbf(&r).db_test_enabled(true));
+        dbf_mut(&mut r).db.host = "DB1".into();
+        assert!(dbf(&r).db_test_enabled(true), "the host differs in case only");
+        dbf_mut(&mut r).db.host = "db2".into();
+        assert!(!dbf(&r).db_test_enabled(true));
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        assert!(dbf(&r).db_test_enabled(true), "a typed password is enough");
+        for change in [|d: &mut DbFields| d.port = "5433".into(), |d: &mut DbFields| d.user = "other".into()] {
+            let mut r = db_edit();
+            change(&mut dbf_mut(&mut r).db);
+            assert!(!dbf(&r).db_test_enabled(true));
+        }
+        // A weaker TLS cannot use the saved password; a stronger one can (the row opens with the usual verify).
+        let mut r = db_edit();
+        dbf_mut(&mut r).tls = SqlTls::Off;
+        assert!(!dbf(&r).db_test_enabled(true));
+        // A row whose password is missing has nothing to use.
+        let mut r = db_loaded();
+        r.listing.as_mut().unwrap().databases.iter_mut().find(|d| d.name == "pg").unwrap().state = "missing".into();
+        r.act(Click::OpenEdit("pg".into()), Page::Databases, &OPEN_VIEW);
+        assert!(!dbf(&r).db_test_enabled(true));
+        // SQLite takes no password.
+        let mut r = db_loaded();
+        r.act(Click::OpenEdit("lite".into()), Page::Databases, &OPEN_VIEW);
+        assert!(dbf(&r).db_test_enabled(true));
+    }
+
+    #[test]
+    fn a_click_sends_the_request_the_fields_make_and_waits_for_its_own_ticket() {
+        // A typed password goes as a value, with no entry name.
+        let mut r = db_edit();
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        match db_test_click(&mut r) {
+            Some(Request::DatabaseTest { db, tls, entry, password_value, ticket }) => {
+                assert_eq!((db.as_str(), tls, entry, ticket), ("postgres://app@db1/sales", Some(SqlTls::Verify), None, 1));
+                assert_eq!(password_value.as_ref().map(Hidden::expose), Some(PW));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert!(dbf(&r).db_test.as_ref().is_some_and(|t| t.ticket == 1 && t.result.is_none()));
+        // One at a time.
+        assert!(db_test_click(&mut r).is_none());
+        db_test_answer(&mut r, 2, Ok(String::new()));
+        assert_eq!(dbf(&r).db_test.as_ref().unwrap().result, None, "another ticket");
+        db_test_answer(&mut r, 1, Err("E2267 shown".into()));
+        assert_eq!(dbf(&r).db_test.as_ref().unwrap().result, Some(Err("E2267 shown".to_owned())));
+        db_test_answer(&mut r, 1, Ok(String::new()));
+        assert_eq!(dbf(&r).db_test.as_ref().unwrap().result, Some(Err("E2267 shown".to_owned())), "the first answer stays");
+        // Editing, nothing typed: the entry's name, no value.
+        let mut r = db_edit();
+        match db_test_click(&mut r) {
+            Some(Request::DatabaseTest { entry, password_value, tls, .. }) => {
+                assert_eq!((entry.as_deref(), password_value.is_none(), tls), (Some("pg"), true, Some(SqlTls::Verify)));
+            }
+            other => panic!("{other:?}"),
+        }
+        // SQLite: no TLS, no entry, no value.
+        let mut r = db_loaded();
+        r.act(Click::OpenEdit("lite".into()), Page::Databases, &OPEN_VIEW);
+        match db_test_click(&mut r) {
+            Some(Request::DatabaseTest { db, tls, entry, password_value, .. }) => {
+                assert_eq!((db.as_str(), tls, entry, password_value.is_none()), ("sqlite://C:\\data\\a.db", None, None, true));
+            }
+            other => panic!("{other:?}"),
+        }
+        // A closed page, a stale form and a form that cannot send ask nothing.
+        let mut r = db_edit();
+        assert!(matches!(r.act(Click::DbTest, Page::Databases, &SHUT), Do::Nothing));
+        dbf_mut(&mut r).stale = true;
+        assert!(db_test_click(&mut r).is_none());
+        let mut r = db_edit();
+        r.write = true;
+        assert!(db_test_click(&mut r).is_none());
+    }
+
+    #[test]
+    fn a_change_of_any_field_or_of_the_password_drops_the_result_and_a_late_answer_finds_nothing() {
+        let changes: [fn(&mut DbFields); 4] = [
+            |d| d.host = "db9".into(),
+            |d| d.database = "other".into(),
+            |d| d.password.as_mut_string().push('x'),
+            |d| d.password.as_mut_string().push(' '),
+        ];
+        for change in changes {
+            let mut r = db_edit();
+            dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+            db_test_click(&mut r).unwrap();
+            db_test_answer(&mut r, 1, Ok(String::new()));
+            dbf_mut(&mut r).drop_stale_db_test();
+            assert!(dbf(&r).db_test.is_some(), "nothing changed yet");
+            change(&mut dbf_mut(&mut r).db);
+            dbf_mut(&mut r).drop_stale_db_test();
+            assert!(dbf(&r).db_test.is_none());
+        }
+        // A late answer, after the fields changed, is not shown.
+        let mut r = db_edit();
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        db_test_click(&mut r).unwrap();
+        dbf_mut(&mut r).db.host = "db9".into();
+        db_test_answer(&mut r, 1, Ok(String::new()));
+        assert!(dbf(&r).db_test.is_none());
+        // The password cleared: a test with a typed password is gone, and the saved one is another ask.
+        let mut r = db_edit();
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        db_test_click(&mut r).unwrap();
+        dbf_mut(&mut r).db.password.as_mut_string().clear();
+        dbf_mut(&mut r).drop_stale_db_test();
+        assert!(dbf(&r).db_test.is_none());
+        // The listing dropped under the page (another role or name): the test goes with it.
+        let mut r = db_edit();
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        db_test_click(&mut r).unwrap();
+        r.dropped();
+        assert!(r.forms[Page::Databases.idx()].as_ref().is_none_or(|f| f.db_test.is_none()));
+    }
+
+    #[test]
+    fn the_ask_holds_the_password_only_as_a_hash_and_a_test_is_not_a_write() {
+        let mut r = db_edit();
+        dbf_mut(&mut r).db.password.as_mut_string().push_str(PW);
+        db_test_click(&mut r).unwrap();
+        let shown = format!("{:?}", dbf(&r));
+        assert!(!shown.contains(PW), "{shown}");
+        assert!(!r.write(), "a test is a read of the engine, not a save");
+        // A request the thread did not take shows as the test's error, not as the page's.
+        r.db_test_unsent("down".into());
+        assert_eq!(dbf(&r).db_test.as_ref().unwrap().result, Some(Err("down".to_owned())));
+        assert!(r.refusal().is_none());
     }
 
     #[test]

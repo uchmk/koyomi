@@ -76,39 +76,13 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
         return Err(line(msg::SQL_NOT_SQL, &[]));
     };
     let secret = || password.clone().map(crate::sftp::password).unwrap_or_else(|| Err(line(msg::CHORE_PASSWORD_MISSING, &[db])));
-    let target = match sql_db(db)? {
-        SqlDb::SqlServer { user, host, port, database } => Target::SqlServer {
-            host,
-            port,
-            database,
-            auth: match user {
-                None => SqlAuth::Windows,
-                Some(user) => SqlAuth::Login { user, password: secret()? },
-            },
-            trust_cert: *tls == SqlTls::Trust,
-        },
-        SqlDb::Postgres { user, host, port, database } => Target::Postgres {
-            host,
-            port,
-            database,
-            user,
-            password: secret()?,
-            tls: match tls {
-                SqlTls::Verify => Tls::Verify,
-                SqlTls::Trust => Tls::Require,
-                SqlTls::Off => Tls::Disable,
-            },
-        },
-        SqlDb::Sqlite { path } => {
-            let path = PathBuf::from(path);
-            // ito-sql makes a file that is not there: a path written wrong
-            // would quietly get an empty database.
-            if !path.is_file() {
-                return Err(line(msg::SQL_DB_FILE_MISSING, &[&path.display().to_string()]));
-            }
-            Target::Sqlite { path }
-        }
+    let parsed = sql_db(db)?;
+    // The password is read only for a login, as before.
+    let resolved = match &parsed {
+        SqlDb::SqlServer { user: Some(_), .. } | SqlDb::Postgres { .. } => Some(secret()?),
+        SqlDb::SqlServer { user: None, .. } | SqlDb::Sqlite { .. } => None,
     };
+    let target = target(parsed, *tls, resolved)?;
     let script = match (sql, file) {
         (Some(s), _) => s.clone(),
         (None, Some(f)) => {
@@ -159,8 +133,47 @@ fn go(job: &Chore, password: Option<String>, stop: &AtomicBool) -> Result<i32, S
     Ok(0)
 }
 
+/// The ito-sql target of `db` with the password already read (`None` for SQL Server with Windows authentication and
+/// for SQLite). A SQLite file that is not there is refused: ito-sql would make it.
+pub(crate) fn target(db: SqlDb, tls: SqlTls, password: Option<String>) -> Result<Target, String> {
+    let missing = |scheme: &str| line(msg::CHORE_PASSWORD_MISSING, &[scheme]);
+    Ok(match db {
+        SqlDb::SqlServer { user, host, port, database } => Target::SqlServer {
+            host,
+            port,
+            database,
+            auth: match user {
+                None => SqlAuth::Windows,
+                Some(user) => SqlAuth::Login { user, password: password.ok_or_else(|| missing("sqlserver://"))? },
+            },
+            trust_cert: tls == SqlTls::Trust,
+        },
+        SqlDb::Postgres { user, host, port, database } => Target::Postgres {
+            host,
+            port,
+            database,
+            user,
+            password: password.ok_or_else(|| missing("postgres://"))?,
+            tls: match tls {
+                SqlTls::Verify => Tls::Verify,
+                SqlTls::Trust => Tls::Require,
+                SqlTls::Off => Tls::Disable,
+            },
+        },
+        SqlDb::Sqlite { path } => {
+            let path = PathBuf::from(path);
+            // ito-sql makes a file that is not there: a path written wrong
+            // would quietly get an empty database.
+            if !path.is_file() {
+                return Err(line(msg::SQL_DB_FILE_MISSING, &[&path.display().to_string()]));
+            }
+            Target::Sqlite { path }
+        }
+    })
+}
+
 /// Where the SQL runs, for the log: `db01:1433/売上`, `C:\data\app.db`.
-fn place(target: &Target) -> String {
+pub(crate) fn place(target: &Target) -> String {
     match target {
         Target::SqlServer { host, port, database, .. } | Target::Postgres { host, port, database, .. } => {
             format!("{host}:{port}/{database}")

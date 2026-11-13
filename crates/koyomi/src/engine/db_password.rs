@@ -18,7 +18,13 @@ pub(super) enum Fresh {
 }
 
 /// The longest password taken, in characters.
-const VALUE_MAX: usize = 1024;
+pub(super) const VALUE_MAX: usize = 1024;
+
+/// Whether a typed password can be taken: not empty, at most [`VALUE_MAX`] characters, no NUL. `DatabasePut` and
+/// `DatabaseTest` share it.
+pub(super) fn value_ok(value: &str) -> bool {
+    !value.is_empty() && value.chars().count() <= VALUE_MAX && !value.contains('\0')
+}
 
 /// How many names `koyomi-db-<name>`, `-2`, … are tried.
 const NAMES_TRIED: u32 = 100;
@@ -76,9 +82,8 @@ pub(super) fn choose(
 /// The refusals that need no store: a value with a `password`, with a SQLite file, or one that is empty, too long or
 /// holds `\0`. Only the entry's name is told.
 fn check_value(typed: &Typed) -> Result<(), String> {
-    let value = typed.value.expose();
     let sqlite = typed.db.trim().get(..9).is_some_and(|p| p.eq_ignore_ascii_case("sqlite://"));
-    if typed.password.is_some() || sqlite || value.is_empty() || value.chars().count() > VALUE_MAX || value.contains('\0') {
+    if typed.password.is_some() || sqlite || !value_ok(typed.value.expose()) {
         return Err(line(msg::DB_PASSWORD_VALUE_BAD, &[typed.name]));
     }
     Ok(())

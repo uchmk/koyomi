@@ -134,6 +134,7 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (DATABASES, "PostgreSQL"),
         (DATABASES, "SQLite"),
         (DATABASES, t.tr("registry.tls_field")),
+        (DATABASES, t.tr("registry.db_test_button")),
         (DATABASES, "database"),
         (HOSTS, "[[host]]"),
         (HOSTS, "koyomi.toml"),

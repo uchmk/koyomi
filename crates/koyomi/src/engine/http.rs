@@ -2296,6 +2296,7 @@ high_contrast = true
             serde_json::json!({"BucketRemove": {"name": "bk", "base_sha256": "b", "force": false}}),
             serde_json::json!({"MailboxPut": {"name": "mb", "mail": "imaps://u@h", "password": "secret:s", "base_sha256": "b"}}),
             serde_json::json!({"MailboxRemove": {"name": "mb", "base_sha256": "b", "force": false}}),
+            serde_json::json!({"DatabaseTest": {"db": "postgres://u@h/d", "tls": null, "entry": null, "password_value": "pw-not-to-show", "ticket": 1}}),
         ];
         for b in bodies {
             let body = door_body(b);
@@ -2329,6 +2330,13 @@ high_contrast = true
         let body = door_body(
             serde_json::json!({"DatabasePut": {"name": 7, "db": "postgres://u@h/d", "password_value": "pw-not-to-show", "base_sha256": "b"}}),
         );
+        let (code, json, seen) = through(&g, &at_door("root", true, &body));
+        assert_eq!(code, 400);
+        assert!(json.to_string().contains("E3796") && !json.to_string().contains("pw-not-to-show"), "{json}");
+        assert!(seen.is_empty());
+        // The same for a database test: the ticket is not a number, and the password is not quoted.
+        let body =
+            door_body(serde_json::json!({"DatabaseTest": {"db": "postgres://u@h/d", "password_value": "pw-not-to-show", "ticket": "x"}}));
         let (code, json, seen) = through(&g, &at_door("root", true, &body));
         assert_eq!(code, 400);
         assert!(json.to_string().contains("E3796") && !json.to_string().contains("pw-not-to-show"), "{json}");

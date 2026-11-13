@@ -37,6 +37,7 @@ use crate::proto::{self, Request, Runs, Snapshot, Versions};
 mod alive;
 mod backup;
 mod db_password;
+mod db_test;
 mod events;
 pub(crate) mod files;
 pub mod http;
@@ -51,6 +52,7 @@ mod runner;
 mod schedule;
 mod session;
 mod shells;
+mod slots;
 mod standby;
 mod tray;
 
@@ -271,6 +273,10 @@ struct State {
     alive: alive::Alive,
     /// The peeks at a host's key or certificate that run on threads of their own (`HostPeek`).
     peeks: peek::Peeks,
+    /// The database tests of the settings form (`DatabaseTest`), on threads of their own.
+    db_tests: slots::Slots,
+    /// How a database test connects (a fake in tests).
+    db_run: db_test::RunFn,
     /// The credential store a password typed in the settings goes to (a fake in tests).
     secrets: Arc<dyn crate::remote::SecretStore + Send + Sync>,
     /// `[ping]`: the outside watcher's address, called while the engine runs.
@@ -384,6 +390,15 @@ impl State {
             backup,
             alive,
             peeks: peek::Peeks::new(peek::real()),
+            db_tests: slots::Slots::new(
+                db_test::SLOTS,
+                "db-test",
+                "koyomi-db-test",
+                msg::DB_TEST_BUSY,
+                msg::DB_TEST_STOPPED,
+                db_test::detail,
+            ),
+            db_run: db_test::real(),
             secrets: Arc::new(crate::remote::Keyring),
             ping: ping::Ping::default(),
             ping_cfg: None,
@@ -600,6 +615,10 @@ impl State {
     /// to the time it woke the PC for, and lets go when neither.
     /// What is left to do before the engine ends: the queue told why it will not run, the books written.
     fn shut_down(&mut self) {
+        // First: the tests and peeks still waiting are told they were stopped (the work sees the cancel flag too).
+        let runner = &mut self.runner;
+        self.db_tests.stop(|op, target, detail, by| runner.record_op(op, target, detail, by));
+        self.peeks.stop(|op, target, detail, by| runner.record_op(op, target, detail, by));
         self.runner.drop_queue();
         self.runner.stop_all(self.runner.stop_wait());
         self.runner.flush();
@@ -662,6 +681,29 @@ impl State {
     fn tick_peeks(&mut self) {
         let runner = &mut self.runner;
         self.peeks.drain(|op, target, detail, by| runner.record_op(op, target, detail, by));
+        self.db_tests.drain(|op, target, detail, by| runner.record_op(op, target, detail, by));
+    }
+
+    /// Starts a database test off the loop. The checks that need no network run here; the saved password is read and the
+    /// connection is made on the worker's thread.
+    fn start_db_test(
+        &mut self,
+        by: &str,
+        ask: &db_test::Ask,
+        reply: std::sync::mpsc::SyncSender<ito_ipc::door::Reply>,
+        expired: Arc<AtomicBool>,
+    ) {
+        if expired.load(Ordering::Relaxed) {
+            return;
+        }
+        let probe = match db_test::prepare(ask, || Ok(self.users_text()?.unwrap_or_default())) {
+            Ok(p) => p,
+            Err(why) => return slots::Slots::refuse(&reply, &expired, why),
+        };
+        let target: String = probe.place().chars().take(120).collect();
+        let (secrets, run) = (self.secrets.clone(), self.db_run.clone());
+        let work = Box::new(move |cancel: &AtomicBool| db_test::run(probe, &*secrets, &run, cancel));
+        self.db_tests.start(by, target, work, reply, expired);
     }
 
     /// Reads the power settings and sets the PC to wake a little before the
@@ -3138,8 +3180,27 @@ impl State {
             Request::UserReset { name, base } => self.user_reset(name, base),
             // The loop hands a peek to `peeks` (at most four at once, off the loop); this path never connects.
             Request::HostPeek { .. } => Err(msg::line(msg::HOST_PEEK_STOPPED, &[])),
+            // Like a peek: the loop hands it to `db_tests`; this path never connects.
+            Request::DatabaseTest { .. } => Err(msg::line(msg::DB_TEST_STOPPED, &[])),
             Request::Over { .. } => Err(msg::line(msg::HTTP_FORBIDDEN, &[])),
         }
+    }
+}
+
+/// The database test a request asks for, bare or inside an `Over` that HTTP may send: who asked (empty at this PC)
+/// and what to test.
+fn as_db_test(request: &Request) -> Option<(&str, db_test::Ask<'_>)> {
+    fn ask(request: &Request) -> Option<db_test::Ask<'_>> {
+        match request {
+            Request::DatabaseTest { db, tls, entry, password_value, .. } => {
+                Some(db_test::Ask { db, tls: *tls, entry: entry.as_deref(), value: password_value.as_ref() })
+            }
+            _ => None,
+        }
+    }
+    match request {
+        Request::Over { by, request } if over_http(request) => ask(request).map(|a| (by.as_str(), a)),
+        other => ask(other).map(|a| ("", a)),
     }
 }
 
@@ -3487,6 +3548,8 @@ pub fn run(own_tray: bool) -> i32 {
                 // A peek at a host takes long: it runs on a thread of its own and answers later.
                 if let Some((by, kind, host, port)) = as_peek(&request) {
                     state.peeks.start(by, kind, host, port, reply, expired);
+                } else if let Some((by, ask)) = as_db_test(&request) {
+                    state.start_db_test(by, &ask, reply, expired);
                 } else {
                     let out = state.answer(&request);
                     if !expired.load(Ordering::Relaxed) {
@@ -3667,6 +3730,227 @@ mod tests {
         let today = ito_common::now::now_local().date_naive();
         let ops = s.runner.ops(today, today).unwrap().join("\n");
         assert!(ops.contains("host-peek") && ops.contains("h.example:22") && ops.contains("ito"), "{ops}");
+    }
+
+    /// A secret store that notes which thread read it.
+    #[derive(Default)]
+    struct ThreadStore {
+        items: std::sync::Mutex<BTreeMap<String, String>>,
+        readers: std::sync::Mutex<Vec<String>>,
+    }
+
+    impl crate::remote::SecretStore for ThreadStore {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.readers.lock().unwrap().push(std::thread::current().name().unwrap_or("").to_owned());
+            Ok(self.items.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, _: &str, _: &str) -> Result<(), String> {
+            panic!("a test never writes the store")
+        }
+        fn delete(&self, _: &str) -> Result<(), String> {
+            panic!("a test never deletes from the store")
+        }
+    }
+
+    const DB_PW: &str = "pw-not-to-show";
+    const DB_CONFIG: &str =
+        "[[database]]\nname = \"main\"\ndb = \"postgres://app@db.example/sales\"\npassword = \"secret:koyomi-db-main\"\n";
+
+    fn db_test_req(db: &str, entry: Option<&str>, value: Option<&str>) -> Request {
+        Request::DatabaseTest {
+            db: db.into(),
+            tls: None,
+            entry: entry.map(str::to_owned),
+            password_value: value.map(|v| proto::Hidden::new(v.to_owned())),
+            ticket: 9,
+        }
+    }
+
+    /// What the fake probe saw: the password and the thread it ran on.
+    type Seen = Arc<std::sync::Mutex<Vec<(String, String)>>>;
+
+    fn fake_probe(answer: Result<(), ito_sql::Error>) -> (db_test::RunFn, Seen) {
+        let seen: Seen = Arc::default();
+        let log = seen.clone();
+        let f: db_test::RunFn = Arc::new(move |target, _, _, _| {
+            let password = match target {
+                ito_sql::Target::Postgres { password, .. } => password.clone(),
+                _ => String::new(),
+            };
+            log.lock().unwrap().push((password, std::thread::current().name().unwrap_or("").to_owned()));
+            answer.clone()
+        });
+        (f, seen)
+    }
+
+    /// Sends `request` through the loop's path and waits for its answer.
+    fn db_test_through(s: &mut State, request: &Request) -> Result<String, String> {
+        let (tx, rx) = std::sync::mpsc::sync_channel(1);
+        let (by, ask) = as_db_test(request).expect("a database test");
+        s.start_db_test(by, &ask, tx, Arc::new(AtomicBool::new(false)));
+        let end = Instant::now() + Duration::from_secs(5);
+        loop {
+            s.tick_peeks();
+            if let Ok(a) = rx.try_recv() {
+                return a;
+            }
+            assert!(Instant::now() < end, "the test did not answer");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn db_state(tag: &str, config: &str, probe: db_test::RunFn) -> (State, Arc<ThreadStore>) {
+        let paths = temp_paths(tag);
+        std::fs::write(&paths.config, config).unwrap();
+        let mut s = State::new(paths);
+        let store = Arc::new(ThreadStore::default());
+        store.items.lock().unwrap().insert("koyomi-db-main".into(), "saved-pw".into());
+        s.secrets = store.clone();
+        s.db_run = probe;
+        (s, store)
+    }
+
+    #[test]
+    fn a_database_test_goes_to_its_manager_with_its_caller_and_answer_never_connects() {
+        let test = || db_test_req("postgres://u@h/d", None, Some("x"));
+        let over = |by: &str, request: Request| Request::Over { by: by.to_owned(), request: Box::new(request) };
+        assert!(matches!(as_db_test(&test()), Some(("", _))));
+        assert!(matches!(as_db_test(&over("ito", test())), Some(("ito", _))));
+        assert!(as_db_test(&Request::Status).is_none() && as_db_test(&over("ito", Request::Status)).is_none());
+        assert!(as_peek(&test()).is_none());
+        let (probe, seen) = fake_probe(Ok(()));
+        let (mut s, _) = db_state("db-test-answer", "", probe);
+        let e = s.answer(&test()).unwrap_err();
+        assert!(msg::DB_TEST_STOPPED.is_in(&e), "{e}");
+        assert!(s.answer(&over("ito", test())).is_err());
+        assert!(seen.lock().unwrap().is_empty());
+        // Through the manager, the caller's name is written down with the place and only the outcome.
+        let asked = over("ito", db_test_req("postgres://app@h.example:5433/sales", None, Some(DB_PW)));
+        assert_eq!(db_test_through(&mut s, &asked), Ok(String::new()));
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap().join("\n");
+        let lines: Vec<&str> = ops.lines().filter(|l| l.contains("db-test")).collect();
+        assert_eq!(lines.len(), 1, "{ops}");
+        // `<time>  <op:<8> <target>  <detail><by>`
+        let tail = format!("db-test  h.example:5433/sales  ok{}", msg::note(msg::N_HTTP_BY, &["ito"]));
+        assert!(lines[0].ends_with(&tail), "{ops}");
+        assert!(!ops.contains(DB_PW) && !ops.contains("app@"), "{ops}");
+    }
+
+    #[test]
+    fn a_typed_value_that_looks_like_a_secret_reference_reaches_the_probe_as_it_is_and_on_the_workers_thread() {
+        let (probe, seen) = fake_probe(Ok(()));
+        let (mut s, store) = db_state("db-test-literal", DB_CONFIG, probe);
+        let r = db_test_through(&mut s, &db_test_req("postgres://u@h/d", Some("main"), Some("secret:abc")));
+        assert_eq!(r, Ok(String::new()));
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "secret:abc");
+        assert_eq!(seen[0].1, "koyomi-db-test");
+        assert!(store.readers.lock().unwrap().is_empty(), "a typed value reads no secret");
+    }
+
+    #[test]
+    fn the_saved_password_is_read_on_the_worker_and_only_for_the_same_server_user_and_tls() {
+        let (probe, seen) = fake_probe(Ok(()));
+        let (mut s, store) = db_state("db-test-saved", DB_CONFIG, probe);
+        let r = db_test_through(&mut s, &db_test_req("postgres://app@DB.example/sales", Some("main"), None));
+        assert_eq!(r, Ok(String::new()));
+        assert_eq!(seen.lock().unwrap()[0].0, "saved-pw");
+        assert_eq!(*store.readers.lock().unwrap(), vec!["koyomi-db-test".to_owned()], "read on the worker, not on the loop");
+        // Another server or user: asked to type it again, and nothing is read or connected.
+        for db in ["postgres://app@other.example/sales", "postgres://app@db.example:5433/sales", "postgres://root@db.example/sales"] {
+            let e = db_test_through(&mut s, &db_test_req(db, Some("main"), None)).unwrap_err();
+            assert!(msg::DB_TEST_RETYPE.is_in(&e), "{db}: {e}");
+        }
+        assert_eq!(seen.lock().unwrap().len(), 1);
+        assert_eq!(store.readers.lock().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn a_test_that_cannot_start_is_refused_with_its_own_line() {
+        let (probe, seen) = fake_probe(Ok(()));
+        let (mut s, store) = db_state("db-test-refused", DB_CONFIG, probe);
+        let id = |r: Result<String, String>| r.unwrap_err();
+        let e = id(db_test_through(&mut s, &db_test_req("postgres://app@db.example/sales", Some("nope"), None)));
+        assert!(msg::REGISTRY_NAME_UNKNOWN.is_in(&e), "{e}");
+        let e = id(db_test_through(&mut s, &db_test_req("sqlserver://u@h/d", None, Some("x"))));
+        assert!(msg::DB_TEST_KIND.is_in(&e), "{e}");
+        let lite = format!("sqlite://{}", std::env::temp_dir().join("koyomi-nothing.db").display());
+        let e = id(db_test_through(&mut s, &db_test_req(&lite, None, Some("x"))));
+        assert!(msg::DB_TEST_VALUE_BAD.is_in(&e), "{e}");
+        let e = id(db_test_through(&mut s, &db_test_req("postgres://u@h/d", None, None)));
+        assert!(msg::DB_TEST_NO_PASSWORD.is_in(&e), "{e}");
+        assert!(seen.lock().unwrap().is_empty() && store.readers.lock().unwrap().is_empty());
+        // A saved entry whose secret is gone from the store.
+        store.items.lock().unwrap().clear();
+        let e = id(db_test_through(&mut s, &db_test_req("postgres://app@db.example/sales", Some("main"), None)));
+        assert!(msg::DB_TEST_NO_PASSWORD.is_in(&e), "{e}");
+        assert!(seen.lock().unwrap().is_empty());
+        // Nothing the refusals said holds the typed password.
+        let e = id(db_test_through(&mut s, &db_test_req("sqlserver://u@h/d", None, Some(DB_PW))));
+        assert!(!e.contains(DB_PW));
+        // And the record of the outcomes has only IDs.
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap().join("\n");
+        assert!(!ops.contains(DB_PW), "{ops}");
+    }
+
+    #[test]
+    fn at_most_two_database_tests_run_and_the_engines_stop_ends_them() {
+        let release = Arc::new(AtomicBool::new(false));
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (go, flag) = (release.clone(), Arc::new(AtomicBool::new(false)));
+        let saw_cancel = flag.clone();
+        let blocking: db_test::RunFn = Arc::new(move |_, _, cancel, _| {
+            let _ = started_tx.send(());
+            let end = Instant::now() + Duration::from_secs(5);
+            while !go.load(Ordering::Relaxed) && !cancel.load(Ordering::Relaxed) && Instant::now() < end {
+                std::thread::sleep(Duration::from_millis(5));
+            }
+            if cancel.load(Ordering::Relaxed) {
+                saw_cancel.store(true, Ordering::Relaxed);
+                return Err(ito_sql::Error::Cancelled);
+            }
+            Ok(())
+        });
+        let (mut s, _) = db_state("db-test-cap", "", blocking);
+        let mut rxs = Vec::new();
+        for _ in 0..3 {
+            let (tx, rx) = std::sync::mpsc::sync_channel(1);
+            let req = db_test_req("postgres://u@h/d", None, Some("x"));
+            let (by, ask) = as_db_test(&req).unwrap();
+            s.start_db_test(by, &ask, tx, Arc::new(AtomicBool::new(false)));
+            rxs.push(rx);
+        }
+        // The third is refused at once; the first two wait for the probe.
+        let e = rxs[2].recv_timeout(Duration::from_secs(2)).unwrap().unwrap_err();
+        assert!(msg::DB_TEST_BUSY.is_in(&e), "{e}");
+        assert!(rxs[0].try_recv().is_err() && rxs[1].try_recv().is_err());
+        for _ in 0..2 {
+            started_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+        }
+        // The engine stops: the waiting callers hold the stopped line at once (no tick), and it is written down.
+        s.shut_down();
+        for rx in &rxs[..2] {
+            let a = rx.try_recv().expect("a waiting test was not answered by the stop");
+            assert!(msg::DB_TEST_STOPPED.is_in(&a.unwrap_err()));
+        }
+        let today = ito_common::now::now_local().date_naive();
+        let ops = s.runner.ops(today, today).unwrap();
+        let stopped: Vec<&String> = ops.iter().filter(|l| l.contains("db-test") && l.contains("E2271")).collect();
+        assert_eq!(stopped.len(), 2, "{ops:?}");
+        // The manager goes: the work sees the cancel flag, and no second answer comes.
+        drop(s);
+        let end = Instant::now() + Duration::from_secs(5);
+        while !flag.load(Ordering::Relaxed) {
+            assert!(Instant::now() < end, "the work did not see cancel");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        for rx in &rxs[..2] {
+            assert_eq!(rx.recv_timeout(Duration::from_secs(5)), Err(std::sync::mpsc::RecvTimeoutError::Disconnected));
+        }
+        release.store(true, Ordering::Relaxed);
     }
 
     /// over HTTP only what its paths ask for goes through; never an approval or a save.

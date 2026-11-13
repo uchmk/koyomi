@@ -3043,6 +3043,90 @@ text = "Cannot write [[database]] {0} to koyomi.toml. ({1}) The secret {2} could
 cause = "Writing koyomi.toml failed, and putting the old value of the secret back failed too, so the secret holds the new password."
 action = "Put the old password back with koyomi secret set, or type the password again in the settings."
 
+[E2262]
+when = "The database to test is not PostgreSQL or SQLite"
+text = "Only PostgreSQL and SQLite databases can be tested."
+cause = "A SQL Server database has no test here, because the engine reads it from koyomi.toml and signs in with its own account."
+action = "Test a PostgreSQL or SQLite database. A SQL Server database is checked by running a sql job."
+
+[E2263]
+when = "A database cannot be tested because there is no password to use"
+text = "There is no password to test the database with."
+cause = "No password was typed, and the saved database has no password in the credential store of the engine's PC."
+action = "Type the password in the form, then test again."
+
+[E2264]
+when = "A database cannot be tested with the saved password because the server, user or TLS differs"
+text = "The saved password is not used for another server, user or a weaker TLS."
+cause = "The saved password is used only for the server, port and user it was saved for, and for TLS that is not weaker. It is never sent anywhere else."
+action = "Type the password in the form to test this server, user or TLS setting."
+
+[E2265]
+when = "The saved password of a database cannot be read from the credential store for a test"
+text = "Cannot read the secret {0} from the credential store."
+cause = "The credential store of the engine's PC may be unavailable or may have refused to read."
+action = "Check the credential store of the engine's PC, or type the password in the form."
+
+[E2266]
+when = "The SQLite file to test does not exist"
+text = "The SQLite file {0} does not exist on the engine's PC."
+cause = "The file is not there, or it is not a file. It was not created, because a test changes nothing."
+action = "Check the path on the engine's PC."
+
+[E2267]
+when = "The test cannot connect to the database"
+text = "Cannot connect to {0}. ({1})"
+cause = "The server may be unreachable, or the port, the user or the password may be wrong, or the TLS setting may not fit the server."
+action = "Check the server, the port, the user ID, the password and the TLS setting."
+
+[E2268]
+when = "The database refused the test"
+text = "The database of {0} refused the test. ({1})"
+cause = "The test connected, and the database returned an error to a query that changes nothing, or the file is not a database."
+action = "Read the message of the database, and check the database name or the file."
+
+[E2269]
+when = "The database test did not finish in time"
+text = "The test of {0} did not finish within {1} seconds."
+cause = "The server did not answer in time, or the engine's PC could not reach it."
+action = "Check that the server is up and reachable from the engine's PC, then test again."
+
+[E2270]
+when = "Too many database tests are running"
+text = "Database tests are already running. Wait for one to end."
+cause = "The engine runs at most 2 database tests at the same time."
+action = "Test again in a moment."
+
+[E2271]
+when = "The database test was stopped"
+text = "The database test was stopped."
+cause = "The engine stopped, or the test ended without an answer."
+action = "Test again when the engine is running."
+
+[E2272]
+when = "The password typed for a database test cannot be used"
+text = "The typed password cannot be used."
+cause = "The password is empty, longer than 1024 characters or contains a NUL character, or the database is a SQLite file."
+action = "Type a password of 1 to 1024 characters for a PostgreSQL database."
+
+[E2273]
+when = "The SQLite file to test is not a path that can be used"
+text = "The SQLite file must be an absolute path on the engine's PC."
+cause = "The path is relative, or it is a network path (starting with a double backslash or //) that a test does not open."
+action = "Give a full path on the engine's own disk, such as C:\\data\\app.db."
+
+[E2274]
+when = "The test with the saved password cannot connect to the database"
+text = "Cannot connect to {0} with the saved password."
+cause = "The server may be unreachable, or the port, the user or the saved password may be wrong, or the TLS setting may not fit the server. The server's own words are shown only for a password typed in the form."
+action = "Type the password in the form and test again to see the reason the server gives."
+
+[E2275]
+when = "The database refused the test with the saved password"
+text = "The database of {0} refused the test with the saved password."
+cause = "The test connected, and the database returned an error to a query that changes nothing. The server's own words are shown only for a password typed in the form."
+action = "Type the password in the form and test again to see the reason the server gives."
+
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."
@@ -4408,6 +4492,7 @@ mail_no_names = "none has a name"
 mail_names = "there are {0}"
 sql_stopped = "Stopped. (The batches before it are already done.)"
 sql_timeout = "Timed out"
+db_test_withheld = "(text withheld)"
 sql_result_rows = "The rows of the result"
 sql_changed_rows = "The rows changed"
 cloud_stopped = "Stopped. (What was being moved is not left behind.)"

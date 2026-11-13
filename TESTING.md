@@ -2231,6 +2231,14 @@ Rows need this PC with the window on この PC unless a row says otherwise.
 | 142.28 | Edit a PostgreSQL entry and change only the password | 保存 is on; the new password replaces the old one; koyomi.toml still names only the secret |
 | 142.29 | Look at a SQL Server row | 編集 is off with a hover saying to fix it in koyomi.toml; 削除 works; jobs still use the database |
 | 142.30 | On this PC, click 参照… for a SQLite file (with a path already typed) | The chooser is titled `SQLite のファイルを選ぶ`, offers `SQLite データベース` and `すべてのファイル`, and starts in the folder of the typed path; the chosen path lands in the field. On a remote engine there is no 参照… |
+| 142.31 | In a PostgreSQL form (new, or edited), type the server, user ID, database and a password, then click 接続テスト | A spinner and `テストしています…` show while it runs; the engine's PC connects and runs a query that changes nothing; a good one shows `接続できました。`; nothing is saved and koyomi.toml and the credential store are unchanged |
+| 142.32 | Test with a wrong password typed, a closed port, and a wrong database name | Each shows one line in the error colour with the place (`host:port/database`) and the server's own words; the typed password never appears in it |
+| 142.33 | Edit a saved PostgreSQL entry and click 接続テスト with the password empty and the server, port, user ID and TLS unchanged | The button is on and the saved password is used (read on the engine's PC); a failure says only the place, not the server's words |
+| 142.34 | Edit a saved PostgreSQL entry, change the server, port, user ID or make TLS weaker, with the password empty | 接続テスト is off with a hover asking for the password; after typing one it is on |
+| 142.35 | Click 接続テスト, then change any field or one character of the password | The result line goes away (a late answer is not shown); the button is on again |
+| 142.36 | Test a SQLite entry with the path of a database file, of an empty file, of a file that is not there, and of a relative path or (on Windows) a network path written either way (`\\server\share` or `/\server\share`) | The database file and the empty file connect; a missing file says it is not there and no file is made; the relative and network paths are refused with a line that asks for a full path on the engine's own disk |
+| 142.37 | Start three tests at once, then stop the engine while they run | The third says that tests are already running; the running ones end with `テストが止められました` when the engine stops; a test never takes more than 15 seconds |
+| 142.38 | Open the form as an editor or as a caller narrowed by nets; test from a window of another PC's engine | An editor and a narrowed caller cannot test (the button is off, and the engine refuses the request); an admin can; the operations record shows `db-test`, the place and only `ok` or the message ID |
 
 ## 143. Hosts, buckets and mailboxes registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`, `engine/mails.rs`)
 
