@@ -1210,10 +1210,12 @@ fn quote_raw(s: &str) -> String {
 }
 
 /// A folder as `koyomi file run` opens it: trimmed and rebuilt from its parts, so a
-/// separator or a `.` at the end is gone (`/x/link/` makes the system follow a link to its
-/// target, and the link check must see the link itself); `..` stays. A bare drive or share
-/// (`D:`, `\?\D:`, `\srv\share`) gets its root separator back (`D:` alone is the drive's
-/// current folder); `/`, `D:\` and an empty path stay as they are.
+/// separator or a `.` at the end is gone and the paths in the output are spelt alike for
+/// `delete`, `empty` and `copy` (ito-fileops reads a `delete` or `empty` folder this way
+/// itself before its link check; `copy` joins onto the path as given); `..` stays.
+/// A bare drive or share (`D:`, `\\?\D:`, `\\srv\share`) gets its root separator back
+/// (`D:` alone is the drive's current folder); `D:\` and an empty path stay as they are,
+/// and `/` is the system's root separator (`\` on Windows).
 pub fn folder_path(p: &str) -> PathBuf {
     let path = Path::new(p.trim());
     let mut out: PathBuf = path.components().collect();
