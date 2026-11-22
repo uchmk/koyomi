@@ -919,8 +919,14 @@ pub(super) fn tid(name: &str) -> String {
 }
 
 pub(super) fn say_line(ui: &mut egui::Ui, text: &str, color: egui::Color32) {
+    say_line_response(ui, text, color);
+}
+
+/// `say_line`, handing back the label's response (for a test ID).
+pub(super) fn say_line_response(ui: &mut egui::Ui, text: &str, color: egui::Color32) -> egui::Response {
     let r = ui.add(egui::Label::new(egui::RichText::new(text).color(color)).wrap());
     ito_a11y::say(&r, ito_a11y::Role::Label, text);
+    r
 }
 
 /// A button that may be off; when it is off for a reason, the reason shows on hover.

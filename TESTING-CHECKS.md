@@ -1,6 +1,6 @@
 # Checklist
 
-1504 checks in TESTING.md, 1487 left for a person.
+1506 checks in TESTING.md, 1489 left for a person.
 
 ## 1. Start
 
@@ -1883,6 +1883,8 @@
 - [ ] **142.36** Test a SQLite entry with the path of a database file, of an empty file, of a text file that is not a database, of a file that is not there, and of a relative path or (on Windows) a network path written either way (`\\server\share` or `/\server\share`) → The database file and the empty file connect, and neither file changes (the same size and modified time); the text file shows a failure line holding `file is not a database`; a missing file says it is not there and no file is made; the relative and network paths are refused with a line that asks for a full path on the engine's own disk 〔未訳〕
 - [ ] **142.37** Start three tests at once, then stop the engine while they run → The third says that tests are already running; the running ones end with `テストが止められました` when the engine stops; a test never takes more than 15 seconds 〔未訳〕
 - [ ] **142.38** Open the form as an editor or as a caller narrowed by nets; test from a window of another PC's engine → An editor and a narrowed caller cannot test (the button is off, and the engine refuses the request); an admin can; the operations record shows `db-test`, the place and only `ok` or the message ID 〔未訳〕
+- [ ] **142.39** In a new PostgreSQL form, keep 接続テスト off for each reason in turn: サーバー `db 1` (a space); ポート `54x`; only サーバー typed; every field typed but no password. Then type a password. Switch to SQLite with no file, then the file `data.db` → One line under the button says why, where the result line goes: `サーバーに使えない文字があります。` and `ポートは 1 から 65535 の数字で入れてください。` in the error colour; `サーバー・ポート・データベース名・ユーザー ID（SQLite はファイル）を正しく入れると、テストできます。` (also for SQLite with no file) and `テストにはパスワードを入力してください。…` dim; `ファイルは、ドライブから始まる全部のパスで入れてください。` in the error colour for `data.db`. With the password typed the line goes away and the button is on. The hover over the button says the same as before 〔未訳〕
+- [ ] **142.40** Paste `postgres://koyomi@192.168.0.134:5432/koyomi` into サーバー; then select the server line and paste `postgresql://u:p%40ss@h:5433/d?sslmode=require` over it; then clear it and type `postgres://koyomi@db1/koyomi` one key at a time and press Tab; then select it and paste `sqlite://C:\datapp.db` → The first paste fills サーバー `192.168.0.134`, ポート `5432`, データベース名 `koyomi`, ユーザー ID `koyomi`. The second puts `p@ss` only into the password (the server line shows `h`, no field shows the password) and opens 詳しい設定 with TLS on `trust`. While typing, the line keeps what is typed (it is not split at `postgres://k`); after Tab it is split into `db1` and `koyomi`. The SQLite paste switches the kind to SQLite with ファイル `C:\datapp.db`. A pasted text that is not a database URL (`postgres://bad host/d`) stays as pasted, and the line under 接続テスト says the server is bad. A pasted URL whose password cannot be read out (`postgres://u:pa/ss@db1/d`, a `/` in it) shows as `postgres://u:***@db1/d`: the password is dropped, not kept in any field 〔未訳〕
 
 ## 143. Hosts, buckets and mailboxes registered in koyomi.toml (`registry.rs`, `engine/mod.rs`, `engine/runner.rs`, `engine/mails.rs`)
 

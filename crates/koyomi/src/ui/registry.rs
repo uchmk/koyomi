@@ -656,15 +656,65 @@ impl Form {
         if self.page != Page::Databases {
             return None;
         }
+        self.db_test_check().ok()
+    }
+
+    /// The database the fields describe, or the first field (in the order `db_url` checks them) that does not make one.
+    fn db_test_check(&self) -> Result<(SqlDb, String), chore::DbField> {
         let d = &self.db;
-        let sqldb = if self.is_sqlite() {
-            SqlDb::Sqlite { path: d.file.trim().to_owned() }
+        self.db_check_with(&d.host, &d.database, &d.user)
+    }
+
+    /// `db_test_check` with the server, database and user given (so a caller can stand in for an empty one).
+    fn db_check_with(&self, host: &str, database: &str, user: &str) -> Result<(SqlDb, String), chore::DbField> {
+        let d = &self.db;
+        let (sqldb, port_ok) = if self.is_sqlite() {
+            (SqlDb::Sqlite { path: d.file.trim().to_owned() }, true)
         } else {
-            let port = port_of(&d.port)?;
-            SqlDb::Postgres { user: d.user.trim().to_owned(), host: d.host.trim().to_owned(), port, database: d.database.trim().to_owned() }
+            let port = port_of(&d.port);
+            let sqldb = SqlDb::Postgres {
+                user: user.trim().to_owned(),
+                host: host.trim().to_owned(),
+                port: port.unwrap_or(chore::POSTGRES_PORT),
+                database: database.trim().to_owned(),
+            };
+            (sqldb, port.is_some())
         };
-        let url = chore::db_url(&sqldb).ok()?;
-        Some((sqldb, url))
+        let url = chore::db_url(&sqldb);
+        if !port_ok {
+            // The port comes after the server in the order `db_url` checks.
+            return Err(if url == Err(chore::DbField::Host) { chore::DbField::Host } else { chore::DbField::Port });
+        }
+        url.map(|u| (sqldb, u))
+    }
+
+    /// Why 接続テスト cannot be asked, for the line under it: the lang key and whether a typed field is bad. `None` when
+    /// a test can be asked. A typed field that is bad comes first; then a required one that is empty; then the password.
+    fn db_test_line(&self) -> Option<(&'static str, bool)> {
+        if self.page != Page::Databases || self.db_test_ask().is_some() {
+            return None;
+        }
+        let d = &self.db;
+        let empty = |s: &str| s.trim().is_empty();
+        let (host, database, user) = (
+            if empty(&d.host) { "h" } else { d.host.as_str() },
+            if empty(&d.database) { "d" } else { d.database.as_str() },
+            if empty(&d.user) { "u" } else { d.user.as_str() },
+        );
+        if self.is_sqlite() {
+            return Some(match self.db_check_with(host, database, user) {
+                Err(f) if !empty(&d.file) => (db_field_key(f), true),
+                Err(_) => ("registry.db_test_fields", false),
+                Ok(_) => ("registry.db_test_need", false),
+            });
+        }
+        if let Err(f) = self.db_check_with(host, database, user) {
+            return Some((db_field_key(f), true));
+        }
+        if empty(&d.host) || empty(&d.database) || empty(&d.user) {
+            return Some(("registry.db_test_fields", false));
+        }
+        Some(("registry.db_test_need", false))
     }
 
     /// Whether the saved password may be meant: the row has one, and the server, port, user and TLS are what the form
@@ -2075,7 +2125,9 @@ fn peek_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, open: boo
 
 /// The lang key of the button's hover: why a test cannot be asked yet, or what it does.
 fn db_test_why(f: &Form) -> &'static str {
-    if f.db_test_url().is_none() {
+    if let Some((key, _)) = f.db_test_line() {
+        key
+    } else if f.db_test_url().is_none() {
         "registry.db_test_fields"
     } else if f.db_test_ask().is_none() {
         "registry.db_test_need"
@@ -2107,6 +2159,13 @@ fn db_test_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &Form, can: b
             users::say_line(ui, t.tr("registry.db_test_waiting"), c.dim);
         }
     });
+    // Off only for the fields or the password: say which, under the button.
+    let line = if can && !f.stale && !waiting { f.db_test_line() } else { None };
+    if let Some((key, bad)) = line {
+        let r = users::say_line_response(ui, t.tr(key), if bad { c.err } else { c.dim });
+        ito_a11y::test_id(&r, &format!("{id}.db_test_why"));
+        return;
+    }
     match f.db_test.as_ref().and_then(|d| d.result.as_ref()) {
         Some(Ok(_)) => users::say_line(ui, t.tr("registry.db_test_ok"), c.fg),
         Some(Err(e)) => users::say_line(ui, e, c.err),
@@ -2139,6 +2198,140 @@ fn password_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form) {
     ui.add(egui::Label::new(note).wrap());
 }
 
+/// Whether the server line is to be split now: it holds a URL and that arrived by a paste, or the line was left.
+fn should_split(now: &str, pasted: bool, lost_focus: bool) -> bool {
+    now.contains("://") && (pasted || lost_focus)
+}
+
+/// The parts of a database URL pasted into the server line. No `Debug`: the password must not reach a log or a message.
+struct Pasted {
+    kind: DbKind,
+    host: String,
+    port: Option<String>,
+    database: Option<String>,
+    user: Option<String>,
+    password: Option<String>,
+    tls: Option<SqlTls>,
+    file: String,
+}
+
+/// `text` with its `%XX` escapes decoded; `None` when an escape is broken or the result is not UTF-8.
+fn pct_decode(text: &str) -> Option<String> {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// Reads a pasted `postgres://[user[:password]@]host[:port][/database][?sslmode=…]` (or `sqlite://path`) leniently.
+/// `None` when the text is not one, or its server is not one the server line takes (it is then left as typed).
+fn split_pasted_db(text: &str) -> Option<Pasted> {
+    let t = text.trim();
+    let (scheme, rest) = t.split_once("://")?;
+    let blank =
+        |kind| Pasted { kind, host: String::new(), port: None, database: None, user: None, password: None, tls: None, file: String::new() };
+    if scheme.eq_ignore_ascii_case("sqlite") {
+        chore::db_url(&SqlDb::Sqlite { path: rest.to_owned() }).ok()?;
+        return Some(Pasted { file: rest.to_owned(), ..blank(DbKind::Sqlite) });
+    }
+    if !scheme.eq_ignore_ascii_case("postgres") && !scheme.eq_ignore_ascii_case("postgresql") {
+        return None;
+    }
+    let (rest, query) = rest.split_once('?').map_or((rest, ""), |(r, q)| (r, q));
+    let (auth, path) = rest.split_once('/').map_or((rest, None), |(a, p)| (a, Some(p)));
+    let (info, hostport) = auth.rsplit_once('@').map_or((None, auth), |(i, h)| (Some(i), h));
+    let (host, port) = if hostport.starts_with('[') {
+        let end = hostport.find(']')?;
+        let (h, after) = hostport.split_at(end + 1);
+        match after {
+            "" => (h, None),
+            a => (h, Some(a.strip_prefix(':')?)),
+        }
+    } else {
+        hostport.rsplit_once(':').map_or((hostport, None), |(h, p)| (h, Some(p)))
+    };
+    let port = match port {
+        None | Some("") => None,
+        Some(p) => Some(p.parse::<u16>().ok().filter(|n| *n != 0)?.to_string()),
+    };
+    // Only a server the server line itself takes.
+    let probe = SqlDb::Postgres { user: "u".into(), host: host.to_owned(), port: chore::POSTGRES_PORT, database: "d".into() };
+    chore::db_url(&probe).ok()?;
+    let (user, password) = match info {
+        None => (None, None),
+        Some(i) => match i.split_once(':') {
+            Some((u, p)) => (Some(u), Some(pct_decode(p)?)),
+            None => (Some(i), None),
+        },
+    };
+    let user = user.filter(|u| !u.is_empty()).map(pct_decode).map_or(Some(None), |d| d.map(Some))?;
+    let database = path.filter(|p| !p.is_empty()).map(pct_decode).map_or(Some(None), |d| d.map(Some))?;
+    let tls = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| k.eq_ignore_ascii_case("sslmode")).and_then(|(_, v)| {
+        match v.to_ascii_lowercase().as_str() {
+            "disable" => Some(SqlTls::Off),
+            "require" => Some(SqlTls::Trust),
+            "verify-ca" | "verify-full" => Some(SqlTls::Verify),
+            _ => None,
+        }
+    });
+    Some(Pasted { host: host.to_owned(), port, database, user, password, tls, ..blank(DbKind::Postgres) })
+}
+
+impl Form {
+    /// Splits the URL in the server line into the fields; one that does not split keeps no password in the line.
+    /// Returns what `apply_pasted` does.
+    fn settle_pasted_host(&mut self) -> bool {
+        if let Some(p) = split_pasted_db(&self.db.host) {
+            return self.apply_pasted(p);
+        }
+        if let std::borrow::Cow::Owned(hidden) = chore::hide_password(&self.db.host) {
+            self.db.host = hidden;
+        }
+        false
+    }
+
+    /// Puts what a pasted URL carried into the fields (only the parts it had). Returns whether the TLS was set to
+    /// something other than the usual, so the section that shows it is to be opened.
+    fn apply_pasted(&mut self, p: Pasted) -> bool {
+        if p.kind == DbKind::Sqlite {
+            self.db.kind = DbKind::Sqlite;
+            self.db.file = p.file;
+            self.db.host.clear();
+            return false;
+        }
+        self.db.host = p.host;
+        if let Some(port) = p.port {
+            self.db.port = port;
+        }
+        if let Some(d) = p.database {
+            self.db.database = d;
+        }
+        if let Some(u) = p.user {
+            self.db.user = u;
+        }
+        if let Some(pw) = p.password {
+            self.password = ito_prefs::Hidden::new(pw);
+        }
+        if let Some(tls) = p.tls {
+            self.tls = tls;
+        }
+        p.tls.is_some_and(|t| t != SqlTls::Verify)
+    }
+}
+
 /// The fields of the database form: the kind, then the server, port, database name, user ID and password of
 /// PostgreSQL (TLS under 詳しい設定), or the file of SQLite. `browsed` is set when 参照… is clicked.
 fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, local: bool, browsed: &mut Option<Chosen>) {
@@ -2155,7 +2348,7 @@ fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, l
             }
         }
     });
-    let text = |ui: &mut egui::Ui, label: &str, hint: &str, tail: &str, width: f32, value: &mut String| {
+    let text = |ui: &mut egui::Ui, label: &str, hint: &str, tail: &str, width: f32, value: &mut String| -> (bool, bool) {
         ui.horizontal(|ui| {
             ui.label(t.tr(label));
             let mut edit = egui::TextEdit::singleline(value).desired_width(width);
@@ -2165,7 +2358,9 @@ fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, l
             let resp = ui.add(edit);
             ito_a11y::say(&resp, ito_a11y::Role::Label, t.tr(label));
             ito_a11y::test_id(&resp, &format!("{id}.{tail}"));
-        });
+            (resp.changed(), resp.lost_focus())
+        })
+        .inner
     };
     if f.is_sqlite() {
         ui.horizontal(|ui| {
@@ -2184,27 +2379,38 @@ fn database_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, id: &str, f: &mut Form, l
         });
         return;
     }
-    text(ui, "registry.db_host_field", "", "host", 240.0, &mut f.db.host);
+    let mut force_open = false;
+    let (changed, lost_focus) = text(ui, "registry.db_host_field", "", "host", 240.0, &mut f.db.host);
+    let pasted = changed && ui.input(|i| i.events.iter().any(|e| matches!(e, egui::Event::Paste(_))));
+    if should_split(&f.db.host, pasted, lost_focus) {
+        // A whole URL pasted (or typed out and left) in the server is split into the fields.
+        force_open = f.settle_pasted_host();
+        if f.is_sqlite() {
+            return;
+        }
+    }
     text(ui, "registry.db_port_field", "registry.db_port_hint", "port", 80.0, &mut f.db.port);
     text(ui, "registry.db_name_field", "", "database", 240.0, &mut f.db.database);
     text(ui, "registry.db_user_field", "", "user", 240.0, &mut f.db.user);
     password_ui(ui, t, id, f);
-    // The TLS choice is open from the start when it is not the usual one.
-    egui::CollapsingHeader::new(t.tr("registry.db_more")).id_salt(format!("{id}.more")).default_open(f.tls != SqlTls::Verify).show(
-        ui,
-        |ui| {
-            ui.horizontal(|ui| {
-                ui.label(t.tr("registry.tls_field"));
-                for s in SqlTls::ALL {
-                    let resp = ui.radio(f.tls == s, s.key());
-                    ito_a11y::test_id(&resp, &format!("{id}.tls_{}", s.key()));
-                    if resp.clicked() {
-                        f.tls = s;
-                    }
+    // The TLS choice is open from the start when it is not the usual one (and when a pasted URL has just set it).
+    let mut more =
+        egui::CollapsingHeader::new(t.tr("registry.db_more")).id_salt(format!("{id}.more")).default_open(f.tls != SqlTls::Verify);
+    if force_open {
+        more = more.open(Some(true));
+    }
+    more.show(ui, |ui| {
+        ui.horizontal(|ui| {
+            ui.label(t.tr("registry.tls_field"));
+            for s in SqlTls::ALL {
+                let resp = ui.radio(f.tls == s, s.key());
+                ito_a11y::test_id(&resp, &format!("{id}.tls_{}", s.key()));
+                if resp.clicked() {
+                    f.tls = s;
                 }
-            });
-        },
-    );
+            }
+        });
+    });
 }
 
 #[cfg(test)]
@@ -3161,7 +3367,7 @@ mod tests {
         let mut f = pg_form();
         assert_eq!(db_test_why(&f), "registry.db_test_hover");
         f.db.port = "70000".into();
-        assert_eq!(db_test_why(&f), "registry.db_test_fields", "a port that does not read, with a password typed");
+        assert_eq!(db_test_why(&f), "registry.db_bad_port", "a port that does not read, with a password typed");
         f.db.port = "5432".into();
         f.password.clear();
         assert_eq!(db_test_why(&f), "registry.db_test_need");
@@ -3170,6 +3376,120 @@ mod tests {
         assert_eq!(db_test_why(&lite), "registry.db_test_fields", "an empty SQLite file");
         lite.db.file = r"C:\data\a.db".into();
         assert_eq!(db_test_why(&lite), "registry.db_test_hover");
+    }
+
+    #[test]
+    fn the_line_under_the_test_button_says_which_field_is_bad_or_empty_or_that_the_password_is_missing() {
+        let mut f = pg_form();
+        assert_eq!(f.db_test_line(), None, "fine fields and a password");
+        f.password.clear();
+        assert_eq!(f.db_test_line(), Some(("registry.db_test_need", false)));
+        f.db.host = "postgres://koyomi@192.168.0.134:5432".into();
+        assert_eq!(f.db_test_line(), Some(("registry.db_bad_host", true)));
+        f.db.host = "db1".into();
+        f.db.port = "54x".into();
+        assert_eq!(f.db_test_line(), Some(("registry.db_bad_port", true)));
+        f.db.port = "5432".into();
+        f.db.user = "a b".into();
+        f.db.database.clear();
+        assert_eq!(f.db_test_line(), Some(("registry.db_bad_user", true)), "a bad typed field wins over an empty one");
+        let empty = Form::add(Page::Databases);
+        assert_eq!(empty.db_test_line(), Some(("registry.db_test_fields", false)));
+        let mut lite = Form::add(Page::Databases);
+        lite.db.kind = DbKind::Sqlite;
+        assert_eq!(lite.db_test_line(), Some(("registry.db_test_fields", false)));
+        lite.db.file = "data.db".into();
+        assert_eq!(lite.db_test_line(), Some(("registry.db_bad_file", true)));
+        lite.db.file = r"C:\data\a.db".into();
+        assert_eq!(lite.db_test_line(), None);
+    }
+
+    fn pasted(text: &str) -> Form {
+        let mut f = Form::add(Page::Databases);
+        f.db.host = text.into();
+        let p = split_pasted_db(text).expect("splits");
+        f.apply_pasted(p);
+        f
+    }
+
+    #[test]
+    fn a_url_pasted_into_the_server_is_split_into_the_fields() {
+        let f = pasted("postgres://koyomi@192.168.0.134:5432/koyomi");
+        let d = &f.db;
+        assert_eq!((d.host.as_str(), d.port.as_str(), d.database.as_str(), d.user.as_str()), ("192.168.0.134", "5432", "koyomi", "koyomi"));
+        let mut g = Form::add(Page::Databases);
+        g.db.port = "6000".into();
+        g.apply_pasted(split_pasted_db("PostgreSQL://u@h/d").expect("splits"));
+        assert_eq!((g.db.host.as_str(), g.db.port.as_str(), g.db.database.as_str(), g.db.user.as_str()), ("h", "6000", "d", "u"));
+        let mut h = Form::add(Page::Databases);
+        h.db.database = "keep".into();
+        h.apply_pasted(split_pasted_db("postgres://h").expect("splits"));
+        assert_eq!((h.db.host.as_str(), h.db.port.as_str(), h.db.database.as_str(), h.db.user.as_str()), ("h", "5432", "keep", ""));
+        let v6 = pasted("postgres://[::1]:5432/d");
+        assert_eq!((v6.db.host.as_str(), v6.db.port.as_str(), v6.db.database.as_str()), ("[::1]", "5432", "d"));
+    }
+
+    #[test]
+    fn a_pasted_password_goes_only_into_the_password_field_and_tls_follows_sslmode() {
+        let mut f = pasted("postgres://u:p%40ss@h:5433/d%20b?sslmode=require");
+        assert!(f.password.expose() == "p@ss", "the password was not decoded into its field");
+        assert_eq!((f.db.host.as_str(), f.db.port.as_str(), f.db.database.as_str(), f.db.user.as_str()), ("h", "5433", "d b", "u"));
+        assert_eq!(f.tls, SqlTls::Trust);
+        for field in [&f.db.host, &f.db.port, &f.db.database, &f.db.user, &f.db.file, &f.name] {
+            assert!(!field.contains("p@ss") && !field.contains("p%40ss"), "a field holds the password");
+        }
+        f.apply_pasted(split_pasted_db("postgres://u@h/d?sslmode=disable").expect("splits"));
+        assert_eq!(f.tls, SqlTls::Off);
+        assert!(f.password.expose() == "p@ss", "no password in the URL leaves the one typed");
+        f.tls = SqlTls::Trust;
+        f.apply_pasted(split_pasted_db("postgres://u@h/d?sslmode=prefer&x=1").expect("splits"));
+        assert_eq!(f.tls, SqlTls::Trust, "an unknown mode leaves the TLS");
+        assert!(!f.apply_pasted(split_pasted_db("postgres://u@h/d?sslmode=verify-full").expect("splits")));
+        assert_eq!(f.tls, SqlTls::Verify);
+        assert!(f.apply_pasted(split_pasted_db("postgres://u@h/d?sslmode=disable").expect("splits")), "the section is to open");
+    }
+
+    #[test]
+    fn the_server_line_is_split_on_a_paste_or_when_left_but_not_while_typing() {
+        let url = "postgres://koyomi@h/d";
+        for n in 1..=url.len() {
+            assert!(!should_split(&url[..n], false, false), "typing step {n}");
+        }
+        assert!(should_split(url, true, false), "pasted, also over a URL");
+        assert!(should_split(url, false, true), "typed out, then left");
+        assert!(!should_split("db1", true, true));
+        assert_eq!(pct_decode("%+1"), None);
+        assert_eq!(pct_decode("a%401").as_deref(), Some("a@1"));
+    }
+
+    #[test]
+    fn a_url_that_does_not_split_loses_its_password_from_the_server_line() {
+        for url in [
+            "postgres://u:pa/ss@db1/d",
+            "postgres://u:p?x@db1/d",
+            "postgres://u:p%zz@db1/d",
+            "postgres://u:pw@db1:0/d",
+            "postgres://u:pw@::1/d",
+        ] {
+            let mut f = pg_form();
+            f.db.host = url.into();
+            assert!(split_pasted_db(url).is_none(), "{url}");
+            f.settle_pasted_host();
+            let secret = url.split_once(':').and_then(|(_, r)| r.split_once(':')).map_or("", |(_, r)| r.split('@').next().unwrap_or(""));
+            assert!(secret.is_empty() || !f.db.host.contains(secret), "the host still holds a password");
+            assert!(f.password.expose() == PW, "the password field changed");
+        }
+    }
+
+    #[test]
+    fn a_pasted_text_that_is_not_a_database_url_is_left_as_typed() {
+        assert!(split_pasted_db("postgres://bad host/d").is_none());
+        assert!(split_pasted_db("db1").is_none());
+        assert!(split_pasted_db("postgres://u@h:0/d").is_none());
+        assert!(split_pasted_db("sqlite://relative.db").is_none());
+        let f = pasted(r"sqlite://C:\data\app.db");
+        assert!(f.is_sqlite());
+        assert_eq!(f.db.file, r"C:\data\app.db");
     }
 
     #[test]
