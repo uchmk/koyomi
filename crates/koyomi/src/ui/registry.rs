@@ -2270,9 +2270,16 @@ fn split_pasted_db(text: &str) -> Option<Pasted> {
     // Only a server the server line itself takes.
     let probe = SqlDb::Postgres { user: "u".into(), host: host.to_owned(), port: chore::POSTGRES_PORT, database: "d".into() };
     chore::db_url(&probe).ok()?;
+    // A template (`{param:…}`) is no pasted URL's, and its colons are not the password's: the line is left (hidden).
+    if info.is_some_and(|i| i.contains(['{', '}'])) {
+        return None;
+    }
     let (user, password) = match info {
         None => (None, None),
         Some(i) => match i.split_once(':') {
+            // `***` is the mark a URL that did not split leaves in the line (`settle_pasted_host`), not a password.
+            // A password that really is `***` is pasted as `%2A%2A%2A`.
+            Some((u, "***")) => (Some(u), None),
             Some((u, p)) => (Some(u), Some(pct_decode(p)?)),
             None => (Some(i), None),
         },
@@ -3470,6 +3477,7 @@ mod tests {
             "postgres://u:p%zz@db1/d",
             "postgres://u:pw@db1:0/d",
             "postgres://u:pw@::1/d",
+            "postgres://{param:u}:pa/ss@db1/d",
         ] {
             let mut f = pg_form();
             f.db.host = url.into();
@@ -3478,7 +3486,19 @@ mod tests {
             let secret = url.split_once(':').and_then(|(_, r)| r.split_once(':')).map_or("", |(_, r)| r.split('@').next().unwrap_or(""));
             assert!(secret.is_empty() || !f.db.host.contains(secret), "the host still holds a password");
             assert!(f.password.expose() == PW, "the password field changed");
+            // Leaving the line splits what is left, if it can, without taking the mark for a password.
+            f.settle_pasted_host();
+            assert!(f.password.expose() == PW, "the mark became the password: {url}");
         }
+        let mut f = pg_form();
+        f.db.host = "postgres://u:pa/ss@db1/d".into();
+        f.settle_pasted_host();
+        assert_eq!(f.db.host, "postgres://u:***@db1/d");
+        f.settle_pasted_host();
+        assert_eq!((f.db.host.as_str(), f.db.database.as_str(), f.db.user.as_str()), ("db1", "d", "u"));
+        assert!(f.password.expose() == PW, "the mark became the password");
+        let escaped = split_pasted_db("postgres://u:%2A%2A%2A@h/d").and_then(|p| p.password);
+        assert!(escaped.as_deref() == Some("***"), "an escaped *** is a password");
     }
 
     #[test]
