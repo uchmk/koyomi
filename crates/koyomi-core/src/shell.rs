@@ -113,17 +113,14 @@ pub fn find_in_path(path_var: &std::ffi::OsStr) -> Vec<(String, PathBuf)> {
 
 fn runnable(p: &Path) -> bool {
     let Ok(m) = std::fs::metadata(p) else { return false };
-    if !m.is_file() {
-        return false;
-    }
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        m.permissions().mode() & 0o111 != 0
+        m.is_file() && m.permissions().mode() & 0o111 != 0
     }
     #[cfg(not(unix))]
     {
-        true
+        m.is_file()
     }
 }
 
