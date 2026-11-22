@@ -523,6 +523,10 @@ mod tests {
         let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &f, &AtomicBool::new(false)).unwrap_err();
         assert!(msg::DB_TEST_TLS.is_in(&e) && e.contains(reason) && e.contains("db.example:5432/sales"), "{e}");
         assert!(!e.contains(PW), "{e}");
+        // A text that holds the typed password is withheld too.
+        let (g, _) = recording(Err(tls(&format!("handshake {PW}"))));
+        let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &g, &AtomicBool::new(false)).unwrap_err();
+        assert!(msg::DB_TEST_TLS.is_in(&e) && !e.contains(PW) && e.contains(&note(msg::N_DB_TEST_WITHHELD, &[])), "{e}");
         let e = run(probe("postgres://app@db.example/sales", None, Some("main"), SAVED), &store, &f, &AtomicBool::new(false)).unwrap_err();
         assert!(msg::DB_TEST_TLS.is_in(&e) && e.contains(reason) && e.contains("db.example:5432/sales"), "{e}");
         assert!(!msg::DB_TEST_CONNECT_SAVED.is_in(&e) && !e.contains("saved-pw"), "{e}");

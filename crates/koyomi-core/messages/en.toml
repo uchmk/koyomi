@@ -3251,7 +3251,7 @@ action = "Wait a moment and press Refresh (F5), or choose another folder."
 when = "The test cannot connect to the database because the TLS check failed"
 text = "Cannot connect to {0} with TLS. ({1})"
 cause = "The server may not use TLS, its certificate may not be verifiable, or the TLS exchange broke off."
-action = "If the server uses a certificate it made itself, set TLS to trust; if the server does not use TLS, set it to off. Otherwise check the server and the port."
+action = "If the server uses a certificate it made itself, set TLS to trust; if the server does not use TLS, set it to off (a weaker TLS cannot use the saved password, so type the password too). Otherwise check the server and the port."
 
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"

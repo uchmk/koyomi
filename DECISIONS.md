@@ -1204,3 +1204,9 @@ ito の欄は `C:\dev\ito\CLAUDE.md` の表で確かめた事実（2026-10-30）
 - 今後: この 10 個は koyomi で直す。ito に頼まない（`crate-request` も立てない）。ito に残る部品（`ito-match`・`ito-secret`・`ito-power` など）は、これまでどおり同じ `rev` で引く。
 - ito から消すのは、koyomi が push してから ito の側で行う（koyomi は `rev` を固定しているので、消しても koyomi は壊れない）。ito は `ito-fetch` の試験のために `ito-testserver` の http の部分だけを残す。
 - これより前の記録に出てくる `ito-sftp` などは、当時の名前のまま残す。
+
+## SQL Server は試験の対象にしない（2026-11-22）
+
+- 持ち主が決めた。SQL Server の試験用のサーバーは持たない。TESTING.md から、本物の SQL Server が要る行（116.8・116.9・116.11・116.12）を消し、116.14 は PostgreSQL だけにした。サーバーが要らない行（116.10・116.16・142.29）は残す。
+- SQL Server のジョブの機能（`sqlserver://`・Windows 認証・SQL Server のログイン）はそのまま残す。消すかどうかは、持ち主が言ったときに決める。
+- SQL Server のジョブを強制終了したときや `timeout` で打ち切ったときは、接続を捨てるだけで、サーバーへの取り消しは送らない（PostgreSQL は 2026-11-22 から送る）。測っていないが、これで受け入れる（Issue は立てない）。
