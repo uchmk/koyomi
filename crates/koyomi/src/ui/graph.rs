@@ -312,6 +312,9 @@ pub fn draw(
     for (i, j) in run.jobs.iter().enumerate() {
         let rect = Rect::from_center_size(at[i], Vec2::splat(RADIUS * 2.0 + 12.0));
         let node = ui.interact(rect, resp.id.with(("node", j.id.as_str())), Sense::CLICK);
+        // Each node says what it shows, as the picture's summary does: a screen reader and `--keys`
+        // (`<RClick:▶ name>`) reach it by that, apart from the job table's row.
+        ito_a11y::say(&node, ito_a11y::Role::Button, &format!("{} {}", j.state.mark(), j.label()));
         if node.clicked() || node.secondary_clicked() {
             hit.get_or_insert((i, node.double_clicked()));
         }
