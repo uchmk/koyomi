@@ -451,6 +451,8 @@ impl Browser {
         let head = t.tr("run.def_head");
         let r = ui.label(egui::RichText::new(head).strong());
         ito_a11y::say(&r, Role::Heading, head);
+        // `--keys` `<State:>` reads whether the heading is in view (the scroll of 139.14).
+        ito_a11y::test_id_in(ui, &r, "run.def_head", None);
         if std::mem::take(&mut self.def_scroll) {
             r.scroll_to_me(Some(egui::Align::TOP));
         }

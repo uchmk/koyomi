@@ -4805,7 +4805,8 @@ impl Browser {
                         (t.tr("run.compare_mark"), ito_prefs::Mark::Compare)
                     };
                     let r = ito_prefs::IconButton::new(mark, label).show(ui);
-                    let r = if marked { r } else { r.on_hover_text(t.tr("run.compare_hint")) };
+                    // Before the press it says what the press will do; `compare_hint` below says what it did.
+                    let r = if marked { r } else { r.on_hover_text(t.tr("run.compare_mark_hover")) };
                     if r.clicked() {
                         self.compare_base = (!marked).then(|| run.id.clone());
                     }
@@ -5060,6 +5061,8 @@ impl Browser {
         };
         let r = ui.label(egui::RichText::new(&title).strong());
         ito_a11y::say(&r, Role::Heading, &title);
+        // `--keys` `<State:>` reads whether the heading is in view (ログを見る scrolls to it, 139.10).
+        ito_a11y::test_id_in(ui, &r, "run.log_head", None);
         if std::mem::take(&mut self.log_scroll) {
             r.scroll_to_me(Some(egui::Align::TOP));
         }
@@ -6356,11 +6359,17 @@ fn no_dir(dir: &std::path::Path, e: std::io::Error) -> Said {
 fn job_menu(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: &str, env: &runmenu::Env, act: &mut Option<(String, runmenu::Act)>) {
     let Some(j) = run.job(job) else { return };
     for item in runmenu::menu_items(t, run, j, env) {
-        if matches!(item.act, runmenu::Act::Kill) {
-            ui.separator();
+        let kill = matches!(item.act, runmenu::Act::Kill);
+        if kill {
+            // The line is painted only; its test ID lets `--keys` `<State:>` place it above the kill item (139.12).
+            let line = ui.separator();
+            ito_a11y::test_id_in(ui, &line, "run.menu.kill_line", None);
         }
         let r = ui.add_enabled(item.enabled, egui::Button::new(&item.label));
         ito_a11y::say(&r, Role::Button, &item.label);
+        if kill {
+            ito_a11y::test_id_in(ui, &r, "run.menu.kill", None);
+        }
         let r = match &item.why {
             Some(why) if !item.enabled => r.on_disabled_hover_text(why),
             _ => r,
