@@ -3247,6 +3247,12 @@ text = "Listing {0} is taking long."
 cause = "The disk is slow to answer (a sleeping disk, a network file system mounted on a Linux engine, and so on)."
 action = "Wait a moment and press Refresh (F5), or choose another folder."
 
+[E2281]
+when = "The test cannot connect to the database because the TLS check failed"
+text = "Cannot connect to {0} with TLS. ({1})"
+cause = "The server may not use TLS, its certificate may not be verifiable, or the TLS exchange broke off."
+action = "If the server uses a certificate it made itself, set TLS to trust; if the server does not use TLS, set it to off. Otherwise check the server and the port."
+
 [E3395]
 when = "The name given in run_as, database, on, host, bucket or mailbox cannot be used"
 text = "The name {1} of {0} cannot be used."

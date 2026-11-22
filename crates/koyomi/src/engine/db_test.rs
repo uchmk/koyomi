@@ -211,6 +211,9 @@ fn run_within(probe: Probe, secrets: &dyn SecretStore, probe_fn: &RunFn, cancel:
         Ok(()) => Ok(String::new()),
         Err(Error::Cancelled) => Err(line(msg::DB_TEST_STOPPED, &[])),
         Err(Error::Timeout) => Err(timed_out()),
+        // A TLS failure is shown for a saved password too: its words are the driver's or rustls's (the server's own
+        // words never get the TLS kind), and `said` still withholds the password.
+        Err(Error::Connect { kind: ConnectKind::Tls, text }) => Err(line(msg::DB_TEST_TLS, &[&place, &said(&text, secret)])),
         Err(Error::Sql(s)) if server_text => Err(line(msg::DB_TEST_REFUSED, &[&place, &said(&s, secret)])),
         Err(Error::Sql(_)) => Err(line(msg::DB_TEST_REFUSED_SAVED, &[&place])),
         Err(Error::Connect { kind: ConnectKind::Missing, .. }) if matches!(target, Target::Sqlite { .. }) => {
@@ -507,6 +510,26 @@ mod tests {
         let (f, _) = recording(Err(Error::Cancelled));
         let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &f, &AtomicBool::new(false)).unwrap_err();
         assert!(msg::DB_TEST_STOPPED.is_in(&e), "{e}");
+    }
+
+    #[test]
+    fn a_tls_failure_is_told_with_its_reason_for_a_typed_and_a_saved_password() {
+        let store = Mem::default();
+        store.items.lock().unwrap().insert("koyomi-db-main".into(), "saved-pw".into());
+        let tls = |text: &str| Error::Connect { kind: ConnectKind::Tls, text: text.into() };
+        let reason = "error performing TLS handshake: invalid peer certificate: UnknownIssuer";
+        let (f, _) = recording(Err(tls(reason)));
+        let t = typed();
+        let e = run(probe("postgres://app@db.example/sales", Some(&t), None, ""), &store, &f, &AtomicBool::new(false)).unwrap_err();
+        assert!(msg::DB_TEST_TLS.is_in(&e) && e.contains(reason) && e.contains("db.example:5432/sales"), "{e}");
+        assert!(!e.contains(PW), "{e}");
+        let e = run(probe("postgres://app@db.example/sales", None, Some("main"), SAVED), &store, &f, &AtomicBool::new(false)).unwrap_err();
+        assert!(msg::DB_TEST_TLS.is_in(&e) && e.contains(reason) && e.contains("db.example:5432/sales"), "{e}");
+        assert!(!msg::DB_TEST_CONNECT_SAVED.is_in(&e) && !e.contains("saved-pw"), "{e}");
+        // A text that holds the saved password is withheld.
+        let (f, _) = recording(Err(tls("handshake saved-pw")));
+        let e = run(probe("postgres://app@db.example/sales", None, Some("main"), SAVED), &store, &f, &AtomicBool::new(false)).unwrap_err();
+        assert!(msg::DB_TEST_TLS.is_in(&e) && !e.contains("saved-pw") && e.contains(&note(msg::N_DB_TEST_WITHHELD, &[])), "{e}");
     }
 
     #[test]
