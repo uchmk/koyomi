@@ -2,12 +2,14 @@
 
 use std::io::ErrorKind;
 use std::sync::Arc;
+use std::time::Duration;
 
 use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
 use rustls::crypto::{ring, CryptoProvider};
 use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
 use rustls::{ClientConfig, DigitallySignedStruct, RootCertStore, SignatureScheme};
-use tokio_postgres::SimpleQueryMessage;
+use tokio_postgres::tls::MakeTlsConnect;
+use tokio_postgres::{SimpleQueryMessage, Socket};
 
 use crate::{Clock, ConnectKind, Error, Last, Outcome, Target, Tls};
 
@@ -21,46 +23,88 @@ pub(crate) fn run(target: &Target, batches: &[String], clock: &Clock, last: &mut
         Tls::Disable => tokio_postgres::config::SslMode::Disable,
         Tls::Require | Tls::Verify => tokio_postgres::config::SslMode::Require,
     });
-    clock.block_on(async {
-        let client = match tls {
-            Tls::Disable => {
-                let (client, conn) = config.connect(tokio_postgres::NoTls).await.map_err(connect_error)?;
-                tokio::spawn(conn);
-                client
-            }
-            Tls::Require | Tls::Verify => {
-                let connector = tokio_postgres_rustls::MakeRustlsConnect::new(client_config(*tls == Tls::Verify)?);
-                let (client, conn) = config.connect(connector).await.map_err(connect_error)?;
-                tokio::spawn(conn);
-                client
-            }
-        };
-        for batch in batches {
-            let messages = client.simple_query(batch).await.map_err(sql_error)?;
-            let mut described = false;
-            for m in messages {
-                match m {
-                    SimpleQueryMessage::RowDescription(cols) => {
-                        described = true;
-                        let names: Vec<String> = cols.iter().map(|c| c.name().to_owned()).collect();
-                        last.begin(&names);
-                    }
-                    SimpleQueryMessage::Row(row) => {
-                        last.row((0..row.len()).map(|i| row.get(i).map(str::to_owned)));
-                    }
-                    // A SELECT also reports how many rows it returned; those are not changed rows.
-                    SimpleQueryMessage::CommandComplete(n) => {
-                        if !described {
-                            outcome.rows_affected += n;
-                        }
-                        described = false;
-                    }
-                    _ => {}
+    // PostgreSQL gets its own loop instead of `Clock::block_on`: on a stop it must send a cancel request before the work is
+    // dropped (a server does not notice a closed client while a statement runs), and it must close the connection cleanly.
+    let rt = clock.runtime()?;
+    let result = match tls {
+        Tls::Disable => rt.block_on(session(&config, tokio_postgres::NoTls, batches, clock, last, outcome)),
+        Tls::Require | Tls::Verify => {
+            let connector = tokio_postgres_rustls::MakeRustlsConnect::new(client_config(*tls == Tls::Verify)?);
+            rt.block_on(session(&config, connector, batches, clock, last, outcome))
+        }
+    };
+    // Do not wait for a host-name lookup still stuck in the OS (from connect or the cancel request): the waits above are
+    // bounded, and dropping the runtime would otherwise join its blocking threads with no bound.
+    rt.shutdown_background();
+    result
+}
+
+/// How long a cancel request may take (the engine gives an SQL job 10 s after a stop).
+const CANCEL_WAIT: Duration = Duration::from_secs(3);
+/// How long the connection task may take to send Terminate and close the stream.
+const CLOSE_WAIT: Duration = Duration::from_secs(2);
+
+async fn session<T>(
+    config: &tokio_postgres::Config,
+    tls: T,
+    batches: &[String],
+    clock: &Clock<'_>,
+    last: &mut Last,
+    outcome: &mut Outcome,
+) -> Result<(), Error>
+where
+    T: MakeTlsConnect<Socket> + Clone + Send + 'static,
+    T::Stream: Send + 'static,
+{
+    // A stop during connect: there is no client yet, so there is nothing to cancel.
+    let (client, conn) = tokio::select! {
+        r = config.connect(tls.clone()) => r.map_err(connect_error)?,
+        e = clock.stopped() => return Err(e),
+    };
+    let token = client.cancel_token();
+    let task = tokio::spawn(conn);
+    let result = tokio::select! {
+        r = batches_on(&client, batches, last, outcome) => r,
+        e = clock.stopped() => Err(e),
+    };
+    if matches!(result, Err(Error::Cancelled | Error::Timeout)) {
+        // Best effort: the statement may still be running on the server.
+        let _ = tokio::time::timeout(CANCEL_WAIT, token.cancel_query(tls)).await;
+    }
+    // Dropping the client makes the connection task send Terminate and shut the stream down (TLS close_notify) once no answer
+    // is pending. After a stop that is when the server has ended the cancelled statement; if it has not within the wait, the
+    // stream is just dropped.
+    drop(client);
+    let _ = tokio::time::timeout(CLOSE_WAIT, task).await;
+    result
+}
+
+async fn batches_on(client: &tokio_postgres::Client, batches: &[String], last: &mut Last, outcome: &mut Outcome) -> Result<(), Error> {
+    for batch in batches {
+        let messages = client.simple_query(batch).await.map_err(sql_error)?;
+        let mut described = false;
+        for m in messages {
+            match m {
+                SimpleQueryMessage::RowDescription(cols) => {
+                    described = true;
+                    let names: Vec<String> = cols.iter().map(|c| c.name().to_owned()).collect();
+                    last.begin(&names);
                 }
+                SimpleQueryMessage::Row(row) => {
+                    last.row((0..row.len()).map(|i| row.get(i).map(str::to_owned)));
+                }
+                // A SELECT also reports how many rows it returned; those are not changed rows.
+                SimpleQueryMessage::CommandComplete(n) => {
+                    if !described {
+                        outcome.rows_affected += n;
+                    }
+                    described = false;
+                }
+                _ => {}
             }
         }
-        Ok(())
-    })
+    }
+    Ok(())
 }
 
 fn connect_error(e: tokio_postgres::Error) -> Error {
@@ -443,5 +487,167 @@ mod tests {
         h.join().unwrap();
         assert_eq!(e.to_string(), TLS_HANDSHAKE, "{e:?}");
         assert_eq!(connect_kind(&e), ConnectKind::Tls, "{e:?}");
+    }
+
+    const PID: u32 = 4242;
+    const SECRET: u32 = 0x0BAD_CAFE;
+
+    fn startup_ok(s: &mut TcpStream) {
+        read_startup(s);
+        let mut out = vec![b'R'];
+        out.extend_from_slice(&8u32.to_be_bytes());
+        out.extend_from_slice(&0u32.to_be_bytes());
+        out.push(b'K');
+        out.extend_from_slice(&12u32.to_be_bytes());
+        out.extend_from_slice(&PID.to_be_bytes());
+        out.extend_from_slice(&SECRET.to_be_bytes());
+        out.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        s.write_all(&out).unwrap();
+    }
+
+    /// Reads one frontend message: its tag and body.
+    fn read_message(s: &mut TcpStream) -> std::io::Result<(u8, Vec<u8>)> {
+        let mut head = [0u8; 5];
+        s.read_exact(&mut head)?;
+        let mut body = vec![0u8; u32::from_be_bytes([head[1], head[2], head[3], head[4]]) as usize - 4];
+        s.read_exact(&mut body)?;
+        Ok((head[0], body))
+    }
+
+    /// A fake server that accepts up to two connections. The first goes through `first`; the second (a cancel request) has its
+    /// first 16 bytes returned. `None` when no second connection came within the deadline.
+    fn fake_two(first: impl FnOnce(TcpStream, Arc<AtomicBool>) + Send + 'static) -> (u16, JoinHandle<Option<[u8; 16]>>) {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let h = std::thread::spawn(move || {
+            let accept = |end: Instant| {
+                while Instant::now() < end {
+                    if let Ok((stream, _)) = listener.accept() {
+                        stream.set_nonblocking(false).unwrap();
+                        stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                        stream.set_write_timeout(Some(Duration::from_secs(3))).unwrap();
+                        return Some(stream);
+                    }
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                None
+            };
+            let one = accept(Instant::now() + Duration::from_secs(10))?;
+            // The first connection stays open (on this thread) while we wait for the second.
+            let (tx, rx) = std::sync::mpsc::channel();
+            let cancelled = Arc::new(AtomicBool::new(false));
+            let flag = cancelled.clone();
+            let t = std::thread::spawn(move || {
+                first(one, flag);
+                let _ = tx.send(());
+            });
+            let second = accept(Instant::now() + Duration::from_secs(4));
+            cancelled.store(true, std::sync::atomic::Ordering::Relaxed);
+            let got = second.and_then(|mut s| {
+                let mut b = [0u8; 16];
+                s.read_exact(&mut b).ok().map(|_| b)
+            });
+            let _ = rx.recv_timeout(Duration::from_secs(6));
+            let _ = t.join();
+            got
+        });
+        (port, h)
+    }
+
+    fn stalls_on_query(mut s: TcpStream, cancelled: Arc<AtomicBool>) {
+        startup_ok(&mut s);
+        let (tag, _) = read_message(&mut s).unwrap();
+        assert_eq!(tag, b'Q');
+        // Not answered until a cancel request has come in (as a real server does); then it ends the statement with an error.
+        let end = Instant::now() + Duration::from_secs(4);
+        while !cancelled.load(std::sync::atomic::Ordering::Relaxed) && Instant::now() < end {
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let mut out = error_response("57014", "canceling statement due to user request");
+        out.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+        let _ = s.write_all(&out);
+        let mut buf = [0u8; 64];
+        while matches!(s.read(&mut buf), Ok(n) if n > 0) {}
+    }
+
+    fn assert_cancel_request(got: Option<[u8; 16]>) {
+        let b = got.expect("no cancel request arrived");
+        assert_eq!(&b[..4], &16u32.to_be_bytes());
+        assert_eq!(&b[4..8], &80877102u32.to_be_bytes());
+        assert_eq!(&b[8..12], &PID.to_be_bytes());
+        assert_eq!(&b[12..16], &SECRET.to_be_bytes());
+    }
+
+    #[test]
+    fn a_stop_sends_a_cancel_request() {
+        let (port, h) = fake_two(stalls_on_query);
+        let flag = Arc::new(AtomicBool::new(false));
+        let raise = flag.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            raise.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let begun = Instant::now();
+        let e = crate::run(&target(port, Tls::Disable), "select pg_sleep(300)", None, &flag, FIVE).unwrap_err();
+        let took = begun.elapsed();
+        t.join().unwrap();
+        assert!(matches!(e, Error::Cancelled), "{e:?}");
+        assert!(took < Duration::from_secs(1) + Duration::from_millis(500), "took {took:?}");
+        assert_cancel_request(h.join().unwrap());
+    }
+
+    #[test]
+    fn a_timeout_sends_a_cancel_request() {
+        let (port, h) = fake_two(stalls_on_query);
+        let e = crate::run(&target(port, Tls::Disable), "select pg_sleep(300)", None, &AtomicBool::new(false), Duration::from_millis(400))
+            .unwrap_err();
+        assert!(matches!(e, Error::Timeout), "{e:?}");
+        assert_cancel_request(h.join().unwrap());
+    }
+
+    #[test]
+    fn a_fine_run_ends_with_terminate() {
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let log = seen.clone();
+        let (port, h) = fake(move |mut s| {
+            startup_ok(&mut s);
+            let (tag, _) = read_message(&mut s).unwrap();
+            assert_eq!(tag, b'Q');
+            let mut out = vec![b'C'];
+            out.extend_from_slice(&((4 + 9) as u32).to_be_bytes());
+            out.extend_from_slice(b"UPDATE 1\0");
+            out.extend_from_slice(&[b'Z', 0, 0, 0, 5, b'I']);
+            s.write_all(&out).unwrap();
+            // Terminate ('X', length 4), then EOF.
+            let m = read_message(&mut s).map(|(t, b)| (t, b.len()));
+            log.lock().unwrap().push(format!("{m:?}"));
+            let mut b = [0u8; 8];
+            log.lock().unwrap().push(format!("{:?}", s.read(&mut b).ok()));
+        });
+        let o = crate::run(&target(port, Tls::Disable), "update t set a = 1", None, &AtomicBool::new(false), FIVE).unwrap();
+        assert_eq!(o.rows_affected, 1);
+        h.join().unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["Ok((88, 0))".to_owned(), "Some(0)".to_owned()]);
+    }
+
+    #[test]
+    fn a_stop_during_connect_sends_no_cancel() {
+        let (port, h) = fake_two(|mut s, _| {
+            let mut b = [0u8; 64];
+            while matches!(s.read(&mut b), Ok(n) if n > 0) {}
+        });
+        let flag = Arc::new(AtomicBool::new(false));
+        let raise = flag.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(200));
+            raise.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+        let begun = Instant::now();
+        let e = crate::run(&target(port, Tls::Disable), "select 1", None, &flag, FIVE).unwrap_err();
+        t.join().unwrap();
+        assert!(matches!(e, Error::Cancelled), "{e:?}");
+        assert!(begun.elapsed() < Duration::from_secs(2), "took {:?}", begun.elapsed());
+        assert!(h.join().unwrap().is_none(), "a second connection arrived");
     }
 }

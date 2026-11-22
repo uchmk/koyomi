@@ -314,15 +314,20 @@ impl Clock<'_> {
         }
     }
 
+    /// A private single-thread runtime for one job.
+    #[cfg(any(feature = "sqlserver", feature = "postgres"))]
+    pub fn runtime(&self) -> Result<tokio::runtime::Runtime, Error> {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| Error::connect(ConnectKind::Other, format!("no runtime: {e}")))
+    }
+
     /// Run `work` on a private single-thread runtime until it ends or the flag / time stops it (the work is dropped,
     /// which closes its connection).
     #[cfg(any(feature = "sqlserver", feature = "postgres"))]
     pub fn block_on<T>(&self, work: impl std::future::Future<Output = Result<T, Error>>) -> Result<T, Error> {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| Error::connect(ConnectKind::Other, format!("no runtime: {e}")))?;
-        rt.block_on(async {
+        self.runtime()?.block_on(async {
             tokio::select! {
                 r = work => r,
                 e = self.stopped() => Err(e),
