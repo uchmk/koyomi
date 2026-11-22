@@ -1901,6 +1901,25 @@ impl Browser {
         self.past_rows.is_some()
     }
 
+    /// Whether 前の回と比べる can be pressed on `run`: an earlier run is known, or the 30 days are not read yet and this
+    /// run is not already waiting for them.
+    fn prev_can(&self, run: &Run) -> bool {
+        let waiting = self.prev_wait.as_deref() == Some(run.id.as_str());
+        self.previous_of(run).is_some() || (!self.past_read() && !waiting)
+    }
+
+    /// 前の回と比べる pressed on `run`: the earlier run becomes the base; while the 30 days are not read, they are asked
+    /// for and the base is set when they come (139.8).
+    fn press_prev(&mut self, run: &Run) {
+        match self.previous_of(run).map(|r| r.id.clone()) {
+            Some(p) => self.compare_base = Some(p),
+            None => {
+                self.prev_wait = Some(run.id.clone());
+                self.ask_past();
+            }
+        }
+    }
+
     /// The job whose log is shown: the one picked, else the one running, else the last that started.
     fn watched_job(run: &Run, picked: Option<&str>) -> Option<String> {
         if let Some(j) = picked.and_then(|p| run.jobs.iter().find(|j| j.id == p)) {
@@ -4811,22 +4830,14 @@ impl Browser {
                         self.compare_base = (!marked).then(|| run.id.clone());
                     }
                     // The run before this one of the same net, as the base in one press.
-                    let prev = self.previous_of(&run).map(|r| r.id.clone());
-                    let waiting = self.prev_wait.as_deref() == Some(run.id.as_str());
-                    let can = prev.is_some() || (!self.past_read() && !waiting);
+                    let can = self.prev_can(&run);
                     let button = ito_prefs::IconButton::new(ito_prefs::Mark::Compare, t.tr("run.prev"));
                     let r = ui.add_enabled(can, |ui: &mut egui::Ui| button.show(ui));
-                    let hover = if prev.is_none() && self.past_read() { t.tr("run.prev_none") } else { t.tr("run.prev_hover") };
+                    let none = self.previous_of(&run).is_none() && self.past_read();
+                    let hover = if none { t.tr("run.prev_none") } else { t.tr("run.prev_hover") };
                     let r = if can { r.on_hover_text(hover) } else { r.on_disabled_hover_text(hover) };
                     if r.clicked() {
-                        match prev {
-                            Some(p) => self.compare_base = Some(p),
-                            None => {
-                                // Not read yet: ask for the days, and the comparison is made when they come.
-                                self.prev_wait = Some(run.id.clone());
-                                self.ask_past();
-                            }
-                        }
+                        self.press_prev(&run);
                     }
                     if run.is_over() && picked.is_none() && !run.never_began() {
                         ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
@@ -9752,5 +9763,38 @@ note = \"n\"
         assert_eq!(shown[0].id, again.id, "the newest run's");
         let title = rerun_title(&t, shown[0], chains.before.get(&shown[0].id).copied().unwrap_or(0));
         assert!(title.ends_with("（再実行 1 回）"), "{title}");
+    }
+
+    /// 前の回と比べる before the last 30 days are read (139.8): the press asks for them, the button is greyed while it
+    /// waits, and the earlier run that comes with them becomes the base. Once they are read, the net's first run has
+    /// nothing to compare with and is greyed.
+    #[test]
+    fn prev_before_the_past_is_read_asks_for_it_and_marks_the_run_that_comes() {
+        let today = ito_common::now::now_local().date_naive();
+        let done = |id: &str, day: chrono::NaiveDate| {
+            let start = day.and_hms_opt(9, 0, 0).unwrap();
+            let net = koyomi_core::jobnet::Jobnet::default();
+            let mut r = Run::new(id, "試験/bom", "bom", &day.to_string(), koyomi_core::run::How::Manual, &net, start);
+            r.ended = Some(start + chrono::Duration::minutes(1));
+            r
+        };
+        let mut b = quiet(defs());
+        let (tx, asked) = asks();
+        b.out.tx = tx;
+        let now = done("now", today);
+        b.runs = vec![now.clone()];
+        assert!(!b.past_read() && b.prev_can(&now), "not read yet: the button can be pressed");
+        b.press_prev(&now);
+        assert!(matches!(asked.try_recv(), Ok(Request::History { .. })), "the press asks for the 30 days");
+        assert_eq!(b.compare_base, None, "no base before the days come");
+        assert!(!b.prev_can(&now), "greyed while it waits");
+        let earlier = done("earlier", today - chrono::Duration::days(1));
+        let (from, to) = Browser::past_range(today);
+        let text = Runs { runs: vec![earlier.clone()] }.to_toml();
+        b.io.0.send(Msg::Answer(Request::History { from, to }, Ok(text))).unwrap();
+        b.drain();
+        assert_eq!(b.compare_base.as_deref(), Some("earlier"), "the run that came is the base");
+        assert_eq!(b.prev_wait, None);
+        assert!(b.past_read() && !b.prev_can(&earlier), "the net's first run: nothing before it");
     }
 }
