@@ -35,6 +35,9 @@ pub struct Config {
     /// `false` stops this PC's window from watching every `[[remote]]` in the background (no notices, no count).
     #[serde(default = "yes")]
     pub watch_remotes: bool,
+    /// The window's own: what a double-click on a job does (`"tab"`: the run page's 定義 tab; none or `"props"`: the
+    /// property window). The engine reads it and ignores it, whatever it says (the window warns of a bad value).
+    pub job_double_click: Option<toml::Value>,
     /// One job's log stops growing here; the rest of its output is not written.
     pub log_max_mb: u64,
     /// `[notify]` as written: which events are told how. The app reads it.
@@ -518,6 +521,7 @@ impl Default for Config {
             archive: false,
             archive_days: 0,
             watch_remotes: true,
+            job_double_click: None,
             log_max_mb: 10,
             notify: toml::Table::new(),
             ping: None,
@@ -540,7 +544,17 @@ impl Default for Config {
     }
 }
 
+/// A TOML value in its TOML form (a string keeps its quotes).
+pub fn value_as_written(v: &toml::Value) -> String {
+    v.to_string()
+}
+
 impl Config {
+    /// `job_double_click` as koyomi.toml wrote it, in TOML form: `"nope"` (quoted), `3`, `true`.
+    pub fn job_double_click_as_written(&self) -> Option<String> {
+        self.job_double_click.as_ref().map(value_as_written)
+    }
+
     pub fn parse(text: &str) -> Result<Config, String> {
         let c: Config = toml::from_str(text).map_err(|e| {
             let m = e.message();
@@ -795,6 +809,17 @@ token = \"secret:a\"
 "
         )
         .is_err());
+    }
+
+    #[test]
+    fn the_windows_double_click_setting_is_read_and_ignored() {
+        assert_eq!(Config::default().job_double_click, None);
+        assert_eq!(Config::parse("job_double_click = \"tab\"\n").unwrap().job_double_click_as_written().as_deref(), Some("\"tab\""));
+        // Whatever it says, the engine does not refuse the file: the window warns of a value it does not know.
+        assert_eq!(Config::parse("job_double_click = \"bogus\"\n").unwrap().job_double_click_as_written().as_deref(), Some("\"bogus\""));
+        let odd = Config::parse("job_double_click = 3\n").unwrap();
+        assert_eq!(odd.job_double_click_as_written().as_deref(), Some("3"), "a number is kept and shown as written");
+        assert!(Config::parse("job_double_click = true\n").is_ok() && Config::parse("[job_double_click]\na = 1\n").is_ok());
     }
 
     #[test]

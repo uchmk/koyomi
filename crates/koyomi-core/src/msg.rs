@@ -1307,6 +1307,8 @@ notes! {
     N_CFG_REMOTE = "cfg_remote",
     N_CFG_REMOTE_UNWATCHED = "cfg_remote_unwatched",
     N_CFG_WATCH_OFF = "cfg_watch_off",
+    N_CFG_JOB_TAB = "cfg_job_tab",
+    N_CFG_JOB_BAD = "cfg_job_bad",
     N_CFG_NOTIFY = "cfg_notify",
     N_CFG_NOTIFY_PLACE = "cfg_notify_place",
     N_CFG_NOTIFY_WEBHOOK = "cfg_notify_webhook",

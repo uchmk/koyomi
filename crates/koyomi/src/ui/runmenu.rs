@@ -114,6 +114,8 @@ pub enum Act {
     Send(Request),
     /// Pick the job (its facts and log show).
     Pick,
+    /// Open the job's property window, at 概要, whatever the double-click setting is.
+    Props,
     /// Open the net in the editor, at the job.
     Editor,
     /// Pick the job and show its definition (the 定義 tab).
@@ -222,6 +224,7 @@ pub fn menu_items(t: &Table, run: &Run, job: &JobRun, env: &Env) -> Vec<Item> {
         item.enabled = !env.blocked;
         out.push(item);
     }
+    out.push(Item::on(t.tr("run.props").to_owned(), Act::Props));
     out.push(Item::on(t.tr("run.ask_log").to_owned(), Act::Pick));
     out.push(Item::on(t.tr("run.def_look").to_owned(), Act::Definition));
     out.push(Item::on(t.tr("run.net_def_look").to_owned(), Act::NetDefinition));
@@ -441,6 +444,7 @@ mod tests {
                 "さいころ の次から（さいころ はスキップ）",
                 "さいころ の次から（さいころ は警告終了）",
                 "ジョブ さいころ を保留",
+                "プロパティ",
                 "ログを見る",
                 "このジョブの定義を見る",
                 "ジョブネットの定義を見る（この回）",

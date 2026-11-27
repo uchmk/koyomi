@@ -535,7 +535,6 @@ impl Browser {
     /// The picked job as the run began with it, read-only. Asks the engine for the copy once per run.
     /// `scroll_ok`: the job drawn is the one picked, so a pending scroll to its definition is for it.
     pub(super) fn definition_section(&mut self, ui: &mut egui::Ui, t: &Table, run: &Run, job_id: &str, scroll_ok: bool) {
-        let c = ito_theme::colors();
         let shown = view(t, run, job_id, self.below_edit(), self.run_defs.get(&run.id), self.run_cmds.get(&run.id));
         ui.add_space(8.0);
         let head = t.tr("run.def_head");
@@ -551,53 +550,67 @@ impl Browser {
             // The picked job is not the one drawn yet: the next frame has it.
             ui.ctx().request_repaint();
         }
-        let dim = |ui: &mut egui::Ui, words: &str| {
-            let r = ui.add(egui::Label::new(egui::RichText::new(words).color(c.dim)).wrap());
-            ito_a11y::say(&r, Role::Label, words);
-        };
-        match shown {
-            View::NeverBegan => {
-                dim(ui, t.tr("run.def_never"));
-                let there = self.snap.as_ref().is_some_and(|s| s.defs.iter().any(|d| d.id == run.jobnet && d.net.is_some()));
-                if there {
-                    let open = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("run.def_open_editor"));
-                    if open.show(ui).clicked() {
-                        self.open_editor(&run.jobnet);
-                        self.focus = 0;
-                    }
-                }
-            }
-            View::NeedsEdit => dim(ui, t.tr("run.def_needs_edit")),
-            View::Loading => dim(ui, t.tr("users.loading")),
-            View::Refused(why) => dim(ui, &why),
-            View::Child { use_, rows } => {
-                dim(ui, &t.trf("run.def_child", &[&use_]));
-                self.definition_grid(ui, t, &rows);
-            }
-            View::Missing => dim(ui, t.tr("run.def_missing")),
-            View::Shown(rows) => self.definition_grid(ui, t, &rows),
+        let there = self.snap.as_ref().is_some_and(|s| s.defs.iter().any(|d| d.id == run.jobnet && d.net.is_some()));
+        if definition_states(ui, t, shown, there, !self.link.is_far()) {
+            self.open_editor(&run.jobnet);
+            self.focus = 0;
         }
     }
 
     /// The rows of a job's definition, one label and value each.
     pub(super) fn definition_grid(&self, ui: &mut egui::Ui, t: &Table, rows: &[Row]) {
-        let c = ito_theme::colors();
-        let local = !self.link.is_far();
-        egui::Grid::new("job_def").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-            for row in rows {
-                ui.label(egui::RichText::new(&row.label).color(c.dim));
-                ui.horizontal_wrapped(|ui| {
-                    let text = if row.mono { egui::RichText::new(&row.value).monospace() } else { egui::RichText::new(&row.value) };
-                    let r = ui.add(egui::Label::new(text).wrap());
-                    ito_a11y::say(&r, Role::Label, &format!("{}: {}", row.label, row.value));
-                    if let Some(folder) = &row.folder {
-                        paths::path_buttons(ui, t, Path::new(folder), paths::Place::Engine, local);
-                    }
-                });
-                ui.end_row();
-            }
-        });
+        definition_grid_of(ui, t, rows, !self.link.is_far());
     }
+}
+
+/// What a job's definition says in each state of its [`View`]. `net_there`: the net is in the engine's list, so a
+/// run that never began can offer the editor; `local`: this PC's engine (folder buttons open here). True when that
+/// editor button was pressed.
+pub(super) fn definition_states(ui: &mut egui::Ui, t: &Table, shown: View, net_there: bool, local: bool) -> bool {
+    let c = ito_theme::colors();
+    let dim = |ui: &mut egui::Ui, words: &str| {
+        let r = ui.add(egui::Label::new(egui::RichText::new(words).color(c.dim)).wrap());
+        ito_a11y::say(&r, Role::Label, words);
+    };
+    let mut editor = false;
+    match shown {
+        View::NeverBegan => {
+            dim(ui, t.tr("run.def_never"));
+            if net_there {
+                let open = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("run.def_open_editor"));
+                editor = open.show(ui).clicked();
+            }
+        }
+        View::NeedsEdit => dim(ui, t.tr("run.def_needs_edit")),
+        View::Loading => dim(ui, t.tr("users.loading")),
+        View::Refused(why) => dim(ui, &why),
+        View::Child { use_, rows } => {
+            dim(ui, &t.trf("run.def_child", &[&use_]));
+            definition_grid_of(ui, t, &rows, local);
+        }
+        View::Missing => dim(ui, t.tr("run.def_missing")),
+        View::Shown(rows) => definition_grid_of(ui, t, &rows, local),
+    }
+    editor
+}
+
+/// The rows of a job's definition, one label and value each.
+pub(super) fn definition_grid_of(ui: &mut egui::Ui, t: &Table, rows: &[Row], local: bool) {
+    let c = ito_theme::colors();
+    egui::Grid::new("job_def").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+        for row in rows {
+            ui.label(egui::RichText::new(&row.label).color(c.dim));
+            ui.horizontal_wrapped(|ui| {
+                let text = if row.mono { egui::RichText::new(&row.value).monospace() } else { egui::RichText::new(&row.value) };
+                let r = ui.add(egui::Label::new(text).wrap());
+                ito_a11y::say(&r, Role::Label, &format!("{}: {}", row.label, row.value));
+                if let Some(folder) = &row.folder {
+                    paths::path_buttons(ui, t, Path::new(folder), paths::Place::Engine, local);
+                }
+            });
+            ui.end_row();
+        }
+    });
 }
 
 #[cfg(test)]

@@ -100,6 +100,8 @@ ito-glossary = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c
 ito-match = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 # The find bar of the log viewer (find only, no replace).
 ito-find ={ git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
+# The job property windows (second windows).
+ito-viewport = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 ito-a11y = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef", features = ["egui"] }
 ito-openin = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 # The path buttons: "copy path" goes through the one clipboard writer.

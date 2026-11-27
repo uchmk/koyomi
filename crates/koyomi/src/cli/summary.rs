@@ -47,6 +47,8 @@ struct Summary {
     exists: bool,
     concurrency: usize,
     watch_remotes: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_double_click: Option<toml::Value>,
     keep_days: u32,
     archive: bool,
     archive_days: u32,
@@ -93,6 +95,7 @@ fn summarize(config: &Config, file: &str, exists: bool) -> Summary {
         exists,
         concurrency: config.concurrency,
         watch_remotes: config.watch_remotes,
+        job_double_click: config.job_double_click.clone(),
         keep_days: config.keep_days,
         archive: config.archive,
         archive_days: config.archive_days,
@@ -148,6 +151,14 @@ fn lines(s: &Summary) -> Vec<String> {
     }
     if !s.watch_remotes {
         v.push(msg::note(msg::N_CFG_WATCH_OFF, &[]));
+    }
+    match &s.job_double_click {
+        None => {}
+        Some(toml::Value::String(x)) if x == "props" => {}
+        Some(toml::Value::String(x)) if x == "tab" => v.push(msg::note(msg::N_CFG_JOB_TAB, &[])),
+        Some(other) => {
+            v.push(msg::note(msg::N_CFG_JOB_BAD, &[&koyomi_core::config::value_as_written(other)]));
+        }
     }
     for r in &s.remote {
         let id = if r.watch { msg::N_CFG_REMOTE } else { msg::N_CFG_REMOTE_UNWATCHED };
@@ -323,6 +334,22 @@ token = \"secret:w\"
             )
             .contains("watch_remotes"));
         assert!(toml.contains("watch_remotes = true"), "{toml}");
+    }
+
+    #[test]
+    fn the_double_click_setting_is_told_like_the_watch() {
+        let (v, toml) = build(Some("job_double_click = \"tab\"\n"), "koyomi.toml").unwrap();
+        assert!(v.contains(&msg::note(msg::N_CFG_JOB_TAB, &[])), "{v:?}");
+        assert!(toml.contains("job_double_click = \"tab\""), "{toml}");
+        let (v, _) = build(Some("job_double_click = \"nope\"\n"), "koyomi.toml").unwrap();
+        assert!(v.contains(&msg::note(msg::N_CFG_JOB_BAD, &["\"nope\""])), "{v:?}");
+        let shown = v.iter().find(|l| l.contains("nope")).unwrap();
+        assert!(shown.contains("job_double_click = \"nope\" ") && !shown.contains("\"\"nope"), "{shown}");
+        let (v, _) = build(Some("job_double_click = 3\n"), "koyomi.toml").unwrap();
+        let shown = v.iter().find(|l| l.contains("job_double_click")).unwrap();
+        assert!(shown.contains("job_double_click = 3 "), "{shown}");
+        let (v, toml) = build(None, "koyomi.toml").unwrap();
+        assert!(!v.iter().any(|l| l.contains("job_double_click")) && !toml.contains("job_double_click"));
     }
 
     #[test]

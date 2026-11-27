@@ -447,6 +447,8 @@ impl App {
         // What the old browser found for the app and the app has not taken yet comes along. On the reconnect after
         // the URL of this very link moved, the manage box stays over it too.
         fresh.keep_from(&mut self.browser);
+        // The property windows belong to the old link: they close with it.
+        self.browser.props_close_all();
         self.browser = fresh;
         self.opening = open.map(|rest| Opening { rest, since: std::time::Instant::now() });
         reset_for_link(&mut self.notices, &mut self.bell_open, &mut self.acked, self.state.clone(), &to);
@@ -1187,6 +1189,7 @@ impl eframe::App for App {
             self.prefs.reread_config();
         }
         self.browser.set_watching(watch::rows_off(&self.prefs.config), !self.prefs.config.watch_remotes);
+        self.browser.job_open = prefs::job_open_of(&self.prefs.config).0;
         self.watching();
         self.far_notices(&ctx);
         self.notice_list(&ctx);
@@ -1239,6 +1242,14 @@ impl eframe::App for App {
                 troubleshoot::show(ui, self, r);
             }
         }
+        // The job property windows: their data, the windows themselves, and what they asked for.
+        self.browser.page_covered = self.settings_open
+            || self.help.open
+            || self.troubleshoot.open
+            || self.palette.is_some()
+            || self.guide.is_open()
+            || self.bell_open;
+        self.browser.props_pass(&ctx, &self.table);
         self.script(&ctx);
         // Last, so the edges of the frameless window win over what is under them.
         if !cfg!(target_os = "macos") {

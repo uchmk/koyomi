@@ -21,6 +21,7 @@ use koyomi_core::scan::{Def, Standing};
 use serde::{Deserialize, Serialize};
 
 use crate::link::{Conn, Link};
+use crate::prefs::JobOpen;
 use crate::proto::{self, Request, Runs, Snapshot};
 use crate::{engine, review, show};
 
@@ -41,6 +42,7 @@ mod logview;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
+mod props;
 mod registry;
 mod runfacts;
 mod runmenu;
@@ -287,6 +289,84 @@ fn peek_apart(work: Work, link: &Link, tx_msg: &Sender<Msg>, ctx: &egui::Context
     None
 }
 
+/// How many property-window logs one round reads on this PC's engine, and on another PC's (the line is slower).
+const WINDOW_LOGS_LOCAL: usize = 2;
+const WINDOW_LOGS_FAR: usize = 1;
+
+/// Which logs the property windows are read for this round: `windows` in turn from `cursor` (which moves on), at
+/// most `cap`, leaving out the one the page already reads (`page`). Pure, so the turn is tested.
+fn window_round(windows: &[(String, String)], page: Option<&(String, String)>, cursor: &mut usize, cap: usize) -> Vec<(String, String)> {
+    let list: Vec<&(String, String)> = windows.iter().filter(|w| Some(*w) != page).collect();
+    if list.is_empty() || cap == 0 {
+        return Vec::new();
+    }
+    let start = *cursor % list.len();
+    let take = cap.min(list.len());
+    *cursor = start + take;
+    (0..take).map(|i| list[(start + i) % list.len()].clone()).collect()
+}
+
+/// What `window_logs` finds when it looks for a request the window sent.
+enum Waiting<W> {
+    Work(W),
+    Empty,
+    /// The window dropped its side: the thread ends.
+    Gone,
+}
+
+/// The window part of a round: before each window log, EVERY waiting request is taken and answered; if there was one,
+/// no more window logs are read this round (the deferred window is first next round: the cursor moves only over the
+/// windows read). Returns false when the thread must end (a send or an answer failed, or the window is gone).
+#[allow(clippy::too_many_arguments)]
+fn window_logs<W>(
+    windows: &[(String, String)],
+    page: Option<&(String, String)>,
+    cursor: &mut usize,
+    cap: usize,
+    take: &mut dyn FnMut() -> Waiting<W>,
+    reply: &mut dyn FnMut(W) -> bool,
+    read: &mut dyn FnMut(&str, &str) -> Option<String>,
+    send: &mut dyn FnMut(String, String, String) -> bool,
+) -> bool {
+    let mut ahead = *cursor;
+    let order = window_round(windows, page, &mut ahead, cap);
+    let mut done = 0;
+    for (run, job) in order {
+        let mut found = false;
+        loop {
+            match take() {
+                Waiting::Work(w) => {
+                    found = true;
+                    if !reply(w) {
+                        return false;
+                    }
+                }
+                Waiting::Empty => break,
+                Waiting::Gone => return false,
+            }
+        }
+        if found {
+            break;
+        }
+        done += 1;
+        if let Some(text) = read(&run, &job) {
+            if !send(run, job, text) {
+                return false;
+            }
+        }
+    }
+    *cursor = cursor.wrapping_add(done);
+    true
+}
+
+/// What the thread reads each round besides the lists: the log the page shows, and the logs of the property windows
+/// that are on their ログ tab. Set by the window every pass.
+#[derive(Clone, Default, Debug, PartialEq, Eq)]
+struct Wanted {
+    page: Option<(String, String)>,
+    windows: Vec<(String, String)>,
+}
+
 /// The thread: keeps the link up, answers the window's requests and asks for the list, the runs, the log being
 /// watched and the handover. It ends when the window drops its side of a channel.
 fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui::Context, seen: &Watch) {
@@ -299,6 +379,7 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
     let mut conn: Option<Conn> = None;
     let mut wait = poll;
     let mut ha_at: Option<std::time::Instant> = None;
+    let mut window_cursor = 0usize;
     loop {
         if conn.as_ref().is_none_or(|c| !c.running()) {
             conn = None;
@@ -369,13 +450,35 @@ fn worker(link: &Link, rx_req: &Receiver<Work>, tx_msg: &Sender<Msg>, ctx: &egui
                 return;
             }
         }
-        let target = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
-        if let Some((run, job)) = target {
+        let wanted = seen.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        if let Some((run, job)) = wanted.page.clone() {
             if let Ok(text) = c.call(&Request::Log { run: run.clone(), job: job.clone() }) {
                 if !send(Msg::Log(run, job, text)) {
                     return;
                 }
             }
+        }
+        // The property windows' logs after the page's: a few a round (one on a far engine), in turn.
+        let cap = if link.is_far() { WINDOW_LOGS_FAR } else { WINDOW_LOGS_LOCAL };
+        let go_on = window_logs(
+            &wanted.windows,
+            wanted.page.as_ref(),
+            &mut window_cursor,
+            cap,
+            &mut || match rx_req.try_recv() {
+                Ok(work) => Waiting::Work(work),
+                Err(mpsc::TryRecvError::Empty) => Waiting::Empty,
+                Err(mpsc::TryRecvError::Disconnected) => Waiting::Gone,
+            },
+            &mut |work| match peek_apart(work, link, tx_msg, ctx) {
+                Some(work) => answer(work, &|r| c.call(r), &send),
+                None => true,
+            },
+            &mut |run, job| c.call(&Request::Log { run: run.to_owned(), job: job.to_owned() }).ok(),
+            &mut |run, job, text| send(Msg::Log(run, job, text)),
+        );
+        if !go_on {
+            return;
         }
         if ha_at.is_none_or(|at| at.elapsed() >= HA_POLL) {
             ha_at = Some(std::time::Instant::now());
@@ -666,7 +769,7 @@ struct Wide {
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
-type Watch = Arc<Mutex<Option<(String, String)>>>;
+type Watch = Arc<Mutex<Wanted>>;
 
 /// The 版を比べる box: the versions kept of a net, the one picked (0 is the newest) and the texts fetched so far.
 struct Vers {
@@ -810,6 +913,10 @@ pub struct Browser {
     /// The job form asked to open the settings at this page; the app takes it once ([`Browser::take_settings_wish`]).
     want_settings: Option<usize>,
     watch: Watch,
+    /// The job property windows (not carried by `keep_from`: a new link has none).
+    props: props::Props,
+    /// What a double click on a job opens (set from koyomi.toml each pass).
+    pub job_open: JobOpen,
     snap: Option<Snapshot>,
     runs: Vec<Run>,
     down: Option<String>,
@@ -960,6 +1067,8 @@ pub struct Browser {
     /// The troubleshooting card is open over the page: the page takes no key, and no box takes egui's focus
     /// from the card's field. Set by the window every frame.
     pub under_card: bool,
+    /// A screen or dialog of the app (settings, help, the bell, the guide) is over the page; set by `App` every pass.
+    pub page_covered: bool,
     /// The command palette is open over the page: no box takes egui's focus from its field. Set by the window every
     /// frame.
     pub under_palette: bool,
@@ -1020,8 +1129,11 @@ impl Browser {
         let net_pane = kept.net_pane != Some(false);
         let run_tab = RunTab::kept(kept.run_tab.as_deref());
         let flow = writer;
+        let props = props::Props::new(state.clone());
         let far = far::Far::start(&io.1, state);
         Browser {
+            props,
+            job_open: JobOpen::default(),
             far,
             config_edit: None,
             hosts: hosts::Hosts::new(),
@@ -1114,6 +1226,7 @@ impl Browser {
             back: Vec::new(),
             reveal: false,
             under_card: false,
+            page_covered: false,
             under_palette: false,
             clock: ito_common::Clock::default(),
             lang: String::new(),
@@ -1670,6 +1783,16 @@ impl Browser {
                     self.runs_known = true;
                 }
                 Msg::Log(run, job, text) => {
+                    // The page takes a log only for the job it asked for: a late reply for a window that has since
+                    // closed (or left the log tab) must not replace it.
+                    let for_page = {
+                        let w = self.watch.lock().unwrap_or_else(|e| e.into_inner());
+                        w.page.as_ref() == Some(&(run.clone(), job.clone()))
+                    };
+                    self.props_log(&run, &job, &text);
+                    if !for_page {
+                        continue;
+                    }
                     // The thread sends the same text every round; an equal one must not start a new search.
                     let new = Some((run, job, text));
                     if self.log != new {
@@ -4874,7 +4997,7 @@ impl Browser {
         self.ask_commands(run);
         self.ask_definition(run);
         let watched = Self::watched_job(run, self.job_sel.as_deref());
-        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        self.watch.lock().unwrap_or_else(|e| e.into_inner()).page = watched.clone().map(|j| (run.id.clone(), j));
         watched
     }
 
@@ -5146,7 +5269,7 @@ impl Browser {
         }
         graph::legend(ui, t, &c, &run);
         if let Some((id, twice)) = pick {
-            self.look_at(id, if twice { Look::Def } else { Look::Pick });
+            self.picked_job(&run, id, twice);
         }
         self.run_menu_act(&run, act);
     }
@@ -5219,6 +5342,18 @@ impl Browser {
         self.set_run_tab(tab);
     }
 
+    /// A job was picked on the page: a double click opens what the setting says (the window, or the 定義 tab).
+    fn picked_job(&mut self, run: &Run, id: String, twice: bool) {
+        if !twice {
+            self.look_at(id, Look::Pick);
+        } else if self.job_open == JobOpen::Props {
+            self.look_at(id.clone(), Look::Pick);
+            self.open_props(&run.id, &id, RunTab::Facts);
+        } else {
+            self.look_at(id, Look::Def);
+        }
+    }
+
     /// Switches the tab of the job detail; `state.toml` keeps it.
     fn set_run_tab(&mut self, tab: RunTab) {
         if self.run_tab != tab {
@@ -5268,8 +5403,21 @@ impl Browser {
             runmenu::Act::Send(req) => {
                 self.send(req);
             }
-            runmenu::Act::Pick => self.look_at(job, Look::Log),
-            runmenu::Act::Definition => self.look_at(job, Look::Def),
+            runmenu::Act::Pick => {
+                if self.job_open == JobOpen::Props {
+                    self.open_props(&run.id, &job, RunTab::Log);
+                } else {
+                    self.look_at(job, Look::Log);
+                }
+            }
+            runmenu::Act::Definition => {
+                if self.job_open == JobOpen::Props {
+                    self.open_props(&run.id, &job, RunTab::Def);
+                } else {
+                    self.look_at(job, Look::Def);
+                }
+            }
+            runmenu::Act::Props => self.open_props(&run.id, &job, RunTab::Facts),
             runmenu::Act::NetDefinition => self.open_net_definition(run, Some(job)),
             runmenu::Act::Kill => {
                 if !self.box_open() {
@@ -5361,7 +5509,7 @@ impl Browser {
             ui.spacing_mut().item_spacing.y = gap;
         });
         if let Some((id, twice)) = pick {
-            self.look_at(id, if twice { Look::Def } else { Look::Pick });
+            self.picked_job(run, id, twice);
         }
         self.run_menu_act(run, act);
     }
@@ -5424,9 +5572,9 @@ impl Browser {
                     egui::ScrollArea::vertical()
                         .id_salt("run_detail")
                         .auto_shrink(false)
-                        .show(ui, |ui| self.facts_body(ui, t, run, &job_id));
+                        .show(ui, |ui| Self::facts_body(ui, t, run, &job_id));
                 } else {
-                    self.facts_body(ui, t, run, &job_id);
+                    Self::facts_body(ui, t, run, &job_id);
                 }
             }
             RunTab::Def => {
@@ -5457,12 +5605,7 @@ impl Browser {
     /// The 履歴 tab: the picked job in the past runs of the run's net the window knows of, one row a run, and the
     /// button that reads older days.
     fn jobhist_tab(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
-        let c = ito_theme::colors();
         let Some(job) = run.job(job_id) else { return };
-        let head = t.trf("run.jobhist_head", &[job.label()]);
-        let r = ui.label(egui::RichText::new(&head).strong());
-        ito_a11y::say(&r, Role::Heading, &head);
-        ito_a11y::test_id_in(ui, &r, "run.jobhist.head", None);
         let today = self.engine_today();
         let rows = jobhist::job_history(std::iter::once(run).chain(self.known_runs()), &run.jobnet, job_id);
         // What is shown: the days read up to today, or further back where a row is older.
@@ -5470,23 +5613,13 @@ impl Browser {
         let from = rows.iter().map(|r| r.date.clone()).chain(std::iter::once((today - chrono::Duration::days(read)).to_string())).min();
         let range =
             t.trf("run.jobhist_range", &[from.as_deref().unwrap_or_default(), &today.to_string(), &rows.len().to_string(), &run.jobnet]);
-        let r = ui.add(egui::Label::new(egui::RichText::new(&range).small().color(c.dim)).wrap());
-        ito_a11y::say(&r, Role::Label, &range);
-        ui.add_space(4.0);
+        jobhist_top(ui, t, job.label(), &range, "run.");
         let mut open = None;
         if rows.is_empty() {
-            let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_none")).color(c.dim)).wrap());
-            ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_none"));
+            jobhist_none(ui, t);
         } else {
-            open = self.jobhist_table(ui, t, run, &rows);
-            ui.add_space(4.0);
-            if let Some((k, took)) = jobhist::usual(&rows) {
-                let line = t.trf("run.jobhist_usual", &[&k.to_string(), &show::duration(t, took)]);
-                let r = ui.add(egui::Label::new(egui::RichText::new(&line).small().color(c.dim)).wrap());
-                ito_a11y::say(&r, Role::Label, &line);
-            }
-            let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_renamed")).small().color(c.dim)).wrap());
-            ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_renamed"));
+            open = Self::jobhist_table(ui, t, &run.id, &rows, &mut self.jobhist_sort, "run.");
+            jobhist_foot(ui, t, &rows);
         }
         self.jobhist_more(ui, t, run);
         if let Some((id, log)) = open {
@@ -5520,7 +5653,16 @@ impl Browser {
     }
 
     /// The table of the job's past runs. Gives the run a double click or the menu asked to open, and whether its log.
-    fn jobhist_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, rows: &[jobhist::Row]) -> Option<(String, bool)> {
+    /// `this_run`: the run the page or window shows (its row says so); `sort`: the table's own sort; `prefix`: "run."
+    /// on the page, "props." in a property window (the test ids).
+    pub(super) fn jobhist_table(
+        ui: &mut egui::Ui,
+        t: &ito_i18n::Table,
+        this_run: &str,
+        rows: &[jobhist::Row],
+        sort: &mut Option<(usize, bool)>,
+        prefix: &str,
+    ) -> Option<(String, bool)> {
         let c = ito_theme::colors();
         let heads: Vec<String> = ["date", "start", "end", "took", "state", "exit", "retried", "how"]
             .map(|k| t.tr(&format!("run.jobhist_col_{k}")).to_owned())
@@ -5548,13 +5690,13 @@ impl Browser {
             3 => rows[i].took.map(|d| d.num_seconds()),
             _ => None,
         };
-        sort_rows_with(&mut cells, self.jobhist_sort, &key);
+        sort_rows_with(&mut cells, *sort, &key);
         let mut open = None;
         let mut body = |ui: &mut egui::Ui, table: &mut TodayTable| {
             ui.spacing_mut().item_spacing.y = 0.0;
             for (i, cells) in &cells {
                 let row = &rows[*i];
-                let this = row.run == run.id;
+                let this = row.run == this_run;
                 let r = table.cells_of(ui, cells, this, Some(row.state));
                 let said: Vec<String> = heads
                     .iter()
@@ -5564,18 +5706,18 @@ impl Browser {
                     .collect();
                 let said = if this { format!("{}, {}", t.tr("run.jobhist_this"), said.join(", ")) } else { said.join(", ") };
                 ito_a11y::say(&r, Role::Row, &said);
-                ito_a11y::test_id_in(ui, &r, &format!("run.jobhist.row.{}", row.run), None);
+                ito_a11y::test_id_in(ui, &r, &format!("{prefix}jobhist.row.{}", row.run), None);
                 if r.double_clicked() || r.triple_clicked() {
                     open = Some((row.run.clone(), false));
                 }
                 let id = ui.make_persistent_id(("jobhist_row_menu", row.run.as_str()));
                 egui::Popup::context_menu(&r).id(id).show(|ui| {
                     for (key, test, log) in
-                        [("run.jobhist_open", "run.jobhist.menu.open", false), ("run.jobhist_open_log", "run.jobhist.menu.log", true)]
+                        [("run.jobhist_open", "jobhist.menu.open", false), ("run.jobhist_open_log", "jobhist.menu.log", true)]
                     {
                         let b = ui.add(egui::Button::new(t.tr(key)));
                         ito_a11y::say(&b, Role::Button, t.tr(key));
-                        ito_a11y::test_id_in(ui, &b, test, None);
+                        ito_a11y::test_id_in(ui, &b, &format!("{prefix}{test}"), None);
                         if b.clicked() {
                             open = Some((row.run.clone(), log));
                             ui.close();
@@ -5592,12 +5734,12 @@ impl Browser {
             let mut widths = TodayTable::fit(ui, &heads, &plain);
             TodayTable::squeeze(&mut widths, ui.available_width(), &[3, 4, 7], 72.0);
             let mut table = TodayTable::with(&c, &widths, ui.available_width());
-            sorted = table.head(ui, &heads, self.jobhist_sort, t.tr("today.sort"));
+            sorted = table.head(ui, &heads, *sort, t.tr("today.sort"));
             body(ui, &mut table);
             ui.spacing_mut().item_spacing.y = gap;
         });
         if let Some(col) = sorted {
-            self.jobhist_sort = TodayTable::next_sort(self.jobhist_sort, col);
+            *sort = TodayTable::next_sort(*sort, col);
         }
         open
     }
@@ -5627,7 +5769,7 @@ impl Browser {
     }
 
     /// The 概要 tab: the job's facts and what its conditions say.
-    fn facts_body(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
+    fn facts_body(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
         let c = ito_theme::colors();
         let Some(job) = run.job(job_id) else { return };
         egui::Grid::new("job_facts").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
@@ -5702,17 +5844,8 @@ impl Browser {
 
     /// What a log viewer said back: the copy and the save are answered in `done`.
     fn log_out(&mut self, out: logview::Out) {
-        if let Some(r) = out.copied {
-            self.done = Some(match r {
-                Ok(()) => Ok(("run.copied", Vec::new())),
-                Err(e) => Err(("run.copy_failed", vec![e])),
-            });
-        }
-        if let Some(r) = out.saved {
-            self.done = Some(match r {
-                Ok(p) => Ok(("run.log_saved", vec![p.display().to_string()])),
-                Err(e) => Err(("run.log_save_failed", vec![e])),
-            });
+        if let Some(said) = out_said(out) {
+            self.done = Some(said);
         }
     }
 
@@ -6034,7 +6167,7 @@ impl Browser {
         if let Some(run) = shown {
             let job = run.jobs.iter().find(|j| j.state.is_error()).map(|j| j.id.clone()).or_else(|| Self::watched_job(&run, None));
             if let Some(job) = job {
-                *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = Some((run.id.clone(), job.clone()));
+                self.watch.lock().unwrap_or_else(|e| e.into_inner()).page = Some((run.id.clone(), job.clone()));
                 section(ui, "inspect.log");
                 ui.label(egui::RichText::new(format!("{} / {job}", run.id)).small().color(c.dim));
                 let text = self.log.as_ref().filter(|(r, j, _)| r == &run.id && j == &job).map(|(_, _, s)| s.as_str()).unwrap_or("");
@@ -6554,6 +6687,57 @@ fn rerun_title(t: &ito_i18n::Table, run: &Run, before: usize) -> String {
         0 => run.title.clone(),
         n => format!("{}  {}", run.title, t.trf("today.reruns", &[&n.to_string()])),
     }
+}
+
+/// The 履歴 tab's heading and its range line (page and property window; `prefix` as for the table).
+pub(super) fn jobhist_top(ui: &mut egui::Ui, t: &ito_i18n::Table, label: &str, range: &str, prefix: &str) {
+    let c = ito_theme::colors();
+    let head = t.trf("run.jobhist_head", &[label]);
+    let r = ui.label(egui::RichText::new(&head).strong());
+    ito_a11y::say(&r, Role::Heading, &head);
+    ito_a11y::test_id_in(ui, &r, &format!("{prefix}jobhist.head"), None);
+    let r = ui.add(egui::Label::new(egui::RichText::new(range).small().color(c.dim)).wrap());
+    ito_a11y::say(&r, Role::Label, range);
+    ui.add_space(4.0);
+}
+
+/// The 履歴 tab when the job has no past run.
+pub(super) fn jobhist_none(ui: &mut egui::Ui, t: &ito_i18n::Table) {
+    let c = ito_theme::colors();
+    let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_none")).color(c.dim)).wrap());
+    ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_none"));
+}
+
+/// Under the 履歴 table: the usual time and the note on renamed jobs.
+pub(super) fn jobhist_foot(ui: &mut egui::Ui, t: &ito_i18n::Table, rows: &[jobhist::Row]) {
+    let c = ito_theme::colors();
+    ui.add_space(4.0);
+    if let Some((k, took)) = jobhist::usual(rows) {
+        let line = t.trf("run.jobhist_usual", &[&k.to_string(), &show::duration(t, took)]);
+        let r = ui.add(egui::Label::new(egui::RichText::new(&line).small().color(c.dim)).wrap());
+        ito_a11y::say(&r, Role::Label, &line);
+    }
+    let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_renamed")).small().color(c.dim)).wrap());
+    ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_renamed"));
+}
+
+/// What a log viewer said back as the line to tell: the copy and the save (a save wins when both came in one frame).
+/// Shared by the run page (`done`) and the property window (its own result line).
+fn out_said(out: logview::Out) -> Option<Result<Said, Said>> {
+    let mut said = None;
+    if let Some(r) = out.copied {
+        said = Some(match r {
+            Ok(()) => Ok(("run.copied", Vec::new())),
+            Err(e) => Err(("run.copy_failed", vec![e])),
+        });
+    }
+    if let Some(r) = out.saved {
+        said = Some(match r {
+            Ok(p) => Ok(("run.log_saved", vec![p.display().to_string()])),
+            Err(e) => Err(("run.log_save_failed", vec![e])),
+        });
+    }
+    said
 }
 
 /// The words of a log viewer (the run page's ログ tab and the wide log).
@@ -7260,6 +7444,7 @@ fn job_menu(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: &str, env: &
     let Some(j) = run.job(job) else { return };
     for item in runmenu::menu_items(t, run, j, env) {
         let kill = matches!(item.act, runmenu::Act::Kill);
+        let props = matches!(item.act, runmenu::Act::Props);
         if kill {
             // The line is painted only; its test ID lets `--keys` `<State:>` place it above the kill item (139.12).
             let line = ui.separator();
@@ -7269,6 +7454,9 @@ fn job_menu(ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: &str, env: &
         ito_a11y::say(&r, Role::Button, &item.label);
         if kill {
             ito_a11y::test_id_in(ui, &r, "run.menu.kill", None);
+        }
+        if props {
+            ito_a11y::test_id_in(ui, &r, "run.menu.props", None);
         }
         let r = match &item.why {
             Some(why) if !item.enabled => r.on_disabled_hover_text(why),
@@ -7468,6 +7656,8 @@ mod tests {
         let (tx, _) = mpsc::channel::<Work>();
         let snap = Some(Snapshot { defs, ..Snapshot::default() });
         Browser {
+            props: props::Props::new(None),
+            job_open: JobOpen::default(),
             far: far::Far::idle(&egui::Context::default()),
             config_edit: None,
             hosts: hosts::Hosts::new(),
@@ -7560,6 +7750,7 @@ mod tests {
             back: Vec::new(),
             reveal: false,
             under_card: false,
+            page_covered: false,
             under_palette: false,
             clock: ito_common::Clock::default(),
             lang: String::new(),
@@ -7601,7 +7792,10 @@ mod tests {
     fn frame(ctx: &egui::Context, size: egui::Vec2, events: Vec<egui::Event>, b: &mut Browser) {
         let t = crate::i18n::table("ja").0;
         let input = egui::RawInput { screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, size)), events, ..Default::default() };
-        let mut out = ctx.run_ui(input, |ui| b.show(ui, &t));
+        let mut out = ctx.run_ui(input, |ui| {
+            b.show(ui, &t);
+            b.props_pass(ui.ctx(), &t);
+        });
         out.textures_delta.clear();
     }
 
@@ -7624,7 +7818,10 @@ mod tests {
             let t = crate::i18n::table("ja").0;
             let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, self.size);
             let input = egui::RawInput { screen_rect: Some(rect), events, ..Default::default() };
-            let mut out = self.ctx.run_ui(input, |ui| b.show(ui, &t));
+            let mut out = self.ctx.run_ui(input, |ui| {
+                b.show(ui, &t);
+                b.props_pass(ui.ctx(), &t);
+            });
             out.textures_delta.clear();
             if let Some(update) = out.platform_output.accesskit_update {
                 for (id, node) in update.nodes {
@@ -8350,7 +8547,7 @@ run = [\"x.exe\"]
         for _ in 0..3 {
             frame(&ctx, size, Vec::new(), &mut b);
         }
-        let watched = b.watch.lock().unwrap().clone();
+        let watched = b.watch.lock().unwrap().page.clone();
         assert_eq!(watched, Some(("20261030-090000-01".into(), "b".into())), "the running job's log is the one fetched");
         assert!(b.killing.is_none());
     }
@@ -8704,6 +8901,7 @@ run = [\"x.exe\"]
     #[test]
     fn looking_at_a_job_switches_the_tab() {
         let mut b = quiet(defs());
+        b.job_open = JobOpen::Tab;
         let run = page_run("20261030-090000-01");
         b.runs = vec![run.clone()];
         b.run_sel = Some(run.id.clone());
@@ -8812,6 +9010,7 @@ run = [\"x.exe\"]
         b.job_sel = Some("a".into());
         b.run_tab = RunTab::Log;
         b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Asked);
+        b.watch.lock().unwrap().page = Some((run.id.clone(), "a".to_owned()));
         b.io.0.send(Msg::Log(run.id.clone(), "a".into(), LOG_TEXT.into())).unwrap();
         let mut s = Screen::new();
         s.settle(&mut b);
@@ -9402,7 +9601,7 @@ run = [\"x.exe\"]
         assert_eq!(b.today_net.as_deref(), Some("試験/bom"));
         assert_eq!(b.run_sel.as_deref(), Some("r1"));
         assert!(s.nodes.values().any(|n| n.0 == "構成ジョブ定義"), "{:?}", s.nodes.values().map(|n| &n.0).collect::<Vec<_>>());
-        assert_eq!(b.watch.lock().unwrap().clone(), Some(("r1".to_owned(), "a".to_owned())));
+        assert_eq!(b.watch.lock().unwrap().page.clone(), Some(("r1".to_owned(), "a".to_owned())));
         s.click("右の欄をたたむ", &mut b);
         assert!(!b.inspector);
         s.click("右の欄を開く", &mut b);
@@ -11266,6 +11465,7 @@ note = \"n\"
     #[test]
     fn a_click_and_then_a_double_click_on_another_job_still_opens_its_definition() {
         let mut b = quiet(defs());
+        b.job_open = JobOpen::Tab;
         let mut r = page_run("r1");
         let mut second = r.jobs[0].clone();
         second.id = "b".into();
@@ -11280,5 +11480,434 @@ note = \"n\"
         s.click("a ", &mut b);
         s.double_click("b ", &mut b);
         assert_eq!((b.job_sel.as_deref(), b.run_tab), (Some("b"), RunTab::Def));
+    }
+
+    fn props_browser() -> Browser {
+        let mut b = quiet(defs());
+        b.runs = vec![page_run("r1")];
+        b.run_sel = Some("r1".into());
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
+        b.run_tab = RunTab::Facts;
+        b
+    }
+
+    fn pk(run: &str, job: &str) -> props::PropsKey {
+        props::PropsKey::new(run, job)
+    }
+
+    #[test]
+    fn a_double_click_on_a_job_opens_its_property_window() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.double_click("a ", &mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")]);
+        assert_eq!(b.props.tab_of(&pk("r1", "a")), Some(RunTab::Facts));
+        assert_eq!(b.run_tab, RunTab::Facts, "the page stays where it was");
+    }
+
+    #[test]
+    fn with_the_tab_setting_a_double_click_shows_the_definition_tab_and_no_window() {
+        let mut b = props_browser();
+        b.job_open = JobOpen::Tab;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.double_click("a ", &mut b);
+        assert!(b.props.keys().is_empty());
+        assert_eq!(b.run_tab, RunTab::Def);
+    }
+
+    #[test]
+    fn the_log_menu_item_opens_the_window_at_the_log_and_the_same_key_twice_adds_none() {
+        let mut b = props_browser();
+        let run = b.runs[0].clone();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::Pick)));
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")]);
+        assert_eq!(b.props.tab_of(&pk("r1", "a")), Some(RunTab::Log));
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::Definition)));
+        s.settle(&mut b);
+        assert_eq!(b.props.keys().len(), 1);
+        assert_eq!(b.props.tab_of(&pk("r1", "a")), Some(RunTab::Def));
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::Props)));
+        s.settle(&mut b);
+        assert_eq!(b.props.tab_of(&pk("r1", "a")), Some(RunTab::Facts));
+    }
+
+    /// A run that never began: its jobs are all still waiting and it is over as 時刻を過ぎた.
+    fn missed_run(id: &str) -> Run {
+        use koyomi_core::jobnet::{Job, Jobnet};
+        let net = Jobnet { jobs: vec![Job { id: "a".into(), run: vec!["x".into()], ..Default::default() }], ..Default::default() };
+        let now = ito_common::now::now_local().naive_local();
+        let mut run = Run::new(id, "試験/bom", "bom", "2026-10-30", koyomi_core::run::How::Manual, &net, now);
+        run.state = State::Missed;
+        run.ended = Some(now);
+        run
+    }
+
+    #[test]
+    fn every_tab_draws_for_a_never_began_run_and_for_a_gone_run() {
+        let mut b = props_browser();
+        b.runs = vec![missed_run("m1")];
+        b.run_sel = Some("m1".into());
+        assert!(b.runs[0].never_began(), "the run really never began");
+        let mut s = Screen::new();
+        b.open_props("m1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        for tab in [RunTab::Facts, RunTab::Def, RunTab::Log, RunTab::Hist] {
+            b.open_props("m1", "a", tab);
+            s.settle(&mut b);
+            assert_eq!(b.props.tab_of(&pk("m1", "a")), Some(tab));
+        }
+        assert_eq!(b.props.def_of(&pk("m1", "a")), Some(runfacts::View::NeverBegan));
+        // The run leaves every list: the last copy stays and the tabs still draw.
+        b.runs.clear();
+        b.run_sel = None;
+        for tab in [RunTab::Facts, RunTab::Def, RunTab::Log, RunTab::Hist] {
+            b.open_props("m1", "a", tab);
+            s.settle(&mut b);
+        }
+        assert_eq!(b.props.keys().len(), 1);
+        assert_eq!(b.props.def_of(&pk("m1", "a")), Some(runfacts::View::NeverBegan), "still a run that never began");
+    }
+
+    #[test]
+    fn the_history_tab_reads_the_job_past_without_the_pages_past_rows() {
+        let mut b = props_browser();
+        assert!(b.past_rows.is_none());
+        let mut past = jobhist::JobPast::new(None, "試験/bom", b.engine_today());
+        past.runs = vec![hist_run("r0", 29, 1)];
+        b.job_past = Some(past);
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Hist);
+        s.settle(&mut b);
+        assert_eq!(b.props.hist_len_of(&pk("r1", "a")), Some(2), "this run and the one the job's past held");
+    }
+
+    #[test]
+    fn the_menu_item_opens_a_window_and_a_history_row_in_it_opens_another_through_the_ui() {
+        let mut b = props_browser();
+        b.runs.push(hist_run("r0", 29, 1));
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.right_click("a ", &mut b);
+        s.settle(&mut b);
+        s.click("プロパティ", &mut b);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")], "the menu's プロパティ opened the window");
+        // The 履歴 tab is named by the page and by the window alike, so the test switches the tab itself.
+        b.open_props("r1", "a", RunTab::Hist);
+        s.settle(&mut b);
+        s.double_click("日付: 2026-10-29", &mut b);
+        s.settle(&mut b);
+        assert!(b.props.keys().contains(&pk("r0", "a")), "a history row opened that run's job: {:?}", b.props.keys());
+    }
+
+    #[test]
+    fn a_window_closed_by_esc_can_be_opened_again() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys().len(), 1);
+        s.show(key(egui::Key::Escape), &mut b);
+        s.settle(&mut b);
+        assert!(b.props.keys().is_empty(), "Esc closed it: show returned a Closed");
+        b.open_props("r1", "a", RunTab::Log);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")]);
+        assert_eq!(b.props.tab_of(&pk("r1", "a")), Some(RunTab::Log));
+    }
+
+    #[test]
+    fn a_job_of_a_run_in_the_pages_past_rows_only_has_a_window_that_draws() {
+        let mut b = props_browser();
+        let run = b.runs.remove(0);
+        b.past_rows = Some(vec![run]);
+        b.run_sel = None;
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Hist);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")]);
+    }
+
+    #[test]
+    fn a_window_only_log_goes_to_the_window_and_not_to_the_page() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.runs.push(page_run("r2"));
+        b.open_props("r2", "a", RunTab::Log);
+        s.settle(&mut b);
+        assert_eq!(b.watch.lock().unwrap().windows, vec![("r2".to_owned(), "a".to_owned())], "the log tab is listed");
+        b.io.0.send(Msg::Log("r2".into(), "a".into(), "one".into())).unwrap();
+        s.settle(&mut b);
+        assert_eq!(b.props.log_of(&pk("r2", "a")).map(|l| l.0), Some("one".to_owned()));
+        assert!(b.log.is_none(), "the page did not ask for it");
+        let gen = b.props.log_of(&pk("r2", "a")).unwrap().1;
+        b.io.0.send(Msg::Log("r2".into(), "a".into(), "one".into())).unwrap();
+        s.settle(&mut b);
+        assert_eq!(b.props.log_of(&pk("r2", "a")).unwrap().1, gen, "the same text keeps the generation");
+    }
+
+    #[test]
+    fn the_window_logs_are_read_in_turn_without_the_pages() {
+        let k = |n: &str| (n.to_owned(), "a".to_owned());
+        let list = vec![k("r1"), k("r2"), k("r3")];
+        let mut cur = 0;
+        assert_eq!(window_round(&list, None, &mut cur, 2), vec![k("r1"), k("r2")]);
+        assert_eq!(window_round(&list, None, &mut cur, 2), vec![k("r3"), k("r1")]);
+        assert_eq!(window_round(&list, Some(&k("r1")), &mut cur, 1), vec![k("r2")], "the page's own log is left out");
+        assert!(window_round(&[], None, &mut cur, 2).is_empty());
+    }
+
+    #[test]
+    fn a_log_for_a_key_that_is_neither_the_pages_nor_a_windows_changes_nothing() {
+        let (mut b, mut s, run) = log_page();
+        let (gen, text) = (b.log_gen, b.log.clone());
+        assert!(gen > 0);
+        b.io.0.send(Msg::Log(run.id.clone(), "zzz".into(), "stray".into())).unwrap();
+        b.io.0.send(Msg::Log("gone-run".into(), "a".into(), "stray".into())).unwrap();
+        s.settle(&mut b);
+        assert_eq!(b.log_gen, gen, "a late reply for a window that closed is not the page's");
+        assert_eq!(b.log, text);
+    }
+
+    fn wk(n: &str) -> (String, String) {
+        (n.to_owned(), "a".to_owned())
+    }
+
+    type Round = (Vec<u8>, Vec<(String, String)>, Vec<(String, String)>);
+
+    /// Runs `window_logs` once over a script of what `take` finds; returns what was answered, read and sent.
+    fn logs_round(list: &[(String, String)], cursor: &mut usize, cap: usize, script: Vec<Waiting<u8>>) -> Round {
+        let mut script: std::collections::VecDeque<_> = script.into();
+        let (mut answered, mut read, mut sent) = (Vec::new(), Vec::new(), Vec::new());
+        let go = window_logs(
+            list,
+            None,
+            cursor,
+            cap,
+            &mut || script.pop_front().unwrap_or(Waiting::Empty),
+            &mut |w| {
+                answered.push(w);
+                true
+            },
+            &mut |r, j| {
+                read.push((r.to_owned(), j.to_owned()));
+                Some("text".to_owned())
+            },
+            &mut |r, j, _| {
+                sent.push((r, j));
+                true
+            },
+        );
+        assert!(go);
+        (answered, read, sent)
+    }
+
+    #[test]
+    fn a_waiting_request_is_answered_before_a_window_log_and_defers_the_rest() {
+        let list = vec![wk("r1"), wk("r2"), wk("r3")];
+        let mut cur = 0;
+        // Two requests wait at the start: both are answered, no window log is read, the cursor stays.
+        let (answered, read, sent) = logs_round(&list, &mut cur, WINDOW_LOGS_LOCAL, vec![Waiting::Work(1), Waiting::Work(2)]);
+        assert_eq!((answered, read.len(), sent.len(), cur), (vec![1, 2], 0, 0, 0));
+        // One arrives after the first log: that one is read, then the request is answered, and the second is deferred.
+        let (answered, read, _) = logs_round(&list, &mut cur, WINDOW_LOGS_LOCAL, vec![Waiting::Empty, Waiting::Work(3)]);
+        assert_eq!((answered, read, cur), (vec![3], vec![wk("r1")], 1), "the cursor moves over the one read");
+        // The deferred one is first the next round.
+        let (_, read, sent) = logs_round(&list, &mut cur, WINDOW_LOGS_LOCAL, vec![]);
+        assert_eq!((read, sent.len(), cur), (vec![wk("r2"), wk("r3")], 2, 3));
+    }
+
+    #[test]
+    fn the_window_logs_of_a_round_are_two_here_one_far_and_the_turn_goes_round() {
+        let list = vec![wk("r1"), wk("r2"), wk("r3")];
+        let mut cur = 0;
+        let (_, read, _) = logs_round(&list, &mut cur, WINDOW_LOGS_LOCAL, vec![]);
+        assert_eq!(read, vec![wk("r1"), wk("r2")]);
+        let (_, read, _) = logs_round(&list, &mut cur, WINDOW_LOGS_LOCAL, vec![]);
+        assert_eq!(read, vec![wk("r3"), wk("r1")]);
+        let mut cur = 0;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            seen.extend(logs_round(&list, &mut cur, WINDOW_LOGS_FAR, vec![]).1);
+        }
+        assert_eq!(seen, vec![wk("r1"), wk("r2"), wk("r3"), wk("r1")], "one per round on another PC's engine");
+    }
+
+    #[test]
+    fn a_window_cannot_drop_a_dirty_editor_and_says_why() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_editor("試験/月次締め");
+        b.editor.as_mut().unwrap().dirty = true;
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        b.props_act(&s.ctx.clone(), props::Act::Editor(pk("r1", "a")));
+        s.settle(&mut b);
+        let e = b.editor.as_ref().unwrap();
+        assert!(e.id == "試験/月次締め" && e.dirty, "the editor is as it was");
+        let said = b.props.result_of(&pk("r1", "a"));
+        assert!(matches!(&said, Some(Err(w)) if w.contains("編集中")), "the window says why: {said:?}");
+    }
+
+    #[test]
+    fn a_window_opens_the_editor_on_the_net_when_nothing_is_unsaved_and_keeps_one_already_there() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        b.props_act(&s.ctx.clone(), props::Act::Editor(pk("r1", "a")));
+        assert_eq!(b.editor.as_ref().map(|e| e.id.as_str()), Some("試験/bom"));
+        b.editor.as_mut().unwrap().dirty = true;
+        b.props_act(&s.ctx.clone(), props::Act::Editor(pk("r1", "a")));
+        assert!(b.editor.as_ref().unwrap().dirty, "the same net keeps its editor");
+    }
+
+    #[test]
+    fn what_covers_the_page_stops_alt_enter_and_the_windows_acts_on_the_page() {
+        let alt_enter = vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::ALT,
+        }];
+        let mut b = props_browser();
+        b.job_sel = Some("a".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.page_covered = true;
+        s.show(alt_enter.clone(), &mut b);
+        s.settle(&mut b);
+        assert!(b.props.keys().is_empty(), "the settings (or a dialog) are in front");
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        let ctx = s.ctx.clone();
+        b.props_act(&ctx, props::Act::Page { key: pk("r1", "a"), log: true });
+        b.props_act(&ctx, props::Act::More(pk("r1", "a")));
+        b.props_act(&ctx, props::Act::Editor(pk("r1", "a")));
+        assert_eq!((b.run_tab, b.editor.is_none()), (RunTab::Facts, true), "nothing is done behind the cover");
+        b.page_covered = false;
+        b.props_act(&ctx, props::Act::More(pk("r1", "a")));
+        assert_eq!(b.run_tab, RunTab::Hist, "uncovered, it acts");
+    }
+
+    #[test]
+    fn alt_enter_opens_the_window_when_nothing_covers_the_page() {
+        let alt_enter = vec![egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: Some(egui::Key::Enter),
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::ALT,
+        }];
+        let mut b = props_browser();
+        b.job_sel = Some("a".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.show(alt_enter, &mut b);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a")]);
+    }
+
+    #[test]
+    fn the_eight_window_note_clears_when_the_window_is_opened_again() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        for i in 0..9 {
+            b.runs.push(page_run(&format!("q{i}")));
+        }
+        for i in 0..9 {
+            b.open_props(&format!("q{i}"), "a", RunTab::Facts);
+            s.settle(&mut b);
+        }
+        assert_eq!(b.props.cap_of(&pk("q8", "a")), Some(true), "the ninth carries the note");
+        b.open_props("q8", "a", RunTab::Log);
+        s.settle(&mut b);
+        assert_eq!(b.props.cap_of(&pk("q8", "a")), Some(false));
+    }
+
+    #[test]
+    fn a_gone_run_below_edit_drops_its_kept_definition() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Def);
+        s.settle(&mut b);
+        b.runs.clear();
+        b.run_sel = None;
+        s.settle(&mut b);
+        assert_ne!(b.props.def_of(&pk("r1", "a")), Some(runfacts::View::NeedsEdit), "an editor of this PC keeps the copy");
+        b.link = Link::Far("kei".into());
+        b.role = Some(koyomi_core::role::Role::Run);
+        s.settle(&mut b);
+        assert_eq!(b.props.def_of(&pk("r1", "a")), Some(runfacts::View::NeedsEdit));
+    }
+
+    #[test]
+    fn the_window_title_names_the_net_and_the_run() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        let title = b.props.title_of_window(&pk("r1", "a")).unwrap();
+        assert!(title.contains("bom"), "{title}");
+    }
+
+    #[test]
+    fn the_window_title_follows_a_language_change_and_is_set_once() {
+        let mut b = props_browser();
+        let ctx = egui::Context::default();
+        let rect = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1280.0, 800.0));
+        let pass = |b: &mut Browser, lang: &str| {
+            let t = crate::i18n::table(lang).0;
+            let input = egui::RawInput { screen_rect: Some(rect), ..Default::default() };
+            let mut out = ctx.run_ui(input, |ui| {
+                b.show(ui, &t);
+                b.props_pass(ui.ctx(), &t);
+            });
+            out.textures_delta.clear();
+        };
+        b.open_props("r1", "a", RunTab::Facts);
+        for _ in 0..3 {
+            pass(&mut b, "ja");
+        }
+        let ja = b.props.title_of_window(&pk("r1", "a")).unwrap();
+        assert!(ja.contains("のプロパティ"), "{ja}");
+        pass(&mut b, "en");
+        let en = b.props.title_of_window(&pk("r1", "a")).unwrap();
+        assert_ne!(en, ja, "the title is in the new language");
+        assert!(!en.contains("のプロパティ"), "{en}");
+        pass(&mut b, "en");
+        assert_eq!(b.props.title_of_window(&pk("r1", "a")).unwrap(), en, "nothing changed, nothing set again");
+    }
+
+    #[test]
+    fn closing_every_window_empties_the_list_and_the_watch() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.open_props("r1", "a", RunTab::Facts);
+        s.settle(&mut b);
+        assert_eq!(b.props.keys().len(), 1);
+        b.props_close_all();
+        s.settle(&mut b);
+        assert!(b.props.keys().is_empty());
+        assert!(b.watch.lock().unwrap().windows.is_empty());
+    }
+
+    #[test]
+    fn a_history_request_opens_that_runs_job_in_another_window() {
+        let mut b = props_browser();
+        let mut s = Screen::new();
+        b.runs.push(page_run("r0"));
+        b.open_props("r1", "a", RunTab::Hist);
+        s.settle(&mut b);
+        b.props_act(&s.ctx.clone(), props::Act::OpenRun { from: pk("r1", "a"), run: "r0".into(), log: true });
+        s.settle(&mut b);
+        assert_eq!(b.props.keys(), vec![pk("r1", "a"), pk("r0", "a")]);
+        assert_eq!(b.props.tab_of(&pk("r0", "a")), Some(RunTab::Log));
     }
 }

@@ -91,6 +91,9 @@ fn index(w: &'static Words, more: &'static MoreWords, lang: &str, t: &ito_i18n::
         (GENERAL, t.tr("settings.log_max")),
         (GENERAL, t.tr("settings.jobs")),
         (GENERAL, t.tr("settings.shell")),
+        (GENERAL, t.tr("settings.job_open_section")),
+        (GENERAL, t.tr("settings.job_double_click")),
+        (GENERAL, "job_double_click"),
         (GENERAL, "keep_days"),
         (GENERAL, "archive"),
         (GENERAL, "concurrency"),
@@ -286,6 +289,11 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     // The watch switch of the Notifications page: this window's, whichever PC's engine it shows.
     let mut watch_pick: Option<bool> = None;
     let watch_remotes = config.watch_remotes;
+    // The General page's 「ジョブをダブルクリックしたとき」: this window's too, whichever PC's engine it shows.
+    let mut job_pick: Option<crate::prefs::JobOpen> = None;
+    let (job_now, job_bad) = crate::prefs::job_open_of(config);
+    let job_words = [tr("settings.job_double_click_props"), tr("settings.job_double_click_tab")];
+    let job_opts: Vec<(usize, &str)> = job_words.iter().enumerate().map(|(i, w)| (i, w.as_str())).collect();
     let mut limit_typed: Vec<(&'static str, String)> = Vec::new();
     let mut day_words: Vec<(u32, String)> = KEEP_DAYS.iter().map(|d| (*d, table.trf("settings.days", &[&d.to_string()]))).collect();
     if !KEEP_DAYS.contains(&config.keep_days) {
@@ -322,6 +330,19 @@ pub fn show(ui: &mut Ui, app: &mut App) {
             asked.extend(out.changes);
             forget |= out.forget;
             startup_toggled = ito_prefs::startup_card_with(ui, l, more, startup_now, startup_problem.as_deref());
+            section(ui, l, &tr("settings.job_open_section"), |ui| {
+                if let Some(bad) = &job_bad {
+                    let line = table.trf("settings.job_double_click_bad", &[bad]);
+                    ito_prefs::status(ui, &line, l.c.err);
+                }
+                let (label, note) = (tr("settings.job_double_click"), tr("settings.job_double_click_hint"));
+                let now = usize::from(job_now == crate::prefs::JobOpen::Tab);
+                if let Some(i) = ito_prefs::keyed_row(ui, l, "job_double_click", &label, &note, |ui| {
+                    ito_prefs::select(ui, "job_double_click", now, &job_opts)
+                }) {
+                    job_pick = Some(if i == 1 { crate::prefs::JobOpen::Tab } else { crate::prefs::JobOpen::Props });
+                }
+            });
             if far {
                 if far_admin {
                     let r = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, &far_config_words).show(ui);
@@ -498,6 +519,9 @@ pub fn show(ui: &mut Ui, app: &mut App) {
     }
     if let Some(on) = watch_pick {
         app.prefs.set_watch_remotes(on, &no_folder);
+    }
+    if let Some(open) = job_pick {
+        app.prefs.set_job_open(open, &no_folder);
     }
     app.prefs.limits_edit(limit_edits, &no_folder);
     if let Some((what, n)) = test {

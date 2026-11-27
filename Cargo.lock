@@ -2999,6 +2999,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "ito-viewport"
+version = "0.317.0"
+source = "git+https://github.com/uchmk/ito?rev=9bd898e28b2177fe9c43ad7529f23495170233ef#9bd898e28b2177fe9c43ad7529f23495170233ef"
+dependencies = [
+ "egui",
+ "ito-a11y",
+ "ito-common",
+ "ito-theme",
+ "ito-titlebar",
+]
+
+[[package]]
 name = "ito-watch"
 version = "0.317.0"
 source = "git+https://github.com/uchmk/ito?rev=9bd898e28b2177fe9c43ad7529f23495170233ef#9bd898e28b2177fe9c43ad7529f23495170233ef"
@@ -3183,6 +3195,7 @@ dependencies = [
  "ito-theme",
  "ito-titlebar",
  "ito-tray",
+ "ito-viewport",
  "ito-watch",
  "ito-winres",
  "koyomi-cloud",

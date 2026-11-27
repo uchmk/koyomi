@@ -182,6 +182,9 @@ struct Req {
     find: String,
     query: Query,
     ctx: egui::Context,
+    /// The viewport the search was asked from: its frame is asked for when the result is ready (a second window
+    /// is not the root's pass).
+    viewport: egui::ViewportId,
 }
 
 /// The one place a request waits for the worker: a newer request replaces an older one that was not taken yet.
@@ -235,7 +238,7 @@ fn work(shared: Arc<Shared>, tx: Sender<Done>) {
         if tx.send(Done { gen: r.gen, version: r.version, found }).is_err() {
             return;
         }
-        r.ctx.request_repaint();
+        r.ctx.request_repaint_of(r.viewport);
     }
 }
 
@@ -422,18 +425,24 @@ impl LogView {
         let have = self.done.as_ref().map(|d| (d.gen, d.version));
         if have != Some(key) {
             if self.sent != Some(key) {
-                let worker = self.worker.get_or_insert_with(Worker::start);
-                worker.shared.put(Req {
-                    gen,
-                    version: key.1,
-                    text: Arc::from(text),
-                    find: self.bar.find.clone(),
-                    query: self.bar.query(),
-                    ctx: ctx.clone(),
-                });
+                let req = self.request(ctx, text, gen);
+                self.worker.get_or_insert_with(Worker::start).shared.put(req);
                 self.sent = Some(key);
             }
             ctx.request_repaint_after(std::time::Duration::from_millis(50));
+        }
+    }
+
+    /// The request for the text `gen` and the query as it is now, from the viewport that is drawing.
+    fn request(&self, ctx: &egui::Context, text: &str, gen: u64) -> Req {
+        Req {
+            gen,
+            version: self.bar.version(),
+            text: Arc::from(text),
+            find: self.bar.find.clone(),
+            query: self.bar.query(),
+            ctx: ctx.clone(),
+            viewport: ctx.viewport_id(),
         }
     }
 
@@ -477,6 +486,30 @@ impl LogView {
         }
         self.serial += 1;
         self.drawn = Some(Drawn { serial: self.serial, gen, version: want_ver, only_hits: want_only, text: shown, hits, starts });
+    }
+
+    /// The finished save, once: the path written or the OS's words (a cancelled dialog says nothing). `show` calls it
+    /// every frame; a caller whose window may not be drawn (a closed tab) calls it itself.
+    pub fn poll_save(&mut self, ctx: &egui::Context) -> Option<Result<PathBuf, String>> {
+        let rx = self.saving.as_ref()?;
+        match rx.try_recv() {
+            Ok(Some(r)) => {
+                self.saving = None;
+                Some(r)
+            }
+            Ok(None) => {
+                self.saving = None;
+                None
+            }
+            Err(TryRecvError::Disconnected) => {
+                self.saving = None;
+                Some(Err("the save thread ended".to_owned()))
+            }
+            Err(TryRecvError::Empty) => {
+                ctx.request_repaint_after(std::time::Duration::from_millis(100));
+                None
+            }
+        }
     }
 
     /// Draws the viewer in the height the caller gives and says what happened.
@@ -550,20 +583,7 @@ impl LogView {
                 Some(std::fs::write(&p, owned).map(|()| p).map_err(|e| e.to_string()))
             }));
         }
-        if let Some(rx) = &self.saving {
-            match rx.try_recv() {
-                Ok(Some(r)) => {
-                    out.saved = Some(r);
-                    self.saving = None;
-                }
-                Ok(None) => self.saving = None,
-                Err(TryRecvError::Disconnected) => {
-                    out.saved = Some(Err("the save thread ended".to_owned()));
-                    self.saving = None;
-                }
-                Err(TryRecvError::Empty) => ui.ctx().request_repaint_after(std::time::Duration::from_millis(100)),
-            }
-        }
+        out.saved = self.poll_save(ui.ctx());
 
         let c = ito_theme::colors();
         if text.is_empty() {
@@ -833,7 +853,15 @@ mod tests {
     }
 
     fn req(gen: u64, version: u64) -> Req {
-        Req { gen, version, text: Arc::from("x"), find: "x".into(), query: q(), ctx: egui::Context::default() }
+        Req {
+            gen,
+            version,
+            text: Arc::from("x"),
+            find: "x".into(),
+            query: q(),
+            ctx: egui::Context::default(),
+            viewport: egui::ViewportId::ROOT,
+        }
     }
 
     #[test]
@@ -859,7 +887,15 @@ mod tests {
     #[test]
     fn the_worker_answers_and_stops() {
         let w = Worker::start();
-        w.shared.put(Req { gen: 7, version: 3, text: Arc::from("a\nb a"), find: "a".into(), query: q(), ctx: egui::Context::default() });
+        w.shared.put(Req {
+            gen: 7,
+            version: 3,
+            text: Arc::from("a\nb a"),
+            find: "a".into(),
+            query: q(),
+            ctx: egui::Context::default(),
+            viewport: egui::ViewportId::ROOT,
+        });
         let d = w.rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
         assert_eq!((d.gen, d.version), (7, 3));
         assert_eq!(d.found.unwrap().hits.len(), 2);
@@ -1177,6 +1213,25 @@ mod tests {
         v.worker = Some(w);
         until(&ctx, &mut v, "beta", 1, |v| v.done.is_some());
         assert_eq!(v.done.as_ref().unwrap().found.as_ref().unwrap().hits.len(), 1);
+    }
+
+    #[test]
+    fn a_search_request_names_the_viewport_it_came_from() {
+        let ctx = egui::Context::default();
+        let other = egui::ViewportId::from_hash_of("props.1");
+        let mut v = LogView::new("props.log");
+        v.bar.find = "beta".into();
+        v.bar.open_find(Some("beta"));
+        let mut got = Vec::new();
+        // a frame of a viewport other than the root, then one of the root
+        for id in [other, egui::ViewportId::ROOT] {
+            let viewports = [(id, egui::ViewportInfo::default())].into_iter().collect();
+            let mut out = ctx.run_ui(egui::RawInput { viewport_id: id, viewports, ..Default::default() }, |ui| {
+                got.push(v.request(ui.ctx(), "beta", 1).viewport);
+            });
+            out.textures_delta.clear();
+        }
+        assert_eq!(got, [other, egui::ViewportId::ROOT]);
     }
 
     #[test]

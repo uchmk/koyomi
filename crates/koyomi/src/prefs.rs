@@ -116,6 +116,37 @@ fn watch_remotes_text(text: &str, on: bool) -> Result<String, String> {
     }
 }
 
+/// What a double-click on a job in a run does (the General page's 「ジョブをダブルクリックしたとき」).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum JobOpen {
+    /// The job's property window (the default).
+    #[default]
+    Props,
+    /// The run page's 定義 tab, as before the window.
+    Tab,
+}
+
+/// The setting as koyomi.toml says it, and the text of a value that is not one of the two (read as the default).
+pub fn job_open_of(config: &Config) -> (JobOpen, Option<String>) {
+    use toml::Value;
+    match &config.job_double_click {
+        None => (JobOpen::Props, None),
+        // Only the two strings are choices; the number 3 reads as the default, with the warning.
+        Some(Value::String(s)) if s == "props" => (JobOpen::Props, None),
+        Some(Value::String(s)) if s == "tab" => (JobOpen::Tab, None),
+        Some(_) => (JobOpen::Props, config.job_double_click_as_written()),
+    }
+}
+
+/// `text` (koyomi.toml) with the top-level `job_double_click` as `open` says: `Tab` adds `job_double_click = "tab"`,
+/// `Props` removes the key (it is the default). The rest of the file keeps its lines and comments.
+pub fn job_double_click_text(text: &str, open: JobOpen) -> Result<String, String> {
+    match open {
+        JobOpen::Props => ito_common::remove_key(text, None, "job_double_click"),
+        JobOpen::Tab => ito_common::set_key(text, None, "job_double_click", "\"tab\""),
+    }
+}
+
 /// `text` with `mails` as its `[[notify.mails]]`. A place just added (no
 /// `states`) is told of `failed` only, as one written without `states`;
 /// `states` is written only when a place's differ from that.
@@ -599,6 +630,47 @@ impl Prefs {
         });
     }
 
+    /// Set what a double-click on a job does: `Tab` writes `job_double_click = "tab"` into koyomi.toml on a thread,
+    /// `Props` removes the key (the default), then the file is read again. Nothing is written when the file already
+    /// says so (a bad value counts as the default, so choosing `Props` over it removes it).
+    pub fn set_job_open(&self, open: JobOpen, no_folder: &str) {
+        let (now, bad) = job_open_of(&self.config);
+        if open == now && bad.is_none() {
+            return;
+        }
+        let (tx, wake, seq) = (self.tx.clone(), self.wake.clone(), self.seq.clone());
+        let Some(base) = self.base.clone() else {
+            Self::send_back(&tx, &wake, Reload::Failed(no_folder.into()));
+            return;
+        };
+        std::thread::spawn(move || {
+            let _one = CONFIG_ONE_AT_A_TIME.lock().unwrap_or_else(|e| e.into_inner());
+            let _held = crate::remote::edits();
+            let path = config_path(&base);
+            let at = |e: String| msg::coded_at(msg::FILE_WRITE_FAILED, &path, &e);
+            let done = (|| {
+                let text = match std::fs::read_to_string(&path) {
+                    Ok(t) => t,
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+                    Err(e) => return Err(msg::coded_at(msg::FILE_READ_FAILED, &path, &msg::io_words(&e))),
+                };
+                let new = job_double_click_text(&text, open).map_err(at)?;
+                if new != text {
+                    if let Some(dir) = path.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| msg::coded_at(msg::DIR_CREATE_FAILED, dir, &msg::io_words(&e)))?;
+                    }
+                    write_atomic(&path, &new).map_err(at)?;
+                }
+                Ok(())
+            })();
+            let r = match done {
+                Ok(()) => next_read(&seq, &path),
+                Err(e) => Reload::Failed(e),
+            };
+            Self::send_back(&tx, &wake, r);
+        });
+    }
+
     /// Open a settings file of the base (`common_path`, `config_path`), made
     /// empty first when there is none, with what the OS opens it with, on a
     /// thread. An empty file reads as the defaults, as no file does.
@@ -739,6 +811,33 @@ place = \"x\"
         assert!(Config::parse(&on).unwrap().watch_remotes);
         // Already as asked: nothing to remove.
         assert_eq!(watch_remotes_text(text, true).unwrap(), text);
+    }
+
+    #[test]
+    fn the_double_click_setting_is_written_only_off_the_default_and_a_bad_value_reads_as_the_default() {
+        let text = "# mine
+keep_days = 30 # keep
+
+[vars]
+place = \"x\"
+";
+        let tab = job_double_click_text(text, JobOpen::Tab).unwrap();
+        assert!(tab.contains("# mine") && tab.contains("keep_days = 30 # keep") && tab.contains("place = \"x\""), "{tab}");
+        assert!(tab.contains("job_double_click = \"tab\""), "{tab}");
+        let cfg = Config::parse(&tab).unwrap();
+        assert_eq!(job_open_of(&cfg), (JobOpen::Tab, None));
+        // Back to the default: the key is gone, the rest stays.
+        let back = job_double_click_text(&tab, JobOpen::Props).unwrap();
+        assert!(!back.contains("job_double_click") && back.contains("# mine") && back.contains("keep_days = 30 # keep"), "{back}");
+        assert_eq!(job_open_of(&Config::parse(&back).unwrap()), (JobOpen::Props, None));
+        assert_eq!(job_double_click_text(text, JobOpen::Props).unwrap(), text, "already the default: nothing to remove");
+        // `props` written by hand is the default, a word we do not know is the default with a warning.
+        assert_eq!(job_open_of(&Config::parse("job_double_click = \"props\"\n").unwrap()), (JobOpen::Props, None));
+        assert_eq!(job_open_of(&Config::parse("job_double_click = \"wide\"\n").unwrap()), (JobOpen::Props, Some("\"wide\"".to_owned())));
+        assert_eq!(job_open_of(&Config::parse("job_double_click = 3\n").unwrap()), (JobOpen::Props, Some("3".to_owned())));
+        assert_eq!(job_open_of(&Config::parse("job_double_click = true\n").unwrap()), (JobOpen::Props, Some("true".to_owned())));
+        // The engine's reader takes the file whatever the window thinks of the word.
+        assert_eq!(job_open_of(&Config::default()), (JobOpen::Props, None));
     }
 
     /// A read begun earlier but slow to come back does not undo a newer one.
