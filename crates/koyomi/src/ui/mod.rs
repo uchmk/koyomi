@@ -595,6 +595,67 @@ struct Kept {
     /// The `[[remote]]` name of the PC the window is connected to; none is this PC.
     #[serde(default)]
     link: Option<String>,
+    /// The tab of the job detail of a run: `"facts"` (the default), `"def"` or `"log"`.
+    #[serde(default)]
+    run_tab: Option<String>,
+}
+
+/// The tab of the job detail of a run page (概要 / 定義 / ログ).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum RunTab {
+    #[default]
+    Facts,
+    Def,
+    Log,
+}
+
+impl RunTab {
+    /// What `state.toml` keeps; a missing or unknown word reads as the facts.
+    fn kept(word: Option<&str>) -> RunTab {
+        match word {
+            Some("def") => RunTab::Def,
+            Some("log") => RunTab::Log,
+            _ => RunTab::Facts,
+        }
+    }
+
+    fn word(self) -> &'static str {
+        match self {
+            RunTab::Facts => "facts",
+            RunTab::Def => "def",
+            RunTab::Log => "log",
+        }
+    }
+}
+
+/// How a job is picked on the run page: what the tab and the scroll become.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Look {
+    /// Only picked: the tab stays.
+    Pick,
+    /// ログを見る: the ログ tab, the log's title in view.
+    Log,
+    /// 定義を見る (and a double click): the 定義 tab, the definition's title in view.
+    Def,
+}
+
+/// What the wide view (広げる) shows.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum WideWhat {
+    /// The picked job's log.
+    Log,
+    /// The whole net of the run, opened at this job (a job id of the run).
+    NetDef(Option<String>),
+}
+
+/// The wide view over the run page: what it shows, and which run, page and link it was opened on.
+#[derive(Clone, Debug)]
+struct Wide {
+    what: WideWhat,
+    run: String,
+    /// Opened in the pane of 履歴 (the stacked layout), not on the run page.
+    hist: bool,
+    link: Option<String>,
 }
 
 /// The job whose log the thread fetches: `(run, job)`.
@@ -756,6 +817,20 @@ pub struct Browser {
     log_scroll: bool,
     /// The next draw of the run page scrolls to the picked job's definition.
     def_scroll: bool,
+    /// The tab of the job detail.
+    run_tab: RunTab,
+    /// The wide view (広げる / the net's definition) when it is up.
+    wide: Option<Wide>,
+    /// The wide log wraps its lines (memory only).
+    wide_wrap: bool,
+    /// The net definition shows its text, not its items (memory only).
+    netdef_text: bool,
+    /// What the text of the net definition is searched for.
+    netdef_find: String,
+    /// The net definition scrolls to the job it was opened at (once).
+    netdef_scroll: bool,
+    /// The run the page showed last frame (a change ends the wide view and the pending scrolls).
+    seen_run: Option<String>,
     /// What the window knows of each run's definition copy (asked once per run).
     run_defs: BTreeMap<String, runfacts::DefCopy>,
     /// What the window knows of each run's commands copy (`commands.toml`; asked once per run).
@@ -922,6 +997,7 @@ impl Browser {
         let (hist_pane, cal_pane) = (kept.history_pane != Some(false), kept.calendar_pane != Some(false));
         let cal_view = calendar::CalView::kept(kept.calendar_view.as_deref(), kept.calendar_week);
         let net_pane = kept.net_pane != Some(false);
+        let run_tab = RunTab::kept(kept.run_tab.as_deref());
         let flow = writer;
         let far = far::Far::start(&io.1, state);
         Browser {
@@ -954,6 +1030,13 @@ impl Browser {
             prev_wait: None,
             log_scroll: false,
             def_scroll: false,
+            run_tab,
+            wide: None,
+            wide_wrap: true,
+            netdef_text: false,
+            netdef_find: String::new(),
+            netdef_scroll: false,
+            seen_run: None,
             run_defs: BTreeMap::new(),
             run_cmds: BTreeMap::new(),
             job_sel: None,
@@ -1948,6 +2031,7 @@ impl Browser {
                 calendar_week: None,
                 net_pane: Some(self.net_pane),
                 link: self.link.far().map(str::to_owned),
+                run_tab: Some(self.run_tab.word().to_owned()),
             });
         }
     }
@@ -2731,6 +2815,9 @@ impl Browser {
             self.result = Some(Err(koyomi_core::msg::line(koyomi_core::msg::LINK_SWITCHING, &[])));
         }
         let ctx = ui.ctx().clone();
+        self.check_wide();
+        // A menu or popup open now keeps this frame's Esc (it closes first).
+        let popup_open = egui::Popup::is_any_open(&ctx);
         self.far.add_box(&ctx, t, self.covered());
         self.far.manage_box(&ctx, t, self.link.far());
         self.config_box(&ctx, t);
@@ -3010,6 +3097,11 @@ impl Browser {
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
         self.confirm_send(&ctx, t, key_for(12));
+        // Esc ends the wide view (also from its search box), unless a box, a popup or a menu takes it.
+        let can_end = self.wide.is_some() && !modal && !popup_open && !self.covered() && !self.box_open();
+        if can_end && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
+            self.wide = None;
+        }
         if keys_modal && !making && !self.covered() && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -4309,7 +4401,12 @@ impl Browser {
                         ito_a11y::say(&r, Role::Label, t.tr("run.history_pick"));
                         return;
                     }
-                    egui::ScrollArea::vertical().id_salt("history_run_scroll").auto_shrink(false).show(ui, |ui| self.run_view(ui, t));
+                    // The wide view has its own scrolls; it takes the pane instead of the page's scroll.
+                    if self.wide.as_ref().is_some_and(|w| w.hist) {
+                        self.run_view(ui, t);
+                    } else {
+                        egui::ScrollArea::vertical().id_salt("history_run_scroll").auto_shrink(false).show(ui, |ui| self.run_view(ui, t));
+                    }
                 });
             edge = edge.min(pane.response.rect.left());
             if close {
@@ -4623,6 +4720,16 @@ impl Browser {
         self.run_page(ui, t, false);
     }
 
+    /// Asks for what the run page shows (the commands and the definition copy of the run) and tells the log thread
+    /// which job's log to fetch. Returns the job watched.
+    fn run_feed(&mut self, run: &Run) -> Option<String> {
+        self.ask_commands(run);
+        self.ask_definition(run);
+        let watched = Self::watched_job(run, self.job_sel.as_deref());
+        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        watched
+    }
+
     /// The run. `paned`: the jobs in words and the log go in a pane at the bottom (its top edge dragged to size
     /// it), the jobs at its left and the picked job's facts and log at its right; the rest scrolls above.
     fn run_page(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, paned: bool) {
@@ -4630,15 +4737,18 @@ impl Browser {
             ui.label(t.tr("run.none"));
             return;
         };
-        self.ask_commands(&run);
-        let watched = Self::watched_job(&run, self.job_sel.as_deref());
-        *self.watch.lock().unwrap_or_else(|e| e.into_inner()) = watched.clone().map(|j| (run.id.clone(), j));
+        let watched = self.run_feed(&run);
         let watched = watched.as_deref();
+        // The wide view takes the whole area instead of the panels and the picture.
+        if self.wide.as_ref().is_some_and(|w| w.run == run.id && w.hist == !paned) {
+            self.wide_view(ui, t, &run, watched);
+            return;
+        }
         if !paned {
             self.run_top(ui, t, &run, watched);
             self.run_jobs(ui, t, &run, watched, false);
             ui.add_space(6.0);
-            self.run_detail(ui, t, &run, watched);
+            self.run_detail(ui, t, &run, watched, false);
             return;
         }
         egui::Panel::bottom("run_pane")
@@ -4657,9 +4767,7 @@ impl Browser {
                     .frame(egui::Frame::new().inner_margin(egui::Margin { left: 10, ..Default::default() }))
                     .show(ui, |ui| {
                         ui.set_min_height(ui.available_height());
-                        egui::ScrollArea::vertical().id_salt("run_detail").auto_shrink(false).show(ui, |ui| {
-                            self.run_detail(ui, t, &run, watched);
-                        });
+                        self.run_detail(ui, t, &run, watched, true);
                     });
                 self.run_jobs(ui, t, &run, watched, true);
             });
@@ -4839,6 +4947,12 @@ impl Browser {
                     if r.clicked() {
                         self.press_prev(&run);
                     }
+                    // The net's whole definition as this run began with it.
+                    let r = ito_prefs::IconButton::new(ito_prefs::Mark::Info, t.tr("run.netdef_open")).show(ui);
+                    ito_a11y::test_id_in(ui, &r, "run.netdef_open", None);
+                    if r.clicked() {
+                        self.open_net_definition(&run, None);
+                    }
                     if run.is_over() && picked.is_none() && !run.never_began() {
                         ui.label(egui::RichText::new(t.tr("run.rerun_hint")).small().color(c.dim));
                     }
@@ -4884,8 +4998,7 @@ impl Browser {
         }
         graph::legend(ui, t, &c, &run);
         if let Some((id, twice)) = pick {
-            self.job_sel = Some(id);
-            self.def_scroll |= twice;
+            self.look_at(id, if twice { Look::Def } else { Look::Pick });
         }
         self.run_menu_act(&run, act);
     }
@@ -4927,10 +5040,73 @@ impl Browser {
                         cmds?.get(&j.id)?.fill(&mut filled);
                         runmenu::command_text(&filled)
                     })
-                    .or_else(|| copy.and_then(|n| n.jobs.iter().find(|d| d.id == j.id)).and_then(runmenu::command_text))?;
+                    .or_else(|| copy.and_then(|n| n.net.jobs.iter().find(|d| d.id == j.id)).and_then(runmenu::command_text))?;
                 Some((j.id.clone(), text))
             })
             .collect()
+    }
+
+    /// Puts `text` on the clipboard and says so (`done`).
+    fn copy_text(&mut self, text: &str) {
+        self.done = Some(match ito_clipboard::clipboard!().set_text(text) {
+            Ok(()) => Ok(("run.copied", Vec::new())),
+            Err(e) => Err(("run.copy_failed", vec![e.to_string()])),
+        });
+    }
+
+    /// Picks `job` on the run page; `how` says which tab shows and what scrolls into view.
+    fn look_at(&mut self, job: String, how: Look) {
+        self.job_sel = Some(job);
+        let tab = match how {
+            Look::Pick => return,
+            Look::Log => {
+                self.log_scroll = true;
+                RunTab::Log
+            }
+            Look::Def => {
+                self.def_scroll = true;
+                RunTab::Def
+            }
+        };
+        self.set_run_tab(tab);
+    }
+
+    /// Switches the tab of the job detail; `state.toml` keeps it.
+    fn set_run_tab(&mut self, tab: RunTab) {
+        if self.run_tab != tab {
+            self.run_tab = tab;
+            self.save_kept();
+        }
+    }
+
+    /// Opens the wide view over the run page (or over the pane of 履歴).
+    fn open_wide(&mut self, run: &Run, what: WideWhat) {
+        self.netdef_scroll = matches!(what, WideWhat::NetDef(Some(_)));
+        self.wide = Some(Wide { what, run: run.id.clone(), hist: self.hist.is_some(), link: self.link.far().map(str::to_owned) });
+    }
+
+    /// Opens the net's definition of `run` in the wide view, at `job`.
+    fn open_net_definition(&mut self, run: &Run, job: Option<String>) {
+        self.ask_definition(run);
+        self.open_wide(run, WideWhat::NetDef(job));
+    }
+
+    /// Ends the wide view when what it was opened on is gone: another run, the page, the link, or the run itself.
+    /// The scrolls pending for another run are dropped with it.
+    fn check_wide(&mut self) {
+        let now = if self.editor.is_some() || self.gantt { None } else { self.selected_run().map(|r| r.id.clone()) };
+        if self.seen_run != now {
+            self.log_scroll = false;
+            self.def_scroll = false;
+            self.netdef_scroll = false;
+            self.seen_run = now.clone();
+        }
+        let Some(w) = &self.wide else { return };
+        let link = self.link.far().map(str::to_owned);
+        let ok = now.as_deref() == Some(w.run.as_str()) && w.link == link && w.hist == self.hist.is_some();
+        if !ok {
+            self.wide = None;
+        }
     }
 
     /// Does what a menu item chosen on `run` asked for. The ids are the ones the menu was opened on.
@@ -4940,14 +5116,9 @@ impl Browser {
             runmenu::Act::Send(req) => {
                 self.send(req);
             }
-            runmenu::Act::Pick => {
-                self.job_sel = Some(job);
-                self.log_scroll = true;
-            }
-            runmenu::Act::Definition => {
-                self.job_sel = Some(job);
-                self.def_scroll = true;
-            }
+            runmenu::Act::Pick => self.look_at(job, Look::Log),
+            runmenu::Act::Definition => self.look_at(job, Look::Def),
+            runmenu::Act::NetDefinition => self.open_net_definition(run, Some(job)),
             runmenu::Act::Kill => {
                 if !self.box_open() {
                     self.killing = Some((run.id.clone(), Some(job)));
@@ -4955,12 +5126,7 @@ impl Browser {
                     self.focus = 1;
                 }
             }
-            runmenu::Act::Copy(text) => {
-                self.done = Some(match ito_clipboard::clipboard!().set_text(&text) {
-                    Ok(()) => Ok(("run.copied", Vec::new())),
-                    Err(e) => Err(("run.copy_failed", vec![e.to_string()])),
-                });
-            }
+            runmenu::Act::Copy(text) => self.copy_text(&text),
             runmenu::Act::Editor => {
                 self.open_editor(&run.jobnet);
                 if let Some(e) = self.editor.as_mut() {
@@ -5041,66 +5207,353 @@ impl Browser {
             ui.spacing_mut().item_spacing.y = gap;
         });
         if let Some((id, twice)) = pick {
-            self.job_sel = Some(id);
-            self.def_scroll |= twice;
+            self.look_at(id, if twice { Look::Def } else { Look::Pick });
         }
         self.run_menu_act(run, act);
     }
 
-    /// The picked job's facts and its log (the job running, else the last that started, when none is picked).
-    fn run_detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>) {
-        let c = ito_theme::colors();
-        if let Some(job) = watched.and_then(|w| run.job(w)) {
-            egui::Grid::new("job_facts").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
-                for (k, v) in show::job_facts(t, job) {
-                    ui.label(egui::RichText::new(&k).color(c.dim));
-                    let r = ui.add(egui::Label::new(&v).wrap());
-                    ito_a11y::say(&r, Role::Label, &format!("{k}: {v}"));
-                    ui.end_row();
-                }
-            });
-            for l in runmenu::met_lines(t, run, job) {
-                let r = ui.add(egui::Label::new(&l).wrap());
-                ito_a11y::say(&r, Role::Label, &l);
-            }
-            self.definition_section(ui, t, run, job.id.as_str());
+    /// The log of `watched` as the thread last fetched it; empty when it is not that of this run and job.
+    fn log_text(&self, run: &Run, watched: Option<&str>) -> String {
+        match (&self.log, &watched) {
+            (Some((r, j, text)), Some(w)) if *r == run.id && j == w => text.clone(),
+            _ => String::new(),
         }
-        ui.add_space(8.0);
+    }
+
+    /// The lines of `text` that match what the search box holds, with the hits line (or the error of the pattern) drawn.
+    fn log_filtered(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, text: String) -> String {
+        let c = ito_theme::colors();
+        match show::filter_log(&text, &self.log_find) {
+            Ok(None) => text,
+            Ok(Some((hits, shown, all))) => {
+                ui.label(egui::RichText::new(t.trf("run.log_hits", &[&shown.to_string(), &all.to_string()])).color(c.dim));
+                hits
+            }
+            Err(e) => {
+                ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
+                text
+            }
+        }
+    }
+
+    /// The tabs of the job detail: 概要, 定義, ログ.
+    fn run_tabs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
+        ui.horizontal(|ui| {
+            let tabs = [
+                (RunTab::Facts, "run.tab_facts", "run.tab.facts"),
+                (RunTab::Def, "run.tab_def", "run.tab.def"),
+                (RunTab::Log, "run.tab_log", "run.tab.log"),
+            ];
+            for (tab, key, id) in tabs {
+                let words = t.tr(key);
+                let r = ui.selectable_label(self.run_tab == tab, words);
+                ito_a11y::say(&r, Role::Button, words);
+                ito_a11y::test_id_in(ui, &r, id, None);
+                if r.clicked() {
+                    self.set_run_tab(tab);
+                }
+            }
+        });
+    }
+
+    /// The picked job: its tabs (概要: facts; 定義: its definition; ログ: its log). `paned`: at the right of the pane at
+    /// the bottom, so the facts and the definition scroll there and the log fills what is left; else (the pane of 履歴)
+    /// all of it flows in the page and the log has a height of its own.
+    fn run_detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>, paned: bool) {
+        let Some(job) = watched.and_then(|w| run.job(w)) else {
+            // No job to watch: the log's title and what it would say.
+            let r = ui.label(egui::RichText::new(t.tr("run.log")).strong());
+            ito_a11y::say(&r, Role::Heading, t.tr("run.log"));
+            ito_a11y::test_id_in(ui, &r, "run.log_head", None);
+            ui.label(egui::RichText::new(t.tr("run.log_none")).color(ito_theme::colors().dim));
+            return;
+        };
+        let job_id = job.id.clone();
+        // A scroll asked for belongs to the job picked; while another is watched it waits for the next frame.
+        let picked = self.job_sel.as_deref() == watched;
+        if self.job_sel.as_deref().is_some_and(|j| run.job(j).is_none()) {
+            self.log_scroll = false;
+            self.def_scroll = false;
+        }
+        self.run_tabs(ui, t);
+        ui.add_space(4.0);
+        match self.run_tab {
+            RunTab::Facts => {
+                if paned {
+                    egui::ScrollArea::vertical()
+                        .id_salt("run_detail")
+                        .auto_shrink(false)
+                        .show(ui, |ui| self.facts_body(ui, t, run, &job_id));
+                } else {
+                    self.facts_body(ui, t, run, &job_id);
+                }
+            }
+            RunTab::Def => {
+                if paned {
+                    egui::ScrollArea::vertical().id_salt("run_detail").auto_shrink(false).show(ui, |ui| {
+                        self.definition_section(ui, t, run, &job_id, picked);
+                        self.net_definition_link(ui, t, run, &job_id);
+                    });
+                } else {
+                    self.definition_section(ui, t, run, &job_id, picked);
+                    self.net_definition_link(ui, t, run, &job_id);
+                }
+            }
+            RunTab::Log => self.log_tab(ui, t, run, watched, paned, picked),
+        }
+    }
+
+    /// The 概要 tab: the job's facts and what its conditions say.
+    fn facts_body(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
+        let c = ito_theme::colors();
+        let Some(job) = run.job(job_id) else { return };
+        egui::Grid::new("job_facts").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
+            for (k, v) in show::job_facts(t, job) {
+                ui.label(egui::RichText::new(&k).color(c.dim));
+                let r = ui.add(egui::Label::new(&v).wrap());
+                ito_a11y::say(&r, Role::Label, &format!("{k}: {v}"));
+                ui.end_row();
+            }
+        });
+        for l in runmenu::met_lines(t, run, job) {
+            let r = ui.add(egui::Label::new(&l).wrap());
+            ito_a11y::say(&r, Role::Label, &l);
+        }
+    }
+
+    /// The link under a job's definition that opens the whole net's definition of the run, at that job.
+    fn net_definition_link(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
+        ui.add_space(6.0);
+        let words = t.tr("run.net_def_all");
+        let r = ui.link(words);
+        ito_a11y::say(&r, Role::Button, words);
+        ito_a11y::test_id_in(ui, &r, "run.netdef_link", None);
+        if r.clicked() {
+            self.open_net_definition(run, Some(job_id.to_owned()));
+        }
+    }
+
+    /// The ログ tab: the title, 広げる, the search box and the hits are fixed; the log fills what is left.
+    fn log_tab(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>, paned: bool, picked: bool) {
+        let c = ito_theme::colors();
         let title = match watched.and_then(|w| run.job(w)) {
             Some(j) => format!("{}: {}", t.tr("run.log"), j.label()),
             None => t.tr("run.log").to_owned(),
         };
-        let r = ui.label(egui::RichText::new(&title).strong());
-        ito_a11y::say(&r, Role::Heading, &title);
-        // `--keys` `<State:>` reads whether the heading is in view (ログを見る scrolls to it, 139.10).
-        ito_a11y::test_id_in(ui, &r, "run.log_head", None);
-        if std::mem::take(&mut self.log_scroll) {
-            r.scroll_to_me(Some(egui::Align::TOP));
-        }
-        let text = match (&self.log, &watched) {
-            (Some((r, j, text)), Some(w)) if *r == run.id && j == w => text.clone(),
-            _ => String::new(),
-        };
+        ui.horizontal(|ui| {
+            let r = ui.label(egui::RichText::new(&title).strong());
+            ito_a11y::say(&r, Role::Heading, &title);
+            // `--keys` `<State:>` reads whether the heading is in view (ログを見る scrolls to it, 139.10).
+            ito_a11y::test_id_in(ui, &r, "run.log_head", None);
+            if picked {
+                if std::mem::take(&mut self.log_scroll) {
+                    r.scroll_to_me(Some(egui::Align::TOP));
+                }
+            } else if self.log_scroll {
+                ui.ctx().request_repaint();
+            }
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let b = ito_prefs::IconButton::new(ito_prefs::Mark::Expand, t.tr("run.log_wide")).show(ui);
+                ito_a11y::test_id_in(ui, &b, "run.log_wide", None);
+                if b.clicked() {
+                    self.open_wide(run, WideWhat::Log);
+                }
+            });
+        });
+        let text = self.log_text(run, watched);
         if text.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
-        } else {
-            ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
-            let text = match show::filter_log(&text, &self.log_find) {
-                Ok(None) => text,
-                Ok(Some((hits, shown, all))) => {
-                    ui.label(egui::RichText::new(t.trf("run.log_hits", &[&shown.to_string(), &all.to_string()])).color(c.dim));
-                    hits
-                }
-                Err(e) => {
-                    ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
-                    text
-                }
-            };
-            egui::ScrollArea::vertical().id_salt("log").auto_shrink([false, false]).stick_to_bottom(true).show(ui, |ui| {
-                let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).wrap());
-                ito_a11y::say(&r, Role::Label, &text);
-            });
+            return;
         }
+        ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
+        let text = self.log_filtered(ui, t, text);
+        let mut area = egui::ScrollArea::vertical().id_salt("log").auto_shrink([false, false]).stick_to_bottom(true);
+        if !paned {
+            area = area.max_height(420.0).min_scrolled_height(420.0);
+        }
+        area.show(ui, |ui| {
+            let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).wrap());
+            ito_a11y::say(&r, Role::Label, &text);
+        });
+    }
+
+    /// The head row every wide view starts with: ← 戻る. True when it was pressed.
+    fn wide_back(ui: &mut egui::Ui, t: &ito_i18n::Table) -> bool {
+        let r = ito_prefs::IconButton::new(ito_prefs::Mark::ChevronLeft, t.tr("run.wide_back")).show(ui);
+        ito_a11y::test_id_in(ui, &r, "run.wide_back", None);
+        r.clicked()
+    }
+
+    /// The wide view over the run page: the log of the picked job, or the net's definition of the run.
+    fn wide_view(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>) {
+        let Some(what) = self.wide.as_ref().map(|w| w.what.clone()) else { return };
+        let back = match what {
+            WideWhat::Log => self.wide_log(ui, t, run, watched),
+            WideWhat::NetDef(job) => self.wide_netdef(ui, t, run, job.as_deref()),
+        };
+        if back {
+            self.wide = None;
+        }
+    }
+
+    /// The picked job's log over the whole area. True when ← 戻る was pressed.
+    fn wide_log(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>) -> bool {
+        let c = ito_theme::colors();
+        let label = watched.and_then(|w| run.job(w)).map(|j| j.label().to_owned()).unwrap_or_default();
+        let title = format!("{}: {label}", t.tr("run.log"));
+        let (_, small) = show::run_head(t, run);
+        let text = self.log_text(run, watched);
+        let mut back = false;
+        let mut copy = false;
+        ui.horizontal_wrapped(|ui| {
+            back = Self::wide_back(ui, t);
+            let r = ui.label(egui::RichText::new(&title).strong());
+            ito_a11y::say(&r, Role::Heading, &title);
+            ito_a11y::test_id_in(ui, &r, "run.wide_head", None);
+            ui.label(egui::RichText::new(&small).small().color(c.dim));
+        });
+        ui.horizontal_wrapped(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
+            let r = ui.checkbox(&mut self.wide_wrap, t.tr("run.wide_wrap"));
+            ito_a11y::say(&r, Role::Button, t.tr("run.wide_wrap"));
+            ito_a11y::test_id_in(ui, &r, "run.wide_wrap", None);
+            let b = ito_prefs::IconButton::new(ito_prefs::Mark::Copy, t.tr("run.wide_copy")).show(ui);
+            ito_a11y::test_id_in(ui, &b, "run.wide_copy", None);
+            copy = b.clicked();
+        });
+        let shown = if text.is_empty() { text } else { self.log_filtered(ui, t, text) };
+        if copy {
+            self.copy_text(&shown);
+        }
+        self.show_result(ui, t);
+        if shown.is_empty() {
+            ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
+            return back;
+        }
+        let wrap = self.wide_wrap;
+        let area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() };
+        area.id_salt("log_wide").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
+            let label = egui::Label::new(egui::RichText::new(&shown).monospace());
+            let r = ui.add(if wrap { label.wrap() } else { label.extend() });
+            ito_a11y::say(&r, Role::Label, &shown);
+        });
+        back
+    }
+
+    /// The whole net's definition of the run (as it was when it began) over the whole area, opened at `job`.
+    /// True when ← 戻る was pressed.
+    fn wide_netdef(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job: Option<&str>) -> bool {
+        let c = ito_theme::colors();
+        let dim = |ui: &mut egui::Ui, words: &str| {
+            let r = ui.add(egui::Label::new(egui::RichText::new(words).color(c.dim)).wrap());
+            ito_a11y::say(&r, Role::Label, words);
+        };
+        let copy_of = self.run_defs.get(&run.id).cloned();
+        let view = runfacts::net_view(run, self.below_edit(), copy_of.as_ref());
+        let text_of = match &view {
+            runfacts::NetView::Shown(n) => Some(n.text.clone()),
+            _ => None,
+        };
+        let head = t.trf("run.netdef_head", &[&run.jobnet]);
+        let mut back = false;
+        let mut copy = false;
+        ui.horizontal_wrapped(|ui| {
+            back = Self::wide_back(ui, t);
+            let r = ui.label(egui::RichText::new(&head).strong());
+            ito_a11y::say(&r, Role::Heading, &head);
+            ito_a11y::test_id_in(ui, &r, "run.netdef_head", None);
+        });
+        ui.horizontal_wrapped(|ui| {
+            for (text_mode, key, id) in [(false, "run.netdef_items", "run.netdef.items"), (true, "run.netdef_text", "run.netdef.text")] {
+                let words = t.tr(key);
+                let r = ui.selectable_label(self.netdef_text == text_mode, words);
+                ito_a11y::say(&r, Role::Button, words);
+                ito_a11y::test_id_in(ui, &r, id, None);
+                if r.clicked() {
+                    self.netdef_text = text_mode;
+                }
+            }
+            if self.netdef_text && text_of.is_some() {
+                ui.add(egui::TextEdit::singleline(&mut self.netdef_find).hint_text(t.tr("run.netdef_find")).desired_width(240.0));
+                let b = ito_prefs::IconButton::new(ito_prefs::Mark::Copy, t.tr("run.wide_copy")).show(ui);
+                ito_a11y::test_id_in(ui, &b, "run.netdef_copy", None);
+                copy = b.clicked();
+            }
+        });
+        if copy {
+            if let Some(text) = &text_of {
+                self.copy_text(text);
+            }
+        }
+        self.show_result(ui, t);
+        match view {
+            runfacts::NetView::NeverBegan => {
+                dim(ui, t.tr("run.def_never"));
+                let there = self.snap.as_ref().is_some_and(|s| s.defs.iter().any(|d| d.id == run.jobnet && d.net.is_some()));
+                if there && ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("run.def_open_editor")).show(ui).clicked() {
+                    self.wide = None;
+                    self.open_editor(&run.jobnet);
+                    self.focus = 0;
+                }
+            }
+            runfacts::NetView::NeedsEdit => dim(ui, t.tr("run.def_needs_edit")),
+            runfacts::NetView::Loading => dim(ui, t.tr("users.loading")),
+            runfacts::NetView::Refused(why) => dim(ui, &why),
+            runfacts::NetView::Shown(nc) => {
+                let (target, child) = runfacts::net_target(run, &nc.net, job);
+                if let (Some(use_), Some(job)) = (&child, job) {
+                    dim(ui, &t.trf("run.netdef_in_child", &[job, use_]));
+                }
+                if self.netdef_text {
+                    self.netdef_text_body(ui, t, &nc.text);
+                } else {
+                    self.netdef_items_body(ui, t, run, nc, target.as_deref());
+                }
+            }
+        }
+        back
+    }
+
+    /// 項目: the net's own rows, then one section per job; the job opened at is scrolled to once.
+    fn netdef_items_body(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, nc: &runfacts::NetCopy, target: Option<&str>) {
+        let c = ito_theme::colors();
+        egui::ScrollArea::vertical().id_salt("netdef_items").auto_shrink(false).show(ui, |ui| {
+            ui.push_id("net", |ui| self.definition_grid(ui, t, &runfacts::net_rows(t, run, &nc.net)));
+            for job in &nc.net.jobs {
+                ui.add_space(10.0);
+                let hit = target == Some(job.id.as_str());
+                let head = job.id.as_str();
+                let mut text = egui::RichText::new(head).strong();
+                if hit {
+                    text = text.color(c.blue);
+                }
+                let r = ui.label(text);
+                ito_a11y::say(&r, Role::Heading, head);
+                if hit && std::mem::take(&mut self.netdef_scroll) {
+                    r.scroll_to_me(Some(egui::Align::TOP));
+                }
+                ui.push_id(job.id.as_str(), |ui| self.definition_grid(ui, t, &runfacts::rows(t, job)));
+            }
+        });
+    }
+
+    /// テキスト: the copy's raw text, the lines the search matches.
+    fn netdef_text_body(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, text: &str) {
+        let c = ito_theme::colors();
+        let shown = match show::filter_log(text, &self.netdef_find) {
+            Ok(None) => text.to_owned(),
+            Ok(Some((hits, shown, all))) => {
+                ui.label(egui::RichText::new(t.trf("run.log_hits", &[&shown.to_string(), &all.to_string()])).color(c.dim));
+                hits
+            }
+            Err(e) => {
+                ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
+                text.to_owned()
+            }
+        };
+        egui::ScrollArea::both().id_salt("netdef_text").auto_shrink(false).show(ui, |ui| {
+            ui.add(egui::Label::new(egui::RichText::new(&shown).monospace()).extend());
+        });
     }
 
     /// The net the inspector on 今日 shows: that of the row picked in the table, else of the run picked
@@ -6607,6 +7060,13 @@ mod tests {
             prev_wait: None,
             log_scroll: false,
             def_scroll: false,
+            run_tab: RunTab::Facts,
+            wide: None,
+            wide_wrap: true,
+            netdef_text: false,
+            netdef_find: String::new(),
+            netdef_scroll: false,
+            seen_run: None,
             run_defs: BTreeMap::new(),
             run_cmds: BTreeMap::new(),
             job_sel: None,
@@ -7470,7 +7930,7 @@ run = [\"x.exe\"]
         let got = b.job_commands(&run);
         assert_eq!(got.get("a").map(String::as_str), Some("tool \"x y\""));
         assert!(!got.contains_key("b"));
-        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(net))));
+        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(runfacts::NetCopy { net, text: String::new() }))));
         let got = b.job_commands(&run);
         assert_eq!(got.get("b").map(String::as_str), Some("later"));
         b.link = Link::Far("kei".into());
@@ -7493,7 +7953,7 @@ run = [\"x.exe\"]
         run.jobs.push(koyomi_core::run::JobRun::from_job(&job("c/w", &[])));
         run.jobs.iter_mut().for_each(|j| j.run.clear());
         let mut b = quiet(defs());
-        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(net))));
+        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Got(Ok(Box::new(runfacts::NetCopy { net, text: String::new() }))));
         assert_eq!(b.job_commands(&run).get("p").map(String::as_str), Some("tool {date}"), "the raw definition text");
         let cmd = |id: &str, run: &[&str]| JobCommand {
             id: id.into(),
@@ -7760,6 +8220,7 @@ run = [\"x.exe\"]
         b.out.tx = tx;
         b.runs = vec![page_run("20261030-090000-01")];
         b.run_sel = Some("20261030-090000-01".into());
+        b.run_tab = RunTab::Def;
         let mut s = Screen::new();
         s.settle(&mut b);
         assert!(matches!(rx_req.try_recv(), Ok(Request::RunDefinition { run }) if run == "20261030-090000-01"));
@@ -7798,6 +8259,107 @@ run = [\"x.exe\"]
         assert!(rx_req.try_recv().is_err());
     }
 
+    /// ログを見る, このジョブの定義を見る and a double click switch the tab of the job detail; a single click only picks.
+    #[test]
+    fn looking_at_a_job_switches_the_tab() {
+        let mut b = quiet(defs());
+        let run = page_run("20261030-090000-01");
+        b.runs = vec![run.clone()];
+        b.run_sel = Some(run.id.clone());
+        assert_eq!(b.run_tab, RunTab::Facts);
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::Pick)));
+        assert_eq!((b.job_sel.as_deref(), b.run_tab, b.log_scroll), (Some("a"), RunTab::Log, true));
+        b.log_scroll = false;
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::Definition)));
+        assert_eq!((b.run_tab, b.def_scroll), (RunTab::Def, true));
+        // A single click (or a right click) picks and leaves the tab.
+        b.def_scroll = false;
+        b.job_sel = None;
+        b.look_at("a".into(), Look::Pick);
+        assert_eq!((b.job_sel.as_deref(), b.run_tab, b.def_scroll), (Some("a"), RunTab::Def, false));
+        // A double click is a look at the definition.
+        b.set_run_tab(RunTab::Log);
+        b.look_at("a".into(), Look::Def);
+        assert_eq!((b.run_tab, b.def_scroll), (RunTab::Def, true));
+    }
+
+    #[test]
+    fn the_run_tab_is_kept_and_an_unknown_word_reads_as_the_facts() {
+        for tab in [RunTab::Facts, RunTab::Def, RunTab::Log] {
+            let text = toml::to_string(&Kept { run_tab: Some(tab.word().to_owned()), ..Default::default() }).unwrap();
+            assert!(text.contains(&format!("run_tab = \"{}\"", tab.word())), "{text}");
+            let back: Kept = toml::from_str(&text).unwrap();
+            assert_eq!(RunTab::kept(back.run_tab.as_deref()), tab);
+        }
+        assert_eq!(RunTab::kept(Some("nonsense")), RunTab::Facts);
+        assert_eq!(RunTab::kept(None), RunTab::Facts);
+        let none: Kept = toml::from_str("").unwrap();
+        assert_eq!(RunTab::kept(none.run_tab.as_deref()), RunTab::Facts);
+    }
+
+    /// A scroll asked for waits while another job than the picked one is the watched one.
+    #[test]
+    fn a_pending_scroll_waits_for_the_picked_job() {
+        let mut b = quiet(defs());
+        b.runs = vec![page_run("20261030-090000-01")];
+        b.run_sel = Some("20261030-090000-01".into());
+        b.run_tab = RunTab::Def;
+        b.job_sel = None;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.def_scroll = true;
+        s.settle(&mut b);
+        assert!(b.def_scroll, "nothing is picked, so the definition drawn is not the one asked for");
+        b.job_sel = Some("a".into());
+        s.settle(&mut b);
+        assert!(!b.def_scroll, "taken once the picked job is the one drawn");
+    }
+
+    #[test]
+    fn the_net_definition_opens_wide_at_the_job_and_ends_with_esc_or_back() {
+        let mut b = quiet(defs());
+        let run = page_run("20261030-090000-01");
+        b.runs = vec![run.clone()];
+        b.run_sel = Some(run.id.clone());
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::NetDefinition)));
+        assert!(matches!(&b.wide, Some(Wide { what: WideWhat::NetDef(Some(j)), run: r, .. }) if j == "a" && *r == run.id));
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l.contains("この回のジョブネットの定義（始まったときのもの）")), "the head");
+        assert!(b.wide.is_some());
+        s.show(key(egui::Key::Escape), &mut b);
+        assert!(b.wide.is_none(), "Esc ends it");
+        b.run_menu_act(&run, Some(("a".into(), runmenu::Act::NetDefinition)));
+        s.settle(&mut b);
+        s.click("← 戻る", &mut b);
+        assert!(b.wide.is_none(), "← 戻る ends it");
+    }
+
+    #[test]
+    fn the_wide_log_ends_when_the_run_changes_and_clears_the_pending_scrolls() {
+        let mut b = quiet(defs());
+        let (one, two) = (page_run("20261030-090000-01"), page_run("20261030-090000-02"));
+        b.runs = vec![one.clone(), two];
+        b.run_sel = Some(one.id.clone());
+        b.job_sel = Some("a".into());
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        b.open_wide(&one, WideWhat::Log);
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|(l, _)| l.starts_with("ログ:")), "the wide head");
+        b.log_scroll = true;
+        b.def_scroll = true;
+        b.run_sel = Some("20261030-090000-02".into());
+        s.settle(&mut b);
+        assert!(b.wide.is_none(), "another run ends it");
+        assert!(!b.log_scroll && !b.def_scroll, "the scrolls of the other run are dropped");
+        // The page changing ends it too.
+        b.open_wide(&b.selected_run().cloned().unwrap(), WideWhat::Log);
+        b.run_sel = None;
+        s.settle(&mut b);
+        assert!(b.wide.is_none());
+    }
+
     /// A copy that could not be read while the link was down is asked again once the engine answers;
     /// one that came is kept.
     #[test]
@@ -7825,6 +8387,7 @@ run = [\"x.exe\"]
         b.runs = vec![run];
         b.run_sel = Some("20261030-090000-02".into());
         b.job_sel = Some("a".into());
+        b.run_tab = RunTab::Def;
         let mut s = Screen::new();
         s.settle(&mut b);
         assert!(s.nodes.values().any(|(l, _)| l.contains("この回は始まっていないので、定義の写しはありません。")));

@@ -116,8 +116,10 @@ pub enum Act {
     Pick,
     /// Open the net in the editor, at the job.
     Editor,
-    /// Pick the job and scroll to its definition.
+    /// Pick the job and show its definition (the 定義 tab).
     Definition,
+    /// Show the whole net's definition of this run (the wide view), opened at the job.
+    NetDefinition,
     /// Kill the job (asked first, so not a `Send`).
     Kill,
     /// Put the text on the clipboard.
@@ -222,6 +224,7 @@ pub fn menu_items(t: &Table, run: &Run, job: &JobRun, env: &Env) -> Vec<Item> {
     }
     out.push(Item::on(t.tr("run.ask_log").to_owned(), Act::Pick));
     out.push(Item::on(t.tr("run.def_look").to_owned(), Act::Definition));
+    out.push(Item::on(t.tr("run.net_def_look").to_owned(), Act::NetDefinition));
     if !job.reason.trim().is_empty() {
         out.push(Item::on(t.tr("run.copy_reason").to_owned(), Act::Copy(job.reason.clone())));
     }
@@ -439,7 +442,8 @@ mod tests {
                 "さいころ の次から（さいころ は警告終了）",
                 "ジョブ さいころ を保留",
                 "ログを見る",
-                "定義を見る",
+                "このジョブの定義を見る",
+                "ジョブネットの定義を見る（この回）",
                 "エディターでこのジョブを開く",
             ]
         );
@@ -547,7 +551,21 @@ mod tests {
         let mut over = r.clone();
         over.ended = Some(at(9, 2));
         assert!(!menu_items(&t, &over, over.job("dice").unwrap(), &env()).iter().any(|i| matches!(i.act, Act::Kill)));
-        assert!(items.iter().any(|i| i.label == "定義を見る" && matches!(i.act, Act::Definition) && i.enabled));
+        assert!(items.iter().any(|i| i.label == "このジョブの定義を見る" && matches!(i.act, Act::Definition) && i.enabled));
+    }
+
+    #[test]
+    fn the_net_definition_follows_the_job_definition_after_the_log() {
+        let t = table();
+        let r = two_jobs();
+        let items = menu_items(&t, &r, r.job("dice").unwrap(), &env());
+        let at = |f: &dyn Fn(&Act) -> bool| items.iter().position(|i| f(&i.act)).unwrap();
+        let (log, def, net) =
+            (at(&|a| matches!(a, Act::Pick)), at(&|a| matches!(a, Act::Definition)), at(&|a| matches!(a, Act::NetDefinition)));
+        assert!(log < def && def + 1 == net);
+        assert_eq!(items[def].label, "このジョブの定義を見る");
+        assert_eq!(items[net].label, "ジョブネットの定義を見る（この回）");
+        assert!(items[net].enabled);
     }
 
     #[test]
@@ -558,7 +576,10 @@ mod tests {
         r.ended = Some(at(9, 2));
         let items = menu_items(&t, &r, r.job("dice").unwrap(), &Env { blocked: true, ..env() });
         assert!(items.iter().filter(|i| matches!(i.act, Act::Send(_))).all(|i| !i.enabled));
-        assert!(items.iter().filter(|i| matches!(i.act, Act::Pick | Act::Definition | Act::Editor)).all(|i| i.enabled));
+        assert!(items
+            .iter()
+            .filter(|i| matches!(i.act, Act::Pick | Act::Definition | Act::NetDefinition | Act::Editor))
+            .all(|i| i.enabled));
     }
 
     fn waiting_run(part: Part) -> Run {

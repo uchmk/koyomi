@@ -113,8 +113,15 @@ pub fn body(t: &Table, d: &Def) -> Vec<String> {
 
 /// The net's own settings, one line each; nothing for the default ones.
 pub fn settings(t: &Table, d: &Def) -> Vec<String> {
+    match &d.net {
+        Some(net) => net_settings(t, net),
+        None => Vec::new(),
+    }
+}
+
+/// [`settings`] of a net read from text (a run's copy of the definition rather than a listed [`Def`]).
+pub fn net_settings(t: &Table, net: &jobnet::Jobnet) -> Vec<String> {
     let mut out = Vec::new();
-    let Some(net) = &d.net else { return out };
     if net.missed == koyomi_core::jobnet::Missed::Once {
         out.push(t.tr("review.missed_once").to_owned());
     }

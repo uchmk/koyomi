@@ -14,22 +14,30 @@ use super::{paths, Browser};
 use crate::proto::Request;
 use crate::{review, show};
 
+/// A run's `definition.toml`: the parsed net, and the text as the engine returned it.
+#[derive(Clone, Debug)]
+pub struct NetCopy {
+    pub net: Jobnet,
+    pub text: String,
+}
+
 /// What the window knows of a run's `definition.toml`.
 #[derive(Clone, Debug)]
 pub enum DefCopy {
     /// Asked for; the reply is not here yet.
     Asked,
-    /// The reply: the parsed net, or why there is none (the engine's refusal, or a parse failure).
-    Got(Result<Box<Jobnet>, String>),
+    /// The reply: the net and its text, or why there is none (the engine's refusal, or a parse failure).
+    Got(Result<Box<NetCopy>, String>),
 }
 
 impl DefCopy {
     /// The engine's reply to `RunDefinition`, parsed with the same parser the snapshot uses.
     pub fn of(reply: Result<String, String>) -> DefCopy {
         DefCopy::Got(match reply {
-            Ok(text) => jobnet::parse(&text)
-                .map(Box::new)
-                .map_err(|problems| problems.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join(" ")),
+            Ok(text) => match jobnet::parse(&text) {
+                Ok(net) => Ok(Box::new(NetCopy { net, text })),
+                Err(problems) => Err(problems.iter().map(|p| p.message.clone()).collect::<Vec<_>>().join(" ")),
+            },
             Err(e) => Err(e),
         })
     }
@@ -119,14 +127,9 @@ pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&
         return View::NeedsEdit;
     }
     // A job of a child net is not in the definition copy (only the parent's text is kept); the run has it as it read it in.
-    if let Some((parent, _)) = job_id.rsplit_once('/') {
+    if job_id.contains('/') {
         if let Some(j) = run.job(job_id) {
-            let use_of = |id: &str| match run.job(id).map(|p| &p.part) {
-                Some(Part::Jobnet { use_ }) => Some(use_.clone()),
-                _ => None,
-            };
-            // The net it is directly in; else the outermost one.
-            let use_ = use_of(parent).or_else(|| job_id.split_once('/').and_then(|(top, _)| use_of(top)));
+            let use_ = child_use(run, job_id);
             let mut job = j.as_job();
             if let Some(CmdCopy::Got(Ok(c))) = cmds {
                 if let Some(jc) = c.get(job_id) {
@@ -141,10 +144,98 @@ pub fn view(t: &Table, run: &Run, job_id: &str, needs_edit: bool, copy: Option<&
         Some(DefCopy::Got(Err(e))) => return View::Refused(e.clone()),
         Some(DefCopy::Got(Ok(net))) => net,
     };
-    if let Some(j) = net.jobs.iter().find(|j| j.id == job_id) {
+    if let Some(j) = net.net.jobs.iter().find(|j| j.id == job_id) {
         return View::Shown(rows(t, j));
     }
     View::Missing
+}
+
+/// The `use` of the child net a job of `run` (an id with a `/`) is directly in; else of the outermost one.
+fn child_use(run: &Run, job_id: &str) -> Option<String> {
+    let (parent, _) = job_id.rsplit_once('/')?;
+    let use_of = |id: &str| match run.job(id).map(|p| &p.part) {
+        Some(Part::Jobnet { use_ }) => Some(use_.clone()),
+        _ => None,
+    };
+    use_of(parent).or_else(|| job_id.split_once('/').and_then(|(top, _)| use_of(top)))
+}
+
+/// What the whole net definition of a run shows.
+#[derive(Debug)]
+pub enum NetView<'a> {
+    NeverBegan,
+    NeedsEdit,
+    Loading,
+    /// The engine's words, as they came.
+    Refused(String),
+    Shown(&'a NetCopy),
+}
+
+/// Picks what to show of the run's own copy of its net.
+pub fn net_view<'a>(run: &Run, needs_edit: bool, copy: Option<&'a DefCopy>) -> NetView<'a> {
+    if run.never_began() {
+        return NetView::NeverBegan;
+    }
+    if needs_edit {
+        return NetView::NeedsEdit;
+    }
+    match copy {
+        None | Some(DefCopy::Asked) => NetView::Loading,
+        Some(DefCopy::Got(Err(e))) => NetView::Refused(e.clone()),
+        Some(DefCopy::Got(Ok(net))) => NetView::Shown(net),
+    }
+}
+
+/// Where the net definition opened from `job` scrolls to, and what to say of it: the job of the copy to scroll to (for
+/// a job of a child net, the job of the copy that calls it: the first segment of the id, when the copy has it) and,
+/// for a child's job, the `use` of the net it is in.
+pub fn net_target(run: &Run, net: &Jobnet, job: Option<&str>) -> (Option<String>, Option<String>) {
+    let Some(job) = job else { return (None, None) };
+    let top = job.split('/').next().unwrap_or(job);
+    let in_copy = net.jobs.iter().any(|j| j.id == top).then(|| top.to_owned());
+    // A child's job whose calling job is not in the run says nothing rather than an empty name.
+    let use_ = if job.contains('/') { child_use(run, job) } else { None };
+    (in_copy, use_)
+}
+
+/// The net-level rows of a copy of a net: what the net is, when it starts, and its settings, in the review's words.
+pub fn net_rows(t: &Table, run: &Run, net: &Jobnet) -> Vec<Row> {
+    let mut out: Vec<Row> = Vec::new();
+    let id = if run.title.is_empty() || run.title == run.jobnet { run.jobnet.clone() } else { format!("{}  ({})", run.title, run.jobnet) };
+    put(&mut out, t.tr("run.netdef_net"), id, false);
+    if let Some((group, _)) = run.jobnet.rsplit_once('/') {
+        put(&mut out, t.tr("run.netdef_group"), group.to_owned(), false);
+    }
+    if let Some(name) = net.name.as_deref().filter(|n| !n.is_empty()) {
+        put(&mut out, t.tr("field.name"), name.to_owned(), false);
+    }
+    if let Some(cal) = net.calendar.as_deref().filter(|c| !c.is_empty()) {
+        put(&mut out, t.tr("run.netdef_calendar"), cal.to_owned(), false);
+    }
+    for w in &net.when {
+        put(&mut out, t.tr("run.netdef_when"), when_words(t, w), true);
+    }
+    if let Some(lock) = net.lock.as_deref().filter(|l| !l.is_empty()) {
+        let shared = if net.lock_shared { " (shared)" } else { "" };
+        put(&mut out, t.tr("run.netdef_lock"), format!("{lock}{shared}"), true);
+    }
+    for (k, v) in &net.params {
+        put(&mut out, &format!("{} {k}", t.tr("run.netdef_params")), v.clone(), true);
+    }
+    for line in review::net_settings(t, net) {
+        put(&mut out, t.tr("run.netdef_setting"), line, false);
+    }
+    out
+}
+
+/// One `[[when]]` in words: an event in the window's words, a time as the keys written (`every = "day", at = [...]`).
+fn when_words(t: &Table, w: &koyomi_core::when::When) -> String {
+    if let Some(row) = show::event_row(t, w) {
+        return row;
+    }
+    let text = toml::to_string(w).unwrap_or_default();
+    let keys = text.lines().filter(|l| !l.is_empty() && !l.starts_with('[') && !l.ends_with("= []"));
+    keys.collect::<Vec<_>>().join(", ")
 }
 
 /// One line of the definition: its words and its value.
@@ -315,7 +406,7 @@ impl Browser {
     }
 
     /// Asks for the run's definition copy, once per run.
-    fn ask_definition(&mut self, run: &Run) {
+    pub(super) fn ask_definition(&mut self, run: &Run) {
         if run.never_began() || self.below_edit() || self.run_defs.contains_key(&run.id) {
             return;
         }
@@ -435,17 +526,16 @@ impl Browser {
                 let r = ui.link(t.tr("run.ask_log"));
                 ito_a11y::say(&r, Role::Button, &words);
                 if r.clicked() {
-                    self.job_sel = Some(row.id.clone());
-                    self.log_scroll = true;
+                    self.look_at(row.id.clone(), super::Look::Log);
                 }
             });
         }
     }
 
     /// The picked job as the run began with it, read-only. Asks the engine for the copy once per run.
-    pub(super) fn definition_section(&mut self, ui: &mut egui::Ui, t: &Table, run: &Run, job_id: &str) {
+    /// `scroll_ok`: the job drawn is the one picked, so a pending scroll to its definition is for it.
+    pub(super) fn definition_section(&mut self, ui: &mut egui::Ui, t: &Table, run: &Run, job_id: &str, scroll_ok: bool) {
         let c = ito_theme::colors();
-        self.ask_definition(run);
         let shown = view(t, run, job_id, self.below_edit(), self.run_defs.get(&run.id), self.run_cmds.get(&run.id));
         ui.add_space(8.0);
         let head = t.tr("run.def_head");
@@ -453,8 +543,13 @@ impl Browser {
         ito_a11y::say(&r, Role::Heading, head);
         // `--keys` `<State:>` reads whether the heading is in view (the scroll of 139.14).
         ito_a11y::test_id_in(ui, &r, "run.def_head", None);
-        if std::mem::take(&mut self.def_scroll) {
-            r.scroll_to_me(Some(egui::Align::TOP));
+        if scroll_ok {
+            if std::mem::take(&mut self.def_scroll) {
+                r.scroll_to_me(Some(egui::Align::TOP));
+            }
+        } else if self.def_scroll {
+            // The picked job is not the one drawn yet: the next frame has it.
+            ui.ctx().request_repaint();
         }
         let dim = |ui: &mut egui::Ui, words: &str| {
             let r = ui.add(egui::Label::new(egui::RichText::new(words).color(c.dim)).wrap());
@@ -485,7 +580,7 @@ impl Browser {
     }
 
     /// The rows of a job's definition, one label and value each.
-    fn definition_grid(&self, ui: &mut egui::Ui, t: &Table, rows: &[Row]) {
+    pub(super) fn definition_grid(&self, ui: &mut egui::Ui, t: &Table, rows: &[Row]) {
         let c = ito_theme::colors();
         let local = !self.link.is_far();
         egui::Grid::new("job_def").num_columns(2).spacing([12.0, 2.0]).show(ui, |ui| {
@@ -645,6 +740,76 @@ use = \"試験/子\"
         let View::Child { use_, .. } = view(&t, &run, "net1/net1", false, None, None) else { panic!() };
         assert_eq!(use_, "a/ab-2");
         assert_eq!(view(&t, &never(State::Missed, ""), "net1/net1", false, None, None), View::NeverBegan);
+    }
+
+    const SMALL_NET: &str = "format = 1
+calendar = \"営業日\"
+missed = \"once\"
+[[when]]
+every = \"day\"
+at = [\"09:00\"]
+[[job]]
+id = \"a\"
+run = [\"x.exe\"]
+[[job]]
+id = \"b\"
+run = [\"y.exe\"]
+after = [\"a\"]
+";
+
+    #[test]
+    fn the_copy_keeps_the_text_it_was_parsed_from() {
+        let DefCopy::Got(Ok(copy)) = net_of(SMALL_NET) else { panic!("parses") };
+        assert_eq!(copy.text, SMALL_NET);
+        assert_eq!(copy.net.jobs.len(), 2);
+    }
+
+    #[test]
+    fn a_text_that_does_not_parse_is_still_an_error() {
+        assert!(matches!(DefCopy::of(Ok("this is = not [ a net".into())), DefCopy::Got(Err(_))));
+    }
+
+    #[test]
+    fn the_net_rows_say_the_calendar_the_start_and_the_missed_setting() {
+        let t = table();
+        let DefCopy::Got(Ok(copy)) = net_of(SMALL_NET) else { panic!("parses") };
+        let rows = net_rows(&t, &ran(), &copy.net);
+        let get = |l: &str| rows.iter().find(|r| r.label == l).unwrap_or_else(|| panic!("{l}: {rows:?}"));
+        assert_eq!(get("カレンダー").value, "営業日");
+        assert_eq!(get("グループ").value, "試験");
+        // `missed = "once"` is said once, in the review's words (skip, the default, says nothing).
+        let missed: Vec<_> = rows.iter().filter(|r| r.value.contains("時刻を過ぎた")).collect();
+        assert_eq!(missed.len(), 1, "{rows:?}");
+        assert!(missed[0].value.starts_with("時刻を過ぎた実行: "), "{rows:?}");
+        assert_eq!(get("開始条件").value, "every = \"day\", at = [\"09:00:00\"]");
+        assert_eq!(rows.iter().filter(|r| r.label == "開始条件").count(), 1, "one [[when]]: {rows:?}");
+        assert!(rows.iter().any(|r| r.label == "ジョブネット" && r.value.contains("試験/bom")), "{rows:?}");
+        // The jobs are not among the net's own rows: each has its section.
+        assert!(!rows.iter().any(|r| r.value.contains("x.exe")), "{rows:?}");
+    }
+
+    #[test]
+    fn the_net_view_picks_the_same_states_as_the_job_definition() {
+        let copy = net_of(SMALL_NET);
+        assert!(matches!(net_view(&ran(), false, Some(&copy)), NetView::Shown(_)));
+        assert!(matches!(net_view(&ran(), false, None), NetView::Loading));
+        assert!(matches!(net_view(&ran(), true, Some(&copy)), NetView::NeedsEdit));
+        assert!(matches!(net_view(&never(State::Missed, ""), false, Some(&copy)), NetView::NeverBegan));
+        let refused = DefCopy::of(Err("E3290 gone".into()));
+        assert!(matches!(net_view(&ran(), false, Some(&refused)), NetView::Refused(w) if w == "E3290 gone"));
+    }
+
+    #[test]
+    fn a_child_job_opens_the_net_definition_at_the_parents_calling_job() {
+        let station = |id: &str, use_: &str| Job { part: Part::Jobnet { use_: use_.into() }, ..job(id, &[]) };
+        let net = Jobnet { jobs: vec![station("net1", "a/ab")], ..Default::default() };
+        let mut run = Run::new("20261030-090000-01", "試験/bom", "bom", "2026-10-30", How::Manual, &net, at());
+        run.jobs.push(koyomi_core::run::JobRun::from_job(&job("net1/file1", &[])));
+        assert_eq!(net_target(&run, &net, Some("net1/file1")), (Some("net1".into()), Some("a/ab".into())));
+        assert_eq!(net_target(&run, &net, Some("net1")), (Some("net1".into()), None));
+        assert_eq!(net_target(&run, &net, None), (None, None));
+        // A child's job whose calling job is not in the run: no empty name to say.
+        assert_eq!(net_target(&run, &net, Some("gone/file1")), (None, None));
     }
 
     #[test]
