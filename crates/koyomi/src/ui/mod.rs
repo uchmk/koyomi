@@ -35,6 +35,7 @@ pub mod whens;
 mod far_config;
 mod ha;
 mod hosts;
+mod jobhist;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
@@ -595,7 +596,7 @@ struct Kept {
     /// The `[[remote]]` name of the PC the window is connected to; none is this PC.
     #[serde(default)]
     link: Option<String>,
-    /// The tab of the job detail of a run: `"facts"` (the default), `"def"` or `"log"`.
+    /// The tab of the job detail of a run: `"facts"` (the default), `"def"`, `"log"` or `"hist"`.
     #[serde(default)]
     run_tab: Option<String>,
 }
@@ -607,6 +608,8 @@ enum RunTab {
     Facts,
     Def,
     Log,
+    /// The job in the past runs of its net.
+    Hist,
 }
 
 impl RunTab {
@@ -615,6 +618,7 @@ impl RunTab {
         match word {
             Some("def") => RunTab::Def,
             Some("log") => RunTab::Log,
+            Some("hist") => RunTab::Hist,
             _ => RunTab::Facts,
         }
     }
@@ -624,6 +628,7 @@ impl RunTab {
             RunTab::Facts => "facts",
             RunTab::Def => "def",
             RunTab::Log => "log",
+            RunTab::Hist => "hist",
         }
     }
 }
@@ -684,6 +689,9 @@ struct History {
     rows: Vec<Run>,
     /// Why there are no rows: a date that does not read, or the engine's word.
     error: Option<String>,
+    /// The days of the last request the box sent: only an answer for these days is taken (the date fields may have
+    /// been edited since).
+    asked: Option<(String, String)>,
 }
 
 impl History {
@@ -698,10 +706,13 @@ impl History {
             sort: None,
             rows: Vec::new(),
             error: None,
+            asked: None,
         }
     }
 
-    fn request(&self) -> Request {
+    /// The request for the days in the fields; they are remembered as the days asked.
+    fn ask(&mut self) -> Request {
+        self.asked = Some((self.from.clone(), self.to.clone()));
         Request::History { from: self.from.clone(), to: self.to.clone() }
     }
 
@@ -811,6 +822,10 @@ pub struct Browser {
     past_rows: Option<Vec<Run>>,
     /// The run opened from the history that no other list holds (older than 30 days): kept so the page does not lose it.
     opened_run: Option<Run>,
+    /// The older days the 履歴 tab of the run page read (the more button): the runs of one net.
+    job_past: Option<jobhist::JobPast>,
+    /// The sort of the 履歴 tab's table.
+    jobhist_sort: Option<(usize, bool)>,
     /// 前の回と比べる was pressed before those runs came: the run it was pressed on.
     prev_wait: Option<String>,
     /// The log's title scrolls into view on the next frame (ログを見る was pressed).
@@ -1027,6 +1042,8 @@ impl Browser {
             compare_base: None,
             past_rows: None,
             opened_run: None,
+            job_past: None,
+            jobhist_sort: None,
             prev_wait: None,
             log_scroll: false,
             def_scroll: false,
@@ -1254,7 +1271,7 @@ impl Browser {
     /// The days the averages are made from: the last 30 days. `to` is tomorrow, so that it
     /// cannot be the range the 履歴 box asks for.
     fn past_range(today: chrono::NaiveDate) -> (String, String) {
-        ((today - chrono::Duration::days(30)).to_string(), (today + chrono::Duration::days(1)).to_string())
+        ((today - chrono::Duration::days(jobhist::READ_DAYS)).to_string(), (today + chrono::Duration::days(1)).to_string())
     }
 
     /// The engine's wall clock, for what the window means by now: on a far link with a snapshot, this PC's UTC clock
@@ -1300,6 +1317,90 @@ impl Browser {
             self.past_asked = Some(today);
             let (from, to) = Self::past_range(today);
             self.send(Request::History { from, to });
+        }
+    }
+
+    /// Drops what the 履歴 tab of the run page read when it is not for this link, net and day any more.
+    fn job_past_keep(&mut self, net: &str) {
+        let (link, day) = (self.link.far().map(str::to_owned), self.engine_today());
+        if self.job_past.as_ref().is_some_and(|p| !p.is_for(link.as_deref(), net, day)) {
+            self.job_past = None;
+        }
+    }
+
+    /// Drops what the 履歴 tab read when the engine's day or the link is not the one it was read on (no matter
+    /// which page is shown).
+    fn job_past_day(&mut self) {
+        if self.job_past.is_none() || !self.engine_date_known() {
+            return;
+        }
+        let (link, day) = (self.link.far().map(str::to_owned), self.engine_today());
+        if self.job_past.as_ref().is_some_and(|p| p.link != link || p.day != day) {
+            self.job_past = None;
+        }
+    }
+
+    /// The more button: reads the next 30-day parts of the days up to 90 (then 365) back, one request at a time,
+    /// newest first. After an error the parts left are asked again.
+    fn job_past_more(&mut self, net: &str) {
+        if !self.engine_date_known() {
+            return;
+        }
+        self.job_past_keep(net);
+        let (link, day) = (self.link.far().map(str::to_owned), self.engine_today());
+        let p = self.job_past.get_or_insert_with(|| jobhist::JobPast::new(link, net, day));
+        if p.asking.is_some() {
+            return;
+        }
+        if p.left.is_empty() {
+            let Some(target) = jobhist::next_target(p.read_to_days) else { return };
+            p.left = jobhist::parts(day, p.read_to_days + 1, target);
+            p.target = target;
+            p.total = p.left.len();
+        }
+        p.error = None;
+        self.job_past_ask();
+    }
+
+    /// Asks the next part of the running press.
+    fn job_past_ask(&mut self) {
+        let Some(p) = self.job_past.as_mut() else { return };
+        if p.left.is_empty() {
+            return;
+        }
+        let (from, to) = p.left.remove(0);
+        p.asking = Some((from.clone(), to.clone()));
+        if !self.send(Request::History { from, to }) {
+            let why = self.unsent_why();
+            if let Some(p) = self.job_past.as_mut() {
+                if let Some(part) = p.asking.take() {
+                    p.left.insert(0, part);
+                }
+                p.error = Some(why);
+            }
+        }
+    }
+
+    /// The answer to the part asked: its runs of this net are kept and the next part is asked, or the press ends
+    /// (or stops at the engine's words).
+    fn job_past_answered(&mut self, parsed: Result<Runs, String>) {
+        let Some(p) = self.job_past.as_mut() else { return };
+        let part = p.asking.take();
+        match parsed {
+            Ok(rs) => {
+                p.take(rs.runs);
+                if p.left.is_empty() {
+                    p.read_to_days = p.target;
+                } else {
+                    self.job_past_ask();
+                }
+            }
+            Err(e) => {
+                if let Some(part) = part {
+                    p.left.insert(0, part);
+                }
+                p.error = Some(e);
+            }
         }
     }
 
@@ -1499,6 +1600,7 @@ impl Browser {
     }
 
     pub fn drain(&mut self) {
+        self.job_past_day();
         self.far.drain();
         if let Some(name) = self.far.take_joined() {
             // The one way the window changes its link: the pick is taken by the app.
@@ -1595,7 +1697,7 @@ impl Browser {
                                 .filter_map(|n| koyomi_core::run::average_duration(&rs.runs, n, 10).map(|a| (n.to_owned(), a)))
                                 .collect();
                             // The 履歴 box may have been typed to this very range: it gets the rows too.
-                            if let Some(h) = self.hist.as_mut().filter(|h| h.from == from && h.to == to) {
+                            if let Some(h) = self.hist.as_mut().filter(|h| h.asked.as_ref().is_some_and(|a| a.0 == from && a.1 == to)) {
                                 h.rows = rs.runs;
                                 h.error = None;
                             }
@@ -1610,16 +1712,36 @@ impl Browser {
                                 self.result = Some(Err(e.clone()));
                             }
                             self.past_failed = Some(std::time::Instant::now());
-                            if let Some(h) = self.hist.as_mut().filter(|h| h.from == from && h.to == to) {
+                            if let Some(h) = self.hist.as_mut().filter(|h| h.asked.as_ref().is_some_and(|a| a.0 == from && a.1 == to)) {
                                 h.rows.clear();
                                 h.error = Some(e);
                             }
                         }
                     }
                 }
-                Msg::Answer(Request::History { .. }, r) => {
-                    // The days asked for: the rows of 履歴, or why there are none.
-                    if let Some(h) = &mut self.hist {
+                Msg::Answer(Request::History { from, to }, r)
+                    if self.job_past.as_ref().is_some_and(|p| p.asking.as_ref().is_some_and(|a| a.0 == from && a.1 == to)) =>
+                {
+                    // A part the 履歴 tab of the run page asked for. The 履歴 box may have asked the very same days.
+                    let parsed = r.and_then(|text| Runs::parse(&text));
+                    if let Some(h) = self.hist.as_mut().filter(|h| h.asked.as_ref().is_some_and(|a| a.0 == from && a.1 == to)) {
+                        match &parsed {
+                            Ok(rs) => {
+                                h.rows = rs.runs.clone();
+                                h.error = None;
+                            }
+                            Err(e) => {
+                                h.rows.clear();
+                                h.error = Some(e.clone());
+                            }
+                        }
+                    }
+                    self.job_past_answered(parsed);
+                }
+                Msg::Answer(Request::History { from, to }, r) => {
+                    // The days the 履歴 box asked for: its rows, or why there are none. An answer for other days
+                    // (an older request, a part of the run page's tab that was dropped) is not its own.
+                    if let Some(h) = self.hist.as_mut().filter(|h| h.asked.as_ref().is_some_and(|a| a.0 == from && a.1 == to)) {
                         match r.and_then(|text| Runs::parse(&text)) {
                             Ok(rs) => {
                                 h.rows = rs.runs;
@@ -1875,6 +1997,7 @@ impl Browser {
             self.selected = Some(net);
         }
         // A run only the history held would be lost with it: keep a copy.
+        // A run only the 履歴 tab of the run page read (`job_past`) is kept the same way.
         let only_history = !self.runs.iter().any(|r| r.id == id) && !self.past_rows.iter().flatten().any(|r| r.id == id);
         // The kept copy itself counts, when the same run is opened again after the history went.
         self.opened_run = if only_history { self.find_run(id).cloned() } else { None };
@@ -1948,6 +2071,7 @@ impl Browser {
             .find(|r| r.id == id)
             .or_else(|| self.hist.as_ref()?.rows.iter().find(|r| r.id == id))
             .or_else(|| self.past_rows.as_ref()?.iter().find(|r| r.id == id))
+            .or_else(|| self.job_past.as_ref()?.runs.iter().find(|r| r.id == id))
             .or(self.opened_run.as_ref().filter(|r| r.id == id))
     }
 
@@ -1962,6 +2086,7 @@ impl Browser {
             .iter()
             .chain(self.hist.iter().flat_map(|h| h.rows.iter()))
             .chain(self.past_rows.iter().flatten())
+            .chain(self.job_past.iter().flat_map(|p| p.runs.iter()))
             // The kept copy only while no list holds that run again (find_run then gives the live one).
             .chain(self.opened_run.iter().filter(|o| self.find_run(&o.id).is_some_and(|r| std::ptr::eq(r, *o))))
     }
@@ -3331,9 +3456,10 @@ impl Browser {
     }
 
     /// Back to `p`, its picked row scrolled into sight; a history asks the engine for its days again.
-    fn put(&mut self, p: Place) {
-        if let Some(h) = &p.hist {
-            self.send(h.request());
+    fn put(&mut self, mut p: Place) {
+        if let Some(h) = p.hist.as_mut() {
+            let req = h.ask();
+            self.send(req);
         }
         self.gantt = p.gantt;
         self.hist = p.hist;
@@ -3499,7 +3625,7 @@ impl Browser {
                     }
                     let said: Vec<&str> = row.cells.iter().map(|(t, _)| t.as_str()).filter(|t| !t.is_empty()).collect();
                     ito_a11y::say(&r, Role::Row, &said.join(" "));
-                    if r.double_clicked() {
+                    if r.double_clicked() || r.triple_clicked() {
                         open = Some(row.id.clone());
                     } else if r.clicked() {
                         pick = Some(row.id.clone());
@@ -3672,7 +3798,7 @@ impl Browser {
                 reveal_row(ui, &r);
             }
             ito_a11y::say(&r, Role::Row, &row.said);
-            if r.double_clicked() {
+            if r.double_clicked() || r.triple_clicked() {
                 // A start still to come has no run yet: its net opens instead.
                 open = Some(row.run.clone().ok_or_else(|| row.net.clone()));
             } else if r.clicked() {
@@ -4324,9 +4450,9 @@ impl Browser {
     /// built and asked when the snapshot has come.
     pub fn open_history(&mut self) {
         let known = self.engine_date_known();
-        let h = History::week(self.engine_today());
+        let mut h = History::week(self.engine_today());
         if known {
-            self.send(h.request());
+            self.send(h.ask());
         }
         self.hist_waiting = !known;
         self.hist = Some(h);
@@ -4348,7 +4474,7 @@ impl Browser {
             h.from = week.from;
             h.to = week.to;
             h.error = None;
-            let req = h.request();
+            let req = h.ask();
             self.send(req);
         }
     }
@@ -4515,7 +4641,7 @@ impl Browser {
                         h.from = from.to_string();
                         h.to = to.to_string();
                         h.error = None;
-                        self.out.send(h.request());
+                        self.out.send(h.ask());
                     }
                     _ => h.error = Some(t.tr("run.history_bad_date").to_owned()),
                 }
@@ -4635,7 +4761,7 @@ impl Browser {
                         let said = [date, show::tag(t, run.state).to_owned(), title.clone(), show::hms(run.started), ended, took];
                         let said = said.iter().map(String::as_str).filter(|x| !x.is_empty()).collect::<Vec<_>>().join(" ");
                         ito_a11y::say(&r, Role::Row, &said);
-                        if r.double_clicked() {
+                        if r.double_clicked() || r.triple_clicked() {
                             open = Some(run.id.clone());
                         } else if r.clicked() {
                             pick = Some(run.id.clone());
@@ -5167,7 +5293,9 @@ impl Browser {
                 (i, cells)
             })
             .collect();
-        sort_rows(&mut rows, self.run_sort);
+        // The time taken sorts by its seconds, not by its words.
+        let took = |i: usize, col: usize| (col == 6).then(|| run.jobs[i].duration().map(|d| d.num_seconds())).flatten();
+        sort_rows_with(&mut rows, self.run_sort, &took);
         let heads: Vec<String> = ["run.col_job", "run.state", "run.start", "run.end", "run.exit", "run.retried", "run.took", "run.reason"]
             .map(|k| t.tr(k).to_owned())
             .to_vec();
@@ -5182,7 +5310,7 @@ impl Browser {
                 let r = table.cells_of(ui, cells, on, Some(j.state));
                 ito_a11y::say(&r, Role::Row, &graph::words(t, j));
                 if r.clicked() || r.secondary_clicked() {
-                    pick = Some((j.id.clone(), r.double_clicked()));
+                    pick = Some((j.id.clone(), r.double_clicked() || r.triple_clicked()));
                 }
                 let id = ui.make_persistent_id(("run_row_menu", run.id.as_str(), j.id.as_str()));
                 egui::Popup::context_menu(&r).id(id).show(|ui| job_menu(ui, t, run, &j.id, &env, &mut act));
@@ -5236,13 +5364,14 @@ impl Browser {
         }
     }
 
-    /// The tabs of the job detail: 概要, 定義, ログ.
+    /// The tabs of the job detail: 概要, 定義, ログ, 履歴.
     fn run_tabs(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table) {
         ui.horizontal(|ui| {
             let tabs = [
                 (RunTab::Facts, "run.tab_facts", "run.tab.facts"),
                 (RunTab::Def, "run.tab_def", "run.tab.def"),
                 (RunTab::Log, "run.tab_log", "run.tab.log"),
+                (RunTab::Hist, "run.tab_hist", "run.tab.hist"),
             ];
             for (tab, key, id) in tabs {
                 let words = t.tr(key);
@@ -5260,6 +5389,8 @@ impl Browser {
     /// the bottom, so the facts and the definition scroll there and the log fills what is left; else (the pane of 履歴)
     /// all of it flows in the page and the log has a height of its own.
     fn run_detail(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, watched: Option<&str>, paned: bool) {
+        // Whatever tab is up, what the 履歴 tab read for another net does not stay among the known runs.
+        self.job_past_keep(&run.jobnet);
         let Some(job) = watched.and_then(|w| run.job(w)) else {
             // No job to watch: the log's title and what it would say.
             let r = ui.label(egui::RichText::new(t.tr("run.log")).strong());
@@ -5300,6 +5431,188 @@ impl Browser {
                 }
             }
             RunTab::Log => self.log_tab(ui, t, run, watched, paned, picked),
+            RunTab::Hist => {
+                if paned {
+                    egui::ScrollArea::vertical()
+                        .id_salt("run_detail")
+                        .auto_shrink(false)
+                        .show(ui, |ui| self.jobhist_tab(ui, t, run, &job_id));
+                } else {
+                    self.jobhist_tab(ui, t, run, &job_id);
+                }
+            }
+        }
+    }
+
+    /// The 履歴 tab: the picked job in the past runs of the run's net the window knows of, one row a run, and the
+    /// button that reads older days.
+    fn jobhist_tab(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, job_id: &str) {
+        let c = ito_theme::colors();
+        let Some(job) = run.job(job_id) else { return };
+        let head = t.trf("run.jobhist_head", &[job.label()]);
+        let r = ui.label(egui::RichText::new(&head).strong());
+        ito_a11y::say(&r, Role::Heading, &head);
+        ito_a11y::test_id_in(ui, &r, "run.jobhist.head", None);
+        let today = self.engine_today();
+        let rows = jobhist::job_history(std::iter::once(run).chain(self.known_runs()), &run.jobnet, job_id);
+        // What is shown: the days read up to today, or further back where a row is older.
+        let read = self.job_past.as_ref().map_or(if self.past_rows.is_some() { jobhist::READ_DAYS } else { 0 }, |p| p.read_to_days);
+        let from = rows.iter().map(|r| r.date.clone()).chain(std::iter::once((today - chrono::Duration::days(read)).to_string())).min();
+        let range =
+            t.trf("run.jobhist_range", &[from.as_deref().unwrap_or_default(), &today.to_string(), &rows.len().to_string(), &run.jobnet]);
+        let r = ui.add(egui::Label::new(egui::RichText::new(&range).small().color(c.dim)).wrap());
+        ito_a11y::say(&r, Role::Label, &range);
+        ui.add_space(4.0);
+        let mut open = None;
+        if rows.is_empty() {
+            let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_none")).color(c.dim)).wrap());
+            ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_none"));
+        } else {
+            open = self.jobhist_table(ui, t, run, &rows);
+            ui.add_space(4.0);
+            if let Some((k, took)) = jobhist::usual(&rows) {
+                let line = t.trf("run.jobhist_usual", &[&k.to_string(), &show::duration(t, took)]);
+                let r = ui.add(egui::Label::new(egui::RichText::new(&line).small().color(c.dim)).wrap());
+                ito_a11y::say(&r, Role::Label, &line);
+            }
+            let r = ui.add(egui::Label::new(egui::RichText::new(t.tr("run.jobhist_renamed")).small().color(c.dim)).wrap());
+            ito_a11y::say(&r, Role::Label, t.tr("run.jobhist_renamed"));
+        }
+        self.jobhist_more(ui, t, run);
+        if let Some((id, log)) = open {
+            self.open_job_run(&id, job_id, log);
+        }
+    }
+
+    /// The more button and what it says while it reads or after it failed.
+    fn jobhist_more(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run) {
+        let c = ito_theme::colors();
+        let p = self.job_past.as_ref().filter(|p| p.is_for(self.link.far(), &run.jobnet, self.engine_today()));
+        if let Some(e) = p.and_then(|p| p.error.as_ref()) {
+            let line = t.trf("run.jobhist_error", &[e]);
+            let r = ui.add(egui::Label::new(egui::RichText::new(&line).color(c.err)).wrap());
+            ito_a11y::say(&r, Role::Label, &line);
+        }
+        let asking = p.is_some_and(|p| p.asking.is_some());
+        let target = jobhist::next_target(p.map_or(jobhist::READ_DAYS, |p| p.read_to_days));
+        let (words, enabled) = match (asking, target, p) {
+            (true, _, Some(p)) => (t.trf("run.jobhist_reading", &[&p.done().to_string(), &p.total.to_string()]), false),
+            (_, Some(days), _) => (t.trf("run.jobhist_more", &[&days.to_string()]), self.engine_date_known()),
+            (_, None, _) => return,
+        };
+        ui.add_space(4.0);
+        let r = ui.add_enabled(enabled, egui::Button::new(&words));
+        ito_a11y::say(&r, Role::Button, &words);
+        ito_a11y::test_id_in(ui, &r, "run.jobhist.more", None);
+        if r.clicked() {
+            self.job_past_more(&run.jobnet);
+        }
+    }
+
+    /// The table of the job's past runs. Gives the run a double click or the menu asked to open, and whether its log.
+    fn jobhist_table(&mut self, ui: &mut egui::Ui, t: &ito_i18n::Table, run: &Run, rows: &[jobhist::Row]) -> Option<(String, bool)> {
+        let c = ito_theme::colors();
+        let heads: Vec<String> = ["date", "start", "end", "took", "state", "exit", "retried", "how"]
+            .map(|k| t.tr(&format!("run.jobhist_col_{k}")).to_owned())
+            .to_vec();
+        let mut cells: Vec<(usize, Vec<(String, bool)>)> = rows
+            .iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let cells = vec![
+                    (r.date.clone(), true),
+                    (r.started.map(show::hms).unwrap_or_default(), true),
+                    (r.ended.map(show::hms).unwrap_or_default(), true),
+                    (r.took.map(|d| show::duration(t, d)).unwrap_or_default(), false),
+                    (show::tag(t, r.state), false),
+                    (r.exit.map(|x| x.to_string()).unwrap_or_default(), true),
+                    (if r.retried == 0 { String::new() } else { r.retried.to_string() }, true),
+                    (t.tr(&format!("csv.{}", crate::sheet::how(r.how))).to_owned(), false),
+                ];
+                (i, cells)
+            })
+            .collect();
+        // The date sorts by when the run began (the words are the run's day), the time taken by its seconds.
+        let key = |i: usize, col: usize| match col {
+            0 => Some(rows[i].run_started.and_utc().timestamp()),
+            3 => rows[i].took.map(|d| d.num_seconds()),
+            _ => None,
+        };
+        sort_rows_with(&mut cells, self.jobhist_sort, &key);
+        let mut open = None;
+        let mut body = |ui: &mut egui::Ui, table: &mut TodayTable| {
+            ui.spacing_mut().item_spacing.y = 0.0;
+            for (i, cells) in &cells {
+                let row = &rows[*i];
+                let this = row.run == run.id;
+                let r = table.cells_of(ui, cells, this, Some(row.state));
+                let said: Vec<String> = heads
+                    .iter()
+                    .zip(cells)
+                    .filter(|(_, (text, _))| !text.is_empty())
+                    .map(|(h, (text, _))| format!("{h}: {text}"))
+                    .collect();
+                let said = if this { format!("{}, {}", t.tr("run.jobhist_this"), said.join(", ")) } else { said.join(", ") };
+                ito_a11y::say(&r, Role::Row, &said);
+                ito_a11y::test_id_in(ui, &r, &format!("run.jobhist.row.{}", row.run), None);
+                if r.double_clicked() || r.triple_clicked() {
+                    open = Some((row.run.clone(), false));
+                }
+                let id = ui.make_persistent_id(("jobhist_row_menu", row.run.as_str()));
+                egui::Popup::context_menu(&r).id(id).show(|ui| {
+                    for (key, test, log) in
+                        [("run.jobhist_open", "run.jobhist.menu.open", false), ("run.jobhist_open_log", "run.jobhist.menu.log", true)]
+                    {
+                        let b = ui.add(egui::Button::new(t.tr(key)));
+                        ito_a11y::say(&b, Role::Button, t.tr(key));
+                        ito_a11y::test_id_in(ui, &b, test, None);
+                        if b.clicked() {
+                            open = Some((row.run.clone(), log));
+                            ui.close();
+                        }
+                    }
+                });
+            }
+        };
+        let mut sorted = None;
+        egui::ScrollArea::horizontal().id_salt("run_jobhist_scroll").auto_shrink([false, true]).show(ui, |ui| {
+            one_size(ui.style_mut());
+            let gap = std::mem::replace(&mut ui.spacing_mut().item_spacing.y, 0.0);
+            let plain: Vec<Vec<(String, bool)>> = cells.iter().map(|(_, r)| r.clone()).collect();
+            let mut widths = TodayTable::fit(ui, &heads, &plain);
+            TodayTable::squeeze(&mut widths, ui.available_width(), &[3, 4, 7], 72.0);
+            let mut table = TodayTable::with(&c, &widths, ui.available_width());
+            sorted = table.head(ui, &heads, self.jobhist_sort, t.tr("today.sort"));
+            body(ui, &mut table);
+            ui.spacing_mut().item_spacing.y = gap;
+        });
+        if let Some(col) = sorted {
+            self.jobhist_sort = TodayTable::next_sort(self.jobhist_sort, col);
+        }
+        open
+    }
+
+    /// Shows run `id` with `job` picked: on the run page the run opens (a link, 戻る returns); in the pane of 履歴
+    /// the pane shows it. The 概要 tab, or the ログ tab with `log`.
+    fn open_job_run(&mut self, id: &str, job: &str, log: bool) {
+        let look = if log { Look::Log } else { Look::Pick };
+        if self.hist.is_some() {
+            // A run only the 履歴 tab read is kept for the pane as the run page keeps it.
+            let in_lists = self.runs.iter().any(|r| r.id == id)
+                || self.hist.iter().any(|h| h.rows.iter().any(|r| r.id == id))
+                || self.past_rows.iter().flatten().any(|r| r.id == id);
+            if !in_lists {
+                self.opened_run = self.find_run(id).cloned();
+            }
+            self.run_sel = Some(id.to_owned());
+            self.result = None;
+        } else {
+            self.follow(|b| b.open_run(id));
+        }
+        self.job_sel = None;
+        self.look_at(job.to_owned(), look);
+        if !log {
+            self.set_run_tab(RunTab::Facts);
         }
     }
 
@@ -6548,16 +6861,28 @@ impl TodayTable {
 /// Sorts a jobs table's `(order, cells)` rows by `sort`. Column 0 (the job) sorts in its own order; the rest by
 /// their words with numbers as numbers (job2 before job10), the empty ones last.
 fn sort_rows(rows: &mut [(usize, Vec<(String, bool)>)], sort: Option<(usize, bool)>) {
+    sort_rows_with(rows, sort, &|_, _| None);
+}
+
+/// [`sort_rows`] with a number for the cells whose words do not sort as they read (a time taken: 「1時間5分」 is
+/// more than 「41分」, a date the run began on). `key(order, col)` gives the number of the row `order` in column
+/// `col`, or none to sort by the words as before; a row without a number goes after those with one, as the empty
+/// cells do, in both directions.
+fn sort_rows_with(rows: &mut [(usize, Vec<(String, bool)>)], sort: Option<(usize, bool)>, key: &dyn Fn(usize, usize) -> Option<i64>) {
     let Some((col, down)) = sort else { return };
     rows.sort_by(|(ia, a), (ib, b)| {
-        let o = if col == 0 {
-            ia.cmp(ib)
-        } else {
-            let (x, y) = (&a[col].0, &b[col].0);
-            match (x.is_empty(), y.is_empty()) {
-                (true, false) => return std::cmp::Ordering::Greater,
-                (false, true) => return std::cmp::Ordering::Less,
-                _ => ito_common::text::natural_cmp(x, y, false),
+        let o = match (key(*ia, col), key(*ib, col)) {
+            (Some(x), Some(y)) => x.cmp(&y),
+            (Some(_), None) => return std::cmp::Ordering::Less,
+            (None, Some(_)) => return std::cmp::Ordering::Greater,
+            (None, None) if col == 0 => ia.cmp(ib),
+            (None, None) => {
+                let (x, y) = (&a[col].0, &b[col].0);
+                match (x.is_empty(), y.is_empty()) {
+                    (true, false) => return std::cmp::Ordering::Greater,
+                    (false, true) => return std::cmp::Ordering::Less,
+                    _ => ito_common::text::natural_cmp(x, y, false),
+                }
             }
         };
         if down {
@@ -6987,7 +7312,8 @@ mod tests {
         };
         let mut h = History::week(chrono::NaiveDate::from_ymd_opt(2026, 10, 30).unwrap());
         assert_eq!((h.from.as_str(), h.to.as_str()), ("2026-10-23", "2026-10-30"));
-        assert!(matches!(h.request(), Request::History { from, to } if from == "2026-10-23" && to == "2026-10-30"));
+        assert!(matches!(h.ask(), Request::History { from, to } if from == "2026-10-23" && to == "2026-10-30"));
+        assert_eq!(h.asked, Some(("2026-10-23".to_owned(), "2026-10-30".to_owned())));
         h.rows = vec![
             run("r1", "g/a", at(28, 9), State::Ok),
             run("r2", "g/b", at(29, 9), State::Error),
@@ -7057,6 +7383,8 @@ mod tests {
             compare_base: None,
             past_rows: None,
             opened_run: None,
+            job_past: None,
+            jobhist_sort: None,
             prev_wait: None,
             log_scroll: false,
             def_scroll: false,
@@ -10359,5 +10687,346 @@ note = \"n\"
         assert_eq!(b.compare_base.as_deref(), Some("earlier"), "the run that came is the base");
         assert_eq!(b.prev_wait, None);
         assert!(b.past_read() && !b.prev_can(&earlier), "the net's first run: nothing before it");
+    }
+
+    /// A run of `page_run`'s net on `day` of October, started `back` days before now.
+    fn hist_run(id: &str, day: u32, back: i64) -> Run {
+        let mut r = page_run(id);
+        r.date = format!("2026-10-{day:02}");
+        r.started = ito_common::now::now_local().naive_local() - chrono::Duration::days(back);
+        r
+    }
+
+    /// A browser on the run page of `r1` with the 履歴 tab up, `a` picked, and `past_rows` read.
+    fn hist_tab_browser(past: Vec<Run>) -> Browser {
+        let mut b = quiet(defs());
+        b.runs = vec![hist_run("r1", 30, 0)];
+        b.past_rows = Some(past);
+        b.run_sel = Some("r1".into());
+        b.job_sel = Some("a".into());
+        b.run_tab = RunTab::Hist;
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
+        b
+    }
+
+    fn rows_said(s: &Screen) -> Vec<String> {
+        s.nodes.values().map(|n| n.0.clone()).filter(|l| l.contains("日付: ")).collect()
+    }
+
+    #[test]
+    fn the_history_tab_is_kept_as_hist() {
+        assert_eq!(RunTab::kept(Some("hist")), RunTab::Hist);
+        assert_eq!(RunTab::Hist.word(), "hist");
+        assert_eq!(RunTab::kept(Some("nonsense")), RunTab::Facts);
+    }
+
+    #[test]
+    fn the_history_tab_shows_the_job_in_the_runs_the_window_holds() {
+        let mut other = hist_run("r4", 27, 3);
+        other.jobnet = "試験/other".into();
+        let mut b = hist_tab_browser(vec![hist_run("r2", 29, 1), hist_run("r3", 28, 2), other]);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        let rows = rows_said(&s);
+        assert_eq!(rows.len(), 3, "this run and two earlier ones: {rows:?}");
+        assert!(rows.iter().any(|r| r.starts_with("この回, 日付: 2026-10-30")), "the shown run says so: {rows:?}");
+        assert!(!rows.iter().any(|r| r.contains("2026-10-27")), "another net's run is not a row");
+        let says = |w: &str| s.nodes.values().any(|n| n.0.contains(w));
+        assert!(says("a の履歴") && says("ジョブネット 試験/bom）"), "the heading and the range line");
+        assert!(says("正常に終わった 3 回の中央値"), "the usual time");
+        assert!(says("さらに前を読む（90 日まで）"));
+        // Another job picked keeps the tab.
+        assert_eq!(b.run_tab, RunTab::Hist);
+    }
+
+    /// The days of the next `History` request the window sent.
+    fn next_part(asked: &Asked) -> Option<(String, String)> {
+        match asked.try_recv() {
+            Ok(Request::History { from, to }) => Some((from, to)),
+            _ => None,
+        }
+    }
+
+    fn part_answer(b: &mut Browser, from: &str, to: &str, runs: Vec<Run>) {
+        let req = Request::History { from: from.into(), to: to.into() };
+        b.io.0.send(Msg::Answer(req, Ok(Runs { runs }.to_toml()))).unwrap();
+        b.drain();
+    }
+
+    #[test]
+    fn the_more_button_reads_90_days_in_two_parts_then_365() {
+        let (tx, asked) = asks();
+        let mut b = hist_tab_browser(vec![hist_run("r2", 29, 1)]);
+        b.out.tx = tx;
+        let today = b.engine_today();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(asked.try_recv().is_err(), "opening the tab asks nothing");
+        s.click("さらに前を読む（90 日まで）", &mut b);
+        let parts = jobhist::parts(today, 31, 90);
+        assert_eq!(next_part(&asked), Some(parts[0].clone()));
+        assert!(asked.try_recv().is_err(), "one request at a time");
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|n| n.0.contains("読んでいます… (0/2)")), "the progress while asking");
+        // The first part answers: its runs of this net stay, another net's do not; the next part is asked.
+        let mut other = hist_run("o1", 5, 50);
+        other.jobnet = "試験/other".into();
+        part_answer(&mut b, &parts[0].0, &parts[0].1, vec![hist_run("p1", 3, 40), other]);
+        assert_eq!(next_part(&asked), Some(parts[1].clone()));
+        assert_eq!(b.job_past.as_ref().unwrap().runs.len(), 1);
+        part_answer(&mut b, &parts[1].0, &parts[1].1, vec![hist_run("p2", 2, 70)]);
+        assert!(asked.try_recv().is_err(), "the last part ends the press");
+        let p = b.job_past.as_ref().unwrap();
+        assert_eq!((p.read_to_days, p.runs.len(), p.asking.is_none()), (90, 2, true));
+        s.settle(&mut b);
+        assert_eq!(rows_said(&s).len(), 4, "this run, r2 and the two read");
+        // The same button now goes to 365 days: 10 parts, one at a time, newest first.
+        s.click("さらに前を読む（365 日まで）", &mut b);
+        let parts = jobhist::parts(today, 91, 365);
+        assert_eq!(parts.len(), 10);
+        assert_eq!(next_part(&asked), Some(parts[0].clone()));
+        for (i, (from, to)) in parts.iter().enumerate() {
+            part_answer(&mut b, from, to, Vec::new());
+            assert_eq!(asked.try_recv().is_ok(), i + 1 < parts.len());
+        }
+        s.settle(&mut b);
+        assert_eq!(b.job_past.as_ref().unwrap().read_to_days, 365);
+        assert!(!s.nodes.values().any(|n| n.0.contains("さらに前を読む")), "the button is gone after 365 days");
+    }
+
+    #[test]
+    fn an_error_stops_the_press_and_the_next_press_asks_the_rest() {
+        let (tx, asked) = asks();
+        let mut b = hist_tab_browser(Vec::new());
+        b.out.tx = tx;
+        let today = b.engine_today();
+        let parts = jobhist::parts(today, 31, 90);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("さらに前を読む（90 日まで）", &mut b);
+        assert!(asked.try_recv().is_ok());
+        part_answer(&mut b, &parts[0].0, &parts[0].1, vec![hist_run("p1", 3, 40)]);
+        assert!(asked.try_recv().is_ok());
+        let req = Request::History { from: parts[1].0.clone(), to: parts[1].1.clone() };
+        b.io.0.send(Msg::Answer(req, Err("engine is gone".into()))).unwrap();
+        b.drain();
+        assert!(asked.try_recv().is_err(), "an error stops it");
+        s.settle(&mut b);
+        assert!(s.nodes.values().any(|n| n.0.contains("読めませんでした: engine is gone")));
+        // The press asks the failed part again, not the first one.
+        s.click("さらに前を読む（90 日まで）", &mut b);
+        assert_eq!(next_part(&asked), Some(parts[1].clone()));
+        assert_eq!(b.job_past.as_ref().unwrap().error, None);
+    }
+
+    #[test]
+    fn a_history_box_answer_for_other_days_is_not_taken_by_the_tab() {
+        let (tx, _asked) = asks();
+        let mut b = hist_tab_browser(Vec::new());
+        b.out.tx = tx;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("さらに前を読む（90 日まで）", &mut b);
+        let asking = b.job_past.as_ref().unwrap().asking.clone();
+        assert!(asking.is_some());
+        part_answer(&mut b, "2020-01-01", "2020-01-31", vec![hist_run("far", 1, 900)]);
+        let p = b.job_past.as_ref().unwrap();
+        assert_eq!((p.runs.len(), &p.asking), (0, &asking), "still waiting for its own part");
+        // The box asked the very same days: it gets the rows as well.
+        b.open_history();
+        let (from, to) = asking.clone().unwrap();
+        {
+            let h = b.hist.as_mut().unwrap();
+            h.from = from.clone();
+            h.to = to.clone();
+            h.asked = Some((from.clone(), to.clone()));
+        }
+        part_answer(&mut b, &from, &to, vec![hist_run("p1", 3, 40)]);
+        assert_eq!(b.hist.as_ref().unwrap().rows.len(), 1);
+        assert_eq!(b.job_past.as_ref().unwrap().runs.len(), 1);
+    }
+
+    #[test]
+    fn a_double_click_opens_that_run_with_the_job_and_the_summary_tab() {
+        let mut b = hist_tab_browser(vec![hist_run("r2", 29, 1)]);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.double_click("日付: 2026-10-29", &mut b);
+        s.settle(&mut b);
+        assert_eq!(b.run_sel.as_deref(), Some("r2"));
+        assert_eq!((b.job_sel.as_deref(), b.run_tab), (Some("a"), RunTab::Facts));
+        assert!(b.selected_run().is_some());
+    }
+
+    #[test]
+    fn the_menu_opens_a_run_or_its_log_without_picking() {
+        let mut b = hist_tab_browser(vec![hist_run("r2", 29, 1)]);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.right_click("日付: 2026-10-29", &mut b);
+        s.settle(&mut b);
+        assert_eq!(b.run_sel.as_deref(), Some("r1"), "a right click picks nothing");
+        s.click("この回のログを見る", &mut b);
+        s.settle(&mut b);
+        assert_eq!(b.run_sel.as_deref(), Some("r2"));
+        assert_eq!((b.job_sel.as_deref(), b.run_tab), (Some("a"), RunTab::Log));
+    }
+
+    #[test]
+    fn a_run_only_the_tab_read_opens_and_stays() {
+        let mut b = hist_tab_browser(Vec::new());
+        b.past_rows = None;
+        let mut jp = jobhist::JobPast::new(None, "試験/bom", b.engine_today());
+        jp.runs = vec![hist_run("old", 3, 60)];
+        b.job_past = Some(jp);
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.double_click("日付: 2026-10-03", &mut b);
+        assert_eq!(b.run_sel.as_deref(), Some("old"));
+        assert!(b.opened_run.is_some(), "a copy is kept for the page");
+        b.job_past = None;
+        assert_eq!(b.selected_run().map(|r| r.id.as_str()), Some("old"));
+    }
+
+    #[test]
+    fn a_double_click_in_the_pane_of_the_history_page_shows_the_run_there() {
+        let mut b = hist_tab_browser(vec![hist_run("r2", 29, 1)]);
+        b.open_history();
+        b.run_sel = Some("r1".into());
+        b.job_sel = Some("a".into());
+        b.run_tab = RunTab::Hist;
+        b.hist.as_mut().unwrap().rows = vec![hist_run("r1", 30, 0)];
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.double_click("日付: 2026-10-29", &mut b);
+        s.settle(&mut b);
+        assert!(b.hist.is_some(), "the page stays");
+        assert_eq!(b.run_sel.as_deref(), Some("r2"));
+        assert_eq!((b.job_sel.as_deref(), b.run_tab), (Some("a"), RunTab::Facts));
+    }
+
+    #[test]
+    fn what_the_tab_read_goes_with_the_link_the_net_and_the_day() {
+        let mut b = hist_tab_browser(Vec::new());
+        let today = b.engine_today();
+        b.job_past = Some(jobhist::JobPast::new(None, "試験/bom", today));
+        b.job_past_keep("試験/bom");
+        assert!(b.job_past.is_some());
+        b.job_past_keep("試験/other");
+        assert!(b.job_past.is_none(), "another net");
+        b.job_past = Some(jobhist::JobPast::new(None, "試験/bom", today - chrono::Duration::days(1)));
+        b.job_past_keep("試験/bom");
+        assert!(b.job_past.is_none(), "another day");
+        b.job_past = Some(jobhist::JobPast::new(None, "試験/bom", today));
+        b.link = Link::Far("kei".into());
+        b.job_past_keep("試験/bom");
+        assert!(b.job_past.is_none(), "another PC");
+    }
+
+    #[test]
+    fn a_history_box_answer_only_lands_for_the_days_it_asked() {
+        let (tx, _asked) = asks();
+        let mut b = quiet(defs());
+        b.out.tx = tx;
+        b.open_history();
+        let (from, to) = b.hist.as_ref().unwrap().asked.clone().unwrap();
+        // The fields are edited after the request went: the answer for what was asked still lands.
+        {
+            let h = b.hist.as_mut().unwrap();
+            h.from = "2020-01-01".into();
+            h.to = "2020-01-05".into();
+        }
+        part_answer(&mut b, &from, &to, vec![hist_run("p1", 3, 40)]);
+        assert_eq!(b.hist.as_ref().unwrap().rows.len(), 1);
+        // An answer for any other days (a request long gone) is dropped.
+        part_answer(&mut b, "2020-01-01", "2020-01-05", vec![hist_run("p2", 3, 40), hist_run("p3", 4, 41)]);
+        assert_eq!(b.hist.as_ref().unwrap().rows.len(), 1);
+    }
+
+    #[test]
+    fn a_part_answer_after_the_tab_was_dropped_leaves_the_history_box_alone() {
+        let (tx, _asked) = asks();
+        let mut b = hist_tab_browser(Vec::new());
+        b.out.tx = tx;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        s.click("さらに前を読む（90 日まで）", &mut b);
+        let (from, to) = b.job_past.as_ref().unwrap().asking.clone().unwrap();
+        b.open_history();
+        b.hist.as_mut().unwrap().rows = vec![hist_run("keep", 3, 5)];
+        b.job_past = None;
+        part_answer(&mut b, &from, &to, vec![hist_run("p1", 3, 40)]);
+        assert_eq!(b.hist.as_ref().unwrap().rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["keep"]);
+    }
+
+    #[test]
+    fn another_net_drops_what_the_tab_read_on_any_tab() {
+        let mut b = hist_tab_browser(Vec::new());
+        let today = b.engine_today();
+        let mut jp = jobhist::JobPast::new(None, "試験/other", today);
+        jp.runs = vec![hist_run("old", 3, 60)];
+        b.job_past = Some(jp);
+        b.run_tab = RunTab::Facts;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        assert!(b.job_past.is_none(), "drawn on the 概要 tab for the net 試験/bom");
+        assert!(b.find_run("old").is_none());
+    }
+
+    #[test]
+    fn a_new_day_drops_what_the_tab_read_without_a_run_page() {
+        let mut b = quiet(defs());
+        let today = b.engine_today();
+        b.job_past = Some(jobhist::JobPast::new(None, "試験/bom", today - chrono::Duration::days(1)));
+        b.drain();
+        assert!(b.job_past.is_none());
+    }
+
+    #[test]
+    fn the_date_column_sorts_by_when_the_run_began_and_the_time_by_its_seconds() {
+        let at = |h| ito_common::now::now_local().naive_local() - chrono::Duration::hours(h);
+        let mut rows: Vec<(usize, Vec<(String, bool)>)> = vec![
+            (0, vec![("b".into(), false), ("1時間5分".into(), false)]),
+            (1, vec![("a".into(), false), ("41分".into(), false)]),
+            (2, vec![("c".into(), false), (String::new(), false)]),
+        ];
+        let began = [at(1), at(3), at(2)];
+        let secs = [Some(65 * 60), Some(41 * 60), None];
+        let key = |i: usize, col: usize| match col {
+            0 => Some(began[i].and_utc().timestamp()),
+            1 => secs[i],
+            _ => None,
+        };
+        let order = |rows: &[(usize, Vec<(String, bool)>)]| rows.iter().map(|r| r.0).collect::<Vec<_>>();
+        sort_rows_with(&mut rows, Some((0, false)), &key);
+        assert_eq!(order(&rows), [1, 2, 0], "oldest first");
+        sort_rows_with(&mut rows, Some((0, true)), &key);
+        assert_eq!(order(&rows), [0, 2, 1], "newest first");
+        sort_rows_with(&mut rows, Some((1, false)), &key);
+        assert_eq!(order(&rows), [1, 0, 2], "41分 before 1時間5分, the empty last");
+        sort_rows_with(&mut rows, Some((1, true)), &key);
+        assert_eq!(order(&rows), [0, 1, 2], "the empty last when down as well");
+        // Without a number the words and, for column 0, the order given decide as before.
+        sort_rows(&mut rows, Some((0, false)));
+        assert_eq!(order(&rows), [0, 1, 2]);
+    }
+
+    #[test]
+    fn a_click_and_then_a_double_click_on_another_job_still_opens_its_definition() {
+        let mut b = quiet(defs());
+        let mut r = page_run("r1");
+        let mut second = r.jobs[0].clone();
+        second.id = "b".into();
+        r.jobs.push(second);
+        b.runs = vec![r];
+        b.run_sel = Some("r1".into());
+        b.run_defs.insert("r1".into(), runfacts::DefCopy::Asked);
+        b.run_tab = RunTab::Facts;
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        // The two clicks come within a few frames: the second of the double click counts as a third.
+        s.click("a ", &mut b);
+        s.double_click("b ", &mut b);
+        assert_eq!((b.job_sel.as_deref(), b.run_tab), (Some("b"), RunTab::Def));
     }
 }

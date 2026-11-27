@@ -316,7 +316,7 @@ pub fn draw(
         // (`<RClick:▶ name>`) reach it by that, apart from the job table's row.
         ito_a11y::say(&node, ito_a11y::Role::Button, &format!("{} {}", j.state.mark(), j.label()));
         if node.clicked() || node.secondary_clicked() {
-            hit.get_or_insert((i, node.double_clicked()));
+            hit.get_or_insert((i, node.double_clicked() || node.triple_clicked()));
         }
         if let Some(menu) = menu.as_deref_mut() {
             // A persistent id: the picture's own ids shift when the page above it changes.

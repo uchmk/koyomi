@@ -66,7 +66,7 @@ pub fn jobs(t: &Table, defs: &[Def]) -> koyomi_table::Table {
 }
 
 /// The key of `how`'s word (`csv.how_<key>`).
-fn how(h: How) -> &'static str {
+pub(crate) fn how(h: How) -> &'static str {
     match h {
         How::Manual => "how_manual",
         How::Schedule => "how_schedule",

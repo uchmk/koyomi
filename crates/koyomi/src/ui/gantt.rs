@@ -191,7 +191,7 @@ pub fn draw(
             };
         }
         ito_a11y::say(&r, ito_a11y::Role::Row, &said);
-        if r.double_clicked() {
+        if r.double_clicked() || r.triple_clicked() {
             clicked = latest.map(|run| (run.id.clone(), true));
         } else if r.clicked() {
             clicked = latest.map(|run| (run.id.clone(), false));

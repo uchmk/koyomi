@@ -697,7 +697,7 @@ fn net_link(ui: &egui::Ui, t: &ito_i18n::Table, r: &egui::Response, said: &str) 
     let tip = format!("{said}\n{}", t.tr("calendar.open_net_hint"));
     let r = r.clone().on_hover_cursor(egui::CursorIcon::PointingHand).on_hover_text(tip);
     ito_a11y::say(&r, Role::Button, said);
-    let mut open = r.double_clicked() || (r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
+    let mut open = r.double_clicked() || r.triple_clicked() || (r.has_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)));
     r.context_menu(|ui| {
         if ui.button(t.tr("calendar.open_net")).clicked() {
             open = true;
