@@ -11,10 +11,10 @@ repository.workspace = true
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 sha2 = "0.10"
-ito-common = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468", features = ["clock"] }
-ito-i18n = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
-ito-match = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
-ito-proc = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
+ito-common = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef", features = ["clock"] }
+ito-i18n = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
+ito-proc = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 koyomi-zip = { path = "../koyomi-zip" }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std", "serde"] }
 roxmltree = "0.20"

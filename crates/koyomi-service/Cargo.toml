@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [target."cfg(windows)".dependencies]
-ito-power = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
+ito-power = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Security",

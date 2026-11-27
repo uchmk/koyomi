@@ -15,7 +15,7 @@ default = []
 tls = ["dep:rustls", "dep:rcgen"]
 
 [dependencies]
-ito-secret = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
+ito-secret = { git = "https://github.com/uchmk/ito", rev = "9bd898e28b2177fe9c43ad7529f23495170233ef" }
 serde = "1"
 serde_json = "1"
 getrandom = "0.4"
