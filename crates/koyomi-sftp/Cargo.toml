@@ -9,7 +9,7 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-ito-match = { git = "https://github.com/uchmk/ito", rev = "02a72723e1b45b0be6b201fa71f75e020bcc806b" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "b696a1d1555da4e9f4eb875c5d6cd531a00be460" }
 # `ring` (not the default aws-lc-rs) needs a C compiler on Linux and macOS targets only; Windows MSVC builds as is.
 russh = { version = "0.65", default-features = false, features = ["ring"] }
 russh-sftp = "3"

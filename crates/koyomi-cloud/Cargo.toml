@@ -13,7 +13,7 @@ publish = false
 test-util = []
 
 [dependencies]
-ito-match = { git = "https://github.com/uchmk/ito", rev = "02a72723e1b45b0be6b201fa71f75e020bcc806b" }
+ito-match = { git = "https://github.com/uchmk/ito", rev = "b696a1d1555da4e9f4eb875c5d6cd531a00be460" }
 # `ring` (not aws-lc-rs); no gzip: object bodies are stored bytes and must come back as they are.
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 sha2 = "0.11"
