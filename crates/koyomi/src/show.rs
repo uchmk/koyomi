@@ -362,14 +362,30 @@ pub fn job_facts(t: &Table, j: &JobRun) -> Vec<(String, String)> {
         }
     }
     if !j.env.is_empty() {
-        // A `secret:<name>` value is a reference to the credential store; it is never shown.
-        let env: Vec<String> = j.env.iter().map(|(k, v)| format!("{k}={}", if v.starts_with("secret:") { "***" } else { v })).collect();
+        let env: Vec<String> = j.env.iter().map(|(k, v)| format!("{k}={}", env_shown(k, v))).collect();
         add("run.env", env.join("  "));
     }
     for m in &j.moved {
         add("run.file", moved(t, m));
     }
     rows
+}
+
+/// An environment value as the job's facts show it. A `secret:<name>` value is a reference to the credential
+/// store and is never shown (`***`). A text the engine gives `koyomi mail|sql|file run` (`KOYOMI_MAIL_*`,
+/// `KOYOMI_SQL_*`, `KOYOMI_FILE_*`) is shown without the [`MAIL_TEXT`] the engine put before it.
+///
+/// [`MAIL_TEXT`]: koyomi_core::chore::MAIL_TEXT
+fn env_shown<'a>(key: &str, value: &'a str) -> &'a str {
+    if value.starts_with("secret:") {
+        return "***";
+    }
+    let engine = ["KOYOMI_MAIL_", "KOYOMI_SQL_", "KOYOMI_FILE_"].iter().any(|p| key.starts_with(p));
+    if engine {
+        value.strip_prefix(koyomi_core::chore::MAIL_TEXT).unwrap_or(value)
+    } else {
+        value
+    }
 }
 
 /// A file a `send` or `fetch` moved: its name, size, hash and whether the far side's was the same.
@@ -458,6 +474,39 @@ error low",
         assert_eq!(get("run.command").as_deref(), Some("powershell: Get-Date"));
         let env = get("run.env").unwrap();
         assert!(env.contains("DB_PASS=***") && env.contains("MODE=full") && !env.contains("secret:db"), "{env}");
+    }
+
+    /// The `|` the engine puts before a text of `koyomi sql|mail|file run` is not shown; a job's own value keeps it.
+    #[test]
+    fn job_facts_hide_the_engine_text_mark() {
+        let (t, _) = crate::i18n::table("en");
+        let env = [
+            ("KOYOMI_SQL_FILE", "|C:\\sql\\a.sql"),
+            ("KOYOMI_SQL_TLS", "trust"),
+            ("KOYOMI_MAIL_SUBJECT", "|secret:not-a-reference"),
+            ("KOYOMI_FILE_PATH", "|D:\\old"),
+            ("KOYOMI_SQL_PASSWORD", "secret:db"),
+            ("MODE", "|kept"),
+        ];
+        let job = koyomi_core::jobnet::Job {
+            id: "a".into(),
+            run: vec!["x".into()],
+            env: env.iter().map(|(k, v)| ((*k).to_owned(), (*v).to_owned())).collect(),
+            ..Default::default()
+        };
+        let rows = job_facts(&t, &JobRun::from_job(&job));
+        let env = rows.iter().find(|r| r.0 == t.tr("run.env")).map(|r| r.1.clone()).unwrap();
+        for want in [
+            "KOYOMI_SQL_FILE=C:\\sql\\a.sql",
+            "KOYOMI_SQL_TLS=trust",
+            "KOYOMI_MAIL_SUBJECT=secret:not-a-reference",
+            "KOYOMI_FILE_PATH=D:\\old",
+            "KOYOMI_SQL_PASSWORD=***",
+            "MODE=|kept",
+        ] {
+            assert!(env.contains(want), "{want} in {env}");
+        }
+        assert!(!env.contains("=|C:") && !env.contains("=|D:") && !env.contains("secret:db"), "{env}");
     }
 
     #[test]
