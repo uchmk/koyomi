@@ -6,8 +6,6 @@
 //!
 //! The caller keeps one [`LogView`] per place and calls [`LogView::show`] each frame with the text and a number
 //! (`gen`) that changes whenever the text changes.
-// The wiring step (the run page, the wide view) removes this allow.
-#![cfg_attr(not(test), allow(dead_code))]
 
 use std::borrow::Cow;
 use std::ops::Range;
@@ -320,8 +318,6 @@ pub struct LogView {
     worker: Option<Worker>,
     /// The hit to bring into view, once.
     scroll: bool,
-    /// The find box had focus at the end of the last frame.
-    box_focus: bool,
     saving: Option<Saving>,
     drawn: Option<Drawn>,
     serial: u64,
@@ -344,7 +340,6 @@ impl LogView {
             sent: None,
             worker: None,
             scroll: false,
-            box_focus: false,
             saving: None,
             drawn: None,
             serial: 0,
@@ -359,6 +354,25 @@ impl LogView {
         self.current_version = None;
         self.scroll = false;
         self.bar.status = Status::Idle;
+    }
+
+    /// The words in the find box.
+    #[cfg(test)]
+    pub fn find_text(&self) -> &str {
+        &self.bar.find
+    }
+
+    /// Takes the search of `from` (the find words, regex, case, whole word and 「一致した行だけ」), so the search
+    /// follows the person from one place to another. The next frame searches for it.
+    pub fn take_query(&mut self, from: &LogView) {
+        // `clear_query` moves the bar's version on, so a result for the old query is never taken for the new one.
+        self.bar.clear_query();
+        self.bar.find.clone_from(&from.bar.find);
+        self.bar.regex = from.bar.regex;
+        self.bar.match_case = from.bar.match_case;
+        self.bar.whole_word = from.bar.whole_word;
+        self.only_hits = from.only_hits;
+        self.reset_search();
     }
 
     /// The search result for the text `gen` and the query as it is now, when there is one.
@@ -482,7 +496,7 @@ impl LogView {
         let mut copy = false;
         let mut save = false;
         let mut bo = ito_find::Output::default();
-        let row = ui.horizontal_wrapped(|ui| {
+        ui.horizontal_wrapped(|ui| {
             bo = self.bar.show(ui, look, &w.find);
             let r = ui.checkbox(&mut self.only_hits, w.only_hits);
             ito_a11y::say(&r, Role::Button, w.only_hits);
@@ -500,29 +514,20 @@ impl LogView {
             save = r.clicked();
         });
 
-        // The bar: Esc in the find box (or ✕) clears the query and keeps the bar; Esc elsewhere is the caller's.
+        // The bar: Esc with one of its widgets focused (or ✕) is `closed`: clear the query, keep the bar, and keep
+        // that Esc from the caller. Esc elsewhere is the caller's.
         self.bar.open = true;
-        // egui drops the focus of a text box at the start of the pass in which Esc is pressed, so the bar's own
-        // Esc test (`memory.focused()` after that) cannot tell; the viewer remembers whether the box had focus at
-        // the end of the last frame. The head row has the one text box there is, so a focused text box whose rect
-        // lies in the row is the find box (another text box elsewhere keeps its Esc). ito-find should report this
-        // itself (ito-19); then this goes.
-        let ours = bo.closed && !esc || esc && self.box_focus;
-        if ours {
+        if bo.closed {
             if esc {
                 ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
             }
-            self.bar.find.clear();
+            self.bar.clear_query();
             self.reset_search();
             out.closed = true;
             ui.ctx().request_repaint();
         } else if bo.query_changed {
             ui.ctx().request_repaint();
         }
-        let ctx = ui.ctx().clone();
-        let row_rect = row.response.rect;
-        self.box_focus = ctx.text_edit_focused()
-            && ui.memory(|m| m.focused()).and_then(|id| ctx.read_response(id)).is_some_and(|r| row_rect.contains_rect(r.rect));
         let total = self.valid(gen).and_then(|r| r.as_ref().ok()).map_or(0, |f| f.hits.len());
         if total > 0 && (bo.next || bo.prev) {
             self.current = step(self.current, total, bo.next);
@@ -1049,10 +1054,58 @@ mod tests {
         run(&mut v, vec![]);
         run(&mut v, vec![]);
         assert!(ctx.text_edit_focused(), "the other box has focus");
-        assert!(!v.box_focus);
         let (closed, seen) = run(&mut v, vec![esc_event()]);
         assert!(!closed && seen, "the other box keeps its Esc");
         assert_eq!(v.bar.find, "beta");
+    }
+
+    #[test]
+    fn take_query_copies_the_search_and_moves_the_version_on() {
+        let mut from = LogView::new("run.log");
+        from.bar.find = "beta".into();
+        from.bar.regex = true;
+        from.bar.match_case = true;
+        from.bar.whole_word = true;
+        from.only_hits = true;
+        let mut to = LogView::new("run.wide");
+        let before = to.bar.version();
+        to.take_query(&from);
+        assert_eq!(
+            (to.bar.find.as_str(), to.bar.regex, to.bar.match_case, to.bar.whole_word, to.only_hits),
+            ("beta", true, true, true, true)
+        );
+        assert!(to.bar.version() > before);
+        // Each keeps its own wrap.
+        from.wrap = false;
+        to.take_query(&from);
+        assert!(to.wrap);
+        // An empty query comes over as empty.
+        let empty = LogView::new("run.log");
+        to.take_query(&empty);
+        assert!(to.bar.find.is_empty() && !to.only_hits && !to.bar.regex);
+    }
+
+    #[test]
+    fn tab_to_a_toggle_then_esc_clears_and_is_not_the_callers() {
+        let ctx = egui::Context::default();
+        let mut v = LogView::new("run.log");
+        v.bar.open_find(Some("beta"));
+        let tab =
+            egui::Event::Key { key: egui::Key::Tab, physical_key: None, pressed: true, repeat: false, modifiers: egui::Modifiers::NONE };
+        frame(&ctx, &mut v, "beta", 1, vec![]);
+        frame(&ctx, &mut v, "beta", 1, vec![tab]);
+        frame(&ctx, &mut v, "beta", 1, vec![]);
+        assert!(!ctx.text_edit_focused(), "the focus moved to a button of the bar");
+        let mut seen = true;
+        let input = egui::RawInput { events: vec![esc_event()], ..Default::default() };
+        let mut closed = false;
+        let mut o = ctx.run_ui(input, |ui| {
+            closed = v.show(ui, ito_prefs::Look { c: ito_theme::colors(), q: "" }, &W, "beta", 1, "x").closed;
+            seen = ui.input(|i| i.key_pressed(egui::Key::Escape));
+        });
+        o.textures_delta.clear();
+        assert!(closed && !seen, "the bar took it");
+        assert!(v.bar.open && v.bar.find.is_empty());
     }
 
     #[test]

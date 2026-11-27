@@ -838,8 +838,10 @@ pub struct Browser {
     run_tab: RunTab,
     /// The wide view (広げる / the net's definition) when it is up.
     wide: Option<Wide>,
-    /// The wide log wraps its lines (memory only).
-    wide_wrap: bool,
+    /// The wide log's viewer (its own wrap; the search is carried from and to `log_view`).
+    wide_log_view: logview::LogView,
+    /// The wide log was up at the end of the last frame (the search comes back to the tab when it ends).
+    wide_log_on: bool,
     /// The net definition shows its text, not its items (memory only).
     netdef_text: bool,
     /// What the text of the net definition is searched for.
@@ -854,8 +856,10 @@ pub struct Browser {
     run_cmds: BTreeMap<String, runfacts::CmdCopy>,
     /// The job whose log is shown, when one was picked by hand.
     job_sel: Option<String>,
-    /// What the log search box holds (a regular expression, smart case).
-    log_find: String,
+    /// The ログ tab's viewer.
+    log_view: logview::LogView,
+    /// The number of the log text: changes only when the stored text does.
+    log_gen: u64,
     /// The last log tail fetched: run, job, text.
     log: Option<(String, String, String)>,
     vertical: bool,
@@ -1051,7 +1055,8 @@ impl Browser {
             def_scroll: false,
             run_tab,
             wide: None,
-            wide_wrap: true,
+            wide_log_view: logview::LogView::new("run.wide"),
+            wide_log_on: false,
             netdef_text: false,
             netdef_find: String::new(),
             netdef_scroll: false,
@@ -1059,7 +1064,8 @@ impl Browser {
             run_defs: BTreeMap::new(),
             run_cmds: BTreeMap::new(),
             job_sel: None,
-            log_find: String::new(),
+            log_view: logview::LogView::new("run.log"),
+            log_gen: 0,
             log: None,
             vertical,
             flow,
@@ -1663,7 +1669,14 @@ impl Browser {
                     self.runs = r.runs;
                     self.runs_known = true;
                 }
-                Msg::Log(run, job, text) => self.log = Some((run, job, text)),
+                Msg::Log(run, job, text) => {
+                    // The thread sends the same text every round; an equal one must not start a new search.
+                    let new = Some((run, job, text));
+                    if self.log != new {
+                        self.log = new;
+                        self.log_gen += 1;
+                    }
+                }
                 Msg::Done(r) => {
                     self.done = Some(r);
                     self.done_path = None;
@@ -3224,11 +3237,18 @@ impl Browser {
         self.confirm_skip_next(&ctx, t, key_for(10));
         self.confirm_staged(&ctx, t, key_for(11));
         self.confirm_send(&ctx, t, key_for(12));
-        // Esc ends the wide view (also from its search box), unless a box, a popup or a menu takes it.
+        // Esc ends the wide view, unless a box, a popup or a menu takes it. The wide log's find bar was drawn above
+        // and has already taken the Esc typed in it (that one clears the search); the next Esc ends the view.
         let can_end = self.wide.is_some() && !modal && !popup_open && !self.covered() && !self.box_open();
         if can_end && ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape)) {
             self.wide = None;
         }
+        // The search follows the person: it came to the wide log when that opened and goes back to the tab now.
+        let wide_log = matches!(self.wide.as_ref().map(|w| &w.what), Some(WideWhat::Log));
+        if self.wide_log_on && !wide_log {
+            self.log_view.take_query(&self.wide_log_view);
+        }
+        self.wide_log_on = wide_log;
         if keys_modal && !making && !self.covered() && !port.is_some_and(|(_, typing)| typing) {
             // Tab moves egui's focus before any of this runs; drop it so the next Enter or Space
             // cannot press a button behind the box (or in it: the box's own focus is `self.focus`).
@@ -5210,6 +5230,10 @@ impl Browser {
     /// Opens the wide view over the run page (or over the pane of 履歴).
     fn open_wide(&mut self, run: &Run, what: WideWhat) {
         self.netdef_scroll = matches!(what, WideWhat::NetDef(Some(_)));
+        if matches!(what, WideWhat::Log) {
+            self.wide_log_view.take_query(&self.log_view);
+            self.wide_log_on = true;
+        }
         self.wide = Some(Wide { what, run: run.id.clone(), hist: self.hist.is_some(), link: self.link.far().map(str::to_owned) });
     }
 
@@ -5347,22 +5371,6 @@ impl Browser {
         match (&self.log, &watched) {
             (Some((r, j, text)), Some(w)) if *r == run.id && j == w => text.clone(),
             _ => String::new(),
-        }
-    }
-
-    /// The lines of `text` that match what the search box holds, with the hits line (or the error of the pattern) drawn.
-    fn log_filtered(&self, ui: &mut egui::Ui, t: &ito_i18n::Table, text: String) -> String {
-        let c = ito_theme::colors();
-        match show::filter_log(&text, &self.log_find) {
-            Ok(None) => text,
-            Ok(Some((hits, shown, all))) => {
-                ui.label(egui::RichText::new(t.trf("run.log_hits", &[&shown.to_string(), &all.to_string()])).color(c.dim));
-                hits
-            }
-            Err(e) => {
-                ui.label(egui::RichText::new(format!("{} {e}", ito_a11y::State::Error.mark())).color(c.err));
-                text
-            }
         }
     }
 
@@ -5680,16 +5688,32 @@ impl Browser {
             ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
             return;
         }
-        ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
-        let text = self.log_filtered(ui, t, text);
-        let mut area = egui::ScrollArea::vertical().id_salt("log").auto_shrink([false, false]).stick_to_bottom(true);
-        if !paned {
-            area = area.max_height(420.0).min_scrolled_height(420.0);
+        let words = log_words(t);
+        let name = format!("{}_{}_{}", run.jobnet, run.id, watched.and_then(|w| run.job(w)).map_or("", |j| j.label()));
+        let look = ito_prefs::Look { c, q: "" };
+        let gen = self.log_gen;
+        let out = if paned {
+            self.log_view.show(ui, look, &words, &text, gen, &name)
+        } else {
+            ui.allocate_ui(egui::vec2(ui.available_width(), 420.0), |ui| self.log_view.show(ui, look, &words, &text, gen, &name)).inner
+        };
+        self.log_out(out);
+    }
+
+    /// What a log viewer said back: the copy and the save are answered in `done`.
+    fn log_out(&mut self, out: logview::Out) {
+        if let Some(r) = out.copied {
+            self.done = Some(match r {
+                Ok(()) => Ok(("run.copied", Vec::new())),
+                Err(e) => Err(("run.copy_failed", vec![e])),
+            });
         }
-        area.show(ui, |ui| {
-            let r = ui.add(egui::Label::new(egui::RichText::new(&text).monospace()).wrap());
-            ito_a11y::say(&r, Role::Label, &text);
-        });
+        if let Some(r) = out.saved {
+            self.done = Some(match r {
+                Ok(p) => Ok(("run.log_saved", vec![p.display().to_string()])),
+                Err(e) => Err(("run.log_save_failed", vec![e])),
+            });
+        }
     }
 
     /// The head row every wide view starts with: ← 戻る. True when it was pressed.
@@ -5719,7 +5743,6 @@ impl Browser {
         let (_, small) = show::run_head(t, run);
         let text = self.log_text(run, watched);
         let mut back = false;
-        let mut copy = false;
         ui.horizontal_wrapped(|ui| {
             back = Self::wide_back(ui, t);
             let r = ui.label(egui::RichText::new(&title).strong());
@@ -5727,31 +5750,18 @@ impl Browser {
             ito_a11y::test_id_in(ui, &r, "run.wide_head", None);
             ui.label(egui::RichText::new(&small).small().color(c.dim));
         });
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::TextEdit::singleline(&mut self.log_find).hint_text(t.tr("run.log_find")).desired_width(240.0));
-            let r = ui.checkbox(&mut self.wide_wrap, t.tr("run.wide_wrap"));
-            ito_a11y::say(&r, Role::Button, t.tr("run.wide_wrap"));
-            ito_a11y::test_id_in(ui, &r, "run.wide_wrap", None);
-            let b = ito_prefs::IconButton::new(ito_prefs::Mark::Copy, t.tr("run.wide_copy")).show(ui);
-            ito_a11y::test_id_in(ui, &b, "run.wide_copy", None);
-            copy = b.clicked();
-        });
-        let shown = if text.is_empty() { text } else { self.log_filtered(ui, t, text) };
-        if copy {
-            self.copy_text(&shown);
-        }
         self.show_result(ui, t);
-        if shown.is_empty() {
+        // No log yet (or not this job's): the same words as the tab, and no viewer, so nothing empty is copied or
+        // saved and no search is kept for a text that is not the stored one.
+        if text.is_empty() {
             ui.label(egui::RichText::new(t.tr("run.log_none")).color(c.dim));
             return back;
         }
-        let wrap = self.wide_wrap;
-        let area = if wrap { egui::ScrollArea::vertical() } else { egui::ScrollArea::both() };
-        area.id_salt("log_wide").auto_shrink(false).stick_to_bottom(true).show(ui, |ui| {
-            let label = egui::Label::new(egui::RichText::new(&shown).monospace());
-            let r = ui.add(if wrap { label.wrap() } else { label.extend() });
-            ito_a11y::say(&r, Role::Label, &shown);
-        });
+        let words = log_words(t);
+        let name = format!("{}_{}_{label}", run.jobnet, run.id);
+        let gen = self.log_gen;
+        let out = self.wide_log_view.show(ui, ito_prefs::Look { c, q: "" }, &words, &text, gen, &name);
+        self.log_out(out);
         back
     }
 
@@ -6543,6 +6553,34 @@ fn rerun_title(t: &ito_i18n::Table, run: &Run, before: usize) -> String {
     match before {
         0 => run.title.clone(),
         n => format!("{}  {}", run.title, t.trf("today.reruns", &[&n.to_string()])),
+    }
+}
+
+/// The words of a log viewer (the run page's ログ tab and the wide log).
+fn log_words(t: &ito_i18n::Table) -> logview::Words<'_> {
+    logview::Words {
+        wrap: t.tr("run.log_wrap"),
+        only_hits: t.tr("run.log_only_hits"),
+        copy: t.tr("run.log_copy"),
+        save: t.tr("run.log_save"),
+        save_hint: t.tr("run.log_save_hint"),
+        none: t.tr("run.log_none"),
+        find: ito_find::Words {
+            find_hint: t.tr("run.log_find"),
+            replace_hint: t.tr("run.find_replace_hint"),
+            regex: t.tr("run.find_regex"),
+            match_case: t.tr("run.find_case"),
+            whole_word: t.tr("run.find_word"),
+            in_selection: t.tr("run.find_selection"),
+            next: t.tr("run.find_next"),
+            prev: t.tr("run.find_prev"),
+            replace: t.tr("run.find_replace"),
+            replace_all: t.tr("run.find_replace_all"),
+            close: t.tr("run.find_close"),
+            toggle_replace: t.tr("run.find_toggle_replace"),
+            no_results: t.tr("run.find_none"),
+            searching: t.tr("run.find_searching"),
+        },
     }
 }
 
@@ -7463,7 +7501,8 @@ mod tests {
             def_scroll: false,
             run_tab: RunTab::Facts,
             wide: None,
-            wide_wrap: true,
+            wide_log_view: logview::LogView::new("run.wide"),
+            wide_log_on: false,
             netdef_text: false,
             netdef_find: String::new(),
             netdef_scroll: false,
@@ -7471,7 +7510,8 @@ mod tests {
             run_defs: BTreeMap::new(),
             run_cmds: BTreeMap::new(),
             job_sel: None,
-            log_find: String::new(),
+            log_view: logview::LogView::new("run.log"),
+            log_gen: 0,
             log: None,
             vertical: false,
             flow: None,
@@ -8759,6 +8799,145 @@ run = [\"x.exe\"]
         b.run_sel = None;
         s.settle(&mut b);
         assert!(b.wide.is_none());
+    }
+
+    const LOG_TEXT: &str = "start job\nalpha beta\nplain line\nbeta gamma\nend job";
+
+    /// The run page on the ログ tab of job `a`, with `LOG_TEXT` as its log.
+    fn log_page() -> (Browser, Screen, Run) {
+        let mut b = quiet(defs());
+        let run = page_run("20261030-090000-01");
+        b.runs = vec![run.clone()];
+        b.run_sel = Some(run.id.clone());
+        b.job_sel = Some("a".into());
+        b.run_tab = RunTab::Log;
+        b.run_defs.insert(run.id.clone(), runfacts::DefCopy::Asked);
+        b.io.0.send(Msg::Log(run.id.clone(), "a".into(), LOG_TEXT.into())).unwrap();
+        let mut s = Screen::new();
+        s.settle(&mut b);
+        (b, s, run)
+    }
+
+    fn type_text(s: &mut Screen, b: &mut Browser, what: &str) {
+        s.nodes.clear();
+        s.show(Vec::new(), b);
+        s.click("ログの中を検索する", b);
+        s.show(vec![egui::Event::Text(what.into())], b);
+        s.settle(b);
+    }
+
+    /// Frames until `done` holds (the viewer's search runs on its own thread).
+    fn until_log(s: &mut Screen, b: &mut Browser, done: impl Fn(&Screen) -> bool) {
+        let start = std::time::Instant::now();
+        loop {
+            // Every frame says its whole tree: forget what was there, or a widget that is gone still reads.
+            s.nodes.clear();
+            s.show(Vec::new(), b);
+            if done(s) {
+                break;
+            }
+            assert!(
+                start.elapsed() < std::time::Duration::from_secs(5),
+                "timed out: {:?}",
+                s.nodes.values().map(|n| &n.0).collect::<Vec<_>>()
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    }
+
+    fn says(s: &Screen, w: &str) -> bool {
+        s.nodes.values().any(|(l, _)| l.contains(w))
+    }
+
+    #[test]
+    fn the_log_tab_shows_the_log_in_the_viewer_with_a_search() {
+        let (mut b, mut s, _) = log_page();
+        assert!(says(&s, "plain line"), "the log is shown");
+        assert!(says(&s, "一致した行だけ") && says(&s, "折り返す") && says(&s, "保存…"), "the viewer's head row");
+        type_text(&mut s, &mut b, "beta");
+        until_log(&mut s, &mut b, |s| says(s, "1 / 2"));
+        assert!(says(&s, "plain line"), "all the lines still show");
+        s.click("一致した行だけ", &mut b);
+        until_log(&mut s, &mut b, |s| !says(s, "plain line"));
+        assert!(says(&s, "alpha beta") && says(&s, "beta gamma") && !says(&s, "start job"), "only the matching lines");
+    }
+
+    #[test]
+    fn the_log_number_changes_only_when_the_text_does() {
+        let (mut b, mut s, run) = log_page();
+        let g = b.log_gen;
+        assert!(g > 0);
+        for _ in 0..3 {
+            b.io.0.send(Msg::Log(run.id.clone(), "a".into(), LOG_TEXT.into())).unwrap();
+            s.settle(&mut b);
+        }
+        assert_eq!(b.log_gen, g, "the same text again is not a new log");
+        b.io.0.send(Msg::Log(run.id.clone(), "a".into(), format!("{LOG_TEXT}\nmore"))).unwrap();
+        s.settle(&mut b);
+        assert_eq!(b.log_gen, g + 1);
+    }
+
+    #[test]
+    fn the_search_goes_to_the_wide_log_and_comes_back_and_esc_is_two_steps() {
+        let (mut b, mut s, run) = log_page();
+        type_text(&mut s, &mut b, "beta");
+        until_log(&mut s, &mut b, |s| says(s, "1 / 2"));
+        s.click("広げる", &mut b);
+        assert!(b.wide.is_some());
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        assert!(says(&s, "← 戻る"), "the wide head");
+        until_log(&mut s, &mut b, |s| says(s, "1 / 2"));
+        // Esc with the find box focused clears the search and keeps the wide view.
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        s.click("ログの中を検索する", &mut b);
+        s.show(key(egui::Key::Escape), &mut b);
+        s.settle(&mut b);
+        assert!(b.wide.is_some(), "the first Esc is the find bar's");
+        until_log(&mut s, &mut b, |s| !says(s, "1 / 2"));
+        // Type again; Esc with the focus elsewhere ends the wide view.
+        type_text(&mut s, &mut b, "gamma");
+        until_log(&mut s, &mut b, |s| says(s, "1 / 1"));
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        s.click_at(egui::pos2(640.0, 700.0), &mut b);
+        s.show(key(egui::Key::Escape), &mut b);
+        s.settle(&mut b);
+        assert!(b.wide.is_none(), "the next Esc ends the wide view");
+        assert_eq!(b.log_view.find_text(), "gamma", "the tab took the search back");
+        // ← 戻る takes it back too: a word changed in the wide log comes back to the tab.
+        b.open_wide(&run, WideWhat::Log);
+        s.settle(&mut b);
+        assert_eq!(b.wide_log_view.find_text(), "gamma");
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        s.click("ログの中を検索する", &mut b);
+        s.show(key(egui::Key::Escape), &mut b);
+        s.settle(&mut b);
+        assert!(b.wide.is_some());
+        type_text(&mut s, &mut b, "delta");
+        assert_eq!(b.wide_log_view.find_text(), "delta");
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        s.click("← 戻る", &mut b);
+        assert!(b.wide.is_none());
+        assert_eq!(b.log_view.find_text(), "delta", "← 戻る took the search back");
+    }
+
+    /// The wide log of a job with no log yet says so and offers no viewer (nothing empty to copy or save).
+    #[test]
+    fn the_wide_log_without_a_log_says_so() {
+        let (mut b, mut s, run) = log_page();
+        b.io.0.send(Msg::Log(run.id.clone(), "a".into(), String::new())).unwrap();
+        s.settle(&mut b);
+        b.open_wide(&run, WideWhat::Log);
+        s.nodes.clear();
+        s.show(Vec::new(), &mut b);
+        s.settle(&mut b);
+        assert!(b.wide.is_some());
+        assert!(says(&s, "← 戻る") && says(&s, "ログはまだありません"), "the head and the words");
+        assert!(!says(&s, "保存…") && !says(&s, "一致した行だけ"), "no viewer for an empty log");
     }
 
     /// A copy that could not be read while the link was down is asked again once the engine answers;
