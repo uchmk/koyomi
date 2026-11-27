@@ -98,6 +98,8 @@ ito-guide = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53
 # Plain wording and hover text for the technical words (`easy = true` in common.toml).
 ito-glossary = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468", features = ["egui"] }
 ito-match = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
+# The find bar of the log viewer (find only, no replace).
+ito-find ={ git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
 ito-a11y = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468", features = ["egui"] }
 ito-openin = { git = "https://github.com/uchmk/ito", rev = "c26eba1622566d6536f53219e74a7d87e6f50468" }
 # The path buttons: "copy path" goes through the one clipboard writer.

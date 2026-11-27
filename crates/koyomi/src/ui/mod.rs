@@ -37,6 +37,7 @@ mod ha;
 mod hosts;
 mod jobhist;
 mod listtable;
+mod logview;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
