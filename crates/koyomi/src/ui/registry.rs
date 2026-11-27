@@ -16,6 +16,7 @@ use koyomi_core::chore::{self, SqlDb, SqlTls, WinrmAuth};
 use koyomi_core::registry::{BucketEntry, HostEntry, MailboxEntry};
 use koyomi_core::{jobnet, msg, registry};
 
+use super::listtable;
 use super::users::{self, Access, Under};
 use crate::proto::{peek_target_ok, AccountRow, BucketRow, DatabaseRow, Hidden, HostRow, MailboxRow, PeekKind, RegistryBody, Request};
 
@@ -1206,6 +1207,8 @@ pub(super) struct Registry {
     error: Option<String>,
     /// The form of each page ([`Page::idx`]).
     pub(super) forms: [Option<Form>; Page::COUNT],
+    /// What the table of each page keeps: its sort and the picked row ([`Page::idx`]).
+    tables: [listtable::Memory; Page::COUNT],
     /// The file chooser, while it is open (only for an engine on this PC).
     browse: Option<Browse>,
     /// The last number given to an opened form.
@@ -1781,136 +1784,38 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
         let listing = r.listing.clone();
         let mut drawn = editing.is_none();
         if let Some(l) = &listing {
-            let empty = match page {
-                Page::Accounts => l.accounts.is_empty(),
-                Page::Databases => l.databases.is_empty(),
-                Page::Hosts => l.hosts.is_empty(),
-                Page::Buckets => l.buckets.is_empty(),
-                Page::Mailboxes => l.mailboxes.is_empty(),
-            };
-            if empty && r.error.is_none() && r.asked == 0 {
+            let dirty = r.forms[page.idx()].as_ref().is_some_and(Form::dirty);
+            let built = build(t, page, l, can, dirty);
+            let names: Vec<String> = built.rows.iter().map(|x| x.name.clone()).collect();
+            // A reload is pending: the list is not known yet, so a pick is not judged against it.
+            r.tables[page.idx()].sync(v.far, (r.asked == 0).then_some(names.as_slice()));
+            if built.rows.is_empty() && r.error.is_none() && r.asked == 0 {
                 users::say_line(ui, t.tr(none), c.dim);
             }
-            match page {
-                Page::Accounts => {
-                    for row in &l.accounts {
-                        let here = editing.as_deref() == Some(row.name.as_str());
-                        drawn |= here;
-                        card(ui, |ui| {
-                            ui.label(egui::RichText::new(&row.name).strong());
-                            let user = t.trf("registry.user_line", &[&row.user]);
-                            line(ui, &user);
-                            secret_lines(ui, t, page, (&row.name, &row.secret, &row.state));
-                            used_line(ui, t, &row.used_by);
-                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
-                        });
-                    }
+            if !built.rows.is_empty() {
+                let heads = heads(t, page);
+                let prefix = format!("registry.{tag}");
+                let spec = listtable::Spec { prefix: &prefix, heads: &heads, hint: t.tr("today.sort"), link: v.far };
+                if let Some((i, key)) = listtable::show(ui, &mut r.tables[page.idx()], &spec, &built.rows, None) {
+                    let name = built.rows[i].name.clone();
+                    click.get_or_insert(if key == "edit" { Click::OpenEdit(name) } else { Click::AskRemove(name) });
                 }
-                Page::Databases => {
-                    for row in &l.databases {
-                        let here = editing.as_deref() == Some(row.name.as_str());
-                        drawn |= here;
-                        card(ui, |ui| {
-                            ui.label(egui::RichText::new(&row.name).strong());
-                            line(ui, &t.trf("registry.kind_line", &[kind_word(&row.kind), &where_word(&row.db)]));
-                            if row.kind != "sqlite" {
-                                // No tls in koyomi.toml is the engine's default, verify.
-                                let tls = row.tls.as_deref().and_then(SqlTls::of).unwrap_or_default();
-                                line(ui, &t.trf("registry.tls_line", &[tls.key()]));
-                            }
-                            // A SQL Server row is written by hand: it keeps its secret lines and is not edited here.
-                            let fixed_by_hand = !matches!(row.kind.as_str(), "postgres" | "sqlite");
-                            if fixed_by_hand {
-                                match &row.secret {
-                                    Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
-                                    None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
-                                }
-                            } else if row.kind != "sqlite" {
-                                line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)]));
-                            }
-                            used_line(ui, t, &row.used_by);
-                            if fixed_by_hand {
-                                let why = t.tr("registry.db_sqlserver_note");
-                                users::say_line(ui, why, c.dim);
-                                row_end_with(r, ui, t, (page, &row.name), (can, here), Some(why), &mut click);
-                            } else {
-                                row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
-                            }
-                        });
-                    }
-                }
-                Page::Hosts => {
-                    for row in &l.hosts {
-                        let here = editing.as_deref() == Some(row.name.as_str());
-                        drawn |= here;
-                        card(ui, |ui| {
-                            ui.label(egui::RichText::new(&row.name).strong());
-                            let kind = if row.kind == "winrm" { "WinRM" } else { "SSH" };
-                            line(ui, &t.trf("registry.kind_line", &[kind, &chore::shown_address(&row.on)]));
-                            for (key, v) in [
-                                ("registry.host_key_line", &row.host_key),
-                                ("registry.key_line", &row.key),
-                                ("registry.cert_line", &row.cert),
-                                ("registry.auth_line", &row.auth),
-                            ] {
-                                if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
-                                    line(ui, &t.trf(key, &[v]));
-                                }
-                            }
-                            match &row.secret {
-                                Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
-                                None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
-                            }
-                            used_line(ui, t, &row.used_by);
-                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
-                        });
-                    }
-                }
-                Page::Buckets => {
-                    for row in &l.buckets {
-                        let here = editing.as_deref() == Some(row.name.as_str());
-                        drawn |= here;
-                        card(ui, |ui| {
-                            ui.label(egui::RichText::new(&row.name).strong());
-                            line(ui, &t.trf("registry.kind_line", &["S3", &row.url]));
-                            for (key, v) in [
-                                ("registry.region_line", &row.region),
-                                ("registry.endpoint_line", &row.endpoint),
-                                ("registry.key_id_line", &row.key_id),
-                            ] {
-                                if let Some(v) = v.as_deref().filter(|v| !v.is_empty()) {
-                                    line(ui, &t.trf(key, &[v]));
-                                }
-                            }
-                            if let Some(s) = &row.key_id_secret {
-                                let state = row.key_id_state.as_deref().unwrap_or("");
-                                secret_lines_as(ui, t, page, (&row.name, s, state), ("registry.key_id_secret_line", ".keyid"));
-                            }
-                            match &row.secret {
-                                Some(s) => secret_lines(ui, t, page, (&row.name, s, &row.state)),
-                                None => line(ui, &t.trf("registry.password_line", &[state_word(t, &row.state)])),
-                            }
-                            used_line(ui, t, &row.used_by);
-                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
-                        });
-                    }
-                }
-                Page::Mailboxes => {
-                    for row in &l.mailboxes {
-                        let here = editing.as_deref() == Some(row.name.as_str());
-                        drawn |= here;
-                        card(ui, |ui| {
-                            ui.label(egui::RichText::new(&row.name).strong());
-                            line(ui, &t.trf("registry.mail_line", &[&chore::shown_address(&row.mail)]));
-                            secret_lines(ui, t, page, (&row.name, &row.secret, &row.state));
-                            used_line(ui, t, &row.used_by);
-                            row_end(r, ui, t, (page, &row.name), (can, here), &mut click);
-                        });
-                    }
-                }
+                notes_ui(ui, t, page, &built);
+            }
+            if let Some(name) = editing.as_deref().filter(|n| names.iter().any(|x| x == n)) {
+                drawn = true;
+                let mut mem = std::mem::take(&mut r.tables[page.idx()]);
+                let heading = t.trf("registry.edit_heading", &[name]);
+                listtable::form_below(ui, &mut mem, &heading, listtable::form_token(tag, name), |ui| {
+                    form_ui(r, ui, t, page, can, &mut click);
+                });
+                r.tables[page.idx()] = mem;
             }
         }
-        // An editor with typed changes whose card is not there (the listing changed): it still shows.
+        if editing.is_none() {
+            listtable::form_closed(&mut r.tables[page.idx()]);
+        }
+        // An editor with typed changes whose entry is not there (the listing changed): it still shows.
         if !drawn {
             card(ui, |ui| form_ui(r, ui, t, page, can, &mut click));
         }
@@ -1948,93 +1853,205 @@ fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     });
 }
 
-fn line(ui: &mut egui::Ui, text: &str) {
-    let r = ui.add(egui::Label::new(text).wrap());
-    ito_a11y::say(&r, ito_a11y::Role::Label, text);
+/// The heads of a page's table: its data columns, then 操作.
+fn heads(t: &ito_i18n::Table, page: Page) -> Vec<String> {
+    let keys: &[&str] = match page {
+        Page::Accounts => &["name", "user", "password", "used"],
+        Page::Databases => &["name", "kind", "where", "tls", "password", "used"],
+        Page::Hosts => &["name", "kind", "address", "auth", "host_key", "password", "used"],
+        Page::Buckets => &["name", "url", "region", "endpoint", "key_id", "secret", "used"],
+        Page::Mailboxes => &["name", "address", "password", "used"],
+    };
+    keys.iter().chain(&["ops"]).map(|k| t.tr(&format!("registry.col_{k}")).to_owned()).collect()
 }
 
-/// 「使っているジョブネット N」 and, when there are some, which.
-fn used_line(ui: &mut egui::Ui, t: &ito_i18n::Table, used: &[String]) {
-    line(ui, &t.trf("registry.used_line", &[&used.len().to_string()]));
-    if !used.is_empty() {
-        let text = nets_word(t, used);
-        let r = ui.add(egui::Label::new(egui::RichText::new(&text).color(ito_theme::colors().dim)).wrap());
-        ito_a11y::say(&r, ito_a11y::Role::Label, &text);
+/// A secret that is not set: whose it is, its name and the tail of its copy button's test ID.
+#[derive(Debug, PartialEq, Eq)]
+struct Missing {
+    who: String,
+    secret: String,
+    tail: &'static str,
+}
+
+/// A page's rows, and what is written under the table.
+struct Built {
+    rows: Vec<listtable::Row>,
+    /// The secrets to set (a command each, with a copy button).
+    missing: Vec<Missing>,
+    /// An entry that is not edited here, and why (SQL Server).
+    notes: Vec<(String, String)>,
+}
+
+/// A secret's state as a cell: `<secret>・<state>` for a secret with a name, else the state; drawn as a warning when
+/// the secret is missing or cannot be read.
+fn secret_cell(t: &ito_i18n::Table, secret: Option<&str>, state: &str) -> listtable::Cell {
+    let word = state_word(t, state);
+    let text = match secret {
+        Some(s) if !s.is_empty() => format!("{s}\u{30fb}{word}"),
+        _ => word.to_owned(),
+    };
+    listtable::Cell::new(text).warn(matches!(state, "missing" | "unreadable"))
+}
+
+/// 「使っているジョブネット」: the count and up to three of them; hovering lists them all.
+fn used_cell(t: &ito_i18n::Table, used: &[String]) -> listtable::Cell {
+    if used.is_empty() {
+        return listtable::Cell::new("");
     }
+    listtable::Cell::new(format!("{}\u{30fb}{}", used.len(), nets_word(t, used))).hover(used.join("\n"))
 }
 
-/// The secret's name and state; for a missing one, the command that sets it, with a copy button.
-fn secret_lines(ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, who: (&str, &str, &str)) {
-    secret_lines_as(ui, t, page, who, ("registry.secret_line", ""));
+/// What a row can do: 編集 (off with `why`, or while the form has typed changes) and 削除.
+fn acts(t: &ito_i18n::Table, page: Page, name: &str, (can, dirty): (bool, bool), no_edit: Option<&str>) -> Vec<listtable::Act> {
+    use ito_prefs::{Mark, Tone};
+    let (tag, id) = (page.tag(), users::tid(name));
+    vec![
+        listtable::Act::new("edit", t.tr("registry.edit"), Mark::Pencil, Tone::Plain)
+            .on(can && no_edit.is_none() && !dirty, no_edit)
+            .id(format!("registry.{tag}.edit.{id}"))
+            .edit(),
+        listtable::Act::new("remove", t.tr("registry.remove"), Mark::Trash, Tone::Danger)
+            .on(can, None)
+            .id(format!("registry.{tag}.remove.{id}")),
+    ]
 }
 
-/// [`secret_lines`] with the key of its words and a tail for the copy button's ID (a second secret of one entry).
-fn secret_lines_as(
-    ui: &mut egui::Ui,
-    t: &ito_i18n::Table,
-    page: Page,
-    (name, secret, state): (&str, &str, &str),
-    (words, tail): (&str, &str),
-) {
-    line(ui, &t.trf(words, &[secret, state_word(t, state)]));
-    if state == "missing" {
-        let cmd = secret_command(secret);
-        ui.horizontal_wrapped(|ui| {
-            ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace()).selectable(true));
-            let id = format!("registry.{}.copy.{}{tail}", page.tag(), users::tid(name));
-            if users::button(ui, true, None, ito_prefs::Mark::Copy, t.tr("users.copy"), ito_prefs::Tone::Plain, &id) {
-                ui.ctx().copy_text(cmd.clone());
+/// The rows of `page`'s table from the listing, and what goes under it.
+fn build(t: &ito_i18n::Table, page: Page, l: &RegistryBody, can: bool, dirty: bool) -> Built {
+    use listtable::{Cell, Row};
+    let mut b = Built { rows: Vec::new(), missing: Vec::new(), notes: Vec::new() };
+    let state = (can, dirty);
+    let need = |b: &mut Built, who: &str, secret: Option<&str>, st: &str, tail: &'static str| {
+        if let (Some(s), "missing") = (secret, st) {
+            b.missing.push(Missing { who: who.to_owned(), secret: s.to_owned(), tail });
+        }
+    };
+    match page {
+        Page::Accounts => {
+            for r in &l.accounts {
+                let cells =
+                    vec![Cell::new(&r.name), Cell::new(&r.user), secret_cell(t, Some(&r.secret), &r.state), used_cell(t, &r.used_by)];
+                b.rows.push(Row::new(&r.name, cells, acts(t, page, &r.name, state, None)));
+                need(&mut b, &r.name, Some(&r.secret), &r.state, "");
             }
-        });
+        }
+        Page::Databases => {
+            for r in &l.databases {
+                // A SQL Server row is written by hand: it keeps its secret and is not edited here.
+                let by_hand = !matches!(r.kind.as_str(), "postgres" | "sqlite");
+                let tls = if r.kind == "sqlite" {
+                    String::new()
+                } else {
+                    r.tls.as_deref().and_then(SqlTls::of).unwrap_or_default().key().to_owned()
+                };
+                let password = match r.kind.as_str() {
+                    "sqlite" => Cell::new(""),
+                    _ if by_hand => secret_cell(t, r.secret.as_deref(), &r.state),
+                    _ => secret_cell(t, None, &r.state),
+                };
+                let cells = vec![
+                    Cell::new(&r.name),
+                    Cell::new(kind_word(&r.kind)),
+                    Cell::new(where_word(&r.db)),
+                    Cell::new(tls),
+                    password,
+                    used_cell(t, &r.used_by),
+                ];
+                let why = t.tr("registry.db_sqlserver_note");
+                b.rows.push(Row::new(&r.name, cells, acts(t, page, &r.name, state, by_hand.then_some(why))));
+                if by_hand {
+                    b.notes.push((r.name.clone(), why.to_owned()));
+                    need(&mut b, &r.name, r.secret.as_deref(), &r.state, "");
+                }
+            }
+        }
+        Page::Hosts => {
+            for r in &l.hosts {
+                let kind = if r.kind == "winrm" { "WinRM" } else { "SSH" };
+                let auth = [&r.auth, &r.key, &r.cert]
+                    .into_iter()
+                    .filter_map(|v| v.as_deref().filter(|v| !v.is_empty()))
+                    .collect::<Vec<_>>()
+                    .join("\u{30fb}");
+                let cells = vec![
+                    Cell::new(&r.name),
+                    Cell::new(kind),
+                    Cell::new(chore::shown_address(&r.on)),
+                    Cell::new(auth),
+                    Cell::new(r.host_key.as_deref().unwrap_or("")),
+                    secret_cell(t, r.secret.as_deref(), &r.state),
+                    used_cell(t, &r.used_by),
+                ];
+                b.rows.push(Row::new(&r.name, cells, acts(t, page, &r.name, state, None)));
+                need(&mut b, &r.name, r.secret.as_deref(), &r.state, "");
+            }
+        }
+        Page::Buckets => {
+            for r in &l.buckets {
+                let key_id = match (&r.key_id, &r.key_id_secret) {
+                    // A plain key id that also has a secret of its own still shows that secret's state beside it.
+                    (Some(k), Some(s)) if !k.is_empty() => {
+                        let sc = secret_cell(t, Some(s), r.key_id_state.as_deref().unwrap_or(""));
+                        Cell::new(format!("{k}\u{30fb}{}", sc.text)).warn(sc.warn)
+                    }
+                    (Some(k), None) if !k.is_empty() => Cell::new(k),
+                    (_, Some(s)) => secret_cell(t, Some(s), r.key_id_state.as_deref().unwrap_or("")),
+                    _ => Cell::new(""),
+                };
+                let cells = vec![
+                    Cell::new(&r.name),
+                    Cell::new(&r.url),
+                    Cell::new(r.region.as_deref().unwrap_or("")),
+                    Cell::new(r.endpoint.as_deref().unwrap_or("")),
+                    key_id,
+                    secret_cell(t, r.secret.as_deref(), &r.state),
+                    used_cell(t, &r.used_by),
+                ];
+                b.rows.push(Row::new(&r.name, cells, acts(t, page, &r.name, state, None)));
+                need(&mut b, &r.name, r.key_id_secret.as_deref(), r.key_id_state.as_deref().unwrap_or(""), ".keyid");
+                need(&mut b, &r.name, r.secret.as_deref(), &r.state, "");
+            }
+        }
+        Page::Mailboxes => {
+            for r in &l.mailboxes {
+                let cells = vec![
+                    Cell::new(&r.name),
+                    Cell::new(chore::shown_address(&r.mail)),
+                    secret_cell(t, Some(&r.secret), &r.state),
+                    used_cell(t, &r.used_by),
+                ];
+                b.rows.push(Row::new(&r.name, cells, acts(t, page, &r.name, state, None)));
+                need(&mut b, &r.name, Some(&r.secret), &r.state, "");
+            }
+        }
     }
+    b
 }
 
-/// The buttons under a card, or the form when it is this card's.
-fn row_end(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, who: (Page, &str), state: (bool, bool), click: &mut Option<Click>) {
-    row_end_with(r, ui, t, who, state, None, click);
-}
-
-/// [`row_end`]; with `no_edit` (the reason) 編集 is off and shows it as its hover.
-fn row_end_with(
-    r: &mut Registry,
-    ui: &mut egui::Ui,
-    t: &ito_i18n::Table,
-    (page, name): (Page, &str),
-    (can, editing): (bool, bool),
-    no_edit: Option<&str>,
-    click: &mut Option<Click>,
-) {
-    if editing {
-        form_ui(r, ui, t, page, can, click);
-        return;
+/// Under the table: the commands that set the secrets that are missing (selectable, with a copy button each), and
+/// the entries that are not edited here with their reason.
+fn notes_ui(ui: &mut egui::Ui, t: &ito_i18n::Table, page: Page, b: &Built) {
+    let c = ito_theme::colors();
+    if !b.missing.is_empty() {
+        ui.add_space(6.0);
+        users::say_line(ui, t.tr("registry.secrets_missing"), c.dim);
+        for m in &b.missing {
+            let cmd = secret_command(&m.secret);
+            ui.horizontal_wrapped(|ui| {
+                let who = format!("{}:", m.who);
+                let r = ui.label(&who);
+                ito_a11y::say(&r, ito_a11y::Role::Label, &who);
+                ui.add(egui::Label::new(egui::RichText::new(&cmd).monospace()).selectable(true));
+                let id = format!("registry.{}.copy.{}{}", page.tag(), users::tid(&m.who), m.tail);
+                if users::button(ui, true, None, ito_prefs::Mark::Copy, t.tr("users.copy"), ito_prefs::Tone::Plain, &id) {
+                    ui.ctx().copy_text(cmd.clone());
+                }
+            });
+        }
     }
-    let id = users::tid(name);
-    let tag = page.tag();
-    let on = can && no_edit.is_none() && !r.forms[page.idx()].as_ref().is_some_and(Form::dirty);
-    ui.horizontal_wrapped(|ui| {
-        if users::button(
-            ui,
-            on,
-            no_edit,
-            ito_prefs::Mark::Pencil,
-            t.tr("registry.edit"),
-            ito_prefs::Tone::Plain,
-            &format!("registry.{tag}.edit.{id}"),
-        ) {
-            click.get_or_insert(Click::OpenEdit(name.to_owned()));
-        }
-        if users::button(
-            ui,
-            can,
-            None,
-            ito_prefs::Mark::Trash,
-            t.tr("registry.remove"),
-            ito_prefs::Tone::Danger,
-            &format!("registry.{tag}.remove.{id}"),
-        ) {
-            click.get_or_insert(Click::AskRemove(name.to_owned()));
-        }
-    });
+    for (name, why) in &b.notes {
+        users::say_line(ui, &format!("{name}: {why}"), c.dim);
+    }
 }
 
 /// A typed line of the form: its label, the tail of its test ID, its hint.
@@ -3876,6 +3893,165 @@ mod tests {
         r.forms[0].as_mut().unwrap().name = "typed".into();
         assert!(r.role_told((Some(Role::Edit), Some("me".into()))));
         assert!(r.listing.is_none() && r.forms[0].as_ref().is_some_and(|f| f.stale));
+    }
+
+    fn ja() -> ito_i18n::Table {
+        crate::i18n::table("ja").0
+    }
+
+    fn texts(row: &listtable::Row) -> Vec<&str> {
+        row.cells.iter().map(|c| c.text.as_str()).collect()
+    }
+
+    #[test]
+    fn the_account_and_database_cells_say_their_words_and_the_warning_marks_a_secret_that_is_not_there() {
+        let t = ja();
+        let b = build(&t, Page::Accounts, &body(), true, false);
+        assert_eq!(heads(&t, Page::Accounts), ["名前", "ユーザー", "パスワード", "使っているジョブネット", "操作"]);
+        assert_eq!(texts(&b.rows[0]), ["ops", "CORP\\ops", "ops・設定済み", "5・a, b, c ほか 2 件"]);
+        assert_eq!(b.rows[0].cells[3].hover.as_deref(), Some("a\nb\nc\nd\ne"), "the hover lists every net");
+        assert!(!b.rows[0].cells[2].warn && b.rows[1].cells[2].warn, "a missing secret is a warning");
+        assert_eq!(texts(&b.rows[1]), ["free", "CORP\\free", "free・未設定", ""]);
+        assert_eq!(b.missing, vec![Missing { who: "free".into(), secret: "free".into(), tail: "" }]);
+        // The words the screen reader says: the empty cell is left out.
+        assert_eq!(b.rows[1].words(&heads(&t, Page::Accounts)), "名前: free, ユーザー: CORP\\free, パスワード: free・未設定");
+
+        let d = build(&t, Page::Databases, &body(), true, false);
+        assert_eq!(heads(&t, Page::Databases).len(), 7);
+        assert_eq!(d.rows[0].cells[1].text, "SQL Server");
+        assert_eq!(d.rows[0].cells[4].text, "main・設定済み", "a SQL Server row keeps its secret");
+        assert_eq!(d.notes, vec![("main".to_owned(), t.tr("registry.db_sqlserver_note").to_owned())]);
+    }
+
+    #[test]
+    fn a_row_has_the_actions_of_today_and_sql_server_cannot_be_edited() {
+        let t = ja();
+        let d = build(&t, Page::Databases, &body(), true, false);
+        let a = &d.rows[0].acts;
+        assert_eq!(a.iter().map(|a| (a.key, a.on)).collect::<Vec<_>>(), [("edit", false), ("remove", true)]);
+        assert_eq!(a[0].why.as_deref(), Some(t.tr("registry.db_sqlserver_note")));
+        assert_eq!(a[0].id.as_deref(), Some("registry.databases.edit.main"));
+        assert_eq!(a[1].id.as_deref(), Some("registry.databases.remove.main"));
+        // A page that may not write has both off; a form with typed changes turns 編集 off only.
+        let ro = build(&t, Page::Accounts, &body(), false, false);
+        assert!(ro.rows[0].acts.iter().all(|a| !a.on));
+        let typed = build(&t, Page::Accounts, &body(), true, true);
+        assert_eq!(typed.rows[0].acts.iter().map(|a| a.on).collect::<Vec<_>>(), [false, true]);
+        assert!(typed.rows[0].acts[0].edit && !typed.rows[0].acts[1].edit, "a double-click runs 編集");
+    }
+
+    #[test]
+    fn the_host_bucket_and_mailbox_cells_and_their_two_missing_secrets() {
+        let t = ja();
+        let mut body = conn_body();
+        body.hosts[0].auth = Some("password".into());
+        body.hosts[0].key = Some("id_ed25519".into());
+        body.buckets[0].key_id = None;
+        body.buckets[0].key_id_secret = Some("logs.keyid".into());
+        body.buckets[0].key_id_state = Some("missing".into());
+        body.buckets[0].state = "missing".into();
+        let h = build(&t, Page::Hosts, &body, true, false);
+        assert_eq!(h.rows[0].cells[3].text, "password・id_ed25519", "auth, key and cert that are set, joined");
+        assert_eq!(h.rows[0].cells[4].text, "SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU");
+        assert_eq!(h.rows[0].cells[1].text, "SSH");
+        assert_eq!(h.rows[1].cells[1].text, "WinRM");
+        let b = build(&t, Page::Buckets, &body, true, false);
+        assert_eq!(b.rows[0].cells[4].text, "logs.keyid・未設定");
+        assert!(b.rows[0].cells[4].warn && b.rows[0].cells[5].warn);
+        assert_eq!(
+            b.missing,
+            vec![
+                Missing { who: "logs".into(), secret: "logs.keyid".into(), tail: ".keyid" },
+                Missing { who: "logs".into(), secret: "logs".into(), tail: "" }
+            ]
+        );
+        // A plain key id with a secret of its own still shows the secret's state.
+        body.buckets[0].key_id = Some("AKIAEXAMPLE".into());
+        let both = build(&t, Page::Buckets, &body, true, false);
+        assert_eq!(both.rows[0].cells[4].text, "AKIAEXAMPLE・logs.keyid・未設定");
+        assert!(both.rows[0].cells[4].warn);
+        let m = build(&t, Page::Mailboxes, &body, true, false);
+        assert_eq!(texts(&m.rows[0]), ["billing", "imaps://u@mail.example.com/INBOX", "billing・設定済み", "1・a"]);
+    }
+
+    /// Drives the page `page` of `r` for a frame and keeps its click (and lets the registry act on it, as the window does).
+    fn drive(r: &mut Registry, page: Page, ui: &mut egui::Ui, clicks: &mut Vec<Click>) {
+        let t = ja();
+        if let Some(c) = show(r, ui, &t, &OPEN, &users::Access::Open, page) {
+            clicks.push(c.clone());
+            r.act(c, page, &OPEN);
+        }
+    }
+
+    #[test]
+    fn a_click_on_delete_asks_the_question_and_opens_no_form() {
+        use super::listtable::pad::Pad;
+        let mut r = loaded();
+        let (mut pad, mut clicks) = (Pad::new(), Vec::new());
+        pad.settle(&mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        let button = pad.in_row("名前: free", "削除…");
+        pad.presses_at(button.center(), egui::PointerButton::Primary, 1, &mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(clicks, vec![Click::AskRemove("free".into())]);
+        assert!(r.confirm.is_some() && r.forms[0].is_none());
+        assert_eq!(r.tables[0].picked(), None, "a button is not a pick");
+    }
+
+    #[test]
+    fn a_double_click_opens_the_form_below_the_table() {
+        use super::listtable::pad::Pad;
+        let mut r = loaded();
+        let (mut pad, mut clicks) = (Pad::new(), Vec::new());
+        pad.settle(&mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        // A double-click on the row opens the edit form, below the table, and keeps the row picked.
+        pad.click_row("名前: ops", egui::PointerButton::Primary, 2, &mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(clicks, vec![Click::OpenEdit("ops".into())]);
+        assert_eq!(r.forms[0].as_ref().and_then(|f| f.editing.as_deref()), Some("ops"));
+        assert_eq!(r.tables[0].picked(), Some("ops"));
+        let (row, heading) = (pad.rect("名前: free"), pad.rect("ops を編集"));
+        assert!(heading.top() >= row.bottom(), "the form is below the rows");
+        // Sorting while the form is open keeps the form and the pick.
+        let head = pad.topmost("名前");
+        pad.presses_at(head.center(), egui::PointerButton::Primary, 1, &mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(r.tables[0].sort(), Some((0, false)));
+        assert!(r.forms[0].is_some() && r.tables[0].picked() == Some("ops"));
+    }
+
+    #[test]
+    fn a_double_click_on_a_sql_server_row_opens_nothing_and_the_menu_has_no_edit() {
+        use super::listtable::pad::Pad;
+        let mut r = loaded();
+        r.touch(2, Page::Databases);
+        let (mut pad, mut clicks) = (Pad::new(), Vec::new());
+        pad.settle(&mut |ui| drive(&mut r, Page::Databases, ui, &mut clicks));
+        pad.click_row("名前: main", egui::PointerButton::Primary, 2, &mut |ui| drive(&mut r, Page::Databases, ui, &mut clicks));
+        assert!(clicks.is_empty() && r.forms[Page::Databases.idx()].is_none());
+        assert_eq!(r.tables[Page::Databases.idx()].picked(), Some("main"));
+        // The reason stays under the table, with the entry's name first.
+        assert!(pad.rect("main: SQL Server はこの画面では直せません").top() > pad.rect("名前: main").bottom());
+        pad.click_row("名前: main", egui::PointerButton::Secondary, 1, &mut |ui| drive(&mut r, Page::Databases, ui, &mut clicks));
+        // The button of the row and the menu's own: two 削除…, and the row's (off) 編集… only.
+        let count = |w: &str| pad.nodes.values().filter(|(l, _)| l == w).count();
+        assert_eq!((count("削除…"), count("編集…")), (2, 1));
+    }
+
+    #[test]
+    fn a_reload_that_drops_the_picked_entry_clears_the_pick_and_a_pending_one_does_not() {
+        use super::listtable::pad::Pad;
+        let mut r = loaded();
+        let (mut pad, mut clicks) = (Pad::new(), Vec::new());
+        pad.settle(&mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        pad.click_row("名前: free", egui::PointerButton::Primary, 1, &mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(r.tables[0].picked(), Some("free"));
+        // A reload is out: the list is not known, the pick stays.
+        r.ask();
+        pad.settle(&mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(r.tables[0].picked(), Some("free"));
+        // The answer lacks the entry: the pick goes.
+        let mut next = body();
+        next.accounts.truncate(1);
+        r.listing_answer(Ok(next.to_toml()));
+        pad.settle(&mut |ui| drive(&mut r, Page::Accounts, ui, &mut clicks));
+        assert_eq!(r.tables[0].picked(), None);
     }
 }
 

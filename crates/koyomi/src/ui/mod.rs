@@ -36,6 +36,7 @@ mod far_config;
 mod ha;
 mod hosts;
 mod jobhist;
+mod listtable;
 mod manage;
 mod net_side;
 pub(crate) mod paths;
@@ -6657,6 +6658,11 @@ impl TodayTable {
 
     /// The header band. A click on a column's name gives its index; the sorted column shows ▲ or ▼.
     fn head(&mut self, ui: &mut egui::Ui, heads: &[String], sort: Option<(usize, bool)>, hint: &str) -> Option<usize> {
+        self.head_to(ui, heads, sort, hint, heads.len())
+    }
+
+    /// [`Self::head`] where only the first `sortable` columns are sort buttons; the others are plain words.
+    fn head_to(&mut self, ui: &mut egui::Ui, heads: &[String], sort: Option<(usize, bool)>, hint: &str, sortable: usize) -> Option<usize> {
         let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width, Self::ROW - 2.0), egui::Sense::hover());
         ui.painter().rect_filled(rect, egui::CornerRadius { nw: 6, ne: 6, sw: 0, se: 0 }, self.c.panel);
         ui.painter().hline(rect.x_range(), rect.bottom(), egui::Stroke::new(1.0, self.c.border));
@@ -6664,20 +6670,27 @@ impl TodayTable {
         let mut hit = None;
         for (i, h) in heads.iter().enumerate() {
             let cell = egui::Rect::from_x_y_ranges(rect.left() + self.cols[i]..=rect.left() + self.cell_right(i), rect.y_range());
-            let r = ui.interact(cell, ui.id().with(("table-head", i)), egui::Sense::click());
+            let sense = if i < sortable { egui::Sense::click() } else { egui::Sense::hover() };
+            let r = ui.interact(cell, ui.id().with(("table-head", i)), sense);
             let arrow = match sort {
                 Some((col, false)) if col == i => " ▲",
                 Some((col, true)) if col == i => " ▼",
                 _ => "",
             };
             let ink = if !arrow.is_empty() || r.hovered() { self.c.fg } else { self.c.dim };
-            if r.hovered() {
+            if r.hovered() && i < sortable {
                 ui.painter().rect_filled(cell, 0.0, self.c.hover());
             }
             // A squeezed column's head ends in `…` (the whole of it on hover) rather than running into the next.
             let g = one_line(ui, &format!("{h}{arrow}"), font.clone(), ink, cell.width() - Self::PAD - 4.0);
             let cut = g.elided;
             ui.painter().galley(egui::pos2(cell.left() + Self::PAD, cell.center().y - g.size().y / 2.0), g, ink);
+            if i >= sortable {
+                // A plain head (the buttons' column): its whole word on hover when it was cut, and no sort.
+                let r = if cut { r.on_hover_text(h) } else { r };
+                ito_a11y::say(&r, Role::Label, h);
+                continue;
+            }
             let r = r
                 .on_hover_text(if cut {
                     format!(
@@ -6855,6 +6868,65 @@ impl TodayTable {
                 cells.fold(w(&format!("{h} ▼"), &small), f32::max) + Self::PAD + 8.0
             })
             .collect()
+    }
+}
+
+/// One cell of [`TodayTable::list_row`]: its words (one line), its own ink when it is not the usual one, and the
+/// words that show on hover instead of its own (else its whole text, when it ends in `…`).
+struct ListCell<'a> {
+    text: &'a str,
+    ink: Option<egui::Color32>,
+    hover: Option<&'a str>,
+}
+
+impl TodayTable {
+    /// One row of a list table (the settings' lists): the data columns `cells` and, after them, the column of the
+    /// row's buttons. The picked or hovered fill covers the whole row, but the click area (`id`) is the data columns
+    /// only, so the buttons in the last column are the widgets' own. Each cell is one line that ends in `…` when cut,
+    /// and shows its own words (or its `hover`) when the pointer is over it. The row is as tall as its buttons
+    /// (`ops_h`). Gives the data area's response and the rect of the buttons' column, to lay the buttons in.
+    fn list_row(&mut self, ui: &mut egui::Ui, id: egui::Id, cells: &[ListCell], on: bool, ops_h: f32) -> (egui::Response, egui::Rect) {
+        let body = egui::TextStyle::Body.resolve(ui.style());
+        let height = Self::ROW.max(ops_h + 4.0);
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(self.width, height), egui::Sense::hover());
+        // A cell with no column (more cells than heads) is not drawn; with no column at all the buttons' column is empty.
+        let last = cells.len().min(self.cols.len().saturating_sub(1));
+        let cells = &cells[..last];
+        let split = rect.left() + self.cols.get(last).copied().unwrap_or(self.width);
+        let data = egui::Rect::from_x_y_ranges(rect.left()..=split, rect.y_range());
+        let ops = egui::Rect::from_x_y_ranges(split + Self::PAD..=rect.right(), rect.y_range());
+        let r = ui.interact(data, id, egui::Sense::click());
+        if !ui.is_rect_visible(rect) {
+            return (r, ops);
+        }
+        let c = &self.c;
+        let p = ui.painter().with_clip_rect(rect.intersect(ui.clip_rect()));
+        if on {
+            p.rect_filled(rect, 0.0, c.chosen());
+            p.rect_filled(egui::Rect::from_min_size(rect.min, egui::vec2(2.0, rect.height())), 0.0, c.run);
+        } else if ui.rect_contains_pointer(rect) {
+            p.rect_filled(rect, 0.0, c.hover());
+        }
+        p.hline(rect.x_range(), rect.bottom() - 0.5, egui::Stroke::new(1.0, c.border));
+        let ink = if on { c.strong() } else { c.fg };
+        let mut cut = vec![false; last];
+        for (i, cell) in cells.iter().enumerate() {
+            let left = rect.left() + self.cols[i] + Self::PAD;
+            let right = rect.left() + self.cell_right(i) - 4.0;
+            let (text, ink) = if cell.text.is_empty() { ("—", c.dim) } else { (cell.text, cell.ink.unwrap_or(ink)) };
+            let g = one_line(ui, text, body.clone(), ink, right - left);
+            cut[i] = g.elided;
+            p.galley(egui::pos2(left, rect.center().y - g.size().y / 2.0), g, ink);
+        }
+        // The words of the cell under the pointer: its own hover, or the whole text when it was cut.
+        let at = ui.input(|i| i.pointer.hover_pos()).map(|pos| pos.x - rect.left());
+        let under = at.and_then(|x| (0..last).find(|&i| x >= self.cols[i] && x < self.cell_right(i)));
+        let r = r.on_hover_cursor(egui::CursorIcon::PointingHand);
+        let r = match under.and_then(|i| cells[i].hover.or(cut[i].then_some(cells[i].text))) {
+            Some(words) => r.on_hover_text(words),
+            None => r,
+        };
+        (r, ops)
     }
 }
 

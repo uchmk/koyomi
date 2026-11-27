@@ -12,6 +12,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ito_a11y::Role;
 
+use super::listtable;
+
 /// A row being renamed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct Editing {
@@ -71,6 +73,8 @@ pub(super) struct Manage {
     pub busy: bool,
     /// What the last press came to: the error, or the outcome.
     pub line: Option<Result<String, String>>,
+    /// The sort and the picked row of the table.
+    table: listtable::Memory,
 }
 
 /// What a frame of the box came to.
@@ -95,7 +99,15 @@ pub(super) enum Pressed {
 impl Manage {
     pub(super) fn new() -> Manage {
         static TICKETS: AtomicU64 = AtomicU64::new(1);
-        Manage { ticket: TICKETS.fetch_add(1, Ordering::Relaxed), editing: None, asking: None, moving: None, busy: false, line: None }
+        Manage {
+            ticket: TICKETS.fetch_add(1, Ordering::Relaxed),
+            editing: None,
+            asking: None,
+            moving: None,
+            busy: false,
+            line: None,
+            table: listtable::Memory::default(),
+        }
     }
 
     /// 名前を変える on a row: the field holds the current name.
@@ -205,6 +217,16 @@ pub(super) fn show(
             && (i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
         (esc, enter, tab)
     });
+    // A row that is gone from the list it was read from cannot be renamed or moved: its form closes before a key can send it
+    // (a URL check that is already running is left alone).
+    if unread.is_none() && !m.busy {
+        if m.editing.as_ref().is_some_and(|e| !names.contains(&e.from)) {
+            m.editing = None;
+        }
+        if m.moving.as_ref().is_some_and(|v| v.step == UrlStep::Form && !names.contains(&v.from)) {
+            m.moving = None;
+        }
+    }
     let key = m.route(esc, enter, tab);
     let c = ito_theme::colors();
     let busy = m.busy;
@@ -216,7 +238,7 @@ pub(super) fn show(
         .resizable(false)
         .anchor(egui::Align2::CENTER_CENTER, egui::vec2(0.0, 0.0))
         .show(ctx, |ui| {
-            ui.set_width(520.0);
+            ui.set_width((ctx.content_rect().width() - 48.0).clamp(360.0, 760.0));
             ui.add_enabled_ui(!busy, |ui| {
                 if let Some(e) = unread {
                     // koyomi.toml did not read: any row would fail to rename or delete, so none is drawn.
@@ -234,12 +256,23 @@ pub(super) fn show(
                     if names.is_empty() {
                         ui.label(egui::RichText::new(t.tr("far.manage_none")).color(c.dim));
                     }
-                    egui::ScrollArea::vertical().id_salt("far-manage-rows").max_height(360.0).auto_shrink([false, true]).show(ui, |ui| {
-                        for name in names {
-                            row(ui, t, m, name, used(name), !off.contains(name.trim()), &mut press, &mut to_edit, &mut to_ask, &mut to_url);
-                        }
-                    });
-                    compare(ui, t, m, &mut press);
+                    m.table.sync(None, Some(names));
+                    if !names.is_empty() {
+                        let rows = rows(t, names, urls, used, off);
+                        egui::ScrollArea::vertical().id_salt("far-manage-rows").max_height(360.0).auto_shrink([false, true]).show(
+                            ui,
+                            |ui| {
+                                table(ui, t, m, &rows, off, (&mut press, &mut to_edit, &mut to_ask, &mut to_url));
+                            },
+                        );
+                    }
+                    if names.iter().any(|n| used(n)) {
+                        // Also in words, not only on the hover of the off buttons.
+                        let text = t.tr("far.manage_in_use_note");
+                        let r = ui.add(egui::Label::new(egui::RichText::new(text).color(c.dim)).wrap());
+                        ito_a11y::say(&r, Role::Label, text);
+                    }
+                    form(ui, t, m, &mut press);
                 }
             });
             if let Some(line) = &m.line {
@@ -323,107 +356,186 @@ pub(super) fn show(
     }
 }
 
-/// One row: the name and its two buttons, or the field being typed in.
-#[allow(clippy::too_many_arguments)]
-fn row(
+/// A URL without a `user:password@` part (a password is never shown).
+pub(super) fn strip_userinfo(url: &str) -> String {
+    // Everything up to the LAST '@' after the scheme goes: a password may hold an unencoded '/', '?' or '#', and a far URL
+    // is a base address, so showing too little beats showing a password.
+    let (scheme, rest) = url.split_once("://").map_or(("", url), |(s, r)| (s, r));
+    let host = rest.rsplit_once('@').map_or(rest, |(_, h)| h);
+    if url.contains("://") {
+        format!("{scheme}://{host}")
+    } else {
+        host.to_owned()
+    }
+}
+
+/// The rows of the table: name, URL (as far as it is known) and state (in use, watched), with the three things a row
+/// can do. A connection in use is neither renamed nor deleted (the reason is the hover of the two).
+fn rows(
+    t: &ito_i18n::Table,
+    names: &[String],
+    urls: &BTreeMap<String, String>,
+    used: &dyn Fn(&str) -> bool,
+    off: &BTreeSet<String>,
+) -> Vec<listtable::Row> {
+    use ito_prefs::{Mark, Tone};
+    names
+        .iter()
+        .map(|name| {
+            let in_use = used(name);
+            let watching = !off.contains(name.trim());
+            let state = [in_use.then(|| t.tr("far.manage_in_use_short")), watching.then(|| t.tr("far.manage_watch"))]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\u{30fb}");
+            // The screen reader hears why the row's rename and delete are off (the hover is not reached by a keyboard).
+            let said = [in_use.then(|| t.tr("far.manage_in_use_said").to_owned()), watching.then(|| t.tr("far.manage_watch").to_owned())]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join("\u{30fb}");
+            let url = urls.get(name.trim()).map_or_else(String::new, |u| strip_userinfo(u));
+            let cells = vec![listtable::Cell::new(name), listtable::Cell::new(url), listtable::Cell::new(state).said(said)];
+            let why = in_use.then(|| t.tr("far.manage_in_use"));
+            let said = |key: &str| format!("{} {name}", t.tr(key));
+            let acts = vec![
+                // Allowed on the connection in use: a PC that moved is exactly when the current link is down.
+                listtable::Act::new("url", t.tr("far.manage_url"), Mark::Link, Tone::Plain).said(said("far.manage_url")),
+                listtable::Act::new("rename", t.tr("far.manage_rename"), Mark::Pencil, Tone::Plain)
+                    .said(said("far.manage_rename"))
+                    .on(!in_use, why)
+                    .edit(),
+                listtable::Act::new("delete", t.tr("far.manage_delete"), Mark::Trash, Tone::Danger)
+                    .said(said("far.manage_delete"))
+                    .on(!in_use, why),
+            ];
+            listtable::Row::new(name, cells, acts)
+        })
+        .collect()
+}
+
+/// The table of connections; the 見張る switch of each row sits in its 操作 cell, left of the buttons.
+fn table(
     ui: &mut egui::Ui,
     t: &ito_i18n::Table,
     m: &mut Manage,
-    name: &str,
-    used: bool,
-    watching: bool,
-    press: &mut Pressed,
-    to_edit: &mut Option<String>,
-    to_ask: &mut Option<String>,
-    to_url: &mut Option<String>,
+    rows: &[listtable::Row],
+    off: &BTreeSet<String>,
+    (press, to_edit, to_ask, to_url): (&mut Pressed, &mut Option<String>, &mut Option<String>, &mut Option<String>),
 ) {
     let c = ito_theme::colors();
-    let editing = m.editing.as_ref().is_some_and(|e| e.from == name);
-    let moving = m.moving.as_ref().is_some_and(|v| v.from == name);
-    let form = m.moving.as_ref().is_some_and(|v| v.from == name && v.step == UrlStep::Form);
-    let (mut go, mut back, mut rename, mut delete, mut url) = (false, false, false, false, false);
-    let (busy, mut flip) = (m.busy, false);
-    egui::Sides::new().height(32.0).show(
-        ui,
-        |ui| {
-            if editing {
-                if let Some(e) = &mut m.editing {
-                    let r = ui.add(egui::TextEdit::singleline(&mut e.text).desired_width(220.0));
-                    ito_a11y::say(&r, Role::Label, &t.trf("far.manage_name", &[name]));
+    let busy = m.busy;
+    let word = t.tr("far.manage_watch");
+    let heads: Vec<String> = ["name", "url", "state", "ops"].iter().map(|k| t.tr(&format!("far.manage_col_{k}")).to_owned()).collect();
+    let word_w = ui.painter().layout_no_wrap(word.to_owned(), egui::TextStyle::Body.resolve(ui.style()), c.dim).size().x;
+    // The switch is `ito_prefs::switch`, which is `ito_theme::zoomed(ctx, 40.0)` wide: the cell grows with the letter zoom.
+    let extra_w = word_w + ito_theme::zoomed(ui.ctx(), 40.0) + ui.spacing().item_spacing.x * 2.0;
+    let rows: Vec<listtable::Row> = rows
+        .iter()
+        .cloned()
+        .map(|mut r| {
+            r.extra_w = extra_w;
+            r
+        })
+        .collect();
+    let mut flip: Option<(String, bool)> = None;
+    let mut draw = |ui: &mut egui::Ui, i: usize| {
+        let name = &rows[i].name;
+        let watching = !off.contains(name.trim());
+        let look = ito_prefs::Look { c, q: "" };
+        ui.label(egui::RichText::new(word).color(c.dim));
+        // The scope holds the switch alone, so a press at its centre (`<Click:見張る kei>`, `<ClickId:>`) lands on the switch.
+        let mut now = false;
+        let scope = ui.add_enabled_ui(!busy, |ui| {
+            now = ito_prefs::switch(ui, look, watching);
+        });
+        let said = t.trf("far.manage_watch_name", &[name]);
+        let enabled = scope.response.enabled();
+        scope.response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, watching, &said));
+        let id = format!("manage.watch.{name}");
+        if ito_a11y::is_test_id(&id) {
+            ito_a11y::test_id(&scope.response, &id);
+        }
+        if now {
+            flip = Some((name.clone(), !watching));
+        }
+    };
+    let spec = listtable::Spec { prefix: "manage", heads: &heads, hint: t.tr("today.sort"), link: None };
+    let hit = listtable::show(ui, &mut m.table, &spec, &rows, Some(&mut draw));
+    if let Some((name, on)) = flip {
+        *press = Pressed::Watch(name, on);
+    }
+    if let Some((i, key)) = hit {
+        let name = Some(rows[i].name.clone());
+        match key {
+            "url" => *to_url = name,
+            "rename" => *to_edit = name,
+            _ => *to_ask = name,
+        }
+    }
+}
+
+/// The form of the row being renamed or moved, below the table: its field and the two buttons, and for a URL that
+/// differs from the stored one the fingerprint to compare.
+fn form(ui: &mut egui::Ui, t: &ito_i18n::Table, m: &mut Manage, press: &mut Pressed) {
+    let (name, moving) = match (&m.moving, &m.editing) {
+        (Some(v), _) => (v.from.clone(), true),
+        (None, Some(e)) => (e.from.clone(), false),
+        _ => {
+            listtable::form_closed(&mut m.table);
+            return;
+        }
+    };
+    let (mut go, mut back) = (false, false);
+    let heading = t.trf(if moving { "far.manage_url_heading" } else { "far.manage_rename_heading" }, &[&name]);
+    let mut mem = std::mem::take(&mut m.table);
+    listtable::form_below(ui, &mut mem, &heading, listtable::form_token(if moving { "url" } else { "rename" }, &name), |ui| {
+        let form_step = m.moving.as_ref().is_some_and(|v| v.step == UrlStep::Form);
+        egui::Sides::new().height(32.0).show(
+            ui,
+            |ui| {
+                if moving {
+                    if let Some(v) = &mut m.moving {
+                        let r = ui.add_enabled(v.step == UrlStep::Form, egui::TextEdit::singleline(&mut v.text).desired_width(320.0));
+                        ito_a11y::say(&r, Role::Label, &t.trf("far.manage_url_name", &[&name]));
+                        if v.fresh {
+                            r.request_focus();
+                            v.fresh = false;
+                        }
+                    }
+                } else if let Some(e) = &mut m.editing {
+                    let r = ui.add(egui::TextEdit::singleline(&mut e.text).desired_width(320.0));
+                    ito_a11y::say(&r, Role::Label, &t.trf("far.manage_name", &[&name]));
                     if e.fresh {
                         r.request_focus();
                         e.fresh = false;
                     }
                 }
-            } else if moving {
-                ui.label(egui::RichText::new(name).strong());
-                if let Some(v) = &mut m.moving {
-                    let r = ui.add_enabled(v.step == UrlStep::Form, egui::TextEdit::singleline(&mut v.text).desired_width(260.0));
-                    ito_a11y::say(&r, Role::Label, &t.trf("far.manage_url_name", &[name]));
-                    if v.fresh {
-                        r.request_focus();
-                        v.fresh = false;
-                    }
-                }
-            } else {
-                ui.label(egui::RichText::new(name).strong());
-                if used {
-                    ui.label(egui::RichText::new(t.tr("far.manage_in_use")).color(c.dim));
-                }
-            }
-        },
-        |ui| {
-            if moving {
+            },
+            |ui| {
                 back = ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("far.manage_back"))
                     .said(&format!("{} {name}", t.tr("far.manage_back")))
                     .show(ui)
                     .clicked();
-                let said = format!("{} {name}", t.tr("far.manage_url_go"));
-                let b =
-                    ito_prefs::IconButton::new(ito_prefs::Mark::Link, t.tr("far.manage_url_go")).said(&said).tone(ito_prefs::Tone::Primary);
-                go = ui.add_enabled(form, |ui: &mut egui::Ui| b.show(ui)).clicked();
-            } else if editing {
-                back = ito_prefs::IconButton::new(ito_prefs::Mark::Close, t.tr("far.manage_back"))
-                    .said(&format!("{} {name}", t.tr("far.manage_back")))
-                    .show(ui)
-                    .clicked();
-                go = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("far.manage_go"))
-                    .said(&format!("{} {name}", t.tr("far.manage_go")))
-                    .tone(ito_prefs::Tone::Primary)
-                    .show(ui)
-                    .clicked();
-            } else {
-                let said = format!("{} {name}", t.tr("far.manage_delete"));
-                let del = ito_prefs::IconButton::new(ito_prefs::Mark::Trash, t.tr("far.manage_delete")).said(&said);
-                delete = ui.add_enabled(!used, |ui: &mut egui::Ui| del.show(ui)).clicked();
-                let said = format!("{} {name}", t.tr("far.manage_rename"));
-                let ren = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("far.manage_rename")).said(&said);
-                rename = ui.add_enabled(!used, |ui: &mut egui::Ui| ren.show(ui)).clicked();
-                // Allowed on the connection in use: a PC that moved is exactly when the current link is down.
-                let said = format!("{} {name}", t.tr("far.manage_url"));
-                url = ito_prefs::IconButton::new(ito_prefs::Mark::Link, t.tr("far.manage_url")).said(&said).show(ui).clicked();
-                // On every row, the one in use included; not while a press is carried out.
-                let look = ito_prefs::Look { c, q: "" };
-                let word = t.tr("far.manage_watch");
-                // The scope holds the switch alone, so a press at its centre (`<Click:見張る kei>`, `<ClickId:>`) lands on
-                // the switch; the word sits beside it.
-                let scope = ui.add_enabled_ui(!busy, |ui| {
-                    flip = ito_prefs::switch(ui, look, watching);
-                });
-                ui.label(egui::RichText::new(word).color(c.dim));
-                let said = t.trf("far.manage_watch_name", &[name]);
-                let enabled = scope.response.enabled();
-                scope.response.widget_info(|| egui::WidgetInfo::selected(egui::WidgetType::Checkbox, enabled, watching, &said));
-                let id = format!("manage.watch.{name}");
-                if ito_a11y::is_test_id(&id) {
-                    ito_a11y::test_id(&scope.response, &id);
+                if moving {
+                    let said = format!("{} {name}", t.tr("far.manage_url_go"));
+                    let b = ito_prefs::IconButton::new(ito_prefs::Mark::Link, t.tr("far.manage_url_go"))
+                        .said(&said)
+                        .tone(ito_prefs::Tone::Primary);
+                    go = ui.add_enabled(form_step, |ui: &mut egui::Ui| b.show(ui)).clicked();
+                } else {
+                    go = ito_prefs::IconButton::new(ito_prefs::Mark::Pencil, t.tr("far.manage_go"))
+                        .said(&format!("{} {name}", t.tr("far.manage_go")))
+                        .tone(ito_prefs::Tone::Primary)
+                        .show(ui)
+                        .clicked();
                 }
-            }
-        },
-    );
-    if flip {
-        *press = Pressed::Watch(name.to_owned(), !watching);
-    }
+            },
+        );
+        compare(ui, t, m, press);
+    });
+    m.table = mem;
     if go {
         if let Some(v) = m.moving.as_ref().filter(|v| v.from == name) {
             *press = Pressed::Url(v.from.clone(), v.text.clone());
@@ -433,18 +545,7 @@ fn row(
     }
     if back {
         m.editing = None;
-        if moving {
-            m.moving = None;
-        }
-    }
-    if url {
-        *to_url = Some(name.to_owned());
-    }
-    if rename {
-        *to_edit = Some(name.to_owned());
-    }
-    if delete {
-        *to_ask = Some(name.to_owned());
+        m.moving = None;
     }
 }
 
@@ -600,5 +701,97 @@ mod tests {
             );
         });
         out.textures_delta.clear();
+    }
+
+    #[test]
+    fn a_password_in_a_url_is_never_shown() {
+        assert_eq!(strip_userinfo("https://kei:secret@pc.example:8443/x?a=b"), "https://pc.example:8443/x?a=b");
+        assert_eq!(strip_userinfo("https://kei:pa/ss@pc.example/"), "https://pc.example/");
+        assert_eq!(strip_userinfo("https://kei:p?w#d@pc.example:8443/x"), "https://pc.example:8443/x");
+        assert_eq!(strip_userinfo("kei:pw@pc:8443"), "pc:8443");
+        assert_eq!(strip_userinfo("https://pc.example:8443/x"), "https://pc.example:8443/x");
+        assert_eq!(strip_userinfo("pc.example"), "pc.example");
+    }
+
+    #[test]
+    fn a_row_in_use_is_neither_renamed_nor_deleted_but_may_move() {
+        let (t, _) = crate::i18n::table("ja");
+        let names = vec!["kei".to_owned(), "works".to_owned()];
+        let urls = BTreeMap::from([("works".to_owned(), "https://u:p@w.example/".to_owned())]);
+        let off = BTreeSet::from(["kei".to_owned()]);
+        let rows = rows(&t, &names, &urls, &|n| n == "works", &off);
+        let texts = |i: usize| rows[i].cells.iter().map(|c| c.text.clone()).collect::<Vec<_>>();
+        assert_eq!(texts(0), ["kei", "", ""], "not watched and not in use: nothing to say");
+        assert_eq!(texts(1)[1], "https://w.example/");
+        let on = |i: usize| rows[i].acts.iter().map(|a| (a.key, a.on)).collect::<Vec<_>>();
+        assert_eq!(on(0), [("url", true), ("rename", true), ("delete", true)]);
+        assert_eq!(on(1), [("url", true), ("rename", false), ("delete", false)]);
+        assert_eq!(rows[1].acts[1].why.as_deref(), Some(t.tr("far.manage_in_use")));
+        assert!(rows[0].acts[1].edit, "a double-click renames");
+        // The screen reader hears why the row in use cannot be renamed or deleted.
+        let heads: Vec<String> = ["名前", "URL", "状態", "操作"].map(str::to_owned).to_vec();
+        assert_eq!(
+            rows[1].words(&heads),
+            "名前: works, URL: https://w.example/, 状態: 使用中（接続中のため、名前の変更と削除はできません）・見張る"
+        );
+        assert_eq!(rows[0].words(&heads), "名前: kei");
+    }
+
+    /// The line under the table that says a connection in use is not renamed or deleted shows only when a row is in use.
+    #[test]
+    fn the_in_use_note_shows_only_when_a_row_is_in_use() {
+        use super::super::listtable::pad::Pad;
+        let (t, _) = crate::i18n::table("ja");
+        let names = vec!["kei".to_owned(), "works".to_owned()];
+        let note = t.tr("far.manage_in_use_note");
+        let mut pad = Pad::new();
+        let mut m = Manage::new();
+        pad.settle(&mut |ui| {
+            show(&mut m, ui.ctx(), &t, &names, &BTreeMap::new(), &BTreeMap::new(), None, &|n| n == "works", &BTreeSet::new(), false);
+        });
+        assert!(pad.nodes.values().any(|(l, _)| l == note), "a row is in use: the line is there");
+        let mut pad = Pad::new();
+        pad.settle(&mut |ui| {
+            show(&mut m, ui.ctx(), &t, &names, &BTreeMap::new(), &BTreeMap::new(), None, &|_| false, &BTreeSet::new(), false);
+        });
+        assert!(!pad.nodes.values().any(|(l, _)| l == note), "none is in use: no line");
+    }
+
+    #[test]
+    fn a_form_whose_row_is_gone_closes_before_a_key_can_send_it() {
+        let (t, _) = crate::i18n::table("ja");
+        let ctx = egui::Context::default();
+        let mut m = Manage::new();
+        m.edit("kei");
+        m.editing.as_mut().unwrap().text = "keiba".into();
+        let run = |m: &mut Manage, names: &[String], enter: bool| {
+            let mut input = egui::RawInput::default();
+            if enter {
+                input.events.push(egui::Event::Key {
+                    key: egui::Key::Enter,
+                    physical_key: None,
+                    pressed: true,
+                    repeat: false,
+                    modifiers: egui::Modifiers::NONE,
+                });
+            }
+            let mut got = Pressed::Nothing;
+            let mut out = ctx.run_ui(input, |ui| {
+                got = show(m, ui.ctx(), &t, names, &BTreeMap::new(), &BTreeMap::new(), None, &|_| false, &BTreeSet::new(), false);
+            });
+            out.textures_delta.clear();
+            got
+        };
+        let both = vec!["kei".to_owned(), "works".to_owned()];
+        run(&mut m, &both, false);
+        assert!(m.editing.is_some(), "the row is there: the form stays");
+        // The list no longer has it, and Enter in the same frame sends nothing.
+        assert_eq!(run(&mut m, &["works".to_owned()], true), Pressed::Nothing);
+        assert!(m.editing.is_none());
+        // A URL form closes the same way at its form step, but a check that is running is left alone.
+        m.move_url("works", "https://w.example/");
+        assert_eq!(run(&mut m, &both, false), Pressed::Nothing);
+        run(&mut m, &["kei".to_owned()], false);
+        assert!(m.moving.is_none());
     }
 }

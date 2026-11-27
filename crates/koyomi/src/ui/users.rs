@@ -16,6 +16,7 @@ use koyomi_core::msg;
 use koyomi_core::role::Role;
 use koyomi_core::users::{Listed, Listing, Token};
 
+use super::listtable;
 use crate::proto::Request;
 
 /// The role and the name the caller has at the engine: what a listing was read under.
@@ -484,6 +485,8 @@ pub(super) struct Users {
     pub(super) confirm: Option<Confirm>,
     token: Option<Issued>,
     tokens_opened: u64,
+    /// The sort and the picked row of the table.
+    table: listtable::Memory,
 }
 
 impl Users {
@@ -874,6 +877,40 @@ fn roles_word(roles: Option<&BTreeMap<String, String>>) -> String {
     }
 }
 
+/// The heads of the table: its data columns, then 操作.
+fn user_heads(t: &ito_i18n::Table) -> Vec<String> {
+    ["name", "role", "nets", "net_roles", "token", "ops"].iter().map(|k| t.tr(&format!("users.col_{k}")).to_owned()).collect()
+}
+
+/// One user as a row: its cells and what it can do. The user this window is connected as is locked (it only shows
+/// why on hover).
+fn user_row(t: &ito_i18n::Table, v: &View, l: &Listed, (can, dirty): (bool, bool)) -> listtable::Row {
+    use ito_prefs::{Mark, Tone};
+    let name = &l.user.name;
+    let locked = Users::locked(v, name);
+    let why = locked.then(|| t.tr("users.self_locked"));
+    let shown = if v.who == Some(name.as_str()) { format!("{name} {}", t.tr("users.you")) } else { name.clone() };
+    let cells = vec![
+        listtable::Cell::new(shown),
+        listtable::Cell::new(l.user.role.clone()),
+        listtable::Cell::new(nets_word(l.user.nets.as_deref())),
+        listtable::Cell::new(roles_word(l.user.roles.as_ref())),
+        listtable::Cell::new(token_word(l)),
+    ];
+    let id = tid(name);
+    let acts = vec![
+        listtable::Act::new("edit", t.tr("users.edit"), Mark::Pencil, Tone::Plain)
+            .on(can && !locked && !dirty, why)
+            .id(format!("users.edit.{id}"))
+            .edit(),
+        listtable::Act::new("reset", t.tr("users.reset"), Mark::Lock, Tone::Plain).on(can && !locked, why).id(format!("users.reset.{id}")),
+        listtable::Act::new("remove", t.tr("users.remove"), Mark::Trash, Tone::Danger)
+            .on(can && !locked, why)
+            .id(format!("users.remove.{id}")),
+    ];
+    listtable::Row::new(name, cells, acts)
+}
+
 /// The token's state in the words `koyomi user list` uses.
 fn token_word(l: &Listed) -> String {
     let secret = l.user.secret.as_deref().unwrap_or_default();
@@ -939,15 +976,7 @@ pub(super) fn button(
     tone: ito_prefs::Tone,
     id: &str,
 ) -> bool {
-    let r = ui.add_enabled_ui(on, |ui| ito_prefs::IconButton::new(mark, words).tone(tone).show(ui)).inner;
-    ito_a11y::test_id(&r, id);
-    if !on {
-        if let Some(w) = why {
-            r.on_disabled_hover_text(w);
-        }
-        return false;
-    }
-    r.clicked()
+    listtable::button(ui, &listtable::Act::new("", words, mark, tone).on(on, why).id(id))
 }
 
 /// Draws the page and returns the one click of this frame.
@@ -1023,73 +1052,37 @@ pub(super) fn show(u: &mut Users, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &Vi
         if u.listing.is_some() && users.is_empty() && u.error.is_none() && u.asked == 0 {
             say_line(ui, &msg::note(msg::N_USER_NONE, &[]), c.dim);
         }
-        for l in &users {
-            let name = &l.user.name;
-            let locked = Users::locked(v, name);
-            egui::Frame::group(ui.style()).show(ui, |ui| {
-                ui.set_width(ui.available_width());
-                let head = if v.who == Some(name.as_str()) { format!("{name} {}", t.tr("users.you")) } else { name.clone() };
-                ui.label(egui::RichText::new(head).strong());
-                let nets = nets_word(l.user.nets.as_deref());
-                let roles = roles_word(l.user.roles.as_ref());
-                for (label, text) in [
-                    (msg::N_USER_LABEL_ROLE, l.user.role.clone()),
-                    (msg::N_USER_LABEL_NETS, nets),
-                    (msg::N_USER_LABEL_ROLES, roles),
-                    (msg::N_USER_LABEL_TOKEN, token_word(l)),
-                ] {
-                    let line = format!("{}: {text}", msg::note(label, &[]));
-                    let r = ui.add(egui::Label::new(line.as_str()).wrap());
-                    ito_a11y::say(&r, ito_a11y::Role::Label, &line);
-                }
-                let editing = u.edit.as_ref().is_some_and(|e| &e.name == name);
-                if editing {
-                    drawn = true;
-                    edit_form(u, ui, t, (can, v.nets), &mut click);
-                } else {
-                    let id = tid(name);
-                    let why = locked.then(|| t.tr("users.self_locked"));
-                    let on = can && !locked && !u.edit.as_ref().is_some_and(Edit::dirty);
-                    ui.horizontal_wrapped(|ui| {
-                        if button(
-                            ui,
-                            on,
-                            why,
-                            ito_prefs::Mark::Pencil,
-                            t.tr("users.edit"),
-                            ito_prefs::Tone::Plain,
-                            &format!("users.edit.{id}"),
-                        ) {
-                            click.get_or_insert(Click::OpenEdit(name.clone()));
-                        }
-                        let on = can && !locked;
-                        if button(
-                            ui,
-                            on,
-                            why,
-                            ito_prefs::Mark::Lock,
-                            t.tr("users.reset"),
-                            ito_prefs::Tone::Plain,
-                            &format!("users.reset.{id}"),
-                        ) {
-                            click.get_or_insert(Click::AskReset(name.clone()));
-                        }
-                        if button(
-                            ui,
-                            on,
-                            why,
-                            ito_prefs::Mark::Trash,
-                            t.tr("users.remove"),
-                            ito_prefs::Tone::Danger,
-                            &format!("users.remove.{id}"),
-                        ) {
-                            click.get_or_insert(Click::AskRemove(name.clone()));
-                        }
-                    });
-                }
-            });
+        let dirty = u.edit.as_ref().is_some_and(Edit::dirty);
+        let rows: Vec<listtable::Row> = users.iter().map(|l| user_row(t, v, l, (can, dirty))).collect();
+        let names: Vec<String> = users.iter().map(|l| l.user.name.clone()).collect();
+        // A reload is pending (or the list is not here yet): the pick is not judged against the list.
+        u.table.sync(v.far, (u.asked == 0 && u.listing.is_some()).then_some(names.as_slice()));
+        if !rows.is_empty() {
+            let heads = user_heads(t);
+            let spec = listtable::Spec { prefix: "users", heads: &heads, hint: t.tr("today.sort"), link: v.far };
+            if let Some((i, key)) = listtable::show(ui, &mut u.table, &spec, &rows, None) {
+                let name = rows[i].name.clone();
+                click.get_or_insert(match key {
+                    "edit" => Click::OpenEdit(name),
+                    "reset" => Click::AskReset(name),
+                    _ => Click::AskRemove(name),
+                });
+            }
         }
-        // An editor with typed changes whose card is not there (the listing changed): it still shows.
+        let editing = u.edit.as_ref().map(|e| e.name.clone());
+        if let Some(name) = editing.as_deref().filter(|n| names.iter().any(|x| x == n)) {
+            drawn = true;
+            let mut mem = std::mem::take(&mut u.table);
+            let heading = t.trf("users.edit_heading", &[name]);
+            listtable::form_below(ui, &mut mem, &heading, listtable::form_token("edit", name), |ui| {
+                edit_form(u, ui, t, (can, v.nets), &mut click);
+            });
+            u.table = mem;
+        }
+        if editing.is_none() {
+            listtable::form_closed(&mut u.table);
+        }
+        // An editor with typed changes whose entry is not there (the listing changed): it still shows.
         if u.edit.is_some() && !drawn {
             egui::Frame::group(ui.style()).show(ui, |ui| {
                 ui.set_width(ui.available_width());
@@ -2079,5 +2072,59 @@ mod tests {
         assert!(u.add.is_some());
         let left = ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape));
         let _ = left;
+    }
+
+    #[test]
+    fn a_user_row_has_its_cells_and_the_actions_with_their_rules_and_the_own_row_is_locked() {
+        let t = crate::i18n::table("ja").0;
+        let mut l = user("mei", "run");
+        l.user.nets = Some(vec!["a".into(), "b".into()]);
+        l.user.roles = Some(BTreeMap::from([("a".to_owned(), "edit".to_owned())]));
+        let v = view(Some("pc"), Some("kei"));
+        let row = user_row(&t, &v, &l, (true, false));
+        assert_eq!(user_heads(&t), ["名前", "役割", "ジョブネット", "ジョブネット別の役割", "トークン", "操作"]);
+        assert_eq!(&row.cells[..4].iter().map(|c| c.text.as_str()).collect::<Vec<_>>(), &["mei", "run", "a, b", "a=edit"]);
+        assert_eq!(row.acts.iter().map(|a| (a.key, a.on)).collect::<Vec<_>>(), [("edit", true), ("reset", true), ("remove", true)]);
+        assert_eq!(row.acts[2].id.as_deref(), Some("users.remove.mei"));
+        // The nets that are empty say "all"; the user this window is connected as is marked and locked.
+        let me = user_row(&t, &v, &user("kei", "admin"), (true, false));
+        assert_eq!(me.cells[0].text, "kei （この接続）");
+        assert!(me.acts.iter().all(|a| !a.on && a.why.as_deref() == Some(t.tr("users.self_locked"))));
+        // A form with typed changes turns only 編集 off.
+        let typed = user_row(&t, &v, &l, (true, true));
+        assert_eq!(typed.acts.iter().map(|a| a.on).collect::<Vec<_>>(), [false, true, true]);
+    }
+
+    #[test]
+    fn a_double_click_opens_the_editor_below_the_table_and_the_own_row_opens_nothing() {
+        use super::super::listtable::pad::Pad;
+        let t = crate::i18n::table("ja").0;
+        let mut u = loaded("b1", &[("kei", "admin"), ("mei", "view")]);
+        let v = view(Some("pc"), Some("kei"));
+        let (mut pad, mut clicks) = (Pad::new(), Vec::new());
+        let frame = |u: &mut Users, ui: &mut egui::Ui, clicks: &mut Vec<Click>| {
+            if let Some(c) = show(u, ui, &t, &v, &Access::Open) {
+                clicks.push(c.clone());
+                u.act(c, &v);
+            }
+        };
+        pad.settle(&mut |ui| frame(&mut u, ui, &mut clicks));
+        pad.click_row("名前: kei", egui::PointerButton::Primary, 2, &mut |ui| frame(&mut u, ui, &mut clicks));
+        assert!(clicks.is_empty() && u.edit.is_none(), "one's own row is locked");
+        assert_eq!(u.table.picked(), Some("kei"), "it is still picked");
+        pad.click_row("名前: mei", egui::PointerButton::Primary, 2, &mut |ui| frame(&mut u, ui, &mut clicks));
+        assert_eq!(
+            clicks,
+            vec![Click::OpenEdit("mei".into())],
+            "{:?} {:?}",
+            u.table.picked(),
+            pad.nodes.values().map(|n| (&n.0, n.1)).collect::<Vec<_>>()
+        );
+        assert!(pad.rect("mei を編集").top() >= pad.rect("名前: mei").bottom());
+        // A reload that no longer lists the picked user clears the pick.
+        u.ask();
+        u.listing_answer(Ok(listing_text("b2", &[("kei", "admin")])));
+        pad.settle(&mut |ui| frame(&mut u, ui, &mut clicks));
+        assert_eq!(u.table.picked(), None);
     }
 }
