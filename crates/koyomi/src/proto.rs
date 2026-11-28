@@ -18,7 +18,7 @@ use koyomi_core::{quiet, when};
 use serde::{Deserialize, Serialize};
 
 /// Bumped when `Request` or what a reply holds changes shape.
-pub const PROTO: u32 = 56;
+pub const PROTO: u32 = 57;
 
 /// A value that must not be printed: a password typed in the form. `Debug` writes `***`, and there is no
 /// `Display`. On the wire it is the plain string.
@@ -524,6 +524,15 @@ pub enum Request {
         path: String,
         ticket: u64,
     },
+    /// Move the passwords written in the addresses of koyomi.toml (`[[host]].on`, `[[mailbox]].mail`,
+    /// `[[database]].db`) into the engine's credential store, as a [`MoveBody`]. With `dry_run` it only plans.
+    /// A `base_sha256` that is not what the file hashes to now refuses it. Never sent a second time on its own:
+    /// the engine may have written the file.
+    MoveAddressPasswords {
+        dry_run: bool,
+        #[serde(default)]
+        base_sha256: Option<String>,
+    },
 }
 
 /// What `DirPlaces` answers: the engine's path style and the places of its picker.
@@ -575,6 +584,29 @@ impl ConfigBody {
 
     /// Read by a window of another PC, which is wired apart from the engine.
     pub fn parse(text: &str) -> Result<ConfigBody, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+}
+
+/// What [`Request::MoveAddressPasswords`] answers.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MoveBody {
+    /// SHA-256 of the koyomi.toml the plan was made on: the `base_sha256` of the real run.
+    pub sha256: String,
+    /// One line per affected entry, then the notes. Never a password.
+    pub lines: Vec<String>,
+    /// The move would be done (a dry run), or was.
+    pub can: bool,
+    /// The file was written and the passwords stored.
+    pub done: bool,
+}
+
+impl MoveBody {
+    pub fn to_toml(&self) -> String {
+        toml::to_string(self).unwrap_or_default()
+    }
+
+    pub fn parse(text: &str) -> Result<MoveBody, String> {
         toml::from_str(text).map_err(|e| e.to_string())
     }
 }
@@ -780,6 +812,7 @@ pub fn door_needs(r: &Request) -> Option<Role> {
         | Request::Users
         | Request::ConfigText
         | Request::ConfigPut { .. }
+        | Request::MoveAddressPasswords { .. }
         | Request::Registry
         | Request::AccountPut { .. }
         | Request::AccountRemove { .. }
@@ -878,6 +911,8 @@ pub fn is_read(r: &Request) -> bool {
         | Request::CalendarDelete { .. }
         | Request::HolidayTable { .. }
         | Request::ConfigPut { .. }
+        // It may have written koyomi.toml and the credential store: never asked twice on its own.
+        | Request::MoveAddressPasswords { .. }
         | Request::AccountPut { .. }
         | Request::AccountRemove { .. }
         | Request::DatabasePut { .. }
@@ -1503,6 +1538,7 @@ c"
             (Request::Users, Some(Admin)),
             (Request::ConfigText, Some(Admin)),
             (Request::ConfigPut { text: String::new(), base_sha256: "b".into() }, Some(Admin)),
+            (Request::MoveAddressPasswords { dry_run: true, base_sha256: None }, Some(Admin)),
             (Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
             (Request::UserRemove { name: "u".into(), base: "b".into() }, Some(Admin)),
             (Request::UserAdd { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() }, Some(Admin)),
@@ -1563,6 +1599,7 @@ c"
             Request::CalendarPut { name: "c".into(), text: String::new(), base_sha256: None },
             Request::HolidayTable { bytes: Vec::new() },
             Request::ConfigPut { text: String::new(), base_sha256: "b".into() },
+            Request::MoveAddressPasswords { dry_run: false, base_sha256: None },
             Request::Propose { id: id(), text: "x".into(), base_sha256: None },
             Request::UserSet { name: "u".into(), role: "run".into(), nets: None, roles: None, base: "b".into() },
             Request::UserRemove { name: "u".into(), base: "b".into() },
@@ -1884,5 +1921,23 @@ warnings = []
         assert_eq!((old.shells.len(), old.shell.as_str()), (0, ""));
         // Nothing found, nothing written.
         assert!(!Snapshot::default().to_toml().contains("shell"));
+    }
+
+    #[test]
+    fn the_address_password_move_reads_back_through_the_door() {
+        for (dry_run, base) in [(true, None), (false, Some("abc".to_string()))] {
+            let r = Request::MoveAddressPasswords { dry_run, base_sha256: base.clone() };
+            let Request::MoveAddressPasswords { dry_run: d, base_sha256: b } = round(&r) else { panic!("not a move") };
+            assert_eq!((d, b), (dry_run, base));
+        }
+        // The old tags stay: DirList is still the variant it was.
+        assert!(matches!(round(&Request::DirList { path: "p".into(), ticket: 1 }), Request::DirList { ticket: 1, .. }));
+    }
+
+    #[test]
+    fn a_move_body_reads_back_from_toml() {
+        let body = MoveBody { sha256: "s".into(), lines: vec!["a".into(), "b \"q\"".into()], can: true, done: false };
+        assert_eq!(MoveBody::parse(&body.to_toml()).unwrap(), body);
+        assert!(MoveBody::parse("not [ toml").is_err());
     }
 }

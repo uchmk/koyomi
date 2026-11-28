@@ -723,6 +723,174 @@ pub fn remove_mailbox(text: &str, name: &str) -> Result<String, String> {
     ito_common::set_tables(text, "mailbox", &blocks)
 }
 
+/// New values for some keys of one row of a raw koyomi.toml array (see [`rewrite_rows`]).
+#[derive(Clone, PartialEq)]
+pub struct RowEdit {
+    /// The array: `host`, `mailbox`, `database` or `bucket`.
+    pub array: &'static str,
+    /// The row, counted from 0 in the array.
+    pub index: usize,
+    /// The keys to set and their new values.
+    pub set: Vec<(String, toml::Value)>,
+}
+
+// No `Debug`: a value may be a password.
+
+/// `text` with the `edits` made, reading it as a plain `toml::Table` (not through `Config::parse`, which refuses a
+/// file whose address holds a password). Each array with an edit is rewritten by `ito_common::set_tables`, every row as
+/// its own keys and values as read, the edited keys replaced, so comments and order stay where `set_tables` keeps them.
+/// The result is read back and compared with the expected table (the old one with exactly those values replaced): any
+/// difference is an `Err`, and so is an array with an element that is not a table.
+pub fn rewrite_rows(text: &str, edits: &[RowEdit]) -> Result<String, String> {
+    let old: toml::Table = text.parse().map_err(|e: toml::de::Error| e.message().to_owned())?;
+    let mut expected = old.clone();
+    let mut arrays: Vec<&'static str> = Vec::new();
+    for e in edits {
+        let rows = expected.get_mut(e.array).and_then(toml::Value::as_array_mut).ok_or_else(|| format!("`{}` is not an array", e.array))?;
+        let row = rows
+            .get_mut(e.index)
+            .and_then(toml::Value::as_table_mut)
+            .ok_or_else(|| format!("`{}` row {} is not a table", e.array, e.index))?;
+        for (k, v) in &e.set {
+            row.insert(k.clone(), v.clone());
+        }
+        if !arrays.contains(&e.array) {
+            arrays.push(e.array);
+        }
+    }
+    let mut out = text.to_owned();
+    for name in arrays {
+        let rows = expected.get(name).and_then(toml::Value::as_array).ok_or_else(|| format!("`{name}` is not an array"))?;
+        let mut blocks: Vec<Vec<(String, String)>> = Vec::new();
+        for r in rows {
+            let t = r.as_table().ok_or_else(|| format!("`{name}` holds an element that is not a table"))?;
+            blocks.push(t.iter().map(|(k, v)| (quote(k), v.to_string())).collect());
+        }
+        let blocks: Vec<Vec<(&str, String)>> = blocks.iter().map(|b| b.iter().map(|(k, v)| (k.as_str(), v.clone())).collect()).collect();
+        out = ito_common::set_tables(&out, name, &blocks)?;
+    }
+    let back: toml::Table = out.parse().map_err(|e: toml::de::Error| e.message().to_owned())?;
+    if back != expected {
+        return Err("the rewritten file does not read back as expected".to_owned());
+    }
+    Ok(out)
+}
+
+/// The address keys of koyomi.toml that may hold a password: `(array, key)`.
+pub const ADDRESS_KEYS: [(&str, &str); 5] =
+    [("host", "on"), ("mailbox", "mail"), ("database", "db"), ("bucket", "url"), ("bucket", "endpoint")];
+
+/// Every password written in an address of `table`, as a message must not repeat it: the raw text, the decoded text,
+/// and each one's escaped form as `{:?}` prints it without the outer quotes (a parse error quotes a value that way).
+/// No empty string, no duplicate, the longest first (a part of a longer one must not leave its rest behind).
+pub fn address_secrets(table: &toml::Table) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut add = |s: String| {
+        // The mark is what a hidden password reads as: no secret (only the exact mark; `%2A%2A%2A` stays one).
+        if !s.is_empty() && s != crate::bundle::MASK && !out.contains(&s) {
+            out.push(s);
+        }
+    };
+    for (array, key) in ADDRESS_KEYS {
+        let Some(rows) = table.get(array).and_then(toml::Value::as_array) else { continue };
+        for addr in rows.iter().filter_map(|r| r.get(key)?.as_str()) {
+            let Some(span) = crate::chore::password_span(addr) else { continue };
+            let raw = &addr[span];
+            let mut forms = vec![raw.to_owned()];
+            if let Some(v) = crate::chore::pct_decode(raw) {
+                forms.push(v);
+            }
+            for f in forms {
+                let dbg = format!("{f:?}");
+                let escaped = dbg[1..dbg.len() - 1].to_owned();
+                add(f);
+                add(escaped);
+            }
+        }
+    }
+    out.sort_by_key(|s| std::cmp::Reverse(s.len()));
+    out
+}
+
+/// What [`mask_address_passwords`] made of a text.
+#[derive(Clone, PartialEq, Eq)]
+pub enum Masked {
+    /// No address holds a password: the text as it is.
+    Unchanged,
+    /// The text with every address password hidden as `***`.
+    Masked(String),
+    /// The text is not TOML, or could not be written back without risk: no copy of it may be made.
+    NotSafe,
+}
+
+/// `text` (a koyomi.toml, read raw) with each password written in an address (`[[host]].on`, `[[mailbox]].mail`,
+/// `[[database]].db`, `[[bucket]].url` and `.endpoint`) hidden by `chore::shown_address`. The rows are rewritten in
+/// place ([`rewrite_rows`]); when that is not possible (an array that holds a non-table, say) the masked table is
+/// serialized instead and its comments are lost; when that fails too, `NotSafe`.
+pub fn mask_address_passwords(text: &str) -> Masked {
+    let Ok(mut table) = text.parse::<toml::Table>() else { return Masked::NotSafe };
+    let secrets = address_secrets(&table);
+    let mut edits = Vec::new();
+    for (array, key) in ADDRESS_KEYS {
+        let Some(rows) = table.get(array).and_then(toml::Value::as_array) else { continue };
+        for (index, row) in rows.iter().enumerate() {
+            let Some(v) = row.as_table().and_then(|t| t.get(key)).and_then(toml::Value::as_str) else { continue };
+            let shown = crate::chore::shown_address(v);
+            if shown != v {
+                edits.push(RowEdit { array, index, set: vec![(key.to_owned(), toml::Value::String(shown.into_owned()))] });
+            }
+        }
+    }
+    if edits.is_empty() {
+        return Masked::Unchanged;
+    }
+    // A password left anywhere else in the text (a comment, a `name`) makes a copy unsafe.
+    let left_over = |t: &str| secrets.iter().any(|s| t.contains(s.as_str()));
+    if let Ok(t) = rewrite_rows(text, &edits) {
+        return if left_over(&t) { Masked::NotSafe } else { Masked::Masked(t) };
+    }
+    for e in &edits {
+        let row =
+            table.get_mut(e.array).and_then(toml::Value::as_array_mut).and_then(|a| a.get_mut(e.index)).and_then(toml::Value::as_table_mut);
+        if let Some(row) = row {
+            for (k, v) in &e.set {
+                row.insert(k.clone(), v.clone());
+            }
+        }
+    }
+    match toml::to_string(&table) {
+        Ok(t) if !left_over(&t) => Masked::Masked(t),
+        _ => Masked::NotSafe,
+    }
+}
+
+/// How a row is named in a message: `[[host]] web1` (the row's `name`, else its number from 1, and also its number
+/// when the name holds one of `secrets`).
+pub fn row_label(array: &str, index: usize, row: &toml::Table, secrets: &[String]) -> String {
+    match row.get("name").and_then(toml::Value::as_str) {
+        Some(n) if !n.trim().is_empty() && !secrets.iter().any(|s| n.contains(s.as_str())) => format!("[[{array}]] {}", n.trim()),
+        _ => format!("[[{array}]] #{}", index + 1),
+    }
+}
+
+/// The labels (`[[host]] web1`) of the rows of `[[host]]`, `[[mailbox]]` and `[[database]]` whose address holds a
+/// password by the strict rule, read from the raw text. Empty when the text is not TOML.
+pub fn address_password_rows(text: &str) -> Vec<String> {
+    let Ok(table) = text.parse::<toml::Table>() else { return Vec::new() };
+    let secrets = address_secrets(&table);
+    let mut out = Vec::new();
+    for (array, key) in ADDRESS_KEYS.into_iter().filter(|(a, _)| *a != "bucket") {
+        let Some(rows) = table.get(array).and_then(toml::Value::as_array) else { continue };
+        for (index, row) in rows.iter().enumerate() {
+            let Some(t) = row.as_table() else { continue };
+            if t.get(key).and_then(toml::Value::as_str).is_some_and(crate::chore::has_password) {
+                out.push(row_label(array, index, t, &secrets));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -733,6 +901,14 @@ mod tests {
 
     fn database(name: &str, db: &str, password: Option<&str>, tls: Option<SqlTls>) -> DatabaseEntry {
         DatabaseEntry { name: name.into(), db: db.into(), password: password.map(Into::into), tls }
+    }
+
+    #[test]
+    fn the_mark_is_not_a_secret_but_the_encoded_mark_is() {
+        let t: toml::Table = "[[host]]\nname = \"a\"\non = \"ssh://u:***@h\"\n".parse().unwrap();
+        assert!(address_secrets(&t).is_empty());
+        let t: toml::Table = "[[host]]\nname = \"a\"\non = \"ssh://u:%2A%2A%2A@h\"\n".parse().unwrap();
+        assert!(address_secrets(&t).contains(&"%2A%2A%2A".to_owned()));
     }
 
     #[test]
@@ -1028,5 +1204,75 @@ mod tests {
         assert!(e.contains("***") && !e.contains(pw), "{e}");
         let e = bucket_prefix("s3://me:Hunter2zz@bkt").unwrap_err();
         assert!(!e.contains(pw), "{e}");
+    }
+
+    const MOVE_PW: &str = "not-the-password";
+
+    fn one_edit(index: usize) -> RowEdit {
+        RowEdit { array: "host", index, set: vec![("on".into(), toml::Value::String("ssh://u@h".into()))] }
+    }
+
+    #[test]
+    fn rewrite_rows_changes_only_the_named_values() {
+        let text = "# top\n[[host]]\nname = \"a\" # keep\non = \"ssh://u:x@h\"\n\"a.b\" = 1\nunknown = [1, 2]\n\n[[host]]\nname = \"b\"\non = \"ssh://b\"\n";
+        let out = rewrite_rows(text, &[one_edit(0)]).unwrap();
+        assert!(out.contains("# top") && out.contains("# keep") && out.contains("ssh://u@h") && !out.contains("u:x"), "{out}");
+        let t: toml::Table = out.parse().unwrap();
+        let rows = t["host"].as_array().unwrap();
+        assert_eq!(rows[0]["a.b"].as_integer(), Some(1));
+        assert_eq!(rows[1]["on"].as_str(), Some("ssh://b"));
+        let mixed = "host = [{ name = \"a\", on = \"ssh://u:x@h\" }, 7]\n";
+        assert!(rewrite_rows(mixed, &[one_edit(0)]).is_err());
+        assert!(rewrite_rows("not toml [", &[one_edit(0)]).is_err());
+        assert!(rewrite_rows(text, &[one_edit(5)]).is_err());
+    }
+
+    #[test]
+    fn rewrite_rows_keeps_an_inline_array_s_data() {
+        let text = "host = [{ name = \"a\", on = \"ssh://u:x@h\" }]\n";
+        let out = rewrite_rows(text, &[one_edit(0)]).unwrap();
+        let t: toml::Table = out.parse().unwrap();
+        assert_eq!(t["host"][0]["on"].as_str(), Some("ssh://u@h"));
+    }
+
+    fn masked_text(text: &str) -> String {
+        match mask_address_passwords(text) {
+            Masked::Masked(t) => t,
+            Masked::Unchanged => panic!("unchanged"),
+            Masked::NotSafe => panic!("not safe"),
+        }
+    }
+
+    #[test]
+    fn mask_address_passwords_hides_each_address_key() {
+        let text = format!(
+            "# c\n[[host]]\nname = \"h\" # n\non = \"ssh://u:{MOVE_PW}@h\"\nextra = true\n\n[[mailbox]]\nname = \"m\"\nmail = \"imaps://me:{MOVE_PW}@h\"\n\n[[database]]\nname = \"d\"\ndb = \"postgres://u:{MOVE_PW}@h/x\"\n\n[[bucket]]\nname = \"b\"\nurl = \"sftp://u:{MOVE_PW}@h\"\nendpoint = \"https://u:{MOVE_PW}@e\"\n"
+        );
+        let out = masked_text(&text);
+        assert!(!out.contains(MOVE_PW) && out.contains("# c") && out.contains("# n") && out.contains("extra = true"), "{out}");
+        assert_eq!(out.matches("***").count(), 5, "{out}");
+        assert!(mask_address_passwords("[[host]]\nname = \"h\"\non = \"ssh://u@h\"\n") == Masked::Unchanged);
+        assert!(mask_address_passwords("") == Masked::Unchanged);
+    }
+
+    #[test]
+    fn mask_address_passwords_falls_back_and_refuses() {
+        let mixed = format!("host = [{{ name = \"a\", on = \"ssh://u:{MOVE_PW}@h\" }}, 7]\n");
+        let out = masked_text(&mixed);
+        assert!(!out.contains(MOVE_PW) && out.contains("***"), "{out}");
+        assert!(mask_address_passwords("this is = not [ toml") == Masked::NotSafe);
+        // TOML that `Config::parse` refuses is still masked.
+        let odd = format!("unknown_key = 1\n[[host]]\nname = \"h\"\non = \"ssh://u:{MOVE_PW}@h\"\nmystery = 2\n");
+        let out = masked_text(&odd);
+        assert!(!out.contains(MOVE_PW) && out.contains("mystery = 2"), "{out}");
+    }
+
+    #[test]
+    fn address_password_rows_lists_host_mailbox_and_database_rows() {
+        let text = format!(
+            "[[host]]\nname = \"web1\"\non = \"ssh://u:{MOVE_PW}@h\"\n[[host]]\nname = \"ok\"\non = \"ssh://u@h\"\n[[mailbox]]\nmail = \"imaps://me:x@h\"\n[[database]]\nname = \"d\"\ndb = \"sqlite://a:b@c\"\n[[bucket]]\nname = \"b\"\nurl = \"sftp://u:x@h\"\n"
+        );
+        assert_eq!(address_password_rows(&text), ["[[host]] web1", "[[mailbox]] #1"]);
+        assert!(address_password_rows("not [ toml").is_empty());
     }
 }

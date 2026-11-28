@@ -1976,6 +1976,91 @@ pub fn shown_address(addr: &str) -> std::borrow::Cow<'_, str> {
     }
 }
 
+/// `text` with its `%XX` escapes decoded; `None` when an escape is broken or the result is not UTF-8.
+pub fn pct_decode(text: &str) -> Option<String> {
+    let b = text.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' {
+            let hex = text.get(i + 1..i + 3)?;
+            if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
+                return None;
+            }
+            out.push(u8::from_str_radix(hex, 16).ok()?);
+            i += 3;
+        } else {
+            out.push(b[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8(out).ok()
+}
+
+/// `addr` with the password written in it taken out (the strict rule, [`password_span`]): the `:` before it and the
+/// span go (`ssh://u:pw@h` is `ssh://u@h`, `ssh://u:@h` is `ssh://u@h`). Unchanged when there is none.
+pub fn without_password(addr: &str) -> std::borrow::Cow<'_, str> {
+    match password_span(addr) {
+        Some(r) => std::borrow::Cow::Owned(format!("{}{}", &addr[..r.start - 1], &addr[r.end..])),
+        None => std::borrow::Cow::Borrowed(addr),
+    }
+}
+
+/// The longest password [`address_password`] moves, in chars.
+pub const ADDRESS_PASSWORD_MOST: usize = 1024;
+
+/// Why a password written in an address cannot be moved to the credential store by the machine.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NotMovable {
+    /// Nothing is written between the colon and the `@`.
+    Empty,
+    /// It is `***`, the mark a masked copy leaves, not a password.
+    Mask,
+    /// It holds a `{param:…}` or `{var:…}` template.
+    Template,
+    /// A `%` escape is broken (or the decoded bytes are not UTF-8).
+    BadEscape,
+    /// The decoded password holds a NUL.
+    Nul,
+    /// The decoded password is longer than [`ADDRESS_PASSWORD_MOST`] chars.
+    TooLong,
+}
+
+/// What an address holds as a password, by the strict rule ([`password_span`]).
+#[derive(Clone, PartialEq, Eq)]
+pub enum AddrPassword {
+    /// None written (also every `sqlite://` address).
+    None,
+    /// A password that can be moved, decoded once (`%40` is `@`).
+    Movable(String),
+    /// A password is written but the machine does not move it.
+    NotMovable(NotMovable),
+}
+
+// No `Debug`: the password must not reach a log or a message.
+
+/// Reads the password written in `addr`. The raw span (before decoding) decides empty, `***` and a template; then it is
+/// decoded once.
+pub fn address_password(addr: &str) -> AddrPassword {
+    let Some(span) = password_span(addr) else { return AddrPassword::None };
+    let raw = &addr[span];
+    if raw.is_empty() {
+        return AddrPassword::NotMovable(NotMovable::Empty);
+    }
+    if raw == "***" {
+        return AddrPassword::NotMovable(NotMovable::Mask);
+    }
+    if raw.contains("{param:") || raw.contains("{var:") {
+        return AddrPassword::NotMovable(NotMovable::Template);
+    }
+    match pct_decode(raw) {
+        None => AddrPassword::NotMovable(NotMovable::BadEscape),
+        Some(v) if v.contains('\0') => AddrPassword::NotMovable(NotMovable::Nul),
+        Some(v) if v.chars().count() > ADDRESS_PASSWORD_MOST => AddrPassword::NotMovable(NotMovable::TooLong),
+        Some(v) => AddrPassword::Movable(v),
+    }
+}
+
 /// The index of the first `:` of `s` that is not inside a `{param:…}` or `{var:…}` template.
 fn first_colon(s: &str) -> Option<usize> {
     let mut i = 0;
@@ -3324,6 +3409,48 @@ mod tests {
         assert_eq!(net.jobs[1].env.get("KOYOMI_CLOUD_FROM").map(String::as_str), Some("in/a.csv"));
         assert_eq!(net.jobs[2].env.get("KOYOMI_SSH_ON").map(String::as_str), Some("web1"));
         assert!(!net.jobs[0].env.contains_key("KOYOMI_SFTP_PASSWORD") && !net.jobs[1].env.contains_key("KOYOMI_CLOUD_PASSWORD"));
+    }
+
+    #[test]
+    fn pct_decode_decodes_escapes_and_refuses_broken_ones() {
+        assert_eq!(pct_decode("%+1"), None);
+        assert_eq!(pct_decode("a%401").as_deref(), Some("a@1"));
+        assert_eq!(pct_decode("%4"), None);
+        assert_eq!(pct_decode("%FF"), None);
+    }
+
+    #[test]
+    fn without_password_takes_out_the_colon_and_the_span() {
+        for (addr, want) in [
+            ("ssh://u:pw@h", "ssh://u@h"),
+            ("postgres://u:p@ss@h/db", "postgres://u@h/db"),
+            ("ssh://u:@h", "ssh://u@h"),
+            ("  ssh://u:pw@h:22  ", "  ssh://u@h:22  "),
+            ("ssh://u@h", "ssh://u@h"),
+            ("sqlite://a:b@c", "sqlite://a:b@c"),
+            ("nothing", "nothing"),
+        ] {
+            assert_eq!(without_password(addr), want, "{addr}");
+        }
+    }
+
+    #[test]
+    fn address_password_tells_what_can_be_moved() {
+        use AddrPassword as A;
+        assert!(matches!(address_password("ssh://u@h"), A::None));
+        assert!(matches!(address_password("sqlite://a:b@c"), A::None));
+        assert!(matches!(address_password("ssh://u:p%40ss@h"), A::Movable(v) if v == "p@ss"));
+        assert!(matches!(address_password("ssh://u:%2A%2A%2A@h"), A::Movable(v) if v == "***"));
+        assert!(matches!(address_password("ssh://u:@h"), A::NotMovable(NotMovable::Empty)));
+        assert!(matches!(address_password("ssh://u:***@h"), A::NotMovable(NotMovable::Mask)));
+        assert!(matches!(address_password("ssh://u:{param:pw}@h"), A::NotMovable(NotMovable::Template)));
+        assert!(matches!(address_password("ssh://u:{var:pw}@h"), A::NotMovable(NotMovable::Template)));
+        assert!(matches!(address_password("ssh://u:a%zzb@h"), A::NotMovable(NotMovable::BadEscape)));
+        assert!(matches!(address_password("ssh://u:a%00b@h"), A::NotMovable(NotMovable::Nul)));
+        let long = format!("ssh://u:{}@h", "a".repeat(1025));
+        assert!(matches!(address_password(&long), A::NotMovable(NotMovable::TooLong)));
+        let edge = format!("ssh://u:{}@h", "a".repeat(1024));
+        assert!(matches!(address_password(&edge), A::Movable(_)));
     }
 
     const PW: &str = "Hunter2zz";

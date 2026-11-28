@@ -18,7 +18,9 @@ use koyomi_core::{jobnet, msg, registry};
 
 use super::listtable;
 use super::users::{self, Access, Under};
-use crate::proto::{peek_target_ok, AccountRow, BucketRow, DatabaseRow, Hidden, HostRow, MailboxRow, PeekKind, RegistryBody, Request};
+use crate::proto::{
+    peek_target_ok, AccountRow, BucketRow, DatabaseRow, Hidden, HostRow, MailboxRow, MoveBody, PeekKind, RegistryBody, Request,
+};
 
 /// The pages share one listing (koyomi.toml is read once).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -153,6 +155,8 @@ pub(super) enum Line {
     ReplyBad,
     /// A request the thread did not take: why.
     Unsent(String),
+    /// The answer of the real run of the repair did not arrive: it is not known whether it moved anything.
+    MoveUnknown,
     /// The name is already registered (adding).
     NameExists(String),
     /// The password field is empty where one is needed.
@@ -168,6 +172,7 @@ impl Line {
             Line::Key(k) => t.tr(k).to_owned(),
             Line::BaseChanged => t.tr("registry.base_changed").to_owned(),
             Line::ReplyBad => t.tr("registry.reply_bad").to_owned(),
+            Line::MoveUnknown => t.tr("registry.move_unknown").to_owned(),
             Line::NameExists(n) => t.trf("registry.name_exists", &[n]),
             Line::PasswordEmpty => t.tr("registry.password_empty").to_owned(),
         }
@@ -1148,6 +1153,16 @@ pub(super) enum Click {
     DbTest,
     /// 「使う」: the value the host showed goes into the field.
     UsePeek,
+    /// 「アドレスのパスワードを移す…」: ask the engine for the plan (a dry run).
+    MoveOpen,
+    /// 「移す」: do what the plan said.
+    MoveRun,
+    /// 「やめる」 of the plan.
+    MoveCancel,
+    /// Tab or Shift+Tab in the plan: the other button.
+    MoveFocus2,
+    /// 「閉じる」 of the answer the real run left on the page.
+    MoveClose,
 }
 
 /// What the browser does after a click.
@@ -1225,6 +1240,23 @@ pub(super) struct Registry {
     /// The last ticket given to a "connect and check".
     peek_ticket: u64,
     pub(super) confirm: Option<Confirm>,
+    /// The repair of passwords written in addresses, while its plan is up.
+    mover: Option<Mover>,
+    /// What the real run of the repair answered, kept on every registry page until it is closed.
+    moved: Option<Vec<Line>>,
+}
+
+/// The plan of moving the passwords written in addresses, and the one request that is out for it.
+#[derive(Default)]
+pub(super) struct Mover {
+    /// A request of the repair is out and not answered: no other goes.
+    out: bool,
+    /// The dry run's answer.
+    plan: Option<MoveBody>,
+    /// What the last answer said when it was not a plan.
+    note: Option<Line>,
+    /// 0: 移す, 1: やめる.
+    focus: u8,
 }
 
 impl Registry {
@@ -1301,6 +1333,7 @@ impl Registry {
         self.error = None;
         self.refusal = None;
         self.confirm = None;
+        self.moved = None;
         self.discard = self.asked;
         self.need = true;
         for f in &mut self.forms {
@@ -1478,9 +1511,43 @@ impl Registry {
                     }
                 }
             }
+            Click::MoveOpen => {
+                if v.open && !self.write && self.mover.is_none() && self.move_offered() {
+                    self.mover = Some(Mover { out: true, ..Mover::default() });
+                    return Do::Send(Request::MoveAddressPasswords { dry_run: true, base_sha256: None });
+                }
+            }
+            Click::MoveRun => {
+                if let Some(m) = self.mover.as_mut().filter(|m| !m.out && v.open && !self.write) {
+                    // Only what the dry run said, on the file it was made for.
+                    if let Some(sha) = m.plan.as_ref().filter(|p| p.can).map(|p| p.sha256.clone()) {
+                        m.out = true;
+                        m.note = None;
+                        return Do::Send(Request::MoveAddressPasswords { dry_run: false, base_sha256: Some(sha) });
+                    }
+                }
+            }
+            Click::MoveCancel => {
+                if self.mover.as_ref().is_some_and(|m| !m.out) {
+                    self.mover = None;
+                }
+            }
+            Click::MoveFocus2 => {
+                if let Some(m) = &mut self.mover {
+                    m.focus = 1 - m.focus.min(1);
+                }
+            }
+            Click::MoveClose => self.moved = None,
             Click::Esc => {
-                // Only this page's question: one left on the other page is not on the screen.
-                if self.confirm.as_ref().is_some_and(|q| q.page == page) {
+                // The plan first (not while its request is out), then the answer of the run, then this page's
+                // question: one left on the other page is not on the screen.
+                if self.mover.is_some() {
+                    if self.mover.as_ref().is_some_and(|m| !m.out) {
+                        self.mover = None;
+                    }
+                } else if self.moved.is_some() {
+                    self.moved = None;
+                } else if self.confirm.as_ref().is_some_and(|q| q.page == page) {
                     self.confirm = None;
                 } else {
                     self.forms[i] = None;
@@ -1620,7 +1687,71 @@ impl Registry {
     /// A question or a form is up on this page (Esc closes it before it closes the settings). The other
     /// page's form does not count: this page's Esc could not close it.
     pub(super) fn wants_esc(&self, page: Page) -> bool {
-        self.confirm.as_ref().is_some_and(|q| q.page == page) || self.forms[page.idx()].is_some()
+        self.mover.is_some()
+            || self.moved.is_some()
+            || self.confirm.as_ref().is_some_and(|q| q.page == page)
+            || self.forms[page.idx()].is_some()
+    }
+
+    /// The listing could not be read because passwords are written in addresses (E2282): the repair is offered.
+    pub(super) fn move_offered(&self) -> bool {
+        self.error.as_deref().is_some_and(|e| e.lines().any(|l| msg::CONFIG_ADDR_PASSWORDS.is_in(l)))
+    }
+
+    /// The answer to a request of the repair. Returns whether the listing is to be asked for again (the file may have
+    /// changed: after a real run whatever it said, after a dry run when the file moved on).
+    pub(super) fn move_answered(&mut self, dry_run: bool, r: Result<String, String>) -> bool {
+        let Some(m) = self.mover.as_mut() else { return !dry_run };
+        m.out = false;
+        match r {
+            Ok(text) => match MoveBody::parse(&text) {
+                // Done: the plan is over, its lines stay on the page, the listing is read again.
+                Ok(body) if body.done => {
+                    self.moved = Some(body.lines.into_iter().map(Line::Raw).collect());
+                    self.mover = None;
+                    true
+                }
+                Ok(body) => {
+                    m.plan = Some(body);
+                    m.note = None;
+                    m.focus = 1;
+                    !dry_run
+                }
+                Err(_) if !dry_run => {
+                    // A real run whose answer does not read: nothing is known of the file, the plan is no more.
+                    self.moved = Some(vec![Line::ReplyBad]);
+                    self.mover = None;
+                    true
+                }
+                Err(_) => {
+                    // The parser's text could quote the reply: it is dropped.
+                    m.note = Some(Line::ReplyBad);
+                    false
+                }
+            },
+            Err(e) if !dry_run && msg::MAY_HAVE_ARRIVED.is_in(&e) => {
+                // A lost answer of a real run is not sent again on its own: the listing says what the file is now.
+                self.moved = Some(vec![Line::MoveUnknown]);
+                self.mover = None;
+                true
+            }
+            Err(e) => {
+                let changed = msg::CONFIG_CHANGED.is_in(&e);
+                m.note = Some(if changed { Line::BaseChanged } else { Line::Raw(e) });
+                if changed {
+                    m.plan = None;
+                }
+                !dry_run || changed
+            }
+        }
+    }
+
+    /// A request of the repair the thread did not take: the plan shows why.
+    pub(super) fn move_unsent(&mut self, why: String) {
+        if let Some(m) = &mut self.mover {
+            m.out = false;
+            m.note = Some(Line::Unsent(why));
+        }
     }
 
     #[cfg(test)]
@@ -1717,9 +1848,11 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
         ui.ctx().input_mut(|i| {
             let esc = i.consume_key(egui::Modifiers::NONE, egui::Key::Escape);
             let asking = r.confirm.as_ref().is_some_and(|q| q.page == page);
-            let enter = asking && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
-            let tab =
-                asking && (i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
+            // Only a plan that is drawn (the same condition as the drawing below).
+            let moving = r.mover.as_ref().is_some_and(|m| !m.out && m.plan.is_some()) && r.move_offered() && access == &Access::Open;
+            let enter = (asking || moving) && i.consume_key(egui::Modifiers::NONE, egui::Key::Enter);
+            let tab = (asking || moving)
+                && (i.consume_key(egui::Modifiers::NONE, egui::Key::Tab) || i.consume_key(egui::Modifiers::SHIFT, egui::Key::Tab));
             (esc, enter, tab)
         })
     } else {
@@ -1728,9 +1861,13 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
     if esc {
         click = Some(Click::Esc);
     } else if enter {
-        click = r.confirm.as_ref().map(|q| if q.focus == 0 { Click::Yes } else { Click::No });
+        click = match (&r.confirm, &r.mover) {
+            (Some(q), _) if q.page == page => Some(if q.focus == 0 { Click::Yes } else { Click::No }),
+            (_, Some(m)) => Some(if m.focus == 0 { Click::MoveRun } else { Click::MoveCancel }),
+            _ => None,
+        };
     } else if tab {
-        click = Some(Click::MoveFocus);
+        click = Some(if r.confirm.as_ref().is_some_and(|q| q.page == page) { Click::MoveFocus } else { Click::MoveFocus2 });
     }
     let [this, far, add, none, ..] = page.words();
     let heading = match v.far {
@@ -1772,6 +1909,12 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
         });
         if let Some(e) = &r.error {
             users::say_line(ui, e, c.err);
+        }
+        if r.moved.is_some() {
+            moved_ui(r, ui, t, &mut click);
+        }
+        if r.move_offered() && access == &Access::Open {
+            move_ui(r, ui, t, v, &mut click);
         }
         let can = r.can_write(v);
         let editing = r.forms[page.idx()].as_ref().and_then(|f| f.editing.clone());
@@ -1844,6 +1987,63 @@ pub(super) fn show(r: &mut Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: 
         }
     }
     click
+}
+
+/// The answer the real run of the repair left, with 「閉じる」.
+fn moved_ui(r: &Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, click: &mut Option<Click>) {
+    use ito_prefs::{Mark, Tone};
+    let c = ito_theme::colors();
+    let Some(lines) = &r.moved else { return };
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        for l in lines {
+            users::say_line(ui, &l.text(t), c.fg);
+        }
+        if users::button(ui, true, None, Mark::Close, t.tr("registry.move_close"), Tone::Primary, "registry.move.close") {
+            click.get_or_insert(Click::MoveClose);
+        }
+    });
+}
+
+/// The button that opens the plan of moving the passwords written in addresses, and the plan with 「移す」 and 「やめる」.
+fn move_ui(r: &Registry, ui: &mut egui::Ui, t: &ito_i18n::Table, v: &View, click: &mut Option<Click>) {
+    use ito_prefs::{Mark, Tone};
+    let c = ito_theme::colors();
+    let Some(m) = &r.mover else {
+        let on = v.open && !r.write && r.asked == 0;
+        if users::button(ui, on, None, Mark::Refresh, t.tr("registry.move_open"), Tone::Plain, "registry.move.open") {
+            click.get_or_insert(Click::MoveOpen);
+        }
+        return;
+    };
+    egui::Frame::group(ui.style()).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        if m.out {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                ui.label(t.tr("registry.move_waiting"));
+            });
+        }
+        if let Some(p) = &m.plan {
+            for line in &p.lines {
+                users::say_line(ui, line, if p.can { c.fg } else { c.err });
+            }
+        }
+        if let Some(n) = &m.note {
+            users::say_line(ui, &n.text(t), c.err);
+        }
+        ui.horizontal(|ui| {
+            // The same guard as the send (`act(Click::MoveRun)`): a button that would do nothing is not enabled.
+            let can = m.plan.as_ref().is_some_and(|p| p.can) && !m.out && v.open && !r.write;
+            let tone = |i: u8| if m.focus == i { Tone::Primary } else { Tone::Plain };
+            if users::button(ui, can, None, Mark::Refresh, t.tr("registry.move_run"), tone(0), "registry.move.run") {
+                click.get_or_insert(Click::MoveRun);
+            }
+            if users::button(ui, !m.out, None, Mark::Close, t.tr("registry.move_cancel"), tone(1), "registry.move.cancel") {
+                click.get_or_insert(Click::MoveCancel);
+            }
+        });
+    });
 }
 
 fn card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
@@ -2232,27 +2432,6 @@ struct Pasted {
     file: String,
 }
 
-/// `text` with its `%XX` escapes decoded; `None` when an escape is broken or the result is not UTF-8.
-fn pct_decode(text: &str) -> Option<String> {
-    let b = text.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' {
-            let hex = text.get(i + 1..i + 3)?;
-            if !hex.bytes().all(|c| c.is_ascii_hexdigit()) {
-                return None;
-            }
-            out.push(u8::from_str_radix(hex, 16).ok()?);
-            i += 3;
-        } else {
-            out.push(b[i]);
-            i += 1;
-        }
-    }
-    String::from_utf8(out).ok()
-}
-
 /// Reads a pasted `postgres://[user[:password]@]host[:port][/database][?sslmode=…]` (or `sqlite://path`) leniently.
 /// `None` when the text is not one, or its server is not one the server line takes (it is then left as typed).
 fn split_pasted_db(text: &str) -> Option<Pasted> {
@@ -2297,12 +2476,12 @@ fn split_pasted_db(text: &str) -> Option<Pasted> {
             // `***` is the mark a URL that did not split leaves in the line (`settle_pasted_host`), not a password.
             // A password that really is `***` is pasted as `%2A%2A%2A`.
             Some((u, "***")) => (Some(u), None),
-            Some((u, p)) => (Some(u), Some(pct_decode(p)?)),
+            Some((u, p)) => (Some(u), Some(chore::pct_decode(p)?)),
             None => (Some(i), None),
         },
     };
-    let user = user.filter(|u| !u.is_empty()).map(pct_decode).map_or(Some(None), |d| d.map(Some))?;
-    let database = path.filter(|p| !p.is_empty()).map(pct_decode).map_or(Some(None), |d| d.map(Some))?;
+    let user = user.filter(|u| !u.is_empty()).map(chore::pct_decode).map_or(Some(None), |d| d.map(Some))?;
+    let database = path.filter(|p| !p.is_empty()).map(chore::pct_decode).map_or(Some(None), |d| d.map(Some))?;
     let tls = query.split('&').filter_map(|kv| kv.split_once('=')).find(|(k, _)| k.eq_ignore_ascii_case("sslmode")).and_then(|(_, v)| {
         match v.to_ascii_lowercase().as_str() {
             "disable" => Some(SqlTls::Off),
@@ -3482,8 +3661,6 @@ mod tests {
         assert!(should_split(url, true, false), "pasted, also over a URL");
         assert!(should_split(url, false, true), "typed out, then left");
         assert!(!should_split("db1", true, true));
-        assert_eq!(pct_decode("%+1"), None);
-        assert_eq!(pct_decode("a%401").as_deref(), Some("a@1"));
     }
 
     #[test]
@@ -4540,6 +4717,266 @@ mod addr_tests {
             ] {
                 let key = format!("registry.{key}");
                 assert_ne!(t.tr(&key), key, "{lang} {key}");
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod move_tests {
+    use super::*;
+
+    const OPEN: View = View { far: None, open: true };
+
+    /// A page whose listing could not be read for passwords in addresses (E2282).
+    fn broken() -> Registry {
+        let mut r = Registry::default();
+        r.touch(1, Page::Hosts);
+        r.ask();
+        r.listing_answer(Err(format!("KOYOMI-E1078 x\n{}", msg::line(msg::CONFIG_ADDR_PASSWORDS, &["[[host]] web"]))));
+        r
+    }
+
+    fn plan(can: bool) -> String {
+        MoveBody { sha256: "sha-a".into(), lines: vec!["[[host]] web: moves".into()], can, done: false }.to_toml()
+    }
+
+    fn sent(d: Do) -> (bool, Option<String>) {
+        match d {
+            Do::Send(Request::MoveAddressPasswords { dry_run, base_sha256 }) => (dry_run, base_sha256),
+            _ => panic!("not a move request"),
+        }
+    }
+
+    #[test]
+    fn the_button_is_offered_only_for_the_passwords_in_addresses_error() {
+        assert!(broken().move_offered());
+        let mut r = Registry::default();
+        r.ask();
+        r.listing_answer(Err("E1000: unknown request".into()));
+        assert!(!r.move_offered());
+        assert!(matches!(r.act(Click::MoveOpen, Page::Hosts, &OPEN), Do::Nothing));
+        assert!(r.mover.is_none());
+    }
+
+    #[test]
+    fn the_plan_then_the_move_each_go_once_and_only_on_the_plans_hash() {
+        let mut r = broken();
+        assert_eq!(sent(r.act(Click::MoveOpen, Page::Hosts, &OPEN)), (true, None));
+        // In flight: nothing else goes, and the plan cannot be run or closed.
+        assert!(matches!(r.act(Click::MoveOpen, Page::Hosts, &OPEN), Do::Nothing));
+        assert!(matches!(r.act(Click::MoveRun, Page::Hosts, &OPEN), Do::Nothing));
+        r.act(Click::Esc, Page::Hosts, &OPEN);
+        assert!(r.mover.is_some());
+        assert!(!r.move_answered(true, Ok(plan(true))), "a dry run does not ask for the listing again");
+        // Enter and Esc and Tab work on the plan; Tab moves between the two buttons.
+        assert_eq!(r.mover.as_ref().map(|m| m.focus), Some(1));
+        r.act(Click::MoveFocus2, Page::Hosts, &OPEN);
+        assert_eq!(r.mover.as_ref().map(|m| m.focus), Some(0));
+        assert_eq!(sent(r.act(Click::MoveRun, Page::Hosts, &OPEN)), (false, Some("sha-a".into())));
+        // The real run is out: a second click sends nothing.
+        assert!(matches!(r.act(Click::MoveRun, Page::Hosts, &OPEN), Do::Nothing));
+        assert!(r.move_answered(false, Ok(MoveBody { sha256: "sha-b".into(), lines: vec![], can: true, done: true }.to_toml())));
+        assert!(r.mover.is_none(), "done: the plan is over and the listing is asked for again");
+    }
+
+    #[test]
+    fn a_plan_that_cannot_be_done_is_not_run_and_esc_closes_it() {
+        let mut r = broken();
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        r.move_answered(true, Ok(plan(false)));
+        assert!(matches!(r.act(Click::MoveRun, Page::Hosts, &OPEN), Do::Nothing));
+        assert!(r.wants_esc(Page::Hosts));
+        r.act(Click::Esc, Page::Hosts, &OPEN);
+        assert!(r.mover.is_none());
+    }
+
+    /// One headless frame of the page with `key` pressed (and `shift`); the click it gave.
+    fn frame(r: &mut Registry, key: Option<egui::Key>, shift: bool) -> Option<Click> {
+        let t = crate::i18n::table("en").0;
+        let ctx = egui::Context::default();
+        let modifiers = if shift { egui::Modifiers::SHIFT } else { egui::Modifiers::NONE };
+        let events = key
+            .into_iter()
+            .flat_map(|key| [true, false].map(|pressed| egui::Event::Key { key, physical_key: None, pressed, repeat: false, modifiers }))
+            .collect();
+        let input = egui::RawInput {
+            events,
+            screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let mut click = None;
+        let mut out = ctx.run_ui(input, |ui| click = show(r, ui, &t, &OPEN, &Access::Open, Page::Hosts));
+        out.textures_delta.clear();
+        click
+    }
+
+    #[test]
+    fn enter_on_a_drawn_plan_sends_the_real_run_and_a_page_without_the_error_sends_nothing() {
+        let mut r = broken();
+        r.touch(2, Page::Hosts);
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        r.move_answered(true, Ok(plan(true)));
+        r.act(Click::MoveFocus2, Page::Hosts, &OPEN);
+        let click = frame(&mut r, Some(egui::Key::Enter), false);
+        assert!(matches!(click, Some(Click::MoveRun)), "{click:?}");
+        assert_eq!(sent(r.act(click.unwrap(), Page::Hosts, &OPEN)), (false, Some("sha-a".into())));
+
+        // The listing reads fine now (no E2282): the plan is not drawn, so its keys are not taken.
+        let mut r = Registry::default();
+        r.touch(1, Page::Hosts);
+        r.ask();
+        r.listing_answer(Err("E1000: unknown request".into()));
+        r.mover = Some(Mover { plan: serde_plan(true), ..Mover::default() });
+        for (key, shift) in [(egui::Key::Enter, false), (egui::Key::Tab, false), (egui::Key::Tab, true)] {
+            assert!(frame(&mut r, Some(key), shift).is_none(), "{key:?}");
+        }
+        // And a run clicked there is not sent either.
+        let v = View { far: None, open: false };
+        assert!(matches!(broken_with_plan().act(Click::MoveRun, Page::Hosts, &v), Do::Nothing));
+    }
+
+    fn serde_plan(can: bool) -> Option<MoveBody> {
+        Some(MoveBody::parse(&plan(can)).unwrap())
+    }
+
+    fn broken_with_plan() -> Registry {
+        let mut r = broken();
+        r.mover = Some(Mover { plan: serde_plan(true), ..Mover::default() });
+        r
+    }
+
+    #[test]
+    fn the_answer_of_a_real_run_stays_until_it_is_closed() {
+        let mut r = broken();
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        r.move_answered(true, Ok(plan(true)));
+        r.act(Click::MoveRun, Page::Hosts, &OPEN);
+        let done = MoveBody { sha256: "sha-b".into(), lines: vec!["moved 1".into()], can: true, done: true };
+        assert!(r.move_answered(false, Ok(done.to_toml())));
+        assert!(r.mover.is_none());
+        // The listing is read again and reads fine: the answer is still up, on any registry page.
+        r.ask();
+        r.listing_answer(Ok(RegistryBody::default().to_toml()));
+        assert!(!r.move_offered());
+        assert_eq!(r.moved, Some(vec![Line::Raw("moved 1".into())]));
+        assert!(frame(&mut r, None, false).is_none());
+        assert!(r.wants_esc(Page::Hosts) && r.wants_esc(Page::Accounts));
+        // 「閉じる」 closes it, and so does Esc.
+        r.act(Click::MoveClose, Page::Hosts, &OPEN);
+        assert!(r.moved.is_none());
+        r.moved = Some(vec![Line::Raw("moved 1".into())]);
+        let click = frame(&mut r, Some(egui::Key::Escape), false);
+        assert!(matches!(click, Some(Click::Esc)));
+        r.act(Click::Esc, Page::Hosts, &OPEN);
+        assert!(r.moved.is_none());
+        // Another engine drops it.
+        r.moved = Some(vec![Line::Raw("moved 1".into())]);
+        r.role_told((None, None));
+        assert!(r.role_told((None, Some("other".into()))));
+        assert!(r.moved.is_none());
+    }
+
+    #[test]
+    fn the_done_frame_shows_its_lines_and_the_close_button_closes_it() {
+        use crate::ui::listtable::pad::Pad;
+        let t = crate::i18n::table("en").0;
+        let mut r = Registry::default();
+        r.touch(1, Page::Hosts);
+        r.ask();
+        r.listing_answer(Ok(RegistryBody::default().to_toml()));
+        r.moved = Some(vec![Line::Raw("moved 1 password".into())]);
+        let mut pad = Pad::new();
+        let mut clicks: Vec<Click> = Vec::new();
+        pad.settle(&mut |ui| clicks.extend(show(&mut r, ui, &t, &OPEN, &Access::Open, Page::Hosts)));
+        // The words and the button are in the screen-reader tree.
+        let _ = pad.rect("moved 1 password");
+        let close = pad.rect("Close").center();
+        assert!(clicks.is_empty());
+        pad.presses_at(close, egui::PointerButton::Primary, 1, &mut |ui| {
+            clicks.extend(show(&mut r, ui, &t, &OPEN, &Access::Open, Page::Hosts))
+        });
+        assert!(clicks.iter().any(|c| matches!(c, Click::MoveClose)), "{clicks:?}");
+        r.act(Click::MoveClose, Page::Hosts, &OPEN);
+        assert!(r.moved.is_none());
+        pad.nodes.clear();
+        pad.settle(&mut |ui| clicks.extend(show(&mut r, ui, &t, &OPEN, &Access::Open, Page::Hosts)));
+        assert!(!pad.nodes.values().any(|(l, _)| l.contains("moved 1 password")), "the text is gone");
+    }
+
+    #[test]
+    fn the_move_button_is_enabled_only_when_the_send_would_go() {
+        use crate::ui::listtable::pad::Pad;
+        let t = crate::i18n::table("en").0;
+        let can_run = |r: &mut Registry, v: View| {
+            let mut pad = Pad::new();
+            let mut clicks: Vec<Click> = Vec::new();
+            pad.settle(&mut |ui| clicks.extend(show(r, ui, &t, &v, &Access::Open, Page::Hosts)));
+            let at = pad.rect("Move").center();
+            pad.presses_at(at, egui::PointerButton::Primary, 1, &mut |ui| clicks.extend(show(r, ui, &t, &v, &Access::Open, Page::Hosts)));
+            clicks.iter().any(|c| matches!(c, Click::MoveRun))
+        };
+        let mut r = broken_with_plan();
+        r.touch(2, Page::Hosts);
+        assert!(can_run(&mut r, View { far: None, open: true }));
+        assert!(!can_run(&mut r, View { far: None, open: false }));
+        r.write = true;
+        assert!(!can_run(&mut r, View { far: None, open: true }));
+    }
+
+    #[test]
+    fn a_real_run_whose_answer_is_lost_or_unreadable_says_it_is_not_known() {
+        for (answer, line) in
+            [(Err(msg::line(msg::MAY_HAVE_ARRIVED, &["timed out"])), Line::MoveUnknown), (Ok("sha256 = [".to_owned()), Line::ReplyBad)]
+        {
+            let mut r = broken();
+            r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+            r.move_answered(true, Ok(plan(true)));
+            r.act(Click::MoveRun, Page::Hosts, &OPEN);
+            assert!(r.move_answered(false, answer), "the listing is asked for again");
+            assert!(r.mover.is_none(), "no plan is left to run");
+            assert_eq!(r.moved, Some(vec![line]));
+        }
+        let t = crate::i18n::table("ja").0;
+        assert_eq!(Line::MoveUnknown.text(&t), "答えが届かなかったので、移せたかどうかわかりません。一覧を読み直します。");
+    }
+
+    #[test]
+    fn a_failed_or_lost_answer_is_shown_and_the_listing_is_read_again() {
+        // Changed file on the real run: the look-again words, the plan is dropped, the listing is asked for.
+        let mut r = broken();
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        r.move_answered(true, Ok(plan(true)));
+        r.act(Click::MoveRun, Page::Hosts, &OPEN);
+        assert!(r.move_answered(false, Err(msg::line(msg::CONFIG_CHANGED, &[]))));
+        let m = r.mover.as_ref().unwrap();
+        assert!(!m.out && m.plan.is_none() && matches!(m.note, Some(Line::BaseChanged)));
+        // A reply of the dry run that does not read.
+        let mut r = broken();
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        assert!(!r.move_answered(true, Ok("sha256 = [".into())));
+        assert!(matches!(r.mover.as_ref().unwrap().note, Some(Line::ReplyBad)));
+        // A request the thread did not take.
+        let mut r = broken();
+        r.act(Click::MoveOpen, Page::Hosts, &OPEN);
+        r.move_unsent("no engine".into());
+        let m = r.mover.as_ref().unwrap();
+        assert!(!m.out && matches!(&m.note, Some(Line::Unsent(s)) if s == "no engine"));
+    }
+
+    #[test]
+    fn the_window_words_exist_in_both_languages() {
+        for lang in ["ja", "en"] {
+            let t = crate::i18n::table(lang).0;
+            for key in [
+                "registry.move_open",
+                "registry.move_waiting",
+                "registry.move_run",
+                "registry.move_cancel",
+                "registry.move_close",
+                "registry.move_unknown",
+            ] {
+                assert_ne!(t.tr(key), key, "{lang} {key}");
             }
         }
     }

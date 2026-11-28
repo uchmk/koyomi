@@ -148,6 +148,10 @@ usage: koyomi [--version | --help | env]
                                      make a new token for a user, shown once; the old one stops working
        koyomi user remove <name>     take a user out of koyomi.toml (its token stays where it is kept)
        koyomi config [<file>]        what koyomi.toml sets, in a few lines (no addresses, tokens or values; no engine needed)
+       koyomi config move-passwords [--dry-run]
+                                     move the passwords written in a host, mailbox or database address of
+                                     koyomi.toml into the credential store (secret:<name>): the engine does it
+                                     once, and says every row first with --dry-run
        koyomi sftp hostkey <host>[:<port>]  the server's host key, as the line a send, fetch or ssh job takes (host_key = SHA256:…)
        koyomi ssh run                what an ssh job runs (kind = ssh): its command on the PC in on = ssh://…
        koyomi winrm cert <host>[:<port>]  the certificate a Windows PC shows for WinRM over HTTPS, as the line a winrm job takes (cert = AB:CD:…)

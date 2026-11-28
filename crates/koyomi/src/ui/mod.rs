@@ -1622,9 +1622,12 @@ impl Browser {
             registry::Do::Send(request) => {
                 let peek = matches!(request, Request::HostPeek { .. });
                 let db_test = matches!(request, Request::DatabaseTest { .. });
+                let mover = matches!(request, Request::MoveAddressPasswords { .. });
                 if !self.out.send(request) {
                     let why = self.unsent_why();
-                    if db_test {
+                    if mover {
+                        self.registry.move_unsent(why);
+                    } else if db_test {
                         self.registry.db_test_unsent(why);
                     } else if peek {
                         self.registry.peek_unsent(why);
@@ -1973,6 +1976,13 @@ impl Browser {
                 }
                 // The アカウント and データベース pages: their own state's, never the result line's.
                 Msg::Answer(Request::Registry, r) => self.registry.listing_answer(r),
+                // The repair of passwords written in addresses: the plan's, never the result line's.
+                Msg::Answer(Request::MoveAddressPasswords { dry_run, .. }, r) => {
+                    if self.registry.move_answered(dry_run, r) {
+                        self.registry.need = true;
+                        self.registry_reask();
+                    }
+                }
                 // The file picker of a far engine: its own state's (an editor in the stack never has a picker).
                 Msg::Answer(req @ (Request::DirList { .. } | Request::DirPlaces { .. }), r) => {
                     if let Some(e) = &mut self.editor {

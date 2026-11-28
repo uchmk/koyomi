@@ -34,6 +34,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::approved::Store;
 use crate::calendar::{self, Calendar, Calendars};
+use crate::chore;
 use crate::config::Config;
 use crate::group::{self, Group};
 use crate::jobnet::{self, Part};
@@ -281,6 +282,17 @@ pub fn export(src: &Source, pick: &Pick) -> Result<Bundle, String> {
 /// is a name, not an address: it stays.
 pub fn mask(settings: &toml::Table) -> toml::Table {
     let mut out = settings.clone();
+    // A password written in an address (`[[host]].on` and the like) is hidden too; it is not put back on import.
+    for (array, key) in crate::registry::ADDRESS_KEYS {
+        let Some(toml::Value::Array(rows)) = out.get_mut(array) else { continue };
+        for row in rows.iter_mut().filter_map(|r| r.as_table_mut()) {
+            let Some(v) = row.get(key).and_then(toml::Value::as_str) else { continue };
+            let shown = chore::shown_address(v).into_owned();
+            if shown != v {
+                row.insert(key.to_owned(), toml::Value::String(shown));
+            }
+        }
+    }
     let Some(toml::Value::Table(notify)) = out.get_mut("notify") else { return out };
     let is_address = |v: &toml::Value| v.as_str().is_some_and(|s| !s.starts_with("secret:") && s != MASK);
     if notify.get("webhook").is_some_and(is_address) {
@@ -290,6 +302,25 @@ pub fn mask(settings: &toml::Table) -> toml::Table {
         for h in hooks.iter_mut().filter_map(|h| h.as_table_mut()) {
             if h.get("url").is_some_and(is_address) {
                 h.insert("url".to_owned(), toml::Value::String(MASK.to_owned()));
+            }
+        }
+    }
+    out
+}
+
+/// The rows of `settings` whose address holds the hidden mark `***` as its password (the file was written by an export
+/// that hid it), as `[[host]] web1`. They are not put back: the import's check refuses them.
+pub fn masked_address_rows(settings: &toml::Table) -> Vec<String> {
+    let mut out = Vec::new();
+    for (array, key) in crate::registry::ADDRESS_KEYS {
+        let Some(toml::Value::Array(rows)) = settings.get(array) else { continue };
+        for (i, row) in rows.iter().enumerate() {
+            let Some(t) = row.as_table() else { continue };
+            let Some(v) = t.get(key).and_then(toml::Value::as_str) else { continue };
+            let hidden = chore::password_span(v).is_some_and(|r| &v[r] == "***");
+            let label = crate::registry::row_label(array, i, t, &[]);
+            if hidden && !out.contains(&label) {
+                out.push(label);
             }
         }
     }
@@ -476,7 +507,8 @@ pub fn plan(b: &Bundle, current: &Source, on_conflict: Option<Conflict>) -> Plan
     if let Some(table) = &b.settings {
         let now = current.settings_table();
         let mut table = table.clone();
-        let notes = unmask(&mut table, now.as_ref());
+        let mut notes = unmask(&mut table, now.as_ref());
+        notes.extend(masked_address_rows(&table).iter().map(|l| msg::line(msg::BUNDLE_ADDRESS_MASKED, &[l])));
         let new = toml::to_string(&table).unwrap_or_default();
         let mut problems = Vec::new();
         if let Err(e) = toml::Value::Table(table.clone()).try_into::<Config>() {
@@ -710,6 +742,44 @@ mod tests {
         let notify = alone["notify"].as_table().unwrap();
         assert!(notify.get("webhook").is_none());
         assert_eq!(notify["webhooks"].as_array().unwrap().len(), 1);
+    }
+
+    const ADDR_PW: &str = "not-the-password";
+
+    fn with_addresses(notify: bool) -> toml::Table {
+        let mut t = if notify { settings() } else { toml::Table::new() };
+        let rows = format!(
+            "[[host]]\nname = \"web1\"\non = \"ssh://u:{ADDR_PW}@h\"\n[[mailbox]]\nname = \"m\"\nmail = \"imaps://me:{ADDR_PW}@h\"\n[[database]]\nname = \"d\"\ndb = \"postgres://u:{{param:pw}}@h/x\"\n[[bucket]]\nname = \"b\"\nurl = \"sftp://u:{ADDR_PW}@h\"\nendpoint = \"https://u:{ADDR_PW}@e\"\n"
+        );
+        t.extend(toml::from_str::<toml::Table>(&rows).unwrap());
+        t
+    }
+
+    #[test]
+    fn mask_hides_each_address_password_with_and_without_notify() {
+        for notify in [false, true] {
+            let masked = mask(&with_addresses(notify));
+            let text = toml::to_string(&masked).unwrap();
+            assert!(!text.contains(ADDR_PW), "{text}");
+            assert_eq!(masked["host"][0]["on"].as_str(), Some("ssh://u:***@h"));
+            assert_eq!(masked["mailbox"][0]["mail"].as_str(), Some("imaps://me:***@h"));
+            assert_eq!(masked["database"][0]["db"].as_str(), Some("postgres://u:***@h/x"));
+            assert_eq!(masked["bucket"][0]["url"].as_str(), Some("sftp://u:***@h"));
+            assert_eq!(masked["bucket"][0]["endpoint"].as_str(), Some("https://u:***@e"));
+            assert_eq!(masked.contains_key("notify"), notify);
+        }
+    }
+
+    #[test]
+    fn an_import_with_a_hidden_address_password_says_which_row() {
+        let mut b = Bundle::new();
+        b.settings = Some(mask(&with_addresses(false)));
+        let p = plan(&b, &Source::default(), None);
+        let all = p.lines().join("\n");
+        assert!(all.contains(&msg::BUNDLE_ADDRESS_MASKED.code()) && all.contains("[[host]] web1") && !all.contains(ADDR_PW), "{all}");
+        let mut plain = Bundle::new();
+        plain.settings = Some(toml::from_str("concurrency = 2\n").unwrap());
+        assert!(!plan(&plain, &Source::default(), None).lines().join("\n").contains(&msg::BUNDLE_ADDRESS_MASKED.code()));
     }
 
     #[test]

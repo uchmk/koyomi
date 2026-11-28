@@ -44,6 +44,7 @@ pub mod http;
 mod idle;
 mod logs;
 mod mails;
+mod move_passwords;
 mod peek;
 mod ping;
 mod primary;
@@ -358,7 +359,10 @@ impl State {
     fn new(paths: Paths) -> State {
         let (config, bad_config) = match paths.config() {
             Ok(c) => (c, None),
-            Err(e) => (Config::default(), Some(e)),
+            Err(e) => {
+                let e = address_hint(e, &paths.config);
+                (Config::default(), Some(e))
+            }
         };
         let keep = retain::Settings::of(&config);
         let blackouts = config.blackout.clone();
@@ -493,7 +497,7 @@ impl State {
                 self.mails.set_rules(&self.defs, &mailboxes);
                 self.bad_config = None;
             }
-            Err(e) => self.bad_config = Some(e),
+            Err(e) => self.bad_config = Some(address_hint(e, &self.paths.config)),
         }
     }
 
@@ -2182,18 +2186,42 @@ impl State {
                 }
             }
         }
+        // The passwords written in the addresses of the settings, on either side: no line of the reply repeats one.
+        let mut hidden: Vec<String> = Vec::new();
+        for item in p.items.iter().filter(|i| i.kind == bundle::Kind::Settings) {
+            for text in item.old.iter().chain(std::iter::once(&item.new)) {
+                if let Ok(table) = text.parse::<toml::Table>() {
+                    hidden.extend(koyomi_core::registry::address_secrets(&table));
+                }
+            }
+        }
         let mut lines = Vec::new();
         for item in &p.items {
             lines.push(item.line());
             if item.change == Change::Replace {
                 if let Some(old) = &item.old {
-                    lines.extend(diff_lines(old, &item.new));
+                    if item.kind == bundle::Kind::Settings {
+                        use koyomi_core::registry::{mask_address_passwords, Masked};
+                        let side = |t: &str| match mask_address_passwords(t) {
+                            Masked::Unchanged => Some(t.to_owned()),
+                            Masked::Masked(m) => Some(m),
+                            Masked::NotSafe => None,
+                        };
+                        // A password left in a comment or a name hides the diff too.
+                        let leaks = |t: &str| hidden.iter().any(|s| t.contains(s.as_str()));
+                        match (side(old), side(&item.new)) {
+                            (Some(a), Some(b)) if !leaks(&a) && !leaks(&b) => lines.extend(diff_lines(&a, &b)),
+                            _ => lines.push(msg::note(msg::N_DIFF_HIDDEN, &[])),
+                        }
+                    } else {
+                        lines.extend(diff_lines(old, &item.new));
+                    }
                 }
             }
-            lines.extend(item.problems.iter().map(|p| msg::note(msg::N_BUNDLE_PROBLEM, &[p])));
+            lines.extend(item.problems.iter().map(|p| move_passwords::redact(msg::note(msg::N_BUNDLE_PROBLEM, &[p]), &hidden)));
         }
-        lines.extend(notes);
-        lines.extend(p.notes.iter().cloned());
+        lines.extend(notes.into_iter().map(|n| move_passwords::redact(n, &hidden)));
+        lines.extend(p.notes.iter().map(|n| move_passwords::redact(n.clone(), &hidden)));
         let mut reply = proto::Plan {
             lines,
             conflicts: p.conflicts(),
@@ -2206,6 +2234,7 @@ impl State {
             return Ok(reply.to_toml());
         }
         let mut written = 0;
+        let mut history_skipped = false;
         for item in &p.items {
             let at = match &item.change {
                 Change::Add | Change::Replace => item.name.clone(),
@@ -2223,7 +2252,11 @@ impl State {
                 }
             };
             let done = (|| {
-                self.keep_version_in(&path, &dir)?;
+                if item.kind == bundle::Kind::Settings {
+                    history_skipped |= self.keep_settings_version()?;
+                } else {
+                    self.keep_version_in(&path, &dir)?;
+                }
                 if let Some(parent) = path.parent() {
                     std::fs::create_dir_all(parent).map_err(|e| dir_failed(parent, &e))?;
                 }
@@ -2237,6 +2270,9 @@ impl State {
         }
         self.rescan();
         reply.applied = true;
+        if history_skipped {
+            reply.lines.push(msg::note(msg::N_HISTORY_SKIPPED, &[]));
+        }
         Ok(reply.to_toml())
     }
 
@@ -2399,11 +2435,53 @@ impl State {
     /// here: the sweep reads it within a few seconds and the HTTP listener swaps the users then and stays open; the reply in
     /// flight is not cut (each connection has its own thread).
     fn users_write(&self, text: &str) -> Result<(), String> {
-        self.keep_version_in(&self.paths.config, &self.paths.state.join("versions").join("_settings"))?;
+        self.users_write_noted(text).map(|_| ())
+    }
+
+    /// [`Self::users_write`], telling whether the old file was left out of the settings history (see
+    /// [`Self::keep_settings_version`]).
+    fn users_write_noted(&self, text: &str) -> Result<bool, String> {
+        let skipped = self.keep_settings_version()?;
         if let Some(dir) = self.paths.config.parent() {
             std::fs::create_dir_all(dir).map_err(|e| dir_failed(dir, &e))?;
         }
-        ito_common::write_atomic(&self.paths.config, text).map_err(|e| write_failed(&self.paths.config, &e))
+        ito_common::write_atomic(&self.paths.config, text).map_err(|e| write_failed(&self.paths.config, &e))?;
+        Ok(skipped)
+    }
+
+    /// Copies koyomi.toml, as it is about to be replaced, to `versions/_settings/<stamp>.toml` with the passwords of
+    /// its addresses hidden (`***`). Returns whether the copy was left out: the old text is not UTF-8, or not TOML, so
+    /// it cannot be checked for a password. Nothing is copied then and the write goes on, so the person can still fix
+    /// the file. A missing file is nothing to keep. The callers hold [`crate::remote::edits`].
+    fn keep_settings_version(&self) -> Result<bool, String> {
+        use koyomi_core::registry::{mask_address_passwords, Masked};
+        let path = &self.paths.config;
+        let dir = self.paths.state.join("versions").join("_settings");
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(msg::line(msg::FILE_READ_FAILED, &[&shown(path), &msg::io_words(&e)])),
+        };
+        // The line says nothing of the file: it only tells the person who reads the log that no copy was kept.
+        let skipped = || {
+            crate::say(&format!("koyomi: {}", msg::note(msg::N_HISTORY_SKIPPED, &[])), false);
+            Ok(true)
+        };
+        let kept: Vec<u8> = match String::from_utf8(bytes) {
+            Err(_) => return skipped(),
+            Ok(text) if text.is_empty() => text.into_bytes(),
+            Ok(text) => match mask_address_passwords(&text) {
+                Masked::Unchanged => text.into_bytes(),
+                Masked::Masked(t) => t.into_bytes(),
+                Masked::NotSafe => return skipped(),
+            },
+        };
+        std::fs::create_dir_all(&dir).map_err(|e| dir_failed(&dir, &e))?;
+        let stamp = ito_common::now::now_local().format("%Y%m%d-%H%M%S").to_string();
+        let version = free_version(&dir, &stamp, "toml");
+        let to = dir.join(format!("{version}.toml"));
+        ito_common::write_atomic(&to, kept).map_err(|e| write_failed(&to, &e))?;
+        Ok(false)
     }
 
     /// See [`Request::UserSet`].
@@ -2500,8 +2578,9 @@ impl State {
         if !by.is_empty() && cuts_link(&old, &new, by) {
             return Err(msg::line(msg::CONFIG_CUTS_LINK, &[by]));
         }
-        self.users_write(text)?;
-        Ok(msg::note(msg::N_CONFIG_WRITTEN, &[]))
+        let skipped = self.users_write_noted(text)?;
+        let done = msg::note(msg::N_CONFIG_WRITTEN, &[]);
+        Ok(if skipped { format!("{done}\n{}", msg::note(msg::N_HISTORY_SKIPPED, &[])) } else { done })
     }
 
     /// The nets (confirmed or not) and staged definitions that name each registered entry, by id: for each
@@ -2541,7 +2620,7 @@ impl State {
     /// See [`Request::Registry`]; `get` reads a secret (the credential store, or a test's own).
     fn registry(&self, get: &dyn Fn(&str) -> std::io::Result<Option<String>>) -> Result<String, String> {
         let text = self.users_text()?.unwrap_or_default();
-        let config = koyomi_core::config::Config::parse(&text)?;
+        let config = koyomi_core::config::Config::parse(&text).map_err(|e| address_hint_in(e, &text))?;
         let state = |name: Option<&str>| match name {
             None => "not-needed",
             Some(n) => match get(n) {
@@ -3140,6 +3219,7 @@ impl State {
             Request::Users => self.users(),
             Request::ConfigText => self.config_text(),
             Request::ConfigPut { text, base_sha256 } => self.config_put(text, base_sha256, by),
+            Request::MoveAddressPasswords { dry_run, base_sha256 } => self.move_address_passwords(*dry_run, base_sha256.as_deref(), by),
             Request::Registry => self.registry(&read_secret),
             Request::AccountPut { name, user, password, base_sha256, password_value } => {
                 let entry = |secret: Option<&str>| koyomi_core::registry::AccountEntry {
@@ -3473,6 +3553,25 @@ fn cuts_link(old: &str, new: &koyomi_core::config::Config, by: &str) -> bool {
     }
     let own = |h: &koyomi_core::config::Http| h.user.iter().find(|u| u.name.trim() == by).cloned();
     own(&was) != own(now)
+}
+
+/// `error` (koyomi.toml does not read) with, when the raw text has rows with a password written in their address, one
+/// more line that names the rows and the repair.
+pub(crate) fn address_hint_in(error: String, text: &str) -> String {
+    let rows = koyomi_core::registry::address_password_rows(text);
+    if rows.is_empty() {
+        error
+    } else {
+        format!("{error}\n{}", msg::line(msg::CONFIG_ADDR_PASSWORDS, &[&rows.join(", ")]))
+    }
+}
+
+/// [`address_hint_in`] for the file at `path` (an unreadable one adds nothing).
+fn address_hint(error: String, path: &Path) -> String {
+    match std::fs::read_to_string(path) {
+        Ok(text) => address_hint_in(error, &text),
+        Err(_) => error,
+    }
 }
 
 /// The name and target a request is written down under when it succeeds: what a person did by hand.
@@ -6518,6 +6617,351 @@ token = \"secret:zed\"
         assert_eq!(standing_of(&s, "経理/a"), Some(Standing::Confirmed));
         let ops = s.runner.ops(today, today).unwrap().join("\n");
         assert!(ops.contains("approve") && ops.contains("alice"), "{ops}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    const ADDR_PW: &str = "not-the-password";
+
+    /// A credential store in memory that can be told to fail (the repair of address passwords).
+    #[derive(Default)]
+    struct MoveStore {
+        items: std::sync::Mutex<BTreeMap<String, String>>,
+        calls: std::sync::Mutex<Vec<String>>,
+        fail_get: bool,
+    }
+
+    impl crate::remote::SecretStore for MoveStore {
+        fn get(&self, name: &str) -> Result<Option<String>, String> {
+            self.calls.lock().unwrap().push(format!("get {name}"));
+            if self.fail_get {
+                return Err("store down".into());
+            }
+            Ok(self.items.lock().unwrap().get(name).cloned())
+        }
+        fn set(&self, name: &str, value: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("set {name}"));
+            self.items.lock().unwrap().insert(name.into(), value.into());
+            Ok(())
+        }
+        fn delete(&self, name: &str) -> Result<(), String> {
+            self.calls.lock().unwrap().push(format!("delete {name}"));
+            self.items.lock().unwrap().remove(name);
+            Ok(())
+        }
+    }
+
+    impl MoveStore {
+        fn writes(&self) -> usize {
+            self.calls.lock().unwrap().iter().filter(|c| !c.starts_with("get ")).count()
+        }
+    }
+
+    /// A koyomi.toml that `Config::parse` refuses because four addresses hold a password (one mailbox has no
+    /// `password` key at all, one has `password = ""`).
+    fn address_password_file() -> String {
+        format!(
+            "concurrency = 2\n\n[[host]]\nname = \"web1\"\non = \"ssh://u:p%40ss@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n\n[[database]]\nname = \"main\"\ndb = \"postgres://u:{ADDR_PW}@h/x\"\n\n[[mailbox]]\nname = \"box\"\nmail = \"imaps://me:{ADDR_PW}@h\"\n\n[[mailbox]]\nname = \"empty\"\nmail = \"imaps://me:{ADDR_PW}2@h\"\npassword = \"\"\n"
+        )
+    }
+
+    fn move_request(dry_run: bool, base: Option<&str>) -> Request {
+        Request::MoveAddressPasswords { dry_run, base_sha256: base.map(str::to_owned) }
+    }
+
+    fn move_state(tag: &str, text: &str) -> (State, Paths, Arc<MoveStore>) {
+        let paths = temp_paths(tag);
+        std::fs::write(&paths.config, text).unwrap();
+        let mut s = State::new(paths.clone());
+        let store = Arc::new(MoveStore::default());
+        s.secrets = store.clone();
+        (s, paths, store)
+    }
+
+    fn move_ops(s: &State) -> String {
+        let today = ito_common::now::now_local().date_naive();
+        s.runner.ops(today, today).unwrap().join("\n")
+    }
+
+    fn settings_copies(paths: &Paths) -> Vec<String> {
+        match std::fs::read_dir(paths.state.join("versions").join("_settings")) {
+            Ok(d) => d.map(|e| std::fs::read_to_string(e.unwrap().path()).unwrap()).collect(),
+            Err(_) => Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_file_with_address_passwords_says_so_and_names_the_repair() {
+        let file = address_password_file();
+        let (s, paths, _) = move_state("move-pw-hint", &file);
+        let bad = s.bad_config.clone().expect("the file does not read");
+        assert!(bad.contains(&msg::CONFIG_ADDR_PASSWORDS.code()), "{bad}");
+        assert!(bad.contains("[[host]] web1") && bad.contains("[[mailbox]] box") && !bad.contains(ADDR_PW), "{bad}");
+        let e = s.registry(&|_| Ok(None)).unwrap_err();
+        assert!(e.contains(&msg::CONFIG_ADDR_PASSWORDS.code()) && !e.contains(ADDR_PW), "{e}");
+        // A file that does not read for another reason has no such line.
+        std::fs::write(&paths.config, "concurrency = \"x\"\n").unwrap();
+        assert!(!s.registry(&|_| Ok(None)).unwrap_err().contains(&msg::CONFIG_ADDR_PASSWORDS.code()));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_dry_run_plans_and_touches_nothing() {
+        let file = address_password_file();
+        let (mut s, paths, store) = move_state("move-pw-dry", &file);
+        let reply = s.answer(&move_request(true, None)).unwrap();
+        let body = proto::MoveBody::parse(&reply).unwrap();
+        assert!(body.can && !body.done, "{reply}");
+        assert!(!reply.contains(ADDR_PW) && !reply.contains("p%40ss") && !reply.contains("p@ss"), "{reply}");
+        assert_eq!(body.sha256, koyomi_core::users::sha256(&file));
+        assert_eq!(store.writes(), 0);
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        assert!(!move_ops(&s).contains("move-address-passwords"));
+        // A real run with another hash is refused before anything is stored.
+        let e = s.answer(&move_request(false, Some("stale"))).unwrap_err();
+        assert!(msg::CONFIG_CHANGED.is_in(&e));
+        assert_eq!(store.writes(), 0);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn the_move_stores_the_passwords_and_makes_the_file_read() {
+        let file = address_password_file();
+        let (mut s, paths, store) = move_state("move-pw-run", &file);
+        let plan = proto::MoveBody::parse(&s.answer(&move_request(true, None)).unwrap()).unwrap();
+        let reply = s.answer(&move_request(false, Some(&plan.sha256))).unwrap();
+        let body = proto::MoveBody::parse(&reply).unwrap();
+        assert!(body.done && body.can, "{reply}");
+        assert!(!reply.contains(ADDR_PW) && !reply.contains("p@ss"), "{reply}");
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(!text.contains(ADDR_PW) && !text.contains("p%40ss"), "{text}");
+        koyomi_core::config::Config::parse(&text).unwrap();
+        assert!(s.bad_config.is_none());
+        let items = store.items.lock().unwrap().clone();
+        assert_eq!(items["koyomi-host-web1"], "p@ss");
+        assert_eq!(items["koyomi-db-main"], ADDR_PW);
+        assert_eq!(items["koyomi-mail-box"], ADDR_PW);
+        assert_eq!(items["koyomi-mail-empty"], format!("{ADDR_PW}2"));
+        assert!(s.registry(&|n| Ok(store.items.lock().unwrap().get(n).cloned())).is_ok());
+        // The history copy of the old file holds `***` and no password.
+        let copies = settings_copies(&paths);
+        assert_eq!(copies.len(), 1);
+        assert!(copies[0].contains("***") && !copies[0].contains(ADDR_PW) && !copies[0].contains("p%40ss"), "{}", copies[0]);
+        // One audit entry, with the labels and no value.
+        let ops = move_ops(&s);
+        assert_eq!(ops.matches("move-address-passwords").count(), 1, "{ops}");
+        assert!(ops.contains("[[host]] web1") && ops.contains("[[mailbox]] box") && !ops.contains(ADDR_PW), "{ops}");
+        // The same request again: nothing to move, nothing touched.
+        let before = store.writes();
+        let again = proto::MoveBody::parse(&s.answer(&move_request(false, None)).unwrap()).unwrap();
+        assert!(!again.can && !again.done);
+        assert_eq!(store.writes(), before);
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), text);
+        assert_eq!(move_ops(&s).matches("move-address-passwords").count(), 1);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn nothing_is_written_when_a_row_cannot_be_moved_or_the_store_cannot_be_read() {
+        let stuck = format!("{}[[host]]\nname = \"z\"\non = \"ssh://u:@h\"\n", address_password_file());
+        let (mut s, paths, store) = move_state("move-pw-stuck", &stuck);
+        let body = proto::MoveBody::parse(&s.answer(&move_request(false, None)).unwrap()).unwrap();
+        assert!(!body.can && !body.done);
+        assert_eq!(store.writes(), 0);
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), stuck);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+
+        let file = address_password_file();
+        let (mut s, paths, _) = move_state("move-pw-noread", &file);
+        let down = Arc::new(MoveStore { fail_get: true, ..MoveStore::default() });
+        s.secrets = down.clone();
+        let body = proto::MoveBody::parse(&s.answer(&move_request(false, None)).unwrap()).unwrap();
+        assert!(!body.can && !body.done);
+        assert_eq!(down.writes(), 0);
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+
+        // The result would still not read for another reason; an array holding a non-table.
+        for text in [
+            format!("{file}[[host]]\nname = \"bad name?\"\non = \"ssh://\"\n"),
+            format!("host = [{{ name = \"a\", on = \"ssh://u:{ADDR_PW}@h\" }}, 7]\n"),
+        ] {
+            let (mut s, paths, store) = move_state("move-pw-other", &text);
+            let body = proto::MoveBody::parse(&s.answer(&move_request(false, None)).unwrap()).unwrap();
+            assert!(!body.can && !body.done, "{text}");
+            assert_eq!(store.writes(), 0);
+            assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), text);
+            let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+        }
+        let (mut s, paths, store) = move_state("move-pw-notoml", "this is = not [ toml");
+        let e = s.answer(&move_request(false, None)).unwrap_err();
+        assert!(msg::MOVE_PW_NOT_TOML.is_in(&e), "{e}");
+        assert_eq!(store.writes(), 0);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_failed_write_takes_the_stored_passwords_back() {
+        let file = address_password_file();
+        let (mut s, paths, store) = move_state("move-pw-writefail", &file);
+        // The history folder cannot be made: `_settings` is a file.
+        let versions = paths.state.join("versions");
+        std::fs::create_dir_all(&versions).unwrap();
+        std::fs::write(versions.join("_settings"), "x").unwrap();
+        let e = s.answer(&move_request(false, None)).unwrap_err();
+        assert!(msg::MOVE_PW_WRITE_FAILED.is_in(&e) && !e.contains(ADDR_PW), "{e}");
+        assert!(store.items.lock().unwrap().is_empty());
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), file);
+        assert!(!move_ops(&s).contains("move-address-passwords"));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_reload_that_fails_after_the_write_says_the_file_was_written() {
+        let file = address_password_file();
+        let (mut s, paths, store) = move_state("move-pw-reloadfail", &file);
+        let reply = s
+            .move_address_passwords_with(false, None, "", |s| s.bad_config = Some(format!("injected {ADDR_PW}")))
+            .expect("the file was written, so the answer is not a refusal");
+        let body = proto::MoveBody::parse(&reply).unwrap();
+        assert!(body.done && body.can, "{reply}");
+        // The sha256 is the planned text's, as on a plain success.
+        assert_eq!(body.sha256, koyomi_core::users::sha256(&file));
+        assert!(body.lines.iter().any(|l| msg::MOVE_PW_AFTER_WRITE.is_in(l) && l.contains("injected")), "{reply}");
+        assert!(body.lines.iter().any(|l| *l == msg::note(msg::N_MOVE_DONE, &["4"])), "{reply}");
+        assert!(!reply.contains(ADDR_PW), "{reply}");
+        assert_eq!(store.items.lock().unwrap().len(), 4);
+        let text = std::fs::read_to_string(&paths.config).unwrap();
+        assert!(!text.contains(ADDR_PW) && text.contains("secret:koyomi-host-web1"), "{text}");
+        assert_eq!(move_ops(&s).matches("move-address-passwords").count(), 1);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_config_put_keeps_a_masked_copy_and_a_not_toml_file_is_not_kept() {
+        let file = address_password_file();
+        let (mut s, paths, _) = move_state("move-pw-put", &file);
+        let base = koyomi_core::users::sha256(&file);
+        let reply = s.dispatch(&Request::ConfigPut { text: "concurrency = 3\n".into(), base_sha256: base }, "").unwrap();
+        assert!(!reply.contains(&msg::note(msg::N_HISTORY_SKIPPED, &[])), "{reply}");
+        let copies = settings_copies(&paths);
+        assert_eq!(copies.len(), 1);
+        assert!(copies[0].contains("***") && !copies[0].contains(ADDR_PW), "{}", copies[0]);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+
+        let broken = format!("this is = not [ toml\npassword = \"{ADDR_PW}\"\n");
+        let (mut s, paths, _) = move_state("move-pw-put-broken", &broken);
+        let base = koyomi_core::users::sha256(&broken);
+        let reply = s.dispatch(&Request::ConfigPut { text: "concurrency = 3\n".into(), base_sha256: base }, "").unwrap();
+        assert!(reply.contains(&msg::note(msg::N_HISTORY_SKIPPED, &[])), "{reply}");
+        assert!(settings_copies(&paths).is_empty());
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), "concurrency = 3\n");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_password_in_a_comment_keeps_no_history_copy_and_the_plan_warns() {
+        let file = format!(
+            "[[host]]\nname = \"web1\"\non = \"ssh://u:{ADDR_PW}@h\" # was ssh://u:{ADDR_PW}@h\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+        );
+        let (mut s, paths, _) = move_state("move-pw-comment", &file);
+        let plan = s.answer(&move_request(true, None)).unwrap();
+        let body = proto::MoveBody::parse(&plan).unwrap();
+        assert!(body.can && body.lines.iter().any(|l| *l == msg::note(msg::N_MOVE_COMMENT, &["[[host]] web1"])), "{plan}");
+        assert!(!plan.contains(ADDR_PW), "{plan}");
+        let reply = s.answer(&move_request(false, Some(&body.sha256))).unwrap();
+        let done = proto::MoveBody::parse(&reply).unwrap();
+        assert!(done.done && done.lines.iter().any(|l| *l == msg::note(msg::N_HISTORY_SKIPPED, &[])), "{reply}");
+        assert!(!reply.contains(ADDR_PW), "{reply}");
+        assert!(settings_copies(&paths).is_empty());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_name_that_holds_the_password_shows_in_no_label_hint_or_audit_line() {
+        let file = format!(
+            "[[host]]\nname = \"{ADDR_PW}\"\non = \"ssh://u:{ADDR_PW}@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+        );
+        let (mut s, paths, store) = move_state("move-pw-name", &file);
+        let bad = s.bad_config.clone().expect("the file does not read");
+        // The hint line names the row by its number: the name holds the password.
+        let hint = bad.lines().find(|l| msg::CONFIG_ADDR_PASSWORDS.is_in(l)).expect("the hint line");
+        assert!(hint.contains("[[host]] #1") && !hint.contains(ADDR_PW), "{hint}");
+        let plan = s.answer(&move_request(true, None)).unwrap();
+        assert!(!plan.contains(ADDR_PW), "{plan}");
+        let body = proto::MoveBody::parse(&plan).unwrap();
+        let reply = s.answer(&move_request(false, Some(&body.sha256))).unwrap();
+        assert!(!reply.contains(ADDR_PW), "{reply}");
+        assert!(store.items.lock().unwrap().contains_key("koyomi-host-row1"));
+        assert!(!move_ops(&s).contains(ADDR_PW), "{}", move_ops(&s));
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn an_import_that_replaces_a_file_with_an_address_password_keeps_one_masked_copy() {
+        let file = address_password_file();
+        let (mut s, paths, _) = move_state("move-pw-import-good", &file);
+        let incoming = settings_bundle("concurrency = 5\n");
+        let r = s.import_with(&incoming, false, Some("overwrite"), "", |_| true).unwrap();
+        assert!(proto::Plan::parse(&r).unwrap().applied, "{r}");
+        assert!(!r.contains(ADDR_PW) && !r.contains("p%40ss"), "{r}");
+        assert_eq!(std::fs::read_to_string(&paths.config).unwrap(), "concurrency = 5\n");
+        let copies = settings_copies(&paths);
+        assert_eq!(copies.len(), 1, "{copies:?}");
+        assert!(copies[0].contains("***") && !copies[0].contains(ADDR_PW) && !copies[0].contains("p%40ss"), "{}", copies[0]);
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn an_import_whose_settings_hold_the_password_in_a_comment_hides_the_diff() {
+        let file = address_password_file();
+        // The current file holds it in a comment: no masked copy is safe.
+        let commented = format!("{file}# was ssh://u:{ADDR_PW}@h\n");
+        let (mut s, paths, _) = move_state("move-pw-import-comment", &commented);
+        let incoming = settings_bundle("concurrency = 5\n");
+        let r = s.import_with(&incoming, true, Some("overwrite"), "", |_| true).unwrap();
+        assert!(r.contains(&msg::note(msg::N_DIFF_HIDDEN, &[])), "{r}");
+        assert!(!r.contains(ADDR_PW) && !r.contains("p%40ss"), "{r}");
+        // The incoming settings hold it in a name: that side is hidden too.
+        let (mut s, paths2, _) = move_state("move-pw-import-name", &file);
+        let incoming = settings_bundle(&format!(
+            "[[host]]\nname = \"{ADDR_PW}\"\non = \"ssh://u:{ADDR_PW}@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+        ));
+        let r = s.import_with(&incoming, true, Some("overwrite"), "", |_| true).unwrap();
+        assert!(r.contains(&msg::note(msg::N_DIFF_HIDDEN, &[])), "{r}");
+        assert!(!r.contains(ADDR_PW), "{r}");
+        let _ = std::fs::remove_dir_all(paths2.app.parent().unwrap());
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn a_masked_bundle_keeps_the_settings_diff_and_says_the_mark() {
+        let file = format!(
+            "[[host]]\nname = \"web1\"\non = \"ssh://u:{ADDR_PW}@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n"
+        );
+        let (mut s, paths, _) = move_state("move-pw-import-mark", &file);
+        let incoming = settings_bundle(
+            "concurrency = 5\n[[host]]\nname = \"web1\"\non = \"ssh://u:***@h\"\nhost_key = \"SHA256:47DEQpj8HBSa+/TImW+5JCeuQeRkm5NMpJWZG3hSuFU\"\n",
+        );
+        let r = s.import_with(&incoming, true, Some("overwrite"), "", |_| true).unwrap();
+        assert!(!r.contains(&msg::note(msg::N_DIFF_HIDDEN, &[])), "{r}");
+        assert!(r.contains("concurrency") && r.contains("***"), "{r}");
+        assert!(!r.contains(ADDR_PW), "{r}");
+        let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
+    }
+
+    #[test]
+    fn an_import_of_settings_with_address_passwords_leaves_none_in_the_reply() {
+        let file = address_password_file();
+        let (mut s, paths, _) = move_state("move-pw-import", &file);
+        let incoming = settings_bundle(&format!("concurrency = 5\n[[host]]\nname = \"web2\"\non = \"ssh://u:{ADDR_PW}9@h\"\n"));
+        for dry in [true, false] {
+            let r = s.import_with(&incoming, dry, Some("overwrite"), "", |_| true);
+            let text = match r {
+                Ok(t) | Err(t) => t,
+            };
+            assert!(!text.contains(ADDR_PW) && !text.contains("p%40ss"), "dry={dry}: {text}");
+        }
+        assert!(settings_copies(&paths).iter().all(|c| !c.contains(ADDR_PW)));
         let _ = std::fs::remove_dir_all(paths.app.parent().unwrap());
     }
 }

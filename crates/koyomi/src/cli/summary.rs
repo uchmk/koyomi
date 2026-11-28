@@ -185,7 +185,7 @@ fn lines(s: &Summary) -> Vec<String> {
 /// words, and as TOML.
 fn build(text: Option<&str>, file: &str) -> Result<(Vec<String>, String), String> {
     let config = match text {
-        Some(t) => Config::parse(t).map_err(|e| named("koyomi.toml", &e))?,
+        Some(t) => Config::parse(t).map_err(|e| crate::engine::address_hint_in(named("koyomi.toml", &e), t))?,
         None => Config::default(),
     };
     let s = summarize(&config, file, text.is_some());
@@ -193,7 +193,50 @@ fn build(text: Option<&str>, file: &str) -> Result<(Vec<String>, String), String
     Ok((lines(&s), toml))
 }
 
+/// `koyomi config move-passwords [--dry-run] [--toml]`: the flags (`true`: only say what would be moved).
+fn move_flags(args: &[String]) -> Result<bool, String> {
+    let mut dry_run = false;
+    for a in args {
+        match a.as_str() {
+            "--dry-run" => dry_run = true,
+            // `--toml` is read by `toml()` for every command.
+            "--toml" => {}
+            other => return Err(format!("config move-passwords does not take {other}")),
+        }
+    }
+    Ok(dry_run)
+}
+
+/// `koyomi config move-passwords`: the engine moves the passwords written in registry addresses into the
+/// credential store and says what it did (exit 0: done, or, with `--dry-run`, it could be done).
+fn move_passwords(args: &[String]) -> i32 {
+    let dry_run = match move_flags(args) {
+        Ok(d) => d,
+        Err(e) => return usage(&e),
+    };
+    let answer = match crate::client::call(&crate::proto::Request::MoveAddressPasswords { dry_run, base_sha256: None }) {
+        Ok(t) => t,
+        Err(e) => return fail(&e),
+    };
+    let body = match crate::proto::MoveBody::parse(&answer) {
+        Ok(b) => b,
+        Err(e) => return fail(&e),
+    };
+    let ok = if dry_run { body.can } else { body.done };
+    if want_toml() {
+        emit(&answer);
+    } else {
+        out(&body.lines.join("\n"), !ok);
+    }
+    i32::from(!ok)
+}
+
 pub fn cmd(args: &[String]) -> i32 {
+    if let [first, rest @ ..] = args {
+        if first == "move-passwords" {
+            return move_passwords(rest);
+        }
+    }
     let (path, explicit) = match args {
         [] => match crate::engine::Paths::find() {
             Ok(p) => (p.config, false),
@@ -264,6 +307,35 @@ name = \"ann\"
 role = \"run\"
 token = \"secret:ann-token\"
 ";
+
+    #[test]
+    fn the_move_passwords_flags_are_read() {
+        let a = |v: &[&str]| move_flags(&v.iter().map(|s| (*s).to_owned()).collect::<Vec<_>>());
+        assert_eq!(a(&[]), Ok(false));
+        assert_eq!(a(&["--dry-run"]), Ok(true));
+        assert_eq!(a(&["--toml", "--dry-run"]), Ok(true));
+        assert!(a(&["--now"]).is_err());
+        assert!(a(&["file.toml"]).is_err());
+    }
+
+    #[test]
+    fn a_file_with_an_address_password_gets_the_repair_line() {
+        let text = "[[host]]
+name = \"web\"
+on = \"ssh://u:not-the-password@h\"
+";
+        let e = build(Some(text), "koyomi.toml").unwrap_err();
+        assert!(e.contains(&msg::CONFIG_ADDR_PASSWORDS.code()) && e.contains("[[host]] web") && !e.contains("not-the-password"), "{e}");
+        let e = build(
+            Some(
+                "concurrency = \"x\"
+",
+            ),
+            "koyomi.toml",
+        )
+        .unwrap_err();
+        assert!(!e.contains(&msg::CONFIG_ADDR_PASSWORDS.code()), "{e}");
+    }
 
     #[test]
     fn the_summary_tells_counts_and_names_not_values() {
