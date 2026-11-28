@@ -46,4 +46,4 @@ if [ -z "$bin" ]; then
   exit 1
 fi
 
-exec runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi "$bin" user "$@"
+exec runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi "$bin" user "$@"

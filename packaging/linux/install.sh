@@ -10,6 +10,7 @@ conf=$conf_dir/koyomi.toml
 cred_dir=/etc/koyomi/credentials
 unit=/etc/systemd/system/koyomi.service
 bin=/usr/local/bin/koyomi
+credstore_dropin=/etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf
 
 usage() {
   cat <<'USAGE'
@@ -53,6 +54,7 @@ fi
 if [ "$mode" = configure ]; then
   # Called by the postinst of the .deb: the files are already in /usr.
   bin=/usr/bin/koyomi
+  secret_tool=/usr/sbin/koyomi-secret
 else
   # A package owns the files when dpkg knows koyomi: use apt or dpkg then.
   # No dpkg-query, or an unknown package, goes on as before. A removed but
@@ -65,13 +67,14 @@ else
     config-files) die "koyomi の .deb パッケージの登録が残っています。先に sudo dpkg -P koyomi を実行してください (データ、設定、token は残ります)。" ;;
     *) die "koyomi は .deb パッケージとしてインストールされています。更新や削除は apt / dpkg を使ってください (例: sudo apt remove koyomi)。" ;;
   esac
+  secret_tool=$here/koyomi-secret
 fi
 
 # Run a command as the koyomi user with a clean XDG environment. Everything
 # under /var/lib/koyomi is written and read through this: that tree is
 # writable by koyomi, so root must not create, chown or read files in it.
 as_koyomi() {
-  runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME="$home" "$@"
+  runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_RUNTIME_DIR HOME="$home" "$@"
 }
 
 # Read the port from the [http] table of the current koyomi.toml. Prints it only
@@ -108,8 +111,11 @@ if [ "$mode" = uninstall ]; then
   echo "  $home  (設定と状態)"
   echo "  /etc/koyomi  (token などのシークレット)"
   echo "  利用者 koyomi"
+  if [ -e "$credstore_dropin" ]; then
+    echo "  $credstore_dropin  (暗号化した secret を使うための設定)"
+  fi
   echo "削除するとき:"
-  echo "  sudo rm -rf $home /etc/koyomi && sudo userdel koyomi"
+  echo "  sudo rm -rf $home /etc/koyomi $credstore_dropin && sudo systemctl daemon-reload && sudo userdel koyomi"
   exit 0
 fi
 
@@ -122,6 +128,7 @@ if [ "$mode" != configure ]; then
   run_bin=$here/koyomi
 else
   run_bin=$bin
+  [ -f "$secret_tool" ] || die "$secret_tool がありません。koyomi のパッケージが壊れています。"
 fi
 if ! ver_out=$("$run_bin" --version 2>&1); then
   echo "$ver_out" >&2
@@ -138,7 +145,10 @@ install -d -m 0750 -o koyomi -g koyomi "$home"
 
 # 3. The admin token, only when there is none yet.
 install -d -m 0700 -o root -g root /etc/koyomi "$cred_dir"
-if [ ! -e "$cred_dir/http-admin" ]; then
+cs_state=$(bash "$secret_tool" --state) \
+  || die "暗号化の状態を読み込めません。README.md の「secret の暗号化」の「復旧」を見てください。"
+# Until the switch is on, the plain folder is the one that counts.
+if [ "$cs_state" != on ] && [ ! -e "$cred_dir/http-admin" ]; then
   tmp=$(mktemp "$cred_dir/.tmp.XXXXXX")
   trap 'rm -f "$tmp"' EXIT
   od -An -tx1 -N32 /dev/urandom | tr -d ' \n' > "$tmp"
@@ -154,10 +164,16 @@ fi
 if [ "$mode" != configure ]; then
   # 4. Check that this systemd can read a credential folder. Done before anything
   #    running is touched, so a failure leaves a working koyomi alone.
-  if ! systemd-run --wait --pipe --quiet -p LoadCredential=koyomi:"$cred_dir" \
-      /bin/sh -c 'test -r "$CREDENTIALS_DIRECTORY/koyomi_http-admin"'; then
-    die "この systemd は credential のフォルダーを読み込めません。Debian 12 以降が必要です。koyomi の起動も更新もしていません。"
+  if [ "$cs_state" != on ]; then
+    if ! systemd-run --wait --pipe --quiet -p LoadCredential=koyomi:"$cred_dir" \
+        /bin/sh -c 'test -r "$CREDENTIALS_DIRECTORY/koyomi_http-admin"'; then
+      die "この systemd は credential のフォルダーを読み込めません。Debian 12 以降が必要です。koyomi の起動も更新もしていません。"
+    fi
   fi
+  # Encrypt the secrets (or keep that healthy). It never stops koyomi; it only
+  # prepares the switch that --finish completes after the start (step 9).
+  bash "$secret_tool" --prepare \
+    || die "暗号化した secret に問題があります (上の表示を見てください)。koyomi の停止も更新もしていません。"
 
   # 5. Stop the unit if it is installed (systemctl waits until it has stopped;
   #    `koyomi engine stop` does not). Not tied to is-active, so that a unit
@@ -175,6 +191,10 @@ if [ "$mode" != configure ]; then
   install -m 0755 -o root -g root "$here/koyomi-user" /usr/local/sbin/koyomi-user
   install -m 0644 -o root -g root "$here/koyomi.service" "$unit"
   systemctl daemon-reload
+else
+  # The package starts the service itself (postinst), then runs --finish.
+  bash "$secret_tool" --prepare \
+    || echo "注意: 暗号化した secret に問題があります (上の表示を見てください)。パッケージの処理は続けます。" >&2
 fi
 
 # 7. First-time settings, written as koyomi (never by root inside its tree).
@@ -211,7 +231,7 @@ else
 fi
 
 # 8. Read the fingerprint before the start (a failure here does not stop the install).
-fp_help="sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi $bin http fingerprint"
+fp_help="sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi $bin http fingerprint"
 if fp=$(as_koyomi "$bin" http fingerprint); then
   # The command adds a note about [[remote]] below the fingerprint.
   fp=${fp%%$'\n'*}
@@ -222,8 +242,10 @@ fi
 
 # 9. Start (the package does it itself with --configure).
 if [ "$mode" != configure ]; then
+  inv=$(systemctl show -p InvocationID --value koyomi 2>/dev/null || true)
   systemctl enable --now koyomi || true
   sleep 3
+  bash "$secret_tool" --finish --after-start "$inv" || true
   if ! systemctl is-active --quiet koyomi; then
     echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
     echo "  journalctl -u koyomi -n 30 --no-pager" >&2
@@ -267,7 +289,7 @@ else
 fi
 echo
 echo "admin の token は次のコマンドで読み込めます (値はここには表示しません):"
-echo "  sudo cat $cred_dir/http-admin"
+echo "  sudo koyomi-secret --show http-admin"
 echo
 echo "Windows の PC からこのポート (${cur_port:-koyomi.toml の port}) に TCP で届く必要があります。ファイアウォールを確認してください。"
 tz=$(timedatectl show -p Timezone --value 2>/dev/null || true)

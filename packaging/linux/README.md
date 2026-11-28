@@ -4,8 +4,9 @@ koyomi のエンジンを Debian で systemd のサービスとして実行し�
 
 ## 必要なもの
 
-- systemd で動いている Debian 12 以降。GUI のライブラリは必要ありません。`LoadCredential` にフォルダーを渡す使い方が必要です (Debian 11 の systemd 247 のマニュアルにはありません)。`install.sh` が実際に試して確認し、読み込めない場合はそこで停止します。
+- systemd で動いている Debian 12 以降。GUI のライブラリは必要ありません。`LoadCredential` にフォルダーを渡す使い方が必要です (Debian 11 の systemd 247 のマニュアルにはありません)。secret の暗号化が有効になる前は、`install.sh` が実際に試して確認し、読み込めない場合はそこで停止します。
 - root の権限 (`sudo`) が必要です。
+- token などの secret は、可能なら systemd の `systemd-creds` で、このマシンの鍵を使って暗号化して保存します。暗号化を有効にできないとき (systemd が古いなど) は、インストールがそう表示し、これまでどおり root だけが読めるファイルに平文で保存します。詳しくは「[secret の暗号化](#secret-の暗号化)」にあります。
 - Windows の PC からエンジンのポートに TCP で届く必要があります。
 
 ## 入手
@@ -53,7 +54,7 @@ sudo ./install.sh --port 9000   # 初回にポートを変えるとき
 
 1. 画面の状態バーの接続先を押し、一番下の「接続先を管理…」から「接続先を追加する…」を開きます (コマンドパレットの「別の PC のエンジンに接続する」でも開けます)。名前と URL (インストールの最後に表示されたもの) を入力します。
 2. 画面に表示された指紋が、インストールの最後に表示された指紋と同じか確認し、「同じでした」を押します。異なる場合は接続しないでください。
-3. `admin` の token を入力して「接続する」を押します。token は Debian で `sudo cat /etc/koyomi/credentials/http-admin` を実行すると読み込めます。
+3. `admin` の token を入力して「接続する」を押します。token は Debian で `sudo koyomi-secret --show http-admin` を実行すると読み込めます。
 
 ### アドレス
 
@@ -74,7 +75,7 @@ sudo ufw allow 8790/tcp
 Debian では次のコマンドで表示できます。
 
 ```sh
-sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi koyomi http fingerprint
+sudo runuser -u koyomi -- env -u XDG_CONFIG_HOME -u XDG_STATE_HOME -u XDG_DATA_HOME -u XDG_RUNTIME_DIR HOME=/var/lib/koyomi koyomi http fingerprint
 ```
 
 Windows では `koyomi remote peek https://<アドレス>:<ポート>` で、相手が見せている指紋を表示できます。
@@ -158,7 +159,7 @@ sudo koyomi-user remove taro                            # 削除する
    od -An -tx1 -N32 /dev/urandom | tr -d ' \n' | sudo koyomi-secret http-taro
    ```
 
-   `koyomi-secret` は値を引数で受け取らず、標準入力から読み込みます (端末から入力したときは画面に表示されません)。koyomi が起動していれば再起動します (実行中のジョブは停止します)。
+   `koyomi-secret` は値を引数で受け取らず、標準入力から読み込みます (端末から入力したときは画面に表示されません)。koyomi が起動していれば再起動します (実行中のジョブは停止します)。暗号化が有効なときは、値を暗号化して保存します。
 
 2. `koyomi.toml` に `[[http.user]]` を追加します。`token` の `secret:` の後ろには、手順 1 で登録した名前を書きます。保存すると、エンジンが数秒のうちに読み直して使い始めます (再起動は要りません)。
 
@@ -167,7 +168,7 @@ sudo koyomi-user remove taro                            # 削除する
    ```
 
    `/var/lib/koyomi` の中は利用者 `koyomi` が書き換えられる場所なので、`install.sh` と同じく root ではなく `koyomi` として書き換えます。
-3. 登録した token を `sudo cat /etc/koyomi/credentials/http-taro` で読み込み、その人に渡します。
+3. 登録した token を `sudo koyomi-secret --show http-taro` で読み込み、その人に渡します。
 
 先に `koyomi.toml` に書いて token を登録していないと、エンジンは HTTPS の受け付けを始められず、ほかの人も接続できなくなります。token を先に登録してください。
 
@@ -177,11 +178,61 @@ sudo koyomi-user remove taro                            # 削除する
 | --- | --- |
 | 設定 (`koyomi.toml`、`jobnets/`、`calendars/`、`tls/`) | `/var/lib/koyomi/.config/uchmk/koyomi/` |
 | 状態 | `/var/lib/koyomi/.local/state/uchmk/koyomi/` |
-| シークレット (token など) | `/etc/koyomi/credentials/` (root だけが読める) |
+| シークレット (token など) | `/etc/koyomi/credstore/` (暗号化。root だけが読める)。暗号化が有効になる前は `/etc/koyomi/credentials/` (平文。root だけが読める) |
+| 暗号化の状態 | `/etc/koyomi/credstore.state` |
+| 暗号化の前に使っていた平文のファイルのうち、使われていないもの | `/etc/koyomi/credentials.unused/` |
+| 暗号化した secret を使うための設定 | `/etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf` |
+| 暗号化の鍵 | `/var/lib/systemd/credential.secret` |
 | 実行ファイル (.deb) | `/usr/bin/koyomi`、`/usr/sbin/koyomi-secret`、`/usr/sbin/koyomi-user` |
 | 実行ファイル (tar.gz) | `/usr/local/bin/koyomi`、`/usr/local/sbin/koyomi-secret`、`/usr/local/sbin/koyomi-user` |
 | サービス (.deb) | `/usr/lib/systemd/system/koyomi.service` |
 | サービス (tar.gz) | `/etc/systemd/system/koyomi.service` |
+
+## secret の暗号化
+
+Debian 13 (systemd 257) など、`systemd-creds` が使えるマシンでは、secret (token など) を、このマシンの鍵で暗号化して保存します。インストールが自動で有効にします。
+
+### インストールと更新で起きること
+
+.deb でも tar.gz でも、インストールや更新のたびに、次のことが起きます。
+
+- `/etc/koyomi/credentials` の平文のファイルを暗号化して、`/etc/koyomi/credstore` に置きます。
+- 暗号化した secret で koyomi を起動します。
+- koyomi が暗号化した secret で動いているのを確認してから、はじめて平文のファイルを削除します。削除した名前と、使われていないため `/etc/koyomi/credentials.unused/` に移した名前が表示されます。これらの値は平文で保存されていたので、値を変更することをお勧めします。
+- 確認できなかったときは、平文のファイルに戻し、そう表示します。もう一度インストールを実行すると、やり直します。
+- koyomi が起動しなかったとき (サービスを無効にしている、など) は、切り替えは途中 (`--state` が `pending`) のままで、平文のファイルも残ります。koyomi を起動したあとで `sudo koyomi-secret --finish` を実行すると、確認して切り替えを終えます。
+- 暗号化を有効にできないとき (systemd が古い、systemd が動いていないなど) は、`注意:` と理由が表示され、これまでどおり平文のファイルで動きます。
+
+### 守られるもの
+
+- 守られるもの: `/etc/koyomi/credstore` のコピー (バックアップやフォルダーのコピー) は、鍵 `/var/lib/systemd/credential.secret` がなければ読めません。
+- 守られないもの: 平文のファイル (暗号化が有効になる前と切り替えの途中の `/etc/koyomi/credentials`、`/etc/koyomi/credentials.unused`)、このマシンの root、ディスク全体のコピー (鍵が同じディスクにあるため)、ジョブ (これまでどおり `koyomi` の権限で動きます)。
+
+### バックアップ
+
+`/etc/koyomi` のバックアップとは別の場所に、`/var/lib/systemd/credential.secret` のバックアップを取ってください。secret を読み直すには、両方が必要です (別のマシンでも同じです)。
+
+### コマンド
+
+```sh
+sudo koyomi-secret --check          # 暗号化したフォルダーを確認する (値は表示しません)
+sudo koyomi-secret --show <名前>     # 値を表示する
+sudo koyomi-secret --state          # off / pending / on のどれかを表示する
+```
+
+### 使われていない平文のファイル
+
+`/etc/koyomi/credentials.unused/` には、暗号化が有効になったあとで見つかった平文のファイル (古い版が書いたもの、手で置いたもの) があります。これらは使われません。値が必要なときは `koyomi-secret` で登録し直してから、ファイルを削除してください。
+
+### 設定ファイル (drop-in)
+
+`/etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf` が、サービスを暗号化したフォルダーに切り替えます。削除しないでください。`systemctl revert koyomi` で削除されたときは、`sudo koyomi-secret --prepare` で戻します (戻したあとは `sudo systemctl restart koyomi` が必要です)。
+
+### 復旧
+
+- koyomi が起動せず、`journalctl -u koyomi` に `status=243/CREDENTIALS` と出るとき: `sudo koyomi-secret --check` が、問題のファイルの名前を表示します。バックアップから鍵を戻すか、そのファイルを `/etc/koyomi/credstore` から別の場所に移して、値を `koyomi-secret` で登録し直します。そのあと `sudo systemctl restart koyomi` を実行します。
+- 鍵のバックアップがないとき: `/etc/koyomi/credstore` を別の場所に移し、drop-in と `/etc/koyomi/credstore.state` を削除して、`sudo systemctl daemon-reload` を実行します。そのあとインストールをもう一度実行します (新しい admin の token が作られます)。ほかの secret は登録し直します。
+- 暗号化が有効になったあとで、古い版に戻すことはできません。古い版の `koyomi-secret` と `install.sh` は、使われない平文のファイルを書いてしまいます。
 
 ## 状態を確認する
 
@@ -196,7 +247,7 @@ sudo -H -u koyomi koyomi status
 - .deb: 新しい .deb を `sudo apt install ./koyomi_<新しい版>_amd64.deb` で入れます。
 - tar.gz: 新しい tar.gz を展開して、もう一度 `sudo ./install.sh` を実行します。
 
-どちらも、サービスを再起動するので、実行中のジョブは停止します。設定と token は変更されません。`systemctl disable` で無効にしたサービスは、無効のまま起動しません。
+どちらも、サービスを再起動するので、実行中のジョブは停止します。設定と token は変更されません。この版に最初に更新したときに、secret の暗号化が有効になります (「[secret の暗号化](#secret-の暗号化)」を見てください)。`systemctl disable` で無効にしたサービスは、無効のまま起動しません。そのときは、暗号化への切り替えは koyomi を起動したあとの `sudo koyomi-secret --finish` で終わります。
 
 ## 停止する
 
@@ -213,7 +264,7 @@ sudo apt purge koyomi          # .deb で入れたとき
 sudo ./install.sh --uninstall  # tar.gz で入れたとき (展開したフォルダーで)
 ```
 
-サービスを止め、実行ファイルとサービスを削除します。`/var/lib/koyomi` (設定と状態)、`/etc/koyomi` (シークレット)、利用者 `koyomi` は、`apt purge` でも残ります。これらを削除するコマンドは最後に表示されます (自動では実行しません)。
+サービスを止め、実行ファイルとサービスを削除します。`/var/lib/koyomi` (設定と状態)、`/etc/koyomi` (シークレット)、利用者 `koyomi`、暗号化のための設定 (`/etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf`) は、`apt purge` でも残ります。これらを削除するコマンドは最後に表示されます (設定のファイルも削除するコマンドです。自動では実行しません)。
 
 `sudo apt remove koyomi` でも削除できます。その場合は、サービスが止まったまま無効になります (`systemctl` では masked と表示されます)。もう一度 .deb を入れると元に戻ります。
 

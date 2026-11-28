@@ -5,6 +5,18 @@
 ## [Unreleased]
 
 ### 追加
+- Debian: root が置く secret（`/etc/koyomi/credentials` の token など）を、systemd-creds でこのマシンの鍵（host 鍵）を使って暗号化し、`/etc/koyomi/credstore` に置く。
+  - 切り替えるのは `install.sh` と `.deb` の入れ直し（`sudo koyomi-secret --prepare` と `--finish`）。koyomi を止めずに準備し、次の起動で暗号化したほうを読めたら平文のファイルを消す。
+    - 切り替えのあいだの状態は `sudo koyomi-secret --state`（`off`・`pending`・`on`）で見られる。
+    - 暗号化したほうで起動できなかったときは、平文のファイルに戻して起動し直し、理由の見方を言う。
+    - koyomi が起動していないときは `pending` のまま平文を残し、起動したあとの `sudo koyomi-secret --finish` で終える。
+  - 暗号化したあとで平文のフォルダーに書かれたファイルは、同じ値なら消し、違う値なら `/etc/koyomi/credentials.unused` に移す（名前が重なれば時刻と `.2`・`.3` を付ける）。どちらも値を変えるよう勧める。
+  - `sudo koyomi-secret <名前>` は暗号化して書き込む。`--show <名前>` は値を見せ、`--check` は開けないファイル・名前の使えないファイル・drop-in（`koyomi.service.d/50-koyomi-credstore.conf`）が無い・変わった・systemd が読み直していない、を言う。
+  - 暗号化を有効にできないとき（systemd が古い・systemd が動いていない、など）は、`注意:` と理由を出して、これまでどおり平文のまま使う。Debian 12 ではまだ試していない。
+  - 暗号化が有効になったあとは、古い版に戻せない（古い `koyomi-secret`・`install.sh` は使われない平文のファイルを書く）。README の「secret の暗号化」の「復旧」に書いた。
+  - `install.sh` の最後の案内は `sudo koyomi-secret --show http-admin` になった。削除の案内に drop-in も入れた。
+  - `koyomi-user` と `install.sh` の `runuser` で、`XDG_DATA_HOME` も外す（koyomi の利用者の置き場を `/var/lib/koyomi` にそろえる）。
+  - 確かめたのは Debian 13（systemd 257）の kei で、捨てるユニットで切り替え・戻し・壊れたファイル・drop-in の消失などを流した。手の確かめは TESTING の 144 節。
 - `koyomi config move-passwords [--dry-run]`: koyomi.toml のアドレスに平文で書かれたパスワードを、エンジンの PC の資格情報の置き場に移す。
   - 対象は `[[host]]` の `on`・`[[mailbox]]` の `mail`・`[[database]]` の `db`。
     - 移した行には `password = "secret:<名前>"` を書く。

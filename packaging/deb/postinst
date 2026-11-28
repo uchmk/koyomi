@@ -4,6 +4,8 @@
 # dh_installsystemd does (--restart-after-upgrade).
 set -e
 
+_koyomi_inv=
+
 if [ "$1" = configure ]; then
     # --port matters only for a first koyomi.toml. A failure here fails the
     # postinst; `dpkg --configure koyomi` runs it again (the steps are repeatable).
@@ -36,6 +38,9 @@ if [ "$1" = configure ] || [ "$1" = abort-upgrade ] || [ "$1" = abort-deconfigur
         else
             _dh_action=start
         fi
+        # The id of the run before this start: koyomi-secret --finish uses it to tell
+        # whether a start was attempted with the encrypted secrets.
+        _koyomi_inv=$(systemctl show -p InvocationID --value koyomi.service 2>/dev/null || true)
         deb-systemd-invoke $_dh_action 'koyomi.service' >/dev/null || true
     fi
 fi
@@ -45,11 +50,16 @@ if [ "$1" = configure ] && [ -d /run/systemd/system ]; then
     if ! systemctl is-enabled --quiet koyomi; then
         # An admin turned it off: the package leaves it off.
         echo "koyomi のサービスは無効のため起動していません（起動するには: systemctl enable --now koyomi）。"
-    elif sleep 3 && systemctl is-active --quiet koyomi; then
-        echo "koyomi は起動しています。"
+        /usr/sbin/koyomi-secret --finish || true
     else
-        echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
-        echo "  journalctl -u koyomi -n 30 --no-pager" >&2
+        sleep 3
+        /usr/sbin/koyomi-secret --finish --after-start "$_koyomi_inv" || true
+        if systemctl is-active --quiet koyomi; then
+            echo "koyomi は起動しています。"
+        else
+            echo "koyomi が起動していません。次のコマンドで理由を確認してください:" >&2
+            echo "  journalctl -u koyomi -n 30 --no-pager" >&2
+        fi
     fi
 fi
 

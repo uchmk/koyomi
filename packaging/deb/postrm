@@ -21,8 +21,11 @@ if [ "$1" = remove ] || [ "$1" = purge ]; then
     echo "  /var/lib/koyomi  (設定と状態)"
     echo "  /etc/koyomi  (token などのシークレット)"
     echo "  利用者 koyomi"
+    if [ -e /etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf ]; then
+        echo "  /etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf  (暗号化した secret を使うための設定)"
+    fi
     echo "削除するとき:"
-    echo "  sudo rm -rf /var/lib/koyomi /etc/koyomi && sudo userdel koyomi"
+    echo "  sudo rm -rf /var/lib/koyomi /etc/koyomi /etc/systemd/system/koyomi.service.d/50-koyomi-credstore.conf && sudo systemctl daemon-reload && sudo userdel koyomi"
 fi
 
 exit 0

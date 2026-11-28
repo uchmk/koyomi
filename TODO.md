@@ -49,6 +49,10 @@
   - [x] `koyomi user list|role|remove` と `koyomi config`、Debian の `sudo koyomi-user`（door の `Users`・`UserSet`・`UserRemove` は admin だけ）。
   - [x] `koyomi user add`（1 行と対話式）と `koyomi user reset`。トークンはハッシュで koyomi.toml に書き、一度だけ見せる。再起動もしない。koyomi.toml に `[http]` がなければ断る。
   - [x] 窓の「利用者」のページ（設定 → 利用者。この PC のエンジンと、admin で別の PC のエンジンにつないだとき）。窓での手の確かめは TESTING の 131 節（未測定）。
+- secret を暗号化して持つ（2026-11-28、持ち主の依頼）:
+  - [x] root が置く secret（`/etc/koyomi/credentials`）を systemd-creds の host 鍵で暗号化し（`/etc/koyomi/credstore`）、`LoadCredentialEncrypted` で渡す。`install.sh` と `.deb` が切り替え、起動できなければ平文に戻す。kei の捨てるユニットで確かめた。手の確かめは TESTING の 144 節（未測定）。
+  - [ ] koyomi の利用者の secret（`koyomi secret set` の置き場）を ito-secret の `Store::SystemdCreds` にする（ito v0.318.0、uchmk/ito#251）。ito の rev を上げて `use_store` を呼び、kei の koyomi の利用者で set・get・delete を 1 回ずつ確かめて ito に伝える。
+  - [ ] kei の本物の `/etc/koyomi/credentials`（`http-*` の token）を暗号化に切り替える。持ち主の返事を待つ。
 
 ## v0.1 の項目（企画で採用したもの）
 
