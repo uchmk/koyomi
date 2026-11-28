@@ -12,7 +12,7 @@ publish = false
 ito-match = { git = "https://github.com/uchmk/ito", rev = "41228a433b1e3e313ddc9f61ca1e253312e2d744" }
 # `ring` (not the default aws-lc-rs) needs a C compiler on Linux and macOS targets only; Windows MSVC builds as is.
 russh = { version = "0.65", default-features = false, features = ["ring"] }
-russh-sftp = "3"
+russh-sftp = "4"
 sha2 = "0.11"
 tokio = { version = "1", features = ["rt-multi-thread", "net", "time", "io-util", "sync"] }
 
