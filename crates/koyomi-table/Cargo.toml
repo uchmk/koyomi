@@ -9,4 +9,4 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-rust_xlsxwriter = "0.102"
+rust_xlsxwriter = "0.104"

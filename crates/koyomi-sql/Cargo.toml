@@ -25,4 +25,4 @@ tokio-postgres = { version = "0.7", optional = true }
 tokio-postgres-rustls = { version = "0.14", default-features = false, optional = true }
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
 webpki-roots = { version = "1", optional = true }
-rusqlite = { version = "0.41", features = ["bundled"], optional = true }
+rusqlite = { version = "0.43", features = ["bundled"], optional = true }
